@@ -367,6 +367,40 @@ impl WidgetTheme for MaterialTheme {
         picker::draw_radio_state_layer(&self.colors, draw, center, radius, selected, state);
     }
 
+    fn segmented_picker_label_color(&self, selected: bool) -> Option<Color> {
+        Some(picker::segmented_label_color(&self.colors, selected))
+    }
+
+    fn draw_segmented_picker_container(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        segment_count: usize,
+    ) {
+        picker::draw_segmented_container(&self.colors, draw, bounds, segment_count);
+    }
+
+    fn draw_segmented_picker_segment(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        selected: bool,
+        is_first: bool,
+        is_last: bool,
+    ) {
+        picker::draw_segmented_segment(&self.colors, draw, bounds, selected, is_first, is_last);
+    }
+
+    fn draw_segmented_picker_state_layer(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        selected: bool,
+        state: WidgetInteractionState,
+    ) {
+        picker::draw_segmented_state_layer(&self.colors, draw, bounds, selected, state);
+    }
+
     fn slider_metrics(&self) -> SliderMetrics {
         slider::metrics()
     }

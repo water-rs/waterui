@@ -33,6 +33,9 @@ pub enum PickerStyle {
     /// A radio button group style picker.
     /// Displays all options vertically with radio button indicators.
     Radio,
+    /// A segmented button style picker.
+    /// Displays all options horizontally as mutually exclusive segments.
+    Segmented,
 }
 
 #[non_exhaustive]
@@ -115,6 +118,12 @@ impl Picker {
     pub const fn style(mut self, style: PickerStyle) -> Self {
         self.0.style = style;
         self
+    }
+
+    /// Changes the picker to segmented button style.
+    #[must_use]
+    pub const fn segmented(self) -> Self {
+        self.style(PickerStyle::Segmented)
     }
 }
 

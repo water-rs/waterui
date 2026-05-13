@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
-use waterui::{Binding, SignalExt, View};
+use waterui::{Binding, Environment, SignalExt, View};
 use waterui_form::secure;
 use waterui_form::secure::Secure;
-use waterui_testing::{MountedApp, Role, Selector};
+use waterui_testing::{MountedApp, Role, Selector, UiTest};
 
 fn secure_view() -> impl View {
     let password = Binding::container(Secure::default());
@@ -18,8 +18,16 @@ fn secure_view() -> impl View {
     ))
 }
 
-#[::waterui::test(secure_view)]
-fn secure_field_set_text_updates_value(app: &mut MountedApp) {
+fn mount_secure_view() -> MountedApp {
+    let mut env = Environment::new();
+    hydrolysis_m3::install(&mut env);
+
+    UiTest::new().environment(env).mount(secure_view)
+}
+
+#[test]
+fn secure_field_set_text_updates_value() {
+    let mut app = mount_secure_view();
     let selector = Selector::default()
         .role(Role::PASSWORD_INPUT)
         .label("Password");

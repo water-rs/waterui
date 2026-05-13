@@ -3,7 +3,7 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
-use waterui::{Binding, View};
+use waterui::{Binding, Environment, View};
 use waterui_form::Calendar;
 use waterui_form::picker::date::{DatePicker, DatePickerType};
 use waterui_form::picker::{Picker, PickerItem, PickerStyle};
@@ -17,7 +17,11 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
+    let mut env = Environment::new();
+    hydrolysis_m3::install(&mut env);
+
     UiTest::new()
+        .environment(env)
         .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
         .mount(build)
 }
@@ -94,7 +98,7 @@ fn date_picker_accessibility() {
 
     let mut app = mount_view(move || {
         form_shell(vstack((
-            DatePicker::new(&selected_date_for_view).label(waterui::text!("Event Date")),
+            DatePicker::new(waterui::text!("Event Date"), &selected_date_for_view),
             waterui::text!("selected:{selected_date_for_view}").foreground(Srgb::WHITE),
         )))
     });
@@ -136,8 +140,7 @@ fn calendar_navigation_and_selection_update_binding() {
 
     let mut app = mount_view(move || {
         form_shell(
-            Calendar::new(&selected_date_for_view)
-                .label("Event Calendar")
+            Calendar::new("Event Calendar", &selected_date_for_view)
                 .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 2, 28).unwrap()),
         )
     });

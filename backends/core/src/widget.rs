@@ -834,6 +834,37 @@ pub trait WidgetTheme {
         _state: WidgetInteractionState,
     ) {
     }
+    /// Optional segmented picker label foreground override.
+    fn segmented_picker_label_color(&self, _selected: bool) -> Option<Color> {
+        None
+    }
+    /// Draw segmented picker container and dividers.
+    fn draw_segmented_picker_container(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _segment_count: usize,
+    ) {
+    }
+    /// Draw one segmented picker segment background.
+    fn draw_segmented_picker_segment(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _selected: bool,
+        _is_first: bool,
+        _is_last: bool,
+    ) {
+    }
+    /// Draw one segmented picker state layer.
+    fn draw_segmented_picker_state_layer(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _selected: bool,
+        _state: WidgetInteractionState,
+    ) {
+    }
 
     /// Return slider metrics.
     fn slider_metrics(&self) -> SliderMetrics;

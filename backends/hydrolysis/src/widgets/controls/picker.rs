@@ -11,6 +11,8 @@ use accesskit::{
 };
 use nami::Binding;
 use std::rc::Rc;
+use waterui::ViewExt;
+use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::id::Id;
@@ -125,7 +127,7 @@ impl HydroNativeView for Native<PickerConfig> {
                         }),
                     );
                 }
-                PickerStyle::Radio => {
+                PickerStyle::Radio | PickerStyle::Segmented => {
                     let mut group = AccessibilityNode::new(
                         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
                     );
@@ -134,10 +136,11 @@ impl HydroNativeView for Native<PickerConfig> {
                         group.set_label(label);
                     }
                     let group_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-                    let metrics = widget_theme(env).picker_metrics(PickerStyle::Radio);
+                    let metrics = widget_theme(env).picker_metrics(picker.style);
                     let mut row_y = ctx.bounds.y0 + metrics.vertical_inset;
                     let selected = renderer.read_signal(&picker.selection);
-                    for item in &items {
+                    let segment_width = ctx.bounds.width() / items.len() as f64;
+                    for (index, item) in items.iter().enumerate() {
                         let label = renderer
                             .read_resolved_text_styled(&item.content, env)
                             .to_plain()
@@ -147,18 +150,29 @@ impl HydroNativeView for Native<PickerConfig> {
                             StyledStr::plain(label.clone()),
                             env,
                         );
-                        let row_height =
-                            f64::from(label_size.height).max(metrics.radio_indicator_size);
-                        let row_rect = vello::kurbo::Rect::new(
-                            ctx.bounds.x0,
-                            row_y,
-                            ctx.bounds.x1,
-                            (row_y + row_height).min(ctx.bounds.y1),
-                        );
+                        let row_rect = if picker.style == PickerStyle::Segmented {
+                            let x0 = ctx.bounds.x0 + segment_width * index as f64;
+                            vello::kurbo::Rect::new(
+                                x0,
+                                ctx.bounds.y0,
+                                x0 + segment_width,
+                                ctx.bounds.y1,
+                            )
+                        } else {
+                            let row_height =
+                                f64::from(label_size.height).max(metrics.radio_indicator_size);
+                            let rect = vello::kurbo::Rect::new(
+                                ctx.bounds.x0,
+                                row_y,
+                                ctx.bounds.x1,
+                                (row_y + row_height).min(ctx.bounds.y1),
+                            );
+                            row_y = rect.y1 + metrics.radio_row_spacing;
+                            rect
+                        };
                         if row_rect.height() <= 0.0 {
                             break;
                         }
-                        row_y = row_rect.y1 + metrics.radio_row_spacing;
                         let mut option =
                             AccessibilityNode::new(renderer.resolve_accessibility_role(
                                 env,
@@ -209,6 +223,9 @@ pub(crate) fn render_picker(
         }
         PickerStyle::Radio => {
             render_radio_picker(ctx, picker.selection, items, env);
+        }
+        PickerStyle::Segmented => {
+            render_segmented_picker(ctx, picker.selection, items, env);
         }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
     }
@@ -445,4 +462,83 @@ pub(crate) fn render_radio_picker(
                 }
             });
     }
+}
+
+pub(crate) fn render_segmented_picker(
+    ctx: &mut WidgetRenderContext<'_>,
+    selection: Binding<Id>,
+    items: Vec<PickerItem<Id>>,
+    env: &Environment,
+) {
+    let theme = widget_theme(env);
+    let metrics = theme.picker_metrics(PickerStyle::Segmented);
+    let selected = ctx.renderer_mut().read_signal(&selection);
+    let bounds = ctx.bounds;
+    let item_count = items.len();
+    let segment_width = bounds.width() / item_count as f64;
+
+    for (index, item) in items.into_iter().enumerate() {
+        let x0 = bounds.x0 + segment_width * index as f64;
+        let segment_rect = vello::kurbo::Rect::new(x0, bounds.y0, x0 + segment_width, bounds.y1);
+        let is_selected = item.tag == selected;
+        let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
+        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        {
+            let mut draw = ctx.draw_context();
+            theme.draw_segmented_picker_segment(
+                &mut draw,
+                segment_rect,
+                is_selected,
+                index == 0,
+                index + 1 == item_count,
+            );
+            theme.draw_segmented_picker_state_layer(
+                &mut draw,
+                segment_rect,
+                is_selected,
+                interaction,
+            );
+        }
+
+        let label = ctx
+            .renderer_mut()
+            .read_resolved_text_styled(&item.content, env);
+        let label_size =
+            HydrolysisRenderer::measure_text_intrinsic_size(ctx.state_mut(), label, env);
+        let label_rect = segmented_label_rect(segment_rect, label_size, metrics);
+        let label_view = match theme.segmented_picker_label_color(is_selected) {
+            Some(color) => AnyView::new(item.content.foreground(color)),
+            None => AnyView::new(item.content),
+        };
+        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
+
+        let tag = item.tag;
+        ctx.renderer_mut()
+            .register_interactive_pointer_target(hit_rect, press_slot, {
+                let selection = selection.clone();
+                move |_renderer, _point, _env| {
+                    if selection.get() == tag {
+                        return false;
+                    }
+                    selection.set(tag);
+                    true
+                }
+            });
+    }
+
+    let mut draw = ctx.draw_context();
+    theme.draw_segmented_picker_container(&mut draw, bounds, item_count);
+}
+
+fn segmented_label_rect(
+    segment_rect: vello::kurbo::Rect,
+    label_size: waterui_core::layout::Size,
+    metrics: PickerMetrics,
+) -> vello::kurbo::Rect {
+    let max_width = (segment_rect.width() - metrics.horizontal_inset * 2.0).max(0.0);
+    let width = f64::from(label_size.width).min(max_width);
+    let height = f64::from(label_size.height).min(segment_rect.height());
+    let x0 = segment_rect.x0 + (segment_rect.width() - width) * 0.5;
+    let y0 = segment_rect.y0 + (segment_rect.height() - height) * 0.5;
+    vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }

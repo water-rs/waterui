@@ -3,7 +3,8 @@ use crate::dimensions::{
     PICKER_MENU_POPUP_CORNER_RADIUS, PICKER_MENU_POPUP_ROW_HEIGHT, PICKER_MENU_POPUP_TOP_SPACING,
     PICKER_MIN_HEIGHT, PICKER_MIN_WIDTH, PICKER_RADIO_INDICATOR_SIZE,
     PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_LABEL_SPACING, PICKER_RADIO_OUTER_RING_WIDTH,
-    PICKER_RADIO_ROW_SPACING, PICKER_VERTICAL_INSET,
+    PICKER_RADIO_ROW_SPACING, PICKER_SEGMENTED_CONTAINER_RADIUS, PICKER_SEGMENTED_HORIZONTAL_INSET,
+    PICKER_SEGMENTED_MIN_HEIGHT, PICKER_SEGMENTED_OUTLINE_WIDTH, PICKER_VERTICAL_INSET,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -13,6 +14,7 @@ use waterui_form::picker::PickerStyle;
 pub fn metrics(style: PickerStyle) -> PickerMetrics {
     match style {
         PickerStyle::Automatic | PickerStyle::Menu | PickerStyle::Radio => material_metrics(),
+        PickerStyle::Segmented => segmented_metrics(),
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
     }
 }
@@ -25,6 +27,23 @@ const fn material_metrics() -> PickerMetrics {
         vertical_inset: PICKER_VERTICAL_INSET,
         label_spacing: PICKER_LABEL_SPACING,
         indicator_space: PICKER_INDICATOR_SPACE,
+        radio_indicator_size: PICKER_RADIO_INDICATOR_SIZE,
+        radio_label_spacing: PICKER_RADIO_LABEL_SPACING,
+        radio_row_spacing: PICKER_RADIO_ROW_SPACING,
+        popup_top_spacing: PICKER_MENU_POPUP_TOP_SPACING,
+        popup_row_height: PICKER_MENU_POPUP_ROW_HEIGHT,
+        popup_corner_radius: PICKER_MENU_POPUP_CORNER_RADIUS,
+    }
+}
+
+const fn segmented_metrics() -> PickerMetrics {
+    PickerMetrics {
+        min_width: PICKER_MIN_WIDTH,
+        min_height: PICKER_SEGMENTED_MIN_HEIGHT,
+        horizontal_inset: PICKER_SEGMENTED_HORIZONTAL_INSET,
+        vertical_inset: 0.0,
+        label_spacing: PICKER_LABEL_SPACING,
+        indicator_space: 0.0,
         radio_indicator_size: PICKER_RADIO_INDICATOR_SIZE,
         radio_label_spacing: PICKER_RADIO_LABEL_SPACING,
         radio_row_spacing: PICKER_RADIO_ROW_SPACING,
@@ -168,12 +187,15 @@ mod tests {
     use vello::peniko::Color;
 
     use super::{
-        MaterialColorScheme, draw_popup_row_background, draw_radio_indicator, draw_separator,
-        material_metrics,
+        MaterialColorScheme, draw_popup_row_background, draw_radio_indicator,
+        draw_segmented_container, draw_segmented_segment, draw_separator, material_metrics,
+        segmented_metrics,
     };
     use crate::dimensions::{
         PICKER_LABEL_SPACING, PICKER_MENU_POPUP_CORNER_RADIUS, PICKER_MENU_POPUP_ROW_HEIGHT,
         PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_OUTER_RING_WIDTH,
+        PICKER_SEGMENTED_CONTAINER_RADIUS, PICKER_SEGMENTED_HORIZONTAL_INSET,
+        PICKER_SEGMENTED_MIN_HEIGHT,
     };
     use crate::{Brush, DrawContext};
 
@@ -182,6 +204,8 @@ mod tests {
         circle_fills: Vec<f64>,
         circle_strokes: Vec<(f64, f64)>,
         rect_fills: Vec<Color>,
+        rounded_strokes: Vec<(RoundedRectRadii, Color, f64)>,
+        line_strokes: Vec<(Color, f64)>,
     }
 
     impl DrawContext for RecordingDrawContext {
@@ -199,13 +223,22 @@ mod tests {
         fn stroke_rounded_rect(
             &mut self,
             _rect: Rect,
-            _radii: RoundedRectRadii,
-            _brush: &Brush,
-            _width: f64,
+            radii: RoundedRectRadii,
+            brush: &Brush,
+            width: f64,
         ) {
+            let Brush::Solid(color) = brush else {
+                panic!("Material picker token strokes must be solid colors");
+            };
+            self.rounded_strokes.push((radii, *color, width));
         }
 
-        fn stroke_line(&mut self, _from: Point, _to: Point, _brush: &Brush, _width: f64) {}
+        fn stroke_line(&mut self, _from: Point, _to: Point, brush: &Brush, width: f64) {
+            let Brush::Solid(color) = brush else {
+                panic!("Material picker token strokes must be solid colors");
+            };
+            self.line_strokes.push((*color, width));
+        }
 
         fn stroke_circle(&mut self, _center: Point, radius: f64, _brush: &Brush, width: f64) {
             self.circle_strokes.push((radius, width));
@@ -276,6 +309,44 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn segmented_metrics_match_material_web_latest_tokens() {
+        let metrics = segmented_metrics();
+
+        assert_eq!(metrics.min_height, PICKER_SEGMENTED_MIN_HEIGHT);
+        assert_eq!(metrics.horizontal_inset, PICKER_SEGMENTED_HORIZONTAL_INSET);
+        assert_eq!(PICKER_SEGMENTED_MIN_HEIGHT, 40.0);
+        assert_eq!(PICKER_SEGMENTED_CONTAINER_RADIUS, 20.0);
+    }
+
+    #[test]
+    fn segmented_container_and_selected_segment_use_material_tokens() {
+        let colors = MaterialColorScheme::baseline_light();
+        let mut draw = RecordingDrawContext::default();
+
+        draw_segmented_segment(
+            &colors,
+            &mut draw,
+            Rect::new(0.0, 0.0, 80.0, 40.0),
+            true,
+            false,
+            false,
+        );
+        draw_segmented_container(&colors, &mut draw, Rect::new(0.0, 0.0, 240.0, 40.0), 3);
+
+        assert_eq!(draw.rect_fills, vec![colors.secondary_container.peniko()]);
+        assert_eq!(draw.rounded_strokes.len(), 1);
+        assert_eq!(draw.rounded_strokes[0].1, colors.outline.peniko());
+        assert_eq!(draw.rounded_strokes[0].2, 1.0);
+        assert_eq!(
+            draw.line_strokes,
+            vec![
+                (colors.outline.peniko(), 1.0),
+                (colors.outline.peniko(), 1.0)
+            ]
+        );
+    }
 }
 
 pub fn draw_radio_state_layer(
@@ -292,6 +363,86 @@ pub fn draw_radio_state_layer(
         20.0,
         if selected {
             colors.primary.peniko()
+        } else {
+            colors.on_surface.peniko()
+        },
+        state,
+    );
+}
+
+pub fn segmented_label_color(
+    colors: &MaterialColorScheme,
+    selected: bool,
+) -> waterui_graphics::color::Color {
+    if selected {
+        colors.on_secondary_container.view_color()
+    } else {
+        colors.on_surface.view_color()
+    }
+}
+
+pub fn draw_segmented_container(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    segment_count: usize,
+) {
+    draw.stroke_rounded_rect(
+        bounds,
+        PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
+        &Brush::from(colors.outline.peniko()),
+        PICKER_SEGMENTED_OUTLINE_WIDTH,
+    );
+    if segment_count <= 1 {
+        return;
+    }
+    let segment_width = bounds.width() / segment_count as f64;
+    for index in 1..segment_count {
+        let x = bounds.x0 + segment_width * index as f64;
+        draw.stroke_line(
+            vello::kurbo::Point::new(x, bounds.y0),
+            vello::kurbo::Point::new(x, bounds.y1),
+            &Brush::from(colors.outline.peniko()),
+            PICKER_SEGMENTED_OUTLINE_WIDTH,
+        );
+    }
+}
+
+pub fn draw_segmented_segment(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    selected: bool,
+    is_first: bool,
+    is_last: bool,
+) {
+    if !selected {
+        return;
+    }
+    if is_first && is_last {
+        draw.fill_rounded_rect(
+            bounds,
+            PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
+            &Brush::from(colors.secondary_container.peniko()),
+        );
+        return;
+    }
+    draw.fill_rect(bounds, &Brush::from(colors.secondary_container.peniko()));
+}
+
+pub fn draw_segmented_state_layer(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    selected: bool,
+    state: WidgetInteractionState,
+) {
+    state_layer::draw_bounded(
+        draw,
+        bounds,
+        PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
+        if selected {
+            colors.on_secondary_container.peniko()
         } else {
             colors.on_surface.peniko()
         },

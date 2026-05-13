@@ -1103,6 +1103,20 @@ pub(crate) fn measure_picker_intrinsic(
             let height = (metrics.vertical_inset * 2.0 + total_height).max(metrics.min_height);
             LayoutSize::new(width as f32, height as f32)
         }
+        PickerStyle::Segmented => {
+            let metrics = theme.picker_metrics(PickerStyle::Segmented);
+            let mut total_width: f64 = 0.0;
+            let mut max_item_height: f64 = 0.0;
+            for item in &items {
+                let styled = resolved_text_styled(&item.content, env);
+                let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
+                total_width += f64::from(size.width) + metrics.horizontal_inset * 2.0;
+                max_item_height = max_item_height.max(f64::from(size.height));
+            }
+            let width = total_width.max(metrics.min_width);
+            let height = (max_item_height + metrics.vertical_inset * 2.0).max(metrics.min_height);
+            LayoutSize::new(width as f32, height as f32)
+        }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
     }
 }
