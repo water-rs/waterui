@@ -52,10 +52,6 @@ impl HydroNativeView for Native<Dynamic> {
         let dynamic = view.as_inner();
         let identity = dynamic.identity();
         push_dynamic_measurement(state, identity, ProposalSize::UNSPECIFIED);
-        if let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity).cloned() {
-            pop_dynamic_measurement(state, identity, "while reading intrinsic cache");
-            return dimensions.size;
-        }
         let initial = dynamic.with_unconnected_view_mut(|slot| {
             slot.take().map(|content| {
                 let normalized = normalize_layout_view(content, env);
@@ -78,13 +74,17 @@ impl HydroNativeView for Native<Dynamic> {
                 })
             }) {
                 Some(Some(dimensions)) => dimensions,
-                Some(None) | None => state
-                    .dynamic_intrinsic_cache
-                    .get(&identity)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node")
-                    }),
+                Some(None) | None => {
+                    state
+                        .dynamic_intrinsic_cache
+                        .get(&identity)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "hydrolysis Dynamic intrinsic cache miss for connected dynamic node"
+                            )
+                        })
+                }
             },
         };
         state
@@ -104,19 +104,6 @@ impl HydroNativeView for Native<Dynamic> {
         let identity = dynamic.identity();
         let proposal_key = proposal_cache_key(identity, proposal);
         push_dynamic_measurement(state, identity, proposal);
-        if proposal == ProposalSize::UNSPECIFIED
-            && let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity).cloned()
-        {
-            pop_dynamic_measurement(state, identity, "while reading dimensions cache");
-            return dimensions;
-        }
-        if proposal != ProposalSize::UNSPECIFIED
-            && let Some(dimensions) = state.dynamic_dimensions_cache.get(&proposal_key).cloned()
-        {
-            pop_dynamic_measurement(state, identity, "while reading proposal dimensions cache");
-            return dimensions;
-        }
-
         let initial = dynamic.with_unconnected_view_mut(|slot| {
             slot.take().map(|content| {
                 let normalized = normalize_layout_view(content, env);
