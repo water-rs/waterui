@@ -486,6 +486,21 @@ impl ListMetrics {
     }
 }
 
+/// Layout metrics for dividers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DividerMetrics {
+    /// Divider stroke thickness.
+    pub thickness: f64,
+}
+
+impl DividerMetrics {
+    /// Create divider layout metrics.
+    #[must_use]
+    pub const fn new(thickness: f64) -> Self {
+        Self { thickness }
+    }
+}
+
 /// Layout metrics for navigation bars.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavigationMetrics {
@@ -770,6 +785,11 @@ pub trait WidgetTheme {
 
     /// Draw a scroll indicator.
     fn draw_scroll_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
+
+    /// Return divider layout metrics.
+    fn divider_metrics(&self) -> DividerMetrics;
+    /// Draw a divider.
+    fn draw_divider(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
     /// Return list layout metrics.
     fn list_metrics(&self) -> ListMetrics;
