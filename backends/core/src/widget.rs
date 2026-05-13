@@ -431,6 +431,10 @@ impl ProgressMetrics {
 pub struct TabsMetrics {
     /// Tab bar height.
     pub bar_height: f64,
+    /// Minimum width for one tab button.
+    pub button_min_width: f64,
+    /// Horizontal label inset inside one tab button.
+    pub button_horizontal_inset: f64,
     /// Selected tab active indicator height.
     pub active_indicator_height: f64,
     /// Selected tab active indicator corner radius.
@@ -442,11 +446,15 @@ impl TabsMetrics {
     #[must_use]
     pub const fn new(
         bar_height: f64,
+        button_min_width: f64,
+        button_horizontal_inset: f64,
         active_indicator_height: f64,
         active_indicator_radius: f64,
     ) -> Self {
         Self {
             bar_height,
+            button_min_width,
+            button_horizontal_inset,
             active_indicator_height,
             active_indicator_radius,
         }

@@ -653,10 +653,11 @@ pub(crate) fn measure_tabs_intrinsic(
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
     let mut bar_width = 0.0;
+    let metrics = widget_theme(env).tabs_metrics();
     for tab in &tabs.tabs {
         let label_size = measure_view_intrinsic(&tab.label.content, state, env);
-        bar_width += (f64::from(label_size.width) + TABS_BUTTON_HORIZONTAL_INSET * 2.0)
-            .max(TABS_BUTTON_MIN_WIDTH);
+        bar_width += (f64::from(label_size.width) + metrics.button_horizontal_inset * 2.0)
+            .max(metrics.button_min_width);
 
         let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
         let content_size = measure_view_intrinsic(&content, state, env);
@@ -665,7 +666,7 @@ pub(crate) fn measure_tabs_intrinsic(
     }
 
     let width = max_content_width.max(bar_width);
-    let height = max_content_height + widget_theme(env).tabs_metrics().bar_height;
+    let height = max_content_height + metrics.bar_height;
     LayoutSize::new(width as f32, height as f32)
 }
 

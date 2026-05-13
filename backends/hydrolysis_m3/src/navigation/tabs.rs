@@ -1,5 +1,6 @@
 use crate::dimensions::{
     TABS_ACTIVE_INDICATOR_HEIGHT, TABS_ACTIVE_INDICATOR_RADIUS, TABS_BAR_HEIGHT,
+    TABS_BUTTON_HORIZONTAL_INSET, TABS_BUTTON_MIN_WIDTH,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -9,6 +10,8 @@ use vello::kurbo::{Rect, RoundedRectRadii};
 pub const fn metrics() -> TabsMetrics {
     TabsMetrics::new(
         TABS_BAR_HEIGHT,
+        TABS_BUTTON_MIN_WIDTH,
+        TABS_BUTTON_HORIZONTAL_INSET,
         TABS_ACTIVE_INDICATOR_HEIGHT,
         TABS_ACTIVE_INDICATOR_RADIUS,
     )
@@ -67,6 +70,7 @@ mod tests {
     use super::metrics;
     use crate::dimensions::{
         TABS_ACTIVE_INDICATOR_HEIGHT, TABS_ACTIVE_INDICATOR_RADIUS, TABS_BAR_HEIGHT,
+        TABS_BUTTON_HORIZONTAL_INSET, TABS_BUTTON_MIN_WIDTH,
     };
 
     #[test]
@@ -74,6 +78,11 @@ mod tests {
         let metrics = metrics();
 
         assert_eq!(metrics.bar_height, TABS_BAR_HEIGHT);
+        assert_eq!(metrics.button_min_width, TABS_BUTTON_MIN_WIDTH);
+        assert_eq!(
+            metrics.button_horizontal_inset,
+            TABS_BUTTON_HORIZONTAL_INSET
+        );
         assert_eq!(
             metrics.active_indicator_height,
             TABS_ACTIVE_INDICATOR_HEIGHT
@@ -83,6 +92,8 @@ mod tests {
             TABS_ACTIVE_INDICATOR_RADIUS
         );
         assert_eq!(TABS_BAR_HEIGHT, 48.0);
+        assert_eq!(TABS_BUTTON_MIN_WIDTH, 48.0);
+        assert_eq!(TABS_BUTTON_HORIZONTAL_INSET, 16.0);
         assert_eq!(TABS_ACTIVE_INDICATOR_HEIGHT, 3.0);
         assert_eq!(TABS_ACTIVE_INDICATOR_RADIUS, 3.0);
     }

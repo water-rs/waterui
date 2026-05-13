@@ -497,6 +497,8 @@ impl WidgetTheme for MinimalTestTheme {
     fn tabs_metrics(&self) -> TabsMetrics {
         TabsMetrics {
             bar_height: 48.0,
+            button_min_width: 48.0,
+            button_horizontal_inset: 16.0,
             active_indicator_height: 3.0,
             active_indicator_radius: 3.0,
         }
