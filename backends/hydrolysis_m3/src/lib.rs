@@ -234,8 +234,13 @@ impl WidgetTheme for MaterialTheme {
         input::placeholder_color(&self.colors)
     }
 
-    fn draw_input_field(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        input::draw_field(&self.colors, draw, bounds);
+    fn draw_input_field(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        state: WidgetInteractionState,
+    ) {
+        input::draw_field(&self.colors, draw, bounds, state);
     }
 
     fn draw_input_field_state_layer(

@@ -658,6 +658,7 @@ impl HydrolysisRenderer {
                 hovered,
                 pressed,
                 focus_visible: false,
+                focus_progress: 0.0,
                 state_layer_opacity,
                 press_layer_opacity,
                 press_origin,

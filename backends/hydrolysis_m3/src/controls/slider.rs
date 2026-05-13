@@ -48,8 +48,7 @@ pub fn draw_thumb(
     } else {
         SLIDER_HANDLE_WIDTH
     };
-    let bounds =
-        vello::kurbo::Rect::from_center_size(center, (width, SLIDER_HANDLE_HEIGHT));
+    let bounds = vello::kurbo::Rect::from_center_size(center, (width, SLIDER_HANDLE_HEIGHT));
     draw.fill_rounded_rect(
         bounds,
         (width / 2.0).into(),

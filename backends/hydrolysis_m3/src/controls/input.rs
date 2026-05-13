@@ -1,7 +1,8 @@
 use crate::dimensions::{
     INPUT_FIELD_HORIZONTAL_INSET, INPUT_FIELD_MIN_HEIGHT, INPUT_FIELD_MIN_WIDTH,
     INPUT_FIELD_VERTICAL_INSET, INPUT_FILLED_ACTIVE_INDICATOR_HEIGHT,
-    INPUT_FILLED_CONTAINER_TOP_RADIUS, INPUT_LABEL_HEIGHT,
+    INPUT_FILLED_CONTAINER_TOP_RADIUS, INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT,
+    INPUT_LABEL_HEIGHT,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -23,7 +24,12 @@ pub fn placeholder_color(colors: &MaterialColorScheme) -> Color {
     colors.on_surface_variant.view_color()
 }
 
-pub fn draw_field(colors: &MaterialColorScheme, draw: &mut dyn DrawContext, bounds: Rect) {
+pub fn draw_field(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: Rect,
+    state: WidgetInteractionState,
+) {
     draw.fill_rounded_rect(
         bounds,
         RoundedRectRadii::new(
@@ -34,12 +40,36 @@ pub fn draw_field(colors: &MaterialColorScheme, draw: &mut dyn DrawContext, boun
         ),
         &Brush::from(colors.surface_container_highest.peniko()),
     );
+    let baseline_color = if state.hovered {
+        colors.on_surface.peniko()
+    } else {
+        colors.on_surface_variant.peniko()
+    };
+    let baseline_y = bounds.y1 - INPUT_FILLED_ACTIVE_INDICATOR_HEIGHT / 2.0;
     draw.stroke_line(
-        Point::new(bounds.x0, bounds.y1),
-        Point::new(bounds.x1, bounds.y1),
-        &Brush::from(colors.on_surface_variant.peniko()),
+        Point::new(bounds.x0, baseline_y),
+        Point::new(bounds.x1, baseline_y),
+        &Brush::from(baseline_color),
         INPUT_FILLED_ACTIVE_INDICATOR_HEIGHT,
     );
+    let focus_alpha = if state.focus_progress > 0.0 {
+        state.focus_progress
+    } else if state.focus_visible {
+        1.0
+    } else {
+        0.0
+    };
+    if focus_alpha > 0.0 {
+        draw.push_layer(focus_alpha, None);
+        let focus_y = bounds.y1 - INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT / 2.0;
+        draw.stroke_line(
+            Point::new(bounds.x0, focus_y),
+            Point::new(bounds.x1, focus_y),
+            &Brush::from(colors.primary.peniko()),
+            INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT,
+        );
+        draw.pop_layer();
+    }
 }
 
 pub fn draw_state_layer(
@@ -66,10 +96,10 @@ pub fn draw_state_layer(
 mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 
-    use super::{MaterialColorScheme, draw_field, metrics};
+    use super::{MaterialColorScheme, WidgetInteractionState, draw_field, metrics};
     use crate::dimensions::{
         INPUT_FIELD_MIN_HEIGHT, INPUT_FIELD_MIN_WIDTH, INPUT_FILLED_ACTIVE_INDICATOR_HEIGHT,
-        INPUT_FILLED_CONTAINER_TOP_RADIUS,
+        INPUT_FILLED_CONTAINER_TOP_RADIUS, INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT,
     };
     use crate::{Brush, DrawContext};
 
@@ -133,7 +163,12 @@ mod tests {
     fn filled_text_field_uses_top_only_container_shape() {
         let colors = MaterialColorScheme::baseline_light();
         let mut draw = RecordingDrawContext::default();
-        draw_field(&colors, &mut draw, Rect::new(0.0, 0.0, 120.0, 56.0));
+        draw_field(
+            &colors,
+            &mut draw,
+            Rect::new(0.0, 0.0, 120.0, 56.0),
+            WidgetInteractionState::NONE,
+        );
 
         assert_eq!(
             draw.rounded_radii,
@@ -147,6 +182,27 @@ mod tests {
         assert_eq!(
             draw.stroke_width,
             Some(INPUT_FILLED_ACTIVE_INDICATOR_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn filled_text_field_focus_indicator_matches_material_web_latest_tokens() {
+        let colors = MaterialColorScheme::baseline_light();
+        let mut draw = RecordingDrawContext::default();
+        draw_field(
+            &colors,
+            &mut draw,
+            Rect::new(0.0, 0.0, 120.0, 56.0),
+            WidgetInteractionState {
+                focus_visible: true,
+                focus_progress: 1.0,
+                ..WidgetInteractionState::NONE
+            },
+        );
+
+        assert_eq!(
+            draw.stroke_width,
+            Some(INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT)
         );
     }
 }
