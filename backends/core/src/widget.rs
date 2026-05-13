@@ -478,6 +478,41 @@ impl ListMetrics {
     }
 }
 
+/// Layout metrics for navigation bars.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NavigationMetrics {
+    /// Automatic title-mode bar height.
+    pub automatic_bar_height: f64,
+    /// Inline title-mode bar height.
+    pub inline_bar_height: f64,
+    /// Large title-mode bar height.
+    pub large_bar_height: f64,
+    /// Navigation title slot height for inline bars.
+    pub inline_title_height: f64,
+    /// Navigation title slot height for large bars.
+    pub large_title_height: f64,
+    /// Title leading inset when no leading bar item is present.
+    pub title_leading_inset: f64,
+    /// Title trailing inset when no trailing bar item is present.
+    pub title_trailing_inset: f64,
+    /// Bottom inset for large navigation titles.
+    pub large_title_bottom_inset: f64,
+    /// Horizontal leading/trailing bar inset.
+    pub horizontal_inset: f64,
+    /// Gap between title and adjacent items.
+    pub item_spacing: f64,
+    /// Search field height.
+    pub search_height: f64,
+    /// Vertical search inset.
+    pub search_vertical_inset: f64,
+    /// Navigation back button size.
+    pub back_button_size: f64,
+    /// Navigation back button leading inset.
+    pub back_button_leading_inset: f64,
+    /// Navigation back button top inset.
+    pub back_button_top_inset: f64,
+}
+
 /// Theme contract for backend-rendered widgets.
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
@@ -679,6 +714,8 @@ pub trait WidgetTheme {
         four_color: bool,
     );
 
+    /// Return navigation bar layout metrics.
+    fn navigation_metrics(&self) -> NavigationMetrics;
     /// Draw a navigation bar background.
     fn draw_navigation_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, background: &Brush);
     /// Draw a navigation bar separator.

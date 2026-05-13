@@ -481,16 +481,6 @@ pub(crate) const TABLE_CELL_HORIZONTAL_PADDING: f64 = 18.0;
 pub(crate) const TABLE_HEADER_HEIGHT: f64 = 32.0;
 pub(crate) const TABLE_ROW_HEIGHT: f64 = 30.0;
 
-pub(crate) const NAVIGATION_BAR_HEIGHT_AUTOMATIC: f64 = 52.0;
-pub(crate) const NAVIGATION_BAR_HEIGHT_INLINE: f64 = 44.0;
-pub(crate) const NAVIGATION_BAR_HEIGHT_LARGE: f64 = 64.0;
-pub(crate) const NAVIGATION_TITLE_HEIGHT_INLINE: f64 = 24.0;
-pub(crate) const NAVIGATION_TITLE_HEIGHT_LARGE: f64 = 32.0;
-pub(crate) const NAVIGATION_BAR_HORIZONTAL_INSET: f64 = 12.0;
-pub(crate) const NAVIGATION_BAR_BOTTOM_INSET: f64 = 8.0;
-pub(crate) const NAVIGATION_BAR_ITEM_SPACING: f64 = 8.0;
-pub(crate) const NAVIGATION_SEARCH_HEIGHT: f64 = 40.0;
-pub(crate) const NAVIGATION_SEARCH_VERTICAL_INSET: f64 = 8.0;
 const NAVIGATION_TRANSITION_DURATION: Duration = Duration::from_millis(250);
 const NAVIGATION_PUSHPOP_PARALLAX_FACTOR: f64 = 0.35;
 
