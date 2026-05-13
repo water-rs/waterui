@@ -288,7 +288,12 @@ impl WidgetTheme for MinimalTestTheme {
         ToggleMetrics {
             width: 10.0,
             height: 20.0,
+            label_spacing: 3.0,
         }
+    }
+
+    fn toggle_value_animation(&self) -> Animation {
+        Animation::linear(Duration::from_millis(100))
     }
 
     fn draw_toggle_switch(

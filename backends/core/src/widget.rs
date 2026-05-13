@@ -218,13 +218,19 @@ pub struct ToggleMetrics {
     pub width: f64,
     /// Toggle control height.
     pub height: f64,
+    /// Spacing between label and toggle control.
+    pub label_spacing: f64,
 }
 
 impl ToggleMetrics {
     /// Create toggle layout metrics.
     #[must_use]
-    pub const fn new(width: f64, height: f64) -> Self {
-        Self { width, height }
+    pub const fn new(width: f64, height: f64, label_spacing: f64) -> Self {
+        Self {
+            width,
+            height,
+            label_spacing,
+        }
     }
 }
 
@@ -610,6 +616,8 @@ pub trait WidgetTheme {
 
     /// Return metrics for a toggle style.
     fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics;
+    /// Return the default animation for toggle value changes.
+    fn toggle_value_animation(&self) -> Animation;
     /// Draw switch-style toggle chrome.
     fn draw_toggle_switch(
         &self,

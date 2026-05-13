@@ -15,7 +15,6 @@ pub(crate) use media::video;
 pub(crate) use nav::{navigation, tabs};
 pub(crate) use platform::webview;
 pub(crate) use scroll::draw_scroll_indicators;
-pub(crate) use toggle::{CONTROL_SPRING_DAMPING, CONTROL_SPRING_STIFFNESS};
 pub(crate) use typography::text;
 pub(crate) use util::{inset_rect, widget_theme};
 pub(crate) use visual::{graphics, icon, map};

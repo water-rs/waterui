@@ -1,7 +1,7 @@
 use crate::dimensions::{
     TOGGLE_CHECKBOX_CONTAINER_SHAPE, TOGGLE_CHECKBOX_OUTLINE_WIDTH,
-    TOGGLE_CHECKBOX_SELECTED_SCALE_START, TOGGLE_CHECKBOX_SIZE, TOGGLE_SWITCH_HEIGHT,
-    TOGGLE_SWITCH_OUTLINE_WIDTH, TOGGLE_SWITCH_PRESSED_HANDLE_SIZE,
+    TOGGLE_CHECKBOX_SELECTED_SCALE_START, TOGGLE_CHECKBOX_SIZE, TOGGLE_LABEL_SPACING,
+    TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_OUTLINE_WIDTH, TOGGLE_SWITCH_PRESSED_HANDLE_SIZE,
     TOGGLE_SWITCH_SELECTED_HANDLE_SIZE, TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE, TOGGLE_SWITCH_WIDTH,
 };
 use crate::theme::colors::MaterialColorScheme;
@@ -12,10 +12,16 @@ use waterui_controls::toggle::ToggleStyle;
 
 pub fn metrics(style: ToggleStyle) -> ToggleMetrics {
     match style {
-        ToggleStyle::Automatic | ToggleStyle::Switch => {
-            ToggleMetrics::new(TOGGLE_SWITCH_WIDTH, TOGGLE_SWITCH_HEIGHT)
-        }
-        ToggleStyle::Checkbox => ToggleMetrics::new(TOGGLE_CHECKBOX_SIZE, TOGGLE_CHECKBOX_SIZE),
+        ToggleStyle::Automatic | ToggleStyle::Switch => ToggleMetrics::new(
+            TOGGLE_SWITCH_WIDTH,
+            TOGGLE_SWITCH_HEIGHT,
+            TOGGLE_LABEL_SPACING,
+        ),
+        ToggleStyle::Checkbox => ToggleMetrics::new(
+            TOGGLE_CHECKBOX_SIZE,
+            TOGGLE_CHECKBOX_SIZE,
+            TOGGLE_LABEL_SPACING,
+        ),
         _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
     }
 }
@@ -102,7 +108,7 @@ mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 
     use super::{MaterialColorScheme, WidgetInteractionState, draw_checkbox, draw_switch};
-    use crate::dimensions::TOGGLE_SWITCH_PRESSED_HANDLE_SIZE;
+    use crate::dimensions::{TOGGLE_LABEL_SPACING, TOGGLE_SWITCH_PRESSED_HANDLE_SIZE};
     use crate::{Brush, DrawContext};
 
     #[derive(Default)]
@@ -185,6 +191,14 @@ mod tests {
 
         assert_eq!(unselected.rounded_stroke_count, 1);
         assert_eq!(selected.rounded_stroke_count, 0);
+    }
+
+    #[test]
+    fn toggle_metrics_include_material_label_spacing() {
+        let metrics = super::metrics(waterui_controls::toggle::ToggleStyle::Switch);
+
+        assert_eq!(metrics.label_spacing, TOGGLE_LABEL_SPACING);
+        assert_eq!(TOGGLE_LABEL_SPACING, 8.0);
     }
 
     #[test]

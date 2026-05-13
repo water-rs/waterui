@@ -15,10 +15,6 @@ use waterui_core::{AnyView, Environment, Native};
 
 use crate::widgets::util::widget_theme;
 
-pub(crate) const TOGGLE_LABEL_SPACING: f64 = 8.0;
-pub(crate) const CONTROL_SPRING_STIFFNESS: f32 = 300.0;
-pub(crate) const CONTROL_SPRING_DAMPING: f32 = 20.0;
-
 impl HydroNativeView for Native<ToggleConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_toggle(ctx, view, env);
@@ -80,7 +76,7 @@ pub(crate) fn render_toggle(
     let toggle = toggle.into_inner();
     let style = toggle.style;
     let metrics = theme.toggle_metrics(style);
-    let spacing = TOGGLE_LABEL_SPACING;
+    let spacing = metrics.label_spacing;
     let control_x0 = (ctx.bounds.x1 - metrics.width).max(ctx.bounds.x0);
     let control_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - metrics.height) / 2.0).max(0.0);
     let control_bounds = vello::kurbo::Rect::new(
@@ -99,7 +95,9 @@ pub(crate) fn render_toggle(
         ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(toggle.label), label_bounds);
     }
 
-    let thumb_progress = ctx.renderer_mut().resolve_toggle_progress(&toggle.toggle);
+    let thumb_progress = ctx
+        .renderer_mut()
+        .resolve_toggle_progress(&toggle.toggle, theme.toggle_value_animation());
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     let mut draw = ctx.draw_context();
@@ -147,7 +145,7 @@ pub(crate) fn measure_toggle_intrinsic(
     let label_size = measure_label_intrinsic(&toggle.label, state, env);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
-        label_width + TOGGLE_LABEL_SPACING + metrics.width
+        label_width + metrics.label_spacing + metrics.width
     } else {
         metrics.width
     };

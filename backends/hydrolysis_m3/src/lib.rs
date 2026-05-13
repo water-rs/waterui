@@ -182,6 +182,10 @@ impl WidgetTheme for MaterialTheme {
         toggle::metrics(style)
     }
 
+    fn toggle_value_animation(&self) -> waterui::animation::Animation {
+        theme::motion::toggle_value()
+    }
+
     fn draw_toggle_switch(
         &self,
         draw: &mut dyn DrawContext,
