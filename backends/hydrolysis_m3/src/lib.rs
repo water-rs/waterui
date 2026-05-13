@@ -34,7 +34,10 @@ use waterui_core::Environment;
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 
-pub use chip::{AssistChip, OutlinedChip, SuggestionChip, assist_chip, suggestion_chip};
+pub use chip::{
+    AssistChip, FilterChip, OutlinedChip, SuggestionChip, assist_chip, filter_chip,
+    suggestion_chip,
+};
 pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
     variant::Variant as MaterialColorVariant,
