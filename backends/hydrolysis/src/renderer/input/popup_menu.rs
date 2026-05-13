@@ -91,7 +91,10 @@ impl PickerMenuSlot {
     }
 }
 
-pub(crate) fn popup_menu_size(nodes: &[PopupMenuNode]) -> (f64, f64) {
+pub(crate) fn popup_menu_size(
+    nodes: &[PopupMenuNode],
+    metrics: TextContextMenuMetrics,
+) -> (f64, f64) {
     let max_label_chars = nodes
         .iter()
         .filter_map(|node| match node {
@@ -100,13 +103,11 @@ pub(crate) fn popup_menu_size(nodes: &[PopupMenuNode]) -> (f64, f64) {
             PopupMenuNode::Divider => None,
         })
         .max()
-        .unwrap_or(0) as f32;
-    let width = (TEXT_CONTEXT_MENU_HORIZONTAL_PADDING * 2.0
-        + max_label_chars * TEXT_CONTEXT_MENU_WIDTH_PER_CHAR)
-        .clamp(TEXT_CONTEXT_MENU_MIN_WIDTH, TEXT_CONTEXT_MENU_MAX_WIDTH);
-    let height =
-        (nodes.len() as f32 * TEXT_CONTEXT_MENU_ROW_HEIGHT).max(TEXT_CONTEXT_MENU_ROW_HEIGHT);
-    (f64::from(width), f64::from(height))
+        .unwrap_or(0) as f64;
+    let width = (metrics.horizontal_padding * 2.0 + max_label_chars * metrics.width_per_char)
+        .clamp(metrics.min_width, metrics.max_width);
+    let height = (nodes.len() as f64 * metrics.row_height).max(metrics.row_height);
+    (width, height)
 }
 
 pub(crate) fn popup_menu_window(
@@ -114,9 +115,10 @@ pub(crate) fn popup_menu_window(
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
     depth: usize,
+    metrics: TextContextMenuMetrics,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let (width, height) = popup_menu_size(&nodes);
+    let (width, height) = popup_menu_size(&nodes, metrics);
     let popup_origin_x = origin.x;
     let popup_origin_y = origin.y;
     let group_for_content = group.clone();
@@ -148,7 +150,7 @@ pub(crate) fn popup_menu_window(
                     let next_depth = depth + 1;
                     let child_origin = LayoutPoint::new(
                         popup_origin_x + width as f32,
-                        popup_origin_y + TEXT_CONTEXT_MENU_ROW_HEIGHT * index as f32,
+                        popup_origin_y + (metrics.row_height * index as f64) as f32,
                     );
                     let button = Button::new(label).style(ButtonStyle::Borderless).action(
                         move |group: PopupMenuStateGroup, env: Environment| {
@@ -161,6 +163,7 @@ pub(crate) fn popup_menu_window(
                                 child_origin,
                                 group.clone(),
                                 next_depth,
+                                metrics,
                             );
                             group.push(child_state);
                             env.get::<WindowManager>()
@@ -233,7 +236,8 @@ impl HydrolysisRenderer {
         }
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
-        let (window, state) = popup_menu_window(nodes, origin, group.clone(), 0);
+        let metrics = widget_theme(env).text_context_menu_metrics();
+        let (window, state) = popup_menu_window(nodes, origin, group.clone(), 0, metrics);
         group.push(state);
         env.get::<WindowManager>()
             .expect("hydrolysis popup menus require WindowManager in environment")

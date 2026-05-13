@@ -12,7 +12,7 @@ mod navigation;
 mod theme;
 
 pub(crate) use controls::{button, input, picker, progress, slider, stepper, toggle};
-pub(crate) use layout::{divider, list, scroll, table};
+pub(crate) use layout::{divider, list, menu, scroll, table};
 pub(crate) use navigation::{navigation as navigation_chrome, tabs};
 pub(crate) use theme::dimensions;
 
@@ -23,8 +23,8 @@ use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics, InteractionMotion,
     ListMetrics, NavigationMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
-    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, ToggleMetrics,
-    WidgetInteractionState, WidgetTheme,
+    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
+    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -277,6 +277,18 @@ impl WidgetTheme for MaterialTheme {
         state: WidgetInteractionState,
     ) {
         input::draw_state_layer(&self.colors, draw, bounds, state);
+    }
+
+    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
+        menu::text_context_metrics()
+    }
+
+    fn draw_text_context_menu_panel(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        menu::draw_text_context_panel(&self.colors, draw, bounds);
+    }
+
+    fn draw_text_context_menu_separator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        menu::draw_text_context_separator(&self.colors, draw, bounds);
     }
 
     fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics {

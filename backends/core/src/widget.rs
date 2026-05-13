@@ -304,6 +304,29 @@ impl InputFieldMetrics {
     }
 }
 
+/// Layout metrics for backend-rendered context menus.
+#[derive(Debug, Clone, Copy)]
+pub struct TextContextMenuMetrics {
+    /// One-line menu row height.
+    pub row_height: f64,
+    /// Horizontal text inset.
+    pub horizontal_padding: f64,
+    /// Vertical text inset.
+    pub vertical_padding: f64,
+    /// Minimum menu width.
+    pub min_width: f64,
+    /// Maximum menu width.
+    pub max_width: f64,
+    /// Estimated width used before text layout is available.
+    pub width_per_char: f64,
+    /// Menu container corner radius.
+    pub corner_radius: f64,
+    /// Horizontal inset for separators.
+    pub separator_horizontal_inset: f64,
+    /// Separator thickness.
+    pub separator_thickness: f64,
+}
+
 /// Picker layout metrics.
 #[derive(Debug, Clone, Copy)]
 pub struct PickerMetrics {
@@ -687,6 +710,12 @@ pub trait WidgetTheme {
         _state: WidgetInteractionState,
     ) {
     }
+    /// Return text context menu metrics.
+    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics;
+    /// Draw text context menu panel.
+    fn draw_text_context_menu_panel(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    /// Draw text context menu separator.
+    fn draw_text_context_menu_separator(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
     /// Return picker metrics for a style.
     fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics;
