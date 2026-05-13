@@ -12,7 +12,7 @@ mod navigation;
 mod theme;
 
 pub(crate) use controls::{button, input, picker, progress, slider, stepper, toggle};
-pub(crate) use layout::{badge, card, divider, list, menu, scroll, table};
+pub(crate) use layout::{badge, card, divider, list, menu, scroll, snackbar, table};
 pub(crate) use navigation::{navigation as navigation_chrome, tabs};
 pub(crate) use theme::dimensions;
 
@@ -136,6 +136,7 @@ pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
         .install(env);
     env.insert(colors);
     env.insert(card::theme(&colors));
+    env.insert(snackbar::theme(&colors));
     env.insert(Box::new(MaterialTheme::with_colors(colors)) as Box<dyn WidgetTheme>);
 }
 
