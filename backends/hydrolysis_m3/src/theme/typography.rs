@@ -64,9 +64,41 @@ pub(crate) fn body_medium() -> Font {
     Font::new(BodyMedium)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BodySmall;
+
+impl Resolvable for BodySmall {
+    type Resolved = ResolvedFont;
+
+    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        Computed::constant(font(12.0, FontWeight::Normal))
+    }
+}
+
+pub(crate) fn body_small() -> Font {
+    Font::new(BodySmall)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TitleSmall;
+
+impl Resolvable for TitleSmall {
+    type Resolved = ResolvedFont;
+
+    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        Computed::constant(font(14.0, FontWeight::Medium))
+    }
+}
+
+pub(crate) fn title_small() -> Font {
+    Font::new(TitleSmall)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MATERIAL_TYPEFACE, body_medium, label_large, label_small, settings};
+    use super::{
+        MATERIAL_TYPEFACE, body_medium, body_small, label_large, label_small, settings, title_small,
+    };
     use waterui::Plugin as _;
     use waterui::env::Environment;
     use waterui::reactive::Signal as _;
@@ -117,5 +149,19 @@ mod tests {
         let env = Environment::new();
 
         assert_material_font(body_medium().resolve(&env).get(), 14.0, FontWeight::Normal);
+    }
+
+    #[test]
+    fn body_small_matches_material_web_v0_192_body_small() {
+        let env = Environment::new();
+
+        assert_material_font(body_small().resolve(&env).get(), 12.0, FontWeight::Normal);
+    }
+
+    #[test]
+    fn title_small_matches_material_web_v0_192_title_small() {
+        let env = Environment::new();
+
+        assert_material_font(title_small().resolve(&env).get(), 14.0, FontWeight::Medium);
     }
 }

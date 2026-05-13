@@ -8,6 +8,7 @@ pub mod chip;
 pub mod color;
 pub mod fab;
 pub mod icon_button;
+pub mod tooltip;
 
 mod controls;
 mod layout;
@@ -57,6 +58,7 @@ pub use theme::colors::{
     MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
     MaterialContrastLevel, MaterialRoleColor,
 };
+pub use tooltip::{PlainTooltip, RichTooltip, plain_tooltip, rich_tooltip};
 
 #[derive(Debug, Clone, Copy)]
 /// Material Design 3 widget theme.
