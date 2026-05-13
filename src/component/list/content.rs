@@ -14,8 +14,8 @@
 
 use alloc::vec::Vec;
 
-use waterui_core::handler::AnyViewBuilder;
 use waterui_core::AnyView;
+use waterui_core::handler::AnyViewBuilder;
 
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_layout::{
