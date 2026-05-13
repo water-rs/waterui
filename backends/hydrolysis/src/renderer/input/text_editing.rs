@@ -585,7 +585,10 @@ pub(crate) fn selection_range_contains_index(
     !range.is_empty() && range.contains(&index)
 }
 
-pub(crate) fn text_context_menu_size(entries: &[TextContextMenuEntry]) -> (f64, f64) {
+pub(crate) fn text_context_menu_size(
+    entries: &[TextContextMenuEntry],
+    metrics: TextContextMenuMetrics,
+) -> (f64, f64) {
     let max_label_chars = entries
         .iter()
         .filter_map(|entry| match entry {
@@ -593,21 +596,20 @@ pub(crate) fn text_context_menu_size(entries: &[TextContextMenuEntry]) -> (f64, 
             TextContextMenuEntry::Divider => None,
         })
         .max()
-        .unwrap_or(0) as f32;
-    let width = (TEXT_CONTEXT_MENU_HORIZONTAL_PADDING * 2.0
-        + max_label_chars * TEXT_CONTEXT_MENU_WIDTH_PER_CHAR)
-        .clamp(TEXT_CONTEXT_MENU_MIN_WIDTH, TEXT_CONTEXT_MENU_MAX_WIDTH);
-    let height =
-        (entries.len() as f32 * TEXT_CONTEXT_MENU_ROW_HEIGHT).max(TEXT_CONTEXT_MENU_ROW_HEIGHT);
-    (f64::from(width), f64::from(height))
+        .unwrap_or(0) as f64;
+    let width = (metrics.horizontal_padding * 2.0 + max_label_chars * metrics.width_per_char)
+        .clamp(metrics.min_width, metrics.max_width);
+    let height = (entries.len() as f64 * metrics.row_height).max(metrics.row_height);
+    (width, height)
 }
 
 pub(crate) fn text_context_menu_overlay_bounds(
     anchor: vello::kurbo::Point,
     entries: &[TextContextMenuEntry],
     window_bounds: vello::kurbo::Rect,
+    metrics: TextContextMenuMetrics,
 ) -> vello::kurbo::Rect {
-    let (width, height) = text_context_menu_size(entries);
+    let (width, height) = text_context_menu_size(entries, metrics);
     let preferred_x = anchor.x;
     let preferred_y = anchor.y;
     let fallback_x = anchor.x - width;
@@ -795,22 +797,12 @@ impl HydrolysisRenderer {
             return;
         };
 
-        let panel =
-            vello::kurbo::RoundedRect::from_rect(overlay.bounds, TEXT_CONTEXT_MENU_CORNER_RADIUS);
-        self.scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            vello::peniko::Color::new([0.98, 0.98, 0.99, 1.0]),
-            None,
-            &panel,
-        );
-        self.scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            vello::peniko::Color::new([0.8, 0.82, 0.86, 1.0]),
-            None,
-            &panel,
-        );
+        let theme = widget_theme(env);
+        let metrics = theme.text_context_menu_metrics();
+        {
+            let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, transform);
+            theme.draw_text_context_menu_panel(&mut draw, overlay.bounds);
+        }
         for (index, row) in overlay.rows.iter().enumerate() {
             let next_is_divider = overlay
                 .rows
@@ -822,26 +814,21 @@ impl HydrolysisRenderer {
                 && !next_is_divider
             {
                 let separator = vello::kurbo::Rect::new(
-                    row.bounds.x0 + 6.0,
-                    row.bounds.y1 - 1.0,
-                    row.bounds.x1 - 6.0,
+                    row.bounds.x0 + metrics.separator_horizontal_inset,
+                    row.bounds.y1 - metrics.separator_thickness,
+                    row.bounds.x1 - metrics.separator_horizontal_inset,
                     row.bounds.y1,
                 );
-                self.scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    vello::peniko::Color::new([0.9, 0.91, 0.94, 1.0]),
-                    None,
-                    &separator,
-                );
+                let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, transform);
+                theme.draw_text_context_menu_separator(&mut draw, separator);
             }
 
             match &row.entry {
                 TextContextMenuEntry::Command { label, .. } => {
                     let text_rect = inset_rect(
                         row.bounds,
-                        f64::from(TEXT_CONTEXT_MENU_HORIZONTAL_PADDING),
-                        TEXT_CONTEXT_MENU_VERTICAL_PADDING,
+                        metrics.horizontal_padding,
+                        metrics.vertical_padding,
                     );
                     let ctx = RenderContext {
                         transform,
@@ -864,18 +851,17 @@ impl HydrolysisRenderer {
                 }
                 TextContextMenuEntry::Divider => {
                     let separator = vello::kurbo::Rect::new(
-                        row.bounds.x0 + 6.0,
-                        row.bounds.y0 + row.bounds.height() * 0.5 - 0.5,
-                        row.bounds.x1 - 6.0,
-                        row.bounds.y0 + row.bounds.height() * 0.5 + 0.5,
+                        row.bounds.x0 + metrics.separator_horizontal_inset,
+                        row.bounds.y0 + row.bounds.height() * 0.5
+                            - metrics.separator_thickness * 0.5,
+                        row.bounds.x1 - metrics.separator_horizontal_inset,
+                        row.bounds.y0
+                            + row.bounds.height() * 0.5
+                            + metrics.separator_thickness * 0.5,
                     );
-                    self.scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        vello::peniko::Color::new([0.86, 0.87, 0.9, 1.0]),
-                        None,
-                        &separator,
-                    );
+                    let mut draw =
+                        VelloDrawContext::with_root_transform(&mut self.scene, transform);
+                    theme.draw_text_context_menu_separator(&mut draw, separator);
                 }
             }
         }
@@ -1207,16 +1193,14 @@ impl HydrolysisRenderer {
             .unwrap_or(HydrolysisTextContextMenuMode::NativeWindow);
 
         if mode == HydrolysisTextContextMenuMode::Overlay {
-            let bounds = text_context_menu_overlay_bounds(point, &entries, self.window_bounds);
+            let metrics = widget_theme(env).text_context_menu_metrics();
+            let bounds =
+                text_context_menu_overlay_bounds(point, &entries, self.window_bounds, metrics);
             let mut rows = Vec::with_capacity(entries.len());
             for (index, entry) in entries.into_iter().enumerate() {
-                let y0 = bounds.y0 + f64::from(TEXT_CONTEXT_MENU_ROW_HEIGHT) * index as f64;
-                let row_bounds = vello::kurbo::Rect::new(
-                    bounds.x0,
-                    y0,
-                    bounds.x1,
-                    y0 + f64::from(TEXT_CONTEXT_MENU_ROW_HEIGHT),
-                );
+                let y0 = bounds.y0 + metrics.row_height * index as f64;
+                let row_bounds =
+                    vello::kurbo::Rect::new(bounds.x0, y0, bounds.x1, y0 + metrics.row_height);
                 rows.push(TextContextMenuOverlayRow {
                     bounds: row_bounds,
                     entry,
@@ -1236,7 +1220,8 @@ impl HydrolysisRenderer {
         }
 
         let menu_state = nami::Binding::container(WindowState::Normal);
-        let (width, height) = text_context_menu_size(&entries);
+        let metrics = widget_theme(env).text_context_menu_metrics();
+        let (width, height) = text_context_menu_size(&entries, metrics);
         let origin = env
             .get::<HydrolysisWindowOrigin>()
             .copied()

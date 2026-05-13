@@ -14,8 +14,8 @@ use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
     ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion, ListMetrics,
     NavigationMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
-    SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, ToggleMetrics,
-    WidgetInteractionState,
+    SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, TextContextMenuMetrics,
+    ToggleMetrics, WidgetInteractionState,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -350,6 +350,24 @@ impl WidgetTheme for MinimalTestTheme {
         _state: WidgetInteractionState,
     ) {
     }
+
+    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
+        TextContextMenuMetrics {
+            row_height: 56.0,
+            horizontal_padding: 16.0,
+            vertical_padding: 12.0,
+            min_width: 112.0,
+            max_width: 320.0,
+            width_per_char: 8.5,
+            corner_radius: 4.0,
+            separator_horizontal_inset: 16.0,
+            separator_thickness: 1.0,
+        }
+    }
+
+    fn draw_text_context_menu_panel(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+
+    fn draw_text_context_menu_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
     fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
         PickerMetrics {
