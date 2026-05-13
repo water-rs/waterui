@@ -1,8 +1,8 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TABS_BUTTON_HORIZONTAL_INSET,
-    WidgetRenderContext, measure_view_intrinsic, tabs_bar_and_content_rect, tabs_button_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_view_intrinsic, tabs_bar_and_content_rect, tabs_button_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -169,7 +169,7 @@ pub(crate) fn render_tabs(
                 },
             );
         }
-        let label_rect = tabs_label_rect(button_rect, label_size);
+        let label_rect = tabs_label_rect(button_rect, label_size, theme_metrics);
         if label_rect.width() > 0.0 && label_rect.height() > 0.0 {
             ctx.dispatch_in_rect_without_accessibility(env, tab.label.content, label_rect);
         }
@@ -186,8 +186,9 @@ pub(crate) fn render_tabs(
 fn tabs_label_rect(
     button_rect: vello::kurbo::Rect,
     label_size: waterui_core::layout::Size,
+    metrics: waterui_backend_core::widget::TabsMetrics,
 ) -> vello::kurbo::Rect {
-    let max_width = (button_rect.width() - TABS_BUTTON_HORIZONTAL_INSET * 2.0).max(0.0);
+    let max_width = (button_rect.width() - metrics.button_horizontal_inset * 2.0).max(0.0);
     let width = f64::from(label_size.width).min(max_width);
     let height = f64::from(label_size.height).min(button_rect.height());
     let x0 = button_rect.x0 + (button_rect.width() - width) * 0.5;

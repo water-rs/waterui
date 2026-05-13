@@ -479,9 +479,6 @@ fn dimensions_for_native<V: HydroNativeView>(
 const NAVIGATION_TRANSITION_DURATION: Duration = Duration::from_millis(250);
 const NAVIGATION_PUSHPOP_PARALLAX_FACTOR: f64 = 0.35;
 
-pub(crate) const TABS_BUTTON_MIN_WIDTH: f64 = 44.0;
-pub(crate) const TABS_BUTTON_HORIZONTAL_INSET: f64 = 8.0;
-
 pub(crate) const LIST_MOVE_CONTROL_WIDTH: f64 = 20.0;
 pub(crate) const LIST_DELETE_CONTROL_WIDTH: f64 = 26.0;
 pub(crate) const LIST_TRAILING_CONTROL_SPACING: f64 = 6.0;
