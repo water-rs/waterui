@@ -6,6 +6,7 @@
 
 pub mod chip;
 pub mod color;
+pub mod fab;
 
 mod controls;
 mod layout;
@@ -36,8 +37,11 @@ use waterui_graphics::color::Color;
 
 pub use chip::{
     AssistChip, FilterChip, InputChip, OutlinedChip, SuggestionChip, assist_chip, filter_chip,
-    input_chip,
-    suggestion_chip,
+    input_chip, suggestion_chip,
+};
+pub use fab::{
+    ExtendedFab, Fab, FabVariantTokens, PrimaryFab, SecondaryFab, SurfaceFab, TertiaryFab,
+    extended_fab, fab,
 };
 pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
