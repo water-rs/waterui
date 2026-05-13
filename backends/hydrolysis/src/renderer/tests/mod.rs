@@ -306,10 +306,14 @@ impl WidgetTheme for MinimalTestTheme {
             button_min_size: 12.0,
             button_max_size: 18.0,
             button_intrinsic_size: 14.0,
+            button_spacing: 4.0,
+            label_spacing: 8.0,
         }
     }
 
     fn draw_stepper_button(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_stepper_decrement_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_stepper_increment_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
     fn input_field_metrics(&self) -> InputFieldMetrics {
         InputFieldMetrics {
