@@ -38,19 +38,15 @@ pub(crate) fn table_data_cell_rect(
     )
 }
 
-fn navigation_bar_height(view: &NavigationView) -> f64 {
+fn navigation_bar_height(view: &NavigationView, env: &Environment) -> f64 {
     if view.bar.hidden.get() {
         0.0
     } else {
-        let base = match view.bar.display_mode {
-            waterui::navigation::NavigationTitleDisplayMode::Automatic => {
-                NAVIGATION_BAR_HEIGHT_AUTOMATIC
-            }
-            waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
-            waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
-        };
+        let metrics = widget_theme(env).navigation_metrics();
+        let base =
+            navigation_base_bar_height_for_display_mode_metrics(view.bar.display_mode, metrics);
         let search_extra = if view.bar.search.is_some() {
-            NAVIGATION_SEARCH_HEIGHT + NAVIGATION_SEARCH_VERTICAL_INSET * 2.0
+            metrics.search_height + metrics.search_vertical_inset * 2.0
         } else {
             0.0
         };
@@ -60,13 +56,22 @@ fn navigation_bar_height(view: &NavigationView) -> f64 {
 
 pub(crate) fn navigation_base_bar_height_for_display_mode(
     display_mode: waterui::navigation::NavigationTitleDisplayMode,
+    env: &Environment,
+) -> f64 {
+    navigation_base_bar_height_for_display_mode_metrics(
+        display_mode,
+        widget_theme(env).navigation_metrics(),
+    )
+}
+
+fn navigation_base_bar_height_for_display_mode_metrics(
+    display_mode: waterui::navigation::NavigationTitleDisplayMode,
+    metrics: waterui_backend_core::widget::NavigationMetrics,
 ) -> f64 {
     match display_mode {
-        waterui::navigation::NavigationTitleDisplayMode::Automatic => {
-            NAVIGATION_BAR_HEIGHT_AUTOMATIC
-        }
-        waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
-        waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
+        waterui::navigation::NavigationTitleDisplayMode::Automatic => metrics.automatic_bar_height,
+        waterui::navigation::NavigationTitleDisplayMode::Inline => metrics.inline_bar_height,
+        waterui::navigation::NavigationTitleDisplayMode::Large => metrics.large_bar_height,
     }
 }
 
@@ -593,7 +598,7 @@ pub(crate) fn measure_navigation_view_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
-    let bar_height = navigation_bar_height(navigation);
+    let bar_height = navigation_bar_height(navigation, env);
     let title_size = if bar_height > 0.0 {
         measure_view_intrinsic(&navigation.bar.title, state, env)
     } else {
@@ -619,15 +624,16 @@ pub(crate) fn measure_navigation_view_intrinsic(
         LayoutSize::zero()
     };
     let content_size = measure_view_intrinsic(&navigation.content, state, env);
+    let metrics = widget_theme(env).navigation_metrics();
     let width = f64::from(content_size.width)
         .max(
             f64::from(leading_size.width)
                 + f64::from(title_size.width)
                 + f64::from(trailing_size.width)
-                + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0
-                + NAVIGATION_BAR_ITEM_SPACING * 2.0,
+                + metrics.horizontal_inset * 2.0
+                + metrics.item_spacing * 2.0,
         )
-        .max(f64::from(search_size.width) + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0);
+        .max(f64::from(search_size.width) + metrics.horizontal_inset * 2.0);
     let height = f64::from(content_size.height) + bar_height;
     LayoutSize::new(width as f32, height as f32)
 }
@@ -709,12 +715,15 @@ pub(crate) fn tabs_button_rect(
     vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
 }
 
-pub(crate) fn navigation_back_button_rect(bounds: vello::kurbo::Rect) -> vello::kurbo::Rect {
+pub(crate) fn navigation_back_button_rect(
+    bounds: vello::kurbo::Rect,
+    metrics: waterui_backend_core::widget::NavigationMetrics,
+) -> vello::kurbo::Rect {
     vello::kurbo::Rect::new(
-        bounds.x0 + 8.0,
-        bounds.y0 + 8.0,
-        bounds.x0 + 38.0,
-        bounds.y0 + 36.0,
+        bounds.x0 + metrics.back_button_leading_inset,
+        bounds.y0 + metrics.back_button_top_inset,
+        bounds.x0 + metrics.back_button_leading_inset + metrics.back_button_size,
+        bounds.y0 + metrics.back_button_top_inset + metrics.back_button_size,
     )
 }
 

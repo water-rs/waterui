@@ -22,8 +22,8 @@ use waterui::text::font::Font;
 use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     Brush, ButtonMetrics, DrawContext, InputFieldMetrics, InteractionMotion, ListMetrics,
-    PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics,
-    StepperMetrics, TabsMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    NavigationMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
+    SliderMetrics, StepperMetrics, TabsMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -405,6 +405,10 @@ impl WidgetTheme for MaterialTheme {
             elapsed,
             four_color,
         );
+    }
+
+    fn navigation_metrics(&self) -> NavigationMetrics {
+        navigation_chrome::metrics()
     }
 
     fn draw_navigation_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, background: &Brush) {

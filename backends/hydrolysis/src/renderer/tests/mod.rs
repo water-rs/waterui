@@ -12,9 +12,9 @@ use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
-    ButtonMetrics, InputFieldMetrics, InteractionMotion, ListMetrics, PickerMetrics,
-    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics,
-    TabsMetrics, ToggleMetrics, WidgetInteractionState,
+    ButtonMetrics, InputFieldMetrics, InteractionMotion, ListMetrics, NavigationMetrics,
+    PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics,
+    StepperMetrics, TabsMetrics, ToggleMetrics, WidgetInteractionState,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -453,6 +453,26 @@ impl WidgetTheme for MinimalTestTheme {
         _elapsed: Duration,
         _four_color: bool,
     ) {
+    }
+
+    fn navigation_metrics(&self) -> NavigationMetrics {
+        NavigationMetrics {
+            automatic_bar_height: 64.0,
+            inline_bar_height: 64.0,
+            large_bar_height: 152.0,
+            inline_title_height: 28.0,
+            large_title_height: 36.0,
+            title_leading_inset: 16.0,
+            title_trailing_inset: 16.0,
+            large_title_bottom_inset: 28.0,
+            horizontal_inset: 4.0,
+            item_spacing: 0.0,
+            search_height: 56.0,
+            search_vertical_inset: 4.0,
+            back_button_size: 40.0,
+            back_button_leading_inset: 4.0,
+            back_button_top_inset: 12.0,
+        }
     }
 
     fn draw_navigation_bar(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _background: &Brush) {

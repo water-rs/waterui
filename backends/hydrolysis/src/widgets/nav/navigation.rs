@@ -5,11 +5,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::accessibility_activation_point;
 use crate::renderer::navigation_state::{HydroNavigationController, NavigationTransitionDirection};
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, NAVIGATION_BAR_BOTTOM_INSET,
-    NAVIGATION_BAR_HEIGHT_AUTOMATIC, NAVIGATION_BAR_HEIGHT_INLINE, NAVIGATION_BAR_HEIGHT_LARGE,
-    NAVIGATION_BAR_HORIZONTAL_INSET, NAVIGATION_BAR_ITEM_SPACING, NAVIGATION_SEARCH_HEIGHT,
-    NAVIGATION_SEARCH_VERTICAL_INSET, NAVIGATION_TITLE_HEIGHT_INLINE,
-    NAVIGATION_TITLE_HEIGHT_LARGE, RenderContext, WidgetRenderContext,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     measure_navigation_view_intrinsic, measure_view_intrinsic, navigation_back_button_rect,
     navigation_base_bar_height_for_display_mode, normalize_layout_view, resolved_color_to_peniko,
     split_compact_threshold, transformed_rect,
@@ -30,6 +26,19 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
 use crate::widgets::widget_theme;
+
+#[derive(Clone, Copy)]
+struct NavigationLeadingReserve(f64);
+
+fn navigation_leading_reserve(env: &Environment) -> f64 {
+    env.get::<NavigationLeadingReserve>()
+        .map_or(0.0, |reserve| reserve.0)
+}
+
+fn back_button_title_reserve(env: &Environment) -> f64 {
+    let metrics = widget_theme(env).navigation_metrics();
+    metrics.back_button_size + metrics.title_leading_inset
+}
 
 impl HydroNativeView for Native<NavigationView> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -54,17 +63,8 @@ impl HydroNativeView for Native<NavigationView> {
             if bar_hidden {
                 return;
             }
-            let bar_height = match bar.display_mode {
-                waterui::navigation::NavigationTitleDisplayMode::Automatic => {
-                    NAVIGATION_BAR_HEIGHT_AUTOMATIC
-                }
-                waterui::navigation::NavigationTitleDisplayMode::Inline => {
-                    NAVIGATION_BAR_HEIGHT_INLINE
-                }
-                waterui::navigation::NavigationTitleDisplayMode::Large => {
-                    NAVIGATION_BAR_HEIGHT_LARGE
-                }
-            };
+            let metrics = widget_theme(env).navigation_metrics();
+            let bar_height = navigation_base_bar_height_for_display_mode(bar.display_mode, env);
             let bar_rect = vello::kurbo::Rect::new(
                 ctx.bounds.x0,
                 ctx.bounds.y0,
@@ -82,15 +82,28 @@ impl HydroNativeView for Native<NavigationView> {
                 bar.display_mode,
                 waterui::navigation::NavigationTitleDisplayMode::Large
             ) {
-                NAVIGATION_TITLE_HEIGHT_LARGE
+                metrics.large_title_height
             } else {
-                NAVIGATION_TITLE_HEIGHT_INLINE
+                metrics.inline_title_height
             };
+            let title_y0 = if matches!(
+                bar.display_mode,
+                waterui::navigation::NavigationTitleDisplayMode::Large
+            ) {
+                bar_rect.y1 - metrics.large_title_bottom_inset - title_height
+            } else {
+                bar_rect.y0 + (bar_height - title_height) * 0.5
+            };
+            let title_leading = navigation_leading_reserve(env);
             let title_rect = vello::kurbo::Rect::new(
-                bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
-                bar_rect.y1 - title_height - NAVIGATION_BAR_BOTTOM_INSET,
-                bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
-                bar_rect.y1 - NAVIGATION_BAR_BOTTOM_INSET,
+                if title_leading > 0.0 {
+                    bar_rect.x0 + metrics.horizontal_inset + title_leading
+                } else {
+                    bar_rect.x0 + metrics.title_leading_inset
+                },
+                title_y0,
+                bar_rect.x1 - metrics.title_trailing_inset,
+                title_y0 + title_height,
             );
             if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
                 let mut title_node = AccessibilityNode::new(
@@ -184,8 +197,10 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
             back_node.set_label("Back".to_owned());
             back_node.add_action(AccessibilityAction::Focus);
             back_node.add_action(AccessibilityAction::Click);
-            let back_bounds =
-                transformed_rect(ctx.hit_transform, navigation_back_button_rect(ctx.bounds));
+            let back_bounds = transformed_rect(
+                ctx.hit_transform,
+                navigation_back_button_rect(ctx.bounds, widget_theme(env).navigation_metrics()),
+            );
             let _ = renderer.register_accessibility_node(
                 back_node,
                 back_bounds,
@@ -217,15 +232,10 @@ pub(crate) fn render_navigation_view(
     let bar_height = if ctx.renderer_mut().read_signal(&hidden) {
         0.0
     } else {
-        let base = match display_mode {
-            waterui::navigation::NavigationTitleDisplayMode::Automatic => {
-                NAVIGATION_BAR_HEIGHT_AUTOMATIC
-            }
-            waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
-            waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
-        };
+        let metrics = widget_theme(env).navigation_metrics();
+        let base = navigation_base_bar_height_for_display_mode(display_mode, env);
         let search_extra = if search.is_some() {
-            NAVIGATION_SEARCH_HEIGHT + NAVIGATION_SEARCH_VERTICAL_INSET * 2.0
+            metrics.search_height + metrics.search_vertical_inset * 2.0
         } else {
             0.0
         };
@@ -233,7 +243,8 @@ pub(crate) fn render_navigation_view(
     };
 
     if bar_height > 0.0 {
-        let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode);
+        let metrics = widget_theme(env).navigation_metrics();
+        let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, env);
         let bar_rect = vello::kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
@@ -270,16 +281,16 @@ pub(crate) fn render_navigation_view(
             0.0
         };
         let leading_rect = vello::kurbo::Rect::new(
-            bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
-            bar_rect.y0 + (base_bar_height - NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
-            (bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET + leading_width).min(bar_rect.x1),
-            bar_rect.y0 + (base_bar_height + NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
+            bar_rect.x0 + metrics.horizontal_inset,
+            bar_rect.y0 + (base_bar_height - metrics.inline_title_height) * 0.5,
+            (bar_rect.x0 + metrics.horizontal_inset + leading_width).min(bar_rect.x1),
+            bar_rect.y0 + (base_bar_height + metrics.inline_title_height) * 0.5,
         );
         let trailing_rect = vello::kurbo::Rect::new(
-            (bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET - trailing_width).max(bar_rect.x0),
-            bar_rect.y0 + (base_bar_height - NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
-            bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
-            bar_rect.y0 + (base_bar_height + NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
+            (bar_rect.x1 - metrics.horizontal_inset - trailing_width).max(bar_rect.x0),
+            bar_rect.y0 + (base_bar_height - metrics.inline_title_height) * 0.5,
+            bar_rect.x1 - metrics.horizontal_inset,
+            bar_rect.y0 + (base_bar_height + metrics.inline_title_height) * 0.5,
         );
         if !leading.is::<()>() && leading_rect.width() > 0.0 && leading_rect.height() > 0.0 {
             ctx.dispatch_in_rect(env, leading, leading_rect);
@@ -292,23 +303,34 @@ pub(crate) fn render_navigation_view(
             display_mode,
             waterui::navigation::NavigationTitleDisplayMode::Large
         ) {
-            NAVIGATION_TITLE_HEIGHT_LARGE
+            metrics.large_title_height
         } else {
-            NAVIGATION_TITLE_HEIGHT_INLINE
+            metrics.inline_title_height
+        };
+        let title_y0 = if matches!(
+            display_mode,
+            waterui::navigation::NavigationTitleDisplayMode::Large
+        ) {
+            bar_rect.y0 + base_bar_height - metrics.large_title_bottom_inset - title_height
+        } else {
+            bar_rect.y0 + (base_bar_height - title_height) * 0.5
+        };
+        let effective_leading_width = leading_width.max(navigation_leading_reserve(env));
+        let title_x0 = if effective_leading_width > 0.0 {
+            bar_rect.x0 + metrics.horizontal_inset + effective_leading_width + metrics.item_spacing
+        } else {
+            bar_rect.x0 + metrics.title_leading_inset
+        };
+        let title_x1 = if trailing_width > 0.0 {
+            bar_rect.x1 - metrics.horizontal_inset - trailing_width - metrics.item_spacing
+        } else {
+            bar_rect.x1 - metrics.title_trailing_inset
         };
         let title_rect = vello::kurbo::Rect::new(
-            (bar_rect.x0
-                + NAVIGATION_BAR_HORIZONTAL_INSET
-                + leading_width
-                + NAVIGATION_BAR_ITEM_SPACING)
-                .min(bar_rect.x1),
-            bar_rect.y0 + (base_bar_height - title_height) * 0.5,
-            (bar_rect.x1
-                - NAVIGATION_BAR_HORIZONTAL_INSET
-                - trailing_width
-                - NAVIGATION_BAR_ITEM_SPACING)
-                .max(bar_rect.x0),
-            bar_rect.y0 + (base_bar_height + title_height) * 0.5,
+            title_x0.min(bar_rect.x1),
+            title_y0,
+            title_x1.max(bar_rect.x0),
+            title_y0 + title_height,
         );
         if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
             ctx.dispatch_in_rect_without_accessibility(env, title, title_rect);
@@ -316,14 +338,14 @@ pub(crate) fn render_navigation_view(
 
         if let Some(search) = search.as_ref() {
             let search_rect = vello::kurbo::Rect::new(
-                bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
-                bar_rect.y0 + base_bar_height + NAVIGATION_SEARCH_VERTICAL_INSET,
-                bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
+                bar_rect.x0 + metrics.horizontal_inset,
+                bar_rect.y0 + base_bar_height + metrics.search_vertical_inset,
+                bar_rect.x1 - metrics.horizontal_inset,
                 (bar_rect.y0
                     + base_bar_height
-                    + NAVIGATION_SEARCH_VERTICAL_INSET
-                    + NAVIGATION_SEARCH_HEIGHT)
-                    .min(bar_rect.y1 - NAVIGATION_SEARCH_VERTICAL_INSET),
+                    + metrics.search_vertical_inset
+                    + metrics.search_height)
+                    .min(bar_rect.y1 - metrics.search_vertical_inset),
             );
             if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
                 ctx.dispatch_in_rect(
@@ -357,8 +379,11 @@ pub(crate) fn render_navigation_split_layout(
 
     if compact && let Some(selected) = selected {
         let detail = split.detail_builder().build(selected);
-        ctx.dispatch_in_rect(env, AnyView::new(detail), ctx.bounds);
-        let back_button_rect = navigation_back_button_rect(ctx.bounds);
+        let mut detail_env = env.clone();
+        detail_env.insert(NavigationLeadingReserve(back_button_title_reserve(env)));
+        ctx.dispatch_in_rect(&detail_env, AnyView::new(detail), ctx.bounds);
+        let back_button_rect =
+            navigation_back_button_rect(ctx.bounds, widget_theme(env).navigation_metrics());
         {
             let theme = widget_theme(env);
             let mut draw = ctx.draw_context();
@@ -419,6 +444,9 @@ pub(crate) fn render_navigation_stack(
             .map_or_else(|| root, |builder| AnyView::new(builder.build()));
         (active, entries_ref.len())
     };
+    if depth > 0 {
+        local_env.insert(NavigationLeadingReserve(back_button_title_reserve(env)));
+    }
     let local_ctx = ctx.with_identity_transforms(ctx.bounds);
     let active_scene =
         HydrolysisRenderer::render_subtree_scene(ctx.renderer_mut(), local_ctx, &local_env, active);
@@ -482,7 +510,8 @@ pub(crate) fn render_navigation_stack(
         return;
     }
 
-    let back_button_rect = navigation_back_button_rect(ctx.bounds);
+    let back_button_rect =
+        navigation_back_button_rect(ctx.bounds, widget_theme(env).navigation_metrics());
     {
         let theme = widget_theme(env);
         let mut draw = ctx.draw_context();
