@@ -21,9 +21,9 @@ use waterui::Plugin as _;
 use waterui::text::font::Font;
 use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
-    Brush, ButtonMetrics, DrawContext, InputFieldMetrics, PickerMetrics, ProgressIndicatorStyle,
-    ProgressMetrics, SliderMetrics, StepperMetrics, ToggleMetrics, WidgetInteractionState,
-    WidgetTheme,
+    Brush, ButtonMetrics, DrawContext, InputFieldMetrics, InteractionMotion, PickerMetrics,
+    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics,
+    ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -143,6 +143,14 @@ impl Default for MaterialTheme {
 }
 
 impl WidgetTheme for MaterialTheme {
+    fn interaction_motion(&self) -> InteractionMotion {
+        theme::motion::interaction()
+    }
+
+    fn progress_motion(&self) -> ProgressMotion {
+        theme::motion::progress()
+    }
+
     fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics {
         button::metrics(style)
     }
@@ -338,6 +346,16 @@ impl WidgetTheme for MaterialTheme {
         progress::draw_linear_fill(&self.colors, draw, bounds);
     }
 
+    fn draw_progress_linear_indeterminate(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        elapsed: core::time::Duration,
+        four_color: bool,
+    ) {
+        progress::draw_linear_indeterminate(&self.colors, draw, bounds, elapsed, four_color);
+    }
+
     fn draw_progress_circular_track(
         &self,
         draw: &mut dyn DrawContext,
@@ -350,6 +368,26 @@ impl WidgetTheme for MaterialTheme {
 
     fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64) {
         progress::draw_circular_fill(&self.colors, draw, path, width);
+    }
+
+    fn draw_progress_circular_indeterminate(
+        &self,
+        draw: &mut dyn DrawContext,
+        center: Point,
+        radius: f64,
+        width: f64,
+        elapsed: core::time::Duration,
+        four_color: bool,
+    ) {
+        progress::draw_circular_indeterminate(
+            &self.colors,
+            draw,
+            center,
+            radius,
+            width,
+            elapsed,
+            four_color,
+        );
     }
 
     fn draw_navigation_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, background: &Brush) {

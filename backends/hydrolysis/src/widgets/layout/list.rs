@@ -242,12 +242,12 @@ pub(crate) fn render_list(
             );
             let up_interaction = (index > 0).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, up_rect);
-                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
                 (hit_bounds, state, slot)
             });
             let down_interaction = (index + 1 < total_rows).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, down_rect);
-                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
                 (hit_bounds, state, slot)
             });
             {
@@ -297,7 +297,7 @@ pub(crate) fn render_list(
             let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
             let (delete_interaction, delete_press_slot) = ctx
                 .renderer_mut()
-                .bind_interaction_target(delete_hit_bounds);
+                .bind_interaction_target(delete_hit_bounds, env);
             {
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();

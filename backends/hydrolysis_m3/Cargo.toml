@@ -25,5 +25,8 @@ waterui-graphics.workspace = true
 tracing.workspace = true
 waterui-testing.workspace = true
 
+[package.metadata.waterui.assets]
+font = [{ name = "Roboto" }]
+
 [lints]
 workspace = true

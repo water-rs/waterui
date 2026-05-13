@@ -127,7 +127,8 @@ pub(crate) fn render_tabs(
         let button_rect = tabs_button_rect(bar_rect, tab_count, index);
         {
             let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
-            let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+            let (interaction, press_slot) =
+                ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
             let is_selected = index == selected_index;
             if index == selected_index {
                 let highlight = inset_rect(button_rect, 4.0, 6.0);

@@ -290,8 +290,7 @@ pub struct HydrolysisRenderer {
     rebuild_in_progress: Rc<Cell<bool>>,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
-    indeterminate_progress_active: bool,
-    indeterminate_progress_started_at: Instant,
+    frame_instant: Instant,
     scroll_controller: ScrollController,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -679,8 +678,7 @@ impl HydrolysisRenderer {
             rebuild_in_progress: Rc::new(Cell::new(false)),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
-            indeterminate_progress_active: false,
-            indeterminate_progress_started_at: Instant::now(),
+            frame_instant: Instant::now(),
             scroll_controller: ScrollController::default(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
@@ -1023,11 +1021,19 @@ impl HydrolysisRenderer {
         self.text_editing.ime_preedit.clone()
     }
 
+    pub(crate) fn set_frame_instant(&mut self, at: Instant) {
+        self.frame_instant = at;
+    }
+
+    pub(crate) fn frame_instant(&self) -> Instant {
+        self.frame_instant
+    }
+
     fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
     where
         S: Signal<Output = f32> + Clone + 'static,
     {
-        let now = Instant::now();
+        let now = self.frame_instant;
         let handle = self.animation_controller.bind_scalar(signal.get());
         let watcher_handle = handle.clone();
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
@@ -1043,7 +1049,7 @@ impl HydrolysisRenderer {
     where
         S: Signal<Output = bool> + Clone + 'static,
     {
-        let now = Instant::now();
+        let now = self.frame_instant;
         let handle = self
             .animation_controller
             .bind_scalar(if signal.get() { 1.0 } else { 0.0 });
@@ -1061,6 +1067,18 @@ impl HydrolysisRenderer {
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
         handle.sample(now).clamp(0.0, 1.0)
+    }
+
+    pub(crate) fn sample_widget_scalar_target(&mut self, target: f32, animation: Animation) -> f32 {
+        let now = self.frame_instant;
+        self.animation_controller
+            .bind_scalar_target(target, animation, now)
+            .sample(now)
+    }
+
+    pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration) -> Duration {
+        self.animation_controller
+            .bind_repeating_phase(cycle, self.frame_instant)
     }
 
     fn render_layout_container(
@@ -2396,7 +2414,6 @@ impl HydrolysisRenderer {
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
         self.animation_controller.begin_rebuild_frame();
-        self.indeterminate_progress_active = false;
         self.scroll_controller.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
@@ -2645,20 +2662,14 @@ impl HydrolysisRenderer {
     }
 
     pub fn advance_animations(&mut self) -> bool {
-        let now = Instant::now();
+        let now = self.frame_instant;
         self.animation_controller.tick(now)
-            || self.indeterminate_progress_active
             || self.navigation.slots.iter().any(|slot| {
                 slot.transition
                     .as_ref()
                     .is_some_and(|state| state.is_active(now))
             })
             || self.advance_text_caret_animation(now)
-    }
-
-    pub(crate) fn indeterminate_progress_elapsed(&mut self, now: Instant) -> core::time::Duration {
-        self.indeterminate_progress_active = true;
-        now.saturating_duration_since(self.indeterminate_progress_started_at)
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
@@ -2698,7 +2709,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) -> bool {
         let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        let at = Instant::now();
+        let at = self.frame_instant;
         self.gesture_engine
             .handle_magnification(center, delta, phase, at, env)
     }
@@ -2729,7 +2740,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) -> bool {
         let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        let at = Instant::now();
+        let at = self.frame_instant;
         self.gesture_engine
             .handle_rotation(center, delta, phase, at, env)
     }

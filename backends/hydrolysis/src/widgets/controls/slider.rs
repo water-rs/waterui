@@ -165,7 +165,7 @@ pub(crate) fn render_slider(
             control_bottom,
         ),
     );
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_slider_track(&mut draw, track_rect, fill_rect);

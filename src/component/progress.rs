@@ -34,7 +34,13 @@ use waterui_macros::text;
 
 fn progress_value_label(value: Computed<f64>) -> Computed<String> {
     value
-        .map(|value| format!("{:.0}%", value.clamp(0.0, 1.0) * 100.0))
+        .map(|value| {
+            if value.is_finite() {
+                format!("{:.0}%", value.clamp(0.0, 1.0) * 100.0)
+            } else {
+                String::new()
+            }
+        })
         .computed()
 }
 /// Configuration for progress indicators.
@@ -51,6 +57,8 @@ pub struct ProgressConfig {
     pub value: Computed<f64>,
     /// The visual style of the progress indicator (linear or circular).
     pub style: ProgressStyle,
+    /// Whether indeterminate progress uses the Material four-color cycle.
+    pub four_color: bool,
 }
 
 /// Visual style options for progress indicators.
@@ -160,6 +168,7 @@ impl Progress {
             value_label: text!("{value_label}").anyview(),
             value,
             style: ProgressStyle::Linear,
+            four_color: false,
         })
     }
 
@@ -216,6 +225,13 @@ impl Progress {
     #[must_use]
     pub const fn linear(self) -> Self {
         self.style(ProgressStyle::Linear)
+    }
+
+    /// Render indeterminate progress with the Material four-color cycle.
+    #[must_use]
+    pub const fn four_color(mut self) -> Self {
+        self.0.four_color = true;
+        self
     }
 }
 

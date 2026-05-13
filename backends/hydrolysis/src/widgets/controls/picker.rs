@@ -281,7 +281,7 @@ pub(crate) fn render_menu_picker(
     {
         let bounds = ctx.bounds;
         let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
-        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
         {
             let mut draw = ctx.draw_context();
             theme.draw_input_field(&mut draw, bounds);
@@ -331,7 +331,7 @@ pub(crate) fn render_menu_picker(
     for (index, item) in items.into_iter().enumerate() {
         let row_rect = menu_picker_option_rect(popup_rect, row_height, index);
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
-        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect);
+        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
             let mut draw = ctx.draw_context();
             theme.draw_picker_popup_row_background(&mut draw, row_rect, item.tag == selected);
@@ -417,7 +417,7 @@ pub(crate) fn render_radio_picker(
         let indicator_radius = metrics.radio_indicator_size / 2.0;
         let is_selected = item.tag == selected;
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
-        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect);
+        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
             let mut draw = ctx.draw_context();
             theme.draw_radio_state_layer(

@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -11,7 +12,9 @@ const VALUE_EPSILON: f32 = 0.000_01;
 #[derive(Debug, Default)]
 pub struct AnimationController {
     slots: Vec<AnimatedScalarSlot>,
+    repeating_slots: Vec<RepeatingPhaseSlot>,
     cursor: usize,
+    repeating_cursor: usize,
 }
 
 #[derive(Debug)]
@@ -33,13 +36,21 @@ struct AnimatedScalarState {
     last_tick: Instant,
 }
 
+#[derive(Debug)]
+struct RepeatingPhaseSlot {
+    started_at: Instant,
+    cycle: Duration,
+}
+
 impl AnimationController {
     pub fn begin_rebuild_frame(&mut self) {
         self.cursor = 0;
+        self.repeating_cursor = 0;
     }
 
     pub fn finish_rebuild_frame(&mut self) {
         self.slots.truncate(self.cursor);
+        self.repeating_slots.truncate(self.repeating_cursor);
     }
 
     pub fn bind_scalar(&mut self, observed_value: f32) -> AnimatedScalarHandle {
@@ -92,7 +103,32 @@ impl AnimationController {
                 has_active = true;
             }
         }
-        has_active
+        has_active || !self.repeating_slots.is_empty()
+    }
+
+    pub fn bind_repeating_phase(&mut self, cycle: Duration, now: Instant) -> Duration {
+        assert!(
+            !cycle.is_zero(),
+            "animation repeating phase cycle must be non-zero"
+        );
+        let index = self.repeating_cursor;
+        self.repeating_cursor = self
+            .repeating_cursor
+            .checked_add(1)
+            .expect("animation controller repeating cursor overflow");
+        if index == self.repeating_slots.len() {
+            self.repeating_slots.push(RepeatingPhaseSlot {
+                started_at: now,
+                cycle,
+            });
+        }
+        let slot = &mut self.repeating_slots[index];
+        if slot.cycle != cycle {
+            slot.started_at = now;
+            slot.cycle = cycle;
+        }
+        let elapsed = now.saturating_duration_since(slot.started_at);
+        Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
     }
 }
 

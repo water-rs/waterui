@@ -256,7 +256,7 @@ pub(crate) fn render_text_field(
     let hit_transform = ctx.hit_transform;
     let (field_interaction, _) = ctx
         .renderer_mut()
-        .bind_interaction_target(transformed_rect(hit_transform, field_rect));
+        .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect);
@@ -487,7 +487,7 @@ pub(crate) fn render_secure_field(
     let hit_transform = ctx.hit_transform;
     let (field_interaction, _) = ctx
         .renderer_mut()
-        .bind_interaction_target(transformed_rect(hit_transform, field_rect));
+        .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect);

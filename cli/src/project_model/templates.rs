@@ -1669,6 +1669,21 @@ pub mod hydrolysis {
                 GeneratedDependencyValue::simple("0.4"),
             ),
             (
+                "waterui-core".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-core",
+                            WATERUI_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir("core")),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
+            (
                 "waterui-preview".to_string(),
                 GeneratedDependencyValue::detailed(
                     super::generated_dependency_from_spec(

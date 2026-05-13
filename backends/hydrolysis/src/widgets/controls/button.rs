@@ -133,7 +133,7 @@ pub(crate) fn render_button(
     let style = button.style;
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
@@ -181,7 +181,7 @@ pub(crate) fn render_menu(
     let style = ButtonStyle::Borderless;
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);

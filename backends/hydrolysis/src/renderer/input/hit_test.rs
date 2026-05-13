@@ -1,12 +1,7 @@
 use super::*;
-use core::time::Duration;
-use waterui::animation::Animation;
+use crate::widgets::util::widget_theme;
+use waterui_backend_core::widget::InteractionMotion;
 use waterui_backend_core::widget::WidgetInteractionState;
-
-const STATE_LAYER_HOVER_ENTER_MS: u64 = 15;
-const STATE_LAYER_PRESS_GROW_MS: u64 = 450;
-const STATE_LAYER_PRESS_FADE_IN_MS: u64 = 105;
-const STATE_LAYER_RELEASE_MS: u64 = 375;
 
 #[derive(Clone)]
 pub(crate) struct PointerTarget {
@@ -304,7 +299,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        let at = Instant::now();
+        let at = self.frame_instant();
         let mut rebuild_requested = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
@@ -486,7 +481,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        let at = Instant::now();
+        let at = self.frame_instant();
         let mut changed = self.handle_pointer_move(x, y, env);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
@@ -507,7 +502,7 @@ impl HydrolysisRenderer {
 
     pub fn handle_pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        let at = Instant::now();
+        let at = self.frame_instant();
         let mut rebuild_requested = false;
         let mut drag_changed = false;
         if let Some(index) = self.text_editing.active_text_selection_drag {
@@ -560,7 +555,7 @@ impl HydrolysisRenderer {
         rebuild_requested |= self.hit_test.press_controller.clear_all();
         let gesture_changed = self
             .gesture_engine
-            .handle_pointer_cancel(Instant::now(), env);
+            .handle_pointer_cancel(self.frame_instant(), env);
         rebuild_requested |= gesture_changed;
         for target in &mut self.hit_test.hover_targets {
             let hovering = self.hit_test.hover_controller.slots[target.slot.index].hovering;
@@ -623,6 +618,7 @@ impl HydrolysisRenderer {
     pub(crate) fn bind_interaction_target(
         &mut self,
         bounds: vello::kurbo::Rect,
+        env: &Environment,
     ) -> (WidgetInteractionState, PressSlot) {
         let (hover_slot, hovered) = self.hit_test.hover_controller.bind();
         let (press_slot, pressed) = self.hit_test.press_controller.bind();
@@ -636,36 +632,24 @@ impl HydrolysisRenderer {
                 on_exit: None,
             });
         }
-        let target_opacity = WidgetInteractionState {
-            hovered,
-            pressed: false,
-            focus_visible: false,
-            state_layer_opacity: 0.0,
-            press_layer_opacity: 0.0,
-            press_origin: None,
-            press_progress: 0.0,
-        }
-        .state_layer_opacity();
-        let now = Instant::now();
+        let motion = widget_theme(env).interaction_motion();
+        let target_opacity = if hovered { motion.hover_opacity } else { 0.0 };
+        let now = self.frame_instant();
         let alpha_handle = self.animation_controller.bind_scalar_target(
             target_opacity,
-            state_layer_animation(target_opacity),
+            state_layer_animation(target_opacity, &motion),
             now,
         );
         let state_layer_opacity = alpha_handle.sample(now);
         let press_opacity_handle = self.animation_controller.bind_scalar_target(
-            if pressed {
-                WidgetInteractionState::PRESSED_STATE_LAYER_OPACITY
-            } else {
-                0.0
-            },
-            press_layer_opacity_animation(pressed),
+            if pressed { motion.pressed_opacity } else { 0.0 },
+            press_layer_opacity_animation(pressed, &motion),
             now,
         );
         let press_layer_opacity = press_opacity_handle.sample(now);
         let press_progress_handle = self.animation_controller.bind_scalar_target(
             if press_origin.is_some() { 1.0 } else { 0.0 },
-            Animation::ease_in_out(Duration::from_millis(STATE_LAYER_PRESS_GROW_MS)),
+            motion.press_grow.clone(),
             now,
         );
         let press_progress = press_progress_handle.sample(now);
@@ -825,20 +809,18 @@ impl HydrolysisRenderer {
     }
 }
 
-fn state_layer_animation(target_opacity: f32) -> Animation {
-    let duration = if target_opacity > 0.0 {
-        STATE_LAYER_HOVER_ENTER_MS
+fn state_layer_animation(target_opacity: f32, motion: &InteractionMotion) -> Animation {
+    if target_opacity > 0.0 {
+        motion.hover_enter.clone()
     } else {
-        STATE_LAYER_RELEASE_MS
-    };
-    Animation::ease_in_out(Duration::from_millis(duration))
+        motion.hover_exit.clone()
+    }
 }
 
-fn press_layer_opacity_animation(pressed: bool) -> Animation {
-    let duration = if pressed {
-        STATE_LAYER_PRESS_FADE_IN_MS
+fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> Animation {
+    if pressed {
+        motion.press_fade_in.clone()
     } else {
-        STATE_LAYER_RELEASE_MS
-    };
-    Animation::ease_in_out(Duration::from_millis(duration))
+        motion.press_fade_out.clone()
+    }
 }
