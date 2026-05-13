@@ -55,13 +55,23 @@ pub(crate) fn navigation() -> NavigationMotion {
     }
 }
 
+pub(crate) fn navigation_drawer() -> Animation {
+    Animation::bezier(
+        Duration::from_millis(250),
+        MATERIAL_STANDARD.0,
+        MATERIAL_STANDARD.1,
+        MATERIAL_STANDARD.2,
+        MATERIAL_STANDARD.3,
+    )
+}
+
 pub(crate) fn toggle_value() -> Animation {
     Animation::spring(300.0, 20.0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{interaction, navigation, progress, text_caret, toggle_value};
+    use super::{interaction, navigation, navigation_drawer, progress, text_caret, toggle_value};
     use core::time::Duration;
     use waterui::animation::Animation;
 
@@ -128,6 +138,14 @@ mod tests {
 
         assert_eq!(motion.transition_duration, Duration::from_millis(250));
         assert_eq!(motion.pushpop_parallax_factor, 0.35);
+    }
+
+    #[test]
+    fn material_navigation_drawer_motion_matches_material_web_labs() {
+        assert_eq!(
+            navigation_drawer(),
+            Animation::bezier(Duration::from_millis(250), 0.2, 0.0, 0.0, 1.0)
+        );
     }
 
     #[test]

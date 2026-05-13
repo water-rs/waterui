@@ -4,8 +4,8 @@ use core::time::Duration;
 
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
-    icon_button, input_chip, install, navigation_bar, navigation_tab, outlined_icon_button,
-    plain_tooltip, rich_tooltip, suggestion_chip,
+    icon_button, input_chip, install, navigation_bar, navigation_drawer, navigation_drawer_item,
+    navigation_tab, outlined_icon_button, plain_tooltip, rich_tooltip, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -477,6 +477,55 @@ fn material_navigation_bar_exposes_tab_semantics_and_selection() {
         "material navigation tab should route tap actions through Hydrolysis gestures"
     );
     assert!(home_tapped.get(), "navigation tab tap should update state");
+}
+
+#[test]
+fn material_navigation_drawer_exposes_item_semantics_and_open_state() {
+    let opened = Binding::bool(true);
+    let inbox_selected = Binding::bool(true);
+    let archive_selected = Binding::bool(false);
+    let archive_tapped = Binding::bool(false);
+    let opened_for_view = opened.clone();
+    let inbox_for_view = inbox_selected.clone();
+    let archive_for_view = archive_selected.clone();
+    let archive_for_action = archive_tapped.clone();
+    let mut app = mount_m3(move || {
+        navigation_drawer(
+            &opened_for_view,
+            vstack((
+                navigation_drawer_item("Inbox", text("I"), &inbox_for_view),
+                navigation_drawer_item("Archive", text("A"), &archive_for_view).action({
+                    let archive_for_action = archive_for_action.clone();
+                    move || archive_for_action.set(true)
+                }),
+            ))
+            .spacing(4.0)
+            .padding_with(12.0),
+        )
+    });
+
+    app.query()
+        .label("Navigation drawer")
+        .expanded(true)
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Inbox")
+        .selected(true)
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Archive")
+        .selected(false)
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Archive").tap(),
+        "material navigation drawer item should route tap actions through Hydrolysis gestures"
+    );
+    assert!(
+        archive_tapped.get(),
+        "navigation drawer item tap should update state"
+    );
 }
 
 #[test]
