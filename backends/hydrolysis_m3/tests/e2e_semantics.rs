@@ -4,7 +4,7 @@ use core::time::Duration;
 
 use hydrolysis_m3::{
     assist_chip, extended_fab, fab, filled_icon_button, filter_chip, icon_button, input_chip,
-    install, outlined_icon_button, suggestion_chip,
+    install, outlined_icon_button, plain_tooltip, rich_tooltip, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -371,6 +371,38 @@ fn material_icon_buttons_expose_button_semantics_and_tap_actions() {
     assert!(
         outlined_tapped.get(),
         "outlined icon button tap should update state"
+    );
+}
+
+#[test]
+fn material_tooltips_expose_accessibility_labels_and_action_semantics() {
+    let action_tapped = Binding::bool(false);
+    let action_for_view = action_tapped.clone();
+    let mut app = mount_m3(move || {
+        vstack((
+            plain_tooltip("Adds this item to your favorites"),
+            rich_tooltip("Favorite", "Adds this item to your favorites").action("Got it", {
+                let action_for_view = action_for_view.clone();
+                move || action_for_view.set(true)
+            }),
+        ))
+        .spacing(12.0)
+    });
+
+    app.query()
+        .label("Adds this item to your favorites")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Got it")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Got it").tap(),
+        "material rich tooltip action should route tap actions through Hydrolysis gestures"
+    );
+    assert!(
+        action_tapped.get(),
+        "rich tooltip action tap should update state"
     );
 }
 
