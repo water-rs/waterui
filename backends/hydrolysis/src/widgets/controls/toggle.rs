@@ -105,7 +105,7 @@ pub(crate) fn render_toggle(
     let mut draw = ctx.draw_context();
     match style {
         ToggleStyle::Automatic | ToggleStyle::Switch => {
-            theme.draw_toggle_switch(&mut draw, control_bounds, thumb_progress);
+            theme.draw_toggle_switch(&mut draw, control_bounds, thumb_progress, interaction);
             theme.draw_toggle_switch_state_layer(
                 &mut draw,
                 control_bounds,

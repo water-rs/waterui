@@ -181,8 +181,14 @@ impl WidgetTheme for MaterialTheme {
         toggle::metrics(style)
     }
 
-    fn draw_toggle_switch(&self, draw: &mut dyn DrawContext, bounds: Rect, progress: f32) {
-        toggle::draw_switch(&self.colors, draw, bounds, progress);
+    fn draw_toggle_switch(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        progress: f32,
+        state: WidgetInteractionState,
+    ) {
+        toggle::draw_switch(&self.colors, draw, bounds, progress, state);
     }
 
     fn draw_toggle_switch_state_layer(
