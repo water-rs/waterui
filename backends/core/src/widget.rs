@@ -309,6 +309,8 @@ pub struct PickerMetrics {
     pub horizontal_inset: f64,
     /// Vertical picker inset.
     pub vertical_inset: f64,
+    /// Gap between an external picker label and the picker field.
+    pub label_spacing: f64,
     /// Space reserved for picker indicators.
     pub indicator_space: f64,
     /// Radio indicator diameter.

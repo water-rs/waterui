@@ -17,8 +17,6 @@ use waterui_text::styled::StyledStr;
 
 use crate::widgets::util::{inset_rect, widget_theme};
 
-const DATE_PICKER_LABEL_SPACING: f64 = 8.0;
-
 impl HydroNativeView for Native<DatePickerConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_date_picker(ctx, view, env);
@@ -85,7 +83,7 @@ pub(crate) fn render_date_picker(
         0.0
     };
     let spacing = if has_label {
-        DATE_PICKER_LABEL_SPACING
+        metrics.label_spacing
     } else {
         0.0
     };
