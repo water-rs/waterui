@@ -94,7 +94,10 @@ pub fn draw_popup_row_background(
         row_rect.x1 - 2.0,
         row_rect.y1 - 1.0,
     );
-    draw.fill_rect(inset, &Brush::from(colors.secondary_container.peniko()));
+    draw.fill_rect(
+        inset,
+        &Brush::from(colors.surface_container_highest.peniko()),
+    );
 }
 
 pub fn draw_popup_row_state_layer(
@@ -128,7 +131,7 @@ pub fn draw_separator(
     draw: &mut dyn DrawContext,
     separator: vello::kurbo::Rect,
 ) {
-    draw.fill_rect(separator, &Brush::from(colors.outline_variant.peniko()));
+    draw.fill_rect(separator, &Brush::from(colors.surface_variant.peniko()));
 }
 
 pub fn draw_radio_indicator(
@@ -161,8 +164,12 @@ pub fn draw_radio_indicator(
 #[cfg(test)]
 mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+    use vello::peniko::Color;
 
-    use super::{MaterialColorScheme, draw_radio_indicator, material_metrics};
+    use super::{
+        MaterialColorScheme, draw_popup_row_background, draw_radio_indicator, draw_separator,
+        material_metrics,
+    };
     use crate::dimensions::{
         PICKER_MENU_POPUP_CORNER_RADIUS, PICKER_MENU_POPUP_ROW_HEIGHT, PICKER_RADIO_INDICATOR_SIZE,
         PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_OUTER_RING_WIDTH,
@@ -173,10 +180,16 @@ mod tests {
     struct RecordingDrawContext {
         circle_fills: Vec<f64>,
         circle_strokes: Vec<(f64, f64)>,
+        rect_fills: Vec<Color>,
     }
 
     impl DrawContext for RecordingDrawContext {
-        fn fill_rect(&mut self, _rect: Rect, _brush: &Brush) {}
+        fn fill_rect(&mut self, _rect: Rect, brush: &Brush) {
+            let Brush::Solid(color) = brush else {
+                panic!("Material picker token fills must be solid colors");
+            };
+            self.rect_fills.push(*color);
+        }
 
         fn fill_rounded_rect(&mut self, _rect: Rect, _radii: RoundedRectRadii, _brush: &Brush) {}
 
@@ -243,6 +256,23 @@ mod tests {
         assert_eq!(unselected.circle_strokes, vec![(9.0, 2.0)]);
         assert_eq!(selected.circle_strokes, vec![(9.0, 2.0)]);
         assert_eq!(selected.circle_fills, vec![5.0]);
+    }
+
+    #[test]
+    fn menu_selected_row_and_divider_use_filled_select_tokens() {
+        let colors = MaterialColorScheme::baseline_light();
+        let mut draw = RecordingDrawContext::default();
+
+        draw_popup_row_background(&colors, &mut draw, Rect::new(0.0, 0.0, 120.0, 48.0), true);
+        draw_separator(&colors, &mut draw, Rect::new(0.0, 48.0, 120.0, 49.0));
+
+        assert_eq!(
+            draw.rect_fills,
+            vec![
+                colors.surface_container_highest.peniko(),
+                colors.surface_variant.peniko(),
+            ]
+        );
     }
 }
 
