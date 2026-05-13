@@ -16,6 +16,7 @@ pub mod calendar;
 pub use calendar::Calendar;
 /// Native picker controls for colors, dates, files, and multiple dates.
 pub mod picker;
+pub use picker::{Picker, PickerItem, PickerStyle};
 /// Validation helpers for form fields.
 pub mod valid;
 
