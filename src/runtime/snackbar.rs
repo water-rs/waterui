@@ -589,7 +589,7 @@ impl View for SnackbarView {
         Frame::new(
             content
                 .padding_with(theme.content_padding)
-                .min_height(theme.single_line_min_height)
+                .height(theme.single_line_min_height)
                 .background(
                     RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
                 )
