@@ -100,6 +100,18 @@ impl Toggle {
         self.0.style = style;
         self
     }
+
+    /// Changes the toggle to switch style.
+    #[must_use]
+    pub const fn switch(self) -> Self {
+        self.style(ToggleStyle::Switch)
+    }
+
+    /// Changes the toggle to checkbox style.
+    #[must_use]
+    pub const fn checkbox(self) -> Self {
+        self.style(ToggleStyle::Checkbox)
+    }
 }
 
 impl_label_style_methods!(Toggle);
