@@ -494,8 +494,6 @@ pub(crate) const NAVIGATION_SEARCH_VERTICAL_INSET: f64 = 8.0;
 const NAVIGATION_TRANSITION_DURATION: Duration = Duration::from_millis(250);
 const NAVIGATION_PUSHPOP_PARALLAX_FACTOR: f64 = 0.35;
 
-pub(crate) const TABS_BAR_MIN_HEIGHT: f64 = 44.0;
-pub(crate) const TABS_BAR_MAX_HEIGHT: f64 = 64.0;
 pub(crate) const TABS_BUTTON_MIN_WIDTH: f64 = 44.0;
 pub(crate) const TABS_BUTTON_HORIZONTAL_INSET: f64 = 8.0;
 

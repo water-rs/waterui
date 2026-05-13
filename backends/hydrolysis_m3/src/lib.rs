@@ -23,7 +23,7 @@ use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     Brush, ButtonMetrics, DrawContext, InputFieldMetrics, InteractionMotion, PickerMetrics,
     ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics,
-    ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    TabsMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -417,6 +417,10 @@ impl WidgetTheme for MaterialTheme {
 
     fn draw_navigation_back_button(&self, draw: &mut dyn DrawContext, bounds: Rect) {
         navigation_chrome::draw_back_button(&self.colors, draw, bounds);
+    }
+
+    fn tabs_metrics(&self) -> TabsMetrics {
+        tabs::metrics()
     }
 
     fn draw_tabs_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool) {

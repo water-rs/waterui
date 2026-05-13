@@ -657,15 +657,16 @@ pub(crate) fn measure_tabs_intrinsic(
     }
 
     let width = max_content_width.max(bar_width);
-    let height = max_content_height + TABS_BAR_MIN_HEIGHT;
+    let height = max_content_height + widget_theme(env).tabs_metrics().bar_height;
     LayoutSize::new(width as f32, height as f32)
 }
 
 pub(crate) fn tabs_bar_and_content_rect(
     bounds: vello::kurbo::Rect,
     position: TabPosition,
+    bar_height: f64,
 ) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
-    let bar_height = (bounds.height() * 0.12).clamp(TABS_BAR_MIN_HEIGHT, TABS_BAR_MAX_HEIGHT);
+    let bar_height = bar_height.min(bounds.height());
     match position {
         TabPosition::Top => (
             vello::kurbo::Rect::new(

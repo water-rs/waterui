@@ -416,6 +416,33 @@ impl ProgressMetrics {
     }
 }
 
+/// Layout metrics for tab containers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabsMetrics {
+    /// Tab bar height.
+    pub bar_height: f64,
+    /// Selected tab active indicator height.
+    pub active_indicator_height: f64,
+    /// Selected tab active indicator corner radius.
+    pub active_indicator_radius: f64,
+}
+
+impl TabsMetrics {
+    /// Create tab layout metrics.
+    #[must_use]
+    pub const fn new(
+        bar_height: f64,
+        active_indicator_height: f64,
+        active_indicator_radius: f64,
+    ) -> Self {
+        Self {
+            bar_height,
+            active_indicator_height,
+            active_indicator_radius,
+        }
+    }
+}
+
 /// Theme contract for backend-rendered widgets.
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
@@ -624,6 +651,8 @@ pub trait WidgetTheme {
     /// Draw a navigation back button.
     fn draw_navigation_back_button(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
+    /// Return tabs layout metrics.
+    fn tabs_metrics(&self) -> TabsMetrics;
     /// Draw a tabs bar.
     fn draw_tabs_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool);
     /// Draw the selected tab highlight.
