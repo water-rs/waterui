@@ -352,6 +352,7 @@ impl WidgetTheme for MinimalTestTheme {
             min_height: 28.0,
             horizontal_inset: 8.0,
             vertical_inset: 6.0,
+            label_spacing: 8.0,
             indicator_space: 18.0,
             radio_indicator_size: 16.0,
             radio_label_spacing: 8.0,
