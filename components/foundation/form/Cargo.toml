@@ -36,6 +36,7 @@ default = ["std"]
 std = ["dep:waterkit-dialog"]
 
 [dev-dependencies]
+hydrolysis-m3.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
 
