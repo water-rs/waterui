@@ -92,7 +92,7 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{Card, Divider, card, suspense};
+    pub use super::widget::{Card, CardStyle, CardStyleTokens, CardTheme, Divider, card, suspense};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
