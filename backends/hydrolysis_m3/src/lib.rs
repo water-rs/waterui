@@ -11,6 +11,7 @@ pub mod fab;
 pub mod icon_button;
 pub mod material_badge;
 pub mod material_card;
+pub mod material_divider;
 pub mod material_list;
 pub mod material_tabs;
 pub mod navigation_bar;
@@ -63,6 +64,7 @@ pub use icon_button::{
 };
 pub use material_badge::{MaterialBadge, material_badge};
 pub use material_card::{MaterialCard, material_card};
+pub use material_divider::{MaterialDivider, material_divider};
 pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
     variant::Variant as MaterialColorVariant,
