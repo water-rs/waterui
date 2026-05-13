@@ -1,7 +1,8 @@
 use crate::dimensions::{
     TOGGLE_CHECKBOX_CONTAINER_SHAPE, TOGGLE_CHECKBOX_OUTLINE_WIDTH,
     TOGGLE_CHECKBOX_SELECTED_SCALE_START, TOGGLE_CHECKBOX_SIZE, TOGGLE_SWITCH_HEIGHT,
-    TOGGLE_SWITCH_OUTLINE_WIDTH, TOGGLE_SWITCH_WIDTH,
+    TOGGLE_SWITCH_OUTLINE_WIDTH, TOGGLE_SWITCH_PRESSED_HANDLE_SIZE,
+    TOGGLE_SWITCH_SELECTED_HANDLE_SIZE, TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE, TOGGLE_SWITCH_WIDTH,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -24,16 +25,28 @@ pub fn draw_switch(
     draw: &mut dyn DrawContext,
     bounds: Rect,
     progress: f32,
+    state: WidgetInteractionState,
 ) {
+    let progress = progress.clamp(0.0, 1.0);
     let track_color = lerp_color(
         colors.surface_container_highest.peniko(),
         colors.primary.peniko(),
         progress,
     );
-    let handle_radius = crate::lerp_f64(8.0, 12.0, progress);
+    let selected = progress > 0.5;
+    let handle_size = if state.pressed {
+        TOGGLE_SWITCH_PRESSED_HANDLE_SIZE
+    } else {
+        crate::lerp_f64(
+            TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE,
+            TOGGLE_SWITCH_SELECTED_HANDLE_SIZE,
+            progress,
+        )
+    };
+    let handle_radius = handle_size / 2.0;
     let thumb_center_x = crate::lerp_f64(
-        bounds.x0 + 4.0 + handle_radius,
-        bounds.x1 - 4.0 - handle_radius,
+        bounds.x0 + TOGGLE_SWITCH_HEIGHT / 2.0,
+        bounds.x1 - TOGGLE_SWITCH_HEIGHT / 2.0,
         progress,
     );
     let thumb_center = Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
@@ -47,11 +60,19 @@ pub fn draw_switch(
             TOGGLE_SWITCH_OUTLINE_WIDTH,
         );
     }
-    let thumb_color = lerp_color(
-        colors.outline.peniko(),
-        colors.on_primary.peniko(),
-        progress,
-    );
+    let thumb_color = if state.pressed || state.hovered || state.focus_visible {
+        if selected {
+            colors.primary_container.peniko()
+        } else {
+            colors.on_surface_variant.peniko()
+        }
+    } else {
+        lerp_color(
+            colors.outline.peniko(),
+            colors.on_primary.peniko(),
+            progress,
+        )
+    };
     draw.fill_circle(thumb_center, handle_radius, &Brush::from(thumb_color));
 }
 
@@ -62,10 +83,9 @@ pub fn draw_switch_state_layer(
     progress: f32,
     state: WidgetInteractionState,
 ) {
-    let handle_radius = crate::lerp_f64(8.0, 12.0, progress);
     let thumb_center_x = crate::lerp_f64(
-        bounds.x0 + 4.0 + handle_radius,
-        bounds.x1 - 4.0 - handle_radius,
+        bounds.x0 + TOGGLE_SWITCH_HEIGHT / 2.0,
+        bounds.x1 - TOGGLE_SWITCH_HEIGHT / 2.0,
         progress,
     );
     let center = Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
@@ -81,7 +101,8 @@ pub fn draw_switch_state_layer(
 mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 
-    use super::{MaterialColorScheme, draw_checkbox, draw_switch};
+    use super::{MaterialColorScheme, WidgetInteractionState, draw_checkbox, draw_switch};
+    use crate::dimensions::TOGGLE_SWITCH_PRESSED_HANDLE_SIZE;
     use crate::{Brush, DrawContext};
 
     #[derive(Default)]
@@ -89,6 +110,7 @@ mod tests {
         rounded_stroke_count: usize,
         rounded_fill_count: usize,
         path_stroke_count: usize,
+        circle_radii: Vec<f64>,
         transform_depth: usize,
     }
 
@@ -115,7 +137,9 @@ mod tests {
 
         fn stroke_circle(&mut self, _center: Point, _radius: f64, _brush: &Brush, _width: f64) {}
 
-        fn fill_circle(&mut self, _center: Point, _radius: f64, _brush: &Brush) {}
+        fn fill_circle(&mut self, _center: Point, radius: f64, _brush: &Brush) {
+            self.circle_radii.push(radius);
+        }
 
         fn fill_path(&mut self, _path: &BezPath, _brush: &Brush) {}
 
@@ -142,13 +166,48 @@ mod tests {
         let bounds = Rect::from_origin_size((0.0, 0.0), (52.0, 32.0));
 
         let mut unselected = RecordingDrawContext::default();
-        draw_switch(&colors, &mut unselected, bounds, 0.0);
+        draw_switch(
+            &colors,
+            &mut unselected,
+            bounds,
+            0.0,
+            WidgetInteractionState::NONE,
+        );
 
         let mut selected = RecordingDrawContext::default();
-        draw_switch(&colors, &mut selected, bounds, 1.0);
+        draw_switch(
+            &colors,
+            &mut selected,
+            bounds,
+            1.0,
+            WidgetInteractionState::NONE,
+        );
 
         assert_eq!(unselected.rounded_stroke_count, 1);
         assert_eq!(selected.rounded_stroke_count, 0);
+    }
+
+    #[test]
+    fn pressed_material_switch_uses_large_handle() {
+        let colors = MaterialColorScheme::baseline_light();
+        let bounds = Rect::from_origin_size((0.0, 0.0), (52.0, 32.0));
+        let mut draw = RecordingDrawContext::default();
+
+        draw_switch(
+            &colors,
+            &mut draw,
+            bounds,
+            0.0,
+            WidgetInteractionState {
+                pressed: true,
+                ..WidgetInteractionState::NONE
+            },
+        );
+
+        assert_eq!(
+            draw.circle_radii,
+            vec![TOGGLE_SWITCH_PRESSED_HANDLE_SIZE / 2.0]
+        );
     }
 
     #[test]
