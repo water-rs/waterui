@@ -122,7 +122,7 @@ mod tests {
         assert_eq!(draw.rounded_strokes.len(), 1);
         assert!(matches!(
             &draw.rounded_strokes[0].2,
-            Brush::Solid(color) if *color == colors.outline_variant.peniko()
+            Brush::Solid(color) if *color == colors.outline.peniko()
         ));
         assert_eq!(draw.rounded_strokes[0].3, 1.0);
     }
@@ -132,7 +132,7 @@ pub fn label_color(colors: &MaterialColorScheme, style: ButtonStyle) -> Option<C
     match style {
         ButtonStyle::BorderedProminent => Some(colors.on_primary.view_color()),
         ButtonStyle::Automatic => Some(colors.on_secondary_container.view_color()),
-        ButtonStyle::Bordered => Some(colors.on_surface_variant.view_color()),
+        ButtonStyle::Bordered => Some(colors.primary.view_color()),
         ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => {
             Some(colors.primary.view_color())
         }
@@ -158,7 +158,7 @@ pub fn draw_chrome(
             draw.stroke_rounded_rect(
                 bounds,
                 BUTTON_CONTAINER_RADIUS.into(),
-                &Brush::from(colors.outline_variant.peniko()),
+                &Brush::from(colors.outline.peniko()),
                 1.0,
             );
         }
@@ -193,7 +193,7 @@ pub fn draw_state_layer(
     let color = match style {
         ButtonStyle::BorderedProminent => colors.on_primary.peniko(),
         ButtonStyle::Automatic => colors.on_secondary_container.peniko(),
-        ButtonStyle::Bordered => colors.on_surface_variant.peniko(),
+        ButtonStyle::Bordered => colors.primary.peniko(),
         ButtonStyle::Link | ButtonStyle::Plain | ButtonStyle::Borderless => colors.primary.peniko(),
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     };
