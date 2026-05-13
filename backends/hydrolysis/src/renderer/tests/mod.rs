@@ -13,9 +13,9 @@ use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
     ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion, ListMetrics,
-    NavigationMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
-    SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, TextContextMenuMetrics,
-    ToggleMetrics, WidgetInteractionState,
+    NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
+    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
+    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -270,6 +270,13 @@ impl WidgetTheme for MinimalTestTheme {
             circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
             linear_indeterminate_cycle: Duration::from_millis(2_000),
             circular_indeterminate_cycle: Duration::from_millis(5_332),
+        }
+    }
+
+    fn navigation_motion(&self) -> NavigationMotion {
+        NavigationMotion {
+            transition_duration: Duration::from_millis(250),
+            pushpop_parallax_factor: 0.35,
         }
     }
 

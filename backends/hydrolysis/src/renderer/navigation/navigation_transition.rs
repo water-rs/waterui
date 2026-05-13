@@ -7,6 +7,7 @@ pub(crate) struct NavigationTransitionFrame<'a> {
     pub(crate) style: NavigationTransition,
     pub(crate) direction: NavigationTransitionDirection,
     pub(crate) progress: f64,
+    pub(crate) pushpop_parallax_factor: f64,
     pub(crate) from_scene: &'a vello::Scene,
     pub(crate) to_scene: &'a vello::Scene,
 }
@@ -17,12 +18,12 @@ pub(crate) fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
         NavigationTransition::PushPop => {
             let (from_x, to_x) = match frame.direction {
                 NavigationTransitionDirection::Push => (
-                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * frame.progress,
+                    -width * frame.pushpop_parallax_factor * frame.progress,
                     width * (1.0 - frame.progress),
                 ),
                 NavigationTransitionDirection::Pop => (
                     width * frame.progress,
-                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * (1.0 - frame.progress),
+                    -width * frame.pushpop_parallax_factor * (1.0 - frame.progress),
                 ),
             };
             append_scene_with_alpha(

@@ -23,6 +23,7 @@ pub(crate) struct NavigationTransitionState {
     pub(crate) from_scene: vello::Scene,
     pub(crate) to_scene: vello::Scene,
     pub(crate) started_at: Instant,
+    pub(crate) duration: Duration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +66,7 @@ impl NavigationTransitionState {
         from_scene: vello::Scene,
         to_scene: vello::Scene,
         started_at: Instant,
+        duration: Duration,
     ) -> Self {
         Self {
             style,
@@ -72,12 +74,13 @@ impl NavigationTransitionState {
             from_scene,
             to_scene,
             started_at,
+            duration,
         }
     }
 
     pub(crate) fn progress(&self, now: Instant) -> f64 {
         let elapsed = now.saturating_duration_since(self.started_at);
-        (elapsed.as_secs_f64() / NAVIGATION_TRANSITION_DURATION.as_secs_f64()).clamp(0.0, 1.0)
+        (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0)
     }
 
     pub(crate) fn is_active(&self, now: Instant) -> bool {
