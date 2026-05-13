@@ -9,13 +9,14 @@ use waterui::reactive::SignalExt as _;
 use waterui::shape::{RoundedRectangle, ShapeExt as _, UnevenRoundedRectangle};
 use waterui::style::{Shadow, Vector};
 use waterui::widget::condition::when;
-use waterui::{Binding, Environment, Signal, Str, View, ViewExt as _};
+use waterui::{Binding, Environment, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, boxed_action};
 
 use crate::color::{
     OnSecondaryContainer, OnSurfaceVariant, SecondaryContainer, Surface, SurfaceContainerLow,
 };
+use crate::semantics::label_plain_text;
 use crate::theme::{motion, typography};
 
 const NAVIGATION_DRAWER_CONTAINER_WIDTH: f32 = 360.0;
@@ -222,17 +223,6 @@ fn drawer_item_content(label: Label, icon: impl View, selected: bool) -> impl Vi
         NAVIGATION_DRAWER_ITEM_HORIZONTAL_PADDING,
     ))
     .background(RoundedRectangle::new(NAVIGATION_DRAWER_ITEM_CLIP_RADIUS).fill(background))
-}
-
-fn label_plain_text(label: &Label) -> Str {
-    label
-        .semantic_text()
-        .clone()
-        .resolve(&Environment::new())
-        .content
-        .get()
-        .to_plain()
-        .into()
 }
 
 const fn noop(_env: &Environment) {}

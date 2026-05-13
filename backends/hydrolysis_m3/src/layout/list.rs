@@ -27,14 +27,9 @@ pub fn draw_row_background(
     colors: &MaterialColorScheme,
     draw: &mut dyn DrawContext,
     bounds: Rect,
-    alternate: bool,
+    _alternate: bool,
 ) {
-    let color = if alternate {
-        colors.surface_container_low.peniko()
-    } else {
-        colors.surface.peniko()
-    };
-    draw.fill_rect(bounds, &Brush::from(color));
+    draw.fill_rect(bounds, &Brush::from(colors.surface.peniko()));
 }
 
 #[cfg(test)]
@@ -120,9 +115,7 @@ pub fn draw_delete_control_state_layer(
     draw_control_state_layer(draw, bounds, colors.on_error.peniko(), state);
 }
 
-pub fn draw_separator(colors: &MaterialColorScheme, draw: &mut dyn DrawContext, bounds: Rect) {
-    draw.fill_rect(bounds, &Brush::from(colors.outline_variant.peniko()));
-}
+pub fn draw_separator(_colors: &MaterialColorScheme, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
 fn draw_control_state_layer(
     draw: &mut dyn DrawContext,
