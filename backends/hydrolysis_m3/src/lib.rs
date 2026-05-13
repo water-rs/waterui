@@ -12,7 +12,7 @@ mod navigation;
 mod theme;
 
 pub(crate) use controls::{button, input, picker, progress, slider, stepper, toggle};
-pub(crate) use layout::{list, scroll, table};
+pub(crate) use layout::{divider, list, scroll, table};
 pub(crate) use navigation::{navigation as navigation_chrome, tabs};
 pub(crate) use theme::dimensions;
 
@@ -21,9 +21,9 @@ use waterui::Plugin as _;
 use waterui::text::font::Font;
 use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
-    Brush, ButtonMetrics, DrawContext, InputFieldMetrics, InteractionMotion, ListMetrics,
-    NavigationMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
-    SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, ToggleMetrics,
+    Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics, InteractionMotion,
+    ListMetrics, NavigationMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
+    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, ToggleMetrics,
     WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
@@ -456,6 +456,14 @@ impl WidgetTheme for MaterialTheme {
 
     fn draw_scroll_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
         scroll::draw_indicator(&self.colors, draw, bounds);
+    }
+
+    fn divider_metrics(&self) -> DividerMetrics {
+        divider::metrics()
+    }
+
+    fn draw_divider(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        divider::draw(&self.colors, draw, bounds);
     }
 
     fn list_metrics(&self) -> ListMetrics {

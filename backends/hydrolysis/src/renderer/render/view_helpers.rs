@@ -111,6 +111,9 @@ pub(crate) fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
     if let Some(content) = passthrough_content(view) {
         return effective_stretch_axis(content);
     }
+    if view.downcast_ref::<Divider>().is_some() {
+        return StretchAxis::CrossAxis;
+    }
     view.stretch_axis()
 }
 
