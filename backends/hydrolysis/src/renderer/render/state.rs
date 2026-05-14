@@ -8,7 +8,10 @@ pub struct HydroState {
     pub(crate) dynamic_dimensions_cache:
         BTreeMap<(usize, Option<u32>, Option<u32>), ViewDimensions>,
     pub(crate) dynamic_measurement_stack: Vec<(usize, ProposalSize)>,
-    pub(crate) measurement_cache: Vec<(usize, usize, ProposalSize, ViewDimensions)>,
+    pub(crate) measurement_cache:
+        BTreeMap<(usize, usize, Option<u32>, Option<u32>), ViewDimensions>,
+    pub(crate) measurement_cache_hits: u32,
+    pub(crate) measurement_cache_misses: u32,
     pub(crate) frame_device: Option<wgpu::Device>,
     pub(crate) frame_queue: Option<wgpu::Queue>,
 }
@@ -21,7 +24,9 @@ impl Default for HydroState {
             dynamic_intrinsic_cache: BTreeMap::new(),
             dynamic_dimensions_cache: BTreeMap::new(),
             dynamic_measurement_stack: Vec::new(),
-            measurement_cache: Vec::new(),
+            measurement_cache: BTreeMap::new(),
+            measurement_cache_hits: 0,
+            measurement_cache_misses: 0,
             frame_device: None,
             frame_queue: None,
         }

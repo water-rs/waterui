@@ -1,7 +1,7 @@
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
-use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton, TouchPhase};
+use hydrolysis::{FrameProfile, HeadlessRuntime, InputEvent, PointerButton, TouchPhase};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
 
@@ -41,6 +41,8 @@ pub struct FrameTiming {
     pub total: std::time::Duration,
     /// Whether the frame rebuilt scene/layout state.
     pub rebuilt: bool,
+    /// Detailed Hydrolysis phase timings and counters.
+    pub profile: FrameProfile,
 }
 
 pub struct HydrolysisA11yDriver {
@@ -188,8 +190,9 @@ impl A11yDriver for HydrolysisA11yDriver {
         let started_at = std::time::Instant::now();
         let outcome = self.runtime(content, env).pump_offscreen();
         FrameTiming {
-            total: started_at.elapsed(),
+            total: outcome.profile.total.max(started_at.elapsed()),
             rebuilt: outcome.rebuilt,
+            profile: outcome.profile,
         }
     }
 }

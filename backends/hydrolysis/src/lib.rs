@@ -32,5 +32,7 @@ pub use platform::{
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 pub use runner::run;
 #[cfg(not(target_arch = "wasm32"))]
-pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+pub use runner::{
+    FrameCounters, FramePhases, FrameProfile, HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot,
+};
 pub use view_renderer::HydrolysisViewRenderer;

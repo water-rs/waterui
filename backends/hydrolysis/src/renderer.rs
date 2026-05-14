@@ -1384,12 +1384,8 @@ impl HydrolysisRenderer {
                 Some(ctx.bounds.width() as f32),
                 Some(ctx.bounds.height() as f32),
             );
-            let proposal_dimensions = measure_view_dimensions_with_proposal(
-                &content,
-                proposal,
-                &mut renderer.state,
-                env,
-            );
+            let proposal_dimensions =
+                measure_view_dimensions_with_proposal(&content, proposal, &mut renderer.state, env);
             let previous_dimensions = renderer
                 .state
                 .dynamic_intrinsic_cache
@@ -2421,6 +2417,8 @@ impl HydrolysisRenderer {
     pub fn begin_rebuild_frame(&mut self) {
         self.rebuild_in_progress.set(true);
         self.state.measurement_cache.clear();
+        self.state.measurement_cache_hits = 0;
+        self.state.measurement_cache_misses = 0;
         self.rebuild_generation.set(
             self.rebuild_generation
                 .get()
@@ -2648,6 +2646,13 @@ impl HydrolysisRenderer {
 
     pub fn take_rebuild_request(&self) -> bool {
         self.rebuild_requested.replace(false)
+    }
+
+    pub(crate) fn measurement_cache_stats(&self) -> (u32, u32) {
+        (
+            self.state.measurement_cache_hits,
+            self.state.measurement_cache_misses,
+        )
     }
 
     #[must_use]
