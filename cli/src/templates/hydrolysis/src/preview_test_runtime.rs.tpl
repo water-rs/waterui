@@ -74,6 +74,32 @@ fn run_perf(width: f32, height: f32) {
             stats.measurement_cache_hits,
             stats.measurement_cache_misses
         ));
+        for (index, frame) in measurement.frames.iter().enumerate() {
+            write_status(&format!(
+                "perf-sample {} index={} total={}us rebuild={}us render={}us acquire={}us present={}us animation={}us input={}us executor_before={}us executor_after={}us rebuilt={} rendered={} captured_snapshot={} cpu_percent_milli={} memory_bytes={} gpu_frame={}us measurement_cache_hits={} measurement_cache_misses={}",
+                measurement.name,
+                index,
+                duration_micros(frame.total),
+                duration_micros(frame.profile.phases.rebuild),
+                duration_micros(frame.profile.phases.render),
+                duration_micros(frame.profile.phases.acquire),
+                duration_micros(frame.profile.phases.present),
+                duration_micros(frame.profile.phases.animation),
+                duration_micros(frame.profile.phases.input),
+                duration_micros(frame.profile.phases.executor_before),
+                duration_micros(frame.profile.phases.executor_after),
+                u8::from(frame.rebuilt),
+                u8::from(frame.profile.counters.rendered),
+                u8::from(frame.profile.counters.captured_snapshot),
+                cpu_percent_milli(frame.resources.cpu_percent),
+                frame.resources.memory_bytes,
+                duration_micros(
+                    frame.profile.phases.acquire + frame.profile.phases.render + frame.profile.phases.present
+                ),
+                frame.profile.counters.measurement_cache_hits,
+                frame.profile.counters.measurement_cache_misses
+            ));
+        }
     }
 }
 
@@ -141,6 +167,14 @@ fn dimension_to_u32(value: f32) -> u32 {
 
 fn duration_micros(duration: Duration) -> u128 {
     duration.as_micros()
+}
+
+fn cpu_percent_milli(value: f32) -> u32 {
+    assert!(
+        value.is_finite() && value >= 0.0,
+        "hydrolysis preview perf: cpu percent must be finite and non-negative"
+    );
+    (value * 1000.0).round() as u32
 }
 
 fn write_status(message: &str) {

@@ -22,6 +22,7 @@ accesskit = "0.24"
 pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 executor-core.workspace = true
+sysinfo.workspace = true
 
 [dev-dependencies]
 hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }

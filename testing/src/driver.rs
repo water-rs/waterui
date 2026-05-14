@@ -2,6 +2,7 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
 use hydrolysis::{FrameProfile, HeadlessRuntime, InputEvent, PointerButton, TouchPhase};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
 
@@ -43,6 +44,17 @@ pub struct FrameTiming {
     pub rebuilt: bool,
     /// Detailed Hydrolysis phase timings and counters.
     pub profile: FrameProfile,
+    /// Process CPU / memory sample collected immediately after the frame.
+    pub resources: ResourceSample,
+}
+
+/// Host process resource sample captured during a perf run.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ResourceSample {
+    /// Process CPU usage percentage reported by the operating system.
+    pub cpu_percent: f32,
+    /// Resident memory in bytes.
+    pub memory_bytes: u64,
 }
 
 pub struct HydrolysisA11yDriver {
@@ -50,6 +62,7 @@ pub struct HydrolysisA11yDriver {
     height: u32,
     mode: DriverMode,
     runtime: Option<HeadlessRuntime>,
+    resources: ResourceSampler,
 }
 
 impl HydrolysisA11yDriver {
@@ -59,6 +72,7 @@ impl HydrolysisA11yDriver {
             height,
             mode,
             runtime: None,
+            resources: ResourceSampler::new(),
         }
     }
 
@@ -193,6 +207,48 @@ impl A11yDriver for HydrolysisA11yDriver {
             total: outcome.profile.total.max(started_at.elapsed()),
             rebuilt: outcome.rebuilt,
             profile: outcome.profile,
+            resources: self.resources.sample(),
+        }
+    }
+}
+
+struct ResourceSampler {
+    system: Option<System>,
+    pid: Option<sysinfo::Pid>,
+}
+
+impl ResourceSampler {
+    const fn new() -> Self {
+        Self {
+            system: None,
+            pid: None,
+        }
+    }
+
+    fn sample(&mut self) -> ResourceSample {
+        let pid = *self.pid.get_or_insert_with(|| {
+            get_current_pid().expect("waterui-testing perf: failed to resolve current process id")
+        });
+        let system = self.system.get_or_insert_with(|| {
+            let mut system = System::new();
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            );
+            system
+        });
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+        );
+        let process = system
+            .process(pid)
+            .expect("waterui-testing perf: current process disappeared during sampling");
+        ResourceSample {
+            cpu_percent: process.cpu_usage(),
+            memory_bytes: process.memory(),
         }
     }
 }
