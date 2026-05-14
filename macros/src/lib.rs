@@ -1002,15 +1002,41 @@ fn is_unit_output(output: &syn::ReturnType) -> bool {
     }
 }
 
-fn parse_test_view_arg(args: TokenStream) -> Result<syn::Path, TokenStream> {
-    let view_args = match syn::parse::Parser::parse2(
-        Punctuated::<syn::Path, Token![,]>::parse_terminated,
-        proc_macro2::TokenStream::from(args),
-    ) {
-        Ok(view_args) => view_args,
-        Err(err) => return Err(err.to_compile_error().into()),
-    };
-    if view_args.len() != 1 {
+struct WateruiTestArgs {
+    view: syn::Path,
+    viewport: Option<(Expr, Expr)>,
+}
+
+impl Parse for WateruiTestArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let view = input.parse()?;
+        let mut viewport = None;
+        while input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+            let name: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            if name != "viewport" {
+                return Err(syn::Error::new_spanned(
+                    name,
+                    "`#[waterui::test(...)]` only accepts `viewport = (width, height)` after the view function path",
+                ));
+            }
+            let content;
+            syn::parenthesized!(content in input);
+            let width: Expr = content.parse()?;
+            content.parse::<Token![,]>()?;
+            let height: Expr = content.parse()?;
+            viewport = Some((width, height));
+        }
+        Ok(Self { view, viewport })
+    }
+}
+
+fn parse_test_view_arg(args: TokenStream) -> Result<WateruiTestArgs, TokenStream> {
+    if args.is_empty() {
         return Err(syn::Error::new(
             Span::call_site(),
             "`#[waterui::test(...)]` requires exactly one argument: a no-arg view function path",
@@ -1018,7 +1044,7 @@ fn parse_test_view_arg(args: TokenStream) -> Result<syn::Path, TokenStream> {
         .to_compile_error()
         .into());
     }
-    Ok(view_args.first().expect("checked length above").clone())
+    syn::parse::<WateruiTestArgs>(args).map_err(|err| err.to_compile_error().into())
 }
 
 fn validate_test_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
@@ -1144,7 +1170,7 @@ fn validate_test_fn(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
 /// }
 ///
 /// #[waterui::test(login_view)]
-/// fn login_flow(app: &mut waterui_testing::MountedApp) {
+/// fn login_flow(app: &mut waterui_testing::SemanticApp) {
 ///     app.query().role(waterui_testing::Role::BUTTON).label("Login").tap();
 /// }
 /// ```
@@ -1157,10 +1183,11 @@ fn validate_test_fn(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
 /// unexpectedly missing.
 #[proc_macro_attribute]
 pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
-    let view_fn = match parse_test_view_arg(args) {
-        Ok(view_fn) => view_fn,
+    let test_args = match parse_test_view_arg(args) {
+        Ok(test_args) => test_args,
         Err(err) => return err,
     };
+    let view_fn = test_args.view;
     let input_fn = parse_macro_input!(input as ItemFn);
     let typed_arg = match validate_test_fn(&input_fn) {
         Ok(typed_arg) => typed_arg,
@@ -1194,11 +1221,17 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
+    let builder = if let Some((width, height)) = test_args.viewport {
+        quote! { #testing_path::ui().viewport(#width, #height) }
+    } else {
+        quote! { #testing_path::ui() }
+    };
+
     let expanded = quote! {
         #(#attrs)*
         #[test]
         #visibility fn #fn_name() {
-            let mut __waterui_test_mounted_app = #testing_path::UiTest::new().mount(#view_fn);
+            let mut __waterui_test_mounted_app = #builder.mount(#view_fn);
             #run_body
         }
     };

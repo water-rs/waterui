@@ -3,7 +3,7 @@
 use waterui::ViewExt as _;
 use waterui::component::text;
 use waterui::graphics::color::Srgb;
-use waterui_testing::{Role, UiTest};
+use waterui_testing::{Role, ui};
 
 fn sample_view() -> impl waterui::View {
     text("Macro-mounted label")
@@ -13,7 +13,7 @@ fn sample_view() -> impl waterui::View {
 }
 
 #[waterui::test(sample_view)]
-fn waterui_test_macro_runs_inside_cargo_test(app: &mut waterui_testing::MountedApp) {
+fn waterui_test_macro_runs_inside_cargo_test(app: &mut waterui_testing::SemanticApp) {
     let label = app
         .query()
         .role(Role::LABEL)
@@ -24,7 +24,7 @@ fn waterui_test_macro_runs_inside_cargo_test(app: &mut waterui_testing::MountedA
 
 #[test]
 fn direct_ui_test_mount_runs_inside_cargo_test() {
-    let mut app = UiTest::new().viewport(240, 120).mount(sample_view);
+    let mut app = ui().viewport(240, 120).mount(sample_view);
     let label = app
         .query()
         .role(Role::LABEL)

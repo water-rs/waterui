@@ -1,8 +1,8 @@
 //! Headless rendering and accessibility-first test utilities for `WaterUI`.
 //!
 //! `waterui-testing` is designed to run inside ordinary `cargo test` targets.
-//! Use [`UiTest`] for interactive accessibility-first flows and [`TestHost`] for
-//! render-only snapshot tests.
+//! Use [`ui`] for interactive accessibility-first flows. Passing a theme installer
+//! enables offscreen Hydrolysis rendering and performance measurement.
 //!
 //! # `cargo test` Integration
 //!
@@ -12,7 +12,7 @@
 //! }
 //!
 //! #[waterui::test(login_view)]
-//! fn login_smoke(app: &mut waterui_testing::MountedApp) {
+//! fn login_smoke(app: &mut waterui_testing::SemanticApp) {
 //!     let login = app
 //!         .query()
 //!         .role(waterui_testing::Role::LABEL)
@@ -56,14 +56,17 @@
 mod app;
 mod artifacts;
 pub(crate) mod driver;
+mod perf;
 mod query;
 mod selector;
 mod semantics;
 mod snapshot;
 pub(crate) mod wait;
 
-pub use app::{MountedApp, UiTest};
+pub use app::{OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, ui};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
+pub use driver::FrameTiming;
+pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 pub use query::Query;
 pub use selector::{ElementRef, ElementSet, Selector};
 pub use semantics::{NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};

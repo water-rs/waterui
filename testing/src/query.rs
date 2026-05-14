@@ -1,11 +1,11 @@
-use crate::app::MountedApp;
+use crate::app::SemanticApp;
 use crate::selector::{ElementRef, ElementSet, Selector};
 use crate::semantics::Role;
 
 /// Chainable query builder bound to a mounted app session.
 #[derive(Debug)]
 pub struct Query<'a> {
-    pub(crate) app: &'a mut MountedApp,
+    pub(crate) app: &'a mut SemanticApp,
     pub(crate) selector: Selector,
 }
 

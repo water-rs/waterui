@@ -1,5 +1,5 @@
 error: `#[waterui::test(...)]` parameter must be `&mut ...`
  --> tests/ui/waterui_test/fail_param_not_mut_ref.rs:6:27
   |
-6 | fn wrong_param_type(_app: &waterui_testing::MountedApp) {}
-  |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+6 | fn wrong_param_type(_app: &waterui_testing::SemanticApp) {}
+  |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

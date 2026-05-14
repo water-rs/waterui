@@ -68,6 +68,14 @@ impl A11yDriver for NoopDriver {
     fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
         false
     }
+
+    fn pump_frame(
+        &mut self,
+        _content: &AnyViewBuilder<AnyView>,
+        _env: &Environment,
+    ) -> crate::driver::FrameTiming {
+        crate::driver::FrameTiming::default()
+    }
 }
 
 fn node_id(raw: u64) -> NodeId {
@@ -147,8 +155,8 @@ fn scoped_tree() -> TreeSnapshot {
     ])
 }
 
-fn mounted(tree: TreeSnapshot) -> MountedApp {
-    MountedApp {
+fn mounted(tree: TreeSnapshot) -> SemanticApp {
+    SemanticApp {
         env: Environment::new(),
         content: AnyViewBuilder::new(|| AnyView::new(())),
         driver: Box::new(NoopDriver),
@@ -190,9 +198,13 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
             headroom: 1.0,
         }),
     );
-    let mut app = UiTest::new().environment(env).viewport(240, 120).mount(|| {
-        vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .environment(env)
+        .viewport(240, 120)
+        .theme(|_: &mut Environment| {})
+        .mount(|| {
+            vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK)
+        });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -209,6 +221,48 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
 }
 
 #[test]
+fn semantic_builder_does_not_require_theme_package() {
+    let mut app = ui()
+        .viewport(180, 80)
+        .mount(|| text("Semantic only").body());
+    let _ = app
+        .query()
+        .role(Role::LABEL)
+        .label("Semantic only")
+        .single();
+}
+
+#[test]
+fn themed_builder_exposes_offscreen_perf_closure_api() {
+    let report = ui()
+        .viewport(96, 72)
+        .theme(|_: &mut Environment| {})
+        .perf_config(PerfConfig {
+            warmups: 1,
+            samples: 3,
+        })
+        .perf_with(
+            || text("Measured").body(),
+            |perf| {
+                perf.measure("steady", |run| {
+                    let _ = run
+                        .app()
+                        .query()
+                        .role(Role::LABEL)
+                        .label("Measured")
+                        .single();
+                });
+            },
+        );
+
+    let measurements = report.measurements();
+    assert_eq!(measurements.len(), 1);
+    assert_eq!(measurements[0].name, "steady");
+    let stats = measurements[0].stats();
+    assert_eq!(stats.samples, 3);
+}
+
+#[test]
 fn ui_test_environment_builder_preserves_custom_theme() {
     let mut env = Environment::new();
     theme::install_color_signal::<theme::color::Foreground>(
@@ -221,9 +275,14 @@ fn ui_test_environment_builder_preserves_custom_theme() {
             headroom: 1.0,
         }),
     );
-    let mut app = UiTest::new().environment(env).viewport(240, 120).mount(|| {
-        vstack((text("Mounted theme").body(), text("Mounted theme").body())).background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .environment(env)
+        .viewport(240, 120)
+        .theme(|_: &mut Environment| {})
+        .mount(|| {
+            vstack((text("Mounted theme").body(), text("Mounted theme").body()))
+                .background(Srgb::BLACK)
+        });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -231,7 +290,7 @@ fn ui_test_environment_builder_preserves_custom_theme() {
             .all()
             .len(),
         2,
-        "UiTest environment builder should keep mounted text semantics intact"
+        "UiBuilder environment builder should keep mounted text semantics intact"
     );
     let snapshot = app.snapshot();
     assert_eq!(snapshot.width, 240);
@@ -241,13 +300,16 @@ fn ui_test_environment_builder_preserves_custom_theme() {
 
 #[test]
 fn smoke_text_color_snapshot_preserves_semantic_labels() {
-    let mut app = UiTest::new().viewport(240, 120).mount(|| {
-        vstack((
-            text("Explicit color").body().color(Srgb::WHITE),
-            text("Explicit color").body().color(Srgb::WHITE),
-        ))
-        .background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .viewport(240, 120)
+        .theme(|_: &mut Environment| {})
+        .mount(|| {
+            vstack((
+                text("Explicit color").body().color(Srgb::WHITE),
+                text("Explicit color").body().color(Srgb::WHITE),
+            ))
+            .background(Srgb::BLACK)
+        });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -261,7 +323,7 @@ fn smoke_text_color_snapshot_preserves_semantic_labels() {
 
 #[test]
 fn smoke_text_snapshot_preserves_semantic_labels() {
-    let mut app = UiTest::new().viewport(240, 120).mount(|| {
+    let mut app = ui().viewport(240, 120).mount(|| {
         vstack((
             text("Focused datum").body().foreground(Srgb::WHITE),
             text("Selected datum").body().foreground(Srgb::WHITE),
@@ -282,7 +344,7 @@ fn smoke_text_snapshot_preserves_semantic_labels() {
 fn tappable_composed_view_exposes_clickable_accessibility_node() {
     let tapped = Rc::new(Cell::new(false));
     let tapped_for_view = Rc::clone(&tapped);
-    let mut app = UiTest::new().viewport(160, 96).mount(move || {
+    let mut app = ui().viewport(160, 96).mount(move || {
         text("Assist")
             .body()
             .padding_with(6.0)
@@ -315,25 +377,28 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
 
 #[test]
 fn ui_test_snapshot_renders_text_after_canvas() {
-    let mut app = UiTest::new().viewport(320, 320).mount(|| {
-        vstack((
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
-            })
-            .size(240.0, 180.0)
-            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-            .a11y_label("Canvas layer"),
-            text("W")
-                .size(48.0)
-                .color(Srgb::WHITE)
-                .body()
-                .padding_with(6.0)
-                .a11y_label("Letter W"),
-        ))
-        .spacing(6.0)
-        .background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(|_: &mut Environment| {})
+        .mount(|| {
+            vstack((
+                Canvas::new(|ctx| {
+                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
+                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+                })
+                .size(240.0, 180.0)
+                .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+                .a11y_label("Canvas layer"),
+                text("W")
+                    .size(48.0)
+                    .color(Srgb::WHITE)
+                    .body()
+                    .padding_with(6.0)
+                    .a11y_label("Letter W"),
+            ))
+            .spacing(6.0)
+            .background(Srgb::BLACK)
+        });
     app.query()
         .role(Role::IMAGE)
         .label("Canvas layer")
@@ -349,14 +414,17 @@ fn ui_test_snapshot_renders_text_after_canvas() {
 
 #[test]
 fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
-    let mut app = UiTest::new().viewport(96, 72).mount(|| {
-        Canvas::new(|ctx| {
-            ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-            ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
-        })
-        .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-        .a11y_label("Canvas smoke")
-    });
+    let mut app = ui()
+        .viewport(96, 72)
+        .theme(|_: &mut Environment| {})
+        .mount(|| {
+            Canvas::new(|ctx| {
+                ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
+                ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
+            })
+            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+            .a11y_label("Canvas smoke")
+        });
     app.query()
         .role(Role::IMAGE)
         .label("Canvas smoke")
@@ -690,7 +758,7 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     let scale = Binding::f32(1.0);
     let hovered = Binding::bool(false);
 
-    let mut app = UiTest::new().viewport(160, 160).mount({
+    let mut app = ui().viewport(160, 160).mount({
         let offset = offset.clone();
         let scale = scale.clone();
         let hovered = hovered.clone();
@@ -781,7 +849,7 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
     let status = Binding::container(String::from("idle"));
     let status_for_view = status.clone();
 
-    let mut app = UiTest::new().mount(move || {
+    let mut app = ui().theme(|_: &mut Environment| {}).mount(move || {
         waterui::text!("{status_for_view}")
             .on_appear(|status: waterui::State<Binding<String>>| {
                 spawn_local(async move {
@@ -820,7 +888,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     let focus_for_view = focus.clone();
     let mut env = Environment::new();
     hydrolysis_m3::install(&mut env);
-    let mut app = UiTest::new().environment(env).mount(move || {
+    let mut app = ui().environment(env).mount(move || {
         vstack((
             TextField::new(&username)
                 .label(text("Username"))

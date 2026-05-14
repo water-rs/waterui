@@ -9,37 +9,84 @@ use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{A11yDriver, DriverPumpResult, HydrolysisA11yDriver};
+use crate::perf::{PerfApp, PerfConfig, PerfReport};
 use crate::query::Query;
 use crate::selector::{ElementRef, ElementSet, Selector};
 use crate::semantics::{NodeId, TreeSnapshot};
 use crate::snapshot::Snapshot;
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
+/// Installs a theme package into a test environment before mounting a view.
+pub trait ThemeInstaller: Clone + 'static {
+    /// Installs theme tokens, renderers, and package-specific hooks into the environment.
+    fn install(&self, env: &mut Environment);
+}
+
+impl<F> ThemeInstaller for F
+where
+    F: Fn(&mut Environment) + Clone + 'static,
+{
+    fn install(&self, env: &mut Environment) {
+        self(env);
+    }
+}
+
+/// Creates a typed UI test builder.
+#[must_use]
+pub fn ui() -> UiBuilder<()> {
+    UiBuilder::new()
+}
+
 /// Runtime test host and configuration.
-#[derive(Debug)]
-pub struct UiTest {
+#[derive(Clone, Debug)]
+pub struct UiBuilder<T = ()> {
     env: Environment,
     width: u32,
     height: u32,
+    theme: T,
+    perf_config: PerfConfig,
 }
 
-impl Default for UiTest {
+impl Default for UiBuilder<()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl UiTest {
-    /// Creates a default UI test runtime (390x844 viewport).
+impl UiBuilder<()> {
+    /// Creates a default semantic UI test runtime (390x844 viewport).
     #[must_use]
     pub fn new() -> Self {
         Self {
             env: Environment::new(),
             width: 390,
             height: 844,
+            theme: (),
+            perf_config: PerfConfig::default(),
         }
     }
 
+    /// Mounts a no-arg view builder and returns a semantic testing session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial Hydrolysis semantic pass does not produce an accessibility tree.
+    pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
+    where
+        V: View + 'static,
+        F: Fn() -> V + 'static,
+    {
+        mount_app(
+            self.env,
+            self.width,
+            self.height,
+            view_fn,
+            DriverMode::Semantic,
+        )
+    }
+}
+
+impl<T> UiBuilder<T> {
     /// Overrides the environment used by the mounted app.
     #[must_use]
     pub fn environment(mut self, env: Environment) -> Self {
@@ -55,36 +102,159 @@ impl UiTest {
         self
     }
 
-    /// Mounts a no-arg view builder and returns a semantic testing session.
+    /// Installs a theme package and enables offscreen rendering APIs.
+    #[must_use]
+    pub fn theme<U: ThemeInstaller>(self, theme: U) -> UiBuilder<U> {
+        UiBuilder {
+            env: self.env,
+            width: self.width,
+            height: self.height,
+            theme,
+            perf_config: self.perf_config,
+        }
+    }
+
+    /// Configures repeated offscreen performance measurement defaults.
+    #[must_use]
+    pub const fn perf_config(mut self, config: PerfConfig) -> Self {
+        self.perf_config = config;
+        self
+    }
+}
+
+impl<T: ThemeInstaller> UiBuilder<T> {
+    /// Mounts a no-arg view builder and returns an offscreen GPU-backed testing session.
     ///
     /// # Panics
     ///
-    /// Panics if the initial Hydrolysis frame does not produce an accessibility tree.
-    pub fn mount<V, F>(self, view_fn: F) -> MountedApp
+    /// Panics if the initial Hydrolysis offscreen frame does not produce an accessibility tree.
+    pub fn mount<V, F>(self, view_fn: F) -> OffscreenApp
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        let builder = AnyViewBuilder::new(move || AnyView::new(view_fn()));
-        let mut app = MountedApp {
-            env: self.env,
-            content: builder,
-            driver: Box::new(HydrolysisA11yDriver::new(self.width, self.height)),
-            tree: TreeSnapshot::empty(),
-            ui_focus: None,
-            revision: 1,
-        };
-        let rebuilt = app.pump_once();
-        assert!(
-            rebuilt,
-            "waterui-testing initial mount did not produce a frame"
-        );
-        app
+        let mut env = self.env;
+        self.theme.install(&mut env);
+        OffscreenApp {
+            app: mount_app(env, self.width, self.height, view_fn, DriverMode::Offscreen),
+        }
+    }
+
+    /// Measures steady-state offscreen frames for a view with the default `steady` scenario.
+    pub fn perf<V, F>(self, view_fn: F) -> PerfReport
+    where
+        V: View + 'static,
+        F: Fn() -> V + Clone + 'static,
+    {
+        self.perf_with(view_fn, |perf| {
+            perf.measure("steady", |_| {});
+        })
+    }
+
+    /// Measures custom offscreen scenarios using a closure-driven automation API.
+    pub fn perf_with<V, F, A>(self, view_fn: F, automation: A) -> PerfReport
+    where
+        V: View + 'static,
+        F: Fn() -> V + Clone + 'static,
+        A: FnOnce(&mut PerfApp<T, F, V>),
+    {
+        let config = self.perf_config;
+        let mut app = PerfApp::new(self, view_fn, config);
+        automation(&mut app);
+        app.finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DriverMode {
+    Semantic,
+    Offscreen,
+}
+
+fn mount_app<V, F>(
+    env: Environment,
+    width: u32,
+    height: u32,
+    view_fn: F,
+    mode: DriverMode,
+) -> SemanticApp
+where
+    V: View + 'static,
+    F: Fn() -> V + 'static,
+{
+    let builder = AnyViewBuilder::new(move || AnyView::new(view_fn()));
+    let mut app = SemanticApp {
+        env,
+        content: builder,
+        driver: Box::new(HydrolysisA11yDriver::new(width, height, mode)),
+        tree: TreeSnapshot::empty(),
+        ui_focus: None,
+        revision: 1,
+    };
+    let rebuilt = app.pump_once();
+    assert!(
+        rebuilt,
+        "waterui-testing initial mount did not produce a semantic tree"
+    );
+    app
+}
+
+/// Offscreen GPU-backed app session with snapshot and performance hooks.
+#[derive(Debug)]
+pub struct OffscreenApp {
+    pub(crate) app: SemanticApp,
+}
+
+impl OffscreenApp {
+    /// Returns the semantic app API shared with non-rendering tests.
+    #[must_use]
+    pub const fn semantic(&self) -> &SemanticApp {
+        &self.app
+    }
+
+    /// Returns the mutable semantic app API shared with non-rendering tests.
+    #[must_use]
+    pub const fn semantic_mut(&mut self) -> &mut SemanticApp {
+        &mut self.app
+    }
+
+    /// Captures the latest RGBA snapshot from the offscreen renderer.
+    pub fn snapshot(&mut self) -> Snapshot {
+        let outcome = self.app.driver.pump(&self.app.content, &self.app.env, true);
+
+        self.app
+            .apply_pump_result(outcome)
+            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
+    }
+
+    /// Captures a snapshot and stores it in `WaterUI`'s canonical artifact layout.
+    pub fn capture_snapshot(
+        &mut self,
+        suite: impl AsRef<str>,
+        case: impl AsRef<str>,
+        stage: impl AsRef<str>,
+    ) -> CapturedSnapshot {
+        let artifacts = self.app.artifacts(suite);
+        artifacts.capture_snapshot(case, stage, self.snapshot())
+    }
+}
+
+impl core::ops::Deref for OffscreenApp {
+    type Target = SemanticApp;
+
+    fn deref(&self) -> &Self::Target {
+        &self.app
+    }
+}
+
+impl core::ops::DerefMut for OffscreenApp {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.app
     }
 }
 
 /// Mounted semantic app session used in `#[waterui::test(...)]`.
-pub struct MountedApp {
+pub struct SemanticApp {
     pub(crate) env: Environment,
     pub(crate) content: AnyViewBuilder<AnyView>,
     pub(crate) driver: Box<dyn A11yDriver>,
@@ -93,9 +263,9 @@ pub struct MountedApp {
     pub(crate) revision: u64,
 }
 
-impl core::fmt::Debug for MountedApp {
+impl core::fmt::Debug for SemanticApp {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MountedApp")
+        f.debug_struct("SemanticApp")
             .field("revision", &self.tree.revision())
             .field("nodes", &self.tree.nodes().len())
             .finish_non_exhaustive()
@@ -106,7 +276,7 @@ impl core::fmt::Debug for MountedApp {
     clippy::missing_panics_doc,
     reason = "assertion helpers intentionally panic with WaterUI-specific diagnostics"
 )]
-impl MountedApp {
+impl SemanticApp {
     /// Returns the latest accessibility tree snapshot.
     #[must_use]
     pub const fn tree(&self) -> &TreeSnapshot {
@@ -119,29 +289,10 @@ impl MountedApp {
         self.ui_focus
     }
 
-    /// Captures the latest RGBA snapshot from the offscreen renderer.
-    pub fn snapshot(&mut self) -> Snapshot {
-        let outcome = self.driver.pump(&self.content, &self.env, true);
-
-        self.apply_pump_result(outcome)
-            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
-    }
-
     /// Creates a canonical artifact helper rooted at the provided suite.
     #[must_use]
     pub fn artifacts(&self, suite: impl AsRef<str>) -> TestArtifacts {
         TestArtifacts::new(suite.as_ref())
-    }
-
-    /// Captures a snapshot and stores it in `WaterUI`'s canonical artifact layout.
-    pub fn capture_snapshot(
-        &mut self,
-        suite: impl AsRef<str>,
-        case: impl AsRef<str>,
-        stage: impl AsRef<str>,
-    ) -> CapturedSnapshot {
-        let artifacts = self.artifacts(suite);
-        artifacts.capture_snapshot(case, stage, self.snapshot())
     }
 
     /// Starts a chainable semantic query.
@@ -580,7 +731,7 @@ impl MountedApp {
     }
 }
 
-impl MountedApp {
+impl SemanticApp {
     pub(crate) fn tap_node(&mut self, node_id: NodeId) -> bool {
         self.perform_action(node_id, AccessibilityAction::Click, None)
     }
