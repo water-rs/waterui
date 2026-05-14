@@ -240,6 +240,7 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
         .perf_config(PerfConfig {
             warmups: 1,
             samples: 3,
+            repetitions: 1,
         })
         .perf_with(
             || text("Measured").body(),

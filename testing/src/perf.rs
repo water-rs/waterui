@@ -12,13 +12,16 @@ pub struct PerfConfig {
     pub warmups: u32,
     /// Number of recorded frames per measurement.
     pub samples: u32,
+    /// Number of independent measurement repetitions.
+    pub repetitions: u32,
 }
 
 impl Default for PerfConfig {
     fn default() -> Self {
         Self {
-            warmups: 5,
-            samples: 60,
+            warmups: 10,
+            samples: 120,
+            repetitions: 7,
         }
     }
 }
@@ -57,6 +60,48 @@ pub struct PerfStats {
     pub p95: Duration,
     /// Number of sampled frames that rebuilt scene/layout state.
     pub rebuilt_frames: usize,
+    /// Number of sampled frames that missed the 120fps frame budget.
+    pub missed_120fps_frames: usize,
+    /// Number of sampled frames that missed the 60fps frame budget.
+    pub missed_60fps_frames: usize,
+    /// Phase duration summaries for sampled frames.
+    pub phases: PerfPhaseStats,
+    /// Measurement cache hits across sampled frames.
+    pub measurement_cache_hits: u64,
+    /// Measurement cache misses across sampled frames.
+    pub measurement_cache_misses: u64,
+}
+
+/// Statistical summary for the measured frame phases.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PerfPhaseStats {
+    /// Time spent draining local executor work before input.
+    pub executor_before: PerfDurationStats,
+    /// Time spent dispatching pending input.
+    pub input: PerfDurationStats,
+    /// Time spent advancing animation and invalidation clocks.
+    pub animation: PerfDurationStats,
+    /// Time spent rebuilding scene/layout state.
+    pub rebuild: PerfDurationStats,
+    /// Time spent acquiring an offscreen frame.
+    pub acquire: PerfDurationStats,
+    /// Time spent submitting Hydrolysis/Vello rendering work.
+    pub render: PerfDurationStats,
+    /// Time spent presenting the offscreen frame.
+    pub present: PerfDurationStats,
+    /// Time spent draining local executor work after rendering.
+    pub executor_after: PerfDurationStats,
+}
+
+/// Duration summary for one measured value.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PerfDurationStats {
+    /// Arithmetic mean duration.
+    pub mean: Duration,
+    /// Median duration.
+    pub median: Duration,
+    /// 95th percentile duration.
+    pub p95: Duration,
 }
 
 impl PerfStats {
@@ -66,20 +111,95 @@ impl PerfStats {
         if frames.is_empty() {
             return Self::default();
         }
-        let mut totals = frames.iter().map(|frame| frame.total).collect::<Vec<_>>();
-        totals.sort_unstable();
-        let sum = totals.iter().copied().sum::<Duration>();
-        let samples = totals.len();
-        let p95_index = ((samples - 1) * 95).div_ceil(100);
+        let total = PerfDurationStats::from_durations(frames.iter().map(|frame| frame.total));
+        let samples = frames.len();
 
         Self {
             samples,
-            mean: sum / u32::try_from(samples).expect("perf sample count should fit u32"),
-            median: totals[samples / 2],
-            min: totals[0],
-            max: totals[samples - 1],
-            p95: totals[p95_index],
+            mean: total.mean,
+            median: total.median,
+            min: frames
+                .iter()
+                .map(|frame| frame.total)
+                .min()
+                .unwrap_or_default(),
+            max: frames
+                .iter()
+                .map(|frame| frame.total)
+                .max()
+                .unwrap_or_default(),
+            p95: total.p95,
             rebuilt_frames: frames.iter().filter(|frame| frame.rebuilt).count(),
+            missed_120fps_frames: frames
+                .iter()
+                .filter(|frame| frame.total > Duration::from_nanos(8_333_333))
+                .count(),
+            missed_60fps_frames: frames
+                .iter()
+                .filter(|frame| frame.total > Duration::from_nanos(16_666_667))
+                .count(),
+            phases: PerfPhaseStats::from_frames(frames),
+            measurement_cache_hits: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.measurement_cache_hits))
+                .sum(),
+            measurement_cache_misses: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.measurement_cache_misses))
+                .sum(),
+        }
+    }
+}
+
+impl PerfPhaseStats {
+    fn from_frames(frames: &[FrameTiming]) -> Self {
+        Self {
+            executor_before: PerfDurationStats::from_durations(
+                frames
+                    .iter()
+                    .map(|frame| frame.profile.phases.executor_before),
+            ),
+            input: PerfDurationStats::from_durations(
+                frames.iter().map(|frame| frame.profile.phases.input),
+            ),
+            animation: PerfDurationStats::from_durations(
+                frames.iter().map(|frame| frame.profile.phases.animation),
+            ),
+            rebuild: PerfDurationStats::from_durations(
+                frames.iter().map(|frame| frame.profile.phases.rebuild),
+            ),
+            acquire: PerfDurationStats::from_durations(
+                frames.iter().map(|frame| frame.profile.phases.acquire),
+            ),
+            render: PerfDurationStats::from_durations(
+                frames.iter().map(|frame| frame.profile.phases.render),
+            ),
+            present: PerfDurationStats::from_durations(
+                frames.iter().map(|frame| frame.profile.phases.present),
+            ),
+            executor_after: PerfDurationStats::from_durations(
+                frames
+                    .iter()
+                    .map(|frame| frame.profile.phases.executor_after),
+            ),
+        }
+    }
+}
+
+impl PerfDurationStats {
+    fn from_durations(values: impl IntoIterator<Item = Duration>) -> Self {
+        let mut durations = values.into_iter().collect::<Vec<_>>();
+        if durations.is_empty() {
+            return Self::default();
+        }
+        durations.sort_unstable();
+        let sum = durations.iter().copied().sum::<Duration>();
+        let samples = durations.len();
+        let p95_index = ((samples - 1) * 95).div_ceil(100);
+        Self {
+            mean: sum / u32::try_from(samples).expect("perf sample count should fit u32"),
+            median: durations[samples / 2],
+            p95: durations[p95_index],
         }
     }
 }
@@ -169,25 +289,41 @@ where
     where
         A: FnMut(&mut PerfRun<'_>),
     {
-        let mut app = self.builder.clone().mount(self.view_fn.clone());
-        for _ in 0..self.config.warmups {
-            let mut run = PerfRun { app: &mut app };
-            automation(&mut run);
-            let _ = run.frame();
-        }
-
         let mut frames = Vec::with_capacity(
-            usize::try_from(self.config.samples).expect("perf sample count should fit usize"),
+            usize::try_from(self.config.samples)
+                .and_then(|samples| {
+                    usize::try_from(self.config.repetitions).map(|repetitions| {
+                        samples
+                            .checked_mul(repetitions)
+                            .expect("perf sample count should fit usize")
+                    })
+                })
+                .expect("perf sample count should fit usize"),
         );
-        for _ in 0..self.config.samples {
-            let mut run = PerfRun { app: &mut app };
-            automation(&mut run);
-            frames.push(run.frame());
+        for _ in 0..self.config.repetitions {
+            let mut app = self.builder.clone().mount(self.view_fn.clone());
+            for _ in 0..self.config.warmups {
+                let mut run = PerfRun { app: &mut app };
+                automation(&mut run);
+                let _ = run.frame();
+            }
+
+            for _ in 0..self.config.samples {
+                let mut run = PerfRun { app: &mut app };
+                automation(&mut run);
+                frames.push(run.frame());
+            }
         }
         self.report.push(PerfMeasurement {
             name: name.into(),
             frames,
         });
+    }
+
+    /// Returns the number of scenarios recorded so far.
+    #[must_use]
+    pub fn measurement_count(&self) -> usize {
+        self.report.measurements.len()
     }
 
     pub(crate) fn finish(self) -> PerfReport {

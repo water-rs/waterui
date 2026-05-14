@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use ignore::WalkBuilder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use syn::{Attribute, Item};
 
 use crate::shell;
@@ -118,7 +118,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
     let automation_body = load_automation_body(
         args.code.as_deref(),
         args.code_file.as_deref(),
-        "perf.measure(\"steady\", |_| {});",
+        "",
         "`water preview perf`",
     )
     .await?;
@@ -129,8 +129,16 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         &targets,
         args.flamegraph_frequency,
     )?;
+    let json_reports =
+        resolve_perf_artifacts(args.report_json.as_deref(), args.all, &targets, "json")?;
+    let traces = resolve_perf_artifacts(args.trace.as_deref(), args.all, &targets, "json")?;
 
-    for (target, flamegraph) in targets.into_iter().zip(flamegraphs.into_iter()) {
+    for (((target, flamegraph), json_report), trace) in targets
+        .into_iter()
+        .zip(flamegraphs.into_iter())
+        .zip(json_reports.into_iter())
+        .zip(traces.into_iter())
+    {
         header!("Preview perf: {}", target.display_name());
         let spinner = shell::spinner("Building and profiling with hydrolysis...");
         let output = test_preview_with_hydrolysis(
@@ -145,6 +153,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
             Some(HydrolysisPreviewPerfConfig {
                 warmups: args.warmups,
                 samples: args.samples,
+                repetitions: args.repetitions,
             }),
             flamegraph.as_ref(),
         )
@@ -153,6 +162,14 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
             s.finish_and_clear();
         }
         emit_child_output(&output);
+        let perf_report = parse_preview_perf_output(target.display_name().to_string(), &output)?;
+        enforce_perf_budget(&perf_report, args.max_p95_us, args.max_rebuild_ratio)?;
+        if let Some(path) = json_report {
+            write_preview_perf_json(&path, &perf_report).await?;
+        }
+        if let Some(path) = trace {
+            write_preview_perf_trace(&path, &perf_report).await?;
+        }
         if let Some(flamegraph) = flamegraph {
             success!(
                 "Preview perf passed: {} (flamegraph: {})",
@@ -313,12 +330,16 @@ struct PreviewPerfArgs {
     frame: String,
 
     /// Warmup frame count before sampling.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 10)]
     warmups: u32,
 
     /// Recorded frame count per measurement.
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 120)]
     samples: u32,
+
+    /// Independent measurement repetitions.
+    #[arg(long, default_value_t = 7)]
+    repetitions: u32,
 
     /// Rust automation body. Receives `perf: &mut waterui_testing::PerfApp<_, _, _>`.
     #[arg(long)]
@@ -336,9 +357,58 @@ struct PreviewPerfArgs {
     #[arg(long, default_value_t = 100)]
     flamegraph_frequency: i32,
 
+    /// Write a machine-readable perf report JSON. With `--all`, PATH is a directory.
+    #[arg(long)]
+    report_json: Option<PathBuf>,
+
+    /// Write a Chrome/Perfetto-compatible aggregate trace JSON. With `--all`, PATH is a directory.
+    #[arg(long)]
+    trace: Option<PathBuf>,
+
+    /// Fail when any measurement p95 exceeds this duration in microseconds.
+    #[arg(long)]
+    max_p95_us: Option<u64>,
+
+    /// Fail when any measurement rebuild ratio exceeds this value.
+    #[arg(long)]
+    max_rebuild_ratio: Option<f64>,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewPerfReport {
+    target: String,
+    measurements: Vec<PreviewPerfMeasurement>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewPerfMeasurement {
+    name: String,
+    samples: u64,
+    mean_us: u64,
+    median_us: u64,
+    p95_us: u64,
+    min_us: u64,
+    max_us: u64,
+    rebuilt_frames: u64,
+    missed_120fps_frames: u64,
+    missed_60fps_frames: u64,
+    measurement_cache_hits: u64,
+    measurement_cache_misses: u64,
+    phases: PreviewPerfPhases,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct PreviewPerfPhases {
+    rebuild_mean_us: u64,
+    rebuild_p95_us: u64,
+    render_mean_us: u64,
+    render_p95_us: u64,
+    animation_mean_us: u64,
+    input_mean_us: u64,
 }
 
 /// Run the preview command.
@@ -770,6 +840,210 @@ fn resolve_flamegraphs(
         output_path,
         frequency,
     })])
+}
+
+fn resolve_perf_artifacts(
+    path: Option<&Path>,
+    all: bool,
+    targets: &[PreviewTarget],
+    extension: &str,
+) -> Result<Vec<Option<PathBuf>>> {
+    let Some(path) = path else {
+        return Ok(std::iter::repeat_with(|| None)
+            .take(targets.len())
+            .collect());
+    };
+    if all {
+        if path.exists() && !path.is_dir() {
+            bail!(
+                "`water preview perf --all` expects artifact paths to be directories, got {}",
+                path.display()
+            );
+        }
+        std::fs::create_dir_all(path)?;
+        return Ok(targets
+            .iter()
+            .map(|target| Some(path.join(format!("{}.{}", target.file_stem(), extension))))
+            .collect());
+    }
+    if targets.len() != 1 {
+        bail!("internal error: single perf artifact path received for multiple preview targets");
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(vec![Some(path.to_path_buf())])
+}
+
+fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerfReport> {
+    let mut measurements = BTreeMap::<String, PreviewPerfMeasurement>::new();
+    for line in output.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("perf ") {
+            let (name, fields) = parse_named_perf_fields(rest)?;
+            measurements.insert(
+                name.clone(),
+                PreviewPerfMeasurement {
+                    name,
+                    samples: parse_required_field(&fields, "samples")?,
+                    mean_us: parse_required_field(&fields, "mean")?,
+                    median_us: parse_required_field(&fields, "median")?,
+                    p95_us: parse_required_field(&fields, "p95")?,
+                    min_us: parse_required_field(&fields, "min")?,
+                    max_us: parse_required_field(&fields, "max")?,
+                    rebuilt_frames: parse_required_field(&fields, "rebuilt")?,
+                    missed_120fps_frames: 0,
+                    missed_60fps_frames: 0,
+                    measurement_cache_hits: 0,
+                    measurement_cache_misses: 0,
+                    phases: PreviewPerfPhases::default(),
+                },
+            );
+        } else if let Some(rest) = line.strip_prefix("perf-phases ") {
+            let (name, fields) = parse_named_perf_fields(rest)?;
+            let measurement = measurements.get_mut(&name).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Hydrolysis preview perf emitted phases before measurement `{name}`"
+                )
+            })?;
+            measurement.phases = PreviewPerfPhases {
+                rebuild_mean_us: parse_required_field(&fields, "rebuild_mean")?,
+                rebuild_p95_us: parse_required_field(&fields, "rebuild_p95")?,
+                render_mean_us: parse_required_field(&fields, "render_mean")?,
+                render_p95_us: parse_required_field(&fields, "render_p95")?,
+                animation_mean_us: parse_required_field(&fields, "animation_mean")?,
+                input_mean_us: parse_required_field(&fields, "input_mean")?,
+            };
+            measurement.missed_120fps_frames = parse_required_field(&fields, "missed_120fps")?;
+            measurement.missed_60fps_frames = parse_required_field(&fields, "missed_60fps")?;
+            measurement.measurement_cache_hits =
+                parse_required_field(&fields, "measurement_cache_hits")?;
+            measurement.measurement_cache_misses =
+                parse_required_field(&fields, "measurement_cache_misses")?;
+        }
+    }
+    if measurements.is_empty() {
+        bail!("Hydrolysis preview perf emitted no perf measurements");
+    }
+    Ok(PreviewPerfReport {
+        target,
+        measurements: measurements.into_values().collect(),
+    })
+}
+
+fn parse_named_perf_fields(rest: &str) -> Result<(String, BTreeMap<String, u64>)> {
+    let mut parts = rest.split_whitespace();
+    let name = parts
+        .next()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing perf measurement name"))?
+        .to_string();
+    let mut fields = BTreeMap::new();
+    for part in parts {
+        let Some((key, value)) = part.split_once('=') else {
+            bail!("invalid perf field `{part}`");
+        };
+        let value = value
+            .strip_suffix("us")
+            .unwrap_or(value)
+            .parse::<u64>()
+            .map_err(|error| color_eyre::eyre::eyre!("invalid perf field `{part}`: {error}"))?;
+        fields.insert(key.to_string(), value);
+    }
+    Ok((name, fields))
+}
+
+fn parse_required_field(fields: &BTreeMap<String, u64>, name: &str) -> Result<u64> {
+    fields
+        .get(name)
+        .copied()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing perf field `{name}`"))
+}
+
+fn enforce_perf_budget(
+    report: &PreviewPerfReport,
+    max_p95_us: Option<u64>,
+    max_rebuild_ratio: Option<f64>,
+) -> Result<()> {
+    for measurement in &report.measurements {
+        if let Some(max_p95_us) = max_p95_us
+            && measurement.p95_us > max_p95_us
+        {
+            bail!(
+                "Preview perf `{}` p95 {}us exceeded budget {}us",
+                measurement.name,
+                measurement.p95_us,
+                max_p95_us
+            );
+        }
+        if let Some(max_rebuild_ratio) = max_rebuild_ratio {
+            let rebuild_ratio = measurement.rebuilt_frames as f64 / measurement.samples as f64;
+            if rebuild_ratio > max_rebuild_ratio {
+                bail!(
+                    "Preview perf `{}` rebuild ratio {} exceeded budget {}",
+                    measurement.name,
+                    rebuild_ratio,
+                    max_rebuild_ratio
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn write_preview_perf_json(path: &Path, report: &PreviewPerfReport) -> Result<()> {
+    let json = serde_json::to_vec_pretty(report)?;
+    smol::fs::write(path, json).await?;
+    Ok(())
+}
+
+async fn write_preview_perf_trace(path: &Path, report: &PreviewPerfReport) -> Result<()> {
+    #[derive(Serialize)]
+    struct Trace<'a> {
+        #[serde(rename = "traceEvents")]
+        trace_events: Vec<TraceEvent<'a>>,
+    }
+
+    #[derive(Serialize)]
+    struct TraceEvent<'a> {
+        name: &'a str,
+        cat: &'a str,
+        ph: &'static str,
+        ts: u64,
+        dur: u64,
+        pid: u32,
+        tid: u32,
+        args: BTreeMap<&'a str, u64>,
+    }
+
+    let mut trace_events = Vec::new();
+    let mut ts = 0;
+    for measurement in &report.measurements {
+        for (name, dur) in [
+            ("rebuild", measurement.phases.rebuild_mean_us),
+            ("render", measurement.phases.render_mean_us),
+            ("animation", measurement.phases.animation_mean_us),
+            ("input", measurement.phases.input_mean_us),
+        ] {
+            let mut args = BTreeMap::new();
+            args.insert("samples", measurement.samples);
+            args.insert("p95_us", measurement.p95_us);
+            trace_events.push(TraceEvent {
+                name,
+                cat: measurement.name.as_str(),
+                ph: "X",
+                ts,
+                dur,
+                pid: 1,
+                tid: 1,
+                args,
+            });
+            ts += dur;
+        }
+    }
+    smol::fs::write(path, serde_json::to_vec_pretty(&Trace { trace_events })?).await?;
+    Ok(())
 }
 
 async fn resolve_sccache_path() -> Option<PathBuf> {

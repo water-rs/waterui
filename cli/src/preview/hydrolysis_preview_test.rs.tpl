@@ -6,6 +6,7 @@ pub(crate) const PREVIEW_WIDTH_ENV: &str = "{{ preview_width_env }}";
 pub(crate) const PREVIEW_HEIGHT_ENV: &str = "{{ preview_height_env }}";
 pub(crate) const PERF_WARMUPS_ENV: &str = "{{ perf_warmups_env }}";
 pub(crate) const PERF_SAMPLES_ENV: &str = "{{ perf_samples_env }}";
+pub(crate) const PERF_REPETITIONS_ENV: &str = "{{ perf_repetitions_env }}";
 pub(crate) const FLAMEGRAPH_ENV: &str = "{{ flamegraph_env }}";
 pub(crate) const FLAMEGRAPH_FREQUENCY_ENV: &str = "{{ flamegraph_frequency_env }}";
 

@@ -28,8 +28,9 @@ fn run_semantic(width: f32, height: f32) {
 
 fn run_perf(width: f32, height: f32) {
     let config = PerfConfig {
-        warmups: parse_optional_u32(preview_test::PERF_WARMUPS_ENV).unwrap_or(5),
-        samples: parse_optional_u32(preview_test::PERF_SAMPLES_ENV).unwrap_or(60),
+        warmups: parse_optional_u32(preview_test::PERF_WARMUPS_ENV).unwrap_or(10),
+        samples: parse_optional_u32(preview_test::PERF_SAMPLES_ENV).unwrap_or(120),
+        repetitions: parse_optional_u32(preview_test::PERF_REPETITIONS_ENV).unwrap_or(7),
     };
     let builder = ui()
         .viewport(dimension_to_u32(width), dimension_to_u32(height))
@@ -40,6 +41,9 @@ fn run_perf(width: f32, height: f32) {
         Some(path) => profile_perf(PathBuf::from(path), builder),
         None => builder.perf_with(preview_test::load_preview_view, |perf| {
             preview_test::run_perf_automation(perf);
+            if perf.measurement_count() == 0 {
+                perf.measure("steady", |_| {});
+            }
         }),
     };
 
@@ -56,6 +60,20 @@ fn run_perf(width: f32, height: f32) {
             duration_micros(stats.max),
             stats.rebuilt_frames
         ));
+        write_status(&format!(
+            "perf-phases {} rebuild_mean={}us rebuild_p95={}us render_mean={}us render_p95={}us animation_mean={}us input_mean={}us missed_120fps={} missed_60fps={} measurement_cache_hits={} measurement_cache_misses={}",
+            measurement.name,
+            duration_micros(stats.phases.rebuild.mean),
+            duration_micros(stats.phases.rebuild.p95),
+            duration_micros(stats.phases.render.mean),
+            duration_micros(stats.phases.render.p95),
+            duration_micros(stats.phases.animation.mean),
+            duration_micros(stats.phases.input.mean),
+            stats.missed_120fps_frames,
+            stats.missed_60fps_frames,
+            stats.measurement_cache_hits,
+            stats.measurement_cache_misses
+        ));
     }
 }
 
@@ -68,6 +86,9 @@ fn profile_perf(
         .unwrap_or_else(|error| panic!("hydrolysis preview perf: failed to start profiler: {error}"));
     let report = builder.perf_with(preview_test::load_preview_view, |perf| {
         preview_test::run_perf_automation(perf);
+        if perf.measurement_count() == 0 {
+            perf.measure("steady", |_| {});
+        }
     });
     let profile = guard
         .report()
