@@ -1,4 +1,5 @@
 pub(crate) mod button;
+pub(crate) mod color_picker;
 pub(crate) mod date_picker;
 pub(crate) mod picker;
 pub(crate) mod progress;
