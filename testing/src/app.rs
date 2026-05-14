@@ -631,6 +631,14 @@ impl SemanticApp {
         self.settle_after_change(changed)
     }
 
+    /// Dispatches a wheel/trackpad scroll at viewport coordinates and settles resulting updates.
+    pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
+        let changed = self
+            .driver
+            .scroll_at(x, y, dx, dy, is_line_delta, &self.env);
+        self.settle_after_change(changed)
+    }
+
     pub(crate) fn magnify_at(&mut self, x: f32, y: f32, factor: f32) -> bool {
         let changed = self.driver.magnify_at(x, y, factor, &self.env);
         self.settle_after_change(changed)

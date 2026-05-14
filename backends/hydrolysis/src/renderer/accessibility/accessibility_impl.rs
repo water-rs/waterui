@@ -235,27 +235,42 @@ impl HydrolysisRenderer {
         &mut self,
         transform: vello::kurbo::Affine,
         subtree: &DynamicAccessibilitySubtree,
-    ) -> BTreeMap<AccessibilityNodeId, AccessibilityNodeId> {
+    ) -> AccessibilityNodeIdRemap {
         if self.accessibility.suppression_depth > 0 {
-            return BTreeMap::new();
+            return AccessibilityNodeIdRemap::new(self.accessibility.next_node_id);
         }
 
-        let mut id_map = BTreeMap::new();
-        for (local_id, _) in &subtree.nodes {
-            id_map.insert(*local_id, self.next_accessibility_node_id());
-        }
+        let id_map = AccessibilityNodeIdRemap::new(self.accessibility.next_node_id);
+        let mut root_child_cursor = 0usize;
 
         for (local_id, node) in &subtree.nodes {
-            let mapped_id = *id_map
-                .get(local_id)
-                .expect("hydrolysis dynamic accessibility node mapping missing local id");
+            let mapped_id = self.next_accessibility_node_id();
+            assert!(
+                mapped_id == id_map.map(*local_id),
+                "hydrolysis dynamic accessibility node ids must be replayed in local id order"
+            );
             let mut mapped_node = node.clone();
-            remap_accessibility_node_references(&mut mapped_node, &id_map);
+            remap_accessibility_node_references(&mut mapped_node, id_map);
             if let Some(bounds) = mapped_node.bounds() {
                 let bounds = transformed_rect(transform, accesskit_rect_to_kurbo_rect(bounds));
                 mapped_node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
             }
-            if subtree.root_children.contains(local_id) {
+            while subtree
+                .root_children
+                .as_slice()
+                .get(root_child_cursor)
+                .is_some_and(|root_child| root_child.0 < local_id.0)
+            {
+                root_child_cursor = root_child_cursor
+                    .checked_add(1)
+                    .expect("hydrolysis dynamic accessibility root child cursor overflow");
+            }
+            if subtree
+                .root_children
+                .as_slice()
+                .get(root_child_cursor)
+                .is_some_and(|root_child| root_child == local_id)
+            {
                 self.accessibility.root_children.push(mapped_id);
             }
             self.accessibility.nodes.push((mapped_id, mapped_node));

@@ -405,6 +405,7 @@ struct RuntimeWindow<P: PlatformWindow> {
     platform: P,
     renderer: HydrolysisRenderer,
     needs_rebuild: bool,
+    scroll_only_rebuild: bool,
     pointer_position: Option<(f32, f32)>,
     render_diagnostics: RenderDiagnostics,
 }
@@ -421,6 +422,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             platform,
             renderer,
             needs_rebuild: true,
+            scroll_only_rebuild: false,
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
         }
@@ -500,6 +502,7 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
         return;
     }
     if runtime.renderer.take_rebuild_request() {
+        runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
     } else {
         runtime.renderer.request_redraw();
@@ -507,10 +510,11 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
     runtime.platform.request_redraw();
 }
 
-fn schedule_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
+fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
     if !changed {
         return;
     }
+    runtime.scroll_only_rebuild = true;
     runtime.needs_rebuild = true;
     runtime.platform.request_redraw();
 }
@@ -547,7 +551,6 @@ fn rebuild_window_scene<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> (bool, u32, Duration) {
-    let diagnostics_enabled = runtime.render_diagnostics.enabled();
     let scale_factor = runtime.platform.scale_factor();
     let surface = runtime.platform.surface();
     let (width, height) = surface.size();
@@ -557,15 +560,21 @@ fn rebuild_window_scene<P: PlatformWindow>(
         .renderer
         .set_frame_resources(surface.device(), surface.queue());
 
-    let rebuild_started_at = diagnostics_enabled.then(Instant::now);
+    let rebuild_started_at = Instant::now();
     if runtime.renderer.advance_animations() {
+        runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
     }
 
     let mut rebuilt = false;
     let mut rebuild_iterations = 0u32;
     loop {
-        let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
+        let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
+        let scroll_rebuild_requested = runtime.scroll_only_rebuild && runtime.needs_rebuild;
+        if renderer_requested_rebuild && !scroll_rebuild_requested {
+            runtime.scroll_only_rebuild = false;
+        }
+        let should_rebuild = runtime.needs_rebuild || renderer_requested_rebuild;
         if !should_rebuild {
             break;
         }
@@ -577,6 +586,9 @@ fn rebuild_window_scene<P: PlatformWindow>(
             "hydrolysis runner: rebuild loop exceeded 64 iterations in a single pump"
         );
         runtime.renderer.reset_scene();
+        runtime
+            .renderer
+            .set_scroll_content_cache_reuse(runtime.scroll_only_rebuild);
         runtime.renderer.begin_rebuild_frame();
         runtime.renderer.set_window_bounds(bounds);
         let content = runtime
@@ -602,17 +614,15 @@ fn rebuild_window_scene<P: PlatformWindow>(
             && runtime.renderer.sync_pointer_hover_state(x, y, env)
         {
             if runtime.renderer.take_rebuild_request() {
+                runtime.scroll_only_rebuild = false;
                 runtime.needs_rebuild = true;
             } else {
                 runtime.renderer.request_redraw();
             }
         }
     }
-    (
-        rebuilt,
-        rebuild_iterations,
-        elapsed_or_zero(rebuild_started_at),
-    )
+    runtime.scroll_only_rebuild = false;
+    (rebuilt, rebuild_iterations, rebuild_started_at.elapsed())
 }
 
 fn pump_window_semantics<P: PlatformWindow>(
@@ -928,7 +938,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_scene_rebuild(runtime, changed);
+                schedule_scroll_scene_rebuild(runtime, changed);
             }
             InputEvent::Magnification { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));
@@ -1536,7 +1546,7 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
 mod tests {
     use super::{
         HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow, schedule_redraw_or_rebuild,
-        schedule_scene_rebuild,
+        schedule_scroll_scene_rebuild,
     };
     use crate::platform::PlatformWindow as _;
     use crate::renderer::HydrolysisRenderer;
@@ -1576,7 +1586,7 @@ mod tests {
         let mut runtime = test_runtime_window();
         runtime.needs_rebuild = false;
 
-        schedule_scene_rebuild(&mut runtime, true);
+        schedule_scroll_scene_rebuild(&mut runtime, true);
 
         assert!(
             runtime.needs_rebuild,

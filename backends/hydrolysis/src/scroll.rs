@@ -95,26 +95,13 @@ impl ScrollController {
 }
 
 impl ScrollHandle {
+    pub(crate) fn cache_key(&self) -> usize {
+        Rc::as_ptr(&self.state) as usize
+    }
+
     pub fn metrics(&self) -> ScrollMetrics {
         let state = self.state.borrow();
         state.metrics()
-    }
-
-    pub fn update_layout(
-        &mut self,
-        axis: Axis,
-        viewport_width: f64,
-        viewport_height: f64,
-        content_width: f64,
-        content_height: f64,
-    ) {
-        self.generation = self.state.borrow_mut().prepare_generation(
-            axis,
-            viewport_width,
-            viewport_height,
-            content_width,
-            content_height,
-        );
     }
 
     pub fn apply_scroll_delta(&self, dx: f32, dy: f32, is_line_delta: bool) -> bool {
@@ -156,16 +143,27 @@ impl ScrollState {
         content_width: f64,
         content_height: f64,
     ) -> u64 {
-        self.generation = self
-            .generation
-            .checked_add(1)
-            .expect("scroll controller generation overflow");
+        let layout_changed = self.axis != axis
+            || value_changed(self.viewport_width, viewport_width)
+            || value_changed(self.viewport_height, viewport_height)
+            || value_changed(self.content_width, content_width)
+            || value_changed(self.content_height, content_height);
+        let old_offset_x = self.offset_x;
+        let old_offset_y = self.offset_y;
         self.axis = axis;
         self.viewport_width = viewport_width;
         self.viewport_height = viewport_height;
         self.content_width = content_width;
         self.content_height = content_height;
         self.clamp_offsets();
+        let offset_changed = value_changed(old_offset_x, self.offset_x)
+            || value_changed(old_offset_y, self.offset_y);
+        if layout_changed || offset_changed {
+            self.generation = self
+                .generation
+                .checked_add(1)
+                .expect("scroll controller generation overflow");
+        }
         self.generation
     }
 
@@ -219,4 +217,8 @@ impl ScrollState {
 
 fn clamp_scroll_offset(value: f64, max: f64) -> f64 {
     value.clamp(0.0, max)
+}
+
+fn value_changed(old: f64, new: f64) -> bool {
+    (old - new).abs() > SCROLL_EPSILON
 }
