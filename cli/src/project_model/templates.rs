@@ -583,6 +583,7 @@ define_scaffold_templates! {
     HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
     HydrolysisMainTemplate => (Hydrolysis, "src/templates/hydrolysis/src/main.rs.tpl"),
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
+    HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
     HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
     PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
     PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
@@ -1586,7 +1587,10 @@ pub mod hydrolysis {
         let manifest = GeneratedCargoManifest {
             package: super::generated_package(package_name, Vec::new()),
             lib: super::generated_lib(&["cdylib", "rlib"]),
-            features: BTreeMap::from([("waterui-preview-mode".to_string(), Vec::new())]),
+            features: BTreeMap::from([
+                ("waterui-preview-mode".to_string(), Vec::new()),
+                ("waterui-preview-test-mode".to_string(), Vec::new()),
+            ]),
             dependencies: cargo_dependencies(ctx),
             target: cargo_target_dependencies(ctx),
             workspace: GeneratedWorkspaceSection {},
@@ -1669,6 +1673,15 @@ pub mod hydrolysis {
                 GeneratedDependencyValue::simple("0.4"),
             ),
             (
+                "pprof".to_string(),
+                GeneratedDependencyValue::detailed(GeneratedDependencyDetail {
+                    version: Some("0.15".to_string()),
+                    path: None,
+                    default_features: None,
+                    features: vec!["flamegraph".to_string()],
+                }),
+            ),
+            (
                 "waterui-core".to_string(),
                 GeneratedDependencyValue::detailed(
                     super::generated_dependency_from_spec(
@@ -1695,6 +1708,21 @@ pub mod hydrolysis {
                             Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
                                 "components/devtools/preview/runtime",
                             )),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
+            (
+                "waterui-testing".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-testing",
+                            WATERUI_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir("testing")),
                         ),
                     )
                     .with_default_features(false),

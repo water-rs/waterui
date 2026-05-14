@@ -1,22 +1,27 @@
 //! `water preview` command implementation.
 //!
-//! Renders a view function and saves it as a PNG image.
+//! Renders, tests, or profiles a WaterUI preview.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use clap::{Args as ClapArgs, ValueEnum};
+use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 use color_eyre::eyre::{Result, bail};
+use ignore::WalkBuilder;
 use serde::Deserialize;
+use syn::{Attribute, Item};
 
 use crate::shell;
 use crate::toolchain_checks;
-use crate::{error, header, success, warn};
+use crate::{error, header, note, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
 use waterui_cli::preview::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewScenario,
-    HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource, HydrolysisPreviewTheme,
-    PreviewPlatform, PreviewSession, launch_preview_session, render_preview_with_hydrolysis,
+    HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource, HydrolysisPreviewTestMode,
+    HydrolysisPreviewTheme, PreviewPlatform, PreviewSession, launch_preview_session,
+    render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
+use waterui_cli::preview::{HydrolysisPreviewFlamegraph, HydrolysisPreviewPerfConfig};
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
 
@@ -39,6 +44,127 @@ impl From<CliPreviewPlatform> for PreviewPlatform {
             CliPreviewPlatform::Android => Self::Android,
         }
     }
+}
+
+async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
+    let platform = resolve_preview_platform(args.platform)?;
+    ensure_hydrolysis_preview_platform(platform)?;
+    let (width, height) = parse_frame(&args.frame)?;
+    let project_path = crate::project_path::canonicalize(&args.path)?;
+    let crate_name = read_project_crate_name(&project_path).await?;
+    let targets = resolve_test_targets(
+        &project_path,
+        &crate_name,
+        args.target.as_deref(),
+        args.expr,
+        args.all,
+    )
+    .await?;
+    let automation_body = load_automation_body(
+        args.code.as_deref(),
+        args.code_file.as_deref(),
+        "",
+        "`water preview test`",
+    )
+    .await?;
+    let sccache_path = resolve_sccache_path().await;
+
+    for target in targets {
+        header!("Preview test: {}", target.display_name());
+        let spinner = shell::spinner("Building and testing with hydrolysis...");
+        let output = test_preview_with_hydrolysis(
+            &project_path,
+            target.hydrolysis_source(),
+            args.theme.into(),
+            HydrolysisPreviewTestMode::Semantic,
+            width,
+            height,
+            sccache_path.clone(),
+            &automation_body,
+            None,
+            None,
+        )
+        .await?;
+        if let Some(s) = spinner {
+            s.finish_and_clear();
+        }
+        emit_child_output(&output);
+        success!("Preview semantic test passed: {}", target.display_name());
+    }
+
+    Ok(())
+}
+
+async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
+    let platform = resolve_preview_platform(args.platform)?;
+    ensure_hydrolysis_preview_platform(platform)?;
+    let (width, height) = parse_frame(&args.frame)?;
+    let project_path = crate::project_path::canonicalize(&args.path)?;
+    let crate_name = read_project_crate_name(&project_path).await?;
+    let targets = resolve_test_targets(
+        &project_path,
+        &crate_name,
+        args.target.as_deref(),
+        args.expr,
+        args.all,
+    )
+    .await?;
+    if args.samples == 0 {
+        bail!("`water preview perf --samples` must be greater than zero.");
+    }
+    if args.flamegraph_frequency <= 0 {
+        bail!("`water preview perf --flamegraph-frequency` must be greater than zero.");
+    }
+    let automation_body = load_automation_body(
+        args.code.as_deref(),
+        args.code_file.as_deref(),
+        "perf.measure(\"steady\", |_| {});",
+        "`water preview perf`",
+    )
+    .await?;
+    let sccache_path = resolve_sccache_path().await;
+    let flamegraphs = resolve_flamegraphs(
+        args.flamegraph.as_deref(),
+        args.all,
+        &targets,
+        args.flamegraph_frequency,
+    )?;
+
+    for (target, flamegraph) in targets.into_iter().zip(flamegraphs.into_iter()) {
+        header!("Preview perf: {}", target.display_name());
+        let spinner = shell::spinner("Building and profiling with hydrolysis...");
+        let output = test_preview_with_hydrolysis(
+            &project_path,
+            target.hydrolysis_source(),
+            args.theme.into(),
+            HydrolysisPreviewTestMode::Perf,
+            width,
+            height,
+            sccache_path.clone(),
+            &automation_body,
+            Some(HydrolysisPreviewPerfConfig {
+                warmups: args.warmups,
+                samples: args.samples,
+            }),
+            flamegraph.as_ref(),
+        )
+        .await?;
+        if let Some(s) = spinner {
+            s.finish_and_clear();
+        }
+        emit_child_output(&output);
+        if let Some(flamegraph) = flamegraph {
+            success!(
+                "Preview perf passed: {} (flamegraph: {})",
+                target.display_name(),
+                flamegraph.output_path.display()
+            );
+        } else {
+            success!("Preview perf passed: {}", target.display_name());
+        }
+    }
+
+    Ok(())
 }
 
 /// Rendering backend for preview.
@@ -69,17 +195,22 @@ impl From<CliHydrolysisPreviewTheme> for HydrolysisPreviewTheme {
 
 /// Arguments for the preview command.
 #[derive(ClapArgs, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
+    /// Preview operation. Omit this to render a preview image.
+    #[command(subcommand)]
+    command: Option<PreviewCommand>,
+
     /// Preview target: a `#[preview]` function path or a WaterUI expression.
-    target: String,
+    target: Option<String>,
 
     /// Treat the target as a WaterUI expression returning `impl View`.
     #[arg(long)]
     expr: bool,
 
-    /// Target platform.
+    /// Target platform (defaults to the native preview platform).
     #[arg(short, long, value_enum)]
-    platform: CliPreviewPlatform,
+    platform: Option<CliPreviewPlatform>,
 
     /// Rendering backend.
     #[arg(long, value_enum)]
@@ -110,33 +241,138 @@ pub struct Args {
     path: PathBuf,
 }
 
+#[derive(Subcommand, Debug)]
+enum PreviewCommand {
+    /// Run semantic assertions against a preview.
+    Test(PreviewTestArgs),
+    /// Profile a preview through the full Hydrolysis offscreen GPU pipeline.
+    Perf(PreviewPerfArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+struct PreviewTestArgs {
+    /// Preview target: a `#[preview]` function path or a WaterUI expression.
+    target: Option<String>,
+
+    /// Discover and test every `#[preview]` function in the crate.
+    #[arg(long)]
+    all: bool,
+
+    /// Treat the target as a WaterUI expression returning `impl View`.
+    #[arg(long)]
+    expr: bool,
+
+    /// Target platform (defaults to the native preview platform).
+    #[arg(short, long, value_enum)]
+    platform: Option<CliPreviewPlatform>,
+
+    /// Theme package for Hydrolysis preview testing.
+    #[arg(long, value_enum)]
+    theme: CliHydrolysisPreviewTheme,
+
+    /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
+    #[arg(short, long, default_value = "375x667")]
+    frame: String,
+
+    /// Rust automation body. Receives `app: &mut waterui_testing::SemanticApp`.
+    #[arg(long)]
+    code: Option<String>,
+
+    /// File containing a Rust automation body.
+    #[arg(long)]
+    code_file: Option<PathBuf>,
+
+    /// Project directory path (defaults to current directory).
+    #[arg(long, default_value = ".")]
+    path: PathBuf,
+}
+
+#[derive(ClapArgs, Debug)]
+struct PreviewPerfArgs {
+    /// Preview target: a `#[preview]` function path or a WaterUI expression.
+    target: Option<String>,
+
+    /// Discover and profile every `#[preview]` function in the crate.
+    #[arg(long)]
+    all: bool,
+
+    /// Treat the target as a WaterUI expression returning `impl View`.
+    #[arg(long)]
+    expr: bool,
+
+    /// Target platform (defaults to the native preview platform).
+    #[arg(short, long, value_enum)]
+    platform: Option<CliPreviewPlatform>,
+
+    /// Theme package for Hydrolysis preview perf.
+    #[arg(long, value_enum)]
+    theme: CliHydrolysisPreviewTheme,
+
+    /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
+    #[arg(short, long, default_value = "375x667")]
+    frame: String,
+
+    /// Warmup frame count before sampling.
+    #[arg(long, default_value_t = 5)]
+    warmups: u32,
+
+    /// Recorded frame count per measurement.
+    #[arg(long, default_value_t = 60)]
+    samples: u32,
+
+    /// Rust automation body. Receives `perf: &mut waterui_testing::PerfApp<_, _, _>`.
+    #[arg(long)]
+    code: Option<String>,
+
+    /// File containing a Rust automation body.
+    #[arg(long)]
+    code_file: Option<PathBuf>,
+
+    /// Write a CPU call-stack flamegraph SVG. With `--all`, PATH is a directory.
+    #[arg(long, num_args = 0..=1, default_missing_value = "__waterui_default_flamegraph__")]
+    flamegraph: Option<PathBuf>,
+
+    /// Flamegraph sampling frequency in Hertz.
+    #[arg(long, default_value_t = 100)]
+    flamegraph_frequency: i32,
+
+    /// Project directory path (defaults to current directory).
+    #[arg(long, default_value = ".")]
+    path: PathBuf,
+}
+
 /// Run the preview command.
 ///
 /// # Errors
 /// Returns an error if preview fails.
 pub async fn run(args: Args) -> Result<()> {
+    match args.command {
+        Some(PreviewCommand::Test(args)) => return run_preview_test(args).await,
+        Some(PreviewCommand::Perf(args)) => return run_preview_perf(args).await,
+        None => {}
+    }
+
+    let Some(target) = args.target.as_deref() else {
+        bail!(
+            "`water preview` requires a target. Use `water preview <target>`, `water preview test`, or `water preview perf`."
+        );
+    };
+
     // Parse frame size
     let (width, height) = parse_frame(&args.frame)?;
+    let platform = resolve_preview_platform(args.platform)?;
 
     // Canonicalize project path
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
-    // Get crate name from Cargo.toml
-    let cargo_toml = project_path.join("Cargo.toml");
-    let cargo_content = smol::fs::read_to_string(&cargo_toml).await?;
-    let cargo: toml::Table = cargo_content.parse()?;
-    let crate_name = cargo
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))?;
+    let crate_name = read_project_crate_name(&project_path).await?;
 
-    let backend = resolve_preview_backend(args.platform, args.backend)?;
+    let backend = resolve_preview_backend(platform, args.backend)?;
     let hydrolysis_theme = resolve_hydrolysis_preview_theme(backend, args.theme)?;
-    let preview_target = resolve_preview_target(crate_name, &args.target, args.expr);
+    let preview_target = resolve_preview_target(&crate_name, target, args.expr);
     header!("Preview: {}", preview_target.display_name());
 
-    check_toolchain_for_backend(args.platform, backend).await?;
+    check_toolchain_for_backend(platform, backend).await?;
 
     // Detect sccache for compilation caching
     let sccache = Sccache;
@@ -190,8 +426,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell::spinner("Connecting to preview app...");
-    let platform: PreviewPlatform = args.platform.into();
-    let mut session = launch_preview_session(&project_path, platform, sccache_path.clone()).await?;
+    let preview_platform: PreviewPlatform = platform.into();
+    let mut session =
+        launch_preview_session(&project_path, preview_platform, sccache_path.clone()).await?;
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
@@ -336,6 +573,225 @@ fn parse_scenario_event(event: ScenarioEventFile) -> Result<HydrolysisPreviewSce
     })
 }
 
+async fn read_project_crate_name(project_path: &Path) -> Result<String> {
+    let cargo_toml = project_path.join("Cargo.toml");
+    let cargo_content = smol::fs::read_to_string(&cargo_toml).await?;
+    let cargo: toml::Table = cargo_content.parse()?;
+    cargo
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(ToString::to_string)
+        .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))
+}
+
+async fn resolve_test_targets(
+    project_path: &Path,
+    crate_name: &str,
+    target: Option<&str>,
+    force_expression: bool,
+    all: bool,
+) -> Result<Vec<PreviewTarget>> {
+    match (all, target) {
+        (true, Some(_)) => bail!("`--all` cannot be combined with an explicit preview target."),
+        (true, None) if force_expression => bail!("`--all` cannot be combined with `--expr`."),
+        (true, None) => discover_preview_targets(project_path, crate_name).await,
+        (false, Some(target)) => {
+            if force_expression {
+                Ok(vec![PreviewTarget::Expression {
+                    expression: target.to_string(),
+                }])
+            } else {
+                Ok(vec![resolve_preview_target(crate_name, target, false)])
+            }
+        }
+        (false, None) => bail!("preview test/perf requires a target or `--all`."),
+    }
+}
+
+async fn discover_preview_targets(
+    project_path: &Path,
+    crate_name: &str,
+) -> Result<Vec<PreviewTarget>> {
+    let src_dir = project_path.join("src");
+    let mut previews = BTreeMap::<String, PathBuf>::new();
+    let mut duplicates = Vec::<(String, PathBuf, PathBuf)>::new();
+
+    for entry in WalkBuilder::new(&src_dir).standard_filters(true).build() {
+        let entry = entry?;
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = smol::fs::read_to_string(path).await?;
+        let file = syn::parse_file(&source)?;
+        collect_preview_functions(path, &file.items, &mut previews, &mut duplicates);
+    }
+
+    if !duplicates.is_empty() {
+        let mut message = String::from(
+            "duplicate `#[preview]` function names are not supported because WaterUI preview exports use function names only:",
+        );
+        for (name, first, second) in duplicates {
+            message.push_str(&format!(
+                "\n  `{name}` in {} and {}",
+                first.display(),
+                second.display()
+            ));
+        }
+        bail!("{message}");
+    }
+    if previews.is_empty() {
+        bail!(
+            "no `#[preview]` functions found under {}",
+            src_dir.display()
+        );
+    }
+
+    Ok(previews
+        .into_keys()
+        .map(|function_name| PreviewTarget::Function {
+            symbol: function_path_to_symbol(crate_name, &function_name),
+            function_path: function_name,
+        })
+        .collect())
+}
+
+fn collect_preview_functions(
+    path: &Path,
+    items: &[Item],
+    previews: &mut BTreeMap<String, PathBuf>,
+    duplicates: &mut Vec<(String, PathBuf, PathBuf)>,
+) {
+    for item in items {
+        match item {
+            Item::Fn(function) if has_preview_attr(&function.attrs) => {
+                let name = function.sig.ident.to_string();
+                if let Some(first) = previews.get(&name) {
+                    duplicates.push((name, first.clone(), path.to_path_buf()));
+                } else {
+                    previews.insert(name, path.to_path_buf());
+                }
+            }
+            Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    collect_preview_functions(path, items, previews, duplicates);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn has_preview_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let path = attr.path();
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        path.is_ident("preview") || segments == ["waterui".to_string(), "preview".to_string()]
+    })
+}
+
+async fn load_automation_body(
+    code: Option<&str>,
+    code_file: Option<&Path>,
+    default_body: &str,
+    command_name: &str,
+) -> Result<String> {
+    match (code, code_file) {
+        (Some(_), Some(_)) => {
+            bail!("{command_name} accepts either `--code` or `--code-file`, not both.")
+        }
+        (Some(code), None) => Ok(code.to_string()),
+        (None, Some(path)) => smol::fs::read_to_string(path).await.map_err(Into::into),
+        (None, None) => Ok(default_body.to_string()),
+    }
+}
+
+fn resolve_flamegraphs(
+    flamegraph: Option<&Path>,
+    all: bool,
+    targets: &[PreviewTarget],
+    frequency: i32,
+) -> Result<Vec<Option<HydrolysisPreviewFlamegraph>>> {
+    let Some(path) = flamegraph else {
+        return Ok(std::iter::repeat_with(|| None)
+            .take(targets.len())
+            .collect());
+    };
+    let default_marker = Path::new("__waterui_default_flamegraph__");
+    if all {
+        let dir = if path == default_marker {
+            PathBuf::from("preview-flamegraphs")
+        } else {
+            path.to_path_buf()
+        };
+        if dir.exists() && !dir.is_dir() {
+            bail!(
+                "`water preview perf --all --flamegraph` expects a directory, got {}",
+                dir.display()
+            );
+        }
+        std::fs::create_dir_all(&dir)?;
+        return Ok(targets
+            .iter()
+            .map(|target| {
+                Some(HydrolysisPreviewFlamegraph {
+                    output_path: dir.join(format!("{}.svg", target.file_stem())),
+                    frequency,
+                })
+            })
+            .collect());
+    }
+    if targets.len() != 1 {
+        bail!("internal error: single flamegraph path received for multiple preview targets");
+    }
+    let output_path = if path == default_marker {
+        PathBuf::from("preview-flamegraph.svg")
+    } else {
+        path.to_path_buf()
+    };
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(vec![Some(HydrolysisPreviewFlamegraph {
+        output_path,
+        frequency,
+    })])
+}
+
+async fn resolve_sccache_path() -> Option<PathBuf> {
+    let sccache = Sccache;
+    sccache.path().await.map_or_else(
+        |_| {
+            warn!(
+                "sccache not found. Build efficiency may be reduced. Install with: {}",
+                sccache_install_hint()
+            );
+            None
+        },
+        Some,
+    )
+}
+
+fn emit_child_output(output: &str) {
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        note!("{line}");
+    }
+}
+
 #[derive(Debug)]
 enum PreviewTarget {
     Function {
@@ -359,6 +815,13 @@ impl PreviewTarget {
         match self {
             Self::Function { symbol, .. } => HydrolysisPreviewSource::Symbol(symbol),
             Self::Expression { expression } => HydrolysisPreviewSource::Expression(expression),
+        }
+    }
+
+    fn file_stem(&self) -> String {
+        match self {
+            Self::Function { function_path, .. } => function_path.replace("::", "_"),
+            Self::Expression { .. } => "expression".to_string(),
         }
     }
 }
@@ -420,6 +883,36 @@ fn resolve_preview_backend(
         );
     }
     Ok(backend)
+}
+
+fn resolve_preview_platform(
+    platform_override: Option<CliPreviewPlatform>,
+) -> Result<CliPreviewPlatform> {
+    if let Some(platform) = platform_override {
+        return Ok(platform);
+    }
+    native_preview_platform()
+}
+
+fn native_preview_platform() -> Result<CliPreviewPlatform> {
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(CliPreviewPlatform::Macos);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!(
+            "No native preview platform is configured for this host. Pass `--platform` explicitly."
+        )
+    }
+}
+
+fn ensure_hydrolysis_preview_platform(platform: CliPreviewPlatform) -> Result<()> {
+    if platform != CliPreviewPlatform::Macos {
+        bail!("`water preview test` and `water preview perf` support Hydrolysis on macos only.");
+    }
+    Ok(())
 }
 
 fn resolve_hydrolysis_preview_theme(

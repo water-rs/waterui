@@ -1,0 +1,131 @@
+//! Hydrolysis preview test runtime for {{ ctx.app_display_name }}.
+
+use std::{env, fs::File, io::Write as _, path::PathBuf, time::Duration};
+
+use crate::preview_test;
+use waterui_testing::{PerfConfig, ui};
+
+pub(crate) fn run() {
+    let width = parse_dimension(preview_test::PREVIEW_WIDTH_ENV);
+    let height = parse_dimension(preview_test::PREVIEW_HEIGHT_ENV);
+    match preview_test::PREVIEW_TEST_MODE {
+        "semantic" => run_semantic(width, height),
+        "perf" => run_perf(width, height),
+        other => panic!("hydrolysis preview test: unsupported mode `{other}`"),
+    }
+}
+
+fn run_semantic(width: f32, height: f32) {
+    let mut env = waterui::env::Environment::new();
+    preview_test::install_preview_theme(&mut env);
+    let mut app = ui()
+        .environment(env)
+        .viewport(dimension_to_u32(width), dimension_to_u32(height))
+        .mount(preview_test::load_preview_view);
+    preview_test::run_semantic_automation(&mut app);
+    write_status("semantic ok");
+}
+
+fn run_perf(width: f32, height: f32) {
+    let config = PerfConfig {
+        warmups: parse_optional_u32(preview_test::PERF_WARMUPS_ENV).unwrap_or(5),
+        samples: parse_optional_u32(preview_test::PERF_SAMPLES_ENV).unwrap_or(60),
+    };
+    let builder = ui()
+        .viewport(dimension_to_u32(width), dimension_to_u32(height))
+        .theme(preview_test::install_preview_theme as fn(&mut waterui::env::Environment))
+        .perf_config(config);
+
+    let report = match env::var_os(preview_test::FLAMEGRAPH_ENV) {
+        Some(path) => profile_perf(PathBuf::from(path), builder),
+        None => builder.perf_with(preview_test::load_preview_view, |perf| {
+            preview_test::run_perf_automation(perf);
+        }),
+    };
+
+    for measurement in report.measurements() {
+        let stats = measurement.stats();
+        write_status(&format!(
+            "perf {} samples={} mean={}us median={}us p95={}us min={}us max={}us rebuilt={}",
+            measurement.name,
+            stats.samples,
+            duration_micros(stats.mean),
+            duration_micros(stats.median),
+            duration_micros(stats.p95),
+            duration_micros(stats.min),
+            duration_micros(stats.max),
+            stats.rebuilt_frames
+        ));
+    }
+}
+
+fn profile_perf(
+    path: PathBuf,
+    builder: waterui_testing::UiBuilder<fn(&mut waterui::env::Environment)>,
+) -> waterui_testing::PerfReport {
+    let frequency = parse_optional_i32(preview_test::FLAMEGRAPH_FREQUENCY_ENV).unwrap_or(100);
+    let guard = pprof::ProfilerGuard::new(frequency)
+        .unwrap_or_else(|error| panic!("hydrolysis preview perf: failed to start profiler: {error}"));
+    let report = builder.perf_with(preview_test::load_preview_view, |perf| {
+        preview_test::run_perf_automation(perf);
+    });
+    let profile = guard
+        .report()
+        .build()
+        .unwrap_or_else(|error| panic!("hydrolysis preview perf: failed to build profiler report: {error}"));
+    let file = File::create(&path).unwrap_or_else(|error| {
+        panic!(
+            "hydrolysis preview perf: failed to create flamegraph `{}`: {error}",
+            path.display()
+        )
+    });
+    profile
+        .flamegraph(file)
+        .unwrap_or_else(|error| panic!("hydrolysis preview perf: failed to write flamegraph: {error}"));
+    report
+}
+
+fn required_env(name: &str) -> String {
+    env::var(name)
+        .unwrap_or_else(|error| panic!("hydrolysis preview test: missing environment variable `{name}`: {error}"))
+}
+
+fn parse_dimension(name: &str) -> f32 {
+    let raw = required_env(name);
+    raw.parse::<f32>()
+        .unwrap_or_else(|error| panic!("hydrolysis preview test: invalid `{name}` value `{raw}`: {error}"))
+}
+
+fn parse_optional_u32(name: &str) -> Option<u32> {
+    let raw = env::var(name).ok()?;
+    Some(raw.parse::<u32>().unwrap_or_else(|error| {
+        panic!("hydrolysis preview test: invalid `{name}` value `{raw}`: {error}")
+    }))
+}
+
+fn parse_optional_i32(name: &str) -> Option<i32> {
+    let raw = env::var(name).ok()?;
+    Some(raw.parse::<i32>().unwrap_or_else(|error| {
+        panic!("hydrolysis preview test: invalid `{name}` value `{raw}`: {error}")
+    }))
+}
+
+fn dimension_to_u32(value: f32) -> u32 {
+    assert!(
+        value.is_finite() && value > 0.0,
+        "hydrolysis preview test dimension must be finite and positive"
+    );
+    value.round() as u32
+}
+
+fn duration_micros(duration: Duration) -> u128 {
+    duration.as_micros()
+}
+
+fn write_status(message: &str) {
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(message.as_bytes())
+        .and_then(|()| stdout.write_all(b"\n"))
+        .unwrap_or_else(|error| panic!("hydrolysis preview test: failed to write status: {error}"));
+}
