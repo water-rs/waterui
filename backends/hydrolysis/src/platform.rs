@@ -880,6 +880,7 @@ mod winit_impl {
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
         surface: WinitSurface,
+        pending_surface_size: Option<PhysicalSize<u32>>,
         pending_events: Vec<InputEvent>,
         pointer_position: (f32, f32),
         modifiers: Modifiers,
@@ -893,6 +894,7 @@ mod winit_impl {
             Self {
                 window,
                 surface,
+                pending_surface_size: None,
                 pending_events: Vec::new(),
                 pointer_position: (0.0, 0.0),
                 modifiers: Modifiers::default(),
@@ -917,7 +919,7 @@ mod winit_impl {
                     self.pending_events.push(InputEvent::CloseRequested);
                 }
                 WindowEvent::Resized(size) => {
-                    self.surface.resize(size.width, size.height);
+                    self.pending_surface_size = Some(*size);
                     self.pending_events.push(InputEvent::Resize {
                         width: size.width.max(1),
                         height: size.height.max(1),
@@ -929,7 +931,7 @@ mod winit_impl {
                         "hydrolysis winit backend received invalid scale factor {scale_factor}"
                     );
                     let size = self.window.inner_size();
-                    self.surface.resize(size.width, size.height);
+                    self.pending_surface_size = Some(size);
                     self.pending_events.push(InputEvent::Resize {
                         width: size.width.max(1),
                         height: size.height.max(1),
@@ -1109,6 +1111,9 @@ mod winit_impl {
 
     impl PlatformWindow for WinitWindow {
         fn surface(&mut self) -> &mut dyn SurfaceProvider {
+            if let Some(size) = self.pending_surface_size.take() {
+                self.surface.resize(size.width, size.height);
+            }
             &mut self.surface
         }
 

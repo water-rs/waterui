@@ -1380,6 +1380,16 @@ impl HydrolysisRenderer {
         if let Some(content) = update {
             let content = normalize_layout_view(content, env);
             let dimensions = measure_view_dimensions(&content, &mut renderer.state, env);
+            let proposal = ProposalSize::new(
+                Some(ctx.bounds.width() as f32),
+                Some(ctx.bounds.height() as f32),
+            );
+            let proposal_dimensions = measure_view_dimensions_with_proposal(
+                &content,
+                proposal,
+                &mut renderer.state,
+                env,
+            );
             let previous_dimensions = renderer
                 .state
                 .dynamic_intrinsic_cache
@@ -1389,6 +1399,14 @@ impl HydrolysisRenderer {
                 .state
                 .dynamic_intrinsic_cache
                 .insert(identity, dimensions.clone());
+            renderer.state.dynamic_dimensions_cache.insert(
+                (
+                    identity,
+                    proposal.width.map(f32::to_bits),
+                    proposal.height.map(f32::to_bits),
+                ),
+                proposal_dimensions,
+            );
             let local_ctx = ctx.with_identity_transforms(ctx.bounds);
             let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
             renderer

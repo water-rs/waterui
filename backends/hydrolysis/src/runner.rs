@@ -452,6 +452,14 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
     runtime.platform.request_redraw();
 }
 
+fn schedule_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
+    if !changed {
+        return;
+    }
+    runtime.needs_rebuild = true;
+    runtime.platform.request_redraw();
+}
+
 fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
     assert!(
         scale_factor.is_finite() && scale_factor > 0.0,
@@ -559,9 +567,20 @@ fn render_window_with_capture<P: PlatformWindow>(
 
         let clear_color = window_clear_color(&runtime.window, env);
         let acquire_started_at = diagnostics_enabled.then(Instant::now);
-        let frame = surface
-            .acquire()
-            .expect("hydrolysis runner: failed to acquire frame");
+        let frame = match surface.acquire() {
+            Ok(frame) => frame,
+            Err(crate::platform::SurfaceError::Surface(
+                wgpu::SurfaceError::Lost
+                | wgpu::SurfaceError::Outdated
+                | wgpu::SurfaceError::Timeout
+                | wgpu::SurfaceError::Other,
+            )) => {
+                runtime.needs_rebuild = true;
+                runtime.platform.request_redraw();
+                return RenderWindowResult { rebuilt, snapshot };
+            }
+            Err(error) => panic!("hydrolysis runner: failed to acquire frame: {error}"),
+        };
         let acquire_duration = elapsed_or_zero(acquire_started_at);
         let render_started_at = diagnostics_enabled.then(Instant::now);
         runtime
@@ -679,6 +698,7 @@ where
                 );
                 runtime.window.frame.set(frame);
                 runtime.needs_rebuild = true;
+                runtime.platform.request_redraw();
             }
             InputEvent::PointerDown { x, y, button } => {
                 runtime.pointer_position = Some((x, y));
@@ -761,7 +781,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_scene_rebuild(runtime, changed);
             }
             InputEvent::Magnification { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));
@@ -1290,7 +1310,8 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{
-        HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow, schedule_redraw_or_rebuild,
+        HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow,
+        schedule_redraw_or_rebuild, schedule_scene_rebuild,
     };
     use crate::platform::PlatformWindow as _;
     use crate::renderer::HydrolysisRenderer;
@@ -1322,6 +1343,23 @@ mod tests {
         assert!(
             runtime.platform.take_redraw_request(),
             "rebuild input must wake the platform event loop for the next frame"
+        );
+    }
+
+    #[test]
+    fn changed_scroll_input_rebuilds_scene_and_wakes_platform_window() {
+        let mut runtime = test_runtime_window();
+        runtime.needs_rebuild = false;
+
+        schedule_scene_rebuild(&mut runtime, true);
+
+        assert!(
+            runtime.needs_rebuild,
+            "scroll changes alter baked scene transforms and must rebuild the scene"
+        );
+        assert!(
+            runtime.platform.take_redraw_request(),
+            "scroll rebuilds must wake the platform event loop for the next frame"
         );
     }
 

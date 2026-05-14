@@ -396,9 +396,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(running, context.backend, &mut crash_ctx).await;
+    stream_running_events(running, context.backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
-    stream_running_events(running, context.backend).await;
+    stream_running_events(running, context.backend).await?;
 
     Ok(())
 }
@@ -631,7 +631,7 @@ async fn stream_running_events(
     running: Running,
     backend: TargetBackend,
     crash_ctx: &mut Option<CrashReportContext>,
-) {
+) -> Result<()> {
     let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
 
@@ -653,22 +653,24 @@ async fn stream_running_events(
             event = augment_event_with_crash_report(event, ctx).await;
         }
 
-        if handle_device_event(event, backend_log_name) {
+        if handle_device_event(event, backend_log_name)? {
             break;
         }
     }
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn stream_running_events(running: Running, backend: TargetBackend) {
+async fn stream_running_events(running: Running, backend: TargetBackend) -> Result<()> {
     let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
 
     loop {
-        if handle_device_event(running.next().await, backend_log_name) {
+        if handle_device_event(running.next().await, backend_log_name)? {
             break;
         }
     }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1134,31 +1136,31 @@ fn validate_desktop_backend_platform_on_host(
 /// Handle a device event.
 ///
 /// Returns `true` if the event loop should break.
-fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool {
+fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> Result<bool> {
     match event {
         Some(DeviceEvent::Started) => {
             shell::status("*", "Application started");
-            false
+            Ok(false)
         }
         Some(DeviceEvent::Stopped) => {
             shell::status("o", "Application stopped");
-            true
+            Ok(true)
         }
         Some(DeviceEvent::Stdout { message }) => {
             line!("[stdout] {message}");
-            false
+            Ok(false)
         }
         Some(DeviceEvent::Stderr { message }) => {
             warn!("[stderr] {message}");
-            false
+            Ok(false)
         }
         Some(DeviceEvent::Log { level, message }) => {
             shell::device_log(platform_name, level, message);
-            false
+            Ok(false)
         }
         Some(DeviceEvent::Exited) => {
-            note!("Application exited");
-            true
+            error!("Application exited unexpectedly");
+            bail!("application exited unexpectedly")
         }
         Some(DeviceEvent::Crashed(msg)) => {
             // Use panic_report for panic messages, regular error for others
@@ -1167,9 +1169,9 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool 
             } else {
                 error!("Application crashed: {msg}");
             }
-            true
+            bail!("application crashed")
         }
-        None => true,
+        None => Ok(true),
     }
 }
 
