@@ -140,6 +140,8 @@ pub(crate) struct PressSlot {
 pub(crate) struct PressStateSlot {
     pub(crate) pressing: bool,
     pub(crate) origin: Option<vello::kurbo::Point>,
+    pub(crate) pressed_at: Option<Instant>,
+    pub(crate) released_at: Option<Instant>,
 }
 
 impl PressController {
@@ -161,22 +163,29 @@ impl PressController {
             self.slots.push(PressStateSlot {
                 pressing: false,
                 origin: None,
+                pressed_at: None,
+                released_at: None,
             });
         }
         (PressSlot { index }, self.slots[index].pressing)
     }
 
-    pub(crate) fn begin_press(&mut self, slot: PressSlot, origin: vello::kurbo::Point) {
+    pub(crate) fn begin_press(&mut self, slot: PressSlot, origin: vello::kurbo::Point, now: Instant) {
         let state = &mut self.slots[slot.index];
         state.pressing = true;
         state.origin = Some(origin);
+        state.pressed_at = Some(now);
+        state.released_at = None;
     }
 
-    pub(crate) fn clear_all(&mut self) -> bool {
+    pub(crate) fn clear_all(&mut self, now: Instant) -> bool {
         let mut changed = false;
         for slot in &mut self.slots {
             changed |= slot.pressing;
             slot.pressing = false;
+            if slot.origin.is_some() && slot.released_at.is_none() {
+                slot.released_at = Some(now);
+            }
         }
         changed
     }
@@ -303,7 +312,7 @@ impl HydrolysisRenderer {
         let mut rebuild_requested = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
-        rebuild_requested |= self.hit_test.press_controller.clear_all();
+        rebuild_requested |= self.hit_test.press_controller.clear_all(at);
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.text_editing.active_text_context_menu,
@@ -428,7 +437,7 @@ impl HydrolysisRenderer {
         for index in pointer_indices {
             let target = self.hit_test.pointer_targets[index].clone();
             if let Some(slot) = target.press_slot {
-                self.hit_test.press_controller.begin_press(slot, point);
+                self.hit_test.press_controller.begin_press(slot, point, at);
                 rebuild_requested = true;
             }
             tracing::trace!(
@@ -486,7 +495,7 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
-        changed |= self.hit_test.press_controller.clear_all();
+        changed |= self.hit_test.press_controller.clear_all(at);
         let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
         changed |= gesture_changed;
         tracing::trace!(
@@ -548,11 +557,12 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
+        let at = self.frame_instant();
         let mut rebuild_requested = false;
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
-        rebuild_requested |= self.hit_test.press_controller.clear_all();
+        rebuild_requested |= self.hit_test.press_controller.clear_all(at);
         let gesture_changed = self
             .gesture_engine
             .handle_pointer_cancel(self.frame_instant(), env);
@@ -622,7 +632,6 @@ impl HydrolysisRenderer {
     ) -> (WidgetInteractionState, PressSlot) {
         let (hover_slot, hovered) = self.hit_test.hover_controller.bind();
         let (press_slot, pressed) = self.hit_test.press_controller.bind();
-        let press_origin = self.hit_test.press_controller.slots[press_slot.index].origin;
         if self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
             self.hit_test.hover_targets.push(HoverTarget {
                 bounds,
@@ -633,8 +642,16 @@ impl HydrolysisRenderer {
             });
         }
         let motion = widget_theme(env).interaction_motion();
-        let target_opacity = if hovered { motion.hover_opacity } else { 0.0 };
         let now = self.frame_instant();
+        let slot = &mut self.hit_test.press_controller.slots[press_slot.index];
+        let visual_pressed = pressed || released_before_minimum_press_duration(slot, now, &motion);
+        if should_clear_released_press_origin(slot, now, &motion) {
+            slot.origin = None;
+            slot.pressed_at = None;
+            slot.released_at = None;
+        }
+        let press_origin = slot.origin;
+        let target_opacity = if hovered { motion.hover_opacity } else { 0.0 };
         let alpha_handle = self.animation_controller.bind_scalar_target(
             target_opacity,
             state_layer_animation(target_opacity, &motion),
@@ -642,8 +659,12 @@ impl HydrolysisRenderer {
         );
         let state_layer_opacity = alpha_handle.sample(now);
         let press_opacity_handle = self.animation_controller.bind_scalar_target(
-            if pressed { motion.pressed_opacity } else { 0.0 },
-            press_layer_opacity_animation(pressed, &motion),
+            if visual_pressed {
+                motion.pressed_opacity
+            } else {
+                0.0
+            },
+            press_layer_opacity_animation(visual_pressed, &motion),
             now,
         );
         let press_layer_opacity = press_opacity_handle.sample(now);
@@ -656,7 +677,7 @@ impl HydrolysisRenderer {
         (
             WidgetInteractionState {
                 hovered,
-                pressed,
+                pressed: visual_pressed,
                 focus_visible: false,
                 focus_progress: 0.0,
                 state_layer_opacity,
@@ -823,5 +844,119 @@ fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> A
         motion.press_fade_in.clone()
     } else {
         motion.press_fade_out.clone()
+    }
+}
+
+fn released_before_minimum_press_duration(
+    slot: &PressStateSlot,
+    now: Instant,
+    motion: &InteractionMotion,
+) -> bool {
+    if slot.pressing || slot.released_at.is_none() {
+        return false;
+    }
+    let Some(pressed_at) = slot.pressed_at else {
+        return false;
+    };
+    now.duration_since(pressed_at) < motion.minimum_press_duration
+}
+
+fn should_clear_released_press_origin(
+    slot: &PressStateSlot,
+    now: Instant,
+    motion: &InteractionMotion,
+) -> bool {
+    if slot.pressing {
+        return false;
+    }
+    let Some(released_at) = slot.released_at else {
+        return false;
+    };
+    let minimum_remaining = slot
+        .pressed_at
+        .map_or(Duration::ZERO, |pressed_at| {
+            motion
+                .minimum_press_duration
+                .saturating_sub(now.duration_since(pressed_at))
+        });
+    let retention = motion
+        .press_fade_out
+        .duration()
+        .max(minimum_remaining);
+    now.duration_since(released_at) >= retention
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PressStateSlot, released_before_minimum_press_duration,
+        should_clear_released_press_origin,
+    };
+    use core::time::Duration;
+    use waterui::animation::Animation;
+    use waterui_backend_core::widget::InteractionMotion;
+
+    fn motion() -> InteractionMotion {
+        InteractionMotion {
+            hover_opacity: 0.08,
+            focus_opacity: 0.12,
+            pressed_opacity: 0.12,
+            dragged_opacity: 0.16,
+            hover_enter: Animation::linear(Duration::from_millis(15)),
+            hover_exit: Animation::linear(Duration::from_millis(15)),
+            focus_enter: Animation::linear(Duration::from_millis(15)),
+            focus_exit: Animation::linear(Duration::from_millis(15)),
+            press_fade_in: Animation::linear(Duration::from_millis(105)),
+            press_fade_out: Animation::linear(Duration::from_millis(375)),
+            press_grow: Animation::linear(Duration::from_millis(450)),
+            minimum_press_duration: Duration::from_millis(225),
+            touch_delay: Duration::from_millis(150),
+        }
+    }
+
+    #[test]
+    fn released_press_stays_visually_pressed_until_minimum_duration() {
+        let started = crate::time::Instant::now();
+        let released = started + Duration::from_millis(80);
+        let slot = PressStateSlot {
+            pressing: false,
+            origin: Some(vello::kurbo::Point::new(16.0, 16.0)),
+            pressed_at: Some(started),
+            released_at: Some(released),
+        };
+
+        assert!(released_before_minimum_press_duration(
+            &slot,
+            started + Duration::from_millis(120),
+            &motion()
+        ));
+        assert!(!released_before_minimum_press_duration(
+            &slot,
+            started + Duration::from_millis(260),
+            &motion()
+        ));
+    }
+
+    #[test]
+    fn released_press_origin_survives_fade_out_then_clears() {
+        let started = crate::time::Instant::now();
+        let released = started + Duration::from_millis(240);
+        let slot = PressStateSlot {
+            pressing: false,
+            origin: Some(vello::kurbo::Point::new(16.0, 16.0)),
+            pressed_at: Some(started),
+            released_at: Some(released),
+        };
+
+        assert!(!should_clear_released_press_origin(
+            &slot,
+            released + Duration::from_millis(300),
+            &motion()
+        ));
+        assert!(should_clear_released_press_origin(
+            &slot,
+            released + Duration::from_millis(380),
+            &motion()
+        ));
     }
 }
