@@ -2021,23 +2021,23 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let shadow = value;
-        let spread = f64::from(shadow.radius.max(0.0));
+        let blur = f64::from(shadow.radius.max(0.0));
         let offset_x = f64::from(shadow.offset.x);
         let offset_y = f64::from(shadow.offset.y);
         let shadow_rect = vello::kurbo::Rect::new(
-            ctx.bounds.x0 + offset_x - spread,
-            ctx.bounds.y0 + offset_y - spread,
-            ctx.bounds.x1 + offset_x + spread,
-            ctx.bounds.y1 + offset_y + spread,
+            ctx.bounds.x0 + offset_x,
+            ctx.bounds.y0 + offset_y,
+            ctx.bounds.x1 + offset_x,
+            ctx.bounds.y1 + offset_y,
         );
         let shadow_color = resolved_color_to_peniko(shadow.color.resolve(env).get());
 
-        renderer.scene.fill(
-            vello::peniko::Fill::NonZero,
+        renderer.scene.draw_blurred_rounded_rect(
             ctx.transform,
-            shadow_color,
-            None,
-            &shadow_rect,
+            shadow_rect,
+            shadow_color.into(),
+            blur,
+            blur,
         );
         Self::dispatch_any(renderer, ctx, env, content);
     }
