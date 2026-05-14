@@ -28,7 +28,7 @@ Keep the change set strictly scoped to the task.
 
 - Do not drag unrelated files into the diff.
 - Do not run workspace-wide formatters or refactors such as `cargo fmt --all`, bulk codemods, or broad search-replace when the task only targets a few files.
-- Prefer file-scoped formatting and verification on the exact files you intentionally changed.
+- Prefer file-scoped formatting and verification on the exact files you intentionally changed. For direct Rust file formatting, never run bare `rustfmt`; pass the workspace edition explicitly, for example `rustfmt --edition 2024 path/to/file.rs`, so rustfmt does not parse this Rust 2024 workspace as Rust 2015 and does not module-walk into unrelated files.
 - Do not run multiple `cargo` commands in parallel. It only creates lock contention and provides no benefit in this repository.
 - Do not hardcode versions, repository URLs, package sources, filesystem paths, or other environment-derived constants just to ignore real complexity. If a value has a real source of truth, derive it from metadata, build inputs, repository structure, or runtime context instead of freezing a literal.
 - Do not add blind timing workarounds such as fixed sleeps, fixed-duration `RunLoop` waits, or arbitrary retry delays to "probably" wait for readiness. Wire the code to the real readiness/completion signal. If synchronous code must bridge to async readiness, keep driving the relevant event loop only until that concrete readiness condition completes.

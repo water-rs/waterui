@@ -438,6 +438,61 @@ pub struct HeadlessSnapshot {
 struct RenderWindowResult {
     rebuilt: bool,
     snapshot: Option<HeadlessSnapshot>,
+    profile: FrameProfile,
+}
+
+/// Phase timing for one Hydrolysis frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FramePhases {
+    /// Time spent draining local executor work before input dispatch.
+    pub executor_before: Duration,
+    /// Time spent dispatching pending input.
+    pub input: Duration,
+    /// Time spent advancing animations and invalidation clocks.
+    pub animation: Duration,
+    /// Time spent rebuilding scene/layout state.
+    pub rebuild: Duration,
+    /// Time spent acquiring the target frame.
+    pub acquire: Duration,
+    /// Time spent submitting rendering work.
+    pub render: Duration,
+    /// Time spent presenting the frame.
+    pub present: Duration,
+    /// Time spent draining local executor work after rendering.
+    pub executor_after: Duration,
+}
+
+/// Counter snapshot for one Hydrolysis frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameCounters {
+    /// Number of rebuild loop iterations in this frame.
+    pub rebuild_iterations: u32,
+    /// Measurement cache hits in this frame.
+    pub measurement_cache_hits: u32,
+    /// Measurement cache misses in this frame.
+    pub measurement_cache_misses: u32,
+    /// Whether this frame rendered to the target.
+    pub rendered: bool,
+    /// Whether this frame captured a CPU snapshot.
+    pub captured_snapshot: bool,
+}
+
+/// Detailed profile for one Hydrolysis frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameProfile {
+    /// Total wall-clock duration for the frame pump.
+    pub total: Duration,
+    /// Phase timing breakdown.
+    pub phases: FramePhases,
+    /// Counter snapshot.
+    pub counters: FrameCounters,
+}
+
+impl FrameProfile {
+    fn with_total(mut self, total: Duration) -> Self {
+        self.total = total;
+        self
+    }
 }
 
 fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
@@ -603,6 +658,7 @@ fn render_window_with_capture<P: PlatformWindow>(
         .set_accessibility_root_label(runtime.window.title.get().as_str());
     let mut snapshot = None;
     let mut rebuilt = false;
+    let profile;
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
@@ -614,7 +670,7 @@ fn render_window_with_capture<P: PlatformWindow>(
         let (width, height) = surface.size();
         let format = surface.format();
         let clear_color = window_clear_color(&runtime.window, env);
-        let acquire_started_at = diagnostics_enabled.then(Instant::now);
+        let acquire_started_at = Instant::now();
         let frame = match surface.acquire() {
             Ok(frame) => frame,
             Err(crate::platform::SurfaceError::Surface(
@@ -625,12 +681,32 @@ fn render_window_with_capture<P: PlatformWindow>(
             )) => {
                 runtime.needs_rebuild = true;
                 runtime.platform.request_redraw();
-                return RenderWindowResult { rebuilt, snapshot };
+                let (measurement_cache_hits, measurement_cache_misses) =
+                    runtime.renderer.measurement_cache_stats();
+                return RenderWindowResult {
+                    rebuilt,
+                    snapshot,
+                    profile: FrameProfile {
+                        phases: FramePhases {
+                            rebuild: rebuild_duration,
+                            acquire: acquire_started_at.elapsed(),
+                            ..FramePhases::default()
+                        },
+                        counters: FrameCounters {
+                            rebuild_iterations,
+                            measurement_cache_hits,
+                            measurement_cache_misses,
+                            rendered: false,
+                            captured_snapshot: false,
+                        },
+                        ..FrameProfile::default()
+                    },
+                };
             }
             Err(error) => panic!("hydrolysis runner: failed to acquire frame: {error}"),
         };
-        let acquire_duration = elapsed_or_zero(acquire_started_at);
-        let render_started_at = diagnostics_enabled.then(Instant::now);
+        let acquire_duration = acquire_started_at.elapsed();
+        let render_started_at = Instant::now();
         runtime
             .renderer
             .render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
@@ -656,10 +732,29 @@ fn render_window_with_capture<P: PlatformWindow>(
             });
         }
         runtime.renderer.clear_frame_resources();
-        let render_duration = elapsed_or_zero(render_started_at);
-        let present_started_at = diagnostics_enabled.then(Instant::now);
+        let render_duration = render_started_at.elapsed();
+        let present_started_at = Instant::now();
         surface.present(frame);
-        let present_duration = elapsed_or_zero(present_started_at);
+        let present_duration = present_started_at.elapsed();
+        let (measurement_cache_hits, measurement_cache_misses) =
+            runtime.renderer.measurement_cache_stats();
+        profile = FrameProfile {
+            phases: FramePhases {
+                rebuild: rebuild_duration,
+                acquire: acquire_duration,
+                render: render_duration,
+                present: present_duration,
+                ..FramePhases::default()
+            },
+            counters: FrameCounters {
+                rebuild_iterations,
+                measurement_cache_hits,
+                measurement_cache_misses,
+                rendered: true,
+                captured_snapshot: capture_snapshot,
+            },
+            ..FrameProfile::default()
+        };
 
         if diagnostics_enabled {
             let window_title = runtime.window.title.get();
@@ -690,7 +785,11 @@ fn render_window_with_capture<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
 
-    RenderWindowResult { rebuilt, snapshot }
+    RenderWindowResult {
+        rebuilt,
+        snapshot,
+        profile,
+    }
 }
 
 fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
@@ -1069,6 +1168,7 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
 #[derive(Debug)]
 pub struct HeadlessPumpResult {
     pub rebuilt: bool,
+    pub profile: FrameProfile,
     #[cfg(feature = "accessibility")]
     pub tree_update: Option<AccessibilityTreeUpdate>,
     pub snapshot: Option<HeadlessSnapshot>,
@@ -1271,10 +1371,17 @@ impl HeadlessRuntime {
     }
 
     pub fn pump_semantic_at(&mut self, at: Instant) -> HeadlessPumpResult {
+        let frame_started_at = Instant::now();
         self.runtime.renderer.set_frame_instant(at);
+        let executor_before_started_at = Instant::now();
         let drained_before = self.local_executor.drain();
+        let executor_before = executor_before_started_at.elapsed();
+        let input_started_at = Instant::now();
         let _ = handle_input_events(&mut self.runtime, &self.env);
+        let input = input_started_at.elapsed();
+        let animation_started_at = Instant::now();
         let _ = advance_runtime(&mut self.runtime, &self.env, at);
+        let animation = animation_started_at.elapsed();
         self.mount_pending_popup_windows();
         for popup in &mut self.popup_windows {
             popup.renderer.set_frame_instant(at);
@@ -1285,10 +1392,23 @@ impl HeadlessRuntime {
         for popup in &mut self.popup_windows {
             let _ = pump_window_semantics(popup, &self.env);
         }
+        let executor_after_started_at = Instant::now();
         let drained_after = self.local_executor.drain();
+        let executor_after = executor_after_started_at.elapsed();
 
         HeadlessPumpResult {
             rebuilt: rebuilt || drained_before || drained_after,
+            profile: FrameProfile {
+                phases: FramePhases {
+                    executor_before,
+                    input,
+                    animation,
+                    executor_after,
+                    ..FramePhases::default()
+                },
+                ..FrameProfile::default()
+            }
+            .with_total(frame_started_at.elapsed()),
             #[cfg(feature = "accessibility")]
             tree_update: self.runtime.renderer.take_accessibility_tree_update(),
             snapshot: None,
@@ -1298,10 +1418,17 @@ impl HeadlessRuntime {
     }
 
     pub fn pump_at(&mut self, capture_snapshot: bool, at: Instant) -> HeadlessPumpResult {
+        let frame_started_at = Instant::now();
         self.runtime.renderer.set_frame_instant(at);
+        let executor_before_started_at = Instant::now();
         let drained_before = self.local_executor.drain();
+        let executor_before = executor_before_started_at.elapsed();
+        let input_started_at = Instant::now();
         let _ = handle_input_events(&mut self.runtime, &self.env);
+        let input = input_started_at.elapsed();
+        let animation_started_at = Instant::now();
         let _ = advance_runtime(&mut self.runtime, &self.env, at);
+        let animation = animation_started_at.elapsed();
         self.mount_pending_popup_windows();
         for popup in &mut self.popup_windows {
             popup.renderer.set_frame_instant(at);
@@ -1328,12 +1455,23 @@ impl HeadlessRuntime {
                 }
             }
         }
+        let executor_after_started_at = Instant::now();
         let drained_after = self.local_executor.drain();
+        let executor_after = executor_after_started_at.elapsed();
+
+        let mut profile = render_result
+            .as_ref()
+            .map_or_else(FrameProfile::default, |result| result.profile);
+        profile.phases.executor_before = executor_before;
+        profile.phases.input = input;
+        profile.phases.animation = animation;
+        profile.phases.executor_after = executor_after;
 
         HeadlessPumpResult {
             rebuilt: render_result.as_ref().is_some_and(|result| result.rebuilt)
                 || drained_before
                 || drained_after,
+            profile: profile.with_total(frame_started_at.elapsed()),
             #[cfg(feature = "accessibility")]
             tree_update: self.runtime.renderer.take_accessibility_tree_update(),
             snapshot: render_result.and_then(|result| result.snapshot),

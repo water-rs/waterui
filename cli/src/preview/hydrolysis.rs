@@ -22,6 +22,7 @@ const HYDROLYSIS_PREVIEW_CAPTURE_MS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_CAPT
 const HYDROLYSIS_PREVIEW_EVENTS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_EVENTS";
 const HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_WARMUPS";
 const HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_SAMPLES";
+const HYDROLYSIS_PREVIEW_PERF_REPETITIONS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_REPETITIONS";
 const HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_FLAMEGRAPH";
 const HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV: &str =
     "WATERUI_HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY";
@@ -93,6 +94,8 @@ pub struct HydrolysisPreviewPerfConfig {
     pub warmups: u32,
     /// Recorded frame count.
     pub samples: u32,
+    /// Independent repetitions.
+    pub repetitions: u32,
 }
 
 /// Optional CPU call-stack flamegraph configuration for preview perf.
@@ -208,6 +211,7 @@ struct HydrolysisPreviewTestTemplate<'a> {
     preview_height_env: &'a str,
     perf_warmups_env: &'a str,
     perf_samples_env: &'a str,
+    perf_repetitions_env: &'a str,
     flamegraph_env: &'a str,
     flamegraph_frequency_env: &'a str,
 }
@@ -406,6 +410,7 @@ async fn write_preview_test_bindings(
         preview_height_env: HYDROLYSIS_PREVIEW_HEIGHT_ENV,
         perf_warmups_env: HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV,
         perf_samples_env: HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV,
+        perf_repetitions_env: HYDROLYSIS_PREVIEW_PERF_REPETITIONS_ENV,
         flamegraph_env: HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV,
         flamegraph_frequency_env: HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV,
     }
@@ -527,6 +532,10 @@ async fn run_preview_test_binary(
         child.env(
             HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV,
             config.samples.to_string(),
+        );
+        child.env(
+            HYDROLYSIS_PREVIEW_PERF_REPETITIONS_ENV,
+            config.repetitions.to_string(),
         );
     }
     if let Some(flamegraph) = flamegraph {
