@@ -3,7 +3,7 @@ fn sample_view() -> impl waterui::View {
 }
 
 #[waterui::test(sample_view)]
-async fn sample_async_test(app: &mut waterui_testing::MountedApp) {
+async fn sample_async_test(app: &mut waterui_testing::SemanticApp) {
     let _ = app.tree();
 }
 

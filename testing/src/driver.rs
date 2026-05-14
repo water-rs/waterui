@@ -5,6 +5,7 @@ use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton, TouchPhase};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
 
+use crate::app::DriverMode;
 use crate::semantics::NodeId;
 use crate::snapshot::Snapshot;
 
@@ -22,6 +23,7 @@ pub trait A11yDriver {
     fn pointer_up(&mut self, x: f32, y: f32, env: &Environment) -> bool;
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool;
     fn clear_ui_focus(&mut self, env: &Environment) -> bool;
+    fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming;
 }
 
 #[derive(Debug)]
@@ -32,17 +34,28 @@ pub struct DriverPumpResult {
     pub(crate) ui_focus: Option<NodeId>,
 }
 
+/// Timing collected for one complete offscreen Hydrolysis frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameTiming {
+    /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
+    pub total: std::time::Duration,
+    /// Whether the frame rebuilt scene/layout state.
+    pub rebuilt: bool,
+}
+
 pub struct HydrolysisA11yDriver {
     width: u32,
     height: u32,
+    mode: DriverMode,
     runtime: Option<HeadlessRuntime>,
 }
 
 impl HydrolysisA11yDriver {
-    pub(crate) const fn new(width: u32, height: u32) -> Self {
+    pub(crate) const fn new(width: u32, height: u32, mode: DriverMode) -> Self {
         Self {
             width,
             height,
+            mode,
             runtime: None,
         }
     }
@@ -65,7 +78,14 @@ impl A11yDriver for HydrolysisA11yDriver {
         env: &Environment,
         capture_snapshot: bool,
     ) -> DriverPumpResult {
-        let result = self.runtime(content, env).pump(capture_snapshot);
+        let result = if capture_snapshot {
+            self.runtime(content, env).pump_snapshot()
+        } else {
+            match self.mode {
+                DriverMode::Semantic => self.runtime(content, env).pump_semantic(),
+                DriverMode::Offscreen => self.runtime(content, env).pump_offscreen(),
+            }
+        };
 
         DriverPumpResult {
             rebuilt: result.rebuilt,
@@ -162,5 +182,14 @@ impl A11yDriver for HydrolysisA11yDriver {
             .as_mut()
             .expect("waterui-testing clear_ui_focus requested before runtime initialization")
             .clear_ui_focus()
+    }
+
+    fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming {
+        let started_at = std::time::Instant::now();
+        let outcome = self.runtime(content, env).pump_offscreen();
+        FrameTiming {
+            total: started_at.elapsed(),
+            rebuilt: outcome.rebuilt,
+        }
     }
 }
