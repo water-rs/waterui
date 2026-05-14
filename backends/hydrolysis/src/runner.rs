@@ -488,6 +488,109 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
     let _ = render_window_with_capture(runtime, env, false);
 }
 
+fn rebuild_window_scene<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+) -> (bool, u32, Duration) {
+    let diagnostics_enabled = runtime.render_diagnostics.enabled();
+    let scale_factor = runtime.platform.scale_factor();
+    let surface = runtime.platform.surface();
+    let (width, height) = surface.size();
+    let bounds = create_bounds(width, height, scale_factor);
+    let root_transform = vello::kurbo::Affine::scale(scale_factor);
+    runtime
+        .renderer
+        .set_frame_resources(surface.device(), surface.queue());
+
+    let rebuild_started_at = diagnostics_enabled.then(Instant::now);
+    if runtime.renderer.advance_animations() {
+        runtime.needs_rebuild = true;
+    }
+
+    let mut rebuilt = false;
+    let mut rebuild_iterations = 0u32;
+    loop {
+        let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
+        if !should_rebuild {
+            break;
+        }
+        rebuild_iterations = rebuild_iterations
+            .checked_add(1)
+            .expect("hydrolysis runner: rebuild iteration counter overflow");
+        assert!(
+            rebuild_iterations <= 64,
+            "hydrolysis runner: rebuild loop exceeded 64 iterations in a single pump"
+        );
+        runtime.renderer.reset_scene();
+        runtime.renderer.begin_rebuild_frame();
+        runtime.renderer.set_window_bounds(bounds);
+        let content = runtime
+            .renderer
+            .with_local_state_env(env, |_local_env| runtime.window.build_content());
+        runtime.renderer.dispatch_with_transform(
+            content,
+            env,
+            bounds,
+            root_transform,
+            vello::kurbo::Affine::IDENTITY,
+        );
+        runtime
+            .renderer
+            .render_active_text_context_menu_overlay(env, root_transform);
+        runtime.renderer.finish_rebuild_frame();
+        runtime
+            .renderer
+            .sync_active_interactions_after_layout(runtime.pointer_position);
+        runtime.needs_rebuild = false;
+        rebuilt = true;
+        if let Some((x, y)) = runtime.pointer_position
+            && runtime.renderer.sync_pointer_hover_state(x, y, env)
+        {
+            if runtime.renderer.take_rebuild_request() {
+                runtime.needs_rebuild = true;
+            } else {
+                runtime.renderer.request_redraw();
+            }
+        }
+    }
+    (
+        rebuilt,
+        rebuild_iterations,
+        elapsed_or_zero(rebuild_started_at),
+    )
+}
+
+fn pump_window_semantics<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+) -> bool {
+    runtime.platform.apply_properties(&runtime.window);
+    #[cfg(feature = "winit")]
+    runtime
+        .renderer
+        .set_accessibility_root_label(runtime.window.title.get().as_str());
+
+    let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
+    if !should_rebuild {
+        return false;
+    }
+
+    let (rebuilt, _, _) = rebuild_window_scene(runtime, env);
+    runtime.renderer.clear_frame_resources();
+    runtime
+        .platform
+        .sync_text_input_state(runtime.renderer.focused_text_input_state());
+    if let Some((x, y)) = runtime.pointer_position {
+        runtime
+            .platform
+            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
+    }
+    if runtime.renderer.take_redraw_request() {
+        runtime.platform.request_redraw();
+    }
+    rebuilt
+}
+
 fn render_window_with_capture<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -503,68 +606,13 @@ fn render_window_with_capture<P: PlatformWindow>(
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
-        let scale_factor = runtime.platform.scale_factor();
+        let (scene_rebuilt, rebuild_iterations, rebuild_duration) =
+            rebuild_window_scene(runtime, env);
+        rebuilt |= scene_rebuilt;
+
         let surface = runtime.platform.surface();
         let (width, height) = surface.size();
         let format = surface.format();
-        let bounds = create_bounds(width, height, scale_factor);
-        let root_transform = vello::kurbo::Affine::scale(scale_factor);
-        runtime
-            .renderer
-            .set_frame_resources(surface.device(), surface.queue());
-
-        let rebuild_started_at = diagnostics_enabled.then(Instant::now);
-        if runtime.renderer.advance_animations() {
-            runtime.needs_rebuild = true;
-        }
-
-        let mut rebuild_iterations = 0u32;
-        loop {
-            let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
-            if !should_rebuild {
-                break;
-            }
-            rebuild_iterations = rebuild_iterations
-                .checked_add(1)
-                .expect("hydrolysis runner: rebuild iteration counter overflow");
-            assert!(
-                rebuild_iterations <= 64,
-                "hydrolysis runner: rebuild loop exceeded 64 iterations in a single pump"
-            );
-            runtime.renderer.reset_scene();
-            runtime.renderer.begin_rebuild_frame();
-            runtime.renderer.set_window_bounds(bounds);
-            let content = runtime
-                .renderer
-                .with_local_state_env(env, |_local_env| runtime.window.build_content());
-            runtime.renderer.dispatch_with_transform(
-                content,
-                env,
-                bounds,
-                root_transform,
-                vello::kurbo::Affine::IDENTITY,
-            );
-            runtime
-                .renderer
-                .render_active_text_context_menu_overlay(env, root_transform);
-            runtime.renderer.finish_rebuild_frame();
-            runtime
-                .renderer
-                .sync_active_interactions_after_layout(runtime.pointer_position);
-            runtime.needs_rebuild = false;
-            rebuilt = true;
-            if let Some((x, y)) = runtime.pointer_position
-                && runtime.renderer.sync_pointer_hover_state(x, y, env)
-            {
-                if runtime.renderer.take_rebuild_request() {
-                    runtime.needs_rebuild = true;
-                } else {
-                    runtime.renderer.request_redraw();
-                }
-            }
-        }
-        let rebuild_duration = elapsed_or_zero(rebuild_started_at);
-
         let clear_color = window_clear_color(&runtime.window, env);
         let acquire_started_at = diagnostics_enabled.then(Instant::now);
         let frame = match surface.acquire() {
@@ -1210,6 +1258,45 @@ impl HeadlessRuntime {
         self.pump_at(capture_snapshot, Instant::now())
     }
 
+    pub fn pump_semantic(&mut self) -> HeadlessPumpResult {
+        self.pump_semantic_at(Instant::now())
+    }
+
+    pub fn pump_offscreen(&mut self) -> HeadlessPumpResult {
+        self.pump_at(false, Instant::now())
+    }
+
+    pub fn pump_snapshot(&mut self) -> HeadlessPumpResult {
+        self.pump_at(true, Instant::now())
+    }
+
+    pub fn pump_semantic_at(&mut self, at: Instant) -> HeadlessPumpResult {
+        self.runtime.renderer.set_frame_instant(at);
+        let drained_before = self.local_executor.drain();
+        let _ = handle_input_events(&mut self.runtime, &self.env);
+        let _ = advance_runtime(&mut self.runtime, &self.env, at);
+        self.mount_pending_popup_windows();
+        for popup in &mut self.popup_windows {
+            popup.renderer.set_frame_instant(at);
+            let _ = handle_input_events(popup, &self.env);
+            let _ = advance_runtime(popup, &self.env, at);
+        }
+        let rebuilt = pump_window_semantics(&mut self.runtime, &self.env);
+        for popup in &mut self.popup_windows {
+            let _ = pump_window_semantics(popup, &self.env);
+        }
+        let drained_after = self.local_executor.drain();
+
+        HeadlessPumpResult {
+            rebuilt: rebuilt || drained_before || drained_after,
+            #[cfg(feature = "accessibility")]
+            tree_update: self.runtime.renderer.take_accessibility_tree_update(),
+            snapshot: None,
+            #[cfg(feature = "accessibility")]
+            ui_focus: self.runtime.renderer.focused_ui_node(),
+        }
+    }
+
     pub fn pump_at(&mut self, capture_snapshot: bool, at: Instant) -> HeadlessPumpResult {
         self.runtime.renderer.set_frame_instant(at);
         let drained_before = self.local_executor.drain();
@@ -1310,8 +1397,8 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{
-        HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow,
-        schedule_redraw_or_rebuild, schedule_scene_rebuild,
+        HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow, schedule_redraw_or_rebuild,
+        schedule_scene_rebuild,
     };
     use crate::platform::PlatformWindow as _;
     use crate::renderer::HydrolysisRenderer;
