@@ -20,7 +20,13 @@ const HYDROLYSIS_PREVIEW_WIDTH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_WIDTH";
 const HYDROLYSIS_PREVIEW_HEIGHT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_HEIGHT";
 const HYDROLYSIS_PREVIEW_CAPTURE_MS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_CAPTURE_MS";
 const HYDROLYSIS_PREVIEW_EVENTS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_EVENTS";
+const HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_WARMUPS";
+const HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_SAMPLES";
+const HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_FLAMEGRAPH";
+const HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV: &str =
+    "WATERUI_HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY";
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
+const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
 
 /// Theme package selected for Hydrolysis preview rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +66,42 @@ pub enum HydrolysisPreviewSource<'a> {
     Symbol(&'a str),
     /// Inline Rust expression returning `impl View`.
     Expression(&'a str),
+}
+
+/// Hydrolysis preview test mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HydrolysisPreviewTestMode {
+    /// Semantic accessibility-tree test without a render target.
+    Semantic,
+    /// Full offscreen GPU performance test.
+    Perf,
+}
+
+impl HydrolysisPreviewTestMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Perf => "perf",
+        }
+    }
+}
+
+/// Repeated frame sampling configuration for Hydrolysis preview perf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HydrolysisPreviewPerfConfig {
+    /// Warmup frame count before recording samples.
+    pub warmups: u32,
+    /// Recorded frame count.
+    pub samples: u32,
+}
+
+/// Optional CPU call-stack flamegraph configuration for preview perf.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydrolysisPreviewFlamegraph {
+    /// Output SVG path.
+    pub output_path: PathBuf,
+    /// Sampling frequency in Hertz.
+    pub frequency: i32,
 }
 
 /// Pointer button used by a Hydrolysis preview scenario event.
@@ -150,6 +192,26 @@ struct HydrolysisPreviewSymbolTemplate<'a> {
     preview_events_env: &'a str,
 }
 
+#[derive(Template)]
+#[template(path = "src/preview/hydrolysis_preview_test.rs.tpl", escape = "none")]
+struct HydrolysisPreviewTestTemplate<'a> {
+    expression_mode: bool,
+    preview_symbol: &'a str,
+    preview_expression: &'a str,
+    crate_name_ident: &'a str,
+    preview_theme: &'a str,
+    preview_theme_installer: &'a str,
+    test_mode: &'a str,
+    semantic_automation_body: &'a str,
+    perf_automation_body: &'a str,
+    preview_width_env: &'a str,
+    preview_height_env: &'a str,
+    perf_warmups_env: &'a str,
+    perf_samples_env: &'a str,
+    flamegraph_env: &'a str,
+    flamegraph_frequency_env: &'a str,
+}
+
 /// Render a preview via the managed Hydrolysis backend binary.
 ///
 /// # Errors
@@ -183,6 +245,52 @@ pub async fn render_preview_with_hydrolysis(
 
     let binary_path = built_hydrolysis_binary_path(&project, "debug").await?;
     run_preview_binary(&project, &binary_path, width, height, output_path, scenario).await
+}
+
+/// Run a preview test or perf session via the managed Hydrolysis backend binary.
+///
+/// # Errors
+/// Returns an error if the managed backend cannot be prepared, built, or executed.
+#[allow(clippy::too_many_arguments)]
+pub async fn test_preview_with_hydrolysis(
+    project_path: &Path,
+    source: HydrolysisPreviewSource<'_>,
+    theme: HydrolysisPreviewTheme,
+    mode: HydrolysisPreviewTestMode,
+    width: f32,
+    height: f32,
+    sccache_path: Option<PathBuf>,
+    automation_body: &str,
+    perf_config: Option<HydrolysisPreviewPerfConfig>,
+    flamegraph: Option<&HydrolysisPreviewFlamegraph>,
+) -> Result<String> {
+    let project = ensure_hydrolysis_backend_ready(project_path).await?;
+    write_preview_test_bindings(&project, source, theme, mode, automation_body).await?;
+    stage_preview_resources(&project, theme).await?;
+
+    let mut build_options = BuildOptions::new(false);
+    if let Some(sccache_path) = sccache_path {
+        build_options = build_options.with_sccache(sccache_path);
+    }
+    build_hydrolysis_with_envs_and_args(
+        &project,
+        TargetPlatform::MacOS,
+        build_options,
+        &[],
+        &["--features", HYDROLYSIS_PREVIEW_TEST_FEATURE],
+    )
+    .await?;
+
+    let binary_path = built_hydrolysis_binary_path(&project, "debug").await?;
+    run_preview_test_binary(
+        &project,
+        &binary_path,
+        width,
+        height,
+        perf_config,
+        flamegraph,
+    )
+    .await
 }
 
 async fn stage_preview_resources(project: &Project, theme: HydrolysisPreviewTheme) -> Result<()> {
@@ -254,6 +362,55 @@ async fn write_preview_symbol_bindings(
     }
     .render()
     .wrap_err("Failed to render hydrolysis preview symbol template")?;
+    smol::fs::write(&module_path, rendered)
+        .await
+        .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;
+    Ok(())
+}
+
+async fn write_preview_test_bindings(
+    project: &Project,
+    source: HydrolysisPreviewSource<'_>,
+    theme: HydrolysisPreviewTheme,
+    mode: HydrolysisPreviewTestMode,
+    automation_body: &str,
+) -> Result<()> {
+    let module_path = project
+        .backend_path::<HydrolysisBackend>()
+        .join("src")
+        .join("preview_test.rs");
+    let crate_name_ident = project.crate_name().rust_ident();
+    let (expression_mode, preview_symbol, preview_expression) = match source {
+        HydrolysisPreviewSource::Symbol(symbol) => (false, symbol, ""),
+        HydrolysisPreviewSource::Expression(expression) => (true, "", expression),
+    };
+    let rendered = HydrolysisPreviewTestTemplate {
+        expression_mode,
+        preview_symbol,
+        preview_expression,
+        crate_name_ident: crate_name_ident.as_str(),
+        preview_theme: theme.name(),
+        preview_theme_installer: theme.installer(),
+        test_mode: mode.as_str(),
+        semantic_automation_body: if mode == HydrolysisPreviewTestMode::Semantic {
+            automation_body
+        } else {
+            ""
+        },
+        perf_automation_body: if mode == HydrolysisPreviewTestMode::Perf {
+            automation_body
+        } else {
+            ""
+        },
+        preview_width_env: HYDROLYSIS_PREVIEW_WIDTH_ENV,
+        preview_height_env: HYDROLYSIS_PREVIEW_HEIGHT_ENV,
+        perf_warmups_env: HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV,
+        perf_samples_env: HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV,
+        flamegraph_env: HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV,
+        flamegraph_frequency_env: HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV,
+    }
+    .render()
+    .wrap_err("Failed to render hydrolysis preview test template")?;
     smol::fs::write(&module_path, rendered)
         .await
         .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;
@@ -345,6 +502,83 @@ async fn run_preview_binary(
     }
 
     Ok(())
+}
+
+async fn run_preview_test_binary(
+    project: &Project,
+    binary_path: &Path,
+    width: f32,
+    height: f32,
+    perf_config: Option<HydrolysisPreviewPerfConfig>,
+    flamegraph: Option<&HydrolysisPreviewFlamegraph>,
+) -> Result<String> {
+    let backend_path = project.backend_path::<HydrolysisBackend>();
+
+    let mut child = smol::process::Command::new(binary_path);
+    let child = command(&mut child);
+    child.current_dir(&backend_path);
+    child.env(HYDROLYSIS_PREVIEW_WIDTH_ENV, width.to_string());
+    child.env(HYDROLYSIS_PREVIEW_HEIGHT_ENV, height.to_string());
+    if let Some(config) = perf_config {
+        child.env(
+            HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV,
+            config.warmups.to_string(),
+        );
+        child.env(
+            HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV,
+            config.samples.to_string(),
+        );
+    }
+    if let Some(flamegraph) = flamegraph {
+        child.env(
+            HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV,
+            absolute_output_path(&flamegraph.output_path)?,
+        );
+        child.env(
+            HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV,
+            flamegraph.frequency.to_string(),
+        );
+    }
+
+    let output = child.output().await.wrap_err_with(|| {
+        format!(
+            "Failed to run hydrolysis preview test binary {}",
+            binary_path.display()
+        )
+    })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let details = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("exit status {}", output.status)
+        };
+        bail!("Hydrolysis preview test binary failed: {details}");
+    }
+
+    if let Some(flamegraph) = flamegraph {
+        let flamegraph_path = absolute_output_path(&flamegraph.output_path)?;
+        let metadata = smol::fs::metadata(&flamegraph_path)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Hydrolysis preview perf did not produce flamegraph {}",
+                    flamegraph_path.display()
+                )
+            })?;
+        if metadata.len() == 0 {
+            bail!(
+                "Hydrolysis preview perf wrote empty flamegraph to {}",
+                flamegraph_path.display()
+            );
+        }
+    }
+
+    Ok(stdout)
 }
 
 fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
