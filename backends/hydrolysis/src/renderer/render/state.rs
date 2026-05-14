@@ -4,6 +4,7 @@ use super::*;
 pub struct HydroState {
     pub font_cx: parley::FontContext,
     pub layout_cx: parley::LayoutContext,
+    pub(crate) text_layout_cache: BTreeMap<TextLayoutCacheKey, parley::Layout<[u8; 4]>>,
     pub(crate) dynamic_intrinsic_cache: BTreeMap<usize, ViewDimensions>,
     pub(crate) dynamic_dimensions_cache:
         BTreeMap<(usize, Option<u32>, Option<u32>), ViewDimensions>,
@@ -21,6 +22,7 @@ impl Default for HydroState {
         Self {
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),
+            text_layout_cache: BTreeMap::new(),
             dynamic_intrinsic_cache: BTreeMap::new(),
             dynamic_dimensions_cache: BTreeMap::new(),
             dynamic_measurement_stack: Vec::new(),
@@ -31,6 +33,35 @@ impl Default for HydroState {
             frame_queue: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct TextLayoutCacheKey {
+    pub(crate) text: String,
+    pub(crate) spans: Vec<TextLayoutSpanCacheKey>,
+    pub(crate) default_font: TextLayoutFontCacheKey,
+    pub(crate) default_brush: [u8; 4],
+    pub(crate) alignment_low: u64,
+    pub(crate) alignment_high: u64,
+    pub(crate) max_width: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct TextLayoutSpanCacheKey {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) font: TextLayoutFontCacheKey,
+    pub(crate) foreground: Option<[u8; 4]>,
+    pub(crate) italic: bool,
+    pub(crate) underline: bool,
+    pub(crate) strikethrough: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct TextLayoutFontCacheKey {
+    pub(crate) size: u32,
+    pub(crate) weight: u16,
+    pub(crate) family: Option<String>,
 }
 
 impl HydroState {

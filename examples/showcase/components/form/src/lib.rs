@@ -183,3 +183,15 @@ fn sample_card() -> impl View {
     ))
     .padding_with(EdgeInsets::all(16.0))
 }
+
+#[preview]
+fn form_preview() -> impl View {
+    main(
+        AppSettings::binding(),
+        RegistrationForm::binding(),
+        binding(""),
+        binding(false),
+        binding(5),
+        binding(0.5),
+    )
+}

@@ -237,6 +237,30 @@ impl PerfRun<'_> {
             .pump_frame(&self.app.app.content, &self.app.app.env)
     }
 
+    /// Queues a pointer move for the next measured frame without settling the app.
+    pub fn pointer_move(&mut self, x: f32, y: f32) {
+        let _ = self.app.app.driver.pointer_move(x, y, &self.app.app.env);
+    }
+
+    /// Queues a primary pointer down for the next measured frame without settling the app.
+    pub fn pointer_down(&mut self, x: f32, y: f32) {
+        let _ = self.app.app.driver.pointer_down(x, y, &self.app.app.env);
+    }
+
+    /// Queues a primary pointer up for the next measured frame without settling the app.
+    pub fn pointer_up(&mut self, x: f32, y: f32) {
+        let _ = self.app.app.driver.pointer_up(x, y, &self.app.app.env);
+    }
+
+    /// Queues a wheel/trackpad scroll event for the next measured frame without settling the app.
+    pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
+        let _ = self
+            .app
+            .app
+            .driver
+            .scroll_at(x, y, dx, dy, is_line_delta, &self.app.app.env);
+    }
+
     /// Accesses semantic assertions and interactions during a performance run.
     #[must_use]
     pub fn app(&mut self) -> &mut OffscreenApp {

@@ -22,6 +22,15 @@ pub trait A11yDriver {
     fn pointer_down(&mut self, x: f32, y: f32, env: &Environment) -> bool;
     fn pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool;
     fn pointer_up(&mut self, x: f32, y: f32, env: &Environment) -> bool;
+    fn scroll_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        is_line_delta: bool,
+        env: &Environment,
+    ) -> bool;
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool;
     fn clear_ui_focus(&mut self, env: &Environment) -> bool;
     fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming;
@@ -163,6 +172,29 @@ impl A11yDriver for HydrolysisA11yDriver {
             x,
             y,
             button: PointerButton::Primary,
+        });
+        true
+    }
+
+    fn scroll_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        is_line_delta: bool,
+        _env: &Environment,
+    ) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing scroll requested before runtime initialization");
+        runtime.push_input_event(InputEvent::Scroll {
+            x,
+            y,
+            dx,
+            dy,
+            is_line_delta,
         });
         true
     }

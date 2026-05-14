@@ -1,3 +1,4 @@
+use super::state::{TextLayoutCacheKey, TextLayoutFontCacheKey, TextLayoutSpanCacheKey};
 use super::*;
 use waterui_core::handler::BoxedAction;
 use waterui_form::picker::PickerStyle;
@@ -446,9 +447,38 @@ impl HydrolysisRenderer {
             return parley::Layout::new();
         }
 
-        let mut family_storage = Vec::new();
         let default_font = waterui_text::font::Font::default().resolve(env).get();
         let default_brush = Self::default_text_brush(env);
+        let resolved_spans = spans
+            .into_iter()
+            .map(|(range, style)| (range, resolve_text_style(&style, env)))
+            .collect::<Vec<_>>();
+        let alignment_id = alignment.stable_id();
+        let cache_key = TextLayoutCacheKey {
+            text: plain.clone(),
+            spans: resolved_spans
+                .iter()
+                .map(|(range, style)| TextLayoutSpanCacheKey {
+                    start: range.start,
+                    end: range.end,
+                    font: text_layout_font_cache_key(&style.font),
+                    foreground: style.foreground,
+                    italic: style.italic,
+                    underline: style.underline,
+                    strikethrough: style.strikethrough,
+                })
+                .collect(),
+            default_font: text_layout_font_cache_key(&default_font),
+            default_brush,
+            alignment_low: alignment_id.low(),
+            alignment_high: alignment_id.high(),
+            max_width: max_width.map(f32::to_bits),
+        };
+        if let Some(layout) = state.text_layout_cache.get(&cache_key) {
+            return layout.clone();
+        }
+
+        let mut family_storage = Vec::new();
         let mut builder = state
             .layout_cx
             .ranged_builder(&mut state.font_cx, &plain, 1.0, true);
@@ -472,8 +502,8 @@ impl HydrolysisRenderer {
         };
         builder.push_default(parley::StyleProperty::FontStack(default_font_stack));
 
-        for (range, style) in spans {
-            Self::push_text_style(&mut builder, &mut family_storage, style, range, env);
+        for (range, style) in &resolved_spans {
+            Self::push_text_style(&mut builder, &mut family_storage, style, range.clone());
         }
 
         let mut layout = builder.build(&plain);
@@ -483,6 +513,7 @@ impl HydrolysisRenderer {
             parley_alignment(alignment),
             parley::AlignmentOptions::default(),
         );
+        state.text_layout_cache.insert(cache_key, layout.clone());
         layout
     }
 
@@ -556,20 +587,18 @@ impl HydrolysisRenderer {
     fn push_text_style(
         builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
         family_storage: &mut Vec<String>,
-        style: TextStyle,
+        style: &ResolvedTextStyle,
         range: std::ops::Range<usize>,
-        env: &Environment,
     ) {
-        let resolved_font = style.font.resolve(env).get();
         builder.push(
-            parley::StyleProperty::FontSize(resolved_font.size),
+            parley::StyleProperty::FontSize(style.font.size),
             range.clone(),
         );
         builder.push(
-            parley::StyleProperty::FontWeight(parley_font_weight(resolved_font.weight)),
+            parley::StyleProperty::FontWeight(parley_font_weight(style.font.weight)),
             range.clone(),
         );
-        if let Some(family) = resolved_font.family {
+        if let Some(family) = &style.font.family {
             family_storage.push(family.to_string());
             let family_name = family_storage
                 .last()
@@ -598,11 +627,52 @@ impl HydrolysisRenderer {
             range.clone(),
         );
         if let Some(color) = style.foreground {
-            builder.push(
-                parley::StyleProperty::Brush(resolved_color_to_rgba8(color.resolve(env).get())),
-                range,
-            );
+            builder.push(parley::StyleProperty::Brush(color), range);
         }
+    }
+}
+
+#[derive(Debug)]
+struct ResolvedTextStyle {
+    font: waterui_text::font::ResolvedFont,
+    foreground: Option<[u8; 4]>,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+}
+
+fn resolve_text_style(style: &TextStyle, env: &Environment) -> ResolvedTextStyle {
+    ResolvedTextStyle {
+        font: style.font.resolve(env).get(),
+        foreground: style
+            .foreground
+            .clone()
+            .map(|color| resolved_color_to_rgba8(color.resolve(env).get())),
+        italic: style.italic,
+        underline: style.underline,
+        strikethrough: style.strikethrough,
+    }
+}
+
+fn text_layout_font_cache_key(font: &waterui_text::font::ResolvedFont) -> TextLayoutFontCacheKey {
+    TextLayoutFontCacheKey {
+        size: font.size.to_bits(),
+        weight: text_font_weight_cache_key(font.weight),
+        family: font.family.as_ref().map(ToString::to_string),
+    }
+}
+
+const fn text_font_weight_cache_key(weight: TextFontWeight) -> u16 {
+    match weight {
+        TextFontWeight::Thin => 100,
+        TextFontWeight::UltraLight => 200,
+        TextFontWeight::Light => 300,
+        TextFontWeight::Normal => 400,
+        TextFontWeight::Medium => 500,
+        TextFontWeight::SemiBold => 600,
+        TextFontWeight::Bold => 700,
+        TextFontWeight::UltraBold => 800,
+        TextFontWeight::Black => 900,
     }
 }
 

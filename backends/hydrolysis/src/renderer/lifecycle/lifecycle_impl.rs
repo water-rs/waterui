@@ -419,14 +419,9 @@ impl HydrolysisRenderer {
         for target in &subtree.text_input_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
             #[cfg(feature = "accessibility")]
-            let accessibility_node_id = target.accessibility_node_id.map(|node_id| {
-                *accessibility_node_map.get(&node_id).unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis dynamic text input accessibility node {:?} is missing remap entry",
-                        node_id
-                    )
-                })
-            });
+            let accessibility_node_id = target
+                .accessibility_node_id
+                .map(|node_id| accessibility_node_map.map(node_id));
             self.register_text_input_target_data(text_editing::TextInputTargetData {
                 target: TextInputTargetRegistration {
                     bounds: transformed_rect(ctx.hit_transform, target.bounds),
