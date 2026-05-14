@@ -446,9 +446,10 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
     }
     if runtime.renderer.take_rebuild_request() {
         runtime.needs_rebuild = true;
-        return;
+    } else {
+        runtime.renderer.request_redraw();
     }
-    runtime.renderer.request_redraw();
+    runtime.platform.request_redraw();
 }
 
 fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
@@ -1284,6 +1285,66 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
         target[channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
     }
     target[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::{
+        HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow, schedule_redraw_or_rebuild,
+    };
+    use crate::platform::PlatformWindow as _;
+    use crate::renderer::HydrolysisRenderer;
+    use core::time::Duration;
+    use waterui::window::{Window, WindowState};
+    use waterui_core::binding;
+
+    #[test]
+    fn changed_redraw_only_input_wakes_platform_window() {
+        let mut runtime = test_runtime_window();
+        runtime.needs_rebuild = false;
+
+        schedule_redraw_or_rebuild(&mut runtime, true);
+
+        assert!(!runtime.needs_rebuild);
+        assert!(runtime.renderer.take_redraw_request());
+        assert!(runtime.platform.take_redraw_request());
+    }
+
+    #[test]
+    fn changed_rebuild_input_wakes_platform_window() {
+        let mut runtime = test_runtime_window();
+        runtime.needs_rebuild = false;
+        runtime.renderer.request_rebuild();
+
+        schedule_redraw_or_rebuild(&mut runtime, true);
+
+        assert!(runtime.needs_rebuild);
+        assert!(
+            runtime.platform.take_redraw_request(),
+            "rebuild input must wake the platform event loop for the next frame"
+        );
+    }
+
+    fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
+        let window = Window::new("", binding(WindowState::Normal), || ());
+        let mut platform =
+            HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
+        platform.apply_properties(&window);
+        let renderer = {
+            let surface = platform.surface();
+            HydrolysisRenderer::new(surface.device())
+        };
+        RuntimeWindow::new(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig {
+                enabled: false,
+                interval: Duration::from_secs(1),
+                slow_frame_threshold: Duration::from_millis(16),
+            },
+        )
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
