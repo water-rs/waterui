@@ -185,6 +185,7 @@ windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 zbus = "5"
 minstant = "0.1"
 cpu-time = "1.0"
+sysinfo = "0.37"
 sys-locale = "0.3"
 iana-time-zone = "0.1"
 dirs = "6"
