@@ -100,6 +100,23 @@ impl ScrollHandle {
         state.metrics()
     }
 
+    pub fn update_layout(
+        &mut self,
+        axis: Axis,
+        viewport_width: f64,
+        viewport_height: f64,
+        content_width: f64,
+        content_height: f64,
+    ) {
+        self.generation = self.state.borrow_mut().prepare_generation(
+            axis,
+            viewport_width,
+            viewport_height,
+            content_width,
+            content_height,
+        );
+    }
+
     pub fn apply_scroll_delta(&self, dx: f32, dy: f32, is_line_delta: bool) -> bool {
         let mut state = self.state.borrow_mut();
         if state.generation != self.generation {
