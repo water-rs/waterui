@@ -1,10 +1,10 @@
 use crate::engine::DrawContext;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TextInputModel,
-    TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
-    measure_secure_field_intrinsic, measure_text_field_intrinsic, measure_view_intrinsic,
-    normalize_view_for_render, transformed_rect,
+    clamp_to_char_boundary, measure_secure_field_intrinsic, measure_text_field_intrinsic,
+    measure_view_intrinsic, normalize_view_for_render, transformed_rect, HydroNativeView,
+    HydroState, HydrolysisRenderer, RenderContext, TextInputModel, TextInputTargetRegistration,
+    WidgetRenderContext,
 };
 use core::num::NonZeroUsize;
 use waterui::cursor::CursorStyle;
@@ -180,6 +180,8 @@ pub(crate) fn render_text_field(
         .renderer_mut()
         .accessibility_label_from_label(&text_field.label, env);
     let label_view = normalize_view_for_render(AnyView::new(text_field.label), env);
+    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
+    let label_height = material_input_label_height(label_size, input_metrics.label_height);
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
     #[cfg(feature = "accessibility")]
     {
@@ -232,28 +234,7 @@ pub(crate) fn render_text_field(
                 .push_pending_text_input_accessibility_node(node_id);
         }
     }
-    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
-    let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(input_metrics.label_height)
-    } else {
-        0.0
-    };
-    if label_height > 0.0 {
-        let label_rect = vello::kurbo::Rect::new(
-            ctx.bounds.x0,
-            ctx.bounds.y0,
-            ctx.bounds.x1,
-            (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
-        );
-        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
-    }
-
-    let field_rect = vello::kurbo::Rect::new(
-        ctx.bounds.x0,
-        ctx.bounds.y0 + label_height,
-        ctx.bounds.x1,
-        ctx.bounds.y1,
-    );
+    let field_rect = ctx.bounds;
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
@@ -275,6 +256,13 @@ pub(crate) fn render_text_field(
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
         theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
+    }
+    if label_height > 0.0 {
+        ctx.dispatch_in_rect_without_accessibility(
+            env,
+            label_view,
+            material_input_label_rect(field_rect, input_metrics.horizontal_inset, label_height),
+        );
     }
 
     let prompt_signal = text_field.prompt.content.clone();
@@ -319,10 +307,11 @@ pub(crate) fn render_text_field(
     } else {
         StyledStr::plain(display)
     };
-    let text_bounds = crate::widgets::util::inset_rect(
+    let text_bounds = material_input_text_rect(
         field_rect,
         input_metrics.horizontal_inset,
         input_metrics.vertical_inset,
+        label_height,
     );
     let committed_layout = HydrolysisRenderer::build_text_layout(
         ctx.state_mut(),
@@ -437,6 +426,8 @@ pub(crate) fn render_secure_field(
         .renderer_mut()
         .accessibility_label_from_label(&secure_field.label, env);
     let label_view = normalize_view_for_render(AnyView::new(secure_field.label), env);
+    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
+    let label_height = material_input_label_height(label_size, input_metrics.label_height);
     #[cfg(feature = "accessibility")]
     {
         let secure_len = ctx
@@ -472,28 +463,7 @@ pub(crate) fn render_secure_field(
                 .push_pending_text_input_accessibility_node(node_id);
         }
     }
-    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
-    let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(input_metrics.label_height)
-    } else {
-        0.0
-    };
-    if label_height > 0.0 {
-        let label_rect = vello::kurbo::Rect::new(
-            ctx.bounds.x0,
-            ctx.bounds.y0,
-            ctx.bounds.x1,
-            (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
-        );
-        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
-    }
-
-    let field_rect = vello::kurbo::Rect::new(
-        ctx.bounds.x0,
-        ctx.bounds.y0 + label_height,
-        ctx.bounds.x1,
-        ctx.bounds.y1,
-    );
+    let field_rect = ctx.bounds;
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
@@ -515,6 +485,13 @@ pub(crate) fn render_secure_field(
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
         theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
+    }
+    if label_height > 0.0 {
+        ctx.dispatch_in_rect_without_accessibility(
+            env,
+            label_view,
+            material_input_label_rect(field_rect, input_metrics.horizontal_inset, label_height),
+        );
     }
 
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
@@ -552,10 +529,11 @@ pub(crate) fn render_secure_field(
             plain_value,
         )
     };
-    let text_bounds = crate::widgets::util::inset_rect(
+    let text_bounds = material_input_text_rect(
         field_rect,
         input_metrics.horizontal_inset,
         input_metrics.vertical_inset,
+        label_height,
     );
     let masked_display = StyledStr::plain(masked.clone());
     let committed_layout = HydrolysisRenderer::build_text_layout(
@@ -655,4 +633,40 @@ pub(crate) fn render_secure_field(
             model: input_model,
             selection: selection_slot,
         });
+}
+
+fn material_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
+    if label_size.width > 0.0 || label_size.height > 0.0 {
+        f64::from(label_size.height).max(min_label_height)
+    } else {
+        0.0
+    }
+}
+
+fn material_input_label_rect(
+    field_rect: vello::kurbo::Rect,
+    horizontal_inset: f64,
+    label_height: f64,
+) -> vello::kurbo::Rect {
+    let y0 = field_rect.y0 + 4.0;
+    vello::kurbo::Rect::new(
+        field_rect.x0 + horizontal_inset,
+        y0,
+        field_rect.x1 - horizontal_inset,
+        (y0 + label_height).min(field_rect.y1),
+    )
+}
+
+fn material_input_text_rect(
+    field_rect: vello::kurbo::Rect,
+    horizontal_inset: f64,
+    vertical_inset: f64,
+    label_height: f64,
+) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        field_rect.x0 + horizontal_inset,
+        field_rect.y0 + vertical_inset + label_height,
+        field_rect.x1 - horizontal_inset,
+        field_rect.y1 - vertical_inset,
+    )
 }

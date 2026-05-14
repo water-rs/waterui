@@ -1,6 +1,6 @@
 use super::*;
-use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
+use waterui_form::picker::PickerStyle;
 
 pub(crate) struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
@@ -840,7 +840,11 @@ pub(crate) fn measure_text_field_intrinsic(
     let metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(&text_field.label, state, env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_height = f64::from(label_size.height).max(metrics.label_height);
+    let label_height = if has_label {
+        f64::from(label_size.height).max(metrics.label_height)
+    } else {
+        0.0
+    };
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
     let prompt = text_field.prompt.content.get();
     let value = text_field.value.get();
@@ -852,18 +856,14 @@ pub(crate) fn measure_text_field_intrinsic(
     );
     let content_width =
         f64::from(prompt_size.width.max(value_size.width)) + metrics.horizontal_inset * 2.0;
-    let content_height =
-        f64::from(prompt_size.height.max(value_size.height)) + metrics.vertical_inset * 2.0;
+    let content_height = f64::from(prompt_size.height.max(value_size.height))
+        + metrics.vertical_inset * 2.0
+        + label_height;
 
     let field_width = content_width.max(metrics.min_width);
     let field_height = content_height.max(metrics.min_height);
-    let width = f64::from(label_size.width).max(field_width);
-    let height = if has_label {
-        label_height + field_height
-    } else {
-        field_height
-    };
-    LayoutSize::new(width as f32, height as f32)
+    let width = (f64::from(label_size.width) + metrics.horizontal_inset * 2.0).max(field_width);
+    LayoutSize::new(width as f32, field_height as f32)
 }
 
 pub(crate) fn measure_secure_field_intrinsic(
@@ -875,7 +875,11 @@ pub(crate) fn measure_secure_field_intrinsic(
     let metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(&secure_field.label, state, env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_height = f64::from(label_size.height).max(metrics.label_height);
+    let label_height = if has_label {
+        f64::from(label_size.height).max(metrics.label_height)
+    } else {
+        0.0
+    };
     let secure_len = secure_field.value.get().expose().chars().count();
     let masked = if secure_len == 0 {
         StyledStr::plain("")
@@ -885,15 +889,10 @@ pub(crate) fn measure_secure_field_intrinsic(
     let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, masked, env);
     let field_width =
         (f64::from(value_size.width) + metrics.horizontal_inset * 2.0).max(metrics.min_width);
-    let field_height =
-        (f64::from(value_size.height) + metrics.vertical_inset * 2.0).max(metrics.min_height);
-    let width = f64::from(label_size.width).max(field_width);
-    let height = if has_label {
-        label_height + field_height
-    } else {
-        field_height
-    };
-    LayoutSize::new(width as f32, height as f32)
+    let field_height = (f64::from(value_size.height) + metrics.vertical_inset * 2.0 + label_height)
+        .max(metrics.min_height);
+    let width = (f64::from(label_size.width) + metrics.horizontal_inset * 2.0).max(field_width);
+    LayoutSize::new(width as f32, field_height as f32)
 }
 
 pub(crate) fn measure_table_metrics(
