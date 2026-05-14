@@ -141,8 +141,8 @@ impl HydroNativeView for Native<Dynamic> {
                         state.dynamic_dimensions_cache.get(&proposal_key).cloned()
                     {
                         dimensions
-                    } else if proposal == ProposalSize::UNSPECIFIED {
-                        state
+                    } else {
+                        let dimensions = state
                             .dynamic_intrinsic_cache
                             .get(&identity)
                             .cloned()
@@ -150,12 +150,13 @@ impl HydroNativeView for Native<Dynamic> {
                                 panic!(
                                     "hydrolysis Dynamic intrinsic cache miss for connected dynamic node"
                                 )
-                            })
-                    } else {
-                        panic!(
-                            "hydrolysis Dynamic proposal dimensions cache miss for connected dynamic node {identity} with proposal {:?}",
-                            proposal
-                        )
+                            });
+                        if proposal != ProposalSize::UNSPECIFIED {
+                            state
+                                .dynamic_dimensions_cache
+                                .insert(proposal_key, dimensions.clone());
+                        }
+                        dimensions
                     }
                 }
             },
