@@ -6,6 +6,7 @@ use core::f32::consts::PI;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::{binding, Binding};
 use waterui::view;
 use waterui_particle::{ParticleShape, ParticleSystem};
@@ -280,6 +281,7 @@ fn bounce_box() -> impl View {
 }
 
 /// Main View
+#[preview]
 fn main() -> impl View {
     let mode = binding(0);
     let is_confetti = mode.clone().map(|m| m == 5);

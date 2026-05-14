@@ -1,6 +1,7 @@
-use waterui::{Environment, app::App, prelude::*};
+use waterui::{Environment, app::App, prelude::*, preview};
 use waterui_barcode::Barcode;
 
+#[preview]
 fn main() -> impl View {
     vstack((
         text("Scan me!").title(),
