@@ -8,10 +8,12 @@
 
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
 
 /// Main view with map and controls
+#[preview]
 fn main_view() -> impl View {
     // San Francisco coordinates
     let sf = Coordinate::new(37.7749, -122.4194);

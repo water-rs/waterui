@@ -8,7 +8,9 @@
 use waterui::app::App;
 use waterui::graphics::shader;
 use waterui::prelude::*;
+use waterui::preview;
 
+#[preview]
 fn main() -> impl View {
     vstack((
         text!("Flame Animation").title(),

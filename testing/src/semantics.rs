@@ -30,6 +30,8 @@ impl Role {
     pub const SLIDER: Self = Self(AccessibilityRole::Slider);
     /// Image role.
     pub const IMAGE: Self = Self(AccessibilityRole::Image);
+    /// Scroll view role.
+    pub const SCROLL_VIEW: Self = Self(AccessibilityRole::ScrollView);
     /// List role.
     pub const LIST: Self = Self(AccessibilityRole::List);
     /// List item role.

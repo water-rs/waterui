@@ -1,5 +1,6 @@
-use waterui::prelude::*;
 use waterui::app::App;
+use waterui::prelude::*;
+use waterui::preview;
 
 // Demo form data structure
 #[form]
@@ -11,6 +12,7 @@ struct UserProfile {
     theme_brightness: f64,
 }
 
+#[preview]
 fn main() -> impl View {
     // Reactive state
     let profile = UserProfile::binding();
