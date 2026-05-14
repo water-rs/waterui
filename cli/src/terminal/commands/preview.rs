@@ -3,6 +3,7 @@
 //! Renders, tests, or profiles a WaterUI preview.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
@@ -24,6 +25,8 @@ use waterui_cli::preview::{
 use waterui_cli::preview::{HydrolysisPreviewFlamegraph, HydrolysisPreviewPerfConfig};
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
+
+const PREVIEW_PERF_HTML_TEMPLATE: &str = include_str!("../../templates/preview_perf_report.html");
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -123,8 +126,11 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
     )
     .await?;
     let sccache_path = resolve_sccache_path().await;
+    let format_output = args.output.clone();
+    let flamegraph_path =
+        resolve_preview_perf_flamegraph_path(args.all, format_output.as_deref(), args.flamegraph);
     let flamegraphs = resolve_flamegraphs(
-        args.flamegraph.as_deref(),
+        Some(flamegraph_path.as_path()),
         args.all,
         &targets,
         args.flamegraph_frequency,
@@ -132,15 +138,23 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
     let json_reports =
         resolve_perf_artifacts(args.report_json.as_deref(), args.all, &targets, "json")?;
     let traces = resolve_perf_artifacts(args.trace.as_deref(), args.all, &targets, "json")?;
+    let html_reports =
+        resolve_perf_mode_artifacts(args.format, format_output.as_deref(), args.all, &targets)?;
+    let mut reports = Vec::new();
 
-    for (((target, flamegraph), json_report), trace) in targets
+    for ((((target, flamegraph), json_report), trace), html_report) in targets
         .into_iter()
         .zip(flamegraphs.into_iter())
         .zip(json_reports.into_iter())
         .zip(traces.into_iter())
+        .zip(html_reports.into_iter())
     {
-        header!("Preview perf: {}", target.display_name());
-        let spinner = shell::spinner("Building and profiling with hydrolysis...");
+        if args.format != PreviewPerfOutputFormat::Json {
+            header!("Preview perf: {}", target.display_name());
+        }
+        let spinner = (args.format != PreviewPerfOutputFormat::Json)
+            .then(|| shell::spinner("Building and profiling with hydrolysis..."))
+            .flatten();
         let output = test_preview_with_hydrolysis(
             &project_path,
             target.hydrolysis_source(),
@@ -161,23 +175,57 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
-        emit_child_output(&output);
-        let perf_report = parse_preview_perf_output(target.display_name().to_string(), &output)?;
+        let mut perf_report =
+            parse_preview_perf_output(target.display_name().to_string(), &output)?;
+        if let Some(flamegraph) = flamegraph.as_ref() {
+            perf_report.flamegraph = Some(flamegraph.output_path.clone());
+        }
         enforce_perf_budget(&perf_report, args.max_p95_us, args.max_rebuild_ratio)?;
+        if args.format == PreviewPerfOutputFormat::Human {
+            emit_preview_perf_human(&perf_report);
+        }
         if let Some(path) = json_report {
             write_preview_perf_json(&path, &perf_report).await?;
         }
         if let Some(path) = trace {
             write_preview_perf_trace(&path, &perf_report).await?;
         }
-        if let Some(flamegraph) = flamegraph {
-            success!(
-                "Preview perf passed: {} (flamegraph: {})",
-                target.display_name(),
-                flamegraph.output_path.display()
-            );
-        } else {
-            success!("Preview perf passed: {}", target.display_name());
+        if let Some(path) = html_report {
+            write_preview_perf_html(&path, std::slice::from_ref(&perf_report)).await?;
+            open_preview_perf_html(&path).await?;
+            success!("Preview perf report opened: {}", path.display());
+        }
+        if args.format != PreviewPerfOutputFormat::Json {
+            if let Some(flamegraph) = flamegraph {
+                success!(
+                    "Preview perf passed: {} (flamegraph: {})",
+                    target.display_name(),
+                    flamegraph.output_path.display()
+                );
+            } else {
+                success!("Preview perf passed: {}", target.display_name());
+            }
+        }
+        reports.push(perf_report);
+    }
+
+    match args.format {
+        PreviewPerfOutputFormat::Human => {}
+        PreviewPerfOutputFormat::Json => {
+            if let Some(path) = format_output.as_deref() {
+                write_preview_perf_output_json(path, &reports).await?;
+            } else {
+                write_preview_perf_stdout_json(&reports)?;
+            }
+        }
+        PreviewPerfOutputFormat::Html => {
+            if args.all {
+                let path =
+                    format_output.unwrap_or_else(|| PathBuf::from("preview-perf-report.html"));
+                write_preview_perf_html(&path, &reports).await?;
+                open_preview_perf_html(&path).await?;
+                success!("Preview perf report opened: {}", path.display());
+            }
         }
     }
 
@@ -373,15 +421,50 @@ struct PreviewPerfArgs {
     #[arg(long)]
     max_rebuild_ratio: Option<f64>,
 
+    /// Presentation mode for perf results.
+    #[arg(long, value_enum, default_value_t = PreviewPerfOutputFormat::Human)]
+    format: PreviewPerfOutputFormat,
+
+    /// Output path for `--format json` or `--format html`. HTML opens automatically.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum PreviewPerfOutputFormat {
+    /// Human-friendly terminal summary.
+    Human,
+    /// Structured JSON written to stdout or `--output`.
+    Json,
+    /// Minimal visual HTML report written to `--output` and opened in the browser.
+    Html,
+}
+
+impl core::fmt::Display for PreviewPerfOutputFormat {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Human => f.write_str("human"),
+            Self::Json => f.write_str("json"),
+            Self::Html => f.write_str("html"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewPerfOutput<'a> {
+    reports: &'a [PreviewPerfReport],
 }
 
 #[derive(Debug, Serialize)]
 struct PreviewPerfReport {
     target: String,
     measurements: Vec<PreviewPerfMeasurement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flamegraph: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -399,6 +482,7 @@ struct PreviewPerfMeasurement {
     measurement_cache_hits: u64,
     measurement_cache_misses: u64,
     phases: PreviewPerfPhases,
+    frames: Vec<PreviewPerfFrame>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -409,6 +493,28 @@ struct PreviewPerfPhases {
     render_p95_us: u64,
     animation_mean_us: u64,
     input_mean_us: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewPerfFrame {
+    index: u64,
+    total_us: u64,
+    rebuild_us: u64,
+    render_us: u64,
+    acquire_us: u64,
+    present_us: u64,
+    animation_us: u64,
+    input_us: u64,
+    executor_before_us: u64,
+    executor_after_us: u64,
+    rebuilt: bool,
+    rendered: bool,
+    captured_snapshot: bool,
+    cpu_percent: f64,
+    memory_bytes: u64,
+    gpu_frame_us: u64,
+    measurement_cache_hits: u64,
+    measurement_cache_misses: u64,
 }
 
 /// Run the preview command.
@@ -801,7 +907,7 @@ fn resolve_flamegraphs(
     let default_marker = Path::new("__waterui_default_flamegraph__");
     if all {
         let dir = if path == default_marker {
-            PathBuf::from("preview-flamegraphs")
+            std::env::temp_dir().join("waterui-preview-flamegraphs")
         } else {
             path.to_path_buf()
         };
@@ -826,7 +932,7 @@ fn resolve_flamegraphs(
         bail!("internal error: single flamegraph path received for multiple preview targets");
     }
     let output_path = if path == default_marker {
-        PathBuf::from("preview-flamegraph.svg")
+        std::env::temp_dir().join("waterui-preview-flamegraph.svg")
     } else {
         path.to_path_buf()
     };
@@ -840,6 +946,22 @@ fn resolve_flamegraphs(
         output_path,
         frequency,
     })])
+}
+
+fn resolve_preview_perf_flamegraph_path(
+    all: bool,
+    output: Option<&Path>,
+    flamegraph: Option<PathBuf>,
+) -> PathBuf {
+    flamegraph.unwrap_or_else(|| {
+        if all {
+            PathBuf::from("__waterui_default_flamegraph__")
+        } else {
+            output
+                .map(|path| path.with_extension("flamegraph.svg"))
+                .unwrap_or_else(|| PathBuf::from("__waterui_default_flamegraph__"))
+        }
+    })
 }
 
 fn resolve_perf_artifacts(
@@ -878,6 +1000,41 @@ fn resolve_perf_artifacts(
     Ok(vec![Some(path.to_path_buf())])
 }
 
+fn resolve_perf_mode_artifacts(
+    format: PreviewPerfOutputFormat,
+    output: Option<&Path>,
+    all: bool,
+    targets: &[PreviewTarget],
+) -> Result<Vec<Option<PathBuf>>> {
+    match format {
+        PreviewPerfOutputFormat::Human | PreviewPerfOutputFormat::Json => {
+            Ok(std::iter::repeat_with(|| None)
+                .take(targets.len())
+                .collect())
+        }
+        PreviewPerfOutputFormat::Html if all => Ok(std::iter::repeat_with(|| None)
+            .take(targets.len())
+            .collect()),
+        PreviewPerfOutputFormat::Html => {
+            if targets.len() != 1 {
+                bail!(
+                    "internal error: single HTML report path received for multiple preview targets"
+                );
+            }
+            let path = output
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| std::env::temp_dir().join("waterui-preview-perf.html"));
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            Ok(vec![Some(path)])
+        }
+    }
+}
+
 fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerfReport> {
     let mut measurements = BTreeMap::<String, PreviewPerfMeasurement>::new();
     for line in output.lines().map(str::trim) {
@@ -899,6 +1056,7 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                     measurement_cache_hits: 0,
                     measurement_cache_misses: 0,
                     phases: PreviewPerfPhases::default(),
+                    frames: Vec::new(),
                 },
             );
         } else if let Some(rest) = line.strip_prefix("perf-phases ") {
@@ -922,6 +1080,36 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                 parse_required_field(&fields, "measurement_cache_hits")?;
             measurement.measurement_cache_misses =
                 parse_required_field(&fields, "measurement_cache_misses")?;
+        } else if let Some(rest) = line.strip_prefix("perf-sample ") {
+            let (name, fields) = parse_named_perf_fields(rest)?;
+            let measurement = measurements.get_mut(&name).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Hydrolysis preview perf emitted sample before measurement `{name}`"
+                )
+            })?;
+            measurement.frames.push(PreviewPerfFrame {
+                index: parse_required_field(&fields, "index")?,
+                total_us: parse_required_field(&fields, "total")?,
+                rebuild_us: parse_required_field(&fields, "rebuild")?,
+                render_us: parse_required_field(&fields, "render")?,
+                acquire_us: parse_required_field(&fields, "acquire")?,
+                present_us: parse_required_field(&fields, "present")?,
+                animation_us: parse_required_field(&fields, "animation")?,
+                input_us: parse_required_field(&fields, "input")?,
+                executor_before_us: parse_required_field(&fields, "executor_before")?,
+                executor_after_us: parse_required_field(&fields, "executor_after")?,
+                rebuilt: parse_required_field(&fields, "rebuilt")? != 0,
+                rendered: parse_required_field(&fields, "rendered")? != 0,
+                captured_snapshot: parse_required_field(&fields, "captured_snapshot")? != 0,
+                cpu_percent: parse_required_field(&fields, "cpu_percent_milli")? as f64 / 1000.0,
+                memory_bytes: parse_required_field(&fields, "memory_bytes")?,
+                gpu_frame_us: parse_required_field(&fields, "gpu_frame")?,
+                measurement_cache_hits: parse_required_field(&fields, "measurement_cache_hits")?,
+                measurement_cache_misses: parse_required_field(
+                    &fields,
+                    "measurement_cache_misses",
+                )?,
+            });
         }
     }
     if measurements.is_empty() {
@@ -930,6 +1118,116 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
     Ok(PreviewPerfReport {
         target,
         measurements: measurements.into_values().collect(),
+        flamegraph: None,
+    })
+}
+
+fn emit_preview_perf_human(report: &PreviewPerfReport) {
+    // This deliberately stays compact and regular: the default terminal format is optimized for
+    // humans and LLM agents to scan, while stable machine consumption belongs to JSON mode.
+    note!("Perf report: {}", report.target);
+    for measurement in &report.measurements {
+        note!(
+            "  {}: samples={} mean={} median={} p95={} min={} max={} rebuilt={}/{} missed120={}/{} missed60={}/{}",
+            measurement.name,
+            measurement.samples,
+            micros_label(measurement.mean_us),
+            micros_label(measurement.median_us),
+            micros_label(measurement.p95_us),
+            micros_label(measurement.min_us),
+            micros_label(measurement.max_us),
+            measurement.rebuilt_frames,
+            measurement.samples,
+            measurement.missed_120fps_frames,
+            measurement.samples,
+            measurement.missed_60fps_frames,
+            measurement.samples
+        );
+        note!(
+            "    phases: rebuild mean={} p95={} | render mean={} p95={} | animation mean={} | input mean={}",
+            micros_label(measurement.phases.rebuild_mean_us),
+            micros_label(measurement.phases.rebuild_p95_us),
+            micros_label(measurement.phases.render_mean_us),
+            micros_label(measurement.phases.render_p95_us),
+            micros_label(measurement.phases.animation_mean_us),
+            micros_label(measurement.phases.input_mean_us)
+        );
+        note!(
+            "    caches: measurement hits={} misses={}",
+            measurement.measurement_cache_hits,
+            measurement.measurement_cache_misses
+        );
+        if let Some(resources) = resource_summary(measurement) {
+            note!(
+                "    resources: cpu avg={:.1}% max={:.1}% | memory max={} | gpu-frame avg={} max={} | raw_samples={}",
+                resources.avg_cpu_percent,
+                resources.max_cpu_percent,
+                bytes_label(resources.max_memory_bytes),
+                micros_label(resources.avg_gpu_frame_us),
+                micros_label(resources.max_gpu_frame_us),
+                measurement.frames.len()
+            );
+        }
+    }
+    if let Some(flamegraph) = &report.flamegraph {
+        note!("  flamegraph: {}", flamegraph.display());
+    }
+}
+
+fn micros_label(value: u64) -> String {
+    format!("{value}us")
+}
+
+fn bytes_label(value: u64) -> String {
+    const MIB: f64 = 1_048_576.0;
+    format!("{:.1}MiB", value as f64 / MIB)
+}
+
+struct PreviewPerfResourceSummary {
+    avg_cpu_percent: f64,
+    max_cpu_percent: f64,
+    max_memory_bytes: u64,
+    avg_gpu_frame_us: u64,
+    max_gpu_frame_us: u64,
+}
+
+fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfResourceSummary> {
+    if measurement.frames.is_empty() {
+        return None;
+    }
+    let sample_count = measurement.frames.len() as f64;
+    let avg_cpu_percent = measurement
+        .frames
+        .iter()
+        .map(|frame| frame.cpu_percent)
+        .sum::<f64>()
+        / sample_count;
+    let avg_gpu_frame_us = measurement
+        .frames
+        .iter()
+        .map(|frame| frame.gpu_frame_us)
+        .sum::<u64>()
+        / u64::try_from(measurement.frames.len()).expect("perf sample count should fit u64");
+    Some(PreviewPerfResourceSummary {
+        avg_cpu_percent,
+        max_cpu_percent: measurement
+            .frames
+            .iter()
+            .map(|frame| frame.cpu_percent)
+            .fold(0.0, f64::max),
+        max_memory_bytes: measurement
+            .frames
+            .iter()
+            .map(|frame| frame.memory_bytes)
+            .max()
+            .unwrap_or_default(),
+        avg_gpu_frame_us,
+        max_gpu_frame_us: measurement
+            .frames
+            .iter()
+            .map(|frame| frame.gpu_frame_us)
+            .max()
+            .unwrap_or_default(),
     })
 }
 
@@ -998,6 +1296,30 @@ async fn write_preview_perf_json(path: &Path, report: &PreviewPerfReport) -> Res
     Ok(())
 }
 
+fn write_preview_perf_stdout_json(reports: &[PreviewPerfReport]) -> Result<()> {
+    let json = serde_json::to_vec_pretty(&PreviewPerfOutput { reports })?;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(&json)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+async fn write_preview_perf_output_json(path: &Path, reports: &[PreviewPerfReport]) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        smol::fs::create_dir_all(parent).await?;
+    }
+    smol::fs::write(
+        path,
+        serde_json::to_vec_pretty(&PreviewPerfOutput { reports })?,
+    )
+    .await?;
+    Ok(())
+}
+
 async fn write_preview_perf_trace(path: &Path, report: &PreviewPerfReport) -> Result<()> {
     #[derive(Serialize)]
     struct Trace<'a> {
@@ -1043,6 +1365,608 @@ async fn write_preview_perf_trace(path: &Path, report: &PreviewPerfReport) -> Re
         }
     }
     smol::fs::write(path, serde_json::to_vec_pretty(&Trace { trace_events })?).await?;
+    Ok(())
+}
+
+async fn write_preview_perf_html(path: &Path, reports: &[PreviewPerfReport]) -> Result<()> {
+    let report_cards = reports
+        .iter()
+        .map(render_preview_perf_report_html)
+        .collect::<String>();
+    let total_measurements = reports
+        .iter()
+        .map(|report| report.measurements.len())
+        .sum::<usize>();
+    let worst_p95 = reports
+        .iter()
+        .flat_map(|report| &report.measurements)
+        .map(|measurement| measurement.p95_us)
+        .max()
+        .unwrap_or_default();
+    let missed_120 = reports
+        .iter()
+        .flat_map(|report| &report.measurements)
+        .map(|measurement| measurement.missed_120fps_frames)
+        .sum::<u64>();
+    let html = PREVIEW_PERF_HTML_TEMPLATE
+        .replace("{{REPORT_COUNT}}", &reports.len().to_string())
+        .replace("{{MEASUREMENT_COUNT}}", &total_measurements.to_string())
+        .replace("{{WORST_P95}}", &micros_label(worst_p95))
+        .replace("{{MISSED_120}}", &missed_120.to_string())
+        .replace("{{REPORTS}}", &report_cards);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        smol::fs::create_dir_all(parent).await?;
+    }
+    smol::fs::write(path, html).await?;
+    Ok(())
+}
+
+fn render_preview_perf_report_html(report: &PreviewPerfReport) -> String {
+    let measurements = report
+        .measurements
+        .iter()
+        .map(|measurement| {
+            render_preview_perf_measurement_html(measurement, report.flamegraph.as_deref())
+        })
+        .collect::<String>();
+    format!(
+        "<section class=\"report\"><h2>{}</h2><div class=\"measurements\">{}</div></section>",
+        html_escape(report.target.as_str()),
+        measurements
+    )
+}
+
+fn render_preview_perf_flamegraph_html(flamegraph: Option<&Path>) -> String {
+    let Some(flamegraph) = flamegraph else {
+        return String::new();
+    };
+    let path = html_escape(&flamegraph.to_string_lossy());
+    format!(
+        concat!(
+            "<section class=\"flamegraph\">",
+            "<div><h3>Flamegraph</h3><a href=\"{}\">Open SVG</a></div>",
+            "<div class=\"flamegraph-viewport\"><object data=\"{}\" type=\"image/svg+xml\"></object></div>",
+            "</section>"
+        ),
+        path, path
+    )
+}
+
+fn render_preview_perf_measurement_html(
+    measurement: &PreviewPerfMeasurement,
+    flamegraph: Option<&Path>,
+) -> String {
+    let diagnosis = render_preview_perf_diagnosis_html(measurement);
+    let resources = render_preview_perf_resource_timeline_html(measurement);
+    let frame_timeline = render_preview_perf_frame_timeline_html(measurement);
+    let phase_stack = render_preview_perf_phase_stack_html(measurement);
+    let flamegraph = render_preview_perf_flamegraph_html(flamegraph);
+    format!(
+        concat!(
+            "<article class=\"measurement\">",
+            "<div class=\"measurement-head\"><h3>{}</h3><span>{}</span></div>",
+            "<nav class=\"tabs\" role=\"tablist\" aria-label=\"Performance views\">",
+            "<button class=\"active\" type=\"button\" role=\"tab\" aria-selected=\"true\" data-tab-target=\"overview\">Overview</button>",
+            "<button type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab-target=\"frames\">Frames</button>",
+            "<button type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab-target=\"resources\">Resources</button>",
+            "<button type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab-target=\"flamegraph\">Flamegraph</button>",
+            "</nav>",
+            "<section class=\"tab-panel active\" data-tab-panel=\"overview\">{}{}",
+            "</section>",
+            "<section class=\"tab-panel\" data-tab-panel=\"frames\">{}",
+            "</section>",
+            "<section class=\"tab-panel\" data-tab-panel=\"resources\">{}",
+            "</section>",
+            "<section class=\"tab-panel\" data-tab-panel=\"flamegraph\">{}",
+            "</section>",
+            "</article>"
+        ),
+        html_escape(measurement.name.as_str()),
+        preview_perf_budget_label(measurement),
+        diagnosis,
+        phase_stack,
+        frame_timeline,
+        resources,
+        flamegraph
+    )
+}
+
+fn preview_perf_budget_label(measurement: &PreviewPerfMeasurement) -> &'static str {
+    if measurement.p95_us > 16_666 {
+        "misses 60fps"
+    } else if measurement.p95_us > 8_333 {
+        "misses 120fps"
+    } else {
+        "120fps ready"
+    }
+}
+
+fn render_preview_perf_diagnosis_html(measurement: &PreviewPerfMeasurement) -> String {
+    let worst = measurement.frames.iter().max_by_key(|frame| frame.total_us);
+    let bottleneck = preview_perf_bottleneck(measurement);
+    let rebuild_ratio = ratio_percent(measurement.rebuilt_frames, measurement.samples);
+    let cache_total = measurement
+        .measurement_cache_hits
+        .saturating_add(measurement.measurement_cache_misses);
+    let cache_hit_ratio = ratio_percent(measurement.measurement_cache_hits, cache_total);
+    let worst_frame = worst
+        .map(|frame| format!("frame {} / {}", frame.index, micros_label(frame.total_us)))
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        concat!(
+            "<section class=\"diagnosis\">",
+            "<div><span>p95</span><strong>{}</strong><small>mean {} / median {}</small></div>",
+            "<div><span>worst sample</span><strong>{}</strong><small>{} samples</small></div>",
+            "<div><span>bottleneck</span><strong>{}</strong><small>{}</small></div>",
+            "<div><span>rebuild pressure</span><strong>{:.1}%</strong><small>{}/{} frames</small></div>",
+            "<div><span>layout cache</span><strong>{:.1}% hit</strong><small>{} hits / {} misses</small></div>",
+            "</section>"
+        ),
+        micros_label(measurement.p95_us),
+        micros_label(measurement.mean_us),
+        micros_label(measurement.median_us),
+        worst_frame,
+        measurement.samples,
+        bottleneck.name,
+        micros_label(bottleneck.mean_us),
+        rebuild_ratio,
+        measurement.rebuilt_frames,
+        measurement.samples,
+        cache_hit_ratio,
+        measurement.measurement_cache_hits,
+        measurement.measurement_cache_misses
+    )
+}
+
+struct PreviewPerfBottleneck {
+    name: &'static str,
+    mean_us: u64,
+}
+
+fn preview_perf_bottleneck(measurement: &PreviewPerfMeasurement) -> PreviewPerfBottleneck {
+    [
+        ("render", measurement.phases.render_mean_us),
+        ("rebuild", measurement.phases.rebuild_mean_us),
+        ("animation", measurement.phases.animation_mean_us),
+        ("input", measurement.phases.input_mean_us),
+    ]
+    .into_iter()
+    .max_by_key(|(_, value)| *value)
+    .map(|(name, mean_us)| PreviewPerfBottleneck { name, mean_us })
+    .expect("preview perf bottleneck phase list is non-empty")
+}
+
+fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasurement) -> String {
+    let Some(summary) = resource_summary(measurement) else {
+        return String::new();
+    };
+    let cpu_chart = render_preview_perf_metric_chart_html(
+        "CPU usage",
+        "line-cpu",
+        &measurement.frames,
+        |frame| f64::from(frame.cpu_percent),
+        |value| format!("{value:.1}%"),
+    );
+    let memory_chart = render_preview_perf_metric_chart_html(
+        "Memory",
+        "line-memory",
+        &measurement.frames,
+        |frame| frame.memory_bytes as f64 / 1_048_576.0,
+        |value| format!("{value:.1} MiB"),
+    );
+    let gpu_chart = render_preview_perf_metric_chart_html(
+        "GPU pipeline",
+        "line-gpu",
+        &measurement.frames,
+        |frame| frame.gpu_frame_us as f64,
+        |value| micros_label(value.round() as u64),
+    );
+    format!(
+        concat!(
+            "<section class=\"resources\">",
+            "<div><span>CPU avg</span><strong>{:.1}%</strong></div>",
+            "<div><span>CPU max</span><strong>{:.1}%</strong></div>",
+            "<div><span>memory max</span><strong>{}</strong></div>",
+            "<div><span>GPU pipeline avg</span><strong>{}</strong></div>",
+            "<div><span>GPU pipeline max</span><strong>{}</strong></div>",
+            "</section>",
+            "<section class=\"trend-grid\">{}{}{}</section>"
+        ),
+        summary.avg_cpu_percent,
+        summary.max_cpu_percent,
+        bytes_label(summary.max_memory_bytes),
+        micros_label(summary.avg_gpu_frame_us),
+        micros_label(summary.max_gpu_frame_us),
+        cpu_chart,
+        memory_chart,
+        gpu_chart
+    )
+}
+
+fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement) -> String {
+    if measurement.frames.len() < 2 {
+        return String::new();
+    }
+    let timing_values = measurement
+        .frames
+        .iter()
+        .flat_map(|frame| {
+            [
+                frame.total_us as f64,
+                frame.render_us as f64,
+                frame.rebuild_us as f64,
+                frame.gpu_frame_us as f64,
+            ]
+        })
+        .collect::<Vec<_>>();
+    let timing_scale = PreviewPerfChartScale::new(timing_values.iter().copied());
+    let fps_values = measurement
+        .frames
+        .iter()
+        .map(preview_perf_throughput_fps)
+        .map(|value| value.min(1_000.0))
+        .collect::<Vec<_>>();
+    let fps_scale = PreviewPerfChartScale::new(fps_values.iter().copied());
+    let fps_points =
+        render_preview_perf_float_polyline_points(&measurement.frames, fps_scale, |frame| {
+            preview_perf_throughput_fps(frame).min(1_000.0)
+        });
+    let total_points =
+        render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
+            frame.total_us as f64
+        });
+    let render_points =
+        render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
+            frame.render_us as f64
+        });
+    let rebuild_points =
+        render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
+            frame.rebuild_us as f64
+        });
+    let gpu_points =
+        render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
+            frame.gpu_frame_us as f64
+        });
+    let points = measurement
+        .frames
+        .iter()
+        .map(|frame| {
+            let x = frame_chart_x(frame.index, measurement.frames.len());
+            let y = timing_scale.y(frame.total_us as f64);
+            format!(
+                concat!(
+                    "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\"></circle>"
+                ),
+                x,
+                y,
+                frame.index,
+                micros_label(frame.total_us),
+                micros_label(frame.gpu_frame_us),
+                micros_label(frame.render_us),
+                micros_label(frame.rebuild_us),
+                frame.cpu_percent,
+                bytes_label(frame.memory_bytes),
+                fps_label(preview_perf_throughput_fps(frame))
+            )
+        })
+        .collect::<String>();
+    let fps_sample_points = measurement
+        .frames
+        .iter()
+        .map(|frame| {
+            let x = frame_chart_x(frame.index, measurement.frames.len());
+            let y = fps_scale.y(preview_perf_throughput_fps(frame).min(1_000.0));
+            format!(
+                concat!(
+                    "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\"></circle>"
+                ),
+                x,
+                y,
+                frame.index,
+                micros_label(frame.total_us),
+                micros_label(frame.gpu_frame_us),
+                micros_label(frame.render_us),
+                micros_label(frame.rebuild_us),
+                frame.cpu_percent,
+                bytes_label(frame.memory_bytes),
+                fps_label(preview_perf_throughput_fps(frame))
+            )
+        })
+        .collect::<String>();
+    let timing_chart = format!(
+        concat!(
+            "<section class=\"line-chart\">",
+            "<div><h4>Frame time</h4><span>{} - {}</span></div>",
+            "<svg viewBox=\"0 0 100 100\" role=\"img\" aria-label=\"Raw frame timing trend\">",
+            "{}",
+            "<polyline class=\"line-total\" points=\"{}\"></polyline>",
+            "<polyline class=\"line-gpu\" points=\"{}\"></polyline>",
+            "<polyline class=\"line-render\" points=\"{}\"></polyline>",
+            "<polyline class=\"line-rebuild\" points=\"{}\"></polyline>",
+            "<g class=\"sample-points\">{}</g>",
+            "</svg>",
+            "<div class=\"hover-inspector\" aria-live=\"polite\">Hover a sample</div>",
+            "<div class=\"legend\"><span class=\"total\">total</span><span class=\"gpu\">GPU pipeline</span><span class=\"render\">render</span><span class=\"rebuild\">rebuild</span><span class=\"budget-label\">budget markers appear when inside range</span></div>",
+            "</section>"
+        ),
+        micros_label(timing_scale.min.round() as u64),
+        micros_label(timing_scale.max.round() as u64),
+        render_preview_perf_budget_lines(timing_scale),
+        total_points,
+        gpu_points,
+        render_points,
+        rebuild_points,
+        points
+    );
+    let fps_chart = format!(
+        concat!(
+            "<section class=\"line-chart\">",
+            "<div><h4>Throughput FPS</h4><span>{} - {}</span></div>",
+            "<svg viewBox=\"0 0 100 100\" role=\"img\" aria-label=\"Throughput FPS trend\">",
+            "{}",
+            "<polyline class=\"line-fps\" points=\"{}\"></polyline>",
+            "<g class=\"sample-points\">{}</g>",
+            "</svg>",
+            "<div class=\"hover-inspector\" aria-live=\"polite\">Hover a frame</div>",
+            "<div class=\"legend\"><span class=\"fps\">offscreen throughput FPS</span><span class=\"budget-label\">display budgets appear when inside range</span></div>",
+            "</section>"
+        ),
+        fps_label(fps_scale.min),
+        fps_label(fps_scale.max),
+        render_preview_perf_fps_budget_lines(fps_scale),
+        fps_points,
+        fps_sample_points
+    );
+    format!(
+        "<section class=\"timeline-grid\">{}{}</section>",
+        timing_chart, fps_chart
+    )
+}
+
+fn render_preview_perf_phase_stack_html(measurement: &PreviewPerfMeasurement) -> String {
+    let phases = [
+        ("input", measurement.phases.input_mean_us, "phase-input"),
+        (
+            "animation",
+            measurement.phases.animation_mean_us,
+            "phase-animation",
+        ),
+        (
+            "rebuild",
+            measurement.phases.rebuild_mean_us,
+            "phase-rebuild",
+        ),
+        ("render", measurement.phases.render_mean_us, "phase-render"),
+    ];
+    let total = phases
+        .iter()
+        .map(|(_, value, _)| *value)
+        .sum::<u64>()
+        .max(1);
+    let segments = phases
+        .iter()
+        .map(|(name, value, class)| {
+            let width = ratio_percent(*value, total).max(0.5);
+            format!(
+                "<i class=\"{}\" style=\"width:{:.2}%\"><span>{} {}</span></i>",
+                class,
+                width,
+                name,
+                micros_label(*value)
+            )
+        })
+        .collect::<String>();
+    format!(
+        concat!(
+            "<section class=\"phase-stack\">",
+            "<div><h4>Phase breakdown</h4><span>mean frame work</span></div>",
+            "<div class=\"phase-bar\">{}</div>",
+            "</section>"
+        ),
+        segments
+    )
+}
+
+fn render_preview_perf_float_polyline_points(
+    frames: &[PreviewPerfFrame],
+    scale: PreviewPerfChartScale,
+    value: impl Fn(&PreviewPerfFrame) -> f64,
+) -> String {
+    frames
+        .iter()
+        .map(|frame| {
+            format!(
+                "{:.2},{:.2}",
+                frame_chart_x(frame.index, frames.len()),
+                scale.y(value(frame))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn render_preview_perf_metric_chart_html(
+    title: &str,
+    line_class: &str,
+    frames: &[PreviewPerfFrame],
+    value: impl Fn(&PreviewPerfFrame) -> f64,
+    label: impl Fn(f64) -> String,
+) -> String {
+    if frames.len() < 2 {
+        return String::new();
+    }
+    let values = frames.iter().map(&value).collect::<Vec<_>>();
+    let scale = PreviewPerfChartScale::new(values.iter().copied());
+    let points = render_preview_perf_float_polyline_points(frames, scale, &value);
+    let samples = frames
+        .iter()
+        .map(|frame| {
+            let current_value = value(frame);
+            format!(
+                concat!(
+                    "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-value=\"{}\"></circle>"
+                ),
+                frame_chart_x(frame.index, frames.len()),
+                scale.y(current_value),
+                frame.index,
+                micros_label(frame.total_us),
+                micros_label(frame.gpu_frame_us),
+                micros_label(frame.render_us),
+                micros_label(frame.rebuild_us),
+                frame.cpu_percent,
+                bytes_label(frame.memory_bytes),
+                fps_label(preview_perf_throughput_fps(frame)),
+                html_escape(&label(current_value))
+            )
+        })
+        .collect::<String>();
+    format!(
+        concat!(
+            "<section class=\"line-chart metric-chart\">",
+            "<div><h4>{}</h4><span>{} - {}</span></div>",
+            "<svg viewBox=\"0 0 100 100\" role=\"img\" aria-label=\"{} trend\">",
+            "<polyline class=\"{}\" points=\"{}\"></polyline>",
+            "<g class=\"sample-points\">{}</g>",
+            "</svg>",
+            "<div class=\"hover-inspector\" aria-live=\"polite\">Hover a frame</div>",
+            "</section>"
+        ),
+        html_escape(title),
+        html_escape(&label(scale.min)),
+        html_escape(&label(scale.max)),
+        html_escape(title),
+        line_class,
+        points,
+        samples
+    )
+}
+
+fn frame_chart_x(index: u64, frame_count: usize) -> f64 {
+    if frame_count <= 1 {
+        return 6.0;
+    }
+    6.0 + ((index as f64 / (frame_count - 1) as f64) * 88.0)
+}
+
+#[derive(Clone, Copy)]
+struct PreviewPerfChartScale {
+    min: f64,
+    max: f64,
+}
+
+impl PreviewPerfChartScale {
+    fn new(values: impl IntoIterator<Item = f64>) -> Self {
+        let mut values = values.into_iter();
+        let first = values.next().unwrap_or(0.0);
+        let (mut min, mut max) = (first, first);
+        for value in values {
+            min = min.min(value);
+            max = max.max(value);
+        }
+        let span = max - min;
+        let padding = if span <= f64::EPSILON {
+            max.abs().mul_add(0.02, 1.0)
+        } else {
+            span * 0.12
+        };
+        Self {
+            min: (min - padding).max(0.0),
+            max: max + padding,
+        }
+    }
+
+    fn contains(self, value: f64) -> bool {
+        (self.min..=self.max).contains(&value)
+    }
+
+    fn y(self, value: f64) -> f64 {
+        if self.max <= self.min {
+            return 50.0;
+        }
+        let clamped = value.clamp(self.min, self.max);
+        92.0 - (((clamped - self.min) / (self.max - self.min)) * 84.0)
+    }
+}
+
+fn render_preview_perf_budget_lines(scale: PreviewPerfChartScale) -> String {
+    [(8_333.0, "budget-120"), (16_666.0, "budget-60")]
+        .into_iter()
+        .filter(|(value, _)| scale.contains(*value))
+        .map(|(value, class)| {
+            let y = scale.y(value);
+            format!(
+                "<line class=\"budget {class}\" x1=\"6\" y1=\"{y:.2}\" x2=\"94\" y2=\"{y:.2}\"></line>"
+            )
+        })
+        .collect()
+}
+
+fn render_preview_perf_fps_budget_lines(scale: PreviewPerfChartScale) -> String {
+    [(120.0, "budget-120"), (60.0, "budget-60")]
+        .into_iter()
+        .filter(|(value, _)| scale.contains(*value))
+        .map(|(value, class)| {
+            let y = scale.y(value);
+            format!(
+                "<line class=\"budget {class}\" x1=\"6\" y1=\"{y:.2}\" x2=\"94\" y2=\"{y:.2}\"></line>"
+            )
+        })
+        .collect()
+}
+
+fn preview_perf_throughput_fps(frame: &PreviewPerfFrame) -> f64 {
+    1_000_000.0 / frame.total_us.max(1) as f64
+}
+
+fn fps_label(value: f64) -> String {
+    if value >= 1_000.0 {
+        ">=1000fps".to_string()
+    } else {
+        format!("{value:.1}fps")
+    }
+}
+
+fn ratio_percent(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    (numerator as f64 / denominator as f64) * 100.0
+}
+
+fn html_escape(value: &str) -> String {
+    askama::filters::escape(value, askama::filters::Html)
+        .expect("HTML escaping should be infallible")
+        .to_string()
+}
+
+async fn open_preview_perf_html(path: &Path) -> Result<()> {
+    let path = crate::project_path::canonicalize(path)?;
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = smol::process::Command::new("open");
+        command.arg(&path);
+        command
+    } else if cfg!(target_os = "windows") {
+        let mut command = smol::process::Command::new("cmd");
+        command.arg("/C").arg("start").arg("").arg(&path);
+        command
+    } else {
+        let mut command = smol::process::Command::new("xdg-open");
+        command.arg(&path);
+        command
+    };
+    let status = command
+        .status()
+        .await
+        .map_err(|error| color_eyre::eyre::eyre!("failed to open HTML report: {error}"))?;
+    if !status.success() {
+        bail!("failed to open HTML report {}: {status}", path.display());
+    }
     Ok(())
 }
 
