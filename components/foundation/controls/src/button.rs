@@ -262,10 +262,7 @@ impl_debug!(ButtonConfig);
 
 impl NativeView for ButtonConfig {}
 
-fn render_button_config<Action>(
-    button: Button<Action>,
-    _env: &Environment,
-) -> ButtonConfig
+fn render_button_config<Action>(button: Button<Action>, _env: &Environment) -> ButtonConfig
 where
     Action: FnMut(&Environment) + 'static,
 {
@@ -339,6 +336,20 @@ pub struct Button<Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
+}
+
+impl<Action> Button<Action> {
+    /// Returns the semantic label displayed by this button.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Returns the visual style requested for this button.
+    #[must_use]
+    pub const fn button_style(&self) -> ButtonStyle {
+        self.style
+    }
 }
 
 impl<Action> Debug for Button<Action> {

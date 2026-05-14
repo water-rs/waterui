@@ -31,22 +31,12 @@ impl HydroNativeView for Native<ScrollView> {
         view: &Self,
         env: &Environment,
     ) {
-        let (axis, content) = view.as_inner().as_parts();
+        let (axis, _content) = view.as_inner().as_parts();
         let viewport = ctx.bounds;
-        let intrinsic = measure_view_intrinsic(content, renderer.state_mut(), env);
         let (content_width, content_height) = match axis {
-            ScrollAxis::Horizontal => (
-                f64::from(intrinsic.width).max(viewport.width()),
-                viewport.height(),
-            ),
-            ScrollAxis::Vertical => (
-                viewport.width(),
-                f64::from(intrinsic.height).max(viewport.height()),
-            ),
-            ScrollAxis::All => (
-                f64::from(intrinsic.width).max(viewport.width()),
-                f64::from(intrinsic.height).max(viewport.height()),
-            ),
+            ScrollAxis::Horizontal | ScrollAxis::Vertical | ScrollAxis::All => {
+                (viewport.width(), viewport.height())
+            }
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         };
         let handle = renderer.bind_scroll_handle(
@@ -127,9 +117,16 @@ pub(crate) fn render_scroll_view(
         _ => panic!("scroll axis variant is not supported by hydrolysis"),
     };
 
-    let handle = ctx
+    let mut handle = ctx
         .renderer_mut()
         .take_pending_scroll_handle("render_scroll_view");
+    handle.update_layout(
+        axis,
+        viewport.width(),
+        viewport.height(),
+        content_width,
+        content_height,
+    );
     let metrics = handle.metrics();
 
     let content_transform = vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));

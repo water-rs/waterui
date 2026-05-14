@@ -1,6 +1,7 @@
 use super::*;
-use waterui_form::picker::date::DatePickerConfig;
+use waterui_core::handler::BoxedAction;
 use waterui_form::picker::PickerStyle;
+use waterui_form::picker::date::DatePickerConfig;
 
 pub(crate) struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
@@ -226,7 +227,9 @@ fn measure_view_dimensions_with_proposal_with_budget(
             remaining - 1,
         );
     }
-
+    if let Some(button) = view.downcast_ref::<Button<BoxedAction<()>>>() {
+        return ViewDimensions::new(measure_button_view_intrinsic(button, state, &scoped_env));
+    }
     if let Some(dimensions) = dimensions_for_known_native_views(view, proposal, state, &scoped_env)
     {
         return dimensions;
@@ -1053,6 +1056,22 @@ pub(crate) fn measure_date_picker_intrinsic(
     let width = f64::from(label_size.width).max(field_width);
     let height = label_height + field_height;
     LayoutSize::new(width as f32, height as f32)
+}
+
+pub(crate) fn measure_button_view_intrinsic(
+    button: &Button<BoxedAction<()>>,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let theme = widget_theme(env);
+    let metrics = theme.button_metrics(button.button_style());
+    let label_size = measure_label_intrinsic(button.label(), state, env);
+    let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
+    let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
+    LayoutSize::new(
+        content_width.max(metrics.min_width) as f32,
+        content_height.max(metrics.min_height) as f32,
+    )
 }
 
 pub(crate) fn measure_picker_intrinsic(

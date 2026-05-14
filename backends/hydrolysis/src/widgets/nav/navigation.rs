@@ -21,7 +21,7 @@ use waterui::navigation::{
     NavigationView,
 };
 use waterui_controls::text_field::TextField;
-use waterui_core::layout::Size as LayoutSize;
+use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
 use crate::widgets::widget_theme;
@@ -46,6 +46,18 @@ impl HydroNativeView for Native<NavigationView> {
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_navigation_view_intrinsic(view.as_inner(), state, env)
+    }
+
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
+            return ViewDimensions::new(LayoutSize::new(width, height));
+        }
+        ViewDimensions::new(Self::intrinsic(state, view, env))
     }
 
     fn accessibility(
