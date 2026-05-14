@@ -295,6 +295,8 @@ pub struct HydrolysisRenderer {
     frame_instant: Instant,
     frame_clock: Rc<Cell<Instant>>,
     scroll_controller: ScrollController,
+    scroll_content_caches: BTreeMap<usize, DynamicSubtree>,
+    reuse_scroll_content_caches: bool,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     accessibility: AccessibilityBuilder,
@@ -645,6 +647,8 @@ impl HydrolysisRenderer {
             frame_instant,
             frame_clock: Rc::new(Cell::new(frame_instant)),
             scroll_controller: ScrollController::default(),
+            scroll_content_caches: BTreeMap::new(),
+            reuse_scroll_content_caches: false,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             accessibility: AccessibilityBuilder::default(),
@@ -2416,6 +2420,9 @@ impl HydrolysisRenderer {
 
     pub fn begin_rebuild_frame(&mut self) {
         self.rebuild_in_progress.set(true);
+        if !self.reuse_scroll_content_caches {
+            self.scroll_content_caches.clear();
+        }
         self.state.measurement_cache.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
@@ -2440,6 +2447,31 @@ impl HydrolysisRenderer {
         self.text_editing.text_selection_cursor = 0;
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
+    }
+
+    pub(crate) fn set_scroll_content_cache_reuse(&mut self, reuse: bool) {
+        self.reuse_scroll_content_caches = reuse;
+    }
+
+    pub(crate) fn render_scroll_content(
+        &mut self,
+        cache_key: usize,
+        ctx: RenderContext,
+        env: &Environment,
+        content: AnyView,
+    ) {
+        if self.reuse_scroll_content_caches
+            && let Some(subtree) = self.scroll_content_caches.remove(&cache_key)
+        {
+            self.replay_dynamic_subtree(ctx, &subtree);
+            self.scroll_content_caches.insert(cache_key, subtree);
+            return;
+        }
+
+        let local_ctx = ctx.with_identity_transforms(ctx.bounds);
+        let subtree = Self::render_dynamic_subtree(self, local_ctx, env, content);
+        self.replay_dynamic_subtree(ctx, &subtree);
+        self.scroll_content_caches.insert(cache_key, subtree);
     }
 
     pub fn finish_rebuild_frame(&mut self) {
@@ -2917,19 +2949,42 @@ fn accesskit_rect_to_kurbo_rect(rect: AccessibilityRect) -> vello::kurbo::Rect {
 }
 
 #[cfg(feature = "accessibility")]
+#[derive(Clone, Copy)]
+pub(crate) struct AccessibilityNodeIdRemap {
+    first_mapped: u64,
+}
+
+#[cfg(feature = "accessibility")]
+impl AccessibilityNodeIdRemap {
+    pub(crate) const fn new(first_mapped: u64) -> Self {
+        Self { first_mapped }
+    }
+
+    pub(crate) fn map(self, node_id: AccessibilityNodeId) -> AccessibilityNodeId {
+        let offset = node_id
+            .0
+            .checked_sub(ACCESSIBILITY_FIRST_NODE_ID)
+            .expect("hydrolysis dynamic accessibility node id underflow");
+        AccessibilityNodeId(
+            self.first_mapped
+                .checked_add(offset)
+                .expect("hydrolysis dynamic accessibility node id overflow"),
+        )
+    }
+}
+
+#[cfg(feature = "accessibility")]
 fn remap_accessibility_node_id(
     node_id: AccessibilityNodeId,
-    id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
+    id_map: AccessibilityNodeIdRemap,
 ) -> AccessibilityNodeId {
-    *id_map
-        .get(&node_id)
-        .expect("hydrolysis dynamic accessibility node mapping missing reference")
+    id_map.map(node_id)
 }
 
 #[cfg(feature = "accessibility")]
 fn remap_accessibility_node_id_vec(
     node_ids: &[AccessibilityNodeId],
-    id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
+    id_map: AccessibilityNodeIdRemap,
 ) -> Vec<AccessibilityNodeId> {
     node_ids
         .iter()
@@ -2941,7 +2996,7 @@ fn remap_accessibility_node_id_vec(
 #[cfg(feature = "accessibility")]
 fn remap_accessibility_node_references(
     node: &mut AccessibilityNode,
-    id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
+    id_map: AccessibilityNodeIdRemap,
 ) {
     let children = node.children();
     if !children.is_empty() {

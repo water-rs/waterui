@@ -61,6 +61,18 @@ impl A11yDriver for NoopDriver {
         false
     }
 
+    fn scroll_at(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _dx: f32,
+        _dy: f32,
+        _is_line_delta: bool,
+        _env: &Environment,
+    ) -> bool {
+        false
+    }
+
     fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) -> bool {
         false
     }
