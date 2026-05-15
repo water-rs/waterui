@@ -2359,7 +2359,6 @@ impl HydrolysisRenderer {
             renderer.request_redraw();
         }
 
-        renderer.compositor.active_filter_images.push(image.clone());
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(
                 ctx.bounds.width() / f64::from(image.width),
