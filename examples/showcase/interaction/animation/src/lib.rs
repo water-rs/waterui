@@ -16,6 +16,7 @@ use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::Binding;
 use waterui::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
 
@@ -62,20 +63,24 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
             .size(60.0, 60.0)
             .rotation(animated_rotation)
             .min_height(100.0),
-        hstack((
-            button("-90°")
-                .action(|State(r): State<Binding<f32>>| r.set(r.get() - 90.0))
-                .state(rotation),
-            button("-45°")
-                .action(|State(r): State<Binding<f32>>| r.set(r.get() - 45.0))
-                .state(rotation),
-            set_f32_button("Reset", 0.0, rotation),
-            button("+45°")
-                .action(|State(r): State<Binding<f32>>| r.set(r.get() + 45.0))
-                .state(rotation),
-            button("+90°")
-                .action(|State(r): State<Binding<f32>>| r.set(r.get() + 90.0))
-                .state(rotation),
+        vstack((
+            hstack((
+                button("-90°")
+                    .action(|State(r): State<Binding<f32>>| r.set(r.get() - 90.0))
+                    .state(rotation),
+                button("-45°")
+                    .action(|State(r): State<Binding<f32>>| r.set(r.get() - 45.0))
+                    .state(rotation),
+                set_f32_button("Reset", 0.0, rotation),
+            )),
+            hstack((
+                button("+45°")
+                    .action(|State(r): State<Binding<f32>>| r.set(r.get() + 45.0))
+                    .state(rotation),
+                button("+90°")
+                    .action(|State(r): State<Binding<f32>>| r.set(r.get() + 90.0))
+                    .state(rotation),
+            )),
         )),
     ))
     .padding()
@@ -93,20 +98,24 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
             .size(50.0, 50.0)
             .offset(animated_x, animated_y)
             .min_height(150.0),
-        hstack((
-            button("Center")
-                .action(
-                    |State(x): State<Binding<f32>>, State(y): State<Binding<f32>>| {
-                        x.set(0.0);
-                        y.set(0.0);
-                    },
-                )
-                .state(offset_x)
-                .state(offset_y),
-            set_f32_button("Left", -50.0, offset_x),
-            set_f32_button("Right", 50.0, offset_x),
-            set_f32_button("Up", -30.0, offset_y),
-            set_f32_button("Down", 30.0, offset_y),
+        vstack((
+            hstack((
+                button("Center")
+                    .action(
+                        |State(x): State<Binding<f32>>, State(y): State<Binding<f32>>| {
+                            x.set(0.0);
+                            y.set(0.0);
+                        },
+                    )
+                    .state(offset_x)
+                    .state(offset_y),
+                set_f32_button("Left", -50.0, offset_x),
+                set_f32_button("Right", 50.0, offset_x),
+            )),
+            hstack((
+                set_f32_button("Up", -30.0, offset_y),
+                set_f32_button("Down", 30.0, offset_y),
+            )),
         )),
     ))
     .padding()
@@ -170,12 +179,16 @@ fn progress_animation_section(progress_value: &Binding<f64>) -> impl View {
         text("Progress Bar Animation").headline(),
         text("Watch the bar smoothly transition between values").body(),
         progress(animated_progress),
-        hstack((
-            set_f64_button("0%", 0.0, progress_value),
-            set_f64_button("25%", 0.25, progress_value),
-            set_f64_button("50%", 0.5, progress_value),
-            set_f64_button("75%", 0.75, progress_value),
-            set_f64_button("100%", 1.0, progress_value),
+        vstack((
+            hstack((
+                set_f64_button("0%", 0.0, progress_value),
+                set_f64_button("25%", 0.25, progress_value),
+                set_f64_button("50%", 0.5, progress_value),
+            )),
+            hstack((
+                set_f64_button("75%", 0.75, progress_value),
+                set_f64_button("100%", 1.0, progress_value),
+            )),
         )),
     ))
     .padding()
@@ -382,12 +395,16 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
         Slider::new("Animation size", size_value)
             .range(0.0..=100.0)
             .hide_label(),
-        hstack((
-            set_f64_button("0", 0.0, size_value),
-            set_f64_button("25", 25.0, size_value),
-            set_f64_button("50", 50.0, size_value),
-            set_f64_button("75", 75.0, size_value),
-            set_f64_button("100", 100.0, size_value),
+        vstack((
+            hstack((
+                set_f64_button("0", 0.0, size_value),
+                set_f64_button("25", 25.0, size_value),
+                set_f64_button("50", 50.0, size_value),
+            )),
+            hstack((
+                set_f64_button("75", 75.0, size_value),
+                set_f64_button("100", 100.0, size_value),
+            )),
         )),
     ))
     .padding()
@@ -417,6 +434,7 @@ fn custom_gpu_animation_section() -> impl View {
     .padding()
 }
 
+#[preview]
 fn main() -> impl View {
     // State for transform sections
     let scale = Binding::f32(1.0);
