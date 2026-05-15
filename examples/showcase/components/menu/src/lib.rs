@@ -9,6 +9,7 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::{Binding, binding};
 use waterui::window::Window;
 
@@ -284,6 +285,11 @@ fn main(toolbar_status: Binding<String>) -> impl View {
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
+}
+
+#[preview]
+fn menu_preview() -> impl View {
+    main(Binding::container(String::from("No toolbar action yet")))
 }
 
 pub fn app(env: Environment) -> App {
