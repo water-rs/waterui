@@ -2818,6 +2818,23 @@ impl HydrolysisRenderer {
         )
     }
 
+    pub(crate) fn render_layer_stats(&self) -> (u32, u32, u32) {
+        let scene_layers = u32::try_from(self.compositor.render_layers.len())
+            .expect("hydrolysis render layer count exceeds u32");
+        let vello_scene_layers = u32::try_from(
+            self.compositor
+                .render_layers
+                .iter()
+                .filter(|layer| matches!(layer, RenderLayer::Vello(_)))
+                .count(),
+        )
+        .expect("hydrolysis Vello scene layer count exceeds u32");
+        let gpu_surface_layers = scene_layers
+            .checked_sub(vello_scene_layers)
+            .expect("hydrolysis render layer count accounting underflow");
+        (scene_layers, vello_scene_layers, gpu_surface_layers)
+    }
+
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
         let index = self.text_editing.focused_text_input.get()?;
