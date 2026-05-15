@@ -484,6 +484,8 @@ struct PreviewPerfMeasurement {
     scene_layers: u64,
     vello_scene_layers: u64,
     gpu_surface_layers: u64,
+    clip_layers: u64,
+    max_clip_depth: u64,
     phases: PreviewPerfPhases,
     frames: Vec<PreviewPerfFrame>,
 }
@@ -521,6 +523,8 @@ struct PreviewPerfFrame {
     scene_layers: u64,
     vello_scene_layers: u64,
     gpu_surface_layers: u64,
+    clip_layers: u64,
+    max_clip_depth: u64,
 }
 
 /// Run the preview command.
@@ -1064,6 +1068,8 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                     scene_layers: 0,
                     vello_scene_layers: 0,
                     gpu_surface_layers: 0,
+                    clip_layers: 0,
+                    max_clip_depth: 0,
                     phases: PreviewPerfPhases::default(),
                     frames: Vec::new(),
                 },
@@ -1092,6 +1098,8 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
             measurement.scene_layers = parse_required_field(&fields, "scene_layers")?;
             measurement.vello_scene_layers = parse_required_field(&fields, "vello_scene_layers")?;
             measurement.gpu_surface_layers = parse_required_field(&fields, "gpu_surface_layers")?;
+            measurement.clip_layers = parse_required_field(&fields, "clip_layers")?;
+            measurement.max_clip_depth = parse_required_field(&fields, "max_clip_depth")?;
         } else if let Some(rest) = line.strip_prefix("perf-sample ") {
             let (name, fields) = parse_named_perf_fields(rest)?;
             let measurement = measurements.get_mut(&name).ok_or_else(|| {
@@ -1124,6 +1132,8 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                 scene_layers: parse_required_field(&fields, "scene_layers")?,
                 vello_scene_layers: parse_required_field(&fields, "vello_scene_layers")?,
                 gpu_surface_layers: parse_required_field(&fields, "gpu_surface_layers")?,
+                clip_layers: parse_required_field(&fields, "clip_layers")?,
+                max_clip_depth: parse_required_field(&fields, "max_clip_depth")?,
             });
         }
     }
@@ -1173,14 +1183,16 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
             measurement.measurement_cache_misses
         );
         note!(
-            "    layers: compositor={} vello={} gpu-surface={}",
+            "    layers: compositor={} vello={} gpu-surface={} clip-pushes={} max-clip-depth={}",
             measurement.scene_layers,
             measurement.vello_scene_layers,
-            measurement.gpu_surface_layers
+            measurement.gpu_surface_layers,
+            measurement.clip_layers,
+            measurement.max_clip_depth
         );
         if let Some(resources) = resource_summary(measurement) {
             note!(
-                "    resources: cpu avg={:.1}% max={:.1}% | memory max={} | gpu-frame avg={} max={} | layers avg={:.1} max={} | raw_samples={}",
+                "    resources: cpu avg={:.1}% max={:.1}% | memory max={} | gpu-frame avg={} max={} | layers avg={:.1} max={} | clip avg={:.1} max-depth={} | raw_samples={}",
                 resources.avg_cpu_percent,
                 resources.max_cpu_percent,
                 bytes_label(resources.max_memory_bytes),
@@ -1188,6 +1200,8 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
                 micros_label(resources.max_gpu_frame_us),
                 resources.avg_scene_layers,
                 resources.max_scene_layers,
+                resources.avg_clip_layers,
+                resources.max_clip_depth,
                 measurement.frames.len()
             );
         }
@@ -1214,6 +1228,8 @@ struct PreviewPerfResourceSummary {
     max_gpu_frame_us: u64,
     avg_scene_layers: f64,
     max_scene_layers: u64,
+    avg_clip_layers: f64,
+    max_clip_depth: u64,
 }
 
 fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfResourceSummary> {
@@ -1263,6 +1279,18 @@ fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfR
             .frames
             .iter()
             .map(|frame| frame.scene_layers)
+            .max()
+            .unwrap_or_default(),
+        avg_clip_layers: measurement
+            .frames
+            .iter()
+            .map(|frame| frame.clip_layers as f64)
+            .sum::<f64>()
+            / sample_count,
+        max_clip_depth: measurement
+            .frames
+            .iter()
+            .map(|frame| frame.max_clip_depth)
             .max()
             .unwrap_or_default(),
     })
@@ -1608,6 +1636,13 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
         |frame| frame.scene_layers as f64,
         |value| format!("{value:.0}"),
     );
+    let clip_chart = render_preview_perf_metric_chart_html(
+        "Clip layers",
+        "line-clip",
+        &measurement.frames,
+        |frame| frame.clip_layers as f64,
+        |value| format!("{value:.0}"),
+    );
     format!(
         concat!(
             "<section class=\"resources\">",
@@ -1618,8 +1653,10 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
             "<div><span>GPU pipeline max</span><strong>{}</strong></div>",
             "<div><span>layer avg</span><strong>{:.1}</strong></div>",
             "<div><span>layer max</span><strong>{}</strong></div>",
+            "<div><span>clip avg</span><strong>{:.1}</strong></div>",
+            "<div><span>clip depth max</span><strong>{}</strong></div>",
             "</section>",
-            "<section class=\"trend-grid\">{}{}{}{}</section>"
+            "<section class=\"trend-grid\">{}{}{}{}{}</section>"
         ),
         summary.avg_cpu_percent,
         summary.max_cpu_percent,
@@ -1628,10 +1665,13 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
         micros_label(summary.max_gpu_frame_us),
         summary.avg_scene_layers,
         summary.max_scene_layers,
+        summary.avg_clip_layers,
+        summary.max_clip_depth,
         cpu_chart,
         memory_chart,
         gpu_chart,
-        layer_chart
+        layer_chart,
+        clip_chart
     )
 }
 
@@ -1688,7 +1728,7 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
             format!(
                 concat!(
                     "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\"></circle>"
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
                 ),
                 x,
                 y,
@@ -1700,7 +1740,9 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
                 frame.cpu_percent,
                 bytes_label(frame.memory_bytes),
                 fps_label(preview_perf_throughput_fps(frame)),
-                frame.scene_layers
+                frame.scene_layers,
+                frame.clip_layers,
+                frame.max_clip_depth
             )
         })
         .collect::<String>();
@@ -1713,7 +1755,7 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
             format!(
                 concat!(
                     "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\"></circle>"
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
                 ),
                 x,
                 y,
@@ -1725,7 +1767,9 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
                 frame.cpu_percent,
                 bytes_label(frame.memory_bytes),
                 fps_label(preview_perf_throughput_fps(frame)),
-                frame.scene_layers
+                frame.scene_layers,
+                frame.clip_layers,
+                frame.max_clip_depth
             )
         })
         .collect::<String>();
@@ -1852,6 +1896,16 @@ fn render_preview_perf_metric_chart_html(
         return String::new();
     }
     let values = frames.iter().map(&value).collect::<Vec<_>>();
+    let actual_min = values
+        .iter()
+        .copied()
+        .reduce(f64::min)
+        .expect("preview perf metric chart has at least two frames");
+    let actual_max = values
+        .iter()
+        .copied()
+        .reduce(f64::max)
+        .expect("preview perf metric chart has at least two frames");
     let scale = PreviewPerfChartScale::new(values.iter().copied());
     let points = render_preview_perf_float_polyline_points(frames, scale, &value);
     let samples = frames
@@ -1861,7 +1915,7 @@ fn render_preview_perf_metric_chart_html(
             format!(
                 concat!(
                     "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-value=\"{}\"></circle>"
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\" data-value=\"{}\"></circle>"
                 ),
                 frame_chart_x(frame.index, frames.len()),
                 scale.y(current_value),
@@ -1873,6 +1927,9 @@ fn render_preview_perf_metric_chart_html(
                 frame.cpu_percent,
                 bytes_label(frame.memory_bytes),
                 fps_label(preview_perf_throughput_fps(frame)),
+                frame.scene_layers,
+                frame.clip_layers,
+                frame.max_clip_depth,
                 html_escape(&label(current_value))
             )
         })
@@ -1889,8 +1946,8 @@ fn render_preview_perf_metric_chart_html(
             "</section>"
         ),
         html_escape(title),
-        html_escape(&label(scale.min)),
-        html_escape(&label(scale.max)),
+        html_escape(&label(actual_min)),
+        html_escape(&label(actual_max)),
         html_escape(title),
         line_class,
         points,
