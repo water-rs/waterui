@@ -137,7 +137,7 @@ pub trait Effect: 'static {
     /// required GPU pipeline for the current device or texture formats.
     fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = EffectSetupResult>;
 
-    /// Called each frame to apply the effect.
+    /// Encodes one frame of effect work into the provided command encoder.
     ///
     /// Read from `input.texture`/`input.view` and write to
     /// `output.texture`/`output.view`. Input and output may have different
@@ -149,7 +149,33 @@ pub trait Effect: 'static {
     ///
     /// Returns an explicit render error when the compiled effect graph is
     /// incomplete or required GPU resources are missing.
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult;
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult;
+
+    /// Called each frame to apply the effect and submit its encoded GPU work.
+    ///
+    /// Hosts that render many effects in one frame should call
+    /// [`Effect::encode_render`] repeatedly with a shared encoder and submit
+    /// once after all effects have been encoded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit render error when the compiled effect graph is
+    /// incomplete or required GPU resources are missing.
+    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
+        let mut encoder = input
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("filter effect encoder"),
+            });
+        let result = self.encode_render(input, output, &mut encoder);
+        input.queue.submit([encoder.finish()]);
+        result
+    }
 
     /// Resolve the output dimensions from the current snapped effect state.
     ///
@@ -185,6 +211,13 @@ pub trait ErasedEffect: 'static {
     fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> EffectSetupFuture<'a>;
     /// Drive `Effect::render`.
     fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult;
+    /// Drive `Effect::encode_render`.
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult;
     /// Drive `Effect::output_size`.
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
     /// Drive `Effect::sync_targets`.
@@ -203,6 +236,15 @@ impl<T: Effect> ErasedEffect for T {
 
     fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
         Effect::render(self, input, output)
+    }
+
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
+        Effect::encode_render(self, input, output, encoder)
     }
 
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
