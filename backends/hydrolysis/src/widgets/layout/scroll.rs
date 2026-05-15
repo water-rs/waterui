@@ -67,6 +67,9 @@ pub(crate) fn render_scroll_view(
         .renderer_mut()
         .take_pending_scroll_handle("render_scroll_view");
     let metrics = handle.metrics();
+    let transform = ctx.transform;
+    let active_layers = ctx.renderer_mut().active_scene_layers_snapshot();
+    let exclusive_root_scroll = active_layers.is_empty() && ctx.renderer_mut().scene_is_empty();
 
     let content_transform = vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
     let content_bounds =
@@ -81,7 +84,17 @@ pub(crate) fn render_scroll_view(
     ctx.renderer_mut().push_lazy_viewport(lazy_viewport);
     let content_ctx = ctx.child(content_transform, content_bounds);
     let renderer = ctx.renderer_mut();
-    renderer.render_scroll_content(handle.cache_key(), content_ctx, env, content);
+    let content_scene =
+        renderer.render_scroll_content(handle.cache_key(), content_ctx, env, content);
+    renderer.retain_scroll_frame(
+        handle.clone(),
+        axis,
+        viewport,
+        transform,
+        content_scene,
+        active_layers,
+        exclusive_root_scroll,
+    );
     ctx.renderer_mut().pop_lazy_viewport("render_scroll_view");
     ctx.pop_layer();
 

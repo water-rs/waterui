@@ -297,9 +297,21 @@ pub struct HydrolysisRenderer {
     scroll_controller: ScrollController,
     scroll_content_caches: BTreeMap<usize, DynamicSubtree>,
     reuse_scroll_content_caches: bool,
+    retained_scroll_frame: Option<RetainedScrollFrame>,
+    retained_scroll_frame_conflicted: bool,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     accessibility: AccessibilityBuilder,
+}
+
+#[derive(Clone)]
+struct RetainedScrollFrame {
+    handle: crate::scroll::ScrollHandle,
+    axis: ScrollAxis,
+    viewport: vello::kurbo::Rect,
+    transform: vello::kurbo::Affine,
+    content_scene: vello::Scene,
+    active_layers: Vec<ActiveSceneLayer>,
 }
 
 struct AppliedFilterRuntime {
@@ -649,6 +661,8 @@ impl HydrolysisRenderer {
             scroll_controller: ScrollController::default(),
             scroll_content_caches: BTreeMap::new(),
             reuse_scroll_content_caches: false,
+            retained_scroll_frame: None,
+            retained_scroll_frame_conflicted: false,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             accessibility: AccessibilityBuilder::default(),
@@ -2414,6 +2428,8 @@ impl HydrolysisRenderer {
         self.scene.reset();
         self.compositor.render_layers.clear();
         self.compositor.active_scene_layers.clear();
+        self.state.measurement_cache_hits = 0;
+        self.state.measurement_cache_misses = 0;
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -2423,6 +2439,8 @@ impl HydrolysisRenderer {
         if !self.reuse_scroll_content_caches {
             self.scroll_content_caches.clear();
         }
+        self.retained_scroll_frame = None;
+        self.retained_scroll_frame_conflicted = false;
         self.state.measurement_cache.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
@@ -2453,25 +2471,138 @@ impl HydrolysisRenderer {
         self.reuse_scroll_content_caches = reuse;
     }
 
+    pub(crate) fn has_retained_scroll_frame(&self) -> bool {
+        self.retained_scroll_frame.is_some() && !self.retained_scroll_frame_conflicted
+    }
+
+    pub(crate) fn active_scene_layers_snapshot(&self) -> Vec<ActiveSceneLayer> {
+        self.compositor.active_scene_layers.clone()
+    }
+
+    pub(crate) fn scene_is_empty(&self) -> bool {
+        self.scene.encoding().is_empty()
+    }
+
+    pub(crate) fn retain_scroll_frame(
+        &mut self,
+        handle: crate::scroll::ScrollHandle,
+        axis: ScrollAxis,
+        viewport: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        content_scene: vello::Scene,
+        active_layers: Vec<ActiveSceneLayer>,
+        exclusive_root: bool,
+    ) {
+        if self.retained_scroll_frame.is_some() {
+            self.retained_scroll_frame = None;
+            self.retained_scroll_frame_conflicted = true;
+            return;
+        }
+        let viewport_matches_window = (viewport.x0 - self.window_bounds.x0).abs() <= f64::EPSILON
+            && (viewport.y0 - self.window_bounds.y0).abs() <= f64::EPSILON
+            && (viewport.x1 - self.window_bounds.x1).abs() <= f64::EPSILON
+            && (viewport.y1 - self.window_bounds.y1).abs() <= f64::EPSILON;
+        if !viewport_matches_window || !exclusive_root {
+            self.retained_scroll_frame_conflicted = true;
+            return;
+        }
+        self.retained_scroll_frame = Some(RetainedScrollFrame {
+            handle,
+            axis,
+            viewport,
+            transform,
+            content_scene,
+            active_layers,
+        });
+    }
+
+    pub(crate) fn refresh_retained_scroll_scene(&mut self, env: &Environment) -> bool {
+        let Some(frame) = self.retained_scroll_frame.clone() else {
+            return false;
+        };
+        if self.retained_scroll_frame_conflicted {
+            return false;
+        }
+
+        self.scene.reset();
+        self.compositor.render_layers.clear();
+        self.compositor.active_scene_layers.clear();
+        self.state.measurement_cache_hits = 0;
+        self.state.measurement_cache_misses = 0;
+        let background_color =
+            resolved_color_to_peniko(Color::new(theme::color::Background).resolve(env).get());
+        self.scene.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            background_color,
+            None,
+            &self.window_bounds,
+        );
+
+        for layer in &frame.active_layers {
+            layer.push_to_scene(&mut self.scene);
+            self.compositor.active_scene_layers.push(layer.clone());
+        }
+
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            frame.transform,
+            &frame.viewport,
+        );
+        self.compositor.active_scene_layers.push(ActiveSceneLayer {
+            alpha: 1.0,
+            transform: frame.transform,
+            shape: LayerShape::Rect(frame.viewport),
+        });
+
+        let metrics = frame.handle.metrics();
+        let content_transform = frame.transform
+            * vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+        self.scene
+            .append(&frame.content_scene, Some(content_transform));
+        self.pop_layer();
+
+        while !self.compositor.active_scene_layers.is_empty() {
+            self.pop_layer();
+        }
+
+        let ctx = RenderContext::with_transforms(frame.viewport, frame.transform, frame.transform);
+        let mut widget_ctx = WidgetRenderContext::new(self, ctx);
+        crate::widgets::draw_scroll_indicators(
+            &mut widget_ctx,
+            env,
+            frame.viewport,
+            metrics,
+            frame.axis,
+        );
+        self.flush_vello_scene_layer();
+        true
+    }
+
     pub(crate) fn render_scroll_content(
         &mut self,
         cache_key: usize,
         ctx: RenderContext,
         env: &Environment,
         content: AnyView,
-    ) {
+    ) -> vello::Scene {
         if self.reuse_scroll_content_caches
             && let Some(subtree) = self.scroll_content_caches.remove(&cache_key)
         {
             self.replay_dynamic_subtree(ctx, &subtree);
+            let scene = subtree.scene.clone();
             self.scroll_content_caches.insert(cache_key, subtree);
-            return;
+            return scene;
         }
 
         let local_ctx = ctx.with_identity_transforms(ctx.bounds);
         let subtree = Self::render_dynamic_subtree(self, local_ctx, env, content);
         self.replay_dynamic_subtree(ctx, &subtree);
+        let scene = subtree.scene.clone();
         self.scroll_content_caches.insert(cache_key, subtree);
+        scene
     }
 
     pub fn finish_rebuild_frame(&mut self) {
