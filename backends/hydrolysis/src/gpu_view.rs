@@ -70,6 +70,7 @@ where
         renderer.render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
             device: frame.device,
             queue: frame.queue,
+            texture: Some(frame.texture),
             view: &frame.view,
             format: frame.format,
             width: frame.width,

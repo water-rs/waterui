@@ -64,6 +64,7 @@ pub(crate) struct GpuSurfaceLayer {
     pub(crate) transform: vello::kurbo::Affine,
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
+    pub(crate) direct_to_target: bool,
 }
 
 pub(crate) enum RenderLayer {
@@ -80,6 +81,7 @@ pub(crate) struct PreparedGpuSurfaceLayer {
 pub struct HydrolysisRenderTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
+    pub texture: Option<&'a wgpu::Texture>,
     pub view: &'a wgpu::TextureView,
     pub format: wgpu::TextureFormat,
     pub width: u32,
@@ -394,6 +396,41 @@ impl EmbeddedGpuSurfaceRuntime {
             uniform_bytes: encode_compositor_uniform(corners, false),
             needs_redraw,
         }
+    }
+
+    pub(crate) fn render_direct_to_target(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        view: wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        self.ensure_setup(device, queue, format);
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.start_time);
+        let delta = now
+            .duration_since(self.last_frame_time)
+            .min(Duration::from_millis(100));
+        self.last_frame_time = now;
+        let mut frame = GpuFrame::new(
+            device,
+            queue,
+            texture,
+            view,
+            format,
+            width,
+            height,
+            PointerState::default(),
+            GestureState::new(),
+            elapsed,
+            delta,
+        );
+        self.surface.render(&mut frame);
+        frame.was_redraw_requested() || self.redraw_handle.take_dirty()
     }
 
     fn ensure_setup(
@@ -759,6 +796,34 @@ impl HydrolysisRenderer {
         let render_layers = core::mem::take(&mut self.compositor.render_layers);
         if render_layers.is_empty() {
             self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
+            return;
+        }
+        if let [RenderLayer::GpuSurface(layer)] = render_layers.as_slice()
+            && layer.direct_to_target
+        {
+            let texture = target
+                .texture
+                .expect("hydrolysis direct GpuSurface render requires target texture");
+            let needs_redraw = self
+                .compositor
+                .gpu_surface_slots
+                .get_mut(layer.slot_index)
+                .unwrap_or_else(|| {
+                    panic!("hydrolysis gpu surface slot {} missing", layer.slot_index)
+                })
+                .render_direct_to_target(
+                    target.device,
+                    target.queue,
+                    texture,
+                    target.view.clone(),
+                    target.format,
+                    target.width,
+                    target.height,
+                );
+            self.compositor.render_layers = render_layers;
+            if needs_redraw {
+                self.request_redraw();
+            }
             return;
         }
         let mut needs_redraw = false;

@@ -835,6 +835,7 @@ fn render_window_with_capture<P: PlatformWindow>(
             .render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
                 device: surface.device(),
                 queue: surface.queue(),
+                texture: Some(frame.texture()),
                 view: frame.view(),
                 format,
                 width,
