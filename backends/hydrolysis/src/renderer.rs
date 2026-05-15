@@ -969,6 +969,23 @@ impl HydrolysisRenderer {
         handle
     }
 
+    pub(crate) fn bind_render_scroll_handle(
+        &mut self,
+        axis: ScrollAxis,
+        viewport_width: f64,
+        viewport_height: f64,
+        content_width: f64,
+        content_height: f64,
+    ) -> ScrollHandle {
+        self.scroll_controller.bind(
+            axis,
+            viewport_width,
+            viewport_height,
+            content_width,
+            content_height,
+        )
+    }
+
     pub(crate) fn take_pending_scroll_handle(&mut self, caller: &'static str) -> ScrollHandle {
         self.lazy.take_pending_scroll_handle(caller)
     }

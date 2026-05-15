@@ -25,32 +25,16 @@ impl HydroNativeView for Native<ScrollView> {
         measure_view_intrinsic(content, state, env)
     }
 
+    fn accessibility_is_render_driven() -> bool {
+        true
+    }
+
     fn accessibility(
-        renderer: &mut HydrolysisRenderer,
-        ctx: crate::renderer::RenderContext,
-        view: &Self,
-        env: &Environment,
+        _renderer: &mut HydrolysisRenderer,
+        _ctx: crate::renderer::RenderContext,
+        _view: &Self,
+        _env: &Environment,
     ) {
-        let (axis, content) = view.as_inner().as_parts();
-        let viewport = ctx.bounds;
-        let intrinsic = measure_view_intrinsic(content, renderer.state_mut(), env);
-        let (content_width, content_height) = scroll_content_size(axis, viewport, intrinsic);
-        let handle = renderer.bind_scroll_handle(
-            axis,
-            viewport.width(),
-            viewport.height(),
-            content_width,
-            content_height,
-        );
-        let metrics = handle.metrics();
-        register_scroll_accessibility_node(
-            renderer,
-            env,
-            transformed_rect(ctx.hit_transform, viewport),
-            &handle,
-            metrics,
-            axis,
-        );
     }
 }
 
@@ -62,10 +46,16 @@ pub(crate) fn render_scroll_view(
     let (axis, content) = scroll.into_inner().into_inner();
     let content = normalize_layout_view(content, env);
     let viewport = ctx.bounds;
+    let intrinsic = measure_view_intrinsic(&content, ctx.renderer_mut().state_mut(), env);
+    let (content_width, content_height) = scroll_content_size(axis, viewport, intrinsic);
 
-    let handle = ctx
-        .renderer_mut()
-        .take_pending_scroll_handle("render_scroll_view");
+    let handle = ctx.renderer_mut().bind_render_scroll_handle(
+        axis,
+        viewport.width(),
+        viewport.height(),
+        content_width,
+        content_height,
+    );
     let metrics = handle.metrics();
     let transform = ctx.transform;
     let active_layers = ctx.renderer_mut().active_scene_layers_snapshot();
@@ -109,6 +99,14 @@ pub(crate) fn render_scroll_view(
     ctx.renderer_mut().register_scroll_target(
         transformed_rect(hit_transform, viewport),
         move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
+    );
+    register_scroll_accessibility_node(
+        ctx.renderer_mut(),
+        env,
+        transformed_rect(hit_transform, viewport),
+        &handle,
+        metrics,
+        axis,
     );
 
     draw_scroll_indicators(ctx, env, viewport, metrics, axis);
