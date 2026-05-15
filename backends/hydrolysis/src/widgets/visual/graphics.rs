@@ -10,7 +10,7 @@ use waterui_core::{Environment, Native};
 use waterui_graphics::color::ResolvedColor;
 use waterui_graphics::view_effect::ViewEffectErased;
 use waterui_graphics::{GpuSurface, ResolvedGradient, SceneView};
-use waterui_shape::ResolvedShape;
+use waterui_shape::{ResolvedMorphShape, ResolvedShape};
 
 #[cfg(feature = "accessibility")]
 fn register_graphics_image_accessibility(
@@ -178,6 +178,38 @@ impl HydroNativeView for Native<ResolvedShape> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         let render_ctx = ctx.render_context();
         HydrolysisRenderer::render_resolved_shape(ctx.renderer_mut(), render_ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+
+    fn dimensions(
+        _state: &mut HydroState,
+        _view: &Self,
+        _env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
+    }
+
+    fn accessibility(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        _view: &Self,
+        env: &Environment,
+    ) {
+        #[cfg(feature = "accessibility")]
+        {
+            register_graphics_image_accessibility(renderer, ctx, env);
+        }
+    }
+}
+
+impl HydroNativeView for Native<ResolvedMorphShape> {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
+        let render_ctx = ctx.render_context();
+        HydrolysisRenderer::render_resolved_morph_shape(ctx.renderer_mut(), render_ctx, view, env);
     }
 
     fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {

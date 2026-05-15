@@ -389,6 +389,124 @@ pub(crate) fn resolved_shape_to_path(
     path_commands_to_path(&shape.commands, bounds)
 }
 
+pub(crate) fn resolved_morph_shape_to_path(
+    shape: &ResolvedMorphShape,
+    progress: f32,
+    bounds: vello::kurbo::Rect,
+) -> vello::kurbo::BezPath {
+    let from = shape_kind_radii(shape.from);
+    let to = shape_kind_radii(shape.to);
+    let progress = progress.clamp(0.0, 1.0);
+    let radii = [
+        lerp(from[0], to[0], progress),
+        lerp(from[1], to[1], progress),
+        lerp(from[2], to[2], progress),
+        lerp(from[3], to[3], progress),
+    ];
+    rounded_rect_path(bounds, radii)
+}
+
+fn shape_kind_radii(kind: ShapeKind) -> [f32; 4] {
+    match kind {
+        ShapeKind::Rect => [0.0; 4],
+        ShapeKind::Circle | ShapeKind::Ellipse | ShapeKind::Capsule => [0.5; 4],
+        ShapeKind::RoundedRect { corner_radius } => [corner_radius.clamp(0.0, 0.5); 4],
+        ShapeKind::UnevenRoundedRect {
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right,
+        } => [
+            top_left.clamp(0.0, 0.5),
+            top_right.clamp(0.0, 0.5),
+            bottom_right.clamp(0.0, 0.5),
+            bottom_left.clamp(0.0, 0.5),
+        ],
+        ShapeKind::CustomPath => {
+            panic!("hydrolysis morph shape rendering requires built-in shape kinds")
+        }
+    }
+}
+
+fn rounded_rect_path(bounds: vello::kurbo::Rect, radii: [f32; 4]) -> vello::kurbo::BezPath {
+    const KAPPA: f64 = 0.552_284_749_830_793_6;
+    let min_side = bounds.width().min(bounds.height()).max(0.0);
+    let [tl, tr, br, bl] = radii.map(|radius| f64::from(radius.clamp(0.0, 0.5)) * min_side);
+    let mut path = vello::kurbo::BezPath::new();
+
+    path.move_to((bounds.x0 + tl, bounds.y0));
+    path.line_to((bounds.x1 - tr, bounds.y0));
+    append_corner(
+        &mut path,
+        vello::kurbo::Point::new(bounds.x1 - tr, bounds.y0 + tr),
+        tr,
+        -core::f64::consts::FRAC_PI_2,
+        0.0,
+        KAPPA,
+    );
+    path.line_to((bounds.x1, bounds.y1 - br));
+    append_corner(
+        &mut path,
+        vello::kurbo::Point::new(bounds.x1 - br, bounds.y1 - br),
+        br,
+        0.0,
+        core::f64::consts::FRAC_PI_2,
+        KAPPA,
+    );
+    path.line_to((bounds.x0 + bl, bounds.y1));
+    append_corner(
+        &mut path,
+        vello::kurbo::Point::new(bounds.x0 + bl, bounds.y1 - bl),
+        bl,
+        core::f64::consts::FRAC_PI_2,
+        core::f64::consts::PI,
+        KAPPA,
+    );
+    path.line_to((bounds.x0, bounds.y0 + tl));
+    append_corner(
+        &mut path,
+        vello::kurbo::Point::new(bounds.x0 + tl, bounds.y0 + tl),
+        tl,
+        core::f64::consts::PI,
+        core::f64::consts::PI + core::f64::consts::FRAC_PI_2,
+        KAPPA,
+    );
+    path.close_path();
+    path
+}
+
+fn append_corner(
+    path: &mut vello::kurbo::BezPath,
+    center: vello::kurbo::Point,
+    radius: f64,
+    start: f64,
+    end: f64,
+    kappa: f64,
+) {
+    if radius <= 0.0 {
+        return;
+    }
+    let start_point = vello::kurbo::Point::new(
+        center.x + radius * start.cos(),
+        center.y + radius * start.sin(),
+    );
+    let end_point =
+        vello::kurbo::Point::new(center.x + radius * end.cos(), center.y + radius * end.sin());
+    let c1 = vello::kurbo::Point::new(
+        start_point.x - radius * kappa * start.sin(),
+        start_point.y + radius * kappa * start.cos(),
+    );
+    let c2 = vello::kurbo::Point::new(
+        end_point.x + radius * kappa * end.sin(),
+        end_point.y - radius * kappa * end.cos(),
+    );
+    path.curve_to(c1, c2, end_point);
+}
+
+fn lerp(from: f32, to: f32, progress: f32) -> f32 {
+    from + (to - from) * progress
+}
+
 pub(crate) fn path_commands_to_path(
     commands: &[PathCommand],
     bounds: vello::kurbo::Rect,
