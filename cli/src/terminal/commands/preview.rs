@@ -481,6 +481,9 @@ struct PreviewPerfMeasurement {
     missed_60fps_frames: u64,
     measurement_cache_hits: u64,
     measurement_cache_misses: u64,
+    scene_layers: u64,
+    vello_scene_layers: u64,
+    gpu_surface_layers: u64,
     phases: PreviewPerfPhases,
     frames: Vec<PreviewPerfFrame>,
 }
@@ -515,6 +518,9 @@ struct PreviewPerfFrame {
     gpu_frame_us: u64,
     measurement_cache_hits: u64,
     measurement_cache_misses: u64,
+    scene_layers: u64,
+    vello_scene_layers: u64,
+    gpu_surface_layers: u64,
 }
 
 /// Run the preview command.
@@ -1055,6 +1061,9 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                     missed_60fps_frames: 0,
                     measurement_cache_hits: 0,
                     measurement_cache_misses: 0,
+                    scene_layers: 0,
+                    vello_scene_layers: 0,
+                    gpu_surface_layers: 0,
                     phases: PreviewPerfPhases::default(),
                     frames: Vec::new(),
                 },
@@ -1080,6 +1089,9 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                 parse_required_field(&fields, "measurement_cache_hits")?;
             measurement.measurement_cache_misses =
                 parse_required_field(&fields, "measurement_cache_misses")?;
+            measurement.scene_layers = parse_required_field(&fields, "scene_layers")?;
+            measurement.vello_scene_layers = parse_required_field(&fields, "vello_scene_layers")?;
+            measurement.gpu_surface_layers = parse_required_field(&fields, "gpu_surface_layers")?;
         } else if let Some(rest) = line.strip_prefix("perf-sample ") {
             let (name, fields) = parse_named_perf_fields(rest)?;
             let measurement = measurements.get_mut(&name).ok_or_else(|| {
@@ -1109,6 +1121,9 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                     &fields,
                     "measurement_cache_misses",
                 )?,
+                scene_layers: parse_required_field(&fields, "scene_layers")?,
+                vello_scene_layers: parse_required_field(&fields, "vello_scene_layers")?,
+                gpu_surface_layers: parse_required_field(&fields, "gpu_surface_layers")?,
             });
         }
     }
@@ -1157,14 +1172,22 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
             measurement.measurement_cache_hits,
             measurement.measurement_cache_misses
         );
+        note!(
+            "    layers: compositor={} vello={} gpu-surface={}",
+            measurement.scene_layers,
+            measurement.vello_scene_layers,
+            measurement.gpu_surface_layers
+        );
         if let Some(resources) = resource_summary(measurement) {
             note!(
-                "    resources: cpu avg={:.1}% max={:.1}% | memory max={} | gpu-frame avg={} max={} | raw_samples={}",
+                "    resources: cpu avg={:.1}% max={:.1}% | memory max={} | gpu-frame avg={} max={} | layers avg={:.1} max={} | raw_samples={}",
                 resources.avg_cpu_percent,
                 resources.max_cpu_percent,
                 bytes_label(resources.max_memory_bytes),
                 micros_label(resources.avg_gpu_frame_us),
                 micros_label(resources.max_gpu_frame_us),
+                resources.avg_scene_layers,
+                resources.max_scene_layers,
                 measurement.frames.len()
             );
         }
@@ -1189,6 +1212,8 @@ struct PreviewPerfResourceSummary {
     max_memory_bytes: u64,
     avg_gpu_frame_us: u64,
     max_gpu_frame_us: u64,
+    avg_scene_layers: f64,
+    max_scene_layers: u64,
 }
 
 fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfResourceSummary> {
@@ -1226,6 +1251,18 @@ fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfR
             .frames
             .iter()
             .map(|frame| frame.gpu_frame_us)
+            .max()
+            .unwrap_or_default(),
+        avg_scene_layers: measurement
+            .frames
+            .iter()
+            .map(|frame| frame.scene_layers as f64)
+            .sum::<f64>()
+            / sample_count,
+        max_scene_layers: measurement
+            .frames
+            .iter()
+            .map(|frame| frame.scene_layers)
             .max()
             .unwrap_or_default(),
     })
@@ -1564,6 +1601,13 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
         |frame| frame.gpu_frame_us as f64,
         |value| micros_label(value.round() as u64),
     );
+    let layer_chart = render_preview_perf_metric_chart_html(
+        "Compositor layers",
+        "line-layers",
+        &measurement.frames,
+        |frame| frame.scene_layers as f64,
+        |value| format!("{value:.0}"),
+    );
     format!(
         concat!(
             "<section class=\"resources\">",
@@ -1572,17 +1616,22 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
             "<div><span>memory max</span><strong>{}</strong></div>",
             "<div><span>GPU pipeline avg</span><strong>{}</strong></div>",
             "<div><span>GPU pipeline max</span><strong>{}</strong></div>",
+            "<div><span>layer avg</span><strong>{:.1}</strong></div>",
+            "<div><span>layer max</span><strong>{}</strong></div>",
             "</section>",
-            "<section class=\"trend-grid\">{}{}{}</section>"
+            "<section class=\"trend-grid\">{}{}{}{}</section>"
         ),
         summary.avg_cpu_percent,
         summary.max_cpu_percent,
         bytes_label(summary.max_memory_bytes),
         micros_label(summary.avg_gpu_frame_us),
         micros_label(summary.max_gpu_frame_us),
+        summary.avg_scene_layers,
+        summary.max_scene_layers,
         cpu_chart,
         memory_chart,
-        gpu_chart
+        gpu_chart,
+        layer_chart
     )
 }
 
@@ -1639,7 +1688,7 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
             format!(
                 concat!(
                     "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\"></circle>"
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\"></circle>"
                 ),
                 x,
                 y,
@@ -1650,7 +1699,8 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
                 micros_label(frame.rebuild_us),
                 frame.cpu_percent,
                 bytes_label(frame.memory_bytes),
-                fps_label(preview_perf_throughput_fps(frame))
+                fps_label(preview_perf_throughput_fps(frame)),
+                frame.scene_layers
             )
         })
         .collect::<String>();
@@ -1663,7 +1713,7 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
             format!(
                 concat!(
                     "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\"></circle>"
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\"></circle>"
                 ),
                 x,
                 y,
@@ -1674,7 +1724,8 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
                 micros_label(frame.rebuild_us),
                 frame.cpu_percent,
                 bytes_label(frame.memory_bytes),
-                fps_label(preview_perf_throughput_fps(frame))
+                fps_label(preview_perf_throughput_fps(frame)),
+                frame.scene_layers
             )
         })
         .collect::<String>();
