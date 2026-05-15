@@ -3398,6 +3398,10 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
     ) {
         self.flush_vello_scene_layer();
+        let direct_to_target = self.compositor.render_layers.is_empty()
+            && self.compositor.active_scene_layers.is_empty()
+            && affine_near(transform, vello::kurbo::Affine::IDENTITY)
+            && rect_near(bounds, self.window_bounds);
         self.compositor
             .render_layers
             .push(RenderLayer::GpuSurface(GpuSurfaceLayer {
@@ -3405,6 +3409,7 @@ impl HydrolysisRenderer {
                 transform,
                 bounds,
                 active_layers: self.compositor.active_scene_layers.clone(),
+                direct_to_target,
             }));
     }
 
@@ -3474,10 +3479,34 @@ impl HydrolysisRenderer {
                 .count(),
         )
         .expect("hydrolysis Vello scene layer count exceeds u32");
+        let direct_gpu_surfaces = u32::try_from(
+            self.compositor
+                .render_layers
+                .iter()
+                .filter(|layer| {
+                    matches!(
+                        layer,
+                        RenderLayer::GpuSurface(GpuSurfaceLayer {
+                            direct_to_target: true,
+                            ..
+                        })
+                    )
+                })
+                .count(),
+        )
+        .expect("hydrolysis direct GpuSurface count exceeds u32");
         let gpu_surface_layers = scene_layers
             .checked_sub(vello_scene_layers)
+            .and_then(|count| count.checked_sub(direct_gpu_surfaces))
             .expect("hydrolysis render layer count accounting underflow");
-        (scene_layers, vello_scene_layers, gpu_surface_layers)
+        let composited_scene_layers = scene_layers
+            .checked_sub(direct_gpu_surfaces)
+            .expect("hydrolysis render layer count accounting underflow");
+        (
+            composited_scene_layers,
+            vello_scene_layers,
+            gpu_surface_layers,
+        )
     }
 
     pub(crate) fn clip_layer_stats(&self) -> (u32, u32) {
@@ -3719,6 +3748,20 @@ impl HydrolysisRenderer {
 
 fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn affine_near(left: vello::kurbo::Affine, right: vello::kurbo::Affine) -> bool {
+    left.as_coeffs()
+        .iter()
+        .zip(right.as_coeffs())
+        .all(|(left, right)| (*left - right).abs() <= 0.001)
+}
+
+fn rect_near(left: vello::kurbo::Rect, right: vello::kurbo::Rect) -> bool {
+    (left.x0 - right.x0).abs() <= 0.001
+        && (left.y0 - right.y0).abs() <= 0.001
+        && (left.x1 - right.x1).abs() <= 0.001
+        && (left.y1 - right.y1).abs() <= 0.001
 }
 
 fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
