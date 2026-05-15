@@ -10,6 +10,7 @@ use waterui::app::App;
 use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
+use waterui::preview;
 
 #[derive(Clone)]
 struct Contact {
@@ -25,6 +26,7 @@ impl Identifiable for Contact {
     }
 }
 
+#[preview]
 fn main() -> impl View {
     let contacts = vec![
         Contact {
