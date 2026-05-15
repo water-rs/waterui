@@ -1,9 +1,11 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use waterui_core::View;
 
 use crate::app::{OffscreenApp, ThemeInstaller, UiBuilder};
 use crate::driver::FrameTiming;
+
+const PERF_FRAME_RATE: u32 = 120;
 
 /// Repeated offscreen render measurement configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,15 +278,23 @@ impl PerfReport {
 #[derive(Debug)]
 pub struct PerfRun<'a> {
     app: &'a mut OffscreenApp,
+    frame_at: &'a mut Instant,
+    frame_interval: Duration,
 }
 
 impl PerfRun<'_> {
     /// Advances one complete offscreen Hydrolysis GPU frame without snapshot readback.
     pub fn frame(&mut self) -> FrameTiming {
-        self.app
-            .app
-            .driver
-            .pump_frame(&self.app.app.content, &self.app.app.env)
+        let timing = self.app.app.driver.pump_frame_at(
+            &self.app.app.content,
+            &self.app.app.env,
+            *self.frame_at,
+        );
+        *self.frame_at = self
+            .frame_at
+            .checked_add(self.frame_interval)
+            .expect("perf frame clock overflow");
+        timing
     }
 
     /// Queues a pointer move for the next measured frame without settling the app.
@@ -376,14 +386,24 @@ where
         );
         for _ in 0..self.config.repetitions {
             let mut app = self.builder.clone().mount(self.view_fn.clone());
+            let mut frame_at = Instant::now();
+            let frame_interval = Duration::from_secs(1) / PERF_FRAME_RATE;
             for _ in 0..self.config.warmups {
-                let mut run = PerfRun { app: &mut app };
+                let mut run = PerfRun {
+                    app: &mut app,
+                    frame_at: &mut frame_at,
+                    frame_interval,
+                };
                 automation(&mut run);
                 let _ = run.frame();
             }
 
             for _ in 0..self.config.samples {
-                let mut run = PerfRun { app: &mut app };
+                let mut run = PerfRun {
+                    app: &mut app,
+                    frame_at: &mut frame_at,
+                    frame_interval,
+                };
                 automation(&mut run);
                 frames.push(run.frame());
             }

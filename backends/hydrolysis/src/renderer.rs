@@ -1102,7 +1102,9 @@ impl HydrolysisRenderer {
 
     fn layout_requires_render_measurement_prewarm(layout: &dyn Layout) -> bool {
         let layout = layout as &dyn Any;
-        !(layout.is::<PaddingLayout>() || layout.is::<LayoutBackgroundLayout>())
+        !(layout.is::<PaddingLayout>()
+            || layout.is::<LayoutBackgroundLayout>()
+            || layout.is::<HStackLayout>())
     }
 
     fn render_layout_container(
