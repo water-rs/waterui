@@ -308,6 +308,12 @@ pub struct HydrolysisRenderer {
     dynamic_morph_draws: Vec<DynamicMorphDraw>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
+    frame_applied_filter_count: u32,
+    frame_applied_filter_capture: Duration,
+    frame_applied_filter_effect: Duration,
+    reuse_applied_filter_inputs: bool,
+    active_applied_filters: Vec<ActiveAppliedFilter>,
+    active_applied_filter_cursor: usize,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     accessibility: AccessibilityBuilder,
@@ -342,6 +348,7 @@ struct AppliedFilterRuntime {
     filter: AppliedFilter,
     setup_complete: bool,
     input_texture: Option<AppliedFilterInputTexture>,
+    output_image: Option<vello::peniko::ImageData>,
 }
 
 impl AppliedFilterRuntime {
@@ -350,6 +357,7 @@ impl AppliedFilterRuntime {
             filter,
             setup_complete: false,
             input_texture: None,
+            output_image: None,
         }
     }
 
@@ -400,6 +408,105 @@ impl AppliedFilterRuntime {
         };
         (&texture.texture, &texture.view)
     }
+
+    fn has_input_texture(&self, width: u32, height: u32) -> bool {
+        self.input_texture
+            .as_ref()
+            .is_some_and(|texture| texture.width == width && texture.height == height)
+    }
+
+    fn render_output(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vello_renderer: &mut vello::Renderer,
+        width: u32,
+        height: u32,
+    ) -> (vello::peniko::ImageData, bool) {
+        let filter_context = EffectContext {
+            device,
+            queue,
+            input_format: wgpu::TextureFormat::Rgba8Unorm,
+            output_format: wgpu::TextureFormat::Rgba8Unorm,
+            pipeline_cache: None,
+        };
+        if !self.setup_complete {
+            match pollster::block_on(self.filter.setup(&filter_context)) {
+                Ok(()) => {}
+                Err(err) => {
+                    panic!("hydrolysis filter setup failed: {err}");
+                }
+            }
+            self.setup_complete = true;
+        }
+        self.filter.sync_targets();
+        let (output_width, output_height) = self.filter.output_size(width, height);
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_applied_filter_output"),
+            size: wgpu::Extent3d {
+                width: output_width,
+                height: output_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+
+        let Some(input_texture) = self.input_texture.as_ref() else {
+            panic!("hydrolysis AppliedFilter input texture missing before render");
+        };
+        let input = EffectInput {
+            device,
+            queue,
+            texture: &input_texture.texture,
+            view: input_texture.view.clone(),
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width,
+            height,
+        };
+        let output = EffectOutput {
+            device,
+            queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width: output_width,
+            height: output_height,
+        };
+        let needs_redraw = match self.filter.render(&input, &output) {
+            Ok(needs_redraw) => needs_redraw || self.filter.redraw_hint(),
+            Err(err) => {
+                panic!("hydrolysis filter render failed: {err}");
+            }
+        };
+
+        let image = if let Some(image) = self
+            .output_image
+            .as_ref()
+            .filter(|image| image.width == output_width && image.height == output_height)
+        {
+            let texture_base = wgpu::TexelCopyTextureInfoBase {
+                texture: output_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            };
+            let _ = vello_renderer.override_image(image, Some(texture_base));
+            image.clone()
+        } else {
+            let image = vello_renderer.register_texture(output_texture);
+            self.output_image = Some(image.clone());
+            image
+        };
+        (image, needs_redraw)
+    }
 }
 
 struct AppliedFilterInputTexture {
@@ -407,6 +514,12 @@ struct AppliedFilterInputTexture {
     height: u32,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+struct ActiveAppliedFilter {
+    runtime: Rc<RefCell<AppliedFilterRuntime>>,
+    width: u32,
+    height: u32,
 }
 
 struct ViewEffectRuntime {
@@ -695,6 +808,12 @@ impl HydrolysisRenderer {
             dynamic_morph_draws: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
+            frame_applied_filter_count: 0,
+            frame_applied_filter_capture: Duration::ZERO,
+            frame_applied_filter_effect: Duration::ZERO,
+            reuse_applied_filter_inputs: false,
+            active_applied_filters: Vec::new(),
+            active_applied_filter_cursor: 0,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             accessibility: AccessibilityBuilder::default(),
@@ -2169,101 +2288,60 @@ impl HydrolysisRenderer {
 
         let width = (ctx.bounds.width().max(1.0).round()) as u32;
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
+        let should_capture_input = {
+            let runtime = runtime.borrow();
+            !renderer.reuse_applied_filter_inputs || !runtime.has_input_texture(width, height)
+        };
+        let capture_started_at = Instant::now();
         let subtree_scene = Self::render_subtree_scene(renderer, ctx, env, content);
 
-        let (input_texture, input_view) = {
+        let input_view = {
             let mut runtime = runtime.borrow_mut();
-            let (texture, view) = runtime.input_texture(&device, width, height);
-            (texture.clone(), view.clone())
+            let (_, view) = runtime.input_texture(&device, width, height);
+            view.clone()
         };
-        renderer
-            .vello_renderer
-            .render_to_texture(
-                &device,
-                &queue,
-                &subtree_scene,
-                &input_view,
-                &vello::RenderParams {
-                    base_color: vello::peniko::Color::TRANSPARENT,
-                    width,
-                    height,
-                    antialiasing_method: vello::AaConfig::Area,
-                },
-            )
-            .expect("hydrolysis AppliedFilter: failed to render subtree");
-
-        let filter_context = EffectContext {
-            device: &device,
-            queue: &queue,
-            input_format: wgpu::TextureFormat::Rgba8Unorm,
-            output_format: wgpu::TextureFormat::Rgba8Unorm,
-            pipeline_cache: None,
-        };
-        let mut runtime = runtime.borrow_mut();
-        if !runtime.setup_complete {
-            match pollster::block_on(runtime.filter.setup(&filter_context)) {
-                Ok(()) => {}
-                Err(err) => {
-                    panic!("hydrolysis filter setup failed: {err}");
-                }
-            }
-            runtime.setup_complete = true;
+        if should_capture_input {
+            renderer
+                .vello_renderer
+                .render_to_texture(
+                    &device,
+                    &queue,
+                    &subtree_scene,
+                    &input_view,
+                    &vello::RenderParams {
+                        base_color: vello::peniko::Color::TRANSPARENT,
+                        width,
+                        height,
+                        antialiasing_method: vello::AaConfig::Area,
+                    },
+                )
+                .expect("hydrolysis AppliedFilter: failed to render subtree");
         }
-        runtime.filter.sync_targets();
-        let (output_width, output_height) = runtime.filter.output_size(width, height);
-        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_applied_filter_output"),
-            size: wgpu::Extent3d {
-                width: output_width,
-                height: output_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
-        });
+        renderer.frame_applied_filter_capture += capture_started_at.elapsed();
 
-        let input = EffectInput {
-            device: &device,
-            queue: &queue,
-            texture: &input_texture,
-            view: input_view,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+        let effect_started_at = Instant::now();
+        let (image, needs_redraw) = runtime.borrow_mut().render_output(
+            &device,
+            &queue,
+            &mut renderer.vello_renderer,
             width,
             height,
-        };
-        let output = EffectOutput {
-            device: &device,
-            queue: &queue,
-            texture: &output_texture,
-            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: output_width,
-            height: output_height,
-        };
-        let needs_redraw = match runtime.filter.render(&input, &output) {
-            Ok(needs_redraw) => needs_redraw || runtime.filter.redraw_hint(),
-            Err(err) => {
-                panic!("hydrolysis filter render failed: {err}");
-            }
-        };
-        drop(runtime);
+        );
+        renderer.frame_applied_filter_effect += effect_started_at.elapsed();
+        renderer.frame_applied_filter_count = renderer
+            .frame_applied_filter_count
+            .checked_add(1)
+            .expect("hydrolysis applied filter counter overflow");
+        renderer.remember_active_applied_filter(Rc::clone(&runtime), width, height);
         if needs_redraw {
-            renderer.request_next_frame_rebuild();
+            renderer.request_redraw();
         }
 
-        let image = renderer.vello_renderer.register_texture(output_texture);
         renderer.compositor.active_filter_images.push(image.clone());
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(output_width),
-                ctx.bounds.height() / f64::from(output_height),
+                ctx.bounds.width() / f64::from(image.width),
+                ctx.bounds.height() / f64::from(image.height),
             );
         let scene = renderer.scene_mut();
         scene.draw_image(
@@ -2807,6 +2885,9 @@ impl HydrolysisRenderer {
         self.state.measurement_cache_misses = 0;
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
+        self.frame_applied_filter_count = 0;
+        self.frame_applied_filter_capture = Duration::ZERO;
+        self.frame_applied_filter_effect = Duration::ZERO;
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -2823,6 +2904,10 @@ impl HydrolysisRenderer {
         self.state.measurement_cache_misses = 0;
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
+        self.frame_applied_filter_count = 0;
+        self.frame_applied_filter_capture = Duration::ZERO;
+        self.frame_applied_filter_effect = Duration::ZERO;
+        self.active_applied_filter_cursor = 0;
         self.rebuild_generation.set(
             self.rebuild_generation
                 .get()
@@ -2848,6 +2933,70 @@ impl HydrolysisRenderer {
 
     pub(crate) fn set_scroll_content_cache_reuse(&mut self, reuse: bool) {
         self.reuse_scroll_content_caches = reuse;
+    }
+
+    pub(crate) fn set_applied_filter_input_cache_reuse(&mut self, reuse: bool) {
+        self.reuse_applied_filter_inputs = reuse;
+    }
+
+    fn remember_active_applied_filter(
+        &mut self,
+        runtime: Rc<RefCell<AppliedFilterRuntime>>,
+        width: u32,
+        height: u32,
+    ) {
+        let index = self.active_applied_filter_cursor;
+        self.active_applied_filter_cursor = self
+            .active_applied_filter_cursor
+            .checked_add(1)
+            .expect("hydrolysis active AppliedFilter cursor overflow");
+        let active = ActiveAppliedFilter {
+            runtime,
+            width,
+            height,
+        };
+        if index == self.active_applied_filters.len() {
+            self.active_applied_filters.push(active);
+        } else {
+            self.active_applied_filters[index] = active;
+        }
+    }
+
+    pub(crate) fn begin_redraw_frame(&mut self) {
+        self.state.measurement_cache_hits = 0;
+        self.state.measurement_cache_misses = 0;
+        self.frame_clip_layers = 0;
+        self.frame_max_clip_depth = 0;
+        self.frame_applied_filter_count = 0;
+        self.frame_applied_filter_capture = Duration::ZERO;
+        self.frame_applied_filter_effect = Duration::ZERO;
+    }
+
+    pub(crate) fn refresh_active_applied_filters(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let active_filters = self
+            .active_applied_filters
+            .iter()
+            .map(|filter| (Rc::clone(&filter.runtime), filter.width, filter.height))
+            .collect::<Vec<_>>();
+        for (runtime, width, height) in active_filters {
+            let effect_started_at = Instant::now();
+            let needs_redraw = runtime
+                .borrow_mut()
+                .render_output(device, queue, &mut self.vello_renderer, width, height)
+                .1;
+            self.frame_applied_filter_effect += effect_started_at.elapsed();
+            self.frame_applied_filter_count = self
+                .frame_applied_filter_count
+                .checked_add(1)
+                .expect("hydrolysis applied filter counter overflow");
+            if needs_redraw {
+                self.request_redraw();
+            }
+        }
     }
 
     pub(crate) fn has_retained_scroll_frame(&self) -> bool {
@@ -3060,6 +3209,8 @@ impl HydrolysisRenderer {
         self.compositor
             .gpu_surface_slots
             .truncate(self.compositor.gpu_surface_cursor);
+        self.active_applied_filters
+            .truncate(self.active_applied_filter_cursor);
         self.popup_menu.finish_rebuild_frame();
         self.text_editing
             .text_selection_slots
@@ -3290,6 +3441,14 @@ impl HydrolysisRenderer {
         (self.frame_clip_layers, self.frame_max_clip_depth)
     }
 
+    pub(crate) fn applied_filter_stats(&self) -> (u32, u64, u64) {
+        (
+            self.frame_applied_filter_count,
+            duration_micros_u64(self.frame_applied_filter_capture),
+            duration_micros_u64(self.frame_applied_filter_effect),
+        )
+    }
+
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
         let index = self.text_editing.focused_text_input.get()?;
@@ -3513,6 +3672,10 @@ impl HydrolysisRenderer {
             accessibility_node_id: data.accessibility_node_id,
         });
     }
+}
+
+fn duration_micros_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
