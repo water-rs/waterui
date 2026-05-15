@@ -212,6 +212,12 @@ impl AnimatedScalarState {
             self.active_target = None;
             return;
         }
+        if self
+            .active_target
+            .is_some_and(|active| approx_eq(active, target))
+        {
+            return;
+        }
 
         match animation {
             Some(animation) => {
@@ -315,5 +321,40 @@ mod tests {
 
         let mid = second.sample(start + Duration::from_millis(60));
         assert!(mid > 0.0 && mid < 1.0);
+    }
+
+    #[test]
+    fn repeated_same_scalar_target_does_not_restart_animation() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        controller.begin_rebuild_frame();
+        let first = controller.bind_scalar_target(
+            0.0,
+            Animation::ease_in_out(Duration::from_millis(120)),
+            start,
+        );
+        controller.finish_rebuild_frame();
+        assert!((first.sample(start) - 0.0).abs() < 0.0001);
+
+        controller.begin_rebuild_frame();
+        let second = controller.bind_scalar_target(
+            1.0,
+            Animation::ease_in_out(Duration::from_millis(120)),
+            start,
+        );
+        controller.finish_rebuild_frame();
+        assert!(second.sample(start + Duration::from_millis(60)) > 0.0);
+
+        controller.begin_rebuild_frame();
+        let third = controller.bind_scalar_target(
+            1.0,
+            Animation::ease_in_out(Duration::from_millis(120)),
+            start + Duration::from_millis(60),
+        );
+        controller.finish_rebuild_frame();
+
+        let final_value = third.sample(start + Duration::from_millis(200));
+        assert!((final_value - 1.0).abs() < 0.0001);
+        assert!(!controller.tick(start + Duration::from_millis(200)));
     }
 }
