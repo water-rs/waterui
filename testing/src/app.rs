@@ -147,7 +147,9 @@ impl<T: ThemeInstaller> UiBuilder<T> {
         F: Fn() -> V + Clone + 'static,
     {
         self.perf_with(view_fn, |perf| {
-            perf.measure("steady", |_| {});
+            perf.measure("steady-redraw", |run| {
+                run.redraw();
+            });
         })
     }
 
