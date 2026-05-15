@@ -163,7 +163,10 @@ pub(crate) fn render_list(
     let list_metrics = widget_theme(env).list_metrics();
     let handle = ctx.renderer_mut().take_pending_scroll_handle("render_list");
     let metrics = handle.metrics();
-    ctx.push_layer_rect(1.0, viewport);
+    let needs_viewport_clip = metrics.max_y > 0.0;
+    if needs_viewport_clip {
+        ctx.push_layer_rect(1.0, viewport);
+    }
 
     let window = resolve_visible_index_window(
         row_count,
@@ -342,7 +345,9 @@ pub(crate) fn render_list(
         }
     }
 
-    ctx.pop_layer();
+    if needs_viewport_clip {
+        ctx.pop_layer();
+    }
 
     let handle_for_input = handle.clone();
     let hit_transform = ctx.hit_transform;
