@@ -120,6 +120,7 @@ impl LocalStateRegistry {
 
 impl LifecycleState {
     pub(crate) fn begin_rebuild_frame(&mut self) {
+        self.previous_frame_retain.clear();
         self.current_frame_retain.clear();
         self.disappear_current.clear();
         self.disappear_slot = 0;

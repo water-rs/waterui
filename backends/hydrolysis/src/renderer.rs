@@ -292,6 +292,7 @@ pub struct HydrolysisRenderer {
     window_bounds: vello::kurbo::Rect,
     redraw_requested: Rc<Cell<bool>>,
     pub(crate) rebuild_requested: Rc<Cell<bool>>,
+    next_frame_rebuild_requested: Cell<bool>,
     rebuild_generation: Rc<Cell<u64>>,
     rebuild_in_progress: Rc<Cell<bool>>,
     lifecycle: LifecycleState,
@@ -355,6 +356,7 @@ impl AppliedFilterRuntime {
     fn replace_filter(&mut self, filter: AppliedFilter) {
         self.filter = filter;
         self.setup_complete = false;
+        self.input_texture = None;
     }
 
     fn input_texture(
@@ -677,6 +679,7 @@ impl HydrolysisRenderer {
             window_bounds: vello::kurbo::Rect::ZERO,
             redraw_requested: Rc::new(Cell::new(false)),
             rebuild_requested: Rc::new(Cell::new(false)),
+            next_frame_rebuild_requested: Cell::new(false),
             rebuild_generation: Rc::new(Cell::new(0)),
             rebuild_in_progress: Rc::new(Cell::new(false)),
             lifecycle: LifecycleState::default(),
@@ -1715,7 +1718,7 @@ impl HydrolysisRenderer {
             ctx.bounds.height() as f32,
         );
         if needs_next_frame {
-            renderer.request_rebuild();
+            renderer.request_next_frame_rebuild();
         }
     }
 
@@ -1845,7 +1848,7 @@ impl HydrolysisRenderer {
         let needs_redraw = runtime.effect.needs_redraw();
         drop(runtime);
         if needs_redraw {
-            renderer.request_rebuild();
+            renderer.request_next_frame_rebuild();
         }
 
         let image = renderer.vello_renderer.register_texture(output_texture);
@@ -2097,7 +2100,7 @@ impl HydrolysisRenderer {
         };
         drop(runtime);
         if needs_redraw {
-            renderer.request_rebuild();
+            renderer.request_next_frame_rebuild();
         }
 
         let image = renderer.vello_renderer.register_texture(output_texture);
@@ -3082,12 +3085,26 @@ impl HydrolysisRenderer {
     }
 
     #[must_use]
+    pub fn has_rebuild_request(&self) -> bool {
+        self.rebuild_requested.get()
+    }
+
+    pub fn request_next_frame_rebuild(&self) {
+        self.next_frame_rebuild_requested.set(true);
+        self.redraw_requested.set(true);
+    }
+
+    #[must_use]
     pub fn rebuild_handle(&self) -> Rc<Cell<bool>> {
         Rc::clone(&self.rebuild_requested)
     }
 
     pub fn take_rebuild_request(&self) -> bool {
         self.rebuild_requested.replace(false)
+    }
+
+    pub fn take_next_frame_rebuild_request(&self) -> bool {
+        self.next_frame_rebuild_requested.replace(false)
     }
 
     pub(crate) fn measurement_cache_stats(&self) -> (u32, u32) {
