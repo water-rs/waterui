@@ -62,6 +62,12 @@ pub struct PerfStats {
     pub p95: Duration,
     /// Number of sampled frames that rebuilt scene/layout state.
     pub rebuilt_frames: usize,
+    /// Number of sampled frames that rendered into the target surface.
+    pub rendered_frames: usize,
+    /// Number of sampled frames that had no render work.
+    pub idle_frames: usize,
+    /// Duration summary over rendered frames only.
+    pub rendered_total: PerfDurationStats,
     /// Number of sampled frames that missed the 120fps frame budget.
     pub missed_120fps_frames: usize,
     /// Number of sampled frames that missed the 60fps frame budget.
@@ -120,6 +126,8 @@ pub struct PerfDurationStats {
     pub median: Duration,
     /// 95th percentile duration.
     pub p95: Duration,
+    /// Slowest duration in the summarized set.
+    pub max: Duration,
 }
 
 impl PerfStats {
@@ -131,6 +139,11 @@ impl PerfStats {
         }
         let total = PerfDurationStats::from_durations(frames.iter().map(|frame| frame.total));
         let samples = frames.len();
+
+        let rendered_frames = frames
+            .iter()
+            .filter(|frame| frame.profile.counters.rendered)
+            .count();
 
         Self {
             samples,
@@ -148,6 +161,16 @@ impl PerfStats {
                 .unwrap_or_default(),
             p95: total.p95,
             rebuilt_frames: frames.iter().filter(|frame| frame.rebuilt).count(),
+            rendered_frames,
+            idle_frames: samples
+                .checked_sub(rendered_frames)
+                .expect("rendered frame count should not exceed sample count"),
+            rendered_total: PerfDurationStats::from_durations(
+                frames
+                    .iter()
+                    .filter(|frame| frame.profile.counters.rendered)
+                    .map(|frame| frame.total),
+            ),
             missed_120fps_frames: frames
                 .iter()
                 .filter(|frame| frame.total > Duration::from_nanos(8_333_333))
@@ -256,6 +279,7 @@ impl PerfDurationStats {
             mean: sum / u32::try_from(samples).expect("perf sample count should fit u32"),
             median: durations[samples / 2],
             p95: durations[p95_index],
+            max: *durations.last().expect("duration list should not be empty"),
         }
     }
 }
