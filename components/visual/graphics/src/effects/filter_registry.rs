@@ -257,10 +257,18 @@ mod tests {
     struct DummyEffect(u32);
 
     impl Effect for DummyEffect {
-        fn setup(&mut self, _ctx: &filtrate::EffectContext) -> impl core::future::Future<Output = filtrate::EffectSetupResult> {
+        fn setup(
+            &mut self,
+            _ctx: &filtrate::EffectContext,
+        ) -> impl core::future::Future<Output = filtrate::EffectSetupResult> {
             core::future::ready(Ok(()))
         }
-        fn render(&mut self, _input: &filtrate::EffectInput, _output: &filtrate::EffectOutput) -> filtrate::EffectRenderResult {
+        fn encode_render(
+            &mut self,
+            _input: &filtrate::EffectInput,
+            _output: &filtrate::EffectOutput,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) -> filtrate::EffectRenderResult {
             Ok(false)
         }
     }

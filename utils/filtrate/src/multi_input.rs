@@ -550,7 +550,12 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
         core::future::ready(Ok(()))
     }
 
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> crate::EffectRenderResult {
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> crate::EffectRenderResult {
         if let Some(err) = self.runtime.setup_error {
             return Err(err);
         }
@@ -618,12 +623,6 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
             ],
         });
 
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("multi-input filter encoder"),
-            });
-
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("multi-input filter pass"),
@@ -645,7 +644,6 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
             render_pass.draw(0..6, 0..1);
         }
 
-        input.queue.submit([encoder.finish()]);
         Ok(false)
     }
 }

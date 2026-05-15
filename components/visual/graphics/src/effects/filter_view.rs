@@ -84,6 +84,22 @@ impl AppliedFilter {
         self.filter.render(input, output)
     }
 
+    /// Encodes `render` into an existing command encoder.
+    ///
+    /// Returns `Ok(true)` if another frame is needed (animation in progress).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the wrapped filter's render failure.
+    pub fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
+        self.filter.encode_render(input, output, encoder)
+    }
+
     /// Resolve the current output dimensions from snapped filter state.
     #[must_use]
     pub fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
@@ -1524,7 +1540,12 @@ impl<F: Filter> Effect for FilterAdapter<F> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
         #[cfg(test)]
         {
             self.last_render_used_direct_output = false;
@@ -1584,11 +1605,6 @@ impl<F: Filter> Effect for FilterAdapter<F> {
             return Err("filter sampler missing after setup");
         };
 
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("filter pass encoder"),
-            });
         let mut used_direct_spatial_output = false;
         let mut source_width = input.width;
         let mut source_height = input.height;
@@ -1960,7 +1976,6 @@ impl<F: Filter> Effect for FilterAdapter<F> {
             }
         }
 
-        input.queue.submit([encoder.finish()]);
         self.target_params_dirty = false;
         #[cfg(test)]
         {

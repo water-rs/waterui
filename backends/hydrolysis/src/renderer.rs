@@ -415,6 +415,11 @@ impl AppliedFilterRuntime {
             .is_some_and(|texture| texture.width == width && texture.height == height)
     }
 
+    fn needs_redraw_refresh(&mut self) -> bool {
+        self.filter.sync_targets();
+        self.filter.redraw_hint()
+    }
+
     fn render_output(
         &mut self,
         device: &wgpu::Device,
@@ -422,6 +427,23 @@ impl AppliedFilterRuntime {
         vello_renderer: &mut vello::Renderer,
         width: u32,
         height: u32,
+    ) -> (vello::peniko::ImageData, bool) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hydrolysis applied filter encoder"),
+        });
+        let output = self.encode_output(device, queue, vello_renderer, width, height, &mut encoder);
+        queue.submit([encoder.finish()]);
+        output
+    }
+
+    fn encode_output(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vello_renderer: &mut vello::Renderer,
+        width: u32,
+        height: u32,
+        encoder: &mut wgpu::CommandEncoder,
     ) -> (vello::peniko::ImageData, bool) {
         let filter_context = EffectContext {
             device,
@@ -480,7 +502,7 @@ impl AppliedFilterRuntime {
             width: output_width,
             height: output_height,
         };
-        let needs_redraw = match self.filter.render(&input, &output) {
+        let needs_redraw = match self.filter.encode_render(&input, &output, encoder) {
             Ok(needs_redraw) => needs_redraw || self.filter.redraw_hint(),
             Err(err) => {
                 panic!("hydrolysis filter render failed: {err}");
@@ -2982,11 +3004,30 @@ impl HydrolysisRenderer {
             .iter()
             .map(|filter| (Rc::clone(&filter.runtime), filter.width, filter.height))
             .collect::<Vec<_>>();
+        if active_filters.is_empty() {
+            return;
+        }
+        let mut encoder = None;
         for (runtime, width, height) in active_filters {
+            if !runtime.borrow_mut().needs_redraw_refresh() {
+                continue;
+            }
+            let encoder = encoder.get_or_insert_with(|| {
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("hydrolysis active applied filters encoder"),
+                })
+            });
             let effect_started_at = Instant::now();
             let needs_redraw = runtime
                 .borrow_mut()
-                .render_output(device, queue, &mut self.vello_renderer, width, height)
+                .encode_output(
+                    device,
+                    queue,
+                    &mut self.vello_renderer,
+                    width,
+                    height,
+                    encoder,
+                )
                 .1;
             self.frame_applied_filter_effect += effect_started_at.elapsed();
             self.frame_applied_filter_count = self
@@ -2996,6 +3037,9 @@ impl HydrolysisRenderer {
             if needs_redraw {
                 self.request_redraw();
             }
+        }
+        if let Some(encoder) = encoder {
+            queue.submit([encoder.finish()]);
         }
     }
 
