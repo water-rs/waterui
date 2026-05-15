@@ -72,13 +72,13 @@ pub struct PerfStats {
     pub measurement_cache_hits: u64,
     /// Measurement cache misses across sampled frames.
     pub measurement_cache_misses: u64,
-    /// Compositor layers submitted across sampled frames.
+    /// Maximum compositor layers submitted by one sampled frame.
     pub scene_layers: u64,
-    /// Vello scene layers submitted across sampled frames.
+    /// Maximum Vello scene layers submitted by one sampled frame.
     pub vello_scene_layers: u64,
-    /// Embedded GPU surface layers submitted across sampled frames.
+    /// Maximum embedded GPU surface layers submitted by one sampled frame.
     pub gpu_surface_layers: u64,
-    /// Vello clip layers pushed across sampled frames.
+    /// Maximum Vello clip layers pushed by one sampled frame.
     pub clip_layers: u64,
     /// Maximum nested Vello clip depth observed across sampled frames.
     pub max_clip_depth: u64,
@@ -168,19 +168,23 @@ impl PerfStats {
             scene_layers: frames
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.scene_layers))
-                .sum(),
+                .max()
+                .unwrap_or_default(),
             vello_scene_layers: frames
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.vello_scene_layers))
-                .sum(),
+                .max()
+                .unwrap_or_default(),
             gpu_surface_layers: frames
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.gpu_surface_layers))
-                .sum(),
+                .max()
+                .unwrap_or_default(),
             clip_layers: frames
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.clip_layers))
-                .sum(),
+                .max()
+                .unwrap_or_default(),
             max_clip_depth: frames
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.max_clip_depth))
