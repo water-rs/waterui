@@ -8,6 +8,7 @@ pub(crate) const PREVIEW_THEME: &str = "{{ preview_theme }}";
 
 {% if expression_mode %}
 pub(crate) fn load_preview_view() -> waterui::AnyView {
+    use {{ crate_name_ident }}::*;
     use waterui::prelude::*;
     use waterui::prelude::picker::picker;
     use waterui as waterui;

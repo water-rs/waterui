@@ -12,6 +12,7 @@ pub(crate) const FLAMEGRAPH_FREQUENCY_ENV: &str = "{{ flamegraph_frequency_env }
 
 {% if expression_mode %}
 pub(crate) fn load_preview_view() -> waterui::AnyView {
+    use {{ crate_name_ident }}::*;
     use waterui::prelude::*;
     use waterui::prelude::picker::picker;
     use waterui as waterui;
