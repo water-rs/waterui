@@ -494,6 +494,12 @@ struct PreviewPerfMeasurement {
 struct PreviewPerfPhases {
     rebuild_mean_us: u64,
     rebuild_p95_us: u64,
+    build_content_mean_us: u64,
+    build_content_p95_us: u64,
+    scene_dispatch_mean_us: u64,
+    scene_dispatch_p95_us: u64,
+    scene_finish_mean_us: u64,
+    scene_finish_p95_us: u64,
     render_mean_us: u64,
     render_p95_us: u64,
     animation_mean_us: u64,
@@ -505,6 +511,9 @@ struct PreviewPerfFrame {
     index: u64,
     total_us: u64,
     rebuild_us: u64,
+    build_content_us: u64,
+    scene_dispatch_us: u64,
+    scene_finish_us: u64,
     render_us: u64,
     acquire_us: u64,
     present_us: u64,
@@ -1084,6 +1093,12 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
             measurement.phases = PreviewPerfPhases {
                 rebuild_mean_us: parse_required_field(&fields, "rebuild_mean")?,
                 rebuild_p95_us: parse_required_field(&fields, "rebuild_p95")?,
+                build_content_mean_us: parse_required_field(&fields, "build_content_mean")?,
+                build_content_p95_us: parse_required_field(&fields, "build_content_p95")?,
+                scene_dispatch_mean_us: parse_required_field(&fields, "scene_dispatch_mean")?,
+                scene_dispatch_p95_us: parse_required_field(&fields, "scene_dispatch_p95")?,
+                scene_finish_mean_us: parse_required_field(&fields, "scene_finish_mean")?,
+                scene_finish_p95_us: parse_required_field(&fields, "scene_finish_p95")?,
                 render_mean_us: parse_required_field(&fields, "render_mean")?,
                 render_p95_us: parse_required_field(&fields, "render_p95")?,
                 animation_mean_us: parse_required_field(&fields, "animation_mean")?,
@@ -1111,6 +1126,9 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                 index: parse_required_field(&fields, "index")?,
                 total_us: parse_required_field(&fields, "total")?,
                 rebuild_us: parse_required_field(&fields, "rebuild")?,
+                build_content_us: parse_required_field(&fields, "build_content")?,
+                scene_dispatch_us: parse_required_field(&fields, "scene_dispatch")?,
+                scene_finish_us: parse_required_field(&fields, "scene_finish")?,
                 render_us: parse_required_field(&fields, "render")?,
                 acquire_us: parse_required_field(&fields, "acquire")?,
                 present_us: parse_required_field(&fields, "present")?,
@@ -1169,9 +1187,15 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
             measurement.samples
         );
         note!(
-            "    phases: rebuild mean={} p95={} | render mean={} p95={} | animation mean={} | input mean={}",
+            "    phases: rebuild mean={} p95={} | build={} p95={} | dispatch={} p95={} | finish={} p95={} | render mean={} p95={} | animation mean={} | input mean={}",
             micros_label(measurement.phases.rebuild_mean_us),
             micros_label(measurement.phases.rebuild_p95_us),
+            micros_label(measurement.phases.build_content_mean_us),
+            micros_label(measurement.phases.build_content_p95_us),
+            micros_label(measurement.phases.scene_dispatch_mean_us),
+            micros_label(measurement.phases.scene_dispatch_p95_us),
+            micros_label(measurement.phases.scene_finish_mean_us),
+            micros_label(measurement.phases.scene_finish_p95_us),
             micros_label(measurement.phases.render_mean_us),
             micros_label(measurement.phases.render_p95_us),
             micros_label(measurement.phases.animation_mean_us),
@@ -1595,6 +1619,9 @@ fn preview_perf_bottleneck(measurement: &PreviewPerfMeasurement) -> PreviewPerfB
     [
         ("render", measurement.phases.render_mean_us),
         ("rebuild", measurement.phases.rebuild_mean_us),
+        ("build content", measurement.phases.build_content_mean_us),
+        ("scene dispatch", measurement.phases.scene_dispatch_mean_us),
+        ("scene finish", measurement.phases.scene_finish_mean_us),
         ("animation", measurement.phases.animation_mean_us),
         ("input", measurement.phases.input_mean_us),
     ]
@@ -1728,7 +1755,7 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
             format!(
                 concat!(
                     "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-build=\"{}\" data-dispatch=\"{}\" data-finish=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
                 ),
                 x,
                 y,
@@ -1737,6 +1764,9 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
                 micros_label(frame.gpu_frame_us),
                 micros_label(frame.render_us),
                 micros_label(frame.rebuild_us),
+                micros_label(frame.build_content_us),
+                micros_label(frame.scene_dispatch_us),
+                micros_label(frame.scene_finish_us),
                 frame.cpu_percent,
                 bytes_label(frame.memory_bytes),
                 fps_label(preview_perf_throughput_fps(frame)),
@@ -1755,7 +1785,7 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
             format!(
                 concat!(
                     "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
+                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-build=\"{}\" data-dispatch=\"{}\" data-finish=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
                 ),
                 x,
                 y,
@@ -1764,6 +1794,9 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
                 micros_label(frame.gpu_frame_us),
                 micros_label(frame.render_us),
                 micros_label(frame.rebuild_us),
+                micros_label(frame.build_content_us),
+                micros_label(frame.scene_dispatch_us),
+                micros_label(frame.scene_finish_us),
                 frame.cpu_percent,
                 bytes_label(frame.memory_bytes),
                 fps_label(preview_perf_throughput_fps(frame)),
@@ -1832,8 +1865,18 @@ fn render_preview_perf_phase_stack_html(measurement: &PreviewPerfMeasurement) ->
             "phase-animation",
         ),
         (
-            "rebuild",
-            measurement.phases.rebuild_mean_us,
+            "build",
+            measurement.phases.build_content_mean_us,
+            "phase-rebuild",
+        ),
+        (
+            "dispatch",
+            measurement.phases.scene_dispatch_mean_us,
+            "phase-rebuild",
+        ),
+        (
+            "finish",
+            measurement.phases.scene_finish_mean_us,
             "phase-rebuild",
         ),
         ("render", measurement.phases.render_mean_us, "phase-render"),

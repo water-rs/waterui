@@ -61,10 +61,16 @@ fn run_perf(width: f32, height: f32) {
             stats.rebuilt_frames
         ));
         write_status(&format!(
-            "perf-phases {} rebuild_mean={}us rebuild_p95={}us render_mean={}us render_p95={}us animation_mean={}us input_mean={}us missed_120fps={} missed_60fps={} measurement_cache_hits={} measurement_cache_misses={} scene_layers={} vello_scene_layers={} gpu_surface_layers={} clip_layers={} max_clip_depth={}",
+            "perf-phases {} rebuild_mean={}us rebuild_p95={}us build_content_mean={}us build_content_p95={}us scene_dispatch_mean={}us scene_dispatch_p95={}us scene_finish_mean={}us scene_finish_p95={}us render_mean={}us render_p95={}us animation_mean={}us input_mean={}us missed_120fps={} missed_60fps={} measurement_cache_hits={} measurement_cache_misses={} scene_layers={} vello_scene_layers={} gpu_surface_layers={} clip_layers={} max_clip_depth={}",
             measurement.name,
             duration_micros(stats.phases.rebuild.mean),
             duration_micros(stats.phases.rebuild.p95),
+            duration_micros(stats.phases.build_content.mean),
+            duration_micros(stats.phases.build_content.p95),
+            duration_micros(stats.phases.scene_dispatch.mean),
+            duration_micros(stats.phases.scene_dispatch.p95),
+            duration_micros(stats.phases.scene_finish.mean),
+            duration_micros(stats.phases.scene_finish.p95),
             duration_micros(stats.phases.render.mean),
             duration_micros(stats.phases.render.p95),
             duration_micros(stats.phases.animation.mean),
@@ -81,11 +87,14 @@ fn run_perf(width: f32, height: f32) {
         ));
         for (index, frame) in measurement.frames.iter().enumerate() {
             write_status(&format!(
-                "perf-sample {} index={} total={}us rebuild={}us render={}us acquire={}us present={}us animation={}us input={}us executor_before={}us executor_after={}us rebuilt={} rendered={} captured_snapshot={} cpu_percent_milli={} memory_bytes={} gpu_frame={}us measurement_cache_hits={} measurement_cache_misses={} scene_layers={} vello_scene_layers={} gpu_surface_layers={} clip_layers={} max_clip_depth={}",
+                "perf-sample {} index={} total={}us rebuild={}us build_content={}us scene_dispatch={}us scene_finish={}us render={}us acquire={}us present={}us animation={}us input={}us executor_before={}us executor_after={}us rebuilt={} rendered={} captured_snapshot={} cpu_percent_milli={} memory_bytes={} gpu_frame={}us measurement_cache_hits={} measurement_cache_misses={} scene_layers={} vello_scene_layers={} gpu_surface_layers={} clip_layers={} max_clip_depth={}",
                 measurement.name,
                 index,
                 duration_micros(frame.total),
                 duration_micros(frame.profile.phases.rebuild),
+                duration_micros(frame.profile.phases.build_content),
+                duration_micros(frame.profile.phases.scene_dispatch),
+                duration_micros(frame.profile.phases.scene_finish),
                 duration_micros(frame.profile.phases.render),
                 duration_micros(frame.profile.phases.acquire),
                 duration_micros(frame.profile.phases.present),

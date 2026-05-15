@@ -454,6 +454,12 @@ pub struct FramePhases {
     pub animation: Duration,
     /// Time spent rebuilding scene/layout state.
     pub rebuild: Duration,
+    /// Time spent building the root WaterUI view value during scene rebuild.
+    pub build_content: Duration,
+    /// Time spent dispatching WaterUI views into Hydrolysis scene/layout state.
+    pub scene_dispatch: Duration,
+    /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
+    pub scene_finish: Duration,
     /// Time spent acquiring the target frame.
     pub acquire: Duration,
     /// Time spent submitting rendering work.
@@ -564,7 +570,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
 fn rebuild_window_scene<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
-) -> (bool, u32, Duration) {
+) -> (bool, u32, FramePhases) {
     let scale_factor = runtime.platform.scale_factor();
     let surface = runtime.platform.surface();
     let (width, height) = surface.size();
@@ -575,6 +581,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
         .set_frame_resources(surface.device(), surface.queue());
 
     let rebuild_started_at = Instant::now();
+    let mut phases = FramePhases::default();
     if runtime.renderer.advance_animations() {
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
@@ -605,9 +612,12 @@ fn rebuild_window_scene<P: PlatformWindow>(
             .set_scroll_content_cache_reuse(runtime.scroll_only_rebuild);
         runtime.renderer.begin_rebuild_frame();
         runtime.renderer.set_window_bounds(bounds);
+        let build_content_started_at = Instant::now();
         let content = runtime
             .renderer
             .with_local_state_env(env, |_local_env| runtime.window.build_content());
+        phases.build_content += build_content_started_at.elapsed();
+        let scene_dispatch_started_at = Instant::now();
         runtime.renderer.dispatch_with_transform(
             content,
             env,
@@ -618,10 +628,13 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime
             .renderer
             .render_active_text_context_menu_overlay(env, root_transform);
+        phases.scene_dispatch += scene_dispatch_started_at.elapsed();
+        let scene_finish_started_at = Instant::now();
         runtime.renderer.finish_rebuild_frame();
         runtime
             .renderer
             .sync_active_interactions_after_layout(runtime.pointer_position);
+        phases.scene_finish += scene_finish_started_at.elapsed();
         runtime.needs_rebuild = false;
         rebuilt = true;
         if let Some((x, y)) = runtime.pointer_position
@@ -638,7 +651,8 @@ fn rebuild_window_scene<P: PlatformWindow>(
     if rebuilt {
         runtime.scroll_only_rebuild = false;
     }
-    (rebuilt, rebuild_iterations, rebuild_started_at.elapsed())
+    phases.rebuild = rebuild_started_at.elapsed();
+    (rebuilt, rebuild_iterations, phases)
 }
 
 fn pump_window_semantics<P: PlatformWindow>(
@@ -688,14 +702,16 @@ fn render_window_with_capture<P: PlatformWindow>(
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
-        let (scene_rebuilt, mut rebuild_iterations, mut rebuild_duration) =
+        let (scene_rebuilt, mut rebuild_iterations, mut rebuild_phases) =
             rebuild_window_scene(runtime, env);
         rebuilt |= scene_rebuilt;
         let clear_color = window_clear_color(&runtime.window, env);
         if runtime.scroll_only_rebuild {
             let refresh_started_at = Instant::now();
             if runtime.renderer.refresh_retained_scroll_scene(env) {
-                rebuild_duration += refresh_started_at.elapsed();
+                let refresh_duration = refresh_started_at.elapsed();
+                rebuild_phases.rebuild += refresh_duration;
+                rebuild_phases.scene_dispatch += refresh_duration;
                 runtime.scroll_only_rebuild = false;
             } else {
                 runtime.needs_rebuild = true;
@@ -705,7 +721,10 @@ fn render_window_with_capture<P: PlatformWindow>(
                 rebuild_iterations = rebuild_iterations
                     .checked_add(fallback_iterations)
                     .expect("hydrolysis runner: rebuild iteration counter overflow");
-                rebuild_duration += fallback_duration;
+                rebuild_phases.rebuild += fallback_duration.rebuild;
+                rebuild_phases.build_content += fallback_duration.build_content;
+                rebuild_phases.scene_dispatch += fallback_duration.scene_dispatch;
+                rebuild_phases.scene_finish += fallback_duration.scene_finish;
                 runtime.scroll_only_rebuild = false;
             }
         }
@@ -734,7 +753,10 @@ fn render_window_with_capture<P: PlatformWindow>(
                     snapshot,
                     profile: FrameProfile {
                         phases: FramePhases {
-                            rebuild: rebuild_duration,
+                            rebuild: rebuild_phases.rebuild,
+                            build_content: rebuild_phases.build_content,
+                            scene_dispatch: rebuild_phases.scene_dispatch,
+                            scene_finish: rebuild_phases.scene_finish,
                             acquire: acquire_started_at.elapsed(),
                             ..FramePhases::default()
                         },
@@ -794,7 +816,10 @@ fn render_window_with_capture<P: PlatformWindow>(
         let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
         profile = FrameProfile {
             phases: FramePhases {
-                rebuild: rebuild_duration,
+                rebuild: rebuild_phases.rebuild,
+                build_content: rebuild_phases.build_content,
+                scene_dispatch: rebuild_phases.scene_dispatch,
+                scene_finish: rebuild_phases.scene_finish,
                 acquire: acquire_duration,
                 render: render_duration,
                 present: present_duration,
@@ -820,7 +845,7 @@ fn render_window_with_capture<P: PlatformWindow>(
             runtime.render_diagnostics.record_frame(
                 window_title.as_str(),
                 RenderPhaseSample {
-                    rebuild: rebuild_duration,
+                    rebuild: rebuild_phases.rebuild,
                     acquire: acquire_duration,
                     render: render_duration,
                     present: present_duration,
