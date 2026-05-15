@@ -94,6 +94,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 renderer.render_scene_to_texture(crate::renderer::HydrolysisRenderTarget {
                     device,
                     queue,
+                    texture: Some(frame.texture()),
                     view: frame.view(),
                     format: surface.format(),
                     width,

@@ -89,6 +89,7 @@ impl TestHost {
         renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
             device: surface.device(),
             queue: surface.queue(),
+            texture: Some(frame.texture()),
             view: frame.view(),
             format: surface.format(),
             width: self.width.max(1),
