@@ -263,6 +263,22 @@ fn normalize_layout_view_with_budget(
         return AnyView::new(Native::new(ScrollView::new(axis, normalized_content)));
     }
 
+    if view.is::<Native<NavigationView>>() {
+        let native = *view
+            .downcast::<Native<NavigationView>>()
+            .expect("layout normalization failed to downcast Native<NavigationView>");
+        let mut navigation = native.into_inner();
+        navigation.bar.title =
+            normalize_layout_view_with_budget(navigation.bar.title, env, next_remaining);
+        navigation.bar.leading =
+            normalize_layout_view_with_budget(navigation.bar.leading, env, next_remaining);
+        navigation.bar.trailing =
+            normalize_layout_view_with_budget(navigation.bar.trailing, env, next_remaining);
+        navigation.content =
+            normalize_layout_view_with_budget(navigation.content, env, next_remaining);
+        return AnyView::new(Native::new(navigation));
+    }
+
     if is_layout_terminal(&view) {
         return view;
     }

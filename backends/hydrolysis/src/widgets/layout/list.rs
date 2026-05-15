@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    materialize_list_item, materialize_list_row, measure_list_intrinsic,
+    local_state_child_env, materialize_list_item, materialize_list_row, measure_list_intrinsic,
     measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
@@ -91,14 +91,16 @@ impl HydroNativeView for Native<ListConfig> {
             list_node.add_action(AccessibilityAction::ScrollDown);
             let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
             for index in window.start..window.end {
-                let item = materialize_list_item(&list.contents, index, env);
+                let row_env = local_state_child_env(env, index);
+                let item = materialize_list_item(&list.contents, index, &row_env);
                 let row_height = {
                     let cached_extent =
                         renderer.lazy.lazy_list_controller.slots[slot_index].row_extents[index];
                     if let Some(extent) = cached_extent {
                         extent
                     } else {
-                        let extent = measure_list_item_row_height(&item, renderer.state_mut(), env);
+                        let extent =
+                            measure_list_item_row_height(&item, renderer.state_mut(), &row_env);
                         renderer.lazy.lazy_list_controller.slots[slot_index].row_extents[index] =
                             Some(extent);
                         extent
@@ -112,8 +114,8 @@ impl HydroNativeView for Native<ListConfig> {
                 let mut row_node = AccessibilityNode::new(
                     renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ListItem),
                 );
-                let default_label = renderer.accessibility_label_from_view(&item.content, env);
-                let label = renderer.resolve_accessibility_label(env, default_label);
+                let default_label = renderer.accessibility_label_from_view(&item.content, &row_env);
+                let label = renderer.resolve_accessibility_label(&row_env, default_label);
                 if let Some(label) = label {
                     row_node.set_label(label);
                 }
@@ -121,7 +123,7 @@ impl HydroNativeView for Native<ListConfig> {
                 if let Some(row_node_id) = renderer.register_accessibility_child_node(
                     row_node,
                     transformed_rect(ctx.hit_transform, row_rect),
-                    env,
+                    &row_env,
                     None,
                 ) {
                     list_node.push_child(row_node_id);
@@ -185,7 +187,8 @@ pub(crate) fn render_list(
     let total_rows = row_count;
     let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
     for index in window.start..window.end {
-        let item = materialize_list_item(&contents, index, env);
+        let row_env = local_state_child_env(env, index);
+        let item = materialize_list_item(&contents, index, &row_env);
         let row_height = {
             let cached_extent = {
                 ctx.renderer_mut().lazy.lazy_list_controller.slots[slot_index].row_extents[index]
@@ -193,7 +196,7 @@ pub(crate) fn render_list(
             if let Some(extent) = cached_extent {
                 extent
             } else {
-                let extent = measure_list_item_row_height(&item, ctx.state_mut(), env);
+                let extent = measure_list_item_row_height(&item, ctx.state_mut(), &row_env);
                 ctx.renderer_mut().lazy.lazy_list_controller.slots[slot_index].row_extents[index] =
                     Some(extent);
                 extent
@@ -211,7 +214,7 @@ pub(crate) fn render_list(
         }
 
         let deletable = ctx.renderer_mut().read_signal(&item.deletable);
-        let content_size = measure_view_intrinsic(&item.content, ctx.state_mut(), env);
+        let content_size = measure_view_intrinsic(&item.content, ctx.state_mut(), &row_env);
         let mut content_rect = list_content_rect(row_rect, list_metrics, content_size);
         let mut trailing_x = row_rect.x1 - 8.0;
 
@@ -240,12 +243,16 @@ pub(crate) fn render_list(
             );
             let up_interaction = (index > 0).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, up_rect);
-                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+                let (state, slot) = ctx
+                    .renderer_mut()
+                    .bind_interaction_target(hit_bounds, &row_env);
                 (hit_bounds, state, slot)
             });
             let down_interaction = (index + 1 < total_rows).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, down_rect);
-                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+                let (state, slot) = ctx
+                    .renderer_mut()
+                    .bind_interaction_target(hit_bounds, &row_env);
                 (hit_bounds, state, slot)
             });
             {
@@ -295,7 +302,7 @@ pub(crate) fn render_list(
             let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
             let (delete_interaction, delete_press_slot) = ctx
                 .renderer_mut()
-                .bind_interaction_target(delete_hit_bounds, env);
+                .bind_interaction_target(delete_hit_bounds, &row_env);
             {
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
@@ -319,7 +326,7 @@ pub(crate) fn render_list(
 
         content_rect.x1 = content_rect.x1.min(trailing_x);
         if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
-            ctx.dispatch_in_rect_without_accessibility(env, item.content, content_rect);
+            ctx.dispatch_in_rect_without_accessibility(&row_env, item.content, content_rect);
         }
 
         {

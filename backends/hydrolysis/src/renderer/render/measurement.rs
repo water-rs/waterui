@@ -698,11 +698,11 @@ pub(crate) fn measure_navigation_view_intrinsic(
         LayoutSize::zero()
     };
     let search_size = if let Some(search) = navigation.bar.search.as_ref() {
-        measure_view_intrinsic(
-            &AnyView::new(TextField::new(&search.text).prompt(search.prompt.clone())),
-            state,
-            env,
-        )
+        let body_env = env.clone();
+        let search_field = TextField::new(&search.text).prompt(search.prompt.clone());
+        let search_body =
+            normalize_layout_view(AnyView::new(search_field.body(&body_env)), &body_env);
+        measure_view_intrinsic(&search_body, state, &body_env)
     } else {
         LayoutSize::zero()
     };
@@ -719,6 +719,19 @@ pub(crate) fn measure_navigation_view_intrinsic(
         .max(f64::from(search_size.width) + metrics.horizontal_inset * 2.0);
     let height = f64::from(content_size.height) + bar_height;
     LayoutSize::new(width as f32, height as f32)
+}
+
+pub(crate) fn measure_owned_navigation_view_intrinsic(
+    navigation: NavigationView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let mut navigation = navigation;
+    navigation.bar.title = normalize_layout_view(navigation.bar.title, env);
+    navigation.bar.leading = normalize_layout_view(navigation.bar.leading, env);
+    navigation.bar.trailing = normalize_layout_view(navigation.bar.trailing, env);
+    navigation.content = normalize_layout_view(navigation.content, env);
+    measure_navigation_view_intrinsic(&navigation, state, env)
 }
 
 pub(crate) fn measure_tabs_intrinsic(
@@ -821,12 +834,13 @@ pub(crate) fn measure_list_intrinsic(
         return LayoutSize::zero();
     }
     let editing = list.editing.get();
+    let first_item_env = local_state_child_env(env, 0);
     let mut first_item = list
         .contents
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
-    first_item.content = normalize_layout_view(first_item.content, env);
-    let content_size = measure_view_intrinsic(&first_item.content, state, env);
+    first_item.content = normalize_layout_view(first_item.content, &first_item_env);
+    let content_size = measure_view_intrinsic(&first_item.content, state, &first_item_env);
     let metrics = widget_theme(env).list_metrics();
     let row_height = (f64::from(content_size.height) + metrics.vertical_inset * 2.0)
         .max(metrics.one_line_row_height);
@@ -872,8 +886,9 @@ pub(crate) fn materialize_list_row(
     state: &mut HydroState,
     env: &Environment,
 ) -> (ListItem, f64) {
-    let item = materialize_list_item(contents, index, env);
-    let row_height = measure_list_item_row_height(&item, state, env);
+    let row_env = local_state_child_env(env, index);
+    let item = materialize_list_item(contents, index, &row_env);
+    let row_height = measure_list_item_row_height(&item, state, &row_env);
     (item, row_height)
 }
 
