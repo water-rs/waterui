@@ -359,7 +359,8 @@ impl AppliedFilterRuntime {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::STORAGE_BINDING,
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -907,8 +908,14 @@ impl HydrolysisRenderer {
         content: AnyView,
     ) -> vello::Scene {
         let mut subtree_scene = vello::Scene::new();
+        let local_ctx = ctx.with_identity_transforms(vello::kurbo::Rect::new(
+            0.0,
+            0.0,
+            ctx.bounds.width(),
+            ctx.bounds.height(),
+        ));
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
-        renderer.dispatch_with_render_depth(content, env, ctx);
+        renderer.dispatch_with_render_depth(content, env, local_ctx);
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
         subtree_scene
     }
@@ -1590,7 +1597,9 @@ impl HydrolysisRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING,
             view_formats: &[],
         });
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1795,10 +1804,7 @@ impl HydrolysisRenderer {
 
         let width = (ctx.bounds.width().max(1.0).round()) as u32;
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let mut subtree_scene = vello::Scene::new();
-        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
-        renderer.dispatch_with_render_depth(content, env, ctx);
-        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+        let subtree_scene = Self::render_subtree_scene(renderer, ctx, env, content);
 
         let (input_texture, input_view) = {
             let mut runtime = runtime.borrow_mut();
