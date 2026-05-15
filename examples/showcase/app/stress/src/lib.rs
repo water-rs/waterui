@@ -190,6 +190,30 @@ fn filter_section(
 }
 
 #[preview]
+fn system_pressure_preview() -> impl View {
+    let toggle = Binding::bool(false);
+    scroll(system_section(120, &toggle))
+}
+
+#[preview]
+fn custom_pressure_preview() -> impl View {
+    scroll(custom_section(96))
+}
+
+#[preview]
+fn filter_pressure_preview() -> impl View {
+    let blur_target = Binding::f64(1.0);
+    let saturation_target = Binding::f64(1.0);
+    let hue_target = Binding::f64(0.0);
+    scroll(filter_section(
+        144,
+        &blur_target,
+        &saturation_target,
+        &hue_target,
+    ))
+}
+
+#[preview]
 fn main() -> impl View {
     let system_count = env_usize("WATERUI_STRESS_SYSTEM_COUNT", 120).clamp(18, 1_440);
     let custom_count = env_usize("WATERUI_STRESS_CUSTOM_COUNT", 96).clamp(14, 1_120);
