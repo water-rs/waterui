@@ -109,7 +109,9 @@ use waterui_graphics::{
     ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
 };
 use waterui_icon::SystemIcon;
+use waterui_layout::background::BackgroundLayout as LayoutBackgroundLayout;
 use waterui_layout::container::{FixedContainer, LazyContainer};
+use waterui_layout::padding::PaddingLayout;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
@@ -1098,6 +1100,11 @@ impl HydrolysisRenderer {
             .bind_repeating_phase(cycle, self.frame_instant)
     }
 
+    fn layout_requires_render_measurement_prewarm(layout: &dyn Layout) -> bool {
+        let layout = layout as &dyn Any;
+        !(layout.is::<PaddingLayout>() || layout.is::<LayoutBackgroundLayout>())
+    }
+
     fn render_layout_container(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -1124,7 +1131,9 @@ impl HydrolysisRenderer {
             Some(ctx.bounds.width() as f32),
             Some(ctx.bounds.height() as f32),
         );
-        let _ = layout.size_that_fits(proposal, &refs);
+        if Self::layout_requires_render_measurement_prewarm(layout.as_ref()) {
+            let _ = layout.size_that_fits(proposal, &refs);
+        }
         let bounds = LayoutRect::from_size(LayoutSize::new(
             ctx.bounds.width() as f32,
             ctx.bounds.height() as f32,
