@@ -473,6 +473,12 @@ pub struct FrameCounters {
     pub measurement_cache_hits: u32,
     /// Measurement cache misses in this frame.
     pub measurement_cache_misses: u32,
+    /// Number of compositor layers submitted for this frame.
+    pub scene_layers: u32,
+    /// Number of Vello scene layers submitted for this frame.
+    pub vello_scene_layers: u32,
+    /// Number of embedded GPU surface layers submitted for this frame.
+    pub gpu_surface_layers: u32,
     /// Whether this frame rendered to the target.
     pub rendered: bool,
     /// Whether this frame captured a CPU snapshot.
@@ -716,6 +722,8 @@ fn render_window_with_capture<P: PlatformWindow>(
                 runtime.platform.request_redraw();
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
+                let (scene_layers, vello_scene_layers, gpu_surface_layers) =
+                    runtime.renderer.render_layer_stats();
                 return RenderWindowResult {
                     rebuilt,
                     snapshot,
@@ -729,6 +737,9 @@ fn render_window_with_capture<P: PlatformWindow>(
                             rebuild_iterations,
                             measurement_cache_hits,
                             measurement_cache_misses,
+                            scene_layers,
+                            vello_scene_layers,
+                            gpu_surface_layers,
                             rendered: false,
                             captured_snapshot: false,
                         },
@@ -771,6 +782,8 @@ fn render_window_with_capture<P: PlatformWindow>(
         let present_duration = present_started_at.elapsed();
         let (measurement_cache_hits, measurement_cache_misses) =
             runtime.renderer.measurement_cache_stats();
+        let (scene_layers, vello_scene_layers, gpu_surface_layers) =
+            runtime.renderer.render_layer_stats();
         profile = FrameProfile {
             phases: FramePhases {
                 rebuild: rebuild_duration,
@@ -783,6 +796,9 @@ fn render_window_with_capture<P: PlatformWindow>(
                 rebuild_iterations,
                 measurement_cache_hits,
                 measurement_cache_misses,
+                scene_layers,
+                vello_scene_layers,
+                gpu_surface_layers,
                 rendered: true,
                 captured_snapshot: capture_snapshot,
             },

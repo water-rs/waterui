@@ -70,6 +70,12 @@ pub struct PerfStats {
     pub measurement_cache_hits: u64,
     /// Measurement cache misses across sampled frames.
     pub measurement_cache_misses: u64,
+    /// Compositor layers submitted across sampled frames.
+    pub scene_layers: u64,
+    /// Vello scene layers submitted across sampled frames.
+    pub vello_scene_layers: u64,
+    /// Embedded GPU surface layers submitted across sampled frames.
+    pub gpu_surface_layers: u64,
 }
 
 /// Statistical summary for the measured frame phases.
@@ -146,6 +152,18 @@ impl PerfStats {
             measurement_cache_misses: frames
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.measurement_cache_misses))
+                .sum(),
+            scene_layers: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.scene_layers))
+                .sum(),
+            vello_scene_layers: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.vello_scene_layers))
+                .sum(),
+            gpu_surface_layers: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.gpu_surface_layers))
                 .sum(),
         }
     }
