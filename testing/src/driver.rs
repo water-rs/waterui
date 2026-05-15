@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
@@ -34,6 +36,14 @@ pub trait A11yDriver {
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool;
     fn clear_ui_focus(&mut self, env: &Environment) -> bool;
     fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming;
+    fn pump_frame_at(
+        &mut self,
+        content: &AnyViewBuilder<AnyView>,
+        env: &Environment,
+        _at: Instant,
+    ) -> FrameTiming {
+        self.pump_frame(content, env)
+    }
 }
 
 #[derive(Debug)]
@@ -235,6 +245,22 @@ impl A11yDriver for HydrolysisA11yDriver {
     fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming {
         let started_at = std::time::Instant::now();
         let outcome = self.runtime(content, env).pump_offscreen();
+        FrameTiming {
+            total: outcome.profile.total.max(started_at.elapsed()),
+            rebuilt: outcome.rebuilt,
+            profile: outcome.profile,
+            resources: self.resources.sample(),
+        }
+    }
+
+    fn pump_frame_at(
+        &mut self,
+        content: &AnyViewBuilder<AnyView>,
+        env: &Environment,
+        at: Instant,
+    ) -> FrameTiming {
+        let started_at = std::time::Instant::now();
+        let outcome = self.runtime(content, env).pump_at(false, at);
         FrameTiming {
             total: outcome.profile.total.max(started_at.elapsed()),
             rebuilt: outcome.rebuilt,
