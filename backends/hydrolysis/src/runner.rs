@@ -563,13 +563,18 @@ fn window_clear_color(window: &Window, env: &Environment) -> vello::peniko::Colo
     }
 }
 
-fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) {
-    let _ = render_window_with_capture(runtime, env, false);
+fn render_window<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
+) {
+    let _ = render_window_with_capture(runtime, env, false, drain_local_tasks);
 }
 
 fn rebuild_window_scene<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
 ) -> (bool, u32, FramePhases) {
     let scale_factor = runtime.platform.scale_factor();
     let surface = runtime.platform.surface();
@@ -620,6 +625,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
             .renderer
             .with_local_state_env(env, |_local_env| runtime.window.build_content());
         phases.build_content += build_content_started_at.elapsed();
+        let _ = drain_local_tasks();
         let scene_dispatch_started_at = Instant::now();
         runtime.renderer.dispatch_with_transform(
             content,
@@ -654,6 +660,10 @@ fn rebuild_window_scene<P: PlatformWindow>(
     if rebuilt {
         runtime.scroll_only_rebuild = false;
     }
+    if runtime.renderer.take_next_frame_rebuild_request() {
+        runtime.needs_rebuild = true;
+        runtime.platform.request_redraw();
+    }
     phases.rebuild = rebuild_started_at.elapsed();
     (rebuilt, rebuild_iterations, phases)
 }
@@ -673,7 +683,7 @@ fn pump_window_semantics<P: PlatformWindow>(
         return false;
     }
 
-    let (rebuilt, _, _) = rebuild_window_scene(runtime, env);
+    let (rebuilt, _, _) = rebuild_window_scene(runtime, env, &mut || false);
     runtime.renderer.clear_frame_resources();
     runtime
         .platform
@@ -693,6 +703,7 @@ fn render_window_with_capture<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
     capture_snapshot: bool,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
 ) -> RenderWindowResult {
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(feature = "winit")]
@@ -706,7 +717,7 @@ fn render_window_with_capture<P: PlatformWindow>(
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
         let (scene_rebuilt, mut rebuild_iterations, mut rebuild_phases) =
-            rebuild_window_scene(runtime, env);
+            rebuild_window_scene(runtime, env, drain_local_tasks);
         rebuilt |= scene_rebuilt;
         let clear_color = window_clear_color(&runtime.window, env);
         if runtime.scroll_only_rebuild {
@@ -719,7 +730,7 @@ fn render_window_with_capture<P: PlatformWindow>(
             } else {
                 runtime.needs_rebuild = true;
                 let (fallback_rebuilt, fallback_iterations, fallback_duration) =
-                    rebuild_window_scene(runtime, env);
+                    rebuild_window_scene(runtime, env, drain_local_tasks);
                 rebuilt |= fallback_rebuilt;
                 rebuild_iterations = rebuild_iterations
                     .checked_add(fallback_iterations)
@@ -1541,8 +1552,11 @@ impl HeadlessRuntime {
         let should_render = capture_snapshot
             || self.runtime.needs_rebuild
             || self.runtime.platform.take_redraw_request();
-        let mut render_result = should_render
-            .then(|| render_window_with_capture(&mut self.runtime, &self.env, capture_snapshot));
+        let mut render_result = should_render.then(|| {
+            render_window_with_capture(&mut self.runtime, &self.env, capture_snapshot, &mut || {
+                self.local_executor.drain()
+            })
+        });
         if capture_snapshot && !self.popup_windows.is_empty() {
             if let Some(snapshot) = render_result
                 .as_mut()
@@ -1550,7 +1564,10 @@ impl HeadlessRuntime {
             {
                 for popup in &mut self.popup_windows {
                     let Some(popup_snapshot) =
-                        render_window_with_capture(popup, &self.env, true).snapshot
+                        render_window_with_capture(popup, &self.env, true, &mut || {
+                            self.local_executor.drain()
+                        })
+                        .snapshot
                     else {
                         continue;
                     };
@@ -1739,7 +1756,7 @@ pub fn run(app: App) {
         };
         load_native_resource_fonts(&mut renderer);
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
-        render_window(&mut runtime, &env);
+        render_window(&mut runtime, &env, &mut || false);
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }
 }
@@ -1925,19 +1942,28 @@ mod web_runner {
     }
 
     impl BrowserRunner {
-        fn drain_local_executor_queue(&self) {
-            while let Some(runnable) = self.runnable_queue.borrow_mut().pop_front() {
+        fn drain_runnable_queue(runnable_queue: &RefCell<VecDeque<Runnable>>) -> bool {
+            let mut drained = false;
+            while let Some(runnable) = runnable_queue.borrow_mut().pop_front() {
+                drained = true;
                 runnable.run();
             }
+            drained
+        }
+
+        fn drain_local_executor_queue(&self) -> bool {
+            Self::drain_runnable_queue(&self.runnable_queue)
         }
 
         fn frame(&mut self) -> bool {
-            self.drain_local_executor_queue();
+            let _ = self.drain_local_executor_queue();
             let should_close = handle_input_events(&mut self.runtime, &self.env);
             if should_close || self.runtime.window.state.get() == WindowState::Closed {
                 return false;
             }
-            render_window(&mut self.runtime, &self.env);
+            render_window(&mut self.runtime, &self.env, &mut || {
+                Self::drain_runnable_queue(&self.runnable_queue)
+            });
             true
         }
 
@@ -2208,10 +2234,17 @@ mod winit_runner {
     }
 
     impl WinitRunner {
-        fn drain_local_executor_queue(&self) {
-            while let Ok(runnable) = self.local_runnable_rx.try_recv() {
+        fn drain_runnable_queue(local_runnable_rx: &mpsc::Receiver<Runnable>) -> bool {
+            let mut drained = false;
+            while let Ok(runnable) = local_runnable_rx.try_recv() {
+                drained = true;
                 runnable.run();
             }
+            drained
+        }
+
+        fn drain_local_executor_queue(&self) -> bool {
+            Self::drain_runnable_queue(&self.local_runnable_rx)
         }
 
         fn current_window_origin(runtime: &RuntimeWindow<WinitWindow>) -> HydrolysisWindowOrigin {
@@ -2332,7 +2365,7 @@ mod winit_runner {
 
     impl ApplicationHandler<RunnerEvent> for WinitRunner {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-            self.drain_local_executor_queue();
+            let _ = self.drain_local_executor_queue();
             self.mount_pending_windows(event_loop);
             for runtime in self.windows.values() {
                 runtime.platform.request_redraw();
@@ -2345,7 +2378,7 @@ mod winit_runner {
             window_id: WindowId,
             event: WindowEvent,
         ) {
-            self.drain_local_executor_queue();
+            let _ = self.drain_local_executor_queue();
             let should_close = {
                 let Some(runtime) = self.windows.get_mut(&window_id) else {
                     return;
@@ -2374,7 +2407,9 @@ mod winit_runner {
                 let Some(runtime) = self.windows.get_mut(&window_id) else {
                     return;
                 };
-                render_window(runtime, &self.env);
+                render_window(runtime, &self.env, &mut || {
+                    Self::drain_runnable_queue(&self.local_runnable_rx)
+                });
                 if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
                     if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
                         tracing::trace!(
@@ -2395,7 +2430,7 @@ mod winit_runner {
         }
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-            self.drain_local_executor_queue();
+            let _ = self.drain_local_executor_queue();
             self.mount_pending_windows(event_loop);
             let now = Instant::now();
             let mut next_gesture_deadline: Option<Instant> = None;
@@ -2417,7 +2452,9 @@ mod winit_runner {
 
         fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RunnerEvent) {
             match event {
-                RunnerEvent::PollLocalTasks => self.drain_local_executor_queue(),
+                RunnerEvent::PollLocalTasks => {
+                    let _ = self.drain_local_executor_queue();
+                }
                 RunnerEvent::MountPendingWindows => {
                     self.mount_pending_windows(_event_loop);
                 }
