@@ -237,7 +237,7 @@
 
     .resources {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 4px;
     }
 
@@ -433,6 +433,14 @@
       stroke: #6c6f35;
     }
 
+    .line-layers {
+      stroke: #5b5f66;
+    }
+
+    .line-clip {
+      stroke: #a05d27;
+    }
+
     .budget {
       stroke: #c4c6bd;
       stroke-width: 1;
@@ -552,6 +560,9 @@
       `rebuild ${element.dataset.rebuild}`,
       `CPU ${element.dataset.cpu}`,
       `memory ${element.dataset.memory}`,
+      element.dataset.layers ? `layers ${element.dataset.layers}` : "",
+      element.dataset.clipLayers ? `clip ${element.dataset.clipLayers}` : "",
+      element.dataset.clipDepth ? `clip depth ${element.dataset.clipDepth}` : "",
       element.dataset.value ? `value ${element.dataset.value}` : "",
     ].filter(Boolean).join("  ");
 

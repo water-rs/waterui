@@ -479,6 +479,10 @@ pub struct FrameCounters {
     pub vello_scene_layers: u32,
     /// Number of embedded GPU surface layers submitted for this frame.
     pub gpu_surface_layers: u32,
+    /// Number of Vello clip layers pushed while building this frame.
+    pub clip_layers: u32,
+    /// Maximum nested Vello clip depth while building this frame.
+    pub max_clip_depth: u32,
     /// Whether this frame rendered to the target.
     pub rendered: bool,
     /// Whether this frame captured a CPU snapshot.
@@ -724,6 +728,7 @@ fn render_window_with_capture<P: PlatformWindow>(
                     runtime.renderer.measurement_cache_stats();
                 let (scene_layers, vello_scene_layers, gpu_surface_layers) =
                     runtime.renderer.render_layer_stats();
+                let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
                 return RenderWindowResult {
                     rebuilt,
                     snapshot,
@@ -740,6 +745,8 @@ fn render_window_with_capture<P: PlatformWindow>(
                             scene_layers,
                             vello_scene_layers,
                             gpu_surface_layers,
+                            clip_layers,
+                            max_clip_depth,
                             rendered: false,
                             captured_snapshot: false,
                         },
@@ -784,6 +791,7 @@ fn render_window_with_capture<P: PlatformWindow>(
             runtime.renderer.measurement_cache_stats();
         let (scene_layers, vello_scene_layers, gpu_surface_layers) =
             runtime.renderer.render_layer_stats();
+        let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
         profile = FrameProfile {
             phases: FramePhases {
                 rebuild: rebuild_duration,
@@ -799,6 +807,8 @@ fn render_window_with_capture<P: PlatformWindow>(
                 scene_layers,
                 vello_scene_layers,
                 gpu_surface_layers,
+                clip_layers,
+                max_clip_depth,
                 rendered: true,
                 captured_snapshot: capture_snapshot,
             },

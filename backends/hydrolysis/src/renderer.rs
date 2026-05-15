@@ -299,6 +299,8 @@ pub struct HydrolysisRenderer {
     reuse_scroll_content_caches: bool,
     retained_scroll_frame: Option<RetainedScrollFrame>,
     retained_scroll_frame_conflicted: bool,
+    frame_clip_layers: u32,
+    frame_max_clip_depth: u32,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     accessibility: AccessibilityBuilder,
@@ -663,6 +665,8 @@ impl HydrolysisRenderer {
             reuse_scroll_content_caches: false,
             retained_scroll_frame: None,
             retained_scroll_frame_conflicted: false,
+            frame_clip_layers: 0,
+            frame_max_clip_depth: 0,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             accessibility: AccessibilityBuilder::default(),
@@ -2430,6 +2434,8 @@ impl HydrolysisRenderer {
         self.compositor.active_scene_layers.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
+        self.frame_clip_layers = 0;
+        self.frame_max_clip_depth = 0;
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -2444,6 +2450,8 @@ impl HydrolysisRenderer {
         self.state.measurement_cache.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
+        self.frame_clip_layers = 0;
+        self.frame_max_clip_depth = 0;
         self.rebuild_generation.set(
             self.rebuild_generation
                 .get()
@@ -2483,6 +2491,13 @@ impl HydrolysisRenderer {
         self.scene.encoding().is_empty()
     }
 
+    pub(crate) fn viewport_matches_window_bounds(&self, viewport: vello::kurbo::Rect) -> bool {
+        (viewport.x0 - self.window_bounds.x0).abs() <= f64::EPSILON
+            && (viewport.y0 - self.window_bounds.y0).abs() <= f64::EPSILON
+            && (viewport.x1 - self.window_bounds.x1).abs() <= f64::EPSILON
+            && (viewport.y1 - self.window_bounds.y1).abs() <= f64::EPSILON
+    }
+
     pub(crate) fn retain_scroll_frame(
         &mut self,
         handle: crate::scroll::ScrollHandle,
@@ -2498,10 +2513,7 @@ impl HydrolysisRenderer {
             self.retained_scroll_frame_conflicted = true;
             return;
         }
-        let viewport_matches_window = (viewport.x0 - self.window_bounds.x0).abs() <= f64::EPSILON
-            && (viewport.y0 - self.window_bounds.y0).abs() <= f64::EPSILON
-            && (viewport.x1 - self.window_bounds.x1).abs() <= f64::EPSILON
-            && (viewport.y1 - self.window_bounds.y1).abs() <= f64::EPSILON;
+        let viewport_matches_window = self.viewport_matches_window_bounds(viewport);
         if !viewport_matches_window || !exclusive_root {
             self.retained_scroll_frame_conflicted = true;
             return;
@@ -2529,6 +2541,8 @@ impl HydrolysisRenderer {
         self.compositor.active_scene_layers.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
+        self.frame_clip_layers = 0;
+        self.frame_max_clip_depth = 0;
         let background_color =
             resolved_color_to_peniko(Color::new(theme::color::Background).resolve(env).get());
         self.scene.fill(
@@ -2544,25 +2558,31 @@ impl HydrolysisRenderer {
             self.compositor.active_scene_layers.push(layer.clone());
         }
 
-        self.scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            frame.transform,
-            &frame.viewport,
-        );
-        self.compositor.active_scene_layers.push(ActiveSceneLayer {
-            alpha: 1.0,
-            transform: frame.transform,
-            shape: LayerShape::Rect(frame.viewport),
-        });
+        let needs_viewport_clip = !self.viewport_matches_window_bounds(frame.viewport);
+        if needs_viewport_clip {
+            self.record_clip_layer_push();
+            self.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                frame.transform,
+                &frame.viewport,
+            );
+            self.compositor.active_scene_layers.push(ActiveSceneLayer {
+                alpha: 1.0,
+                transform: frame.transform,
+                shape: LayerShape::Rect(frame.viewport),
+            });
+        }
 
         let metrics = frame.handle.metrics();
         let content_transform = frame.transform
             * vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
         self.scene
             .append(&frame.content_scene, Some(content_transform));
-        self.pop_layer();
+        if needs_viewport_clip {
+            self.pop_layer();
+        }
 
         while !self.compositor.active_scene_layers.is_empty() {
             self.pop_layer();
@@ -2689,6 +2709,7 @@ impl HydrolysisRenderer {
         transform: vello::kurbo::Affine,
         rect: vello::kurbo::Rect,
     ) {
+        self.record_clip_layer_push();
         self.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -2709,6 +2730,7 @@ impl HydrolysisRenderer {
         transform: vello::kurbo::Affine,
         path: vello::kurbo::BezPath,
     ) {
+        self.record_clip_layer_push();
         self.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -2729,6 +2751,16 @@ impl HydrolysisRenderer {
             .active_scene_layers
             .pop()
             .expect("hydrolysis renderer: pop_layer underflow");
+    }
+
+    fn record_clip_layer_push(&mut self) {
+        self.frame_clip_layers = self
+            .frame_clip_layers
+            .checked_add(1)
+            .expect("hydrolysis frame clip layer counter overflow");
+        let depth = u32::try_from(self.compositor.active_scene_layers.len() + 1)
+            .expect("hydrolysis active scene layer depth exceeds u32");
+        self.frame_max_clip_depth = self.frame_max_clip_depth.max(depth);
     }
 
     fn flush_vello_scene_layer(&mut self) {
@@ -2833,6 +2865,10 @@ impl HydrolysisRenderer {
             .checked_sub(vello_scene_layers)
             .expect("hydrolysis render layer count accounting underflow");
         (scene_layers, vello_scene_layers, gpu_surface_layers)
+    }
+
+    pub(crate) fn clip_layer_stats(&self) -> (u32, u32) {
+        (self.frame_clip_layers, self.frame_max_clip_depth)
     }
 
     #[must_use]
