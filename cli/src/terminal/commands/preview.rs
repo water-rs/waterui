@@ -180,7 +180,16 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         if let Some(flamegraph) = flamegraph.as_ref() {
             perf_report.flamegraph = Some(flamegraph.output_path.clone());
         }
-        enforce_perf_budget(&perf_report, args.max_p95_us, args.max_rebuild_ratio)?;
+        enforce_perf_budget(
+            &perf_report,
+            PreviewPerfBudget {
+                max_p95_us: args.max_p95_us,
+                max_rebuild_ratio: args.max_rebuild_ratio,
+                max_scene_layers: args.max_scene_layers,
+                max_gpu_surface_layers: args.max_gpu_surface_layers,
+                max_clip_layers: args.max_clip_layers,
+            },
+        )?;
         if args.format == PreviewPerfOutputFormat::Human {
             emit_preview_perf_human(&perf_report);
         }
@@ -420,6 +429,18 @@ struct PreviewPerfArgs {
     /// Fail when any measurement rebuild ratio exceeds this value.
     #[arg(long)]
     max_rebuild_ratio: Option<f64>,
+
+    /// Fail when any measurement submits more compositor scene layers than this value.
+    #[arg(long)]
+    max_scene_layers: Option<u64>,
+
+    /// Fail when any measurement submits more embedded GPU surface layers than this value.
+    #[arg(long)]
+    max_gpu_surface_layers: Option<u64>,
+
+    /// Fail when any measurement pushes more Vello clip layers than this value.
+    #[arg(long)]
+    max_clip_layers: Option<u64>,
 
     /// Presentation mode for perf results.
     #[arg(long, value_enum, default_value_t = PreviewPerfOutputFormat::Human)]
@@ -1378,13 +1399,18 @@ fn parse_required_field(fields: &BTreeMap<String, u64>, name: &str) -> Result<u6
         .ok_or_else(|| color_eyre::eyre::eyre!("missing perf field `{name}`"))
 }
 
-fn enforce_perf_budget(
-    report: &PreviewPerfReport,
+#[derive(Clone, Copy, Debug)]
+struct PreviewPerfBudget {
     max_p95_us: Option<u64>,
     max_rebuild_ratio: Option<f64>,
-) -> Result<()> {
+    max_scene_layers: Option<u64>,
+    max_gpu_surface_layers: Option<u64>,
+    max_clip_layers: Option<u64>,
+}
+
+fn enforce_perf_budget(report: &PreviewPerfReport, budget: PreviewPerfBudget) -> Result<()> {
     for measurement in &report.measurements {
-        if let Some(max_p95_us) = max_p95_us
+        if let Some(max_p95_us) = budget.max_p95_us
             && measurement.p95_us > max_p95_us
         {
             bail!(
@@ -1394,7 +1420,7 @@ fn enforce_perf_budget(
                 max_p95_us
             );
         }
-        if let Some(max_rebuild_ratio) = max_rebuild_ratio {
+        if let Some(max_rebuild_ratio) = budget.max_rebuild_ratio {
             let rebuild_ratio = measurement.rebuilt_frames as f64 / measurement.samples as f64;
             if rebuild_ratio > max_rebuild_ratio {
                 bail!(
@@ -1404,6 +1430,36 @@ fn enforce_perf_budget(
                     max_rebuild_ratio
                 );
             }
+        }
+        if let Some(max_scene_layers) = budget.max_scene_layers
+            && measurement.scene_layers > max_scene_layers
+        {
+            bail!(
+                "Preview perf `{}` scene layers {} exceeded budget {}",
+                measurement.name,
+                measurement.scene_layers,
+                max_scene_layers
+            );
+        }
+        if let Some(max_gpu_surface_layers) = budget.max_gpu_surface_layers
+            && measurement.gpu_surface_layers > max_gpu_surface_layers
+        {
+            bail!(
+                "Preview perf `{}` GPU surface layers {} exceeded budget {}",
+                measurement.name,
+                measurement.gpu_surface_layers,
+                max_gpu_surface_layers
+            );
+        }
+        if let Some(max_clip_layers) = budget.max_clip_layers
+            && measurement.clip_layers > max_clip_layers
+        {
+            bail!(
+                "Preview perf `{}` clip layers {} exceeded budget {}",
+                measurement.name,
+                measurement.clip_layers,
+                max_clip_layers
+            );
         }
     }
     Ok(())
