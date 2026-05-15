@@ -588,6 +588,27 @@ pub struct ResolvedShape {
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 
+/// Resolved morphing shape payload rendered directly by capable backends.
+#[derive(Debug, Clone)]
+pub struct ResolvedMorphShape {
+    /// Source shape kind.
+    pub from: ShapeKind,
+    /// Target shape kind.
+    pub to: ShapeKind,
+    /// Resolved fill color.
+    pub fill: waterui_graphics::ResolvedColor,
+    /// Time-based morph animation configuration.
+    pub animation: MorphAnimation,
+    /// Optional explicit progress signal.
+    pub progress: Option<Computed<f32>>,
+}
+
+impl waterui_core::NativeView for ResolvedMorphShape {
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
+}
+
 // ============================================================================
 // FilledShape - Shape as a View with backend-native fill rendering
 // ============================================================================
@@ -788,18 +809,22 @@ impl View for FilledShape {
 impl View for MorphShape {
     fn body(self, env: &Environment) -> impl View {
         let resolved = self.fill.resolve(env).get();
-        let from = kind_to_morph_shape(self.from)
-            .expect("morph source shape must be a built-in morphable shape");
-        let to = kind_to_morph_shape(self.to)
-            .expect("morph target shape must be a built-in morphable shape");
-
-        GpuSurface::new(MorphShapeRenderer::new(
-            from,
-            to,
+        waterui_core::Native::new(ResolvedMorphShape {
+            from: self.from,
+            to: self.to,
+            fill: resolved,
+            animation: self.animation,
+            progress: self.progress.clone(),
+        })
+        .with_fallback(GpuSurface::new(MorphShapeRenderer::new(
+            kind_to_morph_shape(self.from)
+                .expect("morph source shape must be a built-in morphable shape"),
+            kind_to_morph_shape(self.to)
+                .expect("morph target shape must be a built-in morphable shape"),
             resolved,
             self.animation,
             self.progress,
-        ))
+        )))
     }
 }
 

@@ -23,8 +23,8 @@ pub(crate) use render::{
     anchor_point, circle_arc_path, effective_stretch_axis, estimate_layout_intrinsic,
     gesture_group_identity, normalize_layout_view, normalize_view_for_render, parley_alignment,
     parley_font_weight, passthrough_content, path_commands_to_path, resolved_color_to_peniko,
-    resolved_color_to_rgba8, resolved_gradient_to_brush, resolved_shape_to_path, rgba8_to_peniko,
-    transformed_rect,
+    resolved_color_to_rgba8, resolved_gradient_to_brush, resolved_morph_shape_to_path,
+    resolved_shape_to_path, rgba8_to_peniko, transformed_rect,
 };
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -42,6 +42,7 @@ use accesskit::{
 };
 use executor_core::spawn_local;
 use nami::{Binding, Signal, with_local_binding_factory};
+use rustc_hash::FxHashMap;
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
@@ -111,6 +112,7 @@ use waterui_graphics::{
 use waterui_icon::SystemIcon;
 use waterui_layout::background::BackgroundLayout as LayoutBackgroundLayout;
 use waterui_layout::container::{FixedContainer, LazyContainer};
+use waterui_layout::frame::FrameLayout;
 use waterui_layout::padding::PaddingLayout;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -118,7 +120,7 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_layout::stack::{HStackLayout, VStackLayout};
 use waterui_map::MapConfig;
-use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
+use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
@@ -158,7 +160,7 @@ struct HydroHandlerEntry {
 
 #[derive(Clone, Default)]
 struct HydroDispatcher {
-    handlers: Rc<BTreeMap<core::any::TypeId, HydroHandlerEntry>>,
+    handlers: Rc<FxHashMap<core::any::TypeId, HydroHandlerEntry>>,
 }
 
 impl core::fmt::Debug for HydroDispatcher {
@@ -172,7 +174,7 @@ impl core::fmt::Debug for HydroDispatcher {
 impl HydroDispatcher {
     fn new() -> Self {
         Self {
-            handlers: Rc::new(BTreeMap::new()),
+            handlers: Rc::new(FxHashMap::default()),
         }
     }
 
@@ -301,6 +303,8 @@ pub struct HydrolysisRenderer {
     reuse_scroll_content_caches: bool,
     retained_scroll_frame: Option<RetainedScrollFrame>,
     retained_scroll_frame_conflicted: bool,
+    dynamic_morph_capture_depth: u32,
+    dynamic_morph_draws: Vec<DynamicMorphDraw>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     pub(crate) lazy: LazyState,
@@ -315,7 +319,22 @@ struct RetainedScrollFrame {
     viewport: vello::kurbo::Rect,
     transform: vello::kurbo::Affine,
     content_scene: vello::Scene,
+    content_dynamic_morphs: Vec<DynamicMorphDraw>,
     active_layers: Vec<ActiveSceneLayer>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DynamicMorphDraw {
+    shape: ResolvedMorphShape,
+    bounds: vello::kurbo::Rect,
+    transform: vello::kurbo::Affine,
+    started_at: Instant,
+}
+
+pub(crate) struct ScrollContentRender {
+    pub(crate) scene: vello::Scene,
+    pub(crate) dynamic_morphs: Vec<DynamicMorphDraw>,
+    pub(crate) has_frame_images: bool,
 }
 
 struct AppliedFilterRuntime {
@@ -583,6 +602,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ResolvedColor>);
         $macro!(Native<ResolvedGradient>);
         $macro!(Native<ResolvedShape>);
+        $macro!(Native<ResolvedMorphShape>);
         $macro!(Native<VideoConfig>);
         $macro!(Native<VideoPlayerConfig>);
         $macro!(Native<MapConfig>);
@@ -668,6 +688,8 @@ impl HydrolysisRenderer {
             reuse_scroll_content_caches: false,
             retained_scroll_frame: None,
             retained_scroll_frame_conflicted: false,
+            dynamic_morph_capture_depth: 0,
+            dynamic_morph_draws: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             lazy: LazyState::default(),
@@ -829,6 +851,23 @@ impl HydrolysisRenderer {
         self.pop_render_depth();
     }
 
+    fn dispatch_boxed_with_render_depth(
+        &mut self,
+        view: AnyView,
+        env: &Environment,
+        ctx: RenderContext,
+    ) {
+        assert!(
+            self.render_depth < 256,
+            "hydrolysis render dispatch exceeded recursion budget for {}",
+            view.name()
+        );
+        self.push_render_depth();
+        let dispatcher = self.dispatcher.clone();
+        dispatcher.dispatch_boxed(self, view, env, ctx);
+        self.pop_render_depth();
+    }
+
     fn replay_target_depth(&self, subtree_depth_base: usize, target_depth: usize) -> usize {
         let relative_depth = target_depth
             .checked_sub(subtree_depth_base)
@@ -844,7 +883,7 @@ impl HydrolysisRenderer {
         env: &Environment,
         content: AnyView,
     ) {
-        renderer.dispatch_with_render_depth(content, env, ctx);
+        renderer.dispatch_boxed_with_render_depth(content, env, ctx);
     }
 
     pub(crate) fn dispatch_any_without_accessibility(
@@ -856,7 +895,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "accessibility")]
         {
             renderer.push_accessibility_suppression();
-            renderer.dispatch_with_render_depth(content, env, ctx);
+            renderer.dispatch_boxed_with_render_depth(content, env, ctx);
             renderer.pop_accessibility_suppression();
         }
         #[cfg(not(feature = "accessibility"))]
@@ -917,7 +956,7 @@ impl HydrolysisRenderer {
             ctx.bounds.height(),
         ));
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
-        renderer.dispatch_with_render_depth(content, env, local_ctx);
+        renderer.dispatch_boxed_with_render_depth(content, env, local_ctx);
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
         subtree_scene
     }
@@ -1095,6 +1134,92 @@ impl HydrolysisRenderer {
             .sample(now)
     }
 
+    pub(crate) fn sample_morph_progress(
+        &mut self,
+        animation: waterui_shape::MorphAnimation,
+    ) -> f32 {
+        if animation.duration.is_zero() {
+            return 1.0;
+        }
+        let elapsed = self.animation_controller.bind_timeline_phase(
+            animation.duration,
+            animation.repeat,
+            self.frame_instant,
+        );
+        let raw = elapsed.as_secs_f32() / animation.duration.as_secs_f32();
+        let cycle = if animation.repeat {
+            let base = raw.fract();
+            assert!(
+                raw.is_finite() && raw >= 0.0,
+                "morph animation cycle index must be finite and non-negative"
+            );
+            let index = raw.floor() as u64;
+            if animation.autoreverse && index % 2 == 1 {
+                1.0 - base
+            } else {
+                base
+            }
+        } else {
+            raw.clamp(0.0, 1.0)
+        };
+        animation.easing.ease(cycle).clamp(0.0, 1.0)
+    }
+
+    fn sample_morph_draw_progress(&self, draw: &DynamicMorphDraw) -> f32 {
+        let animation = draw.shape.animation;
+        if animation.duration.is_zero() {
+            return 1.0;
+        }
+        let elapsed = self
+            .frame_instant
+            .saturating_duration_since(draw.started_at);
+        let raw = elapsed.as_secs_f32() / animation.duration.as_secs_f32();
+        let cycle = if animation.repeat {
+            let base = raw.fract();
+            assert!(
+                raw.is_finite() && raw >= 0.0,
+                "morph animation cycle index must be finite and non-negative"
+            );
+            let index = raw.floor() as u64;
+            if animation.autoreverse && index % 2 == 1 {
+                1.0 - base
+            } else {
+                base
+            }
+        } else {
+            raw.clamp(0.0, 1.0)
+        };
+        animation.easing.ease(cycle).clamp(0.0, 1.0)
+    }
+
+    fn dynamic_morph_is_active(&self, draw: &DynamicMorphDraw) -> bool {
+        let animation = draw.shape.animation;
+        animation.repeat
+            || self
+                .frame_instant
+                .saturating_duration_since(draw.started_at)
+                < animation.duration
+    }
+
+    fn draw_dynamic_morphs(
+        &mut self,
+        morphs: &[DynamicMorphDraw],
+        parent_transform: vello::kurbo::Affine,
+    ) {
+        for morph in morphs {
+            let progress = self.sample_morph_draw_progress(morph);
+            let path = resolved_morph_shape_to_path(&morph.shape, progress, morph.bounds);
+            let fill = resolved_color_to_peniko(morph.shape.fill);
+            self.scene.fill(
+                vello::peniko::Fill::NonZero,
+                parent_transform * morph.transform,
+                fill,
+                None,
+                &path,
+            );
+        }
+    }
+
     pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration) -> Duration {
         self.animation_controller
             .bind_repeating_phase(cycle, self.frame_instant)
@@ -1104,7 +1229,26 @@ impl HydrolysisRenderer {
         let layout = layout as &dyn Any;
         !(layout.is::<PaddingLayout>()
             || layout.is::<LayoutBackgroundLayout>()
-            || layout.is::<HStackLayout>())
+            || layout.is::<FrameLayout>()
+            || layout.is::<HStackLayout>()
+            || layout.is::<VStackLayout>())
+    }
+
+    fn rects_intersect(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
+        a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
+    }
+
+    fn child_outside_lazy_viewport(
+        renderer: &HydrolysisRenderer,
+        ctx: RenderContext,
+        child_transform: vello::kurbo::Affine,
+        child_bounds: vello::kurbo::Rect,
+    ) -> bool {
+        let Some(viewport) = renderer.lazy.lazy_viewport_stack.last().copied() else {
+            return false;
+        };
+        let child_rect = transformed_rect(ctx.transform * child_transform, child_bounds);
+        !Self::rects_intersect(child_rect, viewport)
     }
 
     fn render_layout_container(
@@ -1151,6 +1295,9 @@ impl HydrolysisRenderer {
                 f64::from(rect.width()),
                 f64::from(rect.height()),
             );
+            if Self::child_outside_lazy_viewport(renderer, ctx, child_transform, child_bounds) {
+                continue;
+            }
             Self::dispatch_any(
                 renderer,
                 ctx.child(child_transform, child_bounds),
@@ -1764,6 +1911,38 @@ impl HydrolysisRenderer {
         );
     }
 
+    pub(crate) fn render_resolved_morph_shape(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        shape: Native<ResolvedMorphShape>,
+        _env: &Environment,
+    ) {
+        let resolved = shape.into_inner();
+        if resolved.progress.is_none() && renderer.dynamic_morph_capture_depth > 0 {
+            renderer.dynamic_morph_draws.push(DynamicMorphDraw {
+                shape: resolved,
+                bounds: ctx.bounds,
+                transform: ctx.transform,
+                started_at: renderer.frame_instant,
+            });
+            return;
+        }
+        let progress = if let Some(progress) = resolved.progress.as_ref() {
+            renderer.resolve_animated_scalar(progress)
+        } else {
+            renderer.sample_morph_progress(resolved.animation)
+        };
+        let path = resolved_morph_shape_to_path(&resolved, progress, ctx.bounds);
+        let fill = resolved_color_to_peniko(resolved.fill);
+        renderer.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            fill,
+            None,
+            &path,
+        );
+    }
+
     fn render_environment_metadata(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -1771,7 +1950,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let (content, scoped_env) = flatten_environment_metadata_owned(AnyView::new(metadata), env);
-        renderer.dispatch_with_render_depth(content, &scoped_env, ctx);
+        renderer.dispatch_boxed_with_render_depth(content, &scoped_env, ctx);
     }
 
     fn render_retain_metadata(
@@ -1782,7 +1961,7 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         renderer.lifecycle.current_frame_retain.push(value);
-        renderer.dispatch_with_render_depth(content, env, ctx);
+        renderer.dispatch_boxed_with_render_depth(content, env, ctx);
     }
 
     fn render_opacity_metadata(
@@ -1796,7 +1975,7 @@ impl HydrolysisRenderer {
 
         let previous_opacity = renderer.hit_test.hit_test_opacity;
         renderer.hit_test.hit_test_opacity = previous_opacity * alpha;
-        renderer.dispatch_with_render_depth(metadata.content, env, ctx);
+        renderer.dispatch_boxed_with_render_depth(metadata.content, env, ctx);
         renderer.hit_test.hit_test_opacity = previous_opacity;
 
         renderer.pop_layer();
@@ -2517,6 +2696,16 @@ impl HydrolysisRenderer {
         self.retained_scroll_frame.is_some() && !self.retained_scroll_frame_conflicted
     }
 
+    pub(crate) fn retained_scroll_dynamic_morphs_active(&self) -> bool {
+        self.retained_scroll_frame.as_ref().is_some_and(|frame| {
+            !self.retained_scroll_frame_conflicted
+                && frame
+                    .content_dynamic_morphs
+                    .iter()
+                    .any(|draw| self.dynamic_morph_is_active(draw))
+        })
+    }
+
     pub(crate) fn active_scene_layers_snapshot(&self) -> Vec<ActiveSceneLayer> {
         self.compositor.active_scene_layers.clone()
     }
@@ -2539,6 +2728,8 @@ impl HydrolysisRenderer {
         viewport: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
         content_scene: vello::Scene,
+        content_dynamic_morphs: Vec<DynamicMorphDraw>,
+        content_has_frame_images: bool,
         active_layers: Vec<ActiveSceneLayer>,
         exclusive_root: bool,
     ) {
@@ -2548,7 +2739,7 @@ impl HydrolysisRenderer {
             return;
         }
         let viewport_matches_window = self.viewport_matches_window_bounds(viewport);
-        if !viewport_matches_window || !exclusive_root {
+        if !viewport_matches_window || !exclusive_root || content_has_frame_images {
             self.retained_scroll_frame_conflicted = true;
             return;
         }
@@ -2558,6 +2749,7 @@ impl HydrolysisRenderer {
             viewport,
             transform,
             content_scene,
+            content_dynamic_morphs,
             active_layers,
         });
     }
@@ -2614,6 +2806,7 @@ impl HydrolysisRenderer {
             * vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
         self.scene
             .append(&frame.content_scene, Some(content_transform));
+        self.draw_dynamic_morphs(&frame.content_dynamic_morphs, content_transform);
         if needs_viewport_clip {
             self.pop_layer();
         }
@@ -2641,22 +2834,42 @@ impl HydrolysisRenderer {
         ctx: RenderContext,
         env: &Environment,
         content: AnyView,
-    ) -> vello::Scene {
+    ) -> ScrollContentRender {
         if self.reuse_scroll_content_caches
             && let Some(subtree) = self.scroll_content_caches.remove(&cache_key)
         {
             self.replay_dynamic_subtree(ctx, &subtree);
             let scene = subtree.scene.clone();
             self.scroll_content_caches.insert(cache_key, subtree);
-            return scene;
+            return ScrollContentRender {
+                scene,
+                dynamic_morphs: Vec::new(),
+                has_frame_images: false,
+            };
         }
 
         let local_ctx = ctx.with_identity_transforms(ctx.bounds);
+        let filter_image_count = self.compositor.active_filter_images.len();
+        let previous_morphs = core::mem::take(&mut self.dynamic_morph_draws);
+        self.dynamic_morph_capture_depth = self
+            .dynamic_morph_capture_depth
+            .checked_add(1)
+            .expect("hydrolysis dynamic morph capture depth overflow");
         let subtree = Self::render_dynamic_subtree(self, local_ctx, env, content);
+        self.dynamic_morph_capture_depth = self
+            .dynamic_morph_capture_depth
+            .checked_sub(1)
+            .expect("hydrolysis dynamic morph capture depth underflow");
+        let dynamic_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
         self.replay_dynamic_subtree(ctx, &subtree);
+        self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
         let scene = subtree.scene.clone();
         self.scroll_content_caches.insert(cache_key, subtree);
-        scene
+        ScrollContentRender {
+            scene,
+            dynamic_morphs,
+            has_frame_images: self.compositor.active_filter_images.len() > filter_image_count,
+        }
     }
 
     pub fn finish_rebuild_frame(&mut self) {

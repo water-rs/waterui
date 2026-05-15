@@ -1122,6 +1122,10 @@ fn advance_runtime<P: PlatformWindow>(
     if runtime.renderer.advance_animations() {
         runtime.needs_rebuild = true;
     }
+    if runtime.renderer.retained_scroll_dynamic_morphs_active() {
+        runtime.scroll_only_rebuild = true;
+        runtime.platform.request_redraw();
+    }
     if runtime.renderer.take_rebuild_request() {
         runtime.needs_rebuild = true;
     }

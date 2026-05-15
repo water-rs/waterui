@@ -40,6 +40,7 @@ struct AnimatedScalarState {
 struct RepeatingPhaseSlot {
     started_at: Instant,
     cycle: Duration,
+    repeat: bool,
 }
 
 impl AnimationController {
@@ -103,10 +104,18 @@ impl AnimationController {
                 has_active = true;
             }
         }
-        has_active || !self.repeating_slots.is_empty()
+        has_active
+            || self.repeating_slots.iter().any(|slot| {
+                slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
+            })
     }
 
     pub fn bind_repeating_phase(&mut self, cycle: Duration, now: Instant) -> Duration {
+        let elapsed = self.bind_timeline_phase(cycle, true, now);
+        Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
+    }
+
+    pub fn bind_timeline_phase(&mut self, cycle: Duration, repeat: bool, now: Instant) -> Duration {
         assert!(
             !cycle.is_zero(),
             "animation repeating phase cycle must be non-zero"
@@ -120,15 +129,17 @@ impl AnimationController {
             self.repeating_slots.push(RepeatingPhaseSlot {
                 started_at: now,
                 cycle,
+                repeat,
             });
         }
         let slot = &mut self.repeating_slots[index];
-        if slot.cycle != cycle {
+        if slot.cycle != cycle || slot.repeat != repeat {
             slot.started_at = now;
             slot.cycle = cycle;
+            slot.repeat = repeat;
         }
         let elapsed = now.saturating_duration_since(slot.started_at);
-        Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
+        if repeat { elapsed } else { elapsed.min(cycle) }
     }
 }
 

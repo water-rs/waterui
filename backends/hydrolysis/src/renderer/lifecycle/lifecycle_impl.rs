@@ -313,7 +313,7 @@ impl HydrolysisRenderer {
             let previous_suppression_depth = renderer.accessibility.suppression_depth;
             renderer.accessibility.next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
             renderer.accessibility.suppression_depth = 0;
-            renderer.dispatch_with_render_depth(content, env, ctx);
+            renderer.dispatch_boxed_with_render_depth(content, env, ctx);
             renderer.accessibility.suppression_depth = previous_suppression_depth;
             renderer.accessibility.next_node_id = previous_next_node_id;
 
@@ -324,7 +324,7 @@ impl HydrolysisRenderer {
             );
         }
         #[cfg(not(feature = "accessibility"))]
-        renderer.dispatch_with_render_depth(content, env, ctx);
+        renderer.dispatch_boxed_with_render_depth(content, env, ctx);
 
         core::mem::swap(
             &mut renderer.hit_test.scroll_targets,
