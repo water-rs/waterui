@@ -512,6 +512,9 @@ struct PreviewPerfMeasurement {
     gpu_surface_layers: u64,
     clip_layers: u64,
     max_clip_depth: u64,
+    applied_filter_count: u64,
+    applied_filter_capture_us: u64,
+    applied_filter_effect_us: u64,
     phases: PreviewPerfPhases,
     frames: Vec<PreviewPerfFrame>,
 }
@@ -560,6 +563,9 @@ struct PreviewPerfFrame {
     gpu_surface_layers: u64,
     clip_layers: u64,
     max_clip_depth: u64,
+    applied_filter_count: u64,
+    applied_filter_capture_us: u64,
+    applied_filter_effect_us: u64,
 }
 
 /// Run the preview command.
@@ -1125,6 +1131,9 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                     gpu_surface_layers: 0,
                     clip_layers: 0,
                     max_clip_depth: 0,
+                    applied_filter_count: 0,
+                    applied_filter_capture_us: 0,
+                    applied_filter_effect_us: 0,
                     phases: PreviewPerfPhases::default(),
                     frames: Vec::new(),
                 },
@@ -1161,6 +1170,12 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
             measurement.gpu_surface_layers = parse_required_field(&fields, "gpu_surface_layers")?;
             measurement.clip_layers = parse_required_field(&fields, "clip_layers")?;
             measurement.max_clip_depth = parse_required_field(&fields, "max_clip_depth")?;
+            measurement.applied_filter_count =
+                parse_required_field(&fields, "applied_filter_count")?;
+            measurement.applied_filter_capture_us =
+                parse_required_field(&fields, "applied_filter_capture")?;
+            measurement.applied_filter_effect_us =
+                parse_required_field(&fields, "applied_filter_effect")?;
         } else if let Some(rest) = line.strip_prefix("perf-sample ") {
             let (name, fields) = parse_named_perf_fields(rest)?;
             let measurement = measurements.get_mut(&name).ok_or_else(|| {
@@ -1198,6 +1213,9 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
                 gpu_surface_layers: parse_required_field(&fields, "gpu_surface_layers")?,
                 clip_layers: parse_required_field(&fields, "clip_layers")?,
                 max_clip_depth: parse_required_field(&fields, "max_clip_depth")?,
+                applied_filter_count: parse_required_field(&fields, "applied_filter_count")?,
+                applied_filter_capture_us: parse_required_field(&fields, "applied_filter_capture")?,
+                applied_filter_effect_us: parse_required_field(&fields, "applied_filter_effect")?,
             });
         }
     }
@@ -1264,6 +1282,12 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
             measurement.gpu_surface_layers,
             measurement.clip_layers,
             measurement.max_clip_depth
+        );
+        note!(
+            "    filters: applied={} capture={} effect={}",
+            measurement.applied_filter_count,
+            micros_label(measurement.applied_filter_capture_us),
+            micros_label(measurement.applied_filter_effect_us)
         );
         if let Some(resources) = resource_summary(measurement) {
             note!(

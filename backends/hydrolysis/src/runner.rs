@@ -406,6 +406,7 @@ struct RuntimeWindow<P: PlatformWindow> {
     renderer: HydrolysisRenderer,
     needs_rebuild: bool,
     scroll_only_rebuild: bool,
+    effect_only_rebuild_pending: bool,
     pointer_position: Option<(f32, f32)>,
     render_diagnostics: RenderDiagnostics,
 }
@@ -423,6 +424,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             renderer,
             needs_rebuild: true,
             scroll_only_rebuild: false,
+            effect_only_rebuild_pending: false,
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
         }
@@ -489,6 +491,12 @@ pub struct FrameCounters {
     pub clip_layers: u32,
     /// Maximum nested Vello clip depth while building this frame.
     pub max_clip_depth: u32,
+    /// Number of AppliedFilter nodes dispatched in this frame.
+    pub applied_filter_count: u32,
+    /// Time spent capturing AppliedFilter input subtrees, in microseconds.
+    pub applied_filter_capture_us: u64,
+    /// Time spent running AppliedFilter GPU effects, in microseconds.
+    pub applied_filter_effect_us: u64,
     /// Whether this frame rendered to the target.
     pub rendered: bool,
     /// Whether this frame captured a CPU snapshot.
@@ -520,6 +528,7 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
     if runtime.renderer.take_rebuild_request() {
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
     } else {
         runtime.renderer.request_redraw();
     }
@@ -533,6 +542,7 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
     runtime.scroll_only_rebuild = true;
     if !runtime.renderer.has_retained_scroll_frame() {
         runtime.needs_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
     } else {
         runtime.renderer.request_redraw();
     }
@@ -590,9 +600,11 @@ fn rebuild_window_scene<P: PlatformWindow>(
     let animations_active = runtime.renderer.advance_animations();
     if animations_active && runtime.renderer.has_retained_scroll_frame() {
         runtime.scroll_only_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
     } else if animations_active {
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
     }
 
     let mut rebuilt = false;
@@ -602,11 +614,15 @@ fn rebuild_window_scene<P: PlatformWindow>(
         let scroll_rebuild_requested = runtime.scroll_only_rebuild && runtime.needs_rebuild;
         if renderer_requested_rebuild && !scroll_rebuild_requested {
             runtime.scroll_only_rebuild = false;
+            runtime.effect_only_rebuild_pending = false;
         }
         let should_rebuild = runtime.needs_rebuild || renderer_requested_rebuild;
         if !should_rebuild {
             break;
         }
+        let reuse_filter_inputs = runtime.effect_only_rebuild_pending
+            && !renderer_requested_rebuild
+            && !runtime.scroll_only_rebuild;
         rebuild_iterations = rebuild_iterations
             .checked_add(1)
             .expect("hydrolysis runner: rebuild iteration counter overflow");
@@ -618,6 +634,9 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime
             .renderer
             .set_scroll_content_cache_reuse(runtime.scroll_only_rebuild);
+        runtime
+            .renderer
+            .set_applied_filter_input_cache_reuse(reuse_filter_inputs);
         runtime.renderer.begin_rebuild_frame();
         runtime.renderer.set_window_bounds(bounds);
         let build_content_started_at = Instant::now();
@@ -645,6 +664,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
             .sync_active_interactions_after_layout(runtime.pointer_position);
         phases.scene_finish += scene_finish_started_at.elapsed();
         runtime.needs_rebuild = false;
+        runtime.effect_only_rebuild_pending = false;
         rebuilt = true;
         if let Some((x, y)) = runtime.pointer_position
             && runtime.renderer.sync_pointer_hover_state(x, y, env)
@@ -652,6 +672,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
             if runtime.renderer.take_rebuild_request() {
                 runtime.scroll_only_rebuild = false;
                 runtime.needs_rebuild = true;
+                runtime.effect_only_rebuild_pending = false;
             } else {
                 runtime.renderer.request_redraw();
             }
@@ -661,8 +682,12 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime.scroll_only_rebuild = false;
     }
     if runtime.renderer.take_next_frame_rebuild_request() {
+        runtime.effect_only_rebuild_pending =
+            !runtime.needs_rebuild && !runtime.scroll_only_rebuild;
         runtime.needs_rebuild = true;
         runtime.platform.request_redraw();
+    } else if !runtime.needs_rebuild {
+        runtime.effect_only_rebuild_pending = false;
     }
     phases.rebuild = rebuild_started_at.elapsed();
     (rebuilt, rebuild_iterations, phases)
@@ -762,6 +787,8 @@ fn render_window_with_capture<P: PlatformWindow>(
                 let (scene_layers, vello_scene_layers, gpu_surface_layers) =
                     runtime.renderer.render_layer_stats();
                 let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
+                let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
+                    runtime.renderer.applied_filter_stats();
                 return RenderWindowResult {
                     rebuilt,
                     snapshot,
@@ -783,6 +810,9 @@ fn render_window_with_capture<P: PlatformWindow>(
                             gpu_surface_layers,
                             clip_layers,
                             max_clip_depth,
+                            applied_filter_count,
+                            applied_filter_capture_us,
+                            applied_filter_effect_us,
                             rendered: false,
                             captured_snapshot: false,
                         },
@@ -794,6 +824,12 @@ fn render_window_with_capture<P: PlatformWindow>(
         };
         let acquire_duration = acquire_started_at.elapsed();
         let render_started_at = Instant::now();
+        if !rebuilt {
+            runtime.renderer.begin_redraw_frame();
+            runtime
+                .renderer
+                .refresh_active_applied_filters(surface.device(), surface.queue());
+        }
         runtime
             .renderer
             .render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
@@ -828,6 +864,8 @@ fn render_window_with_capture<P: PlatformWindow>(
         let (scene_layers, vello_scene_layers, gpu_surface_layers) =
             runtime.renderer.render_layer_stats();
         let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
+        let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
+            runtime.renderer.applied_filter_stats();
         profile = FrameProfile {
             phases: FramePhases {
                 rebuild: rebuild_phases.rebuild,
@@ -848,6 +886,9 @@ fn render_window_with_capture<P: PlatformWindow>(
                 gpu_surface_layers,
                 clip_layers,
                 max_clip_depth,
+                applied_filter_count,
+                applied_filter_capture_us,
+                applied_filter_effect_us,
                 rendered: true,
                 captured_snapshot: capture_snapshot,
             },
@@ -943,6 +984,7 @@ where
                 );
                 runtime.window.frame.set(frame);
                 runtime.needs_rebuild = true;
+                runtime.effect_only_rebuild_pending = false;
                 runtime.platform.request_redraw();
             }
             InputEvent::PointerDown { x, y, button } => {
@@ -1051,6 +1093,7 @@ where
                 );
                 if changed {
                     runtime.needs_rebuild = true;
+                    runtime.effect_only_rebuild_pending = false;
                 }
             }
             InputEvent::Key {
@@ -1132,24 +1175,30 @@ fn advance_runtime<P: PlatformWindow>(
     }
     if runtime.renderer.handle_gesture_tick(now, env) {
         runtime.needs_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
     }
     let animations_active = runtime.renderer.advance_animations();
     if animations_active && runtime.renderer.has_retained_scroll_frame() {
         runtime.scroll_only_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
         runtime.platform.request_redraw();
     } else if animations_active {
         runtime.needs_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
     }
     if runtime.renderer.retained_scroll_dynamic_morphs_active() {
         runtime.scroll_only_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
         runtime.platform.request_redraw();
     }
     let rebuild_requested = runtime.renderer.take_rebuild_request();
     if rebuild_requested && runtime.renderer.has_retained_scroll_frame() {
         runtime.scroll_only_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
         runtime.platform.request_redraw();
     } else if rebuild_requested {
         runtime.needs_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
     if runtime.needs_rebuild {

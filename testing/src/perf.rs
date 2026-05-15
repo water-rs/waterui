@@ -88,6 +88,12 @@ pub struct PerfStats {
     pub clip_layers: u64,
     /// Maximum nested Vello clip depth observed across sampled frames.
     pub max_clip_depth: u64,
+    /// AppliedFilter nodes dispatched across sampled frames.
+    pub applied_filter_count: u64,
+    /// AppliedFilter subtree capture time across sampled frames, in microseconds.
+    pub applied_filter_capture_us: u64,
+    /// AppliedFilter GPU effect time across sampled frames, in microseconds.
+    pub applied_filter_effect_us: u64,
 }
 
 /// Statistical summary for the measured frame phases.
@@ -213,6 +219,18 @@ impl PerfStats {
                 .map(|frame| u64::from(frame.profile.counters.max_clip_depth))
                 .max()
                 .unwrap_or_default(),
+            applied_filter_count: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.applied_filter_count))
+                .sum(),
+            applied_filter_capture_us: frames
+                .iter()
+                .map(|frame| frame.profile.counters.applied_filter_capture_us)
+                .sum(),
+            applied_filter_effect_us: frames
+                .iter()
+                .map(|frame| frame.profile.counters.applied_filter_effect_us)
+                .sum(),
         }
     }
 }
