@@ -321,6 +321,15 @@ impl PerfRun<'_> {
             .scroll_at(x, y, dx, dy, is_line_delta, &self.app.app.env);
     }
 
+    /// Requests a redraw for the next measured frame without changing semantic state.
+    pub fn redraw(&mut self) {
+        let _ = self
+            .app
+            .app
+            .driver
+            .request_redraw(&self.app.app.content, &self.app.app.env);
+    }
+
     /// Accesses semantic assertions and interactions during a performance run.
     #[must_use]
     pub fn app(&mut self) -> &mut OffscreenApp {

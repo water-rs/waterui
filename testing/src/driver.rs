@@ -35,6 +35,7 @@ pub trait A11yDriver {
     ) -> bool;
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool;
     fn clear_ui_focus(&mut self, env: &Environment) -> bool;
+    fn request_redraw(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> bool;
     fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming;
     fn pump_frame_at(
         &mut self,
@@ -240,6 +241,11 @@ impl A11yDriver for HydrolysisA11yDriver {
             .as_mut()
             .expect("waterui-testing clear_ui_focus requested before runtime initialization")
             .clear_ui_focus()
+    }
+
+    fn request_redraw(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> bool {
+        self.runtime(content, env).request_redraw();
+        true
     }
 
     fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming {

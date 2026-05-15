@@ -42,7 +42,9 @@ fn run_perf(width: f32, height: f32) {
         None => builder.perf_with(preview_test::load_preview_view, |perf| {
             preview_test::run_perf_automation(perf);
             if perf.measurement_count() == 0 {
-                perf.measure("steady", |_| {});
+                perf.measure("steady-redraw", |run| {
+                    run.redraw();
+                });
             }
         }),
     };
@@ -132,7 +134,9 @@ fn profile_perf(
     let report = builder.perf_with(preview_test::load_preview_view, |perf| {
         preview_test::run_perf_automation(perf);
         if perf.measurement_count() == 0 {
-            perf.measure("steady", |_| {});
+            perf.measure("steady-redraw", |run| {
+                run.redraw();
+            });
         }
     });
     let profile = guard

@@ -1409,6 +1409,10 @@ impl HeadlessRuntime {
         self.runtime.platform.push_event(event);
     }
 
+    pub fn request_redraw(&mut self) {
+        self.runtime.platform.request_redraw();
+    }
+
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
         let changed = self

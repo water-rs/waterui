@@ -81,6 +81,10 @@ impl A11yDriver for NoopDriver {
         false
     }
 
+    fn request_redraw(&mut self, _content: &AnyViewBuilder<AnyView>, _env: &Environment) -> bool {
+        false
+    }
+
     fn pump_frame(
         &mut self,
         _content: &AnyViewBuilder<AnyView>,
@@ -273,6 +277,30 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
     assert_eq!(measurements[0].name, "steady");
     let stats = measurements[0].stats();
     assert_eq!(stats.samples, 3);
+}
+
+#[test]
+fn themed_builder_default_perf_requests_redraw() {
+    let report = ui()
+        .viewport(96, 72)
+        .theme(|_: &mut Environment| {})
+        .perf_config(PerfConfig {
+            warmups: 1,
+            samples: 3,
+            repetitions: 1,
+        })
+        .perf(|| text("Redraw measured").body());
+
+    let measurements = report.measurements();
+    assert_eq!(measurements.len(), 1);
+    assert_eq!(measurements[0].name, "steady-redraw");
+    let stats = measurements[0].stats();
+    assert_eq!(stats.samples, 3);
+    assert_eq!(stats.rebuilt_frames, 0);
+    assert!(
+        stats.phases.render.p95 > Duration::ZERO,
+        "default perf should measure real redraw frames"
+    );
 }
 
 #[test]
