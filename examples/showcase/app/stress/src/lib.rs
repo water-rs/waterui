@@ -1,6 +1,6 @@
 //! Stress Example - High pressure real-app workload for profiling
 //!
-//! This app is intended for professional profiling (xctrace/perfetto), not preview.
+//! This app is intended for professional profiling through native tools and WaterUI preview perf.
 //! It drives three independent pressure paths:
 //! - System animation path (metadata -> native animation acceleration)
 //! - Custom animation path (framework/self-rendered GPU animation)
@@ -18,6 +18,7 @@ use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::Binding;
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
 use waterui::task::{sleep, spawn_local};
@@ -188,6 +189,7 @@ fn filter_section(
     .padding()
 }
 
+#[preview]
 fn main() -> impl View {
     let system_count = env_usize("WATERUI_STRESS_SYSTEM_COUNT", 120).clamp(18, 1_440);
     let custom_count = env_usize("WATERUI_STRESS_CUSTOM_COUNT", 96).clamp(14, 1_120);
