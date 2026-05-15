@@ -21,6 +21,7 @@ use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::{Picker, PickerStyle};
 use waterui::media::Url;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 use waterui::shape::RoundedRectangle;
 
@@ -74,6 +75,7 @@ fn decorated_dates() -> BTreeSet<Date> {
     .collect()
 }
 
+#[preview]
 fn main() -> impl View {
     let automatic_selection = binding(Fruit::Apple);
     let menu_selection = binding(Fruit::Banana);
@@ -133,8 +135,7 @@ fn main() -> impl View {
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31)),
                 text!("Selected date: {date}"),
                 spacer(),
-                DatePicker::new("Time Only", &time_only)
-                    .ty(DatePickerType::HourMinuteAndSecond),
+                DatePicker::new("Time Only", &time_only).ty(DatePickerType::HourMinuteAndSecond),
                 text!("Selected time: {time_only}"),
                 spacer(),
                 DatePicker::new("Date & Time", &datetime)
