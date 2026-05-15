@@ -515,7 +515,11 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
         return;
     }
     runtime.scroll_only_rebuild = true;
-    runtime.needs_rebuild = true;
+    if !runtime.renderer.has_retained_scroll_frame() {
+        runtime.needs_rebuild = true;
+    } else {
+        runtime.renderer.request_redraw();
+    }
     runtime.platform.request_redraw();
 }
 
@@ -621,7 +625,9 @@ fn rebuild_window_scene<P: PlatformWindow>(
             }
         }
     }
-    runtime.scroll_only_rebuild = false;
+    if rebuilt {
+        runtime.scroll_only_rebuild = false;
+    }
     (rebuilt, rebuild_iterations, rebuild_started_at.elapsed())
 }
 
@@ -672,14 +678,31 @@ fn render_window_with_capture<P: PlatformWindow>(
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
-        let (scene_rebuilt, rebuild_iterations, rebuild_duration) =
+        let (scene_rebuilt, mut rebuild_iterations, mut rebuild_duration) =
             rebuild_window_scene(runtime, env);
         rebuilt |= scene_rebuilt;
+        let clear_color = window_clear_color(&runtime.window, env);
+        if runtime.scroll_only_rebuild {
+            let refresh_started_at = Instant::now();
+            if runtime.renderer.refresh_retained_scroll_scene(env) {
+                rebuild_duration += refresh_started_at.elapsed();
+                runtime.scroll_only_rebuild = false;
+            } else {
+                runtime.needs_rebuild = true;
+                let (fallback_rebuilt, fallback_iterations, fallback_duration) =
+                    rebuild_window_scene(runtime, env);
+                rebuilt |= fallback_rebuilt;
+                rebuild_iterations = rebuild_iterations
+                    .checked_add(fallback_iterations)
+                    .expect("hydrolysis runner: rebuild iteration counter overflow");
+                rebuild_duration += fallback_duration;
+                runtime.scroll_only_rebuild = false;
+            }
+        }
 
         let surface = runtime.platform.surface();
         let (width, height) = surface.size();
         let format = surface.format();
-        let clear_color = window_clear_color(&runtime.window, env);
         let acquire_started_at = Instant::now();
         let frame = match surface.acquire() {
             Ok(frame) => frame,
