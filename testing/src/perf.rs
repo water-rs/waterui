@@ -93,6 +93,12 @@ pub struct PerfPhaseStats {
     pub animation: PerfDurationStats,
     /// Time spent rebuilding scene/layout state.
     pub rebuild: PerfDurationStats,
+    /// Time spent building the root WaterUI view value during scene rebuild.
+    pub build_content: PerfDurationStats,
+    /// Time spent dispatching WaterUI views into Hydrolysis scene/layout state.
+    pub scene_dispatch: PerfDurationStats,
+    /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
+    pub scene_finish: PerfDurationStats,
     /// Time spent acquiring an offscreen frame.
     pub acquire: PerfDurationStats,
     /// Time spent submitting Hydrolysis/Vello rendering work.
@@ -198,6 +204,19 @@ impl PerfPhaseStats {
             ),
             rebuild: PerfDurationStats::from_durations(
                 frames.iter().map(|frame| frame.profile.phases.rebuild),
+            ),
+            build_content: PerfDurationStats::from_durations(
+                frames
+                    .iter()
+                    .map(|frame| frame.profile.phases.build_content),
+            ),
+            scene_dispatch: PerfDurationStats::from_durations(
+                frames
+                    .iter()
+                    .map(|frame| frame.profile.phases.scene_dispatch),
+            ),
+            scene_finish: PerfDurationStats::from_durations(
+                frames.iter().map(|frame| frame.profile.phases.scene_finish),
             ),
             acquire: PerfDurationStats::from_durations(
                 frames.iter().map(|frame| frame.profile.phases.acquire),
