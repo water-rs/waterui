@@ -696,6 +696,9 @@ struct ScenarioEventFile {
     x: Option<f32>,
     y: Option<f32>,
     button: Option<String>,
+    dx: Option<f32>,
+    dy: Option<f32>,
+    is_line_delta: Option<bool>,
 }
 
 async fn load_hydrolysis_scenario(
@@ -741,6 +744,7 @@ fn parse_scenario_event(event: ScenarioEventFile) -> Result<HydrolysisPreviewSce
         "pointer_down" => HydrolysisPreviewEventKind::PointerDown,
         "pointer_up" => HydrolysisPreviewEventKind::PointerUp,
         "pointer_cancel" => HydrolysisPreviewEventKind::PointerCancel,
+        "scroll" | "wheel" => HydrolysisPreviewEventKind::Scroll,
         other => bail!("unsupported Hydrolysis preview scenario event kind `{other}`"),
     };
     let button = event
@@ -756,20 +760,31 @@ fn parse_scenario_event(event: ScenarioEventFile) -> Result<HydrolysisPreviewSce
     let needs_point = !matches!(kind, HydrolysisPreviewEventKind::PointerCancel);
     let x = match event.x {
         Some(x) => x,
-        None if needs_point => bail!("Hydrolysis preview pointer event requires x coordinate"),
+        None if needs_point => bail!("Hydrolysis preview scenario event requires x coordinate"),
         None => 0.0,
     };
     let y = match event.y {
         Some(y) => y,
-        None if needs_point => bail!("Hydrolysis preview pointer event requires y coordinate"),
+        None if needs_point => bail!("Hydrolysis preview scenario event requires y coordinate"),
         None => 0.0,
     };
+    let dx = event.dx.unwrap_or(0.0);
+    let dy = event.dy.unwrap_or(0.0);
+    if matches!(kind, HydrolysisPreviewEventKind::Scroll)
+        && dx.abs() <= f32::EPSILON
+        && dy.abs() <= f32::EPSILON
+    {
+        bail!("Hydrolysis preview scroll event requires non-zero dx or dy");
+    }
     Ok(HydrolysisPreviewScenarioEvent {
         at_ms: event.at_ms,
         kind,
         x,
         y,
         button,
+        dx,
+        dy,
+        is_line_delta: event.is_line_delta.unwrap_or(false),
     })
 }
 

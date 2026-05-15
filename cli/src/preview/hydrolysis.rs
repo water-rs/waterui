@@ -139,6 +139,8 @@ pub enum HydrolysisPreviewEventKind {
     PointerUp,
     /// Cancel the active pointer.
     PointerCancel,
+    /// Dispatch a wheel or trackpad scroll event.
+    Scroll,
 }
 
 impl HydrolysisPreviewEventKind {
@@ -148,6 +150,7 @@ impl HydrolysisPreviewEventKind {
             Self::PointerDown => "pointer_down",
             Self::PointerUp => "pointer_up",
             Self::PointerCancel => "pointer_cancel",
+            Self::Scroll => "scroll",
         }
     }
 }
@@ -165,6 +168,12 @@ pub struct HydrolysisPreviewScenarioEvent {
     pub y: f32,
     /// Pointer button for down/up events.
     pub button: Option<HydrolysisPreviewPointerButton>,
+    /// Scroll delta along the x axis for scroll events.
+    pub dx: f32,
+    /// Scroll delta along the y axis for scroll events.
+    pub dy: f32,
+    /// Whether scroll delta values are line units instead of logical units.
+    pub is_line_delta: bool,
 }
 
 /// Interactive capture scenario for Hydrolysis preview.
@@ -607,14 +616,17 @@ fn encode_events(events: &[HydrolysisPreviewScenarioEvent]) -> String {
         .iter()
         .map(|event| {
             format!(
-                "{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}",
                 event.at_ms,
                 event.kind.as_str(),
                 event.x,
                 event.y,
                 event
                     .button
-                    .map_or("", HydrolysisPreviewPointerButton::as_str)
+                    .map_or("", HydrolysisPreviewPointerButton::as_str),
+                event.dx,
+                event.dy,
+                u8::from(event.is_line_delta)
             )
         })
         .collect::<Vec<_>>()

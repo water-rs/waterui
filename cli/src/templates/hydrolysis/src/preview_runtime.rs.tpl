@@ -105,6 +105,9 @@ struct ScenarioEvent {
     x: f32,
     y: f32,
     button: PointerButton,
+    dx: f32,
+    dy: f32,
+    is_line_delta: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,6 +116,7 @@ enum ScenarioEventKind {
     PointerDown,
     PointerUp,
     PointerCancel,
+    Scroll,
 }
 
 impl ScenarioEvent {
@@ -133,6 +137,13 @@ impl ScenarioEvent {
                 button: self.button,
             },
             ScenarioEventKind::PointerCancel => InputEvent::PointerCancel,
+            ScenarioEventKind::Scroll => InputEvent::Scroll {
+                x: self.x,
+                y: self.y,
+                dx: self.dx,
+                dy: self.dy,
+                is_line_delta: self.is_line_delta,
+            },
         }
     }
 }
@@ -200,6 +211,15 @@ fn parse_event(raw: &str) -> ScenarioEvent {
         .next()
         .unwrap_or_else(|| panic!("hydrolysis preview: scenario event `{raw}` is missing y"));
     let button = parts.next().unwrap_or("");
+    let dx = parts
+        .next()
+        .unwrap_or_else(|| panic!("hydrolysis preview: scenario event `{raw}` is missing dx"));
+    let dy = parts
+        .next()
+        .unwrap_or_else(|| panic!("hydrolysis preview: scenario event `{raw}` is missing dy"));
+    let is_line_delta = parts.next().unwrap_or_else(|| {
+        panic!("hydrolysis preview: scenario event `{raw}` is missing is_line_delta")
+    });
     assert!(
         parts.next().is_none(),
         "hydrolysis preview: scenario event `{raw}` has too many fields"
@@ -213,6 +233,7 @@ fn parse_event(raw: &str) -> ScenarioEvent {
             "pointer_down" => ScenarioEventKind::PointerDown,
             "pointer_up" => ScenarioEventKind::PointerUp,
             "pointer_cancel" => ScenarioEventKind::PointerCancel,
+            "scroll" => ScenarioEventKind::Scroll,
             _ => panic!("hydrolysis preview: unsupported scenario event kind `{kind}`"),
         },
         x: x.parse::<f32>()
@@ -224,6 +245,15 @@ fn parse_event(raw: &str) -> ScenarioEvent {
             "secondary" => PointerButton::Secondary,
             "middle" => PointerButton::Middle,
             _ => panic!("hydrolysis preview: unsupported pointer button `{button}`"),
+        },
+        dx: dx.parse::<f32>()
+            .unwrap_or_else(|error| panic!("hydrolysis preview: invalid event dx `{dx}`: {error}")),
+        dy: dy.parse::<f32>()
+            .unwrap_or_else(|error| panic!("hydrolysis preview: invalid event dy `{dy}`: {error}")),
+        is_line_delta: match is_line_delta {
+            "0" | "false" => false,
+            "1" | "true" => true,
+            _ => panic!("hydrolysis preview: invalid event is_line_delta `{is_line_delta}`"),
         },
     }
 }
