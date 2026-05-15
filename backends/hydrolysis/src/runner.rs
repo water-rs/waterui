@@ -582,7 +582,10 @@ fn rebuild_window_scene<P: PlatformWindow>(
 
     let rebuild_started_at = Instant::now();
     let mut phases = FramePhases::default();
-    if runtime.renderer.advance_animations() {
+    let animations_active = runtime.renderer.advance_animations();
+    if animations_active && runtime.renderer.has_retained_scroll_frame() {
+        runtime.scroll_only_rebuild = true;
+    } else if animations_active {
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
     }
@@ -1119,14 +1122,22 @@ fn advance_runtime<P: PlatformWindow>(
     if runtime.renderer.handle_gesture_tick(now, env) {
         runtime.needs_rebuild = true;
     }
-    if runtime.renderer.advance_animations() {
+    let animations_active = runtime.renderer.advance_animations();
+    if animations_active && runtime.renderer.has_retained_scroll_frame() {
+        runtime.scroll_only_rebuild = true;
+        runtime.platform.request_redraw();
+    } else if animations_active {
         runtime.needs_rebuild = true;
     }
     if runtime.renderer.retained_scroll_dynamic_morphs_active() {
         runtime.scroll_only_rebuild = true;
         runtime.platform.request_redraw();
     }
-    if runtime.renderer.take_rebuild_request() {
+    let rebuild_requested = runtime.renderer.take_rebuild_request();
+    if rebuild_requested && runtime.renderer.has_retained_scroll_frame() {
+        runtime.scroll_only_rebuild = true;
+        runtime.platform.request_redraw();
+    } else if rebuild_requested {
         runtime.needs_rebuild = true;
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
