@@ -52,7 +52,7 @@ fn run_perf(width: f32, height: f32) {
     for measurement in report.measurements() {
         let stats = measurement.stats();
         write_status(&format!(
-            "perf {} samples={} mean={}us median={}us p95={}us min={}us max={}us rebuilt={}",
+            "perf {} samples={} mean={}us median={}us p95={}us min={}us max={}us rebuilt={} rendered={} idle={} rendered_mean={}us rendered_p95={}us rendered_max={}us",
             measurement.name,
             stats.samples,
             duration_micros(stats.mean),
@@ -60,7 +60,12 @@ fn run_perf(width: f32, height: f32) {
             duration_micros(stats.p95),
             duration_micros(stats.min),
             duration_micros(stats.max),
-            stats.rebuilt_frames
+            stats.rebuilt_frames,
+            stats.rendered_frames,
+            stats.idle_frames,
+            duration_micros(stats.rendered_total.mean),
+            duration_micros(stats.rendered_total.p95),
+            duration_micros(stats.rendered_total.max)
         ));
         write_status(&format!(
             "perf-phases {} rebuild_mean={}us rebuild_p95={}us build_content_mean={}us build_content_p95={}us scene_dispatch_mean={}us scene_dispatch_p95={}us scene_finish_mean={}us scene_finish_p95={}us render_mean={}us render_p95={}us animation_mean={}us input_mean={}us missed_120fps={} missed_60fps={} measurement_cache_hits={} measurement_cache_misses={} scene_layers={} vello_scene_layers={} gpu_surface_layers={} clip_layers={} max_clip_depth={}",
