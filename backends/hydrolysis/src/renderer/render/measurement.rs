@@ -268,6 +268,10 @@ pub(crate) fn measure_layout_dimensions<'a>(
     }
     let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
     let size = layout.size_that_fits(proposal, &refs);
+    if can_skip_layout_alignment_measurement(layout, &subviews) {
+        return ViewDimensions::new(size);
+    }
+
     let bounds = LayoutRect::from_size(size);
     let child_rects = layout.place(bounds, &refs);
     let placed_subviews: Vec<PlacedSubview<'_>> = subviews
@@ -317,6 +321,37 @@ pub(crate) fn measure_layout_dimensions<'a>(
     }
 
     dimensions
+}
+
+fn can_skip_layout_alignment_measurement(
+    layout: &dyn Layout,
+    children: &[HydroSubview<'_>],
+) -> bool {
+    layout.explicit_horizontal_alignments().is_empty()
+        && layout.explicit_vertical_alignments().is_empty()
+        && children
+            .iter()
+            .all(|child| view_has_plain_alignment_dimensions(child.view()))
+}
+
+fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
+    if let Some(content) = passthrough_content(view) {
+        return view_has_plain_alignment_dimensions(content);
+    }
+    if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
+        let (layout, children) = container.as_inner().as_parts();
+        return layout.explicit_horizontal_alignments().is_empty()
+            && layout.explicit_vertical_alignments().is_empty()
+            && children.iter().all(view_has_plain_alignment_dimensions);
+    }
+    is_hydro_native_view(view)
+        || view.downcast_ref::<()>().is_some()
+        || view.downcast_ref::<Str>().is_some()
+        || view.downcast_ref::<&'static str>().is_some()
+        || view.downcast_ref::<String>().is_some()
+        || view.downcast_ref::<Cow<'static, str>>().is_some()
+        || view.downcast_ref::<Text>().is_some()
+        || view.downcast_ref::<Divider>().is_some()
 }
 
 impl HydrolysisRenderer {

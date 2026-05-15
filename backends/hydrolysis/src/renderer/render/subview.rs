@@ -24,6 +24,10 @@ impl<'a> HydroSubview<'a> {
             measure_cache: RefCell::new(Vec::new()),
         }
     }
+
+    pub(crate) const fn view(&self) -> &'a AnyView {
+        self.view
+    }
 }
 
 impl SubView for HydroSubview<'_> {
