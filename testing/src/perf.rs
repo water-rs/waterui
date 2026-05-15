@@ -76,6 +76,10 @@ pub struct PerfStats {
     pub vello_scene_layers: u64,
     /// Embedded GPU surface layers submitted across sampled frames.
     pub gpu_surface_layers: u64,
+    /// Vello clip layers pushed across sampled frames.
+    pub clip_layers: u64,
+    /// Maximum nested Vello clip depth observed across sampled frames.
+    pub max_clip_depth: u64,
 }
 
 /// Statistical summary for the measured frame phases.
@@ -165,6 +169,15 @@ impl PerfStats {
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.gpu_surface_layers))
                 .sum(),
+            clip_layers: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.clip_layers))
+                .sum(),
+            max_clip_depth: frames
+                .iter()
+                .map(|frame| u64::from(frame.profile.counters.max_clip_depth))
+                .max()
+                .unwrap_or_default(),
         }
     }
 }
