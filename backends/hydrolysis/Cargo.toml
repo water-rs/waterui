@@ -35,6 +35,7 @@ parley.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 executor-core.workspace = true
+rustc-hash.workspace = true
 async-task = "4.7"
 native-executor.workspace = true
 winit = { version = "0.30", optional = true }

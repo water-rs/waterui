@@ -1,16 +1,17 @@
 use super::*;
+use rustc_hash::FxHashMap;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
     pub font_cx: parley::FontContext,
     pub layout_cx: parley::LayoutContext,
     pub(crate) text_layout_cache: BTreeMap<TextLayoutCacheKey, parley::Layout<[u8; 4]>>,
-    pub(crate) dynamic_intrinsic_cache: BTreeMap<usize, ViewDimensions>,
+    pub(crate) dynamic_intrinsic_cache: FxHashMap<usize, ViewDimensions>,
     pub(crate) dynamic_dimensions_cache:
-        BTreeMap<(usize, Option<u32>, Option<u32>), ViewDimensions>,
+        FxHashMap<(usize, Option<u32>, Option<u32>), ViewDimensions>,
     pub(crate) dynamic_measurement_stack: Vec<(usize, ProposalSize)>,
     pub(crate) measurement_cache:
-        BTreeMap<(usize, usize, Option<u32>, Option<u32>), ViewDimensions>,
+        FxHashMap<(usize, usize, Option<u32>, Option<u32>), ViewDimensions>,
     pub(crate) measurement_cache_hits: u32,
     pub(crate) measurement_cache_misses: u32,
     pub(crate) frame_device: Option<wgpu::Device>,
@@ -23,10 +24,10 @@ impl Default for HydroState {
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),
             text_layout_cache: BTreeMap::new(),
-            dynamic_intrinsic_cache: BTreeMap::new(),
-            dynamic_dimensions_cache: BTreeMap::new(),
+            dynamic_intrinsic_cache: FxHashMap::default(),
+            dynamic_dimensions_cache: FxHashMap::default(),
             dynamic_measurement_stack: Vec::new(),
-            measurement_cache: BTreeMap::new(),
+            measurement_cache: FxHashMap::default(),
             measurement_cache_hits: 0,
             measurement_cache_misses: 0,
             frame_device: None,

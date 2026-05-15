@@ -128,16 +128,10 @@ pub(crate) fn measure_view_dimensions_with_proposal(
         proposal.height.map(f32::to_bits),
     );
     if let Some(dimensions) = state.measurement_cache.get(&cache_key) {
-        state.measurement_cache_hits = state
-            .measurement_cache_hits
-            .checked_add(1)
-            .expect("hydrolysis measurement cache hit counter overflow");
+        state.measurement_cache_hits += 1;
         return dimensions.clone();
     }
-    state.measurement_cache_misses = state
-        .measurement_cache_misses
-        .checked_add(1)
-        .expect("hydrolysis measurement cache miss counter overflow");
+    state.measurement_cache_misses += 1;
 
     let dimensions =
         measure_view_dimensions_with_proposal_with_budget(view, proposal, state, env, 256);
@@ -395,8 +389,7 @@ impl HydrolysisRenderer {
                     let run = glyph_run.run();
                     let style = glyph_run.style();
                     let brush = rgba8_to_peniko(style.brush);
-                    let normalized_coords: Vec<vello::NormalizedCoord> =
-                        run.normalized_coords().to_vec();
+                    let normalized_coords = run.normalized_coords();
 
                     let mut run_x = glyph_run.offset();
                     let run_y = glyph_run.baseline();
@@ -407,13 +400,20 @@ impl HydrolysisRenderer {
                         vello::Glyph { id: glyph.id, x, y }
                     });
 
-                    scene
+                    let glyph_run_builder = scene
                         .draw_glyphs(run.font())
                         .brush(brush)
                         .transform(text_transform)
-                        .font_size(run.font_size())
-                        .normalized_coords(&normalized_coords)
-                        .draw(vello::peniko::Fill::NonZero, glyphs);
+                        .font_size(run.font_size());
+                    if normalized_coords.is_empty() {
+                        glyph_run_builder.draw(vello::peniko::Fill::NonZero, glyphs);
+                    } else {
+                        let normalized_coords: Vec<vello::NormalizedCoord> =
+                            normalized_coords.to_vec();
+                        glyph_run_builder
+                            .normalized_coords(&normalized_coords)
+                            .draw(vello::peniko::Fill::NonZero, glyphs);
+                    }
                 }
             }
         }
