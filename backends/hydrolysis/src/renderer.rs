@@ -1254,6 +1254,142 @@ impl HydrolysisRenderer {
         !Self::rects_intersect(child_rect, viewport)
     }
 
+    fn vstack_child_stretches_main_axis(axis: StretchAxis) -> bool {
+        matches!(
+            axis,
+            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
+        )
+    }
+
+    fn local_lazy_viewport_for_context(
+        renderer: &HydrolysisRenderer,
+        ctx: RenderContext,
+    ) -> Option<vello::kurbo::Rect> {
+        let viewport = renderer.lazy.lazy_viewport_stack.last().copied()?;
+        let [scale_x, skew_y, skew_x, scale_y, translate_x, translate_y] =
+            ctx.transform.as_coeffs();
+        if skew_x.abs() > f64::EPSILON
+            || skew_y.abs() > f64::EPSILON
+            || scale_x <= 0.0
+            || scale_y <= 0.0
+        {
+            return None;
+        }
+        Some(vello::kurbo::Rect::new(
+            (viewport.x0 - translate_x) / scale_x,
+            (viewport.y0 - translate_y) / scale_y,
+            (viewport.x1 - translate_x) / scale_x,
+            (viewport.y1 - translate_y) / scale_y,
+        ))
+    }
+
+    fn can_render_lazy_viewport_vstack_container(
+        renderer: &HydrolysisRenderer,
+        ctx: RenderContext,
+        layout: VStackLayout,
+        _children: &[AnyView],
+    ) -> bool {
+        layout.spacing >= 0.0 && Self::local_lazy_viewport_for_context(renderer, ctx).is_some()
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn render_lazy_viewport_vstack_container(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        layout: VStackLayout,
+        children: Vec<AnyView>,
+        env: &Environment,
+    ) {
+        let visible_bounds = Self::local_lazy_viewport_for_context(renderer, ctx)
+            .expect("hydrolysis lazy fixed VStackLayout requires a local lazy viewport");
+        let count = children.len();
+        if count == 0 {
+            return;
+        }
+
+        let slot_index = {
+            let index = renderer.lazy.lazy_stack_controller.bind();
+            renderer.lazy.lazy_stack_controller.slots[index].prepare_len(count);
+            index
+        };
+
+        let spacing = f64::from(layout.spacing);
+        let mut cursor = ctx.bounds.y0;
+        let mut children = children.into_iter();
+        for index in 0..count {
+            if index > 0 {
+                cursor += spacing;
+            }
+
+            let cached_extent =
+                { renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] };
+            if let Some(extent) = cached_extent
+                && cursor + extent < visible_bounds.y0
+            {
+                cursor += extent;
+                let _ = children.next().unwrap_or_else(|| {
+                    panic!("hydrolysis fixed VStack child cache advanced past child {index}")
+                });
+                continue;
+            }
+            if cursor > visible_bounds.y1 {
+                break;
+            }
+
+            let child = children.next().unwrap_or_else(|| {
+                panic!("hydrolysis fixed VStack child iterator ended at index {index}")
+            });
+            let child_env = local_state_child_env(env, index);
+            let child = normalize_layout_view(child, &child_env);
+            let proposal = ProposalSize::new(Some(ctx.bounds.width() as f32), None);
+            let (size, stretch_axis) = {
+                let state = RefCell::new(&mut renderer.state);
+                let subview = HydroSubview::from_view(&child, &state, &child_env);
+                (subview.measure(proposal).size, subview.stretch_axis())
+            };
+            let child_width = if matches!(
+                stretch_axis,
+                StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
+            ) || size.width.is_infinite()
+            {
+                ctx.bounds.width()
+            } else {
+                f64::from(size.width).min(ctx.bounds.width())
+            };
+            let child_height = if Self::vstack_child_stretches_main_axis(stretch_axis) {
+                0.0
+            } else {
+                f64::from(size.height)
+            };
+            renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] =
+                Some(child_height);
+
+            let child_rect = {
+                let x = if layout.alignment == HorizontalAlignment::Leading {
+                    ctx.bounds.x0
+                } else if layout.alignment == HorizontalAlignment::Trailing {
+                    ctx.bounds.x1 - child_width
+                } else {
+                    ctx.bounds.x0 + (ctx.bounds.width() - child_width) / 2.0
+                };
+                vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
+            };
+
+            if Self::rects_intersect(child_rect, visible_bounds) {
+                Self::dispatch_any(
+                    renderer,
+                    ctx.child(
+                        vello::kurbo::Affine::translate((child_rect.x0, child_rect.y0)),
+                        vello::kurbo::Rect::new(0.0, 0.0, child_width, child_height),
+                    ),
+                    &child_env,
+                    child,
+                );
+            }
+            cursor += child_height;
+        }
+    }
+
     fn render_layout_container(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -1261,6 +1397,25 @@ impl HydrolysisRenderer {
         children: Vec<AnyView>,
         env: &Environment,
     ) {
+        let layout_any = layout.as_ref() as &dyn Any;
+        if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>()
+            && Self::can_render_lazy_viewport_vstack_container(
+                renderer,
+                ctx,
+                vstack.clone(),
+                &children,
+            )
+        {
+            Self::render_lazy_viewport_vstack_container(
+                renderer,
+                ctx,
+                vstack.clone(),
+                children,
+                env,
+            );
+            return;
+        }
+
         let mut resolved_children = Vec::with_capacity(children.len());
         let mut child_envs = Vec::with_capacity(children.len());
         for (index, child) in children.into_iter().enumerate() {
