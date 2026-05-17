@@ -3585,6 +3585,16 @@ impl HydrolysisRenderer {
             || self.advance_text_caret_animation(now)
     }
 
+    pub fn animations_active(&self) -> bool {
+        let now = self.frame_instant;
+        self.animation_controller.has_active(now)
+            || self.navigation.slots.iter().any(|slot| {
+                slot.transition
+                    .as_ref()
+                    .is_some_and(|state| state.is_active(now))
+            })
+    }
+
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
         self.dispatch_with_transform(
             view,

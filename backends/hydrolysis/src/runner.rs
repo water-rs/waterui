@@ -680,6 +680,10 @@ fn rebuild_window_scene<P: PlatformWindow>(
             !runtime.needs_rebuild && !runtime.scroll_only_rebuild;
         runtime.needs_rebuild = true;
         runtime.platform.request_redraw();
+    } else if runtime.renderer.animations_active() && !runtime.needs_rebuild {
+        runtime.effect_only_rebuild_pending = false;
+        runtime.needs_rebuild = true;
+        runtime.platform.request_redraw();
     } else if !runtime.needs_rebuild {
         runtime.effect_only_rebuild_pending = false;
     }
@@ -1092,10 +1096,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                if changed {
-                    runtime.needs_rebuild = true;
-                    runtime.effect_only_rebuild_pending = false;
-                }
+                schedule_redraw_or_rebuild(runtime, changed);
             }
             InputEvent::Key {
                 key,
