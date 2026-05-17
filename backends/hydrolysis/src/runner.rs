@@ -2154,6 +2154,8 @@ mod winit_runner {
     use winit::application::ApplicationHandler;
     use winit::event::WindowEvent;
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
     #[cfg(any(hydrolysis_wayland_platform, docsrs))]
     use winit::platform::wayland::EventLoopExtWayland;
     use winit::window::{Window as NativeWindow, WindowId};
@@ -2207,7 +2209,12 @@ mod winit_runner {
     }
 
     pub fn run(app: App) {
-        let event_loop = EventLoop::<RunnerEvent>::with_user_event()
+        let mut event_loop_builder = EventLoop::<RunnerEvent>::with_user_event();
+        #[cfg(target_os = "macos")]
+        event_loop_builder
+            .with_activation_policy(ActivationPolicy::Regular)
+            .with_activate_ignoring_other_apps(true);
+        let event_loop = event_loop_builder
             .build()
             .expect("hydrolysis runner: failed to create event loop");
         let event_proxy = event_loop.create_proxy();
@@ -2316,7 +2323,7 @@ mod winit_runner {
             let attributes = NativeWindow::default_attributes()
                 .with_title(window.title.get().as_str())
                 .with_resizable(window.resizable)
-                .with_visible(false)
+                .with_visible(true)
                 .with_decorations(!matches!(
                     window.style,
                     waterui::window::WindowStyle::Borderless
@@ -2360,7 +2367,11 @@ mod winit_runner {
                 );
                 None
             };
+            let should_focus = !matches!(window.style, waterui::window::WindowStyle::Borderless);
             platform.native_window().set_visible(true);
+            if should_focus {
+                platform.native_window().focus_window();
+            }
             (
                 RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config),
                 adapter,
