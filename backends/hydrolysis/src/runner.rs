@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 #[cfg(feature = "winit")]
+#[cfg(target_os = "linux")]
 use std::{process::Command, str};
 
 #[cfg(feature = "accessibility")]
@@ -364,6 +365,13 @@ fn readback_texture_rgba8(
 }
 
 #[cfg(feature = "winit")]
+#[cfg(not(target_os = "linux"))]
+fn probe_accessibility_runtime() -> bool {
+    true
+}
+
+#[cfg(feature = "winit")]
+#[cfg(target_os = "linux")]
 fn probe_accessibility_runtime() -> bool {
     let output = Command::new("busctl")
         .args([
@@ -2138,6 +2146,7 @@ mod winit_runner {
     use std::sync::{Arc, mpsc};
     use std::time::Instant;
 
+    use accesskit::ActivationHandler;
     use accesskit_winit::{
         Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
     };
@@ -2166,7 +2175,7 @@ mod winit_runner {
     };
     use crate::runner::{
         RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
-        render_window,
+        pump_window_semantics, render_window,
     };
 
     #[derive(Debug)]
@@ -2179,6 +2188,17 @@ mod winit_runner {
     impl From<AccessKitEvent> for RunnerEvent {
         fn from(value: AccessKitEvent) -> Self {
             Self::AccessKit(value)
+        }
+    }
+
+    #[derive(Clone)]
+    struct InitialAccessibilityTree {
+        tree_update: accesskit::TreeUpdate,
+    }
+
+    impl ActivationHandler for InitialAccessibilityTree {
+        fn request_initial_tree(&mut self) -> Option<accesskit::TreeUpdate> {
+            Some(self.tree_update.clone())
         }
     }
 
@@ -2323,7 +2343,7 @@ mod winit_runner {
             let attributes = NativeWindow::default_attributes()
                 .with_title(window.title.get().as_str())
                 .with_resizable(window.resizable)
-                .with_visible(true)
+                .with_visible(false)
                 .with_decorations(!matches!(
                     window.style,
                     waterui::window::WindowStyle::Borderless
@@ -2345,37 +2365,46 @@ mod winit_runner {
                 HydrolysisRenderer::new(surface.device())
             };
             super::load_native_resource_fonts(&mut renderer);
+            let mut runtime =
+                RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
+            let _ = pump_window_semantics(&mut runtime, &self.env);
             let adapter = if self.accessibility_enabled {
-                let adapter = AccessKitAdapter::with_event_loop_proxy(
+                let initial_tree_update = runtime.renderer.take_accessibility_tree_update().expect(
+                    "hydrolysis winit accessibility: initial tree update missing after initial semantic rebuild",
+                );
+                let adapter = AccessKitAdapter::with_mixed_handlers(
                     event_loop,
-                    platform.native_window(),
+                    runtime.platform.native_window(),
+                    InitialAccessibilityTree {
+                        tree_update: initial_tree_update,
+                    },
                     self.event_proxy.clone(),
                 );
                 tracing::trace!(
                     target: "waterui::hydrolysis::a11y",
-                    window_id = ?platform.id(),
-                    title = window.title.get().as_str(),
+                    window_id = ?runtime.platform.id(),
+                    title = runtime.window.title.get().as_str(),
                     "created accesskit adapter for window"
                 );
                 Some(adapter)
             } else {
                 tracing::warn!(
                     target: "waterui::hydrolysis::a11y",
-                    window_id = ?platform.id(),
-                    title = window.title.get().as_str(),
+                    window_id = ?runtime.platform.id(),
+                    title = runtime.window.title.get().as_str(),
                     "accessibility adapter disabled: org.a11y.Bus is unavailable"
                 );
                 None
             };
-            let should_focus = !matches!(window.style, waterui::window::WindowStyle::Borderless);
-            platform.native_window().set_visible(true);
+            let should_focus = !matches!(
+                runtime.window.style,
+                waterui::window::WindowStyle::Borderless
+            );
+            runtime.platform.native_window().set_visible(true);
             if should_focus {
-                platform.native_window().focus_window();
+                runtime.platform.native_window().focus_window();
             }
-            (
-                RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config),
-                adapter,
-            )
+            (runtime, adapter)
         }
 
         fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
