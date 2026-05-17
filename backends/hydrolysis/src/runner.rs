@@ -526,6 +526,7 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
         return;
     }
     if runtime.renderer.take_rebuild_request() {
+        runtime.renderer.invalidate_retained_scroll_content();
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
@@ -540,12 +541,8 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
         return;
     }
     runtime.scroll_only_rebuild = true;
-    if !runtime.renderer.has_retained_scroll_frame() {
-        runtime.needs_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-    } else {
-        runtime.renderer.request_redraw();
-    }
+    runtime.needs_rebuild = true;
+    runtime.effect_only_rebuild_pending = false;
     runtime.platform.request_redraw();
 }
 
@@ -598,10 +595,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
     let rebuild_started_at = Instant::now();
     let mut phases = FramePhases::default();
     let animations_active = runtime.renderer.advance_animations();
-    if animations_active && runtime.renderer.has_retained_scroll_frame() {
-        runtime.scroll_only_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-    } else if animations_active {
+    if animations_active {
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
@@ -611,8 +605,8 @@ fn rebuild_window_scene<P: PlatformWindow>(
     let mut rebuild_iterations = 0u32;
     loop {
         let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
-        let scroll_rebuild_requested = runtime.scroll_only_rebuild && runtime.needs_rebuild;
-        if renderer_requested_rebuild && !scroll_rebuild_requested {
+        if renderer_requested_rebuild {
+            runtime.renderer.invalidate_retained_scroll_content();
             runtime.scroll_only_rebuild = false;
             runtime.effect_only_rebuild_pending = false;
         }
@@ -703,7 +697,13 @@ fn pump_window_semantics<P: PlatformWindow>(
         .renderer
         .set_accessibility_root_label(runtime.window.title.get().as_str());
 
-    let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
+    let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
+    if renderer_requested_rebuild {
+        runtime.renderer.invalidate_retained_scroll_content();
+        runtime.scroll_only_rebuild = false;
+        runtime.effect_only_rebuild_pending = false;
+    }
+    let should_rebuild = runtime.needs_rebuild || renderer_requested_rebuild;
     if !should_rebuild {
         return false;
     }
@@ -1179,25 +1179,20 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.effect_only_rebuild_pending = false;
     }
     let animations_active = runtime.renderer.advance_animations();
-    if animations_active && runtime.renderer.has_retained_scroll_frame() {
-        runtime.scroll_only_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.platform.request_redraw();
-    } else if animations_active {
+    if animations_active {
+        runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
     }
-    if runtime.renderer.retained_scroll_dynamic_morphs_active() {
+    if runtime.renderer.retained_scroll_dynamic_morphs_active() && !runtime.needs_rebuild {
         runtime.scroll_only_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
         runtime.platform.request_redraw();
     }
     let rebuild_requested = runtime.renderer.take_rebuild_request();
-    if rebuild_requested && runtime.renderer.has_retained_scroll_frame() {
-        runtime.scroll_only_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.platform.request_redraw();
-    } else if rebuild_requested {
+    if rebuild_requested {
+        runtime.renderer.invalidate_retained_scroll_content();
+        runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
     }

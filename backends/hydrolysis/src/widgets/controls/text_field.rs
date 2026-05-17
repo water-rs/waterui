@@ -1,10 +1,10 @@
 use crate::engine::DrawContext;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
-    clamp_to_char_boundary, measure_secure_field_intrinsic, measure_text_field_intrinsic,
-    measure_view_intrinsic, normalize_view_for_render, transformed_rect, HydroNativeView,
-    HydroState, HydrolysisRenderer, RenderContext, TextInputModel, TextInputTargetRegistration,
-    WidgetRenderContext,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TextInputModel,
+    TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
+    measure_secure_field_intrinsic, measure_text_field_intrinsic, measure_view_intrinsic,
+    normalize_view_for_render, transformed_rect,
 };
 use core::num::NonZeroUsize;
 use waterui::cursor::CursorStyle;
@@ -26,6 +26,10 @@ use accesskit::{
 };
 
 use crate::widgets::util::widget_theme;
+
+const FLOATING_LABEL_SCALE: f64 = 0.75;
+const CONTENT_VISIBLE_PORTION: f32 = 5.0 / 9.0;
+const CONTENT_ENTER_DELAY_PORTION: f32 = 1.0 - CONTENT_VISIBLE_PORTION;
 
 impl HydroNativeView for Native<ResolvedTextFieldConfig> {
     fn accessibility_is_render_driven() -> bool {
@@ -238,13 +242,13 @@ pub(crate) fn render_text_field(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let focus_motion = theme.interaction_motion();
+    let interaction_motion = theme.interaction_motion();
     let focus_progress = ctx.renderer_mut().sample_widget_scalar_target(
         if is_focused { 1.0 } else { 0.0 },
         if is_focused {
-            focus_motion.focus_enter
+            interaction_motion.focus_enter.clone()
         } else {
-            focus_motion.focus_exit
+            interaction_motion.focus_exit.clone()
         },
     );
     let (mut field_interaction, _) = ctx
@@ -257,14 +261,6 @@ pub(crate) fn render_text_field(
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
         theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
-    if label_height > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(
-            env,
-            label_view,
-            material_input_label_rect(field_rect, input_metrics.horizontal_inset, label_height),
-        );
-    }
-
     let prompt_signal = text_field.prompt.content.clone();
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
     let value_binding = text_field.value;
@@ -297,6 +293,32 @@ pub(crate) fn render_text_field(
     };
     let committed_with_preedit = value.clone() + preedit.as_str();
     let use_placeholder = committed_with_preedit.is_empty();
+    let label_target = if is_focused || !committed_with_preedit.is_empty() {
+        1.0
+    } else {
+        0.0
+    };
+    let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
+        label_target,
+        if label_target > 0.0 {
+            interaction_motion.focus_enter
+        } else {
+            interaction_motion.focus_exit
+        },
+    );
+    if label_height > 0.0 {
+        dispatch_material_label(
+            ctx,
+            env,
+            label_view,
+            field_rect,
+            input_metrics.horizontal_inset,
+            label_height,
+            label_progress,
+        );
+    }
+    let content_alpha =
+        material_input_content_alpha(label_height > 0.0, label_target, label_progress);
     let display = if use_placeholder {
         prompt
     } else {
@@ -350,28 +372,30 @@ pub(crate) fn render_text_field(
         slot.focus = input_model.plain_index_from_layout_index(selection.focus().index());
         selection
     };
-    ctx.push_layer_rect(1.0, text_bounds);
-    if selection_visible && !selection.is_collapsed() {
-        let selection_brush = theme.input_selection_brush();
-        let mut draw = ctx.draw_context();
-        for (rect, _) in selection.geometry(&committed_layout) {
-            let highlight = vello::kurbo::Rect::new(
-                text_bounds.x0 + rect.x0,
-                text_bounds.y0 + rect.y0,
-                text_bounds.x0 + rect.x1,
-                text_bounds.y0 + rect.y1,
-            );
-            draw.fill_rect(highlight, &selection_brush);
+    if content_alpha > 0.0 {
+        ctx.push_layer_rect(content_alpha, text_bounds);
+        if selection_visible && !selection.is_collapsed() {
+            let selection_brush = theme.input_selection_brush();
+            let mut draw = ctx.draw_context();
+            for (rect, _) in selection.geometry(&committed_layout) {
+                let highlight = vello::kurbo::Rect::new(
+                    text_bounds.x0 + rect.x0,
+                    text_bounds.y0 + rect.y0,
+                    text_bounds.x0 + rect.x1,
+                    text_bounds.y0 + rect.y1,
+                );
+                draw.fill_rect(highlight, &selection_brush);
+            }
         }
+        ctx.render_styled_text_limited(
+            display_styled,
+            HorizontalAlignment::Leading,
+            env,
+            text_bounds,
+            line_limit,
+        );
+        ctx.pop_layer();
     }
-    ctx.render_styled_text_limited(
-        display_styled,
-        HorizontalAlignment::Leading,
-        env,
-        text_bounds,
-        line_limit,
-    );
-    ctx.pop_layer();
     let cursor_area = {
         let rect = selection.focus().geometry(&committed_layout, 1.0);
         let x0 = text_bounds.x0 + rect.x0;
@@ -467,13 +491,13 @@ pub(crate) fn render_secure_field(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let focus_motion = theme.interaction_motion();
+    let interaction_motion = theme.interaction_motion();
     let focus_progress = ctx.renderer_mut().sample_widget_scalar_target(
         if is_focused { 1.0 } else { 0.0 },
         if is_focused {
-            focus_motion.focus_enter
+            interaction_motion.focus_enter.clone()
         } else {
-            focus_motion.focus_exit
+            interaction_motion.focus_exit.clone()
         },
     );
     let (mut field_interaction, _) = ctx
@@ -486,14 +510,6 @@ pub(crate) fn render_secure_field(
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
         theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
-    if label_height > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(
-            env,
-            label_view,
-            material_input_label_rect(field_rect, input_metrics.horizontal_inset, label_height),
-        );
-    }
-
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
     let value_binding = secure_field.value;
     let input_model = TextInputModel::SecureField {
@@ -529,6 +545,32 @@ pub(crate) fn render_secure_field(
             plain_value,
         )
     };
+    let label_target = if is_focused || !plain_value.is_empty() {
+        1.0
+    } else {
+        0.0
+    };
+    let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
+        label_target,
+        if label_target > 0.0 {
+            interaction_motion.focus_enter
+        } else {
+            interaction_motion.focus_exit
+        },
+    );
+    if label_height > 0.0 {
+        dispatch_material_label(
+            ctx,
+            env,
+            label_view,
+            field_rect,
+            input_metrics.horizontal_inset,
+            label_height,
+            label_progress,
+        );
+    }
+    let content_alpha =
+        material_input_content_alpha(label_height > 0.0, label_target, label_progress);
     let text_bounds = material_input_text_rect(
         field_rect,
         input_metrics.horizontal_inset,
@@ -574,28 +616,30 @@ pub(crate) fn render_secure_field(
         slot.focus = input_model.plain_index_from_layout_index(selection.focus().index());
         selection
     };
-    ctx.push_layer_rect(1.0, text_bounds);
-    if selection_visible && !selection.is_collapsed() {
-        let selection_brush = theme.input_selection_brush();
-        let mut draw = ctx.draw_context();
-        for (rect, _) in selection.geometry(&committed_layout) {
-            let highlight = vello::kurbo::Rect::new(
-                text_bounds.x0 + rect.x0,
-                text_bounds.y0 + rect.y0,
-                text_bounds.x0 + rect.x1,
-                text_bounds.y0 + rect.y1,
-            );
-            draw.fill_rect(highlight, &selection_brush);
+    if content_alpha > 0.0 {
+        ctx.push_layer_rect(content_alpha, text_bounds);
+        if selection_visible && !selection.is_collapsed() {
+            let selection_brush = theme.input_selection_brush();
+            let mut draw = ctx.draw_context();
+            for (rect, _) in selection.geometry(&committed_layout) {
+                let highlight = vello::kurbo::Rect::new(
+                    text_bounds.x0 + rect.x0,
+                    text_bounds.y0 + rect.y0,
+                    text_bounds.x0 + rect.x1,
+                    text_bounds.y0 + rect.y1,
+                );
+                draw.fill_rect(highlight, &selection_brush);
+            }
         }
+        ctx.render_styled_text_limited(
+            masked_display,
+            HorizontalAlignment::Leading,
+            env,
+            text_bounds,
+            Some(1),
+        );
+        ctx.pop_layer();
     }
-    ctx.render_styled_text_limited(
-        masked_display,
-        HorizontalAlignment::Leading,
-        env,
-        text_bounds,
-        Some(1),
-    );
-    ctx.pop_layer();
     let cursor_area = {
         let rect = selection.focus().geometry(&committed_layout, 1.0);
         let x0 = text_bounds.x0 + rect.x0;
@@ -657,6 +701,59 @@ fn material_input_label_rect(
     )
 }
 
+fn material_input_resting_label_rect(
+    field_rect: vello::kurbo::Rect,
+    horizontal_inset: f64,
+    label_height: f64,
+) -> vello::kurbo::Rect {
+    let y0 = field_rect.y0 + ((field_rect.height() - label_height) * 0.5).max(0.0);
+    vello::kurbo::Rect::new(
+        field_rect.x0 + horizontal_inset,
+        y0,
+        field_rect.x1 - horizontal_inset,
+        (y0 + label_height).min(field_rect.y1),
+    )
+}
+
+fn dispatch_material_label(
+    ctx: &mut WidgetRenderContext<'_>,
+    env: &Environment,
+    label_view: AnyView,
+    field_rect: vello::kurbo::Rect,
+    horizontal_inset: f64,
+    label_height: f64,
+    progress: f32,
+) {
+    let progress = f64::from(progress.clamp(0.0, 1.0));
+    let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
+    let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
+    let scale = 1.0 + (FLOATING_LABEL_SCALE - 1.0) * progress;
+    let x = resting.x0 + (floating.x0 - resting.x0) * progress;
+    let y = resting.y0 + (floating.y0 - resting.y0) * progress;
+    let width = floating.width() / scale;
+    let height = label_height / scale;
+    let transform = vello::kurbo::Affine::translate((x, y)) * vello::kurbo::Affine::scale(scale);
+    let child = ctx.child(transform, vello::kurbo::Rect::new(0.0, 0.0, width, height));
+    HydrolysisRenderer::dispatch_any_without_accessibility(
+        ctx.renderer_mut(),
+        child,
+        env,
+        label_view,
+    );
+}
+
+fn material_input_content_alpha(has_label: bool, target: f32, progress: f32) -> f32 {
+    if !has_label {
+        return 1.0;
+    }
+    let progress = progress.clamp(0.0, 1.0);
+    if target > 0.0 {
+        ((progress - CONTENT_ENTER_DELAY_PORTION) / CONTENT_VISIBLE_PORTION).clamp(0.0, 1.0)
+    } else {
+        ((progress - CONTENT_ENTER_DELAY_PORTION) / CONTENT_VISIBLE_PORTION).clamp(0.0, 1.0)
+    }
+}
+
 fn material_input_text_rect(
     field_rect: vello::kurbo::Rect,
     horizontal_inset: f64,
@@ -669,4 +766,44 @@ fn material_input_text_rect(
         field_rect.x1 - horizontal_inset,
         field_rect.y1 - vertical_inset,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CONTENT_ENTER_DELAY_PORTION, CONTENT_VISIBLE_PORTION, material_input_content_alpha,
+    };
+
+    #[test]
+    fn material_input_content_enter_matches_material_web_delay() {
+        assert_eq!(material_input_content_alpha(true, 1.0, 0.0), 0.0);
+        assert_eq!(
+            material_input_content_alpha(true, 1.0, CONTENT_ENTER_DELAY_PORTION),
+            0.0
+        );
+        assert_eq!(material_input_content_alpha(true, 1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn material_input_content_exit_matches_material_web_visible_window() {
+        assert_eq!(material_input_content_alpha(true, 0.0, 1.0), 1.0);
+        assert_eq!(
+            material_input_content_alpha(
+                true,
+                0.0,
+                CONTENT_ENTER_DELAY_PORTION + (CONTENT_VISIBLE_PORTION * 0.5),
+            ),
+            0.5
+        );
+        assert_eq!(
+            material_input_content_alpha(true, 0.0, CONTENT_ENTER_DELAY_PORTION),
+            0.0
+        );
+        assert_eq!(material_input_content_alpha(true, 0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn material_input_without_label_keeps_content_visible() {
+        assert_eq!(material_input_content_alpha(false, 0.0, 0.0), 1.0);
+    }
 }

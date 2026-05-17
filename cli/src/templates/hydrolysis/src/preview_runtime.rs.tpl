@@ -66,6 +66,7 @@ fn run_scenario(output_dir: PathBuf, width: f32, height: f32) {
         dimension_to_u32(height),
     );
     let started_at = Instant::now();
+    let _ = runtime.pump_semantic_at(started_at);
     let mut event_index = 0usize;
     for capture_ms in captures {
         while event_index < events.len() && events[event_index].at_ms <= capture_ms {

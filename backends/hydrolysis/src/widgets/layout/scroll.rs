@@ -1,8 +1,9 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext, measure_view_intrinsic,
-    normalize_layout_view, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext,
+    measure_view_dimensions_with_proposal, measure_view_intrinsic, normalize_layout_view,
+    transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -10,6 +11,7 @@ use accesskit::{
 };
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::layout::ProposalSize;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
 
@@ -46,7 +48,13 @@ pub(crate) fn render_scroll_view(
     let (axis, content) = scroll.into_inner().into_inner();
     let content = normalize_layout_view(content, env);
     let viewport = ctx.bounds;
-    let intrinsic = measure_view_intrinsic(&content, ctx.renderer_mut().state_mut(), env);
+    let intrinsic = measure_scroll_content_intrinsic(
+        axis,
+        viewport,
+        &content,
+        ctx.renderer_mut().state_mut(),
+        env,
+    );
     let (content_width, content_height) = scroll_content_size(axis, viewport, intrinsic);
 
     let handle = ctx.renderer_mut().bind_render_scroll_handle(
@@ -66,12 +74,17 @@ pub(crate) fn render_scroll_view(
     let content_transform = vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
     let content_bounds =
         vello::kurbo::Rect::new(0.0, 0.0, metrics.content_width, metrics.content_height);
-    let lazy_viewport = vello::kurbo::Rect::new(
+    let visible_lazy_viewport = vello::kurbo::Rect::new(
         metrics.offset_x,
         metrics.offset_y,
         metrics.offset_x + viewport.width(),
         metrics.offset_y + viewport.height(),
     );
+    let lazy_viewport = if exclusive_root_scroll && !needs_viewport_clip {
+        content_bounds
+    } else {
+        visible_lazy_viewport
+    };
     if needs_viewport_clip {
         ctx.push_layer_rect(1.0, viewport);
     }
@@ -82,10 +95,10 @@ pub(crate) fn render_scroll_view(
         renderer.render_scroll_content(handle.cache_key(), content_ctx, env, content);
     renderer.retain_scroll_frame(
         handle.clone(),
+        handle.cache_key(),
         axis,
         viewport,
         transform,
-        content_render.scene,
         content_render.dynamic_morphs,
         content_render.has_frame_images,
         active_layers,
@@ -114,6 +127,22 @@ pub(crate) fn render_scroll_view(
     draw_scroll_indicators(ctx, env, viewport, metrics, axis);
 }
 
+fn measure_scroll_content_intrinsic(
+    axis: ScrollAxis,
+    viewport: vello::kurbo::Rect,
+    content: &waterui_core::AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let proposal = match axis {
+        ScrollAxis::Horizontal => ProposalSize::new(None, Some(viewport.height() as f32)),
+        ScrollAxis::Vertical => ProposalSize::new(Some(viewport.width() as f32), None),
+        ScrollAxis::All => ProposalSize::UNSPECIFIED,
+        _ => panic!("scroll axis variant is not supported by hydrolysis"),
+    };
+    measure_view_dimensions_with_proposal(content, proposal, state, env).size
+}
+
 fn scroll_content_size(
     axis: ScrollAxis,
     viewport: vello::kurbo::Rect,
@@ -136,7 +165,7 @@ fn scroll_content_size(
     }
 }
 
-fn register_scroll_accessibility_node(
+pub(crate) fn register_scroll_accessibility_node(
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
     bounds: vello::kurbo::Rect,

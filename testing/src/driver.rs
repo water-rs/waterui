@@ -3,7 +3,10 @@ use std::time::Instant;
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
-use hydrolysis::{FrameProfile, HeadlessRuntime, InputEvent, PointerButton, TouchPhase};
+use hydrolysis::{
+    FrameProfile, HeadlessRuntime, InputEvent, KeyCode, KeyState, Modifiers, PointerButton,
+    TouchPhase,
+};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
@@ -33,6 +36,8 @@ pub trait A11yDriver {
         is_line_delta: bool,
         env: &Environment,
     ) -> bool;
+    fn text_input(&mut self, text: String, env: &Environment) -> bool;
+    fn key_press(&mut self, key: KeyCode, modifiers: Modifiers, env: &Environment) -> bool;
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool;
     fn clear_ui_focus(&mut self, env: &Environment) -> bool;
     fn request_redraw(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> bool;
@@ -206,6 +211,28 @@ impl A11yDriver for HydrolysisA11yDriver {
             dx,
             dy,
             is_line_delta,
+        });
+        true
+    }
+
+    fn text_input(&mut self, text: String, _env: &Environment) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing text_input requested before runtime initialization");
+        runtime.push_input_event(InputEvent::TextInput { text });
+        true
+    }
+
+    fn key_press(&mut self, key: KeyCode, modifiers: Modifiers, _env: &Environment) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing key_press requested before runtime initialization");
+        runtime.push_input_event(InputEvent::Key {
+            key,
+            state: KeyState::Pressed,
+            modifiers,
         });
         true
     }

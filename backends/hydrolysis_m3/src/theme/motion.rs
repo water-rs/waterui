@@ -15,8 +15,20 @@ pub(crate) fn interaction() -> InteractionMotion {
         dragged_opacity: 0.16,
         hover_enter: Animation::linear(Duration::from_millis(15)),
         hover_exit: Animation::linear(Duration::from_millis(15)),
-        focus_enter: Animation::linear(Duration::from_millis(15)),
-        focus_exit: Animation::linear(Duration::from_millis(15)),
+        focus_enter: Animation::bezier(
+            Duration::from_millis(150),
+            MATERIAL_STANDARD.0,
+            MATERIAL_STANDARD.1,
+            MATERIAL_STANDARD.2,
+            MATERIAL_STANDARD.3,
+        ),
+        focus_exit: Animation::bezier(
+            Duration::from_millis(150),
+            MATERIAL_STANDARD.0,
+            MATERIAL_STANDARD.1,
+            MATERIAL_STANDARD.2,
+            MATERIAL_STANDARD.3,
+        ),
         press_fade_in: Animation::linear(Duration::from_millis(105)),
         press_fade_out: Animation::linear(Duration::from_millis(375)),
         press_grow: Animation::bezier(
@@ -85,6 +97,14 @@ mod tests {
         assert_eq!(
             motion.hover_enter,
             Animation::linear(Duration::from_millis(15))
+        );
+        assert_eq!(
+            motion.focus_enter,
+            Animation::bezier(Duration::from_millis(150), 0.2, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(
+            motion.focus_exit,
+            Animation::bezier(Duration::from_millis(150), 0.2, 0.0, 0.0, 1.0)
         );
         assert_eq!(
             motion.press_fade_in,

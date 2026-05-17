@@ -4,6 +4,7 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
+use hydrolysis::{KeyCode, Modifiers};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
@@ -613,9 +614,22 @@ impl SemanticApp {
         self.settle_after_change(changed)
     }
 
-    pub(crate) fn tap_at(&mut self, x: f32, y: f32) -> bool {
+    /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
+    pub fn tap_at(&mut self, x: f32, y: f32) -> bool {
         let mut changed = self.driver.pointer_down(x, y, &self.env);
         changed |= self.driver.pointer_up(x, y, &self.env);
+        self.settle_after_change(changed)
+    }
+
+    /// Dispatches a primary pointer-down event at viewport coordinates.
+    pub fn pointer_down_at(&mut self, x: f32, y: f32) -> bool {
+        let changed = self.driver.pointer_down(x, y, &self.env);
+        self.settle_after_change(changed)
+    }
+
+    /// Dispatches a primary pointer-up event at viewport coordinates.
+    pub fn pointer_up_at(&mut self, x: f32, y: f32) -> bool {
+        let changed = self.driver.pointer_up(x, y, &self.env);
         self.settle_after_change(changed)
     }
 
@@ -638,6 +652,30 @@ impl SemanticApp {
         let changed = self
             .driver
             .scroll_at(x, y, dx, dy, is_line_delta, &self.env);
+        self.settle_after_change(changed)
+    }
+
+    /// Dispatches committed text through the Hydrolysis text input path.
+    pub fn text_input(&mut self, text: impl Into<String>) -> bool {
+        let changed = self.driver.text_input(text.into(), &self.env);
+        self.settle_after_change(changed)
+    }
+
+    /// Dispatches a named keyboard key such as `Backspace`, `Delete`, or `ArrowLeft`.
+    pub fn press_named_key(&mut self, key: impl Into<String>) -> bool {
+        let changed =
+            self.driver
+                .key_press(KeyCode::Named(key.into()), Modifiers::default(), &self.env);
+        self.settle_after_change(changed)
+    }
+
+    /// Dispatches a character keyboard key without text-input synthesis.
+    pub fn press_character_key(&mut self, key: impl Into<String>) -> bool {
+        let changed = self.driver.key_press(
+            KeyCode::Character(key.into()),
+            Modifiers::default(),
+            &self.env,
+        );
         self.settle_after_change(changed)
     }
 
