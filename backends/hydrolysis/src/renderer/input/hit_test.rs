@@ -50,6 +50,8 @@ pub(crate) struct HitTestState {
     pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
     pub(crate) hover_controller: HoverController,
     pub(crate) press_controller: PressController,
+    pub(crate) active_press_bounds: Option<vello::kurbo::Rect>,
+    pub(crate) active_press_origin: Option<vello::kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
     pub(crate) hit_test_opacity: f32,
     pub(crate) hit_test_order: usize,
@@ -170,7 +172,12 @@ impl PressController {
         (PressSlot { index }, self.slots[index].pressing)
     }
 
-    pub(crate) fn begin_press(&mut self, slot: PressSlot, origin: vello::kurbo::Point, now: Instant) {
+    pub(crate) fn begin_press(
+        &mut self,
+        slot: PressSlot,
+        origin: vello::kurbo::Point,
+        now: Instant,
+    ) {
         let state = &mut self.slots[slot.index];
         state.pressing = true;
         state.origin = Some(origin);
@@ -312,6 +319,8 @@ impl HydrolysisRenderer {
         let mut rebuild_requested = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.hit_test.active_press_bounds = None;
+        self.hit_test.active_press_origin = None;
         rebuild_requested |= self.hit_test.press_controller.clear_all(at);
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
@@ -438,6 +447,8 @@ impl HydrolysisRenderer {
             let target = self.hit_test.pointer_targets[index].clone();
             if let Some(slot) = target.press_slot {
                 self.hit_test.press_controller.begin_press(slot, point, at);
+                self.hit_test.active_press_bounds = Some(target.bounds);
+                self.hit_test.active_press_origin = Some(point);
                 rebuild_requested = true;
             }
             tracing::trace!(
@@ -451,6 +462,10 @@ impl HydrolysisRenderer {
                 "dispatch pointer target"
             );
             let changed = (target.action.borrow_mut())(self, point, env);
+            if changed {
+                self.request_rebuild();
+                rebuild_requested = true;
+            }
             if target.captures_drag {
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
                 self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
@@ -495,6 +510,8 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.hit_test.active_press_bounds = None;
+        self.hit_test.active_press_origin = None;
         changed |= self.hit_test.press_controller.clear_all(at);
         let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
         changed |= gesture_changed;
@@ -521,6 +538,9 @@ impl HydrolysisRenderer {
         }
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
+            if pointer_drag_changed {
+                self.request_rebuild();
+            }
             drag_changed |= pointer_drag_changed;
             rebuild_requested |= pointer_drag_changed;
         }
@@ -562,6 +582,8 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.hit_test.active_press_bounds = None;
+        self.hit_test.active_press_origin = None;
         rebuild_requested |= self.hit_test.press_controller.clear_all(at);
         let gesture_changed = self
             .gesture_engine
@@ -599,6 +621,7 @@ impl HydrolysisRenderer {
         self.register_pointer_target_action(
             bounds,
             false,
+            None,
             Rc::new(RefCell::new(action)),
             self.render_depth,
         );
@@ -608,6 +631,7 @@ impl HydrolysisRenderer {
         &mut self,
         bounds: vello::kurbo::Rect,
         captures_drag: bool,
+        press_slot: Option<PressSlot>,
         action: PointerAction,
         depth: usize,
     ) {
@@ -620,7 +644,7 @@ impl HydrolysisRenderer {
             captures_drag,
             depth,
             order,
-            press_slot: None,
+            press_slot,
             action,
         });
     }
@@ -631,7 +655,12 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) -> (WidgetInteractionState, PressSlot) {
         let (hover_slot, hovered) = self.hit_test.hover_controller.bind();
-        let (press_slot, pressed) = self.hit_test.press_controller.bind();
+        let (press_slot, slot_pressed) = self.hit_test.press_controller.bind();
+        let active_bounds_pressed = self
+            .hit_test
+            .active_press_origin
+            .is_some_and(|origin| bounds.contains(origin));
+        let pressed = slot_pressed || active_bounds_pressed;
         if self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
             self.hit_test.hover_targets.push(HoverTarget {
                 bounds,
@@ -650,7 +679,11 @@ impl HydrolysisRenderer {
             slot.pressed_at = None;
             slot.released_at = None;
         }
-        let press_origin = slot.origin;
+        let press_origin = if active_bounds_pressed {
+            self.hit_test.active_press_origin.or(slot.origin)
+        } else {
+            slot.origin
+        };
         let target_opacity = if hovered { motion.hover_opacity } else { 0.0 };
         let alpha_handle = self.animation_controller.bind_scalar_target(
             target_opacity,
@@ -872,25 +905,19 @@ fn should_clear_released_press_origin(
     let Some(released_at) = slot.released_at else {
         return false;
     };
-    let minimum_remaining = slot
-        .pressed_at
-        .map_or(Duration::ZERO, |pressed_at| {
-            motion
-                .minimum_press_duration
-                .saturating_sub(now.duration_since(pressed_at))
-        });
-    let retention = motion
-        .press_fade_out
-        .duration()
-        .max(minimum_remaining);
+    let minimum_remaining = slot.pressed_at.map_or(Duration::ZERO, |pressed_at| {
+        motion
+            .minimum_press_duration
+            .saturating_sub(now.duration_since(pressed_at))
+    });
+    let retention = motion.press_fade_out.duration().max(minimum_remaining);
     now.duration_since(released_at) >= retention
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        PressStateSlot, released_before_minimum_press_duration,
-        should_clear_released_press_origin,
+        PressStateSlot, released_before_minimum_press_duration, should_clear_released_press_origin,
     };
     use core::time::Duration;
     use waterui::animation::Animation;

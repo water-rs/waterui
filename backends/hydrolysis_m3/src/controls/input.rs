@@ -84,15 +84,13 @@ pub fn draw_field(
         0.0
     };
     if focus_alpha > 0.0 {
-        draw.push_layer(focus_alpha, None);
         let focus_y = bounds.y1 - INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT / 2.0;
         draw.stroke_line(
             Point::new(bounds.x0, focus_y),
             Point::new(bounds.x1, focus_y),
-            &Brush::from(colors.primary.peniko()),
+            &Brush::from(role_with_alpha(colors.primary.argb(), focus_alpha)),
             INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT,
         );
-        draw.pop_layer();
     }
 }
 

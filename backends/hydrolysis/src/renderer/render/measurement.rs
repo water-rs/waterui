@@ -970,12 +970,6 @@ pub(crate) fn measure_text_field_intrinsic(
     let theme = widget_theme(env);
     let metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(&text_field.label, state, env);
-    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_height = if has_label {
-        f64::from(label_size.height).max(metrics.label_height)
-    } else {
-        0.0
-    };
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
     let prompt = text_field.prompt.content.get();
     let value = text_field.value.get();
@@ -987,9 +981,8 @@ pub(crate) fn measure_text_field_intrinsic(
     );
     let content_width =
         f64::from(prompt_size.width.max(value_size.width)) + metrics.horizontal_inset * 2.0;
-    let content_height = f64::from(prompt_size.height.max(value_size.height))
-        + metrics.vertical_inset * 2.0
-        + label_height;
+    let content_height =
+        f64::from(prompt_size.height.max(value_size.height)) + metrics.vertical_inset * 2.0;
 
     let field_width = content_width.max(metrics.min_width);
     let field_height = content_height.max(metrics.min_height);
@@ -1005,12 +998,6 @@ pub(crate) fn measure_secure_field_intrinsic(
     let theme = widget_theme(env);
     let metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(&secure_field.label, state, env);
-    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_height = if has_label {
-        f64::from(label_size.height).max(metrics.label_height)
-    } else {
-        0.0
-    };
     let secure_len = secure_field.value.get().expose().chars().count();
     let masked = if secure_len == 0 {
         StyledStr::plain("")
@@ -1020,8 +1007,8 @@ pub(crate) fn measure_secure_field_intrinsic(
     let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, masked, env);
     let field_width =
         (f64::from(value_size.width) + metrics.horizontal_inset * 2.0).max(metrics.min_width);
-    let field_height = (f64::from(value_size.height) + metrics.vertical_inset * 2.0 + label_height)
-        .max(metrics.min_height);
+    let field_height =
+        (f64::from(value_size.height) + metrics.vertical_inset * 2.0).max(metrics.min_height);
     let width = (f64::from(label_size.width) + metrics.horizontal_inset * 2.0).max(field_width);
     LayoutSize::new(width as f32, field_height as f32)
 }
