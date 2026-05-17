@@ -44,7 +44,8 @@ fn ripple_geometry(bounds: Rect, origin: Point, progress: f64) -> RippleGeometry
     }
 }
 
-fn ripple_brush(color: Color, geometry: RippleGeometry) -> Brush {
+fn ripple_brush(color: Color, opacity: f32, geometry: RippleGeometry) -> Brush {
+    let color = color.with_alpha(opacity.clamp(0.0, 1.0));
     Brush::from(
         Gradient::new_radial(geometry.center, geometry.radius as f32)
             .with_stops([(geometry.solid_stop, color), (1.0, color.with_alpha(0.0))]),
@@ -75,9 +76,9 @@ pub(crate) fn draw_bounded(
 
     let progress = f64::from(state.press_progress.clamp(0.0, 1.0));
     let ripple = ripple_geometry(bounds, origin, progress);
-    let brush = ripple_brush(color, ripple);
+    let brush = ripple_brush(color, press_opacity, ripple);
 
-    draw.push_rounded_layer(press_opacity, bounds, radii);
+    draw.push_rounded_layer(1.0, bounds, radii);
     draw.fill_circle(ripple.center, ripple.radius, &brush);
     draw.pop_layer();
 }
@@ -104,8 +105,8 @@ pub(crate) fn draw_unbounded_circle(
     let bounds = Rect::from_center_size(center, (radius * 2.0, radius * 2.0));
     let origin = state.press_origin.unwrap_or(center);
     let ripple = ripple_geometry(bounds, origin, progress);
-    let brush = ripple_brush(color, ripple);
-    draw.push_layer(press_opacity, None);
+    let brush = ripple_brush(color, press_opacity, ripple);
+    draw.push_layer(1.0, None);
     draw.fill_circle(ripple.center, ripple.radius, &brush);
     draw.pop_layer();
 }
@@ -144,7 +145,7 @@ mod tests {
             radius: 120.0,
             solid_stop: RIPPLE_SOFT_EDGE_MINIMUM_SOLID_STOP,
         };
-        let brush = ripple_brush(Color::new([1.0, 0.0, 0.0, 1.0]), geometry);
+        let brush = ripple_brush(Color::new([1.0, 0.0, 0.0, 1.0]), 0.12, geometry);
 
         let Brush::Gradient(gradient) = brush else {
             panic!("Material ripple press layer must use a radial gradient brush");
@@ -156,6 +157,7 @@ mod tests {
         assert_eq!(position.end_center, geometry.center);
         assert_eq!(position.end_radius, geometry.radius as f32);
         assert_eq!(gradient.stops[0].offset, geometry.solid_stop);
+        assert_eq!(gradient.stops[0].color.components[3], 0.12);
         assert_eq!(gradient.stops[1].offset, 1.0);
         assert_eq!(gradient.stops[1].color.components[3], 0.0);
     }

@@ -59,11 +59,9 @@ pub fn draw_button_state_layer(
     bounds: Rect,
     state: WidgetInteractionState,
 ) {
-    let radius = if state.pressed {
-        STEPPER_PRESSED_CONTAINER_RADIUS
-    } else {
-        STEPPER_CONTAINER_RADIUS
-    };
+    let progress = f64::from(state.press_progress.clamp(0.0, 1.0));
+    let radius = STEPPER_CONTAINER_RADIUS
+        + (STEPPER_PRESSED_CONTAINER_RADIUS - STEPPER_CONTAINER_RADIUS) * progress;
     state_layer::draw_bounded(
         draw,
         bounds,

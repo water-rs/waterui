@@ -43,6 +43,7 @@ pub(crate) struct DynamicNode {
 pub(crate) struct DynamicSubtree {
     pub(crate) scene: vello::Scene,
     pub(crate) depth_base: usize,
+    pub(crate) retains: Vec<Retain>,
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) gesture_targets: Vec<GestureTarget>,
     pub(crate) cursor_targets: Vec<CursorTarget>,
@@ -128,7 +129,11 @@ impl LifecycleState {
         self.local_state_registry.borrow_mut().begin_rebuild_frame();
     }
 
-    pub(crate) fn finish_rebuild_frame(&mut self, state: &mut HydroState) {
+    pub(crate) fn finish_rebuild_frame(
+        &mut self,
+        state: &mut HydroState,
+        preserve_inactive_state: bool,
+    ) {
         self.previous_frame_retain = core::mem::take(&mut self.current_frame_retain);
 
         let previous_hooks = core::mem::take(&mut self.disappear_previous);
@@ -139,18 +144,22 @@ impl LifecycleState {
         }
         self.disappear_previous = core::mem::take(&mut self.disappear_current);
 
-        self.local_state_registry
-            .borrow_mut()
-            .finish_rebuild_frame();
+        if !preserve_inactive_state {
+            self.local_state_registry
+                .borrow_mut()
+                .finish_rebuild_frame();
+        }
         let active_dynamic_identities = self.dynamic_identities_current_frame.clone();
-        self.dynamic_nodes
-            .retain(|identity, _| active_dynamic_identities.contains(identity));
-        state
-            .dynamic_intrinsic_cache
-            .retain(|identity, _| active_dynamic_identities.contains(identity));
-        state
-            .dynamic_dimensions_cache
-            .retain(|(identity, _, _), _| active_dynamic_identities.contains(identity));
+        if !preserve_inactive_state {
+            self.dynamic_nodes
+                .retain(|identity, _| active_dynamic_identities.contains(identity));
+            state
+                .dynamic_intrinsic_cache
+                .retain(|identity, _| active_dynamic_identities.contains(identity));
+            state
+                .dynamic_dimensions_cache
+                .retain(|(identity, _, _), _| active_dynamic_identities.contains(identity));
+        }
     }
 
     pub(crate) fn install_local_state_env(&self, env: &Environment) -> Environment {
@@ -260,6 +269,7 @@ impl HydrolysisRenderer {
     ) -> DynamicSubtree {
         let subtree_depth_base = renderer.render_depth;
         let mut subtree_scene = vello::Scene::new();
+        let mut subtree_retains = Vec::new();
         let mut subtree_pointer_targets = Vec::new();
         let mut subtree_gesture_targets = Vec::new();
         let mut subtree_cursor_targets = Vec::new();
@@ -275,6 +285,10 @@ impl HydrolysisRenderer {
         let mut subtree_accessibility_actions = BTreeMap::new();
 
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+        core::mem::swap(
+            &mut renderer.lifecycle.current_frame_retain,
+            &mut subtree_retains,
+        );
         core::mem::swap(
             &mut renderer.hit_test.pointer_targets,
             &mut subtree_pointer_targets,
@@ -354,11 +368,16 @@ impl HydrolysisRenderer {
             &mut renderer.hit_test.pointer_targets,
             &mut subtree_pointer_targets,
         );
+        core::mem::swap(
+            &mut renderer.lifecycle.current_frame_retain,
+            &mut subtree_retains,
+        );
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
 
         DynamicSubtree {
             scene: subtree_scene,
             depth_base: subtree_depth_base,
+            retains: subtree_retains,
             pointer_targets: subtree_pointer_targets,
             gesture_targets: subtree_gesture_targets,
             cursor_targets: subtree_cursor_targets,
@@ -374,15 +393,45 @@ impl HydrolysisRenderer {
         }
     }
 
+    pub(crate) fn render_dynamic_subtree_with_local_interactions(
+        renderer: &mut HydrolysisRenderer,
+        replay_ctx: RenderContext,
+        local_ctx: RenderContext,
+        env: &Environment,
+        content: AnyView,
+    ) -> DynamicSubtree {
+        let active_press_origin = renderer.hit_test.active_press_origin;
+        let active_press_bounds = renderer.hit_test.active_press_bounds;
+        let inverse_hit_transform = replay_ctx.hit_transform.inverse();
+        renderer.hit_test.active_press_origin =
+            active_press_origin.map(|origin| inverse_hit_transform * origin);
+        renderer.hit_test.active_press_bounds =
+            active_press_bounds.map(|bounds| transformed_rect(inverse_hit_transform, bounds));
+        let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
+        renderer.hit_test.active_press_origin = active_press_origin;
+        renderer.hit_test.active_press_bounds = active_press_bounds;
+        subtree
+    }
+
     pub(crate) fn replay_dynamic_subtree(&mut self, ctx: RenderContext, subtree: &DynamicSubtree) {
+        let _retained_watcher_count = subtree.retains.len();
         self.scene.append(&subtree.scene, Some(ctx.transform));
         let mut gesture_group_remap = BTreeMap::new();
 
         for target in &subtree.pointer_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
+            let press_slot = if target.press_slot.is_some()
+                && self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD
+            {
+                let (slot, _) = self.hit_test.press_controller.bind();
+                Some(slot)
+            } else {
+                None
+            };
             self.register_pointer_target_action(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 target.captures_drag,
+                press_slot,
                 Rc::clone(&target.action),
                 depth,
             );

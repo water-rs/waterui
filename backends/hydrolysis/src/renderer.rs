@@ -322,10 +322,10 @@ pub struct HydrolysisRenderer {
 #[derive(Clone)]
 struct RetainedScrollFrame {
     handle: crate::scroll::ScrollHandle,
+    cache_key: usize,
     axis: ScrollAxis,
     viewport: vello::kurbo::Rect,
     transform: vello::kurbo::Affine,
-    content_scene: vello::Scene,
     content_dynamic_morphs: Vec<DynamicMorphDraw>,
     active_layers: Vec<ActiveSceneLayer>,
 }
@@ -339,7 +339,6 @@ pub(crate) struct DynamicMorphDraw {
 }
 
 pub(crate) struct ScrollContentRender {
-    pub(crate) scene: vello::Scene,
     pub(crate) dynamic_morphs: Vec<DynamicMorphDraw>,
     pub(crate) has_frame_images: bool,
 }
@@ -1252,9 +1251,10 @@ impl HydrolysisRenderer {
         S: Signal<Output = bool> + Clone + 'static,
     {
         let now = self.frame_instant;
-        let handle = self
-            .animation_controller
-            .bind_scalar(if signal.get() { 1.0 } else { 0.0 }, now);
+        let target = if signal.get() { 1.0 } else { 0.0 };
+        let handle =
+            self.animation_controller
+                .bind_scalar_target(target, default_animation.clone(), now);
         let watcher_handle = handle.clone();
         let frame_clock = Rc::clone(&self.frame_clock);
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
@@ -1907,7 +1907,9 @@ impl HydrolysisRenderer {
                 proposal_dimensions,
             );
             let local_ctx = ctx.with_identity_transforms(ctx.bounds);
-            let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
+            let subtree = Self::render_dynamic_subtree_with_local_interactions(
+                renderer, ctx, local_ctx, env, content,
+            );
             renderer
                 .lifecycle
                 .dynamic_nodes
@@ -1925,7 +1927,13 @@ impl HydrolysisRenderer {
             .is_some_and(|node| node.cached_subtree.is_none())
         {
             let local_ctx = ctx.with_identity_transforms(ctx.bounds);
-            let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, AnyView::new(()));
+            let subtree = Self::render_dynamic_subtree_with_local_interactions(
+                renderer,
+                ctx,
+                local_ctx,
+                env,
+                AnyView::new(()),
+            );
             renderer
                 .lifecycle
                 .dynamic_nodes
@@ -3042,8 +3050,10 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(crate) fn has_retained_scroll_frame(&self) -> bool {
-        self.retained_scroll_frame.is_some() && !self.retained_scroll_frame_conflicted
+    pub(crate) fn invalidate_retained_scroll_content(&mut self) {
+        self.scroll_content_caches.clear();
+        self.retained_scroll_frame = None;
+        self.retained_scroll_frame_conflicted = true;
     }
 
     pub(crate) fn retained_scroll_dynamic_morphs_active(&self) -> bool {
@@ -3074,10 +3084,10 @@ impl HydrolysisRenderer {
     pub(crate) fn retain_scroll_frame(
         &mut self,
         handle: crate::scroll::ScrollHandle,
+        cache_key: usize,
         axis: ScrollAxis,
         viewport: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
-        content_scene: vello::Scene,
         content_dynamic_morphs: Vec<DynamicMorphDraw>,
         content_has_frame_images: bool,
         active_layers: Vec<ActiveSceneLayer>,
@@ -3095,10 +3105,10 @@ impl HydrolysisRenderer {
         }
         self.retained_scroll_frame = Some(RetainedScrollFrame {
             handle,
+            cache_key,
             axis,
             viewport,
             transform,
-            content_scene,
             content_dynamic_morphs,
             active_layers,
         });
@@ -3112,13 +3122,7 @@ impl HydrolysisRenderer {
             return false;
         }
 
-        self.scene.reset();
-        self.compositor.render_layers.clear();
-        self.compositor.active_scene_layers.clear();
-        self.state.measurement_cache_hits = 0;
-        self.state.measurement_cache_misses = 0;
-        self.frame_clip_layers = 0;
-        self.frame_max_clip_depth = 0;
+        self.reset_scene();
         let background_color =
             resolved_color_to_peniko(Color::new(theme::color::Background).resolve(env).get());
         self.scene.fill(
@@ -3154,8 +3158,16 @@ impl HydrolysisRenderer {
         let metrics = frame.handle.metrics();
         let content_transform = frame.transform
             * vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
-        self.scene
-            .append(&frame.content_scene, Some(content_transform));
+        let content_bounds =
+            vello::kurbo::Rect::new(0.0, 0.0, metrics.content_width, metrics.content_height);
+        let content_ctx =
+            RenderContext::with_transforms(content_bounds, content_transform, content_transform);
+        if let Some(subtree) = self.scroll_content_caches.remove(&frame.cache_key) {
+            self.replay_dynamic_subtree(content_ctx, &subtree);
+            self.scroll_content_caches.insert(frame.cache_key, subtree);
+        } else {
+            return false;
+        }
         self.draw_dynamic_morphs(&frame.content_dynamic_morphs, content_transform);
         if needs_viewport_clip {
             self.pop_layer();
@@ -3166,6 +3178,19 @@ impl HydrolysisRenderer {
         }
 
         let ctx = RenderContext::with_transforms(frame.viewport, frame.transform, frame.transform);
+        let target_handle = frame.handle.clone();
+        self.register_scroll_target(
+            transformed_rect(ctx.hit_transform, frame.viewport),
+            move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
+        );
+        crate::widgets::scroll::register_scroll_accessibility_node(
+            self,
+            env,
+            transformed_rect(ctx.hit_transform, frame.viewport),
+            &frame.handle,
+            metrics,
+            frame.axis,
+        );
         let mut widget_ctx = WidgetRenderContext::new(self, ctx);
         crate::widgets::draw_scroll_indicators(
             &mut widget_ctx,
@@ -3189,10 +3214,8 @@ impl HydrolysisRenderer {
             && let Some(subtree) = self.scroll_content_caches.remove(&cache_key)
         {
             self.replay_dynamic_subtree(ctx, &subtree);
-            let scene = subtree.scene.clone();
             self.scroll_content_caches.insert(cache_key, subtree);
             return ScrollContentRender {
-                scene,
                 dynamic_morphs: Vec::new(),
                 has_frame_images: false,
             };
@@ -3205,7 +3228,9 @@ impl HydrolysisRenderer {
             .dynamic_morph_capture_depth
             .checked_add(1)
             .expect("hydrolysis dynamic morph capture depth overflow");
-        let subtree = Self::render_dynamic_subtree(self, local_ctx, env, content);
+        let subtree = Self::render_dynamic_subtree_with_local_interactions(
+            self, ctx, local_ctx, env, content,
+        );
         self.dynamic_morph_capture_depth = self
             .dynamic_morph_capture_depth
             .checked_sub(1)
@@ -3213,10 +3238,8 @@ impl HydrolysisRenderer {
         let dynamic_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
         self.replay_dynamic_subtree(ctx, &subtree);
         self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
-        let scene = subtree.scene.clone();
         self.scroll_content_caches.insert(cache_key, subtree);
         ScrollContentRender {
-            scene,
             dynamic_morphs,
             has_frame_images: self.compositor.active_filter_images.len() > filter_image_count,
         }
@@ -3229,7 +3252,8 @@ impl HydrolysisRenderer {
             self.compositor.active_scene_layers.len()
         );
         self.flush_vello_scene_layer();
-        self.lifecycle.finish_rebuild_frame(&mut self.state);
+        self.lifecycle
+            .finish_rebuild_frame(&mut self.state, self.reuse_scroll_content_caches);
 
         if matches!(
             self.text_editing.focused_text_input.get(),
