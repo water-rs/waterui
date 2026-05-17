@@ -110,6 +110,15 @@ impl AnimationController {
             })
     }
 
+    pub fn has_active(&self, now: Instant) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.state.borrow().is_active())
+            || self.repeating_slots.iter().any(|slot| {
+                slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
+            })
+    }
+
     pub fn bind_repeating_phase(&mut self, cycle: Duration, now: Instant) -> Duration {
         let elapsed = self.bind_timeline_phase(cycle, true, now);
         Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
@@ -239,6 +248,10 @@ impl AnimatedScalarState {
             self.active_target = None;
         }
         active
+    }
+
+    fn is_active(&self) -> bool {
+        self.track.is_active()
     }
 
     fn current(&self) -> f32 {
