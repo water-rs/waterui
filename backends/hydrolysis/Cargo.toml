@@ -30,6 +30,7 @@ waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-backend-core.workspace = true
 waterkit-clipboard.workspace = true
+waterui-locale.workspace = true
 vello.workspace = true
 parley.workspace = true
 wgpu.workspace = true

@@ -484,6 +484,7 @@ impl HydrolysisRenderer {
 
         let default_font = waterui_text::font::Font::default().resolve(env).get();
         let default_brush = Self::default_text_brush(env);
+        let locale = text_layout_locale(env);
         let resolved_spans = spans
             .into_iter()
             .map(|(range, style)| (range, resolve_text_style(&style, env)))
@@ -505,6 +506,7 @@ impl HydrolysisRenderer {
                 .collect(),
             default_font: text_layout_font_cache_key(&default_font),
             default_brush,
+            locale: locale.clone(),
             alignment_low: alignment_id.low(),
             alignment_high: alignment_id.high(),
             max_width: max_width.map(f32::to_bits),
@@ -522,6 +524,7 @@ impl HydrolysisRenderer {
         builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
             default_font.weight,
         )));
+        builder.push_default(parley::StyleProperty::Locale(Some(locale.as_str())));
         builder.push_default(parley::StyleProperty::FontStack(font_stack(
             default_font.family.as_deref(),
             &mut family_storage,
@@ -689,10 +692,16 @@ fn font_stack<'a>(
     parley::FontStack::Source(Cow::Borrowed(family_name.as_str()))
 }
 
+fn text_layout_locale(env: &Environment) -> String {
+    waterui_locale::locale_binding(env).get().canonical_tag()
+}
+
 #[cfg(test)]
 mod font_stack_tests {
-    use super::font_stack;
+    use super::{font_stack, text_layout_locale};
     use parley::style::{FontFamily, GenericFamily};
+    use waterui_core::Environment;
+    use waterui_locale::locales;
 
     #[test]
     fn explicit_family_list_is_preserved_for_parley_css_parsing() {
@@ -717,6 +726,14 @@ mod font_stack_tests {
             parley::FontStack::Single(FontFamily::Generic(GenericFamily::SansSerif))
         );
         assert!(family_storage.is_empty());
+    }
+
+    #[test]
+    fn text_layout_locale_uses_environment_locale() {
+        let mut env = Environment::new();
+        env.insert(locales::ZH_TW);
+
+        assert_eq!(text_layout_locale(&env), "zh-TW");
     }
 }
 

@@ -42,6 +42,7 @@ pub(crate) struct TextLayoutCacheKey {
     pub(crate) spans: Vec<TextLayoutSpanCacheKey>,
     pub(crate) default_font: TextLayoutFontCacheKey,
     pub(crate) default_brush: [u8; 4],
+    pub(crate) locale: String,
     pub(crate) alignment_low: u64,
     pub(crate) alignment_high: u64,
     pub(crate) max_width: Option<u32>,
