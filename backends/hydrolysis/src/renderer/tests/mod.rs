@@ -253,6 +253,23 @@ fn dynamic_initial_content_builds_real_subtree_before_second_rebuild() {
     );
 }
 
+#[test]
+fn interaction_press_origin_is_converted_to_widget_local_space() {
+    let state = WidgetInteractionState {
+        press_origin: Some(Point::new(125.0, 84.0)),
+        press_progress: 0.5,
+        press_layer_opacity: 0.12,
+        ..WidgetInteractionState::NONE
+    };
+
+    let local =
+        crate::widgets::util::local_interaction_state(state, Affine::translate((100.0, 80.0)));
+
+    assert_eq!(local.press_origin, Some(Point::new(25.0, 4.0)));
+    assert_eq!(local.press_progress, state.press_progress);
+    assert_eq!(local.press_layer_opacity, state.press_layer_opacity);
+}
+
 #[derive(Default)]
 struct NoopDrawContext;
 
@@ -687,6 +704,10 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
         ));
 
     assert!(renderer.set_focused_text_input(Some(0)));
+    assert!(
+        renderer.take_rebuild_request(),
+        "text input focus changes must rebuild immediately so focus animations start on click"
+    );
     assert!(renderer.handle_ime_preedit("拼音"));
     assert_eq!(renderer.text_editing.ime_preedit.as_deref(), Some("拼音"));
     assert!(renderer.handle_ime_commit("中"));

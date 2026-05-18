@@ -25,7 +25,7 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 
-use crate::widgets::util::widget_theme;
+use crate::widgets::util::{local_interaction_state, widget_theme};
 
 const FLOATING_LABEL_SCALE: f64 = 0.75;
 const CONTENT_VISIBLE_PORTION: f32 = 5.0 / 9.0;
@@ -254,6 +254,7 @@ pub(crate) fn render_text_field(
     let (mut field_interaction, _) = ctx
         .renderer_mut()
         .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
+    field_interaction = local_interaction_state(field_interaction, hit_transform);
     field_interaction.focus_visible = is_focused;
     field_interaction.focus_progress = focus_progress;
     {
@@ -503,6 +504,7 @@ pub(crate) fn render_secure_field(
     let (mut field_interaction, _) = ctx
         .renderer_mut()
         .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
+    field_interaction = local_interaction_state(field_interaction, hit_transform);
     field_interaction.focus_visible = is_focused;
     field_interaction.focus_progress = focus_progress;
     {

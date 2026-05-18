@@ -12,7 +12,7 @@ use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::widgets::widget_theme;
+use crate::widgets::{local_interaction_state, widget_theme};
 
 impl HydroNativeView for Native<Tabs> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -148,6 +148,7 @@ pub(crate) fn render_tabs(
             }
             {
                 let theme = widget_theme(env);
+                let interaction = local_interaction_state(interaction, ctx.hit_transform);
                 let mut draw = ctx.draw_context();
                 theme.draw_tabs_button_state_layer(
                     &mut draw,

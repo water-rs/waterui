@@ -21,7 +21,7 @@ use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
 
-use crate::widgets::util::widget_theme;
+use crate::widgets::util::{local_interaction_state, widget_theme};
 use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {
@@ -294,6 +294,7 @@ pub(crate) fn render_menu_picker(
         let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
         let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
         {
+            let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
             theme.draw_input_field(&mut draw, bounds, interaction);
             theme.draw_picker_state_layer(&mut draw, bounds, interaction);
@@ -344,6 +345,7 @@ pub(crate) fn render_menu_picker(
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
         let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
+            let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
             theme.draw_picker_popup_row_background(&mut draw, row_rect, item.tag == selected);
             theme.draw_picker_popup_row_state_layer(
@@ -430,6 +432,7 @@ pub(crate) fn render_radio_picker(
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
         let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
+            let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
             theme.draw_radio_state_layer(
                 &mut draw,
@@ -484,6 +487,7 @@ pub(crate) fn render_segmented_picker(
         let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
         let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
+            let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
             theme.draw_segmented_picker_segment(
                 &mut draw,
