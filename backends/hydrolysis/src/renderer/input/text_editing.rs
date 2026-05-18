@@ -1007,6 +1007,9 @@ impl HydrolysisRenderer {
         slot.anchor = anchor;
         slot.focus = focus;
         slot.initialized = true;
+        if changed {
+            self.request_rebuild();
+        }
         changed
     }
 
@@ -1028,11 +1031,17 @@ impl HydrolysisRenderer {
             slot.anchor = next_index;
             slot.focus = next_index;
             slot.initialized = true;
+            if changed {
+                self.request_rebuild();
+            }
             return changed;
         }
         let changed = slot.focus != next_index || !slot.initialized;
         slot.focus = next_index;
         slot.initialized = true;
+        if changed {
+            self.request_rebuild();
+        }
         changed
     }
 

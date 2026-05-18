@@ -2250,21 +2250,7 @@ mod winit_runner {
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
-        let text_context_menu_mode = {
-            #[cfg(any(hydrolysis_wayland_platform, docsrs))]
-            {
-                if event_loop.is_wayland() {
-                    HydrolysisTextContextMenuMode::Overlay
-                } else {
-                    HydrolysisTextContextMenuMode::NativeWindow
-                }
-            }
-            #[cfg(not(any(hydrolysis_wayland_platform, docsrs)))]
-            {
-                HydrolysisTextContextMenuMode::NativeWindow
-            }
-        };
-        env.insert(text_context_menu_mode);
+        env.insert(HydrolysisTextContextMenuMode::Overlay);
         env.insert(waterui::window::WindowManager::new({
             let pending_window_queue = Rc::clone(&pending_window_queue);
             let event_proxy = event_proxy.clone();
