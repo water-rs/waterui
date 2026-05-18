@@ -3648,7 +3648,6 @@ impl HydrolysisRenderer {
                     .as_ref()
                     .is_some_and(|state| state.is_active(now))
             })
-            || self.advance_text_caret_animation(now)
     }
 
     pub fn animations_active(&self) -> bool {

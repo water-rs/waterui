@@ -379,14 +379,17 @@ pub(crate) fn render_text_field(
         );
         ctx.pop_layer();
     }
-    let cursor_area = {
-        let rect = selection.focus().geometry(&committed_layout, 1.0);
-        let x0 = text_bounds.x0 + rect.x0;
-        let y0 = text_bounds.y0 + rect.y0;
-        let x1 = text_bounds.x0 + rect.x1.max(rect.x0 + 1.0);
-        let y1 = text_bounds.y0 + rect.y1.max(rect.y0 + 1.0);
-        vello::kurbo::Rect::new(x0, y0, x1, y1)
-    };
+    let cursor_geometry = selection.focus().geometry(&committed_layout, 1.0);
+    let cursor_area = material_input_cursor_rect(
+        text_bounds,
+        vello::kurbo::Rect::new(
+            cursor_geometry.x0,
+            cursor_geometry.y0,
+            cursor_geometry.x1,
+            cursor_geometry.y1,
+        ),
+        display_layout_height,
+    );
     let hit_transform = ctx.hit_transform;
     ctx.renderer_mut().register_cursor_target(
         transformed_rect(hit_transform, field_rect),
@@ -588,14 +591,17 @@ pub(crate) fn render_secure_field(
         );
         ctx.pop_layer();
     }
-    let cursor_area = {
-        let rect = selection.focus().geometry(&committed_layout, 1.0);
-        let x0 = text_bounds.x0 + rect.x0;
-        let y0 = text_bounds.y0 + rect.y0;
-        let x1 = text_bounds.x0 + rect.x1.max(rect.x0 + 1.0);
-        let y1 = text_bounds.y0 + rect.y1.max(rect.y0 + 1.0);
-        vello::kurbo::Rect::new(x0, y0, x1, y1)
-    };
+    let cursor_geometry = selection.focus().geometry(&committed_layout, 1.0);
+    let cursor_area = material_input_cursor_rect(
+        text_bounds,
+        vello::kurbo::Rect::new(
+            cursor_geometry.x0,
+            cursor_geometry.y0,
+            cursor_geometry.x1,
+            cursor_geometry.y1,
+        ),
+        committed_layout.height(),
+    );
     let hit_transform = ctx.hit_transform;
     ctx.renderer_mut().register_cursor_target(
         transformed_rect(hit_transform, field_rect),
@@ -726,11 +732,33 @@ fn material_input_text_clip_rect(
     vello::kurbo::Rect::new(text_rect.x0, y0, text_rect.x1, y1)
 }
 
+fn material_input_cursor_rect(
+    text_rect: vello::kurbo::Rect,
+    cursor_geometry: vello::kurbo::Rect,
+    fallback_layout_height: f32,
+) -> vello::kurbo::Rect {
+    let x0 = text_rect.x0 + cursor_geometry.x0;
+    let x1 = text_rect.x0 + cursor_geometry.x1.max(cursor_geometry.x0 + 1.0);
+    let fallback_height = f64::from(fallback_layout_height)
+        .max(1.0)
+        .min(text_rect.height());
+    let geometry_height = cursor_geometry.height();
+    let (y0, y1) = if geometry_height > 1.0 {
+        (
+            text_rect.y0 + cursor_geometry.y0,
+            text_rect.y0 + cursor_geometry.y1,
+        )
+    } else {
+        (text_rect.y0, text_rect.y0 + fallback_height)
+    };
+    vello::kurbo::Rect::new(x0, y0, x1, y1.min(text_rect.y1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CONTENT_ENTER_DELAY_PORTION, CONTENT_VISIBLE_PORTION, material_input_content_alpha,
-        material_input_text_clip_rect,
+        material_input_cursor_rect, material_input_text_clip_rect,
     };
 
     #[test]
@@ -791,5 +819,31 @@ mod tests {
         assert_eq!(clip.x1, text.x1);
         assert!(clip.height() >= 34.0);
         assert!(clip.y1 > text.y1);
+    }
+
+    #[test]
+    fn material_input_cursor_uses_fallback_height_for_empty_layout_geometry() {
+        let text = vello::kurbo::Rect::new(16.0, 26.0, 184.0, 60.0);
+        let empty_geometry = vello::kurbo::Rect::new(0.0, 0.0, 0.0, 1.0);
+
+        let cursor = material_input_cursor_rect(text, empty_geometry, 22.0);
+
+        assert_eq!(cursor.x0, text.x0);
+        assert_eq!(cursor.x1, text.x0 + 1.0);
+        assert_eq!(cursor.y0, text.y0);
+        assert_eq!(cursor.y1, text.y0 + 22.0);
+    }
+
+    #[test]
+    fn material_input_cursor_preserves_non_empty_layout_geometry() {
+        let text = vello::kurbo::Rect::new(16.0, 26.0, 184.0, 60.0);
+        let geometry = vello::kurbo::Rect::new(42.0, 3.0, 43.0, 25.0);
+
+        let cursor = material_input_cursor_rect(text, geometry, 34.0);
+
+        assert_eq!(cursor.x0, text.x0 + 42.0);
+        assert_eq!(cursor.x1, text.x0 + 43.0);
+        assert_eq!(cursor.y0, text.y0 + 3.0);
+        assert_eq!(cursor.y1, text.y0 + 25.0);
     }
 }
