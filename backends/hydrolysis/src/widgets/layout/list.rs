@@ -18,7 +18,8 @@ use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 use crate::renderer::lazy::{resolve_visible_index_window, sum_cached_or_estimated};
-use crate::widgets::{draw_scroll_indicators, local_interaction_state, widget_theme};
+use crate::renderer::local_interaction_state;
+use crate::widgets::{draw_scroll_indicators, widget_theme};
 
 impl HydroNativeView for Native<ListConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {

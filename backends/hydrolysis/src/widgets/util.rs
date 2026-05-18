@@ -1,5 +1,4 @@
 use crate::engine::WidgetTheme;
-use waterui_backend_core::widget::WidgetInteractionState;
 use waterui_core::Environment;
 
 pub(crate) fn widget_theme(env: &Environment) -> &dyn WidgetTheme {
@@ -15,14 +14,4 @@ pub(crate) fn inset_rect(rect: vello::kurbo::Rect, dx: f64, dy: f64) -> vello::k
         (rect.x1 - dx).max(rect.x0 + dx),
         (rect.y1 - dy).max(rect.y0 + dy),
     )
-}
-
-pub(crate) fn local_interaction_state(
-    mut state: WidgetInteractionState,
-    hit_transform: vello::kurbo::Affine,
-) -> WidgetInteractionState {
-    state.press_origin = state
-        .press_origin
-        .map(|origin| hit_transform.inverse() * origin);
-    state
 }

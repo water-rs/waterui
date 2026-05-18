@@ -16,5 +16,5 @@ pub(crate) use nav::{navigation, tabs};
 pub(crate) use platform::webview;
 pub(crate) use scroll::draw_scroll_indicators;
 pub(crate) use typography::text;
-pub(crate) use util::{inset_rect, local_interaction_state, widget_theme};
+pub(crate) use util::{inset_rect, widget_theme};
 pub(crate) use visual::{graphics, icon, map};
