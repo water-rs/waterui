@@ -770,6 +770,30 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
 }
 
 #[test]
+fn text_selection_pointer_update_requests_scene_rebuild() {
+    let mut renderer = test_renderer();
+    let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
+    renderer
+        .text_editing
+        .text_input_targets
+        .push(text_input_target(
+            text_field_model("selection", None),
+            Rc::clone(&selection),
+        ));
+
+    assert!(renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
+    assert!(
+        renderer.take_rebuild_request(),
+        "text selection changes must rebuild the scene so highlight geometry tracks pointer moves"
+    );
+    assert!(!renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
+    assert!(
+        !renderer.take_rebuild_request(),
+        "unchanged text selection must not schedule redundant rebuilds"
+    );
+}
+
+#[test]
 fn secure_text_context_menu_excludes_copy_and_cut() {
     let selection = Rc::new(RefCell::new(TextSelectionSlot {
         anchor: 0,
