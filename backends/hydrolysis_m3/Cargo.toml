@@ -27,7 +27,25 @@ tracing.workspace = true
 waterui-testing.workspace = true
 
 [package.metadata.waterui.assets]
-font = [{ name = "Roboto" }]
+
+[[package.metadata.waterui.assets.font]]
+name = "Roboto"
+
+[[package.metadata.waterui.assets.font]]
+name = "Noto Sans CJK JP"
+remote_path = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/06_NotoSansCJKjp.zip"
+
+[[package.metadata.waterui.assets.font]]
+name = "Noto Sans CJK KR"
+remote_path = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/07_NotoSansCJKkr.zip"
+
+[[package.metadata.waterui.assets.font]]
+name = "Noto Sans CJK SC"
+remote_path = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/08_NotoSansCJKsc.zip"
+
+[[package.metadata.waterui.assets.font]]
+name = "Noto Sans CJK TC"
+remote_path = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/09_NotoSansCJKtc.zip"
 
 [lints]
 workspace = true
