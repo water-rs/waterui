@@ -12,7 +12,8 @@ use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::widgets::{local_interaction_state, widget_theme};
+use crate::renderer::local_interaction_state;
+use crate::widgets::widget_theme;
 
 impl HydroNativeView for Native<Tabs> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {

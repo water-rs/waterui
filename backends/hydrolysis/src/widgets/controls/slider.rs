@@ -17,7 +17,8 @@ use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
 
-use crate::widgets::util::{local_interaction_state, widget_theme};
+use crate::renderer::local_interaction_state;
+use crate::widgets::util::widget_theme;
 
 impl HydroNativeView for Native<SliderConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {

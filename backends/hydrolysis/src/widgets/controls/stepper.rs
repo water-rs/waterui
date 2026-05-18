@@ -13,7 +13,8 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::widgets::util::{local_interaction_state, widget_theme};
+use crate::renderer::local_interaction_state;
+use crate::widgets::util::widget_theme;
 
 impl HydroNativeView for Native<StepperConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {

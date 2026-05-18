@@ -304,10 +304,10 @@ impl HydrolysisRenderer {
             &mut renderer.hit_test.hover_targets,
             &mut subtree_hover_targets,
         );
-        core::mem::swap(
-            &mut renderer.hit_test.hover_controller,
-            &mut subtree_hover_controller,
-        );
+        renderer
+            .hit_test
+            .interaction
+            .swap_hover_controller(&mut subtree_hover_controller);
         core::mem::swap(
             &mut renderer.text_editing.text_input_targets,
             &mut subtree_text_input_targets,
@@ -349,10 +349,10 @@ impl HydrolysisRenderer {
             &mut renderer.text_editing.text_input_targets,
             &mut subtree_text_input_targets,
         );
-        core::mem::swap(
-            &mut renderer.hit_test.hover_controller,
-            &mut subtree_hover_controller,
-        );
+        renderer
+            .hit_test
+            .interaction
+            .swap_hover_controller(&mut subtree_hover_controller);
         core::mem::swap(
             &mut renderer.hit_test.hover_targets,
             &mut subtree_hover_targets,
@@ -423,8 +423,7 @@ impl HydrolysisRenderer {
             let press_slot = if target.press_slot.is_some()
                 && self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD
             {
-                let (slot, _) = self.hit_test.press_controller.bind();
-                Some(slot)
+                Some(self.hit_test.interaction.bind_press_slot())
             } else {
                 None
             };

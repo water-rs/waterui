@@ -262,8 +262,7 @@ fn interaction_press_origin_is_converted_to_widget_local_space() {
         ..WidgetInteractionState::NONE
     };
 
-    let local =
-        crate::widgets::util::local_interaction_state(state, Affine::translate((100.0, 80.0)));
+    let local = crate::renderer::local_interaction_state(state, Affine::translate((100.0, 80.0)));
 
     assert_eq!(local.press_origin, Some(Point::new(25.0, 4.0)));
     assert_eq!(local.press_progress, state.press_progress);
@@ -278,7 +277,7 @@ fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
 
     renderer.begin_rebuild_frame();
     let (_, slot) = renderer.bind_interaction_target(Rect::new(0.0, 0.0, 80.0, 80.0), &env);
-    renderer.hit_test.press_controller.begin_press(
+    renderer.hit_test.interaction.begin_press(
         slot,
         Point::new(20.0, 20.0),
         renderer.frame_instant(),
@@ -290,6 +289,20 @@ fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
 
     assert!(!state.pressed);
     assert_eq!(state.press_origin, None);
+}
+
+#[test]
+fn interaction_engine_resolves_focus_state() {
+    let mut renderer = test_renderer();
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+
+    renderer.begin_rebuild_frame();
+    let (state, _) =
+        renderer.bind_focused_interaction_target(Rect::new(0.0, 0.0, 80.0, 80.0), &env, true);
+
+    assert!(state.focus_visible);
+    assert_eq!(state.focus_progress, 1.0);
 }
 
 #[derive(Default)]

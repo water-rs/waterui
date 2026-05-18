@@ -21,7 +21,8 @@ use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
 
-use crate::widgets::util::{local_interaction_state, widget_theme};
+use crate::renderer::local_interaction_state;
+use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {

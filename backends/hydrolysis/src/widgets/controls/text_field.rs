@@ -25,7 +25,8 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 
-use crate::widgets::util::{local_interaction_state, widget_theme};
+use crate::renderer::local_interaction_state;
+use crate::widgets::util::widget_theme;
 
 const FLOATING_LABEL_SCALE: f64 = 0.75;
 const CONTENT_VISIBLE_PORTION: f32 = 5.0 / 9.0;
@@ -242,21 +243,12 @@ pub(crate) fn render_text_field(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let interaction_motion = theme.interaction_motion();
-    let focus_progress = ctx.renderer_mut().sample_widget_scalar_target(
-        if is_focused { 1.0 } else { 0.0 },
-        if is_focused {
-            interaction_motion.focus_enter.clone()
-        } else {
-            interaction_motion.focus_exit.clone()
-        },
+    let (mut field_interaction, _) = ctx.renderer_mut().bind_focused_interaction_target(
+        transformed_rect(hit_transform, field_rect),
+        env,
+        is_focused,
     );
-    let (mut field_interaction, _) = ctx
-        .renderer_mut()
-        .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
     field_interaction = local_interaction_state(field_interaction, hit_transform);
-    field_interaction.focus_visible = is_focused;
-    field_interaction.focus_progress = focus_progress;
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
@@ -299,6 +291,7 @@ pub(crate) fn render_text_field(
     } else {
         0.0
     };
+    let interaction_motion = theme.interaction_motion();
     let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
         label_target,
         if label_target > 0.0 {
@@ -492,21 +485,12 @@ pub(crate) fn render_secure_field(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let interaction_motion = theme.interaction_motion();
-    let focus_progress = ctx.renderer_mut().sample_widget_scalar_target(
-        if is_focused { 1.0 } else { 0.0 },
-        if is_focused {
-            interaction_motion.focus_enter.clone()
-        } else {
-            interaction_motion.focus_exit.clone()
-        },
+    let (mut field_interaction, _) = ctx.renderer_mut().bind_focused_interaction_target(
+        transformed_rect(hit_transform, field_rect),
+        env,
+        is_focused,
     );
-    let (mut field_interaction, _) = ctx
-        .renderer_mut()
-        .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
     field_interaction = local_interaction_state(field_interaction, hit_transform);
-    field_interaction.focus_visible = is_focused;
-    field_interaction.focus_progress = focus_progress;
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
@@ -552,6 +536,7 @@ pub(crate) fn render_secure_field(
     } else {
         0.0
     };
+    let interaction_motion = theme.interaction_motion();
     let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
         label_target,
         if label_target > 0.0 {
