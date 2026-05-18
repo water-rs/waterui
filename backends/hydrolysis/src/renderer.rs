@@ -2610,7 +2610,7 @@ impl HydrolysisRenderer {
         let gesture_start = renderer.gesture_engine.target_count();
         let cursor_start = renderer.hit_test.cursor_targets.len();
         let hover_start = renderer.hit_test.hover_targets.len();
-        let hover_cursor_start = renderer.hit_test.hover_controller.cursor();
+        let hover_cursor_start = renderer.hit_test.interaction.hover_cursor();
         let scroll_start = renderer.hit_test.scroll_targets.len();
         let text_start = renderer.text_editing.text_input_targets.len();
 
@@ -2627,8 +2627,8 @@ impl HydrolysisRenderer {
         renderer.hit_test.hover_targets.truncate(hover_start);
         renderer
             .hit_test
-            .hover_controller
-            .rewind_to(hover_cursor_start);
+            .interaction
+            .rewind_hover_to(hover_cursor_start);
         renderer.hit_test.scroll_targets.truncate(scroll_start);
         let text_end = renderer.text_editing.text_input_targets.len();
         renderer

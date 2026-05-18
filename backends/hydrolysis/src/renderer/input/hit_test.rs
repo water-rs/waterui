@@ -1,6 +1,5 @@
 use super::*;
 use crate::widgets::util::widget_theme;
-use waterui_backend_core::widget::InteractionMotion;
 use waterui_backend_core::widget::WidgetInteractionState;
 
 #[derive(Clone)]
@@ -48,8 +47,7 @@ pub(crate) struct HitTestState {
     pub(crate) cursor_targets: Vec<CursorTarget>,
     pub(crate) hover_targets: Vec<HoverTarget>,
     pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
-    pub(crate) hover_controller: HoverController,
-    pub(crate) press_controller: PressController,
+    pub(crate) interaction: InteractionEngine,
     pub(crate) active_press_bounds: Option<vello::kurbo::Rect>,
     pub(crate) active_press_origin: Option<vello::kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
@@ -69,13 +67,11 @@ impl HitTestState {
     pub(crate) fn begin_rebuild_frame(&mut self) {
         self.hit_test_opacity = 1.0;
         self.hit_test_order = 0;
-        self.hover_controller.begin_rebuild_frame();
-        self.press_controller.begin_rebuild_frame();
+        self.interaction.begin_rebuild_frame();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.hover_controller.finish_rebuild_frame();
-        self.press_controller.finish_rebuild_frame();
+        self.interaction.finish_rebuild_frame();
     }
 
     pub(crate) fn next_hit_test_order(&mut self) -> usize {
@@ -104,14 +100,14 @@ impl HitTestState {
         let mut changed = false;
         for target in &mut self.hover_targets {
             let contains = target.bounds.contains(point);
-            let slot_hovering = self.hover_controller.slots[target.slot.index].hovering;
+            let slot_hovering = self.interaction.hovering(target.slot);
             if contains && !slot_hovering {
-                self.hover_controller.set_hovering(target.slot, true);
+                self.interaction.set_hovering(target.slot, true);
                 if let Some(on_enter) = target.on_enter.as_mut() {
                     changed |= (on_enter.borrow_mut())(env);
                 }
             } else if !contains && slot_hovering {
-                self.hover_controller.set_hovering(target.slot, false);
+                self.interaction.set_hovering(target.slot, false);
                 if let Some(on_exit) = target.on_exit.as_mut() {
                     changed |= (on_exit.borrow_mut())(env);
                 }
@@ -124,132 +120,6 @@ impl HitTestState {
             }
         }
         changed
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct PressController {
-    pub(crate) slots: Vec<PressStateSlot>,
-    pub(crate) cursor: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PressSlot {
-    pub(crate) index: usize,
-}
-
-#[derive(Debug)]
-pub(crate) struct PressStateSlot {
-    pub(crate) pressing: bool,
-    pub(crate) origin: Option<vello::kurbo::Point>,
-    pub(crate) pressed_at: Option<Instant>,
-    pub(crate) released_at: Option<Instant>,
-}
-
-impl PressController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    pub(crate) fn bind(&mut self) -> (PressSlot, bool) {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("press controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(PressStateSlot {
-                pressing: false,
-                origin: None,
-                pressed_at: None,
-                released_at: None,
-            });
-        }
-        (PressSlot { index }, self.slots[index].pressing)
-    }
-
-    pub(crate) fn begin_press(
-        &mut self,
-        slot: PressSlot,
-        origin: vello::kurbo::Point,
-        now: Instant,
-    ) {
-        let state = &mut self.slots[slot.index];
-        state.pressing = true;
-        state.origin = Some(origin);
-        state.pressed_at = Some(now);
-        state.released_at = None;
-    }
-
-    pub(crate) fn clear_all(&mut self, now: Instant) -> bool {
-        let mut changed = false;
-        for slot in &mut self.slots {
-            changed |= slot.pressing;
-            slot.pressing = false;
-            if slot.origin.is_some() && slot.released_at.is_none() {
-                slot.released_at = Some(now);
-            }
-        }
-        changed
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct HoverController {
-    pub(crate) slots: Vec<HoverStateSlot>,
-    pub(crate) cursor: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct HoverSlot {
-    pub(crate) index: usize,
-}
-
-#[derive(Debug)]
-pub(crate) struct HoverStateSlot {
-    pub(crate) hovering: bool,
-}
-
-impl HoverController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    pub(crate) fn bind(&mut self) -> (HoverSlot, bool) {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("hover controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(HoverStateSlot { hovering: false });
-        }
-        (HoverSlot { index }, self.slots[index].hovering)
-    }
-
-    pub(crate) fn set_hovering(&mut self, slot: HoverSlot, hovering: bool) {
-        self.slots[slot.index].hovering = hovering;
-    }
-
-    pub(crate) fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    pub(crate) fn rewind_to(&mut self, cursor: usize) {
-        assert!(
-            (cursor <= self.cursor),
-            "hover controller rewind cursor exceeds current cursor"
-        );
-        self.cursor = cursor;
-        self.slots.truncate(cursor);
     }
 }
 
@@ -321,7 +191,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
-        rebuild_requested |= self.hit_test.press_controller.clear_all(at);
+        rebuild_requested |= self.hit_test.interaction.clear_all_presses(at);
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.text_editing.active_text_context_menu,
@@ -446,7 +316,7 @@ impl HydrolysisRenderer {
         for index in pointer_indices {
             let target = self.hit_test.pointer_targets[index].clone();
             if let Some(slot) = target.press_slot {
-                self.hit_test.press_controller.begin_press(slot, point, at);
+                self.hit_test.interaction.begin_press(slot, point, at);
                 self.hit_test.active_press_bounds = Some(target.bounds);
                 self.hit_test.active_press_origin = Some(point);
                 rebuild_requested = true;
@@ -512,7 +382,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
-        changed |= self.hit_test.press_controller.clear_all(at);
+        changed |= self.hit_test.interaction.clear_all_presses(at);
         let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
         changed |= gesture_changed;
         tracing::trace!(
@@ -584,19 +454,17 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
-        rebuild_requested |= self.hit_test.press_controller.clear_all(at);
+        rebuild_requested |= self.hit_test.interaction.clear_all_presses(at);
         let gesture_changed = self
             .gesture_engine
             .handle_pointer_cancel(self.frame_instant(), env);
         rebuild_requested |= gesture_changed;
         for target in &mut self.hit_test.hover_targets {
-            let hovering = self.hit_test.hover_controller.slots[target.slot.index].hovering;
+            let hovering = self.hit_test.interaction.hovering(target.slot);
             if !hovering {
                 continue;
             }
-            self.hit_test
-                .hover_controller
-                .set_hovering(target.slot, false);
+            self.hit_test.interaction.set_hovering(target.slot, false);
             if let Some(on_exit) = target.on_exit.as_mut() {
                 rebuild_requested |= (on_exit.borrow_mut())(env);
             }
@@ -654,12 +522,29 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         env: &Environment,
     ) -> (WidgetInteractionState, PressSlot) {
-        let (hover_slot, hovered) = self.hit_test.hover_controller.bind();
-        let (press_slot, slot_pressed) = self.hit_test.press_controller.bind();
-        let active_bounds_pressed = self
-            .hit_test
-            .active_press_origin
-            .is_some_and(|origin| bounds.contains(origin));
+        self.bind_interaction_target_with_focus(bounds, env, None)
+    }
+
+    pub(crate) fn bind_focused_interaction_target(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        focused: bool,
+    ) -> (WidgetInteractionState, PressSlot) {
+        self.bind_interaction_target_with_focus(
+            bounds,
+            env,
+            Some(InteractionFocus::visible(focused)),
+        )
+    }
+
+    fn bind_interaction_target_with_focus(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        focus: Option<InteractionFocus>,
+    ) -> (WidgetInteractionState, PressSlot) {
+        let (hover_slot, hovered) = self.hit_test.interaction.bind_hover();
         if self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
             self.hit_test.hover_targets.push(HoverTarget {
                 bounds,
@@ -671,59 +556,14 @@ impl HydrolysisRenderer {
         }
         let motion = widget_theme(env).interaction_motion();
         let now = self.frame_instant();
-        let slot = &mut self.hit_test.press_controller.slots[press_slot.index];
-        let slot_origin_in_bounds = slot.origin.is_some_and(|origin| bounds.contains(origin));
-        let slot_pressed = slot_pressed && slot_origin_in_bounds;
-        let released_press_visible =
-            slot_origin_in_bounds && released_before_minimum_press_duration(slot, now, &motion);
-        let visual_pressed = slot_pressed || active_bounds_pressed || released_press_visible;
-        if should_clear_released_press_origin(slot, now, &motion) {
-            slot.origin = None;
-            slot.pressed_at = None;
-            slot.released_at = None;
-        }
-        let press_origin = if active_bounds_pressed {
-            self.hit_test.active_press_origin.or(slot.origin)
-        } else if slot_origin_in_bounds {
-            slot.origin
-        } else {
-            None
-        };
-        let target_opacity = if hovered { motion.hover_opacity } else { 0.0 };
-        let alpha_handle = self.animation_controller.bind_scalar_target(
-            target_opacity,
-            state_layer_animation(target_opacity, &motion),
+        self.hit_test.interaction.bind_widget_state(
+            bounds,
+            hovered,
+            focus,
+            self.hit_test.active_press_origin,
+            &motion,
+            &mut self.animation_controller,
             now,
-        );
-        let state_layer_opacity = alpha_handle.sample(now);
-        let press_opacity_handle = self.animation_controller.bind_scalar_target(
-            if visual_pressed {
-                motion.pressed_opacity
-            } else {
-                0.0
-            },
-            press_layer_opacity_animation(visual_pressed, &motion),
-            now,
-        );
-        let press_layer_opacity = press_opacity_handle.sample(now);
-        let press_progress_handle = self.animation_controller.bind_scalar_target(
-            if press_origin.is_some() { 1.0 } else { 0.0 },
-            motion.press_grow.clone(),
-            now,
-        );
-        let press_progress = press_progress_handle.sample(now);
-        (
-            WidgetInteractionState {
-                hovered,
-                pressed: visual_pressed,
-                focus_visible: false,
-                focus_progress: 0.0,
-                state_layer_opacity,
-                press_layer_opacity,
-                press_origin,
-                press_progress,
-            },
-            press_slot,
         )
     }
 
@@ -817,7 +657,7 @@ impl HydrolysisRenderer {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        let (slot, _hovering) = self.hit_test.hover_controller.bind();
+        let (slot, _hovering) = self.hit_test.interaction.bind_hover();
         self.hit_test.hover_targets.push(HoverTarget {
             bounds,
             slot,
@@ -866,129 +706,5 @@ impl HydrolysisRenderer {
         self.hit_test
             .scroll_targets
             .push(ScrollTarget { bounds, action });
-    }
-}
-
-fn state_layer_animation(target_opacity: f32, motion: &InteractionMotion) -> Animation {
-    if target_opacity > 0.0 {
-        motion.hover_enter.clone()
-    } else {
-        motion.hover_exit.clone()
-    }
-}
-
-fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> Animation {
-    if pressed {
-        motion.press_fade_in.clone()
-    } else {
-        motion.press_fade_out.clone()
-    }
-}
-
-fn released_before_minimum_press_duration(
-    slot: &PressStateSlot,
-    now: Instant,
-    motion: &InteractionMotion,
-) -> bool {
-    if slot.pressing || slot.released_at.is_none() {
-        return false;
-    }
-    let Some(pressed_at) = slot.pressed_at else {
-        return false;
-    };
-    now.duration_since(pressed_at) < motion.minimum_press_duration
-}
-
-fn should_clear_released_press_origin(
-    slot: &PressStateSlot,
-    now: Instant,
-    motion: &InteractionMotion,
-) -> bool {
-    if slot.pressing {
-        return false;
-    }
-    let Some(released_at) = slot.released_at else {
-        return false;
-    };
-    let minimum_remaining = slot.pressed_at.map_or(Duration::ZERO, |pressed_at| {
-        motion
-            .minimum_press_duration
-            .saturating_sub(now.duration_since(pressed_at))
-    });
-    let retention = motion.press_fade_out.duration().max(minimum_remaining);
-    now.duration_since(released_at) >= retention
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        PressStateSlot, released_before_minimum_press_duration, should_clear_released_press_origin,
-    };
-    use core::time::Duration;
-    use waterui::animation::Animation;
-    use waterui_backend_core::widget::InteractionMotion;
-
-    fn motion() -> InteractionMotion {
-        InteractionMotion {
-            hover_opacity: 0.08,
-            focus_opacity: 0.12,
-            pressed_opacity: 0.12,
-            dragged_opacity: 0.16,
-            hover_enter: Animation::linear(Duration::from_millis(15)),
-            hover_exit: Animation::linear(Duration::from_millis(15)),
-            focus_enter: Animation::linear(Duration::from_millis(15)),
-            focus_exit: Animation::linear(Duration::from_millis(15)),
-            press_fade_in: Animation::linear(Duration::from_millis(105)),
-            press_fade_out: Animation::linear(Duration::from_millis(375)),
-            press_grow: Animation::linear(Duration::from_millis(450)),
-            minimum_press_duration: Duration::from_millis(225),
-            touch_delay: Duration::from_millis(150),
-        }
-    }
-
-    #[test]
-    fn released_press_stays_visually_pressed_until_minimum_duration() {
-        let started = crate::time::Instant::now();
-        let released = started + Duration::from_millis(80);
-        let slot = PressStateSlot {
-            pressing: false,
-            origin: Some(vello::kurbo::Point::new(16.0, 16.0)),
-            pressed_at: Some(started),
-            released_at: Some(released),
-        };
-
-        assert!(released_before_minimum_press_duration(
-            &slot,
-            started + Duration::from_millis(120),
-            &motion()
-        ));
-        assert!(!released_before_minimum_press_duration(
-            &slot,
-            started + Duration::from_millis(260),
-            &motion()
-        ));
-    }
-
-    #[test]
-    fn released_press_origin_survives_fade_out_then_clears() {
-        let started = crate::time::Instant::now();
-        let released = started + Duration::from_millis(240);
-        let slot = PressStateSlot {
-            pressing: false,
-            origin: Some(vello::kurbo::Point::new(16.0, 16.0)),
-            pressed_at: Some(started),
-            released_at: Some(released),
-        };
-
-        assert!(!should_clear_released_press_origin(
-            &slot,
-            released + Duration::from_millis(300),
-            &motion()
-        ));
-        assert!(should_clear_released_press_origin(
-            &slot,
-            released + Duration::from_millis(380),
-            &motion()
-        ));
     }
 }
