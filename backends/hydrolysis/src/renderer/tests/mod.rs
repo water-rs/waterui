@@ -270,6 +270,28 @@ fn interaction_press_origin_is_converted_to_widget_local_space() {
     assert_eq!(local.press_layer_opacity, state.press_layer_opacity);
 }
 
+#[test]
+fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
+    let mut renderer = test_renderer();
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+
+    renderer.begin_rebuild_frame();
+    let (_, slot) = renderer.bind_interaction_target(Rect::new(0.0, 0.0, 80.0, 80.0), &env);
+    renderer.hit_test.press_controller.begin_press(
+        slot,
+        Point::new(20.0, 20.0),
+        renderer.frame_instant(),
+    );
+    renderer.finish_rebuild_frame();
+
+    renderer.begin_rebuild_frame();
+    let (state, _) = renderer.bind_interaction_target(Rect::new(100.0, 100.0, 180.0, 180.0), &env);
+
+    assert!(!state.pressed);
+    assert_eq!(state.press_origin, None);
+}
+
 #[derive(Default)]
 struct NoopDrawContext;
 
