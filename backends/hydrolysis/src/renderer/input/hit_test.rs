@@ -103,11 +103,13 @@ impl HitTestState {
             let slot_hovering = self.interaction.hovering(target.slot);
             if contains && !slot_hovering {
                 self.interaction.set_hovering(target.slot, true);
+                changed = true;
                 if let Some(on_enter) = target.on_enter.as_mut() {
                     changed |= (on_enter.borrow_mut())(env);
                 }
             } else if !contains && slot_hovering {
                 self.interaction.set_hovering(target.slot, false);
+                changed = true;
                 if let Some(on_exit) = target.on_exit.as_mut() {
                     changed |= (on_exit.borrow_mut())(env);
                 }
@@ -192,6 +194,9 @@ impl HydrolysisRenderer {
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         rebuild_requested |= self.hit_test.interaction.clear_all_presses(at);
+        if rebuild_requested {
+            self.request_rebuild();
+        }
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.text_editing.active_text_context_menu,
@@ -319,6 +324,7 @@ impl HydrolysisRenderer {
                 self.hit_test.interaction.begin_press(slot, point, at);
                 self.hit_test.active_press_bounds = Some(target.bounds);
                 self.hit_test.active_press_origin = Some(point);
+                self.request_rebuild();
                 rebuild_requested = true;
             }
             tracing::trace!(
@@ -382,7 +388,11 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
-        changed |= self.hit_test.interaction.clear_all_presses(at);
+        let press_changed = self.hit_test.interaction.clear_all_presses(at);
+        if press_changed {
+            self.request_rebuild();
+        }
+        changed |= press_changed;
         let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
         changed |= gesture_changed;
         tracing::trace!(
@@ -416,7 +426,11 @@ impl HydrolysisRenderer {
         }
         let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
         rebuild_requested |= gesture_changed;
-        rebuild_requested |= self.hit_test.sync_hover_targets(point, env, true);
+        let hover_changed = self.hit_test.sync_hover_targets(point, env, true);
+        if hover_changed {
+            self.request_rebuild();
+        }
+        rebuild_requested |= hover_changed;
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -434,6 +448,9 @@ impl HydrolysisRenderer {
     pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let changed = self.hit_test.sync_hover_targets(point, env, false);
+        if changed {
+            self.request_rebuild();
+        }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -454,7 +471,11 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
-        rebuild_requested |= self.hit_test.interaction.clear_all_presses(at);
+        let press_changed = self.hit_test.interaction.clear_all_presses(at);
+        if press_changed {
+            self.request_rebuild();
+        }
+        rebuild_requested |= press_changed;
         let gesture_changed = self
             .gesture_engine
             .handle_pointer_cancel(self.frame_instant(), env);

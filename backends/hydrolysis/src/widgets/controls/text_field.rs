@@ -1,4 +1,3 @@
-use crate::engine::DrawContext;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TextInputModel,
@@ -262,26 +261,16 @@ pub(crate) fn render_text_field(
         line_limit,
         selection_menu: text_field.selection_menu,
     };
-    let (prompt, value, preedit, caret_opacity, selection_visible) = {
-        let selection_visible = is_focused
-            || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
+    let (prompt, value, preedit) = {
         let preedit = if is_focused {
             ctx.renderer_mut().current_ime_preedit().unwrap_or_default()
         } else {
             Str::new()
         };
-        let caret_opacity = if is_focused {
-            let now = ctx.renderer_mut().frame_instant();
-            ctx.renderer_mut().text_caret_opacity(now)
-        } else {
-            0.0
-        };
         (
             ctx.renderer_mut().read_signal(&prompt_signal).to_plain(),
             ctx.renderer_mut().read_signal(&value_binding).to_plain(),
             preedit,
-            caret_opacity,
-            selection_visible,
         )
     };
     let committed_with_preedit = value.clone() + preedit.as_str();
@@ -368,19 +357,6 @@ pub(crate) fn render_text_field(
     };
     if content_alpha > 0.0 {
         ctx.push_layer_rect(content_alpha, text_bounds);
-        if selection_visible && !selection.is_collapsed() {
-            let selection_brush = theme.input_selection_brush();
-            let mut draw = ctx.draw_context();
-            for (rect, _) in selection.geometry(&committed_layout) {
-                let highlight = vello::kurbo::Rect::new(
-                    text_bounds.x0 + rect.x0,
-                    text_bounds.y0 + rect.y0,
-                    text_bounds.x0 + rect.x1,
-                    text_bounds.y0 + rect.y1,
-                );
-                draw.fill_rect(highlight, &selection_brush);
-            }
-        }
         ctx.render_styled_text_limited(
             display_styled,
             HorizontalAlignment::Leading,
@@ -398,12 +374,6 @@ pub(crate) fn render_text_field(
         let y1 = text_bounds.y0 + rect.y1.max(rect.y0 + 1.0);
         vello::kurbo::Rect::new(x0, y0, x1, y1)
     };
-    if is_focused && selection.is_collapsed() && caret_opacity > 0.0 {
-        let caret_brush = theme.input_caret_brush(caret_opacity);
-        let mut draw = ctx.draw_context();
-        draw.fill_rect(cursor_area, &caret_brush);
-    }
-
     let hit_transform = ctx.hit_transform;
     ctx.renderer_mut().register_cursor_target(
         transformed_rect(hit_transform, field_rect),
@@ -422,6 +392,7 @@ pub(crate) fn render_text_field(
             bounds: transformed_rect(hit_transform, field_rect),
             cursor_area: transformed_rect(hit_transform, cursor_area),
             text_bounds: transformed_rect(hit_transform, text_bounds),
+            content_alpha,
             layout: committed_layout,
             purpose: TextInputPurpose::Normal,
             model: input_model,
@@ -501,9 +472,7 @@ pub(crate) fn render_secure_field(
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
     };
-    let (masked, caret_opacity, selection_visible, plain_value) = {
-        let selection_visible = is_focused
-            || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
+    let (masked, plain_value) = {
         let plain_value = ctx
             .renderer_mut()
             .read_signal(&value_binding)
@@ -518,18 +487,7 @@ pub(crate) fn render_secure_field(
             0
         };
         let count = plain_value.chars().count() + preedit_count;
-        let caret_opacity = if is_focused {
-            let now = ctx.renderer_mut().frame_instant();
-            ctx.renderer_mut().text_caret_opacity(now)
-        } else {
-            0.0
-        };
-        (
-            "*".repeat(count),
-            caret_opacity,
-            selection_visible,
-            plain_value,
-        )
+        ("*".repeat(count), plain_value)
     };
     let label_target = if is_focused || !plain_value.is_empty() {
         1.0
@@ -605,19 +563,6 @@ pub(crate) fn render_secure_field(
     };
     if content_alpha > 0.0 {
         ctx.push_layer_rect(content_alpha, text_bounds);
-        if selection_visible && !selection.is_collapsed() {
-            let selection_brush = theme.input_selection_brush();
-            let mut draw = ctx.draw_context();
-            for (rect, _) in selection.geometry(&committed_layout) {
-                let highlight = vello::kurbo::Rect::new(
-                    text_bounds.x0 + rect.x0,
-                    text_bounds.y0 + rect.y0,
-                    text_bounds.x0 + rect.x1,
-                    text_bounds.y0 + rect.y1,
-                );
-                draw.fill_rect(highlight, &selection_brush);
-            }
-        }
         ctx.render_styled_text_limited(
             masked_display,
             HorizontalAlignment::Leading,
@@ -635,12 +580,6 @@ pub(crate) fn render_secure_field(
         let y1 = text_bounds.y0 + rect.y1.max(rect.y0 + 1.0);
         vello::kurbo::Rect::new(x0, y0, x1, y1)
     };
-    if is_focused && selection.is_collapsed() && caret_opacity > 0.0 {
-        let caret_brush = theme.input_caret_brush(caret_opacity);
-        let mut draw = ctx.draw_context();
-        draw.fill_rect(cursor_area, &caret_brush);
-    }
-
     let hit_transform = ctx.hit_transform;
     ctx.renderer_mut().register_cursor_target(
         transformed_rect(hit_transform, field_rect),
@@ -659,6 +598,7 @@ pub(crate) fn render_secure_field(
             bounds: transformed_rect(hit_transform, field_rect),
             cursor_area: transformed_rect(hit_transform, cursor_area),
             text_bounds: transformed_rect(hit_transform, text_bounds),
+            content_alpha,
             layout: committed_layout,
             purpose: TextInputPurpose::Password,
             model: input_model,
