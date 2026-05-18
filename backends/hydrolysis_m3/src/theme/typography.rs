@@ -3,7 +3,8 @@ use waterui::text::font::{Font, FontWeight, ResolvedFont};
 use waterui::theme::FontSettings;
 use waterui_core::{Environment, resolve::Resolvable};
 
-const MATERIAL_TYPEFACE: &str = "Roboto";
+const MATERIAL_TYPEFACE: &str =
+    "Roboto, Noto Sans CJK JP, Noto Sans CJK KR, Noto Sans CJK SC, Noto Sans CJK TC, sans-serif";
 
 const fn font(size: f32, weight: FontWeight) -> ResolvedFont {
     ResolvedFont::with_static_family(size, weight, MATERIAL_TYPEFACE)
@@ -159,6 +160,14 @@ mod tests {
         assert_eq!(font.size, expected_size);
         assert_eq!(font.weight, expected_weight);
         assert_eq!(font.family.as_deref(), Some(MATERIAL_TYPEFACE));
+    }
+
+    #[test]
+    fn material_typeface_uses_roboto_with_noto_cjk_fallbacks() {
+        assert_eq!(
+            MATERIAL_TYPEFACE,
+            "Roboto, Noto Sans CJK JP, Noto Sans CJK KR, Noto Sans CJK SC, Noto Sans CJK TC, sans-serif"
+        );
     }
 
     #[test]
