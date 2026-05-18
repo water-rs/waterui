@@ -13,7 +13,7 @@ use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::widgets::util::widget_theme;
+use crate::widgets::util::{local_interaction_state, widget_theme};
 
 impl HydroNativeView for Native<ToggleConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -88,6 +88,7 @@ pub(crate) fn render_toggle(
         .resolve_toggle_progress(&toggle.toggle, theme.toggle_value_animation());
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let interaction = local_interaction_state(interaction, ctx.hit_transform);
     let mut draw = ctx.draw_context();
     match style {
         ToggleStyle::Automatic | ToggleStyle::Switch => {

@@ -20,7 +20,7 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::color::Color;
 
-use crate::widgets::util::{inset_rect, widget_theme};
+use crate::widgets::util::{inset_rect, local_interaction_state, widget_theme};
 
 impl HydroNativeView for Native<ButtonConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -135,6 +135,7 @@ pub(crate) fn render_button(
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
         theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
@@ -183,6 +184,7 @@ pub(crate) fn render_menu(
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
         theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
