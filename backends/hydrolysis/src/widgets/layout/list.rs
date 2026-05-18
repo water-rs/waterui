@@ -18,7 +18,7 @@ use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 use crate::renderer::lazy::{resolve_visible_index_window, sum_cached_or_estimated};
-use crate::widgets::{draw_scroll_indicators, widget_theme};
+use crate::widgets::{draw_scroll_indicators, local_interaction_state, widget_theme};
 
 impl HydroNativeView for Native<ListConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -259,14 +259,17 @@ pub(crate) fn render_list(
                 (hit_bounds, state, slot)
             });
             {
+                let hit_transform = ctx.hit_transform;
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_move_control(&mut draw, control_rect);
                 if let Some((_, state, _)) = &up_interaction {
-                    theme.draw_list_move_control_state_layer(&mut draw, up_rect, *state);
+                    let state = local_interaction_state(*state, hit_transform);
+                    theme.draw_list_move_control_state_layer(&mut draw, up_rect, state);
                 }
                 if let Some((_, state, _)) = &down_interaction {
-                    theme.draw_list_move_control_state_layer(&mut draw, down_rect, *state);
+                    let state = local_interaction_state(*state, hit_transform);
+                    theme.draw_list_move_control_state_layer(&mut draw, down_rect, state);
                 }
             }
 
@@ -307,6 +310,8 @@ pub(crate) fn render_list(
                 .renderer_mut()
                 .bind_interaction_target(delete_hit_bounds, &row_env);
             {
+                let delete_interaction =
+                    local_interaction_state(delete_interaction, ctx.hit_transform);
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_delete_control(&mut draw, delete_rect);

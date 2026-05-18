@@ -773,6 +773,7 @@ impl HydrolysisRenderer {
             self.dismiss_active_text_context_menu();
             self.dismiss_active_popup_menu();
         }
+        self.request_rebuild();
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             previous_focus = ?previous,
