@@ -497,7 +497,11 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         for target in self.hit_test.scroll_targets.iter_mut().rev() {
             if target.bounds.contains(point) {
-                return (target.action.borrow_mut())(dx, dy, is_line_delta);
+                let changed = (target.action.borrow_mut())(dx, dy, is_line_delta);
+                if changed {
+                    self.dismiss_active_text_context_menu();
+                }
+                return changed;
             }
         }
         false

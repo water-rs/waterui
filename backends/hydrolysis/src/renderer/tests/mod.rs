@@ -56,6 +56,7 @@ fn text_input_target(
         bounds: Rect::ZERO,
         cursor_area: Rect::ZERO,
         text_bounds: Rect::ZERO,
+        text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
         layout: parley::Layout::default(),
         purpose: TextInputPurpose::Normal,

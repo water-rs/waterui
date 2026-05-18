@@ -325,6 +325,8 @@ pub(crate) fn render_text_field(
         env,
         Some(text_bounds.width() as f32),
     );
+    let text_clip_bounds =
+        material_input_text_clip_rect(field_rect, text_bounds, committed_layout.height());
     let selection = {
         let mut slot = selection_slot.borrow_mut();
         if !slot.initialized {
@@ -356,7 +358,7 @@ pub(crate) fn render_text_field(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.push_layer_rect(content_alpha, text_bounds);
+        ctx.push_layer_rect(content_alpha, text_clip_bounds);
         ctx.render_styled_text_limited(
             display_styled,
             HorizontalAlignment::Leading,
@@ -392,6 +394,7 @@ pub(crate) fn render_text_field(
             bounds: transformed_rect(hit_transform, field_rect),
             cursor_area: transformed_rect(hit_transform, cursor_area),
             text_bounds: transformed_rect(hit_transform, text_bounds),
+            text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
             content_alpha,
             layout: committed_layout,
             purpose: TextInputPurpose::Normal,
@@ -530,6 +533,8 @@ pub(crate) fn render_secure_field(
         env,
         Some(text_bounds.width() as f32),
     );
+    let text_clip_bounds =
+        material_input_text_clip_rect(field_rect, text_bounds, committed_layout.height());
     let selection = {
         let mut slot = selection_slot.borrow_mut();
         if !slot.initialized {
@@ -562,7 +567,7 @@ pub(crate) fn render_secure_field(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.push_layer_rect(content_alpha, text_bounds);
+        ctx.push_layer_rect(content_alpha, text_clip_bounds);
         ctx.render_styled_text_limited(
             masked_display,
             HorizontalAlignment::Leading,
@@ -598,6 +603,7 @@ pub(crate) fn render_secure_field(
             bounds: transformed_rect(hit_transform, field_rect),
             cursor_area: transformed_rect(hit_transform, cursor_area),
             text_bounds: transformed_rect(hit_transform, text_bounds),
+            text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
             content_alpha,
             layout: committed_layout,
             purpose: TextInputPurpose::Password,
@@ -695,10 +701,25 @@ fn material_input_text_rect(
     )
 }
 
+fn material_input_text_clip_rect(
+    field_rect: vello::kurbo::Rect,
+    text_rect: vello::kurbo::Rect,
+    layout_height: f32,
+) -> vello::kurbo::Rect {
+    let required_height = f64::from(layout_height).max(text_rect.height());
+    if required_height <= text_rect.height() {
+        return text_rect;
+    }
+    let y1 = (text_rect.y0 + required_height).min(field_rect.y1);
+    let y0 = (y1 - required_height).max(field_rect.y0);
+    vello::kurbo::Rect::new(text_rect.x0, y0, text_rect.x1, y1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CONTENT_ENTER_DELAY_PORTION, CONTENT_VISIBLE_PORTION, material_input_content_alpha,
+        material_input_text_clip_rect,
     };
 
     #[test]
@@ -732,5 +753,19 @@ mod tests {
     #[test]
     fn material_input_without_label_keeps_content_visible() {
         assert_eq!(material_input_content_alpha(false, 0.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn material_input_text_clip_expands_for_tall_fallback_glyphs() {
+        let field = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = vello::kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
+
+        let clip = material_input_text_clip_rect(field, text, 30.0);
+
+        assert_eq!(clip.x0, text.x0);
+        assert_eq!(clip.x1, text.x1);
+        assert!(clip.height() >= 30.0);
+        assert!(clip.y0 >= field.y0);
+        assert!(clip.y1 <= field.y1);
     }
 }
