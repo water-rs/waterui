@@ -522,20 +522,10 @@ impl HydrolysisRenderer {
         builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
             default_font.weight,
         )));
-        let default_font_stack = if let Some(family) = default_font.family {
-            family_storage.push(family.to_string());
-            let family_name = family_storage
-                .last()
-                .expect("default font family storage must contain the pushed value");
-            parley::FontStack::Single(parley::FontFamily::Named(Cow::Borrowed(
-                family_name.as_str(),
-            )))
-        } else {
-            parley::FontStack::Single(parley::FontFamily::Generic(
-                parley::style::GenericFamily::SansSerif,
-            ))
-        };
-        builder.push_default(parley::StyleProperty::FontStack(default_font_stack));
+        builder.push_default(parley::StyleProperty::FontStack(font_stack(
+            default_font.family.as_deref(),
+            &mut family_storage,
+        )));
 
         for (range, style) in &resolved_spans {
             Self::push_text_style(&mut builder, &mut family_storage, style, range.clone());
@@ -634,14 +624,8 @@ impl HydrolysisRenderer {
             range.clone(),
         );
         if let Some(family) = &style.font.family {
-            family_storage.push(family.to_string());
-            let family_name = family_storage
-                .last()
-                .expect("font family storage must contain the pushed value");
             builder.push(
-                parley::StyleProperty::FontStack(parley::FontStack::Single(
-                    parley::FontFamily::Named(Cow::Borrowed(family_name.as_str())),
-                )),
+                parley::StyleProperty::FontStack(font_stack(Some(family.as_str()), family_storage)),
                 range.clone(),
             );
         }
@@ -686,6 +670,53 @@ fn resolve_text_style(style: &TextStyle, env: &Environment) -> ResolvedTextStyle
         italic: style.italic,
         underline: style.underline,
         strikethrough: style.strikethrough,
+    }
+}
+
+fn font_stack<'a>(
+    family: Option<&str>,
+    family_storage: &'a mut Vec<String>,
+) -> parley::FontStack<'a> {
+    let Some(family) = family else {
+        return parley::FontStack::Single(parley::FontFamily::Generic(
+            parley::style::GenericFamily::SansSerif,
+        ));
+    };
+    family_storage.push(family.to_string());
+    let family_name = family_storage
+        .last()
+        .expect("font family storage must contain the pushed value");
+    parley::FontStack::Source(Cow::Borrowed(family_name.as_str()))
+}
+
+#[cfg(test)]
+mod font_stack_tests {
+    use super::font_stack;
+    use parley::style::{FontFamily, GenericFamily};
+
+    #[test]
+    fn explicit_family_list_is_preserved_for_parley_css_parsing() {
+        let mut family_storage = Vec::new();
+        let stack = font_stack(
+            Some("Roboto, Noto Sans CJK SC, sans-serif"),
+            &mut family_storage,
+        );
+
+        assert_eq!(
+            stack,
+            parley::FontStack::Source("Roboto, Noto Sans CJK SC, sans-serif".into())
+        );
+    }
+
+    #[test]
+    fn missing_family_uses_sans_serif_generic() {
+        let mut family_storage = Vec::new();
+
+        assert_eq!(
+            font_stack(None, &mut family_storage),
+            parley::FontStack::Single(FontFamily::Generic(GenericFamily::SansSerif))
+        );
+        assert!(family_storage.is_empty());
     }
 }
 
