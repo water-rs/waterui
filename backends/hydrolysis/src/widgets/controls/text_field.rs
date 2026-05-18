@@ -325,8 +325,19 @@ pub(crate) fn render_text_field(
         env,
         Some(text_bounds.width() as f32),
     );
-    let text_clip_bounds =
-        material_input_text_clip_rect(field_rect, text_bounds, committed_layout.height());
+    let display_layout_height = HydrolysisRenderer::build_text_layout(
+        ctx.state_mut(),
+        display_styled.clone(),
+        HorizontalAlignment::Leading,
+        env,
+        Some(text_bounds.width() as f32),
+    )
+    .height();
+    let text_clip_bounds = material_input_text_clip_rect(
+        field_rect,
+        text_bounds,
+        committed_layout.height().max(display_layout_height),
+    );
     let selection = {
         let mut slot = selection_slot.borrow_mut();
         if !slot.initialized {
@@ -767,5 +778,18 @@ mod tests {
         assert!(clip.height() >= 30.0);
         assert!(clip.y0 >= field.y0);
         assert!(clip.y1 <= field.y1);
+    }
+
+    #[test]
+    fn material_input_text_clip_expands_for_placeholder_layout() {
+        let field = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = vello::kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
+
+        let clip = material_input_text_clip_rect(field, text, 34.0);
+
+        assert_eq!(clip.x0, text.x0);
+        assert_eq!(clip.x1, text.x1);
+        assert!(clip.height() >= 34.0);
+        assert!(clip.y1 > text.y1);
     }
 }
