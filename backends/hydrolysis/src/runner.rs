@@ -1299,6 +1299,10 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
     }
+    if runtime.renderer.advance_text_caret_animation(now) {
+        runtime.renderer.request_redraw();
+        runtime.platform.request_redraw();
+    }
     if runtime.renderer.retained_scroll_dynamic_morphs_active() && !runtime.needs_rebuild {
         runtime.scroll_only_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
@@ -1815,14 +1819,16 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{
-        HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow, schedule_redraw_or_rebuild,
-        schedule_scroll_scene_rebuild,
+        HeadlessPlatformWindow, RenderDiagnosticsConfig, RuntimeWindow, advance_runtime,
+        schedule_redraw_or_rebuild, schedule_scroll_scene_rebuild,
     };
     use crate::platform::PlatformWindow as _;
     use crate::renderer::HydrolysisRenderer;
     use core::time::Duration;
+    use std::time::Instant;
     use waterui::window::{Window, WindowState};
-    use waterui_core::binding;
+    use waterui_backend_core::widget::TextCaretMotion;
+    use waterui_core::{Environment, binding};
 
     #[test]
     fn changed_redraw_only_input_wakes_platform_window() {
@@ -1866,6 +1872,33 @@ mod tests {
             runtime.platform.take_redraw_request(),
             "scroll rebuilds must wake the platform event loop for the next frame"
         );
+    }
+
+    #[test]
+    fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
+        let mut runtime = test_runtime_window();
+        let now = Instant::now();
+        let motion = TextCaretMotion {
+            fade_cycle_duration: Duration::from_millis(1_000),
+            frame_interval: Duration::from_millis(16),
+            min_opacity: 0.2,
+        };
+        runtime.renderer.set_frame_instant(now);
+        runtime.renderer.set_text_caret_motion(motion);
+        assert!(runtime.renderer.set_focused_text_input(Some(0)));
+        assert!(runtime.renderer.take_rebuild_request());
+        runtime.needs_rebuild = false;
+        assert!(!runtime.platform.take_redraw_request());
+
+        let deadline = now
+            .checked_add(motion.frame_interval)
+            .expect("test caret deadline overflow");
+        let env = Environment::new();
+
+        assert!(advance_runtime(&mut runtime, &env, deadline).is_some());
+        assert!(!runtime.needs_rebuild);
+        assert!(runtime.renderer.take_redraw_request());
+        assert!(runtime.platform.take_redraw_request());
     }
 
     fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
