@@ -660,7 +660,6 @@ impl HydrolysisRenderer {
             .hit_test
             .active_press_origin
             .is_some_and(|origin| bounds.contains(origin));
-        let pressed = slot_pressed || active_bounds_pressed;
         if self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
             self.hit_test.hover_targets.push(HoverTarget {
                 bounds,
@@ -673,7 +672,11 @@ impl HydrolysisRenderer {
         let motion = widget_theme(env).interaction_motion();
         let now = self.frame_instant();
         let slot = &mut self.hit_test.press_controller.slots[press_slot.index];
-        let visual_pressed = pressed || released_before_minimum_press_duration(slot, now, &motion);
+        let slot_origin_in_bounds = slot.origin.is_some_and(|origin| bounds.contains(origin));
+        let slot_pressed = slot_pressed && slot_origin_in_bounds;
+        let released_press_visible =
+            slot_origin_in_bounds && released_before_minimum_press_duration(slot, now, &motion);
+        let visual_pressed = slot_pressed || active_bounds_pressed || released_press_visible;
         if should_clear_released_press_origin(slot, now, &motion) {
             slot.origin = None;
             slot.pressed_at = None;
@@ -681,8 +684,10 @@ impl HydrolysisRenderer {
         }
         let press_origin = if active_bounds_pressed {
             self.hit_test.active_press_origin.or(slot.origin)
-        } else {
+        } else if slot_origin_in_bounds {
             slot.origin
+        } else {
+            None
         };
         let target_opacity = if hovered { motion.hover_opacity } else { 0.0 };
         let alpha_handle = self.animation_controller.bind_scalar_target(
