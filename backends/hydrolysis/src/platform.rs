@@ -1023,6 +1023,7 @@ mod winit_impl {
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == ElementState::Pressed
+                        && should_emit_keyboard_text(self.modifiers)
                         && let Some(text) = keyboard_text_payload(event)
                     {
                         tracing::trace!(
@@ -1042,7 +1043,7 @@ mod winit_impl {
                         "winit raw input event"
                     );
                     self.pending_events.push(InputEvent::Key {
-                        key: map_key_event(event),
+                        key: map_key_event(event, self.modifiers),
                         state: match event.state {
                             ElementState::Pressed => KeyState::Pressed,
                             ElementState::Released => KeyState::Released,
@@ -1265,8 +1266,14 @@ mod winit_impl {
         }
     }
 
-    fn map_key_event(event: &KeyEvent) -> KeyCode {
-        if keyboard_text_payload(event).is_some() && matches!(event.logical_key, Key::Character(_))
+    fn should_emit_keyboard_text(modifiers: Modifiers) -> bool {
+        !(modifiers.control || modifiers.alt || modifiers.super_key)
+    }
+
+    fn map_key_event(event: &KeyEvent, modifiers: Modifiers) -> KeyCode {
+        if should_emit_keyboard_text(modifiers)
+            && keyboard_text_payload(event).is_some()
+            && matches!(event.logical_key, Key::Character(_))
         {
             return KeyCode::Unidentified;
         }
@@ -1310,7 +1317,8 @@ mod winit_impl {
         use winit::dpi::PhysicalPosition;
         use winit::event::MouseScrollDelta;
 
-        use super::{map_cursor_position, map_scroll_delta};
+        use super::{map_cursor_position, map_scroll_delta, should_emit_keyboard_text};
+        use crate::platform::Modifiers;
 
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
@@ -1337,6 +1345,26 @@ mod winit_impl {
             assert_eq!(dx, -2.0);
             assert_eq!(dy, 3.5);
             assert!(is_line_delta);
+        }
+
+        #[test]
+        fn command_modified_characters_are_reserved_for_shortcuts() {
+            assert!(should_emit_keyboard_text(Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            }));
+            assert!(!should_emit_keyboard_text(Modifiers {
+                control: true,
+                ..Modifiers::default()
+            }));
+            assert!(!should_emit_keyboard_text(Modifiers {
+                super_key: true,
+                ..Modifiers::default()
+            }));
+            assert!(!should_emit_keyboard_text(Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            }));
         }
 
         #[test]
