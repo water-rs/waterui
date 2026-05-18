@@ -42,8 +42,86 @@ fn init_main_thread_executors() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
-    use parley::fontique::{Blob, GenericFamily};
+    use parley::fontique::{Blob, Collection, FallbackKey, FamilyId, GenericFamily, Script};
     use std::sync::Arc;
+
+    #[derive(Default)]
+    struct ResourceFontFamilies {
+        generic: Vec<FamilyId>,
+        hani_simplified: Vec<FamilyId>,
+        hani_traditional: Vec<FamilyId>,
+        hani_japanese: Vec<FamilyId>,
+        hani_korean: Vec<FamilyId>,
+    }
+
+    fn extend_family_ids(
+        target: &mut Vec<FamilyId>,
+        families: &[(FamilyId, Vec<parley::fontique::FontInfo>)],
+    ) {
+        target.extend(families.iter().map(|(family_id, _)| *family_id));
+    }
+
+    fn classify_resource_font(
+        file_name: &str,
+        families: &[(FamilyId, Vec<parley::fontique::FontInfo>)],
+        resource: &mut ResourceFontFamilies,
+    ) {
+        let file_name = file_name.to_ascii_lowercase();
+        if file_name.contains("roboto") {
+            extend_family_ids(&mut resource.generic, families);
+        } else if file_name.contains("notosanscjksc") {
+            extend_family_ids(&mut resource.generic, families);
+            extend_family_ids(&mut resource.hani_simplified, families);
+        } else if file_name.contains("notosanscjktc") {
+            extend_family_ids(&mut resource.generic, families);
+            extend_family_ids(&mut resource.hani_traditional, families);
+        } else if file_name.contains("notosanscjkjp") {
+            extend_family_ids(&mut resource.generic, families);
+            extend_family_ids(&mut resource.hani_japanese, families);
+        } else if file_name.contains("notosanscjkkr") {
+            extend_family_ids(&mut resource.generic, families);
+            extend_family_ids(&mut resource.hani_korean, families);
+        }
+    }
+
+    fn set_fallbacks(
+        collection: &mut Collection,
+        key: impl Into<FallbackKey>,
+        families: &[FamilyId],
+    ) {
+        if families.is_empty() {
+            return;
+        }
+        assert!(
+            collection.set_fallbacks(key, families.iter().copied()),
+            "hydrolysis native font loader attempted to install an untracked script fallback"
+        );
+    }
+
+    fn install_resource_font_fallbacks(
+        collection: &mut Collection,
+        resource: &ResourceFontFamilies,
+    ) {
+        if !resource.generic.is_empty() {
+            collection
+                .set_generic_families(GenericFamily::SansSerif, resource.generic.iter().copied());
+            collection
+                .set_generic_families(GenericFamily::UiSansSerif, resource.generic.iter().copied());
+            collection
+                .set_generic_families(GenericFamily::SystemUi, resource.generic.iter().copied());
+        }
+
+        let hani = Script::from("Hani");
+        set_fallbacks(collection, hani, &resource.hani_simplified);
+        for locale in ["zh", "zh-CN", "zh-SG"] {
+            set_fallbacks(collection, (hani, locale), &resource.hani_simplified);
+        }
+        for locale in ["zh-Hant", "zh-TW", "zh-HK", "zh-MO"] {
+            set_fallbacks(collection, (hani, locale), &resource.hani_traditional);
+        }
+        set_fallbacks(collection, (hani, "ja"), &resource.hani_japanese);
+        set_fallbacks(collection, (hani, "ko"), &resource.hani_korean);
+    }
 
     let mut roots = Vec::new();
     if let Ok(current_dir) = std::env::current_dir() {
@@ -53,10 +131,22 @@ fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
         && let Some(exe_dir) = exe.parent()
     {
         roots.push(exe_dir.join("resources").join("fonts"));
+        if let Some(contents_dir) = exe_dir.parent()
+            && contents_dir
+                .file_name()
+                .is_some_and(|name| name == "Contents")
+        {
+            roots.push(
+                contents_dir
+                    .join("Resources")
+                    .join("resources")
+                    .join("fonts"),
+            );
+        }
     }
 
     let state = renderer.state_mut();
-    let mut resource_family_ids = Vec::new();
+    let mut resource_fonts = ResourceFontFamilies::default();
     for root in roots {
         if !root.exists() {
             continue;
@@ -91,7 +181,16 @@ fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
                 .font_cx
                 .collection
                 .register_fonts(Blob::new(Arc::new(font_data)), None);
-            resource_family_ids.extend(families.iter().map(|(family_id, _)| *family_id));
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "hydrolysis native font loader found a font path without UTF-8 file name: `{}`",
+                        path.display()
+                    )
+                });
+            classify_resource_font(file_name, &families, &mut resource_fonts);
             tracing::debug!(
                 target: "waterui::hydrolysis::fonts",
                 path = %path.display(),
@@ -100,16 +199,7 @@ fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
             );
         }
     }
-    if !resource_family_ids.is_empty() {
-        state.font_cx.collection.set_generic_families(
-            GenericFamily::SansSerif,
-            resource_family_ids.iter().copied(),
-        );
-        state.font_cx.collection.set_generic_families(
-            GenericFamily::UiSansSerif,
-            resource_family_ids.iter().copied(),
-        );
-    }
+    install_resource_font_fallbacks(&mut state.font_cx.collection, &resource_fonts);
 }
 
 fn install_native_component_hooks(env: &mut Environment) {
@@ -1870,7 +1960,7 @@ mod web_runner {
         async_task::{AsyncTask, Runnable},
         try_init_local_executor,
     };
-    use fontique::{Blob, FontInfoOverride, GenericFamily};
+    use fontique::{Blob, FallbackKey, FamilyId, FontInfoOverride, GenericFamily, Script};
     use js_sys::Uint8Array;
     use serde::Deserialize;
     use wasm_bindgen::{JsCast, closure::Closure};
@@ -1898,6 +1988,88 @@ mod web_runner {
     struct WebFontManifestEntry {
         name: String,
         file_name: String,
+    }
+
+    #[derive(Default)]
+    struct WebResourceFontFamilies {
+        generic: Vec<FamilyId>,
+        hani_simplified: Vec<FamilyId>,
+        hani_traditional: Vec<FamilyId>,
+        hani_japanese: Vec<FamilyId>,
+        hani_korean: Vec<FamilyId>,
+    }
+
+    fn extend_web_family_ids(
+        target: &mut Vec<FamilyId>,
+        families: &[(FamilyId, Vec<fontique::FontInfo>)],
+    ) {
+        target.extend(families.iter().map(|(family_id, _)| *family_id));
+    }
+
+    fn classify_web_resource_font(
+        name: &str,
+        families: &[(FamilyId, Vec<fontique::FontInfo>)],
+        resource: &mut WebResourceFontFamilies,
+    ) {
+        match name {
+            "Roboto" => extend_web_family_ids(&mut resource.generic, families),
+            "Noto Sans CJK SC" => {
+                extend_web_family_ids(&mut resource.generic, families);
+                extend_web_family_ids(&mut resource.hani_simplified, families);
+            }
+            "Noto Sans CJK TC" => {
+                extend_web_family_ids(&mut resource.generic, families);
+                extend_web_family_ids(&mut resource.hani_traditional, families);
+            }
+            "Noto Sans CJK JP" => {
+                extend_web_family_ids(&mut resource.generic, families);
+                extend_web_family_ids(&mut resource.hani_japanese, families);
+            }
+            "Noto Sans CJK KR" => {
+                extend_web_family_ids(&mut resource.generic, families);
+                extend_web_family_ids(&mut resource.hani_korean, families);
+            }
+            _ => {}
+        }
+    }
+
+    fn set_web_fallbacks(
+        collection: &mut fontique::Collection,
+        key: impl Into<FallbackKey>,
+        families: &[FamilyId],
+    ) {
+        if families.is_empty() {
+            return;
+        }
+        assert!(
+            collection.set_fallbacks(key, families.iter().copied()),
+            "hydrolysis web font loader attempted to install an untracked script fallback"
+        );
+    }
+
+    fn install_web_resource_font_fallbacks(
+        collection: &mut fontique::Collection,
+        resource: &WebResourceFontFamilies,
+    ) {
+        if !resource.generic.is_empty() {
+            collection
+                .set_generic_families(GenericFamily::SansSerif, resource.generic.iter().copied());
+            collection
+                .set_generic_families(GenericFamily::UiSansSerif, resource.generic.iter().copied());
+            collection
+                .set_generic_families(GenericFamily::SystemUi, resource.generic.iter().copied());
+        }
+
+        let hani = Script::from("Hani");
+        set_web_fallbacks(collection, hani, &resource.hani_simplified);
+        for locale in ["zh", "zh-CN", "zh-SG"] {
+            set_web_fallbacks(collection, (hani, locale), &resource.hani_simplified);
+        }
+        for locale in ["zh-Hant", "zh-TW", "zh-HK", "zh-MO"] {
+            set_web_fallbacks(collection, (hani, locale), &resource.hani_traditional);
+        }
+        set_web_fallbacks(collection, (hani, "ja"), &resource.hani_japanese);
+        set_web_fallbacks(collection, (hani, "ko"), &resource.hani_korean);
     }
 
     async fn fetch_response(path: &str) -> Response {
@@ -1945,8 +2117,8 @@ mod web_runner {
             |error| panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}"),
         );
 
-        let mut generic_family_ids = Vec::new();
         let mut default_family_ids = Vec::new();
+        let mut resource_fonts = WebResourceFontFamilies::default();
         let state = renderer.state_mut();
         for font in manifest.fonts {
             let font_path = format!("fonts/{}", font.file_name);
@@ -1961,7 +2133,7 @@ mod web_runner {
             if font.name == manifest.default_family {
                 default_family_ids.extend(families.iter().map(|(family_id, _)| *family_id));
             }
-            generic_family_ids.extend(families.into_iter().map(|(family_id, _)| family_id));
+            classify_web_resource_font(font.name.as_str(), &families, &mut resource_fonts);
         }
 
         assert!(
@@ -1969,14 +2141,7 @@ mod web_runner {
             "hydrolysis web font manifest default family `{}` did not register any fonts",
             manifest.default_family
         );
-        state
-            .font_cx
-            .collection
-            .set_generic_families(GenericFamily::SansSerif, generic_family_ids.iter().copied());
-        state.font_cx.collection.set_generic_families(
-            GenericFamily::UiSansSerif,
-            generic_family_ids.iter().copied(),
-        );
+        install_web_resource_font_fallbacks(&mut state.font_cx.collection, &resource_fonts);
     }
 
     #[derive(Clone)]
