@@ -1027,13 +1027,13 @@ pub(crate) fn measure_text_field_intrinsic(
     let value_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, value, env, line_limit,
     );
+    let label_height = measured_input_label_height(label_size, metrics.label_height);
+    let text_height = prompt_size.height.max(value_size.height);
     let content_width =
         f64::from(prompt_size.width.max(value_size.width)) + metrics.horizontal_inset * 2.0;
-    let content_height =
-        f64::from(prompt_size.height.max(value_size.height)) + metrics.vertical_inset * 2.0;
 
     let field_width = content_width.max(metrics.min_width);
-    let field_height = content_height.max(metrics.min_height);
+    let field_height = measured_input_field_height(text_height, label_height, metrics);
     let width = (f64::from(label_size.width) + metrics.horizontal_inset * 2.0).max(field_width);
     LayoutSize::new(width as f32, field_height as f32)
 }
@@ -1053,12 +1053,56 @@ pub(crate) fn measure_secure_field_intrinsic(
         StyledStr::plain("*".repeat(secure_len))
     };
     let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, masked, env);
+    let label_height = measured_input_label_height(label_size, metrics.label_height);
     let field_width =
         (f64::from(value_size.width) + metrics.horizontal_inset * 2.0).max(metrics.min_width);
-    let field_height =
-        (f64::from(value_size.height) + metrics.vertical_inset * 2.0).max(metrics.min_height);
+    let field_height = measured_input_field_height(value_size.height, label_height, metrics);
     let width = (f64::from(label_size.width) + metrics.horizontal_inset * 2.0).max(field_width);
     LayoutSize::new(width as f32, field_height as f32)
+}
+
+fn measured_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
+    if label_size.width > 0.0 || label_size.height > 0.0 {
+        f64::from(label_size.height).max(min_label_height)
+    } else {
+        0.0
+    }
+}
+
+fn measured_input_field_height(
+    text_height: f32,
+    label_height: f64,
+    metrics: waterui_backend_core::widget::InputFieldMetrics,
+) -> f64 {
+    let text_height = f64::from(text_height);
+    let measured_height = if label_height > 0.0 {
+        label_height + metrics.vertical_inset + text_height + metrics.vertical_inset
+    } else {
+        text_height + metrics.vertical_inset * 2.0
+    };
+    measured_height.max(metrics.min_height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::measured_input_field_height;
+    use waterui_backend_core::widget::InputFieldMetrics;
+
+    #[test]
+    fn labeled_input_field_height_reserves_space_for_tall_text() {
+        let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
+
+        assert_eq!(measured_input_field_height(22.0, 18.0, metrics), 56.0);
+        assert_eq!(measured_input_field_height(34.0, 18.0, metrics), 68.0);
+    }
+
+    #[test]
+    fn unlabeled_input_field_height_uses_minimum_until_text_needs_more() {
+        let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
+
+        assert_eq!(measured_input_field_height(34.0, 0.0, metrics), 56.0);
+        assert_eq!(measured_input_field_height(48.0, 0.0, metrics), 64.0);
+    }
 }
 
 pub(crate) fn measure_table_metrics(
