@@ -301,7 +301,7 @@ pub struct HydrolysisRenderer {
     frame_instant: Instant,
     frame_clock: Rc<Cell<Instant>>,
     scroll_controller: ScrollController,
-    scroll_content_caches: BTreeMap<usize, DynamicSubtree>,
+    scroll_content_caches: BTreeMap<usize, ScrollContentCache>,
     reuse_scroll_content_caches: bool,
     retained_scroll_frame: Option<RetainedScrollFrame>,
     retained_scroll_frame_conflicted: bool,
@@ -329,6 +329,11 @@ struct RetainedScrollFrame {
     transform: vello::kurbo::Affine,
     content_dynamic_morphs: Vec<DynamicMorphDraw>,
     active_layers: Vec<ActiveSceneLayer>,
+}
+
+struct ScrollContentCache {
+    lazy_viewport: vello::kurbo::Rect,
+    subtree: DynamicSubtree,
 }
 
 #[derive(Clone)]
@@ -1384,6 +1389,36 @@ impl HydrolysisRenderer {
         a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
     }
 
+    fn canonical_geometry_bits(value: f64) -> u64 {
+        if value == 0.0 {
+            0.0f64.to_bits()
+        } else {
+            value.to_bits()
+        }
+    }
+
+    fn lazy_stack_slot_key(&self, ctx: RenderContext) -> LazyStackSlotKey {
+        let [scale_x, skew_y, skew_x, scale_y, translate_x, translate_y] =
+            ctx.transform.as_coeffs();
+        LazyStackSlotKey {
+            depth: self.render_depth,
+            transform: [
+                Self::canonical_geometry_bits(scale_x),
+                Self::canonical_geometry_bits(skew_y),
+                Self::canonical_geometry_bits(skew_x),
+                Self::canonical_geometry_bits(scale_y),
+                Self::canonical_geometry_bits(translate_x),
+                Self::canonical_geometry_bits(translate_y),
+            ],
+            bounds: [
+                Self::canonical_geometry_bits(ctx.bounds.x0),
+                Self::canonical_geometry_bits(ctx.bounds.y0),
+                Self::canonical_geometry_bits(ctx.bounds.x1),
+                Self::canonical_geometry_bits(ctx.bounds.y1),
+            ],
+        }
+    }
+
     fn child_outside_lazy_viewport(
         renderer: &HydrolysisRenderer,
         ctx: RenderContext,
@@ -1450,11 +1485,12 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let slot_index = {
-            let index = renderer.lazy.lazy_stack_controller.bind();
-            renderer.lazy.lazy_stack_controller.slots[index].prepare_len(count);
-            index
-        };
+        let slot_key = renderer.lazy_stack_slot_key(ctx);
+        renderer
+            .lazy
+            .lazy_stack_controller
+            .bind(slot_key)
+            .prepare_len(count);
 
         let spacing = f64::from(layout.spacing);
         let mut cursor = ctx.bounds.y0;
@@ -1464,8 +1500,13 @@ impl HydrolysisRenderer {
                 cursor += spacing;
             }
 
-            let cached_extent =
-                { renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] };
+            let cached_extent = {
+                renderer
+                    .lazy
+                    .lazy_stack_controller
+                    .slot(slot_key)
+                    .item_extents[index]
+            };
             if let Some(extent) = cached_extent
                 && cursor + extent < visible_bounds.y0
             {
@@ -1504,8 +1545,11 @@ impl HydrolysisRenderer {
             } else {
                 f64::from(size.height)
             };
-            renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] =
-                Some(child_height);
+            renderer
+                .lazy
+                .lazy_stack_controller
+                .slot_mut(slot_key)
+                .item_extents[index] = Some(child_height);
 
             let child_rect = {
                 let x = if layout.alignment == HorizontalAlignment::Leading {
@@ -1638,11 +1682,12 @@ impl HydrolysisRenderer {
                 .copied()
                 .unwrap_or(ctx.bounds)
         };
-        let slot_index = {
-            let index = renderer.lazy.lazy_stack_controller.bind();
-            renderer.lazy.lazy_stack_controller.slots[index].prepare_len(count);
-            index
-        };
+        let slot_key = renderer.lazy_stack_slot_key(ctx);
+        renderer
+            .lazy
+            .lazy_stack_controller
+            .bind(slot_key)
+            .prepare_len(count);
         let (visible_start, visible_end, spacing) = match axis_config {
             LazyStackAxisConfig::Vertical { spacing, .. } => {
                 (visible_bounds.y0, visible_bounds.y1, spacing)
@@ -1652,8 +1697,13 @@ impl HydrolysisRenderer {
             }
         };
         let window = resolve_visible_index_window(count, visible_start, visible_end, |index| {
-            let cached_extent =
-                { renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] };
+            let cached_extent = {
+                renderer
+                    .lazy
+                    .lazy_stack_controller
+                    .slot(slot_key)
+                    .item_extents[index]
+            };
             let extent = if let Some(extent) = cached_extent {
                 extent
             } else {
@@ -1677,8 +1727,11 @@ impl HydrolysisRenderer {
                     LazyStackAxisConfig::Vertical { .. } => f64::from(size.height),
                     LazyStackAxisConfig::Horizontal { .. } => f64::from(size.width),
                 };
-                renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] =
-                    Some(extent);
+                renderer
+                    .lazy
+                    .lazy_stack_controller
+                    .slot_mut(slot_key)
+                    .item_extents[index] = Some(extent);
                 extent
             };
             if index + 1 < count {
@@ -1767,8 +1820,11 @@ impl HydrolysisRenderer {
                 LazyStackAxisConfig::Horizontal { .. } => child_rect.width(),
             };
             {
-                renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] =
-                    Some(extent);
+                renderer
+                    .lazy
+                    .lazy_stack_controller
+                    .slot_mut(slot_key)
+                    .item_extents[index] = Some(extent);
             }
             Self::dispatch_any(
                 renderer,
@@ -3164,9 +3220,9 @@ impl HydrolysisRenderer {
             vello::kurbo::Rect::new(0.0, 0.0, metrics.content_width, metrics.content_height);
         let content_ctx =
             RenderContext::with_transforms(content_bounds, content_transform, content_transform);
-        if let Some(subtree) = self.scroll_content_caches.remove(&frame.cache_key) {
-            self.replay_dynamic_subtree(content_ctx, &subtree);
-            self.scroll_content_caches.insert(frame.cache_key, subtree);
+        if let Some(cache) = self.scroll_content_caches.remove(&frame.cache_key) {
+            self.replay_dynamic_subtree(content_ctx, &cache.subtree);
+            self.scroll_content_caches.insert(frame.cache_key, cache);
         } else {
             return false;
         }
@@ -3208,15 +3264,17 @@ impl HydrolysisRenderer {
     pub(crate) fn render_scroll_content(
         &mut self,
         cache_key: usize,
+        lazy_viewport: vello::kurbo::Rect,
         ctx: RenderContext,
         env: &Environment,
         content: AnyView,
     ) -> ScrollContentRender {
         if self.reuse_scroll_content_caches
-            && let Some(subtree) = self.scroll_content_caches.remove(&cache_key)
+            && let Some(cache) = self.scroll_content_caches.remove(&cache_key)
+            && rect_near(cache.lazy_viewport, lazy_viewport)
         {
-            self.replay_dynamic_subtree(ctx, &subtree);
-            self.scroll_content_caches.insert(cache_key, subtree);
+            self.replay_dynamic_subtree(ctx, &cache.subtree);
+            self.scroll_content_caches.insert(cache_key, cache);
             return ScrollContentRender {
                 dynamic_morphs: Vec::new(),
                 has_frame_images: false,
@@ -3240,7 +3298,13 @@ impl HydrolysisRenderer {
         let dynamic_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
         self.replay_dynamic_subtree(ctx, &subtree);
         self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
-        self.scroll_content_caches.insert(cache_key, subtree);
+        self.scroll_content_caches.insert(
+            cache_key,
+            ScrollContentCache {
+                lazy_viewport,
+                subtree,
+            },
+        );
         ScrollContentRender {
             dynamic_morphs,
             has_frame_images: self.compositor.active_filter_images.len() > filter_image_count,
@@ -3769,6 +3833,7 @@ impl HydrolysisRenderer {
             bounds: data.target.bounds,
             cursor_area: data.target.cursor_area,
             text_bounds: data.target.text_bounds,
+            text_clip_bounds: data.target.text_clip_bounds,
             content_alpha: data.target.content_alpha,
             layout: data.target.layout,
             purpose: data.target.purpose,

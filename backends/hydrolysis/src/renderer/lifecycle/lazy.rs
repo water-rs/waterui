@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(crate) struct LazyState {
@@ -37,8 +38,8 @@ impl LazyState {
 
 #[derive(Debug, Default)]
 pub(crate) struct LazyStackController {
-    pub(crate) slots: Vec<LazyStackSlot>,
-    pub(crate) cursor: usize,
+    pub(crate) slots: BTreeMap<LazyStackSlotKey, LazyStackSlot>,
+    pub(crate) active_keys: BTreeSet<LazyStackSlotKey>,
 }
 
 #[derive(Debug, Default)]
@@ -56,6 +57,13 @@ pub(crate) struct LazyTableController {
 #[derive(Debug, Default)]
 pub(crate) struct LazyStackSlot {
     pub(crate) item_extents: Vec<Option<f64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct LazyStackSlotKey {
+    pub(crate) depth: usize,
+    pub(crate) transform: [u64; 6],
+    pub(crate) bounds: [u64; 4],
 }
 
 #[derive(Debug, Default)]
@@ -97,23 +105,28 @@ pub(crate) enum LazyStackAxisConfig {
 
 impl LazyStackController {
     pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
+        self.active_keys.clear();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
+        self.slots.retain(|key, _| self.active_keys.contains(key));
     }
 
-    pub(crate) fn bind(&mut self) -> usize {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("lazy stack controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(LazyStackSlot::default());
-        }
-        index
+    pub(crate) fn bind(&mut self, key: LazyStackSlotKey) -> &mut LazyStackSlot {
+        self.active_keys.insert(key);
+        self.slots.entry(key).or_default()
+    }
+
+    pub(crate) fn slot(&self, key: LazyStackSlotKey) -> &LazyStackSlot {
+        self.slots
+            .get(&key)
+            .expect("lazy stack slot must be bound before read")
+    }
+
+    pub(crate) fn slot_mut(&mut self, key: LazyStackSlotKey) -> &mut LazyStackSlot {
+        self.slots
+            .get_mut(&key)
+            .expect("lazy stack slot must be bound before mutation")
     }
 }
 
@@ -309,5 +322,38 @@ pub(crate) fn table_metrics_from_slot(
         column_widths: slot.column_widths.clone(),
         table_width: slot.column_widths.iter().sum(),
         table_height: metrics.header_height + metrics.row_height * slot.max_rows as f64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY_A: LazyStackSlotKey = LazyStackSlotKey {
+        depth: 1,
+        transform: [1, 0, 0, 1, 0, 0],
+        bounds: [0, 0, 100, 100],
+    };
+    const KEY_B: LazyStackSlotKey = LazyStackSlotKey {
+        depth: 1,
+        transform: [1, 0, 0, 1, 0, 200],
+        bounds: [0, 0, 100, 100],
+    };
+
+    #[test]
+    fn lazy_stack_slots_are_bound_by_key_not_frame_order() {
+        let mut controller = LazyStackController::default();
+        controller.bind(KEY_A).prepare_len(1);
+        controller.slot_mut(KEY_A).item_extents[0] = Some(24.0);
+        controller.bind(KEY_B).prepare_len(1);
+        controller.slot_mut(KEY_B).item_extents[0] = Some(48.0);
+        controller.finish_rebuild_frame();
+
+        controller.begin_rebuild_frame();
+        controller.bind(KEY_B).prepare_len(1);
+
+        assert_eq!(controller.slot(KEY_B).item_extents[0], Some(48.0));
+        controller.finish_rebuild_frame();
+        assert!(!controller.slots.contains_key(&KEY_A));
     }
 }

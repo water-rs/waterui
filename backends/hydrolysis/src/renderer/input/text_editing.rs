@@ -48,6 +48,7 @@ pub(crate) struct TextInputTarget {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) cursor_area: vello::kurbo::Rect,
     pub(crate) text_bounds: vello::kurbo::Rect,
+    pub(crate) text_clip_bounds: vello::kurbo::Rect,
     pub(crate) content_alpha: f32,
     pub(crate) layout: parley::Layout<[u8; 4]>,
     pub(crate) purpose: TextInputPurpose,
@@ -64,6 +65,7 @@ pub(crate) struct TextInputTargetRegistration {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) cursor_area: vello::kurbo::Rect,
     pub(crate) text_bounds: vello::kurbo::Rect,
+    pub(crate) text_clip_bounds: vello::kurbo::Rect,
     pub(crate) content_alpha: f32,
     pub(crate) layout: parley::Layout<[u8; 4]>,
     pub(crate) purpose: TextInputPurpose,
@@ -770,7 +772,7 @@ impl HydrolysisRenderer {
                     continue;
                 }
                 let selection = refreshed_target_selection(target);
-                draw.push_layer(target.content_alpha, Some(&target.text_bounds));
+                draw.push_layer(target.content_alpha, Some(&target.text_clip_bounds));
                 if selection.is_collapsed() {
                     if focused == Some(index) {
                         let caret_opacity = self.text_caret_opacity(self.frame_instant());
@@ -880,10 +882,11 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn dismiss_active_text_context_menu(&mut self) {
-        if let Some(menu) = self.text_editing.active_text_context_menu.take()
-            && let ActiveTextContextMenu::NativeWindow { state, .. } = menu
-        {
-            state.set(WindowState::Closed);
+        if let Some(menu) = self.text_editing.active_text_context_menu.take() {
+            match menu {
+                ActiveTextContextMenu::Overlay { .. } => self.request_rebuild(),
+                ActiveTextContextMenu::NativeWindow { state, .. } => state.set(WindowState::Closed),
+            }
         }
     }
 
@@ -1327,6 +1330,7 @@ impl HydrolysisRenderer {
                     env: env.clone(),
                 },
             });
+            self.request_rebuild();
             return true;
         }
 

@@ -91,8 +91,13 @@ pub(crate) fn render_scroll_view(
     ctx.renderer_mut().push_lazy_viewport(lazy_viewport);
     let content_ctx = ctx.child(content_transform, content_bounds);
     let renderer = ctx.renderer_mut();
-    let content_render =
-        renderer.render_scroll_content(handle.cache_key(), content_ctx, env, content);
+    let content_render = renderer.render_scroll_content(
+        handle.cache_key(),
+        lazy_viewport,
+        content_ctx,
+        env,
+        content,
+    );
     renderer.retain_scroll_frame(
         handle.clone(),
         handle.cache_key(),
