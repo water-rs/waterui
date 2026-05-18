@@ -316,7 +316,8 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
     fs::create_dir_all(&resources_dir).await?;
     assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
 
-    let font_declarations = assets::scan_fonts(project).await?;
+    let mut font_declarations = assets::scan_fonts(project).await?;
+    font_declarations.extend(assets::hydrolysis_default_font_declarations());
     let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(project)?);
     if !resolved_fonts.is_empty() {

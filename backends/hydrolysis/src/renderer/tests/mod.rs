@@ -56,6 +56,7 @@ fn text_input_target(
         bounds: Rect::ZERO,
         cursor_area: Rect::ZERO,
         text_bounds: Rect::ZERO,
+        content_alpha: 1.0,
         layout: parley::Layout::default(),
         purpose: TextInputPurpose::Normal,
         depth: 0,
@@ -770,7 +771,7 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
 }
 
 #[test]
-fn text_selection_pointer_update_requests_scene_rebuild() {
+fn text_selection_pointer_update_uses_transient_redraw_path() {
     let mut renderer = test_renderer();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     renderer
@@ -783,8 +784,8 @@ fn text_selection_pointer_update_requests_scene_rebuild() {
 
     assert!(renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
     assert!(
-        renderer.take_rebuild_request(),
-        "text selection changes must rebuild the scene so highlight geometry tracks pointer moves"
+        !renderer.take_rebuild_request(),
+        "text selection changes are rendered by the transient overlay instead of a full scene rebuild"
     );
     assert!(!renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
     assert!(
