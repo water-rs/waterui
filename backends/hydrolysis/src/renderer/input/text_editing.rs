@@ -1,4 +1,5 @@
 use super::*;
+use crate::engine::DrawContext;
 
 #[derive(Clone)]
 pub(crate) enum TextInputModel {
@@ -47,6 +48,7 @@ pub(crate) struct TextInputTarget {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) cursor_area: vello::kurbo::Rect,
     pub(crate) text_bounds: vello::kurbo::Rect,
+    pub(crate) content_alpha: f32,
     pub(crate) layout: parley::Layout<[u8; 4]>,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) depth: usize,
@@ -62,6 +64,7 @@ pub(crate) struct TextInputTargetRegistration {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) cursor_area: vello::kurbo::Rect,
     pub(crate) text_bounds: vello::kurbo::Rect,
+    pub(crate) content_alpha: f32,
     pub(crate) layout: parley::Layout<[u8; 4]>,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) model: TextInputModel,
@@ -181,6 +184,13 @@ impl TextInputModel {
                 let text = self.plain_text();
                 char_offset_to_byte_index(text.as_str(), layout_index)
             }
+        }
+    }
+
+    pub(crate) fn layout_len_for_plain_text(&self, text: &str) -> usize {
+        match self {
+            Self::TextField { .. } => text.len(),
+            Self::SecureField { .. } => text.chars().count(),
         }
     }
 }
@@ -678,6 +688,43 @@ pub(crate) fn execute_text_context_menu_action(
     }
 }
 
+fn refreshed_target_selection(target: &TextInputTarget) -> parley::Selection {
+    let plain_text = target.model.plain_text();
+    let mut slot = target.selection.borrow_mut();
+    if !slot.initialized {
+        slot.anchor = plain_text.len();
+        slot.focus = plain_text.len();
+        slot.initialized = true;
+    }
+    slot.anchor = clamp_to_char_boundary(plain_text.as_str(), slot.anchor);
+    slot.focus = clamp_to_char_boundary(plain_text.as_str(), slot.focus);
+    let layout_len = target.model.layout_len_for_plain_text(plain_text.as_str());
+    let anchor_layout = target.model.layout_index_from_plain_index(slot.anchor);
+    let focus_layout = target.model.layout_index_from_plain_index(slot.focus);
+    let anchor_affinity = if anchor_layout >= layout_len {
+        parley::Affinity::Upstream
+    } else {
+        parley::Affinity::Downstream
+    };
+    let focus_affinity = if focus_layout >= layout_len {
+        parley::Affinity::Upstream
+    } else {
+        parley::Affinity::Downstream
+    };
+    let selection = parley::Selection::new(
+        parley::Cursor::from_byte_index(&target.layout, anchor_layout, anchor_affinity),
+        parley::Cursor::from_byte_index(&target.layout, focus_layout, focus_affinity),
+    )
+    .refresh(&target.layout);
+    slot.anchor = target
+        .model
+        .plain_index_from_layout_index(selection.anchor().index());
+    slot.focus = target
+        .model
+        .plain_index_from_layout_index(selection.focus().index());
+    selection
+}
+
 impl HydrolysisRenderer {
     pub(crate) fn set_text_caret_motion(&mut self, motion: TextCaretMotion) {
         self.text_editing.text_caret_motion = Some(motion);
@@ -701,6 +748,55 @@ impl HydrolysisRenderer {
     pub(crate) fn clear_text_caret_animation(&mut self) {
         self.text_editing.text_caret_fade_started_at = None;
         self.text_editing.text_caret_next_frame_at = None;
+    }
+
+    pub(crate) fn prepare_transient_text_input_overlay(
+        &mut self,
+        env: &Environment,
+        transform: vello::kurbo::Affine,
+    ) {
+        let focused = self.text_editing.focused_text_input.get();
+        let menu_target = self.active_text_context_menu_target();
+        let mut scene = vello::Scene::new();
+        let theme = widget_theme(env);
+        {
+            let mut draw = VelloDrawContext::with_root_transform(&mut scene, transform);
+            for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
+                if target.content_alpha <= 0.0 {
+                    continue;
+                }
+                let selection_visible = focused == Some(index) || menu_target == Some(index);
+                if !selection_visible {
+                    continue;
+                }
+                let selection = refreshed_target_selection(target);
+                draw.push_layer(target.content_alpha, Some(&target.text_bounds));
+                if selection.is_collapsed() {
+                    if focused == Some(index) {
+                        let caret_opacity = self.text_caret_opacity(self.frame_instant());
+                        if caret_opacity > 0.0 {
+                            draw.fill_rect(
+                                target.cursor_area,
+                                &theme.input_caret_brush(caret_opacity),
+                            );
+                        }
+                    }
+                } else {
+                    let selection_brush = theme.input_selection_brush();
+                    for (rect, _) in selection.geometry(&target.layout) {
+                        let highlight = vello::kurbo::Rect::new(
+                            target.text_bounds.x0 + rect.x0,
+                            target.text_bounds.y0 + rect.y0,
+                            target.text_bounds.x0 + rect.x1,
+                            target.text_bounds.y0 + rect.y1,
+                        );
+                        draw.fill_rect(highlight, &selection_brush);
+                    }
+                }
+                draw.pop_layer();
+            }
+        }
+        self.transient_scene = Some(scene);
     }
 
     pub(crate) fn advance_text_caret_animation(&mut self, now: Instant) -> bool {
@@ -1007,9 +1103,6 @@ impl HydrolysisRenderer {
         slot.anchor = anchor;
         slot.focus = focus;
         slot.initialized = true;
-        if changed {
-            self.request_rebuild();
-        }
         changed
     }
 
@@ -1031,17 +1124,11 @@ impl HydrolysisRenderer {
             slot.anchor = next_index;
             slot.focus = next_index;
             slot.initialized = true;
-            if changed {
-                self.request_rebuild();
-            }
             return changed;
         }
         let changed = slot.focus != next_index || !slot.initialized;
         slot.focus = next_index;
         slot.initialized = true;
-        if changed {
-            self.request_rebuild();
-        }
         changed
     }
 

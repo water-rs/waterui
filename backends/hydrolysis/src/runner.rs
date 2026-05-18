@@ -42,7 +42,7 @@ fn init_main_thread_executors() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
-    use parley::fontique::Blob;
+    use parley::fontique::{Blob, GenericFamily};
     use std::sync::Arc;
 
     let mut roots = Vec::new();
@@ -56,6 +56,7 @@ fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
     }
 
     let state = renderer.state_mut();
+    let mut resource_family_ids = Vec::new();
     for root in roots {
         if !root.exists() {
             continue;
@@ -90,6 +91,7 @@ fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
                 .font_cx
                 .collection
                 .register_fonts(Blob::new(Arc::new(font_data)), None);
+            resource_family_ids.extend(families.iter().map(|(family_id, _)| *family_id));
             tracing::debug!(
                 target: "waterui::hydrolysis::fonts",
                 path = %path.display(),
@@ -97,6 +99,16 @@ fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
                 "registered native Hydrolysis font"
             );
         }
+    }
+    if !resource_family_ids.is_empty() {
+        state.font_cx.collection.set_generic_families(
+            GenericFamily::SansSerif,
+            resource_family_ids.iter().copied(),
+        );
+        state.font_cx.collection.set_generic_families(
+            GenericFamily::UiSansSerif,
+            resource_family_ids.iter().copied(),
+        );
     }
 }
 
@@ -780,6 +792,7 @@ fn render_window_with_capture<P: PlatformWindow>(
             }
         }
 
+        let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());
         let surface = runtime.platform.surface();
         let (width, height) = surface.size();
         let format = surface.format();
@@ -842,6 +855,9 @@ fn render_window_with_capture<P: PlatformWindow>(
                 .renderer
                 .refresh_active_applied_filters(surface.device(), surface.queue());
         }
+        runtime
+            .renderer
+            .prepare_transient_text_input_overlay(env, root_transform);
         runtime
             .renderer
             .render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
@@ -1929,6 +1945,7 @@ mod web_runner {
             |error| panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}"),
         );
 
+        let mut generic_family_ids = Vec::new();
         let mut default_family_ids = Vec::new();
         let state = renderer.state_mut();
         for font in manifest.fonts {
@@ -1942,8 +1959,9 @@ mod web_runner {
                 }),
             );
             if font.name == manifest.default_family {
-                default_family_ids.extend(families.into_iter().map(|(family_id, _)| family_id));
+                default_family_ids.extend(families.iter().map(|(family_id, _)| *family_id));
             }
+            generic_family_ids.extend(families.into_iter().map(|(family_id, _)| family_id));
         }
 
         assert!(
@@ -1954,10 +1972,10 @@ mod web_runner {
         state
             .font_cx
             .collection
-            .set_generic_families(GenericFamily::SansSerif, default_family_ids.iter().copied());
+            .set_generic_families(GenericFamily::SansSerif, generic_family_ids.iter().copied());
         state.font_cx.collection.set_generic_families(
             GenericFamily::UiSansSerif,
-            default_family_ids.iter().copied(),
+            generic_family_ids.iter().copied(),
         );
     }
 

@@ -44,6 +44,22 @@ const FONT_REGISTRY: &[(&str, &str)] = &[
         "https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip",
     ),
     (
+        "Noto Sans CJK JP",
+        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/06_NotoSansCJKjp.zip",
+    ),
+    (
+        "Noto Sans CJK KR",
+        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/07_NotoSansCJKkr.zip",
+    ),
+    (
+        "Noto Sans CJK SC",
+        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/08_NotoSansCJKsc.zip",
+    ),
+    (
+        "Noto Sans CJK TC",
+        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/09_NotoSansCJKtc.zip",
+    ),
+    (
         "JetBrainsMono",
         "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
     ),
@@ -56,8 +72,15 @@ const FONT_REGISTRY: &[(&str, &str)] = &[
         "https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u%2F1.062R-i%2F1.026R-vf/OTF-source-code-pro-2.042R-u_1.062R-i.zip",
     ),
 ];
-const HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY: &str = "Inter";
+const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
 const HYDROLYSIS_WEB_FONT_MANIFEST_FILE_NAME: &str = "waterui-fonts.json";
+const HYDROLYSIS_DEFAULT_FONT_FAMILIES: &[&str] = &[
+    HYDROLYSIS_DEFAULT_FONT_FAMILY,
+    "Noto Sans CJK JP",
+    "Noto Sans CJK KR",
+    "Noto Sans CJK SC",
+    "Noto Sans CJK TC",
+];
 
 /// Font declaration from a crate's Cargo.toml metadata.
 #[derive(Debug, Clone)]
@@ -252,6 +275,17 @@ pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>>
 
     info!("Found {} font declarations from dependencies", fonts.len());
     Ok(fonts)
+}
+
+pub fn hydrolysis_default_font_declarations() -> Vec<FontDeclaration> {
+    HYDROLYSIS_DEFAULT_FONT_FAMILIES
+        .iter()
+        .map(|name| FontDeclaration {
+            name: (*name).to_string(),
+            source: FontSource::BuiltIn,
+            crate_name: "waterui-cli".to_string(),
+        })
+        .collect()
 }
 
 /// Resolves and deduplicates font declarations.
@@ -763,11 +797,7 @@ pub async fn copy_fonts(fonts: &[ResolvedFont], dest: &Path) -> eyre::Result<()>
 /// fallback even when the project does not declare any fonts.
 pub async fn stage_hydrolysis_web_fonts(project: &Project, site_root: &Path) -> eyre::Result<()> {
     let mut declarations = scan_fonts(project).await?;
-    declarations.push(FontDeclaration {
-        name: HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY.to_string(),
-        source: FontSource::BuiltIn,
-        crate_name: "waterui-cli".to_string(),
-    });
+    declarations.extend(hydrolysis_default_font_declarations());
 
     let resolved_fonts = resolve_fonts(declarations).await?;
     let fonts_dest = site_root.join("fonts");
@@ -790,7 +820,7 @@ async fn write_hydrolysis_web_font_manifest(
             .ok_or_eyre("Font path has no filename")?
             .to_string_lossy()
             .into_owned();
-        if font.name == HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY {
+        if font.name == HYDROLYSIS_DEFAULT_FONT_FAMILY {
             has_default_family = true;
         }
         manifest_fonts.push(HydrolysisWebFontManifestEntry {
@@ -801,11 +831,11 @@ async fn write_hydrolysis_web_font_manifest(
 
     assert!(
         has_default_family,
-        "hydrolysis web font staging must include default family `{HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY}`"
+        "hydrolysis web font staging must include default family `{HYDROLYSIS_DEFAULT_FONT_FAMILY}`"
     );
 
     let manifest = HydrolysisWebFontManifest {
-        default_family: HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY.to_string(),
+        default_family: HYDROLYSIS_DEFAULT_FONT_FAMILY.to_string(),
         fonts: manifest_fonts,
     };
     let payload = serde_json::to_vec_pretty(&manifest)?;
@@ -820,13 +850,19 @@ async fn write_hydrolysis_web_font_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{collections::HashSet, fs};
     use tempfile::tempdir;
 
     #[test]
     fn test_font_registry_has_entries() {
         assert!(!FONT_REGISTRY.is_empty());
         assert!(FONT_REGISTRY.iter().any(|(name, _)| *name == "Inter"));
+        assert!(FONT_REGISTRY.iter().any(|(name, _)| *name == "Roboto"));
+        assert!(
+            FONT_REGISTRY
+                .iter()
+                .any(|(name, _)| *name == "Noto Sans CJK SC")
+        );
         // Icon pack fonts should NOT be in the built-in registry
         assert!(
             !FONT_REGISTRY
@@ -837,6 +873,25 @@ mod tests {
             !FONT_REGISTRY
                 .iter()
                 .any(|(name, _)| name.contains("Material Design"))
+        );
+    }
+
+    #[test]
+    fn hydrolysis_default_fonts_include_material_base_and_cjk_fallbacks() {
+        let declarations = hydrolysis_default_font_declarations();
+        let names: HashSet<&str> = declarations
+            .iter()
+            .map(|declaration| declaration.name.as_str())
+            .collect();
+        assert!(names.contains("Roboto"));
+        assert!(names.contains("Noto Sans CJK JP"));
+        assert!(names.contains("Noto Sans CJK KR"));
+        assert!(names.contains("Noto Sans CJK SC"));
+        assert!(names.contains("Noto Sans CJK TC"));
+        assert!(
+            declarations
+                .iter()
+                .all(|declaration| matches!(declaration.source, FontSource::BuiltIn))
         );
     }
 

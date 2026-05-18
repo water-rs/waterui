@@ -476,6 +476,7 @@ impl HydrolysisRenderer {
                     bounds: transformed_rect(ctx.hit_transform, target.bounds),
                     cursor_area: transformed_rect(ctx.hit_transform, target.cursor_area),
                     text_bounds: transformed_rect(ctx.hit_transform, target.text_bounds),
+                    content_alpha: target.content_alpha,
                     layout: target.layout.clone(),
                     purpose: target.purpose,
                     model: target.model.clone(),

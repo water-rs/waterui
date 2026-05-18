@@ -793,7 +793,17 @@ impl HydrolysisRenderer {
         self.flush_vello_scene_layer();
         let fullscreen_uniform =
             encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]], true);
-        let render_layers = core::mem::take(&mut self.compositor.render_layers);
+        let mut render_layers = core::mem::take(&mut self.compositor.render_layers);
+        let transient_layer_count = if let Some(scene) = self
+            .transient_scene
+            .take()
+            .filter(|scene| !scene.encoding().is_empty())
+        {
+            render_layers.push(RenderLayer::Vello(scene));
+            1
+        } else {
+            0
+        };
         if render_layers.is_empty() {
             self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
             return;
@@ -908,6 +918,9 @@ impl HydrolysisRenderer {
                     );
                 }
             }
+        }
+        for _ in 0..transient_layer_count {
+            render_layers.pop();
         }
         self.compositor.render_layers = render_layers;
 
