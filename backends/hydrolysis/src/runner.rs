@@ -2491,9 +2491,10 @@ mod winit_runner {
         };
 
         event_loop.set_control_flow(ControlFlow::Wait);
-        event_loop
-            .run_app(&mut runner)
-            .expect("hydrolysis runner: event loop failed");
+        let run_result = event_loop.run_app(&mut runner);
+        waterui_locale::shutdown_current_thread_runtime_locale_state();
+        let _ = runner.drain_local_executor_queue();
+        run_result.expect("hydrolysis runner: event loop failed");
     }
 
     struct WinitRunner {
