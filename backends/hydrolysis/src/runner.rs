@@ -650,9 +650,16 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
     if !changed {
         return;
     }
-    runtime.scroll_only_rebuild = true;
-    runtime.needs_rebuild = true;
-    runtime.effect_only_rebuild_pending = false;
+    if runtime.renderer.take_rebuild_request() {
+        runtime.renderer.invalidate_retained_scroll_content();
+        runtime.scroll_only_rebuild = false;
+        runtime.needs_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
+    } else {
+        runtime.scroll_only_rebuild = true;
+        runtime.needs_rebuild = false;
+        runtime.effect_only_rebuild_pending = false;
+    }
     runtime.platform.request_redraw();
 }
 
@@ -768,6 +775,9 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime
             .renderer
             .render_active_text_context_menu_overlay(env, root_transform);
+        runtime
+            .renderer
+            .render_active_picker_menu_overlay(env, root_transform);
         phases.scene_dispatch += scene_dispatch_started_at.elapsed();
         let scene_finish_started_at = Instant::now();
         runtime.renderer.finish_rebuild_frame();
@@ -1866,19 +1876,17 @@ mod tests {
     }
 
     #[test]
-    fn changed_scroll_input_rebuilds_scene_and_wakes_platform_window() {
+    fn changed_scroll_input_refreshes_retained_scene_and_wakes_platform_window() {
         let mut runtime = test_runtime_window();
         runtime.needs_rebuild = false;
 
         schedule_scroll_scene_rebuild(&mut runtime, true);
 
-        assert!(
-            runtime.needs_rebuild,
-            "scroll changes alter baked scene transforms and must rebuild the scene"
-        );
+        assert!(!runtime.needs_rebuild);
+        assert!(runtime.scroll_only_rebuild);
         assert!(
             runtime.platform.take_redraw_request(),
-            "scroll rebuilds must wake the platform event loop for the next frame"
+            "scroll refreshes must wake the platform event loop for the next frame"
         );
     }
 

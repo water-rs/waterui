@@ -1,9 +1,11 @@
 use super::*;
 use core::time::Duration;
 use waterui::shape::{RoundedRectangle, ShapeExt as _};
-use waterui::theme::color::{Surface, SurfaceVariant};
+use waterui::theme::color::Surface;
+use waterui_backend_core::widget::WidgetInteractionState;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::{AnimationExt as _, id::Id};
+use waterui_form::picker::PickerStyle;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 
@@ -37,6 +39,7 @@ pub(crate) struct PopupMenuStateGroup(pub(crate) Rc<RefCell<Vec<Binding<WindowSt
 #[derive(Default)]
 pub(crate) struct PopupMenuState {
     pub(crate) active_popup_menu_group: Option<PopupMenuStateGroup>,
+    pub(crate) active_picker_menu_overlay: Option<PickerMenuOverlay>,
     pub(crate) picker_menu_slots: Vec<PickerMenuSlot>,
     pub(crate) picker_menu_cursor: usize,
 }
@@ -49,6 +52,22 @@ pub(crate) struct PickerMenuSlot {
 pub(crate) struct PickerMenuEntry {
     pub(crate) label: String,
     pub(crate) tag: Id,
+}
+
+#[derive(Clone)]
+pub(crate) struct PickerMenuOverlay {
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) rows: Vec<PickerMenuOverlayRow>,
+    pub(crate) selection: Binding<Id>,
+    pub(crate) open: Rc<Cell<bool>>,
+    pub(crate) opened_at: Instant,
+}
+
+#[derive(Clone)]
+pub(crate) struct PickerMenuOverlayRow {
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) entry: PickerMenuEntry,
+    pub(crate) selected: bool,
 }
 
 impl PopupMenuState {
@@ -242,93 +261,6 @@ pub(crate) fn popup_menu_window(
     (popup, state)
 }
 
-pub(crate) fn picker_menu_window(
-    entries: Vec<PickerMenuEntry>,
-    selection: Binding<Id>,
-    open: Rc<Cell<bool>>,
-    origin: LayoutPoint,
-    width: f64,
-    row_height: f64,
-    group: PopupMenuStateGroup,
-    selected: Id,
-    corner_radius: f64,
-) -> (Window, Binding<WindowState>) {
-    assert!(
-        !entries.is_empty(),
-        "hydrolysis picker menu requires entries"
-    );
-    assert!(
-        width.is_finite() && width > 0.0,
-        "hydrolysis picker menu requires positive finite width"
-    );
-    assert!(
-        row_height.is_finite() && row_height > 0.0,
-        "hydrolysis picker menu requires positive finite row height"
-    );
-    let state = Binding::container(WindowState::Normal);
-    let height = row_height * entries.len() as f64;
-    let state_for_content = state.clone();
-    let entries_for_content = entries.clone();
-    let group_for_content = group.clone();
-    let open_for_disappear = Rc::clone(&open);
-    let popup_content = move || {
-        let mut rows = Vec::with_capacity(entries_for_content.len());
-        for entry in entries_for_content.clone() {
-            let tag = entry.tag;
-            let is_selected = tag == selected;
-            let row_selection = selection.clone();
-            let row_group = group_for_content.clone();
-            let row_open = Rc::clone(&open_for_disappear);
-            let button = Button::new(entry.label)
-                .style(ButtonStyle::Borderless)
-                .action(move || {
-                    if row_selection.get() != tag {
-                        row_selection.set(tag);
-                    }
-                    row_open.set(false);
-                    row_group.close_all();
-                });
-            let row_background = if is_selected {
-                Color::new(SurfaceVariant).with_opacity(0.72)
-            } else {
-                Color::transparent()
-            };
-            rows.push(AnyView::new(
-                Frame::new(button)
-                    .width(width as f32)
-                    .height(row_height as f32)
-                    .background(RoundedRectangle::new(0.02).fill(row_background)),
-            ));
-        }
-        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-            rows.into_iter().collect();
-        let panel = menu_content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(0.0)
-            .background(
-                RoundedRectangle::new((corner_radius / width) as f32)
-                    .fill(Color::new(Surface).with_opacity(0.96)),
-            )
-            .on_disappear({
-                let open = Rc::clone(&open_for_disappear);
-                move || {
-                    open.set(false);
-                }
-            });
-        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
-    };
-    let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
-        .style(WindowStyle::Borderless)
-        .resizable(false)
-        .background(Color::transparent());
-    popup.closable = false;
-    popup.frame.set(LayoutRect::new(
-        origin,
-        LayoutSize::new(width as f32, height as f32),
-    ));
-    (popup, state)
-}
-
 fn color_picker_palette() -> [(&'static str, Color); 12] {
     [
         ("Red", Color::srgb(0xba, 0x1a, 0x1a)),
@@ -452,7 +384,16 @@ pub(crate) fn color_picker_window(
 }
 
 impl HydrolysisRenderer {
+    pub(crate) fn active_popup_menu_visible(&self) -> bool {
+        self.popup_menu.active_popup_menu_group.is_some()
+            || self.popup_menu.active_picker_menu_overlay.is_some()
+    }
+
     pub(crate) fn dismiss_active_popup_menu(&mut self) {
+        if let Some(overlay) = self.popup_menu.active_picker_menu_overlay.take() {
+            overlay.open.set(false);
+            self.request_rebuild();
+        }
         if let Some(group) = self.popup_menu.active_popup_menu_group.take() {
             group.close_all();
         }
@@ -508,31 +449,38 @@ impl HydrolysisRenderer {
         width: f64,
         row_height: f64,
         selected: Id,
-        corner_radius: f64,
-        env: &Environment,
     ) -> bool {
         if entries.is_empty() {
             return false;
         }
         self.dismiss_active_popup_menu();
         open.set(true);
-        let group = PopupMenuStateGroup::new();
-        let (window, state) = picker_menu_window(
-            entries,
-            selection,
-            Rc::clone(&open),
-            origin,
-            width,
-            row_height,
-            group.clone(),
-            selected,
-            corner_radius,
+        let bounds = vello::kurbo::Rect::new(
+            f64::from(origin.x),
+            f64::from(origin.y),
+            f64::from(origin.x) + width,
+            f64::from(origin.y) + row_height * entries.len() as f64,
         );
-        group.push(state);
-        env.get::<WindowManager>()
-            .expect("hydrolysis picker menus require WindowManager in environment")
-            .show(window);
-        self.popup_menu.active_popup_menu_group = Some(group);
+        let rows = entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let y0 = bounds.y0 + row_height * index as f64;
+                PickerMenuOverlayRow {
+                    bounds: vello::kurbo::Rect::new(bounds.x0, y0, bounds.x1, y0 + row_height),
+                    selected: entry.tag == selected,
+                    entry,
+                }
+            })
+            .collect();
+        self.popup_menu.active_picker_menu_overlay = Some(PickerMenuOverlay {
+            bounds,
+            rows,
+            selection,
+            open,
+            opened_at: self.frame_instant(),
+        });
+        self.request_rebuild();
         true
     }
 
@@ -553,6 +501,107 @@ impl HydrolysisRenderer {
             .expect("hydrolysis color picker requires WindowManager in environment")
             .show(window);
         self.popup_menu.active_popup_menu_group = Some(group);
+        true
+    }
+
+    pub(crate) fn render_active_picker_menu_overlay(
+        &mut self,
+        env: &Environment,
+        transform: vello::kurbo::Affine,
+    ) {
+        let Some(overlay) = self.popup_menu.active_picker_menu_overlay.clone() else {
+            return;
+        };
+        let animation = popup_enter_animation();
+        let elapsed = self.frame_instant().duration_since(overlay.opened_at);
+        let progress = animation.progress(elapsed);
+        if !animation.is_complete(elapsed) {
+            self.request_rebuild();
+        }
+
+        let alpha = 0.96 * progress;
+        let scale = f64::from(animation.interpolate(&0.96_f32, &1.0_f32, elapsed));
+        let anchor = vello::kurbo::Point::new(overlay.bounds.x0, overlay.bounds.y0);
+        let menu_transform = transform
+            * vello::kurbo::Affine::translate((anchor.x, anchor.y))
+            * vello::kurbo::Affine::scale(scale)
+            * vello::kurbo::Affine::translate((-anchor.x, -anchor.y));
+
+        self.push_layer_rect(alpha, transform, overlay.bounds);
+        let theme = widget_theme(env);
+        {
+            let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, menu_transform);
+            theme.draw_picker_popup(&mut draw, overlay.bounds);
+        }
+        for (index, row) in overlay.rows.iter().enumerate() {
+            let metrics = theme.picker_metrics(PickerStyle::Menu);
+            {
+                let mut draw =
+                    VelloDrawContext::with_root_transform(&mut self.scene, menu_transform);
+                theme.draw_picker_popup_row_background(&mut draw, row.bounds, row.selected);
+                theme.draw_picker_popup_row_state_layer(
+                    &mut draw,
+                    row.bounds,
+                    row.selected,
+                    WidgetInteractionState::NONE,
+                );
+            }
+            if index + 1 < overlay.rows.len() {
+                let separator = vello::kurbo::Rect::new(
+                    row.bounds.x0,
+                    row.bounds.y1,
+                    row.bounds.x1,
+                    row.bounds.y1 + 1.0,
+                );
+                let mut draw =
+                    VelloDrawContext::with_root_transform(&mut self.scene, menu_transform);
+                theme.draw_picker_separator(&mut draw, separator);
+            }
+            let text_bounds =
+                inset_rect(row.bounds, metrics.horizontal_inset, metrics.vertical_inset);
+            let ctx = RenderContext {
+                transform: menu_transform,
+                hit_transform: vello::kurbo::Affine::IDENTITY,
+                bounds: overlay.bounds,
+            }
+            .child(
+                vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
+                vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
+            );
+            let (state, scene) = self.state_and_scene_mut();
+            Self::render_styled_text(
+                state,
+                scene,
+                ctx,
+                StyledStr::plain(row.entry.label.clone()),
+                HorizontalAlignment::Leading,
+                env,
+            );
+        }
+        self.pop_layer();
+    }
+
+    pub(crate) fn handle_picker_menu_overlay_pointer_down(
+        &mut self,
+        point: vello::kurbo::Point,
+    ) -> bool {
+        let Some(overlay) = self.popup_menu.active_picker_menu_overlay.clone() else {
+            return false;
+        };
+        if !overlay.bounds.contains(point) {
+            self.dismiss_active_popup_menu();
+            return false;
+        }
+        for row in &overlay.rows {
+            if !row.bounds.contains(point) {
+                continue;
+            }
+            if overlay.selection.get() != row.entry.tag {
+                overlay.selection.set(row.entry.tag);
+            }
+            self.dismiss_active_popup_menu();
+            return true;
+        }
         true
     }
 
