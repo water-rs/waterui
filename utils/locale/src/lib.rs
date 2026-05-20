@@ -38,6 +38,12 @@ pub use format::{LocalizedDisplay, LocalizedList};
 pub use locale::{Locale, locales};
 pub use plural::{PluralCategory, select_plural};
 
+#[doc(hidden)]
+/// Clears the current thread's cached runtime locale binding before an executor shuts down.
+pub fn shutdown_current_thread_runtime_locale_state() {
+    system::shutdown_current_thread_runtime_locale_state();
+}
+
 /// Returns a reactive binding for the effective locale in the given environment.
 #[must_use]
 pub fn locale_binding(env: &waterui_core::Environment) -> nami::Binding<Locale> {

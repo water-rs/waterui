@@ -69,10 +69,19 @@ fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
     state.listener = listener;
 }
 
-#[cfg(test)]
-/// Resets the per-thread runtime locale cache so tests can start from a clean state.
-pub fn reset_runtime_locale_state_for_tests() {
+fn reset_runtime_locale_state() {
     RUNTIME_LOCALE_STATE.with(|slot| {
         let _ = slot.borrow_mut().take();
     });
+}
+
+#[cfg(test)]
+/// Resets the per-thread runtime locale cache so tests can start from a clean state.
+pub fn reset_runtime_locale_state_for_tests() {
+    reset_runtime_locale_state();
+}
+
+/// Clears the current thread's runtime locale cache during controlled executor shutdown.
+pub fn shutdown_current_thread_runtime_locale_state() {
+    reset_runtime_locale_state();
 }
