@@ -1,8 +1,8 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_picker_intrinsic, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry, RenderContext,
+    WidgetRenderContext, measure_picker_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -268,7 +268,6 @@ pub(crate) fn render_menu_picker(
     let metrics = theme.picker_metrics(PickerStyle::Menu);
     let selected = ctx.renderer_mut().read_signal(&selection);
     let menu_open = ctx.renderer_mut().bind_picker_menu_state();
-    let is_menu_open = menu_open.get();
     let selected_index = items
         .iter()
         .position(|item| item.tag == selected)
@@ -289,6 +288,15 @@ pub(crate) fn render_menu_picker(
         option_texts.push(plain);
     }
     let selected_text = option_texts[selected_index].clone();
+    let row_height = menu_picker_row_height(max_item_text_height, metrics);
+    let entries = items
+        .iter()
+        .zip(option_texts.iter())
+        .map(|(item, label)| PickerMenuEntry {
+            label: label.to_string(),
+            tag: item.tag,
+        })
+        .collect::<Vec<_>>();
 
     {
         let bounds = ctx.bounds;
@@ -302,12 +310,31 @@ pub(crate) fn render_menu_picker(
             theme.draw_picker_indicator(&mut draw, bounds);
         }
         let field_open_state = Rc::clone(&menu_open);
+        let picker_selection = selection.clone();
+        let menu_entries = entries.clone();
+        let menu_origin =
+            waterui_core::layout::Point::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
+        let menu_width = hit_bounds.width();
         ctx.renderer_mut().register_interactive_pointer_target(
             hit_bounds,
             press_slot,
-            move |_renderer, _point, _env| {
-                field_open_state.set(!field_open_state.get());
-                true
+            move |renderer, _point, env| {
+                if field_open_state.get() {
+                    renderer.dismiss_active_popup_menu();
+                    false
+                } else {
+                    renderer.show_picker_menu(
+                        menu_entries.clone(),
+                        picker_selection.clone(),
+                        Rc::clone(&field_open_state),
+                        menu_origin,
+                        menu_width,
+                        row_height,
+                        selected,
+                        metrics.popup_corner_radius,
+                        env,
+                    )
+                }
             },
         );
     }
@@ -329,70 +356,6 @@ pub(crate) fn render_menu_picker(
         env,
         text_bounds,
     );
-
-    if !is_menu_open {
-        return;
-    }
-
-    let row_height = menu_picker_row_height(max_item_text_height, metrics);
-    let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
-    {
-        let mut draw = ctx.draw_context();
-        theme.draw_picker_popup(&mut draw, popup_rect);
-    }
-
-    for (index, item) in items.into_iter().enumerate() {
-        let row_rect = menu_picker_option_rect(popup_rect, row_height, index);
-        let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
-        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
-        {
-            let interaction = local_interaction_state(interaction, ctx.hit_transform);
-            let mut draw = ctx.draw_context();
-            theme.draw_picker_popup_row_background(&mut draw, row_rect, item.tag == selected);
-            theme.draw_picker_popup_row_state_layer(
-                &mut draw,
-                row_rect,
-                item.tag == selected,
-                interaction,
-            );
-        }
-        if index + 1 < option_texts.len() {
-            let separator = vello::kurbo::Rect::new(
-                row_rect.x0 + 6.0,
-                row_rect.y1 - 1.0,
-                row_rect.x1 - 6.0,
-                row_rect.y1,
-            );
-            let mut draw = ctx.draw_context();
-            theme.draw_picker_separator(&mut draw, separator);
-        }
-        let row_text_rect = crate::widgets::util::inset_rect(
-            row_rect,
-            metrics.horizontal_inset,
-            metrics.vertical_inset,
-        );
-        ctx.render_styled_text(
-            StyledStr::plain(option_texts[index].clone()),
-            HorizontalAlignment::Leading,
-            env,
-            row_text_rect,
-        );
-
-        let open_state = Rc::clone(&menu_open);
-        let selection = selection.clone();
-        let tag = item.tag;
-        ctx.renderer_mut().register_interactive_pointer_target(
-            hit_rect,
-            press_slot,
-            move |_renderer, _point, _env| {
-                if selection.get() != tag {
-                    selection.set(tag);
-                }
-                open_state.set(false);
-                true
-            },
-        );
-    }
 }
 
 pub(crate) fn render_radio_picker(

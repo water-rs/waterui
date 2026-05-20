@@ -4,19 +4,18 @@ use accesskit::{
 };
 use nami::Signal;
 use vello::kurbo::{Rect, RoundedRectRadii};
-use waterui_backend_core::widget::{Brush, DrawContext as _, WidgetInteractionState};
+use waterui_backend_core::widget::{Brush, DrawContext as _};
 use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
+use crate::renderer::local_interaction_state;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_label_intrinsic, resolved_color_to_peniko,
+    measure_label_intrinsic, resolved_color_to_peniko, transformed_rect,
 };
-#[cfg(feature = "accessibility")]
-use crate::renderer::transformed_rect;
 use crate::widgets::util::{inset_rect, widget_theme};
 
 const COLOR_SWATCH_SIZE: f64 = 32.0;
@@ -121,9 +120,13 @@ fn render_color_picker(
         return;
     }
 
+    let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_bounds, WidgetInteractionState::NONE);
+        theme.draw_input_field(&mut draw, field_bounds, interaction);
+        theme.draw_input_field_state_layer(&mut draw, field_bounds, interaction);
     }
 
     let content_bounds = inset_rect(
@@ -177,4 +180,16 @@ fn render_color_picker(
             text_bounds,
         );
     }
+
+    let value = color_picker.value.clone();
+    let origin = waterui_core::layout::Point::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
+    let support_alpha = color_picker.support_alpha;
+    let support_hdr = color_picker.support_hdr;
+    ctx.renderer_mut().register_interactive_pointer_target(
+        hit_bounds,
+        press_slot,
+        move |renderer, _point, env| {
+            renderer.show_color_picker(value.clone(), support_alpha, support_hdr, origin, env)
+        },
+    );
 }

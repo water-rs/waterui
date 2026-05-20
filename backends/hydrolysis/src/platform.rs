@@ -812,6 +812,18 @@ mod winit_impl {
 
             let caps = surface.get_capabilities(&adapter);
             let format = super::select_hydrolysis_surface_format(&caps);
+            let alpha_mode = caps
+                .alpha_modes
+                .iter()
+                .copied()
+                .find(|mode| {
+                    matches!(
+                        mode,
+                        wgpu::CompositeAlphaMode::PreMultiplied
+                            | wgpu::CompositeAlphaMode::PostMultiplied
+                    )
+                })
+                .unwrap_or(caps.alpha_modes[0]);
             let size = window.inner_size();
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -819,7 +831,7 @@ mod winit_impl {
                 width: size.width.max(1),
                 height: size.height.max(1),
                 present_mode: wgpu::PresentMode::AutoVsync,
-                alpha_mode: caps.alpha_modes[0],
+                alpha_mode,
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };

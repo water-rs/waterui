@@ -680,6 +680,14 @@ fn window_clear_color(window: &Window, env: &Environment) -> vello::peniko::Colo
     }
 }
 
+#[cfg(feature = "winit")]
+fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
+    match &window.background {
+        WindowBackground::Opaque => false,
+        WindowBackground::Color(color) => color.resolve(env).get().opacity < 1.0,
+    }
+}
+
 fn render_window<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -2547,6 +2555,7 @@ mod winit_runner {
                 .with_title(window.title.get().as_str())
                 .with_resizable(window.resizable)
                 .with_visible(false)
+                .with_transparent(super::window_requires_transparency(&window, &self.env))
                 .with_decorations(!matches!(
                     window.style,
                     waterui::window::WindowStyle::Borderless
