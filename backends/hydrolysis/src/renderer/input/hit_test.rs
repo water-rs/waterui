@@ -211,6 +211,12 @@ impl HydrolysisRenderer {
                 return changed;
             }
         }
+        if self.popup_menu.active_picker_menu_overlay.is_some() {
+            let changed = self.handle_picker_menu_overlay_pointer_down(point);
+            if changed || self.popup_menu.active_picker_menu_overlay.is_none() {
+                return changed;
+            }
+        }
         if button != PointerButton::Secondary {
             self.dismiss_active_text_context_menu();
         }
@@ -500,6 +506,7 @@ impl HydrolysisRenderer {
                 let changed = (target.action.borrow_mut())(dx, dy, is_line_delta);
                 if changed {
                     self.dismiss_active_text_context_menu();
+                    self.dismiss_active_popup_menu();
                 }
                 return changed;
             }
