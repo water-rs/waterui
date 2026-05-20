@@ -15,18 +15,21 @@ use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{IntoLabel, button};
 use waterui_core::{AnyView, Environment, LocalStateScope, LocalStateStore, View};
+use waterui_graphics::color::Color;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
-use waterui_layout::spacer;
-use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack, vstack};
+use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack, vstack, zstack};
 use waterui_locale::format::date::{format_calendar_month_year, format_calendar_weekday};
 use waterui_locale::{Locale, locale_binding};
 use waterui_text::{
     Text,
-    font::Caption,
     styled::{Style, StyledStr},
     text,
 };
+
+const CALENDAR_DAY_SIZE: f32 = 40.0;
+const CALENDAR_CELL_SPACING: f32 = 8.0;
+const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 
 #[derive(Debug)]
 /// A calendar-style control for selecting a single date.
@@ -248,11 +251,13 @@ pub(crate) fn calendar_rows<V: View>(
             .copied()
             .map(&mut cell_view)
             .collect::<HStack<_>>()
-            .spacing(6.0);
+            .spacing(CALENDAR_CELL_SPACING);
         rows.push(row);
     }
 
-    rows.into_iter().collect::<VStack<_>>().spacing(6.0)
+    rows.into_iter()
+        .collect::<VStack<_>>()
+        .spacing(CALENDAR_CELL_SPACING)
 }
 
 pub(crate) fn initial_visible_month(
@@ -310,19 +315,17 @@ fn build_month_header(
             visible_month.clone(),
             VisibleMonth::previous,
         ))
-        .width(40.0),
-        spacer(),
+        .width(CALENDAR_DAY_SIZE),
         title,
-        spacer(),
         Frame::new(month_navigation_button(
             ">",
             can_go_next,
             visible_month,
             VisibleMonth::next,
         ))
-        .width(40.0),
+        .width(CALENDAR_DAY_SIZE),
     ))
-    .spacing(8.0)
+    .spacing(16.0)
 }
 
 fn month_navigation_button(
@@ -332,7 +335,7 @@ fn month_navigation_button(
     step: fn(VisibleMonth) -> VisibleMonth,
 ) -> impl View {
     if enabled {
-        AnyView::new(button(label).bordered().action(move || {
+        AnyView::new(button(label).borderless().action(move || {
             visible_month.set(step(visible_month.get()));
         }))
     } else {
@@ -353,11 +356,11 @@ fn weekday_header(locale: &Locale) -> impl View {
     .into_iter()
     .map(|weekday| {
         Frame::new(Text::new(format_calendar_weekday(locale, weekday)).caption())
-            .width(44.0)
-            .height(24.0)
+            .width(CALENDAR_DAY_SIZE)
+            .height(CALENDAR_WEEKDAY_HEIGHT)
     })
     .collect::<HStack<_>>()
-    .spacing(6.0)
+    .spacing(CALENDAR_CELL_SPACING)
 }
 
 fn single_day_cell_content(
@@ -374,28 +377,39 @@ fn single_day_cell_content(
 
     if is_selectable {
         let accessibility_label = day_cell_accessibility_label(cell.date);
-        let button = if is_selected {
-            button(day_cell_label(cell.date, decorated))
-                .accessibility_label(accessibility_label)
-                .bordered_prominent()
+        let hit_target = if is_selected {
+            AnyView::new(
+                button(accessibility_label)
+                    .bordered_prominent()
+                    .hide_label()
+                    .action(move || {
+                        selection.set(cell.date);
+                    }),
+            )
         } else {
-            button(day_cell_label(cell.date, decorated))
-                .accessibility_label(accessibility_label)
-                .bordered()
+            AnyView::new(
+                button(accessibility_label)
+                    .borderless()
+                    .hide_label()
+                    .action(move || {
+                        selection.set(cell.date);
+                    }),
+            )
         };
 
         AnyView::new(
-            Frame::new(button.action(move || {
-                selection.set(cell.date);
-            }))
-            .width(44.0)
-            .height(40.0),
+            Frame::new(zstack((
+                hit_target,
+                day_cell_visual_label(cell.date, decorated, is_selected),
+            )))
+            .width(CALENDAR_DAY_SIZE)
+            .height(CALENDAR_DAY_SIZE),
         )
     } else {
         AnyView::new(
             Frame::new(day_cell_placeholder(cell, decorated))
-                .width(44.0)
-                .height(40.0),
+                .width(CALENDAR_DAY_SIZE)
+                .height(CALENDAR_DAY_SIZE),
         )
     }
 }
@@ -414,40 +428,64 @@ pub(crate) fn multi_day_cell_content(
 
     if is_selectable {
         let accessibility_label = day_cell_accessibility_label(cell.date);
-        let button = if is_selected {
-            button(day_cell_label(cell.date, decorated))
-                .accessibility_label(accessibility_label)
-                .bordered_prominent()
+        let hit_target = if is_selected {
+            AnyView::new(
+                button(accessibility_label)
+                    .bordered_prominent()
+                    .hide_label()
+                    .action(move || {
+                        let mut dates = selection.get();
+                        if !dates.insert(cell.date) {
+                            dates.remove(&cell.date);
+                        }
+                        selection.set(dates);
+                    }),
+            )
         } else {
-            button(day_cell_label(cell.date, decorated))
-                .accessibility_label(accessibility_label)
-                .bordered()
+            AnyView::new(
+                button(accessibility_label)
+                    .borderless()
+                    .hide_label()
+                    .action(move || {
+                        let mut dates = selection.get();
+                        if !dates.insert(cell.date) {
+                            dates.remove(&cell.date);
+                        }
+                        selection.set(dates);
+                    }),
+            )
         };
 
         AnyView::new(
-            Frame::new(button.action(move || {
-                let mut dates = selection.get();
-                if !dates.insert(cell.date) {
-                    dates.remove(&cell.date);
-                }
-                selection.set(dates);
-            }))
-            .width(44.0)
-            .height(40.0),
+            Frame::new(zstack((
+                hit_target,
+                day_cell_visual_label(cell.date, decorated, is_selected),
+            )))
+            .width(CALENDAR_DAY_SIZE)
+            .height(CALENDAR_DAY_SIZE),
         )
     } else {
         AnyView::new(
             Frame::new(day_cell_placeholder(cell, decorated))
-                .width(44.0)
-                .height(40.0),
+                .width(CALENDAR_DAY_SIZE)
+                .height(CALENDAR_DAY_SIZE),
         )
+    }
+}
+
+fn day_cell_visual_label(date: Date, decorated: bool, is_selected: bool) -> Text {
+    let label = day_cell_label(date, decorated);
+    if is_selected {
+        label.color(Color::srgb(255, 255, 255))
+    } else {
+        label
     }
 }
 
 fn day_cell_label(date: Date, decorated: bool) -> Text {
     let mut label = StyledStr::plain(date.day().to_string());
     if decorated {
-        label.push("\n•", Style::new().font(Caption));
+        label.push("•", Style::new());
     }
     Text::new(label).text_align(HorizontalAlignment::Center)
 }
