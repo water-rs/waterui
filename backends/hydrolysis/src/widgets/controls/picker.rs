@@ -318,7 +318,7 @@ pub(crate) fn render_menu_picker(
         ctx.renderer_mut().register_interactive_pointer_target(
             hit_bounds,
             press_slot,
-            move |renderer, _point, env| {
+            move |renderer, _point, _env| {
                 if field_open_state.get() {
                     renderer.dismiss_active_popup_menu();
                     false
@@ -331,8 +331,6 @@ pub(crate) fn render_menu_picker(
                         menu_width,
                         row_height,
                         selected,
-                        metrics.popup_corner_radius,
-                        env,
                     )
                 }
             },

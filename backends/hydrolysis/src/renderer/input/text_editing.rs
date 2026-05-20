@@ -1495,7 +1495,7 @@ impl HydrolysisRenderer {
                 },
                 KeyCode::Named(value) if value == "Escape" => {
                     let changed = self.text_editing.active_text_context_menu.is_some()
-                        || self.popup_menu.active_popup_menu_group.is_some();
+                        || self.active_popup_menu_visible();
                     self.dismiss_active_text_context_menu();
                     self.dismiss_active_popup_menu();
                     changed
@@ -1532,7 +1532,7 @@ impl HydrolysisRenderer {
                 }
                 KeyCode::Named(value) if value == "Escape" => {
                     let changed = self.text_editing.active_text_context_menu.is_some()
-                        || self.popup_menu.active_popup_menu_group.is_some();
+                        || self.active_popup_menu_visible();
                     self.dismiss_active_text_context_menu();
                     self.dismiss_active_popup_menu();
                     changed

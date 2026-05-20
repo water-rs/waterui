@@ -42,11 +42,14 @@ impl Runtime {
     }
 
     fn remove_listener(&self, id: u64) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("waterui-locale regional runtime mutex poisoned");
-        state.listeners.remove(&id);
+        let removed = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("waterui-locale regional runtime mutex poisoned");
+            state.listeners.remove(&id)
+        };
+        drop(removed);
     }
 }
 
@@ -441,7 +444,11 @@ impl Extractor for RegionalContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_region, normalize_locale_tag};
+    use super::{current_settings, extract_region, normalize_locale_tag, register_listener};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     #[test]
     fn normalize_locale_tag_handles_separator_and_casing() {
@@ -456,5 +463,27 @@ mod tests {
         assert_eq!(extract_region("es-419"), Some("419".to_string()));
         assert_eq!(extract_region("zh-Hant"), None);
         assert_eq!(extract_region("en-US-u-hc-h23"), Some("US".to_string()));
+    }
+
+    #[test]
+    fn unregister_drops_listener_after_runtime_mutex_is_released() {
+        struct DropReadsRuntime(Arc<AtomicBool>);
+
+        impl Drop for DropReadsRuntime {
+            fn drop(&mut self) {
+                let _ = current_settings();
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let probe = DropReadsRuntime(Arc::clone(&dropped));
+        let handle = register_listener(move |_| {
+            let _ = &probe;
+        });
+
+        handle.unregister();
+
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }
