@@ -2,6 +2,7 @@
 
 use core::str::FromStr;
 use std::cell::RefCell;
+use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use nami::{Binding, Container};
@@ -15,7 +16,23 @@ thread_local! {
 
 struct RuntimeLocaleState {
     binding: Binding<Locale>,
-    listener: Option<ListenerHandle>,
+    listener: Option<ManuallyDrop<ListenerHandle>>,
+}
+
+impl RuntimeLocaleState {
+    fn has_listener(&self) -> bool {
+        self.listener.is_some()
+    }
+
+    fn set_listener(&mut self, listener: ListenerHandle) {
+        self.listener = Some(ManuallyDrop::new(listener));
+    }
+
+    fn unregister_listener(&mut self) {
+        if let Some(listener) = self.listener.take() {
+            ManuallyDrop::into_inner(listener).unregister();
+        }
+    }
 }
 
 pub fn runtime_locale_binding() -> Binding<Locale> {
@@ -50,7 +67,7 @@ fn locale_from_tag(tag: &str) -> Locale {
 }
 
 fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
-    if state.listener.is_some() {
+    if state.has_listener() {
         return;
     }
 
@@ -66,12 +83,16 @@ fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
     }))
     .ok();
 
-    state.listener = listener;
+    if let Some(listener) = listener {
+        state.set_listener(listener);
+    }
 }
 
 fn reset_runtime_locale_state() {
     RUNTIME_LOCALE_STATE.with(|slot| {
-        let _ = slot.borrow_mut().take();
+        if let Some(mut state) = slot.borrow_mut().take() {
+            state.unregister_listener();
+        }
     });
 }
 

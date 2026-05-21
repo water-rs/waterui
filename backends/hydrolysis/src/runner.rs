@@ -2539,6 +2539,12 @@ mod winit_runner {
             Self::drain_runnable_queue(&self.local_runnable_rx)
         }
 
+        fn exit_after_runtime_cleanup(&self, event_loop: &ActiveEventLoop) {
+            waterui_locale::shutdown_current_thread_runtime_locale_state();
+            let _ = self.drain_local_executor_queue();
+            event_loop.exit();
+        }
+
         fn current_window_origin(runtime: &RuntimeWindow<WinitWindow>) -> HydrolysisWindowOrigin {
             let native_window = runtime.platform.native_window();
             if let Ok(position) = native_window.outer_position() {
@@ -2664,7 +2670,7 @@ mod winit_runner {
             }
 
             if self.windows.is_empty() && self.pending_windows.is_empty() {
-                event_loop.exit();
+                self.exit_after_runtime_cleanup(event_loop);
             }
         }
     }
@@ -2704,7 +2710,7 @@ mod winit_runner {
                 self.windows.remove(&window_id);
                 self.accesskit_adapters.remove(&window_id);
                 if self.windows.is_empty() && self.pending_windows.is_empty() {
-                    event_loop.exit();
+                    self.exit_after_runtime_cleanup(event_loop);
                 }
                 return;
             }
