@@ -7,7 +7,7 @@ use waterui::text::Text;
 use waterui::{Binding, Environment, SignalExt, View};
 use waterui_form::secure;
 use waterui_form::secure::Secure;
-use waterui_testing::{MountedApp, Role, Selector, UiTest};
+use waterui_testing::{Role, Selector, SemanticApp, ui};
 
 fn secure_view() -> impl View {
     let password = Binding::container(Secure::default());
@@ -18,11 +18,11 @@ fn secure_view() -> impl View {
     ))
 }
 
-fn mount_secure_view() -> MountedApp {
+fn mount_secure_view() -> SemanticApp {
     let mut env = Environment::new();
     hydrolysis_m3::install(&mut env);
 
-    UiTest::new().environment(env).mount(secure_view)
+    ui().environment(env).mount(secure_view)
 }
 
 #[test]
