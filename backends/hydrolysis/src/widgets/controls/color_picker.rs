@@ -1,4 +1,8 @@
 #[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
+#[cfg(feature = "accessibility")]
+use crate::renderer::accessibility_activation_point;
+#[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
@@ -57,7 +61,15 @@ impl HydroNativeView for Native<ColorPickerConfig> {
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Click);
             let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            let _ = renderer.register_accessibility_node(node, bounds, env, None);
+            let activation_point = accessibility_activation_point(bounds);
+            let _ = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::PointerPrimaryClick {
+                    point: activation_point,
+                }),
+            );
         }
     }
 }
