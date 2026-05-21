@@ -5,10 +5,20 @@ use waterui::ViewExt as _;
 use waterui::id::{Id, TaggedView};
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
-use waterui::{AnyView, Binding, View};
+use waterui::{AnyView, Binding, Environment, View};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationSplitView, NavigationStack, NavigationView};
-use waterui_testing::{MountedApp, Role, Selector};
+use waterui_testing::{Role, Selector, SemanticApp, ui};
+
+fn mount_view<V, F>(build: F) -> SemanticApp
+where
+    V: View + 'static,
+    F: Fn() -> V + 'static,
+{
+    let mut env = Environment::new();
+    hydrolysis_m3::install(&mut env);
+    ui().environment(env).mount(build)
+}
 
 fn home_tab_id() -> Id {
     Id::try_from(1).expect("test tab id must be non-zero")
@@ -67,8 +77,9 @@ fn split_view() -> impl View {
     .placeholder(|| Text::new("placeholder content"))
 }
 
-#[::waterui::test(tabs_view)]
-fn tabs_tap_switches_selection_and_content(app: &mut MountedApp) {
+#[test]
+fn tabs_tap_switches_selection_and_content() {
+    let mut app = mount_view(tabs_view);
     app.query().role(Role::TAB_LIST).assert_exists();
     app.query()
         .role(Role::TAB)
@@ -104,8 +115,9 @@ fn tabs_tap_switches_selection_and_content(app: &mut MountedApp) {
         .assert_exists();
 }
 
-#[::waterui::test(stack_view)]
-fn navigation_link_push_and_back_pop_update_content(app: &mut MountedApp) {
+#[test]
+fn navigation_link_push_and_back_pop_update_content() {
+    let mut app = mount_view(stack_view);
     app.query()
         .role(Role::BUTTON)
         .label("Open Detail")
@@ -132,8 +144,9 @@ fn navigation_link_push_and_back_pop_update_content(app: &mut MountedApp) {
     );
 }
 
-#[::waterui::test(split_view)]
-fn split_view_selection_switches_placeholder_to_detail(app: &mut MountedApp) {
+#[test]
+fn split_view_selection_switches_placeholder_to_detail() {
+    let mut app = mount_view(split_view);
     app.query()
         .role(Role::BUTTON)
         .label("Select Detail")

@@ -348,7 +348,7 @@ where
     fn body(self, _env: &Environment) -> impl View {
         let path: NavigationPath<T> = self.path;
         let path_controller = NavigationPathController(path.clone());
-        let destination = self.destination;
+        let destination = Rc::new(self.destination);
         let root = self.root;
         let transition = self.transition;
         NavigationStack::new(use_env(
@@ -356,9 +356,11 @@ where
                 let path = path.inner;
                 let current_path = RefCell::new(path.snapshot());
                 for component in current_path.borrow().iter().cloned() {
-                    receiver.push(destination(component));
+                    receiver
+                        .push_builder(path_destination_builder(Rc::clone(&destination), component));
                 }
 
+                let destination = Rc::clone(&destination);
                 let guard = path.watch(.., move |slice| {
                     let next_path = slice.into_value().to_vec();
                     let mut current_path = current_path.borrow_mut();
@@ -369,7 +371,10 @@ where
                     }
 
                     for item in next_path.iter().skip(shared_prefix) {
-                        receiver.push(destination(item.clone()));
+                        receiver.push_builder(path_destination_builder(
+                            Rc::clone(&destination),
+                            item.clone(),
+                        ));
                     }
 
                     *current_path = next_path;
@@ -381,6 +386,17 @@ where
         ))
         .transition(transition)
     }
+}
+
+fn path_destination_builder<T, F>(
+    destination: Rc<F>,
+    component: T,
+) -> AnyViewBuilder<NavigationView>
+where
+    T: 'static + Clone,
+    F: 'static + Fn(T) -> NavigationView,
+{
+    AnyViewBuilder::new(move || destination(component.clone()))
 }
 
 /// A path representing the current navigation stack.
