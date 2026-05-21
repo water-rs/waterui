@@ -3,16 +3,17 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
-use waterui::{Binding, Environment, View};
+use waterui::{Binding, Color, Environment, View};
 use waterui_form::Calendar;
+use waterui_form::picker::color::ColorPicker;
 use waterui_form::picker::date::{DatePicker, DatePickerType};
 use waterui_form::picker::{Picker, PickerItem, PickerStyle};
-use waterui_testing::{MountedApp, Role, UiTest};
+use waterui_testing::{Role, SemanticApp, ui};
 
 const VIEWPORT_WIDTH: u32 = 320;
 const VIEWPORT_HEIGHT: u32 = 240;
 
-fn mount_view<V, F>(build: F) -> MountedApp
+fn mount_view<V, F>(build: F) -> SemanticApp
 where
     V: View + 'static,
     F: Fn() -> V + 'static,
@@ -20,8 +21,7 @@ where
     let mut env = Environment::new();
     hydrolysis_m3::install(&mut env);
 
-    UiTest::new()
-        .environment(env)
+    ui().environment(env)
         .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
         .mount(build)
 }
@@ -131,6 +131,24 @@ fn date_picker_accessibility() {
         .role(Role::LABEL)
         .label("selected:2025-02-14")
         .assert_exists();
+}
+
+#[test]
+fn color_picker_accessibility_tap_is_handled() {
+    let selected_color = Binding::container(Color::srgb(0, 0, 0));
+    let selected_color_for_view = selected_color.clone();
+
+    let mut app = mount_view(move || {
+        form_shell(ColorPicker::new(
+            waterui::text!("Accent Color"),
+            &selected_color_for_view,
+        ))
+    });
+
+    assert!(
+        app.query().role(Role::BUTTON).label("Accent Color").tap(),
+        "color picker should be tappable through accessibility"
+    );
 }
 
 #[test]
