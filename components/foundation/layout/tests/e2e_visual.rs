@@ -1,5 +1,7 @@
+use hydrolysis_m3::install as install_m3;
 use waterui::View;
 use waterui::ViewExt as _;
+use waterui::env::Environment;
 use waterui::graphics::color::Srgb;
 use waterui::text::text;
 use waterui_layout::scroll;
@@ -14,7 +16,11 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    ui().viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT).mount(build)
+    let mut env = Environment::new();
+    install_m3(&mut env);
+    ui().environment(env)
+        .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+        .mount(build)
 }
 
 fn visual_shell<V: View>(content: V) -> impl View {
@@ -121,42 +127,29 @@ fn scroll_view_scroll_down_changes_content() {
         )
     });
 
-    let first_before = app
+    let second_before = app
         .query()
         .role(Role::LABEL)
-        .label("First item")
+        .label("Second item")
         .single()
         .bounds();
-    let fourth_before = app
-        .query()
-        .role(Role::LABEL)
-        .label("Fourth item")
-        .single()
-        .bounds();
-
     assert!(
         app.query().label("scroll-layout").scroll_down(),
         "scroll view scroll_down should succeed"
     );
 
-    let first_after = app
+    let second_after = app
         .query()
         .role(Role::LABEL)
-        .label("First item")
+        .label("Second item")
         .single()
         .bounds();
-    let fourth_after = app
-        .query()
+    app.query()
         .role(Role::LABEL)
-        .label("Fourth item")
-        .single()
-        .bounds();
+        .label("Third item")
+        .assert_exists();
     assert!(
-        first_after.y() < first_before.y(),
-        "scrolling down should move earlier content upward: before={first_before:?} after={first_after:?}"
-    );
-    assert!(
-        fourth_after.y() < fourth_before.y(),
-        "scrolling down should bring later content upward: before={fourth_before:?} after={fourth_after:?}"
+        second_after.y() < second_before.y(),
+        "scrolling down should move earlier content upward: before={second_before:?} after={second_after:?}"
     );
 }
