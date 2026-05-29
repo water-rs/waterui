@@ -88,11 +88,11 @@ pub struct PerfStats {
     pub clip_layers: u64,
     /// Maximum nested Vello clip depth observed across sampled frames.
     pub max_clip_depth: u64,
-    /// AppliedFilter nodes dispatched across sampled frames.
+    /// `AppliedFilter` nodes dispatched across sampled frames.
     pub applied_filter_count: u64,
-    /// AppliedFilter subtree capture time across sampled frames, in microseconds.
+    /// `AppliedFilter` subtree capture time across sampled frames, in microseconds.
     pub applied_filter_capture_us: u64,
-    /// AppliedFilter GPU effect time across sampled frames, in microseconds.
+    /// `AppliedFilter` GPU effect time across sampled frames, in microseconds.
     pub applied_filter_effect_us: u64,
 }
 
@@ -107,9 +107,9 @@ pub struct PerfPhaseStats {
     pub animation: PerfDurationStats,
     /// Time spent rebuilding scene/layout state.
     pub rebuild: PerfDurationStats,
-    /// Time spent building the root WaterUI view value during scene rebuild.
+    /// Time spent building the root `WaterUI` view value during scene rebuild.
     pub build_content: PerfDurationStats,
-    /// Time spent dispatching WaterUI views into Hydrolysis scene/layout state.
+    /// Time spent dispatching `WaterUI` views into Hydrolysis scene/layout state.
     pub scene_dispatch: PerfDurationStats,
     /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
     pub scene_finish: PerfDurationStats,
@@ -168,9 +168,7 @@ impl PerfStats {
             p95: total.p95,
             rebuilt_frames: frames.iter().filter(|frame| frame.rebuilt).count(),
             rendered_frames,
-            idle_frames: samples
-                .checked_sub(rendered_frames)
-                .expect("rendered frame count should not exceed sample count"),
+            idle_frames: samples - rendered_frames,
             rendered_total: PerfDurationStats::from_durations(
                 frames
                     .iter()
@@ -330,6 +328,10 @@ pub struct PerfRun<'a> {
 
 impl PerfRun<'_> {
     /// Advances one complete offscreen Hydrolysis GPU frame without snapshot readback.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the synthetic frame clock overflows.
     pub fn frame(&mut self) -> FrameTiming {
         let timing = self.app.app.driver.pump_frame_at(
             &self.app.app.content,
@@ -378,7 +380,7 @@ impl PerfRun<'_> {
 
     /// Accesses semantic assertions and interactions during a performance run.
     #[must_use]
-    pub fn app(&mut self) -> &mut OffscreenApp {
+    pub const fn app(&mut self) -> &mut OffscreenApp {
         self.app
     }
 }
@@ -424,6 +426,10 @@ where
     }
 
     /// Measures one scenario across warmup and sample frames.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the configured sample count does not fit in memory on this target.
     pub fn measure<A>(&mut self, name: impl Into<String>, mut automation: A)
     where
         A: FnMut(&mut PerfRun<'_>),
@@ -471,7 +477,7 @@ where
 
     /// Returns the number of scenarios recorded so far.
     #[must_use]
-    pub fn measurement_count(&self) -> usize {
+    pub const fn measurement_count(&self) -> usize {
         self.report.measurements.len()
     }
 

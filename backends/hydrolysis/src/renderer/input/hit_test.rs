@@ -589,10 +589,12 @@ impl HydrolysisRenderer {
         let motion = widget_theme(env).interaction_motion();
         let now = self.frame_instant();
         self.hit_test.interaction.bind_widget_state(
-            bounds,
-            hovered,
-            focus,
-            self.hit_test.active_press_origin,
+            WidgetInteractionInput {
+                bounds,
+                hovered,
+                focus,
+                active_press_origin: self.hit_test.active_press_origin,
+            },
             &motion,
             &mut self.animation_controller,
             now,

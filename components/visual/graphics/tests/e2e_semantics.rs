@@ -1,3 +1,5 @@
+//! Accessibility semantics coverage for graphics views.
+
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;

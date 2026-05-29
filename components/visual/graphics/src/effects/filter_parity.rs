@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn pixel_mean_abs_diff_handles_size_mismatch() {
-        assert_eq!(pixel_mean_abs_diff(&[1, 2, 3], &[1, 2]), f64::INFINITY);
+        assert!(pixel_mean_abs_diff(&[1, 2, 3], &[1, 2]).is_infinite());
     }
 
     #[test]
