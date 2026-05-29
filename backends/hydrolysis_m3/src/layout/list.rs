@@ -6,20 +6,26 @@ use crate::dimensions::{
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
-use crate::{Brush, DrawContext, ListMetrics, WidgetInteractionState};
+use crate::{
+    Brush, DrawContext, ListDividerMetrics, ListMetrics, ListRowMetrics,
+    ListTrailingControlMetrics, WidgetInteractionState,
+};
 use vello::kurbo::{Point, Rect};
 
 pub const fn metrics() -> ListMetrics {
     ListMetrics::new(
-        LIST_ONE_LINE_ROW_HEIGHT,
-        LIST_HORIZONTAL_INSET,
-        LIST_VERTICAL_INSET,
-        LIST_DIVIDER_LEADING_INSET,
-        LIST_DIVIDER_TRAILING_INSET,
-        LIST_MOVE_CONTROL_WIDTH,
-        LIST_DELETE_CONTROL_WIDTH,
-        LIST_TRAILING_CONTROL_SPACING,
-        LIST_TRAILING_CONTROL_VERTICAL_INSET,
+        ListRowMetrics::new(
+            LIST_ONE_LINE_ROW_HEIGHT,
+            LIST_HORIZONTAL_INSET,
+            LIST_VERTICAL_INSET,
+        ),
+        ListDividerMetrics::new(LIST_DIVIDER_LEADING_INSET, LIST_DIVIDER_TRAILING_INSET),
+        ListTrailingControlMetrics::new(
+            LIST_MOVE_CONTROL_WIDTH,
+            LIST_DELETE_CONTROL_WIDTH,
+            LIST_TRAILING_CONTROL_SPACING,
+            LIST_TRAILING_CONTROL_VERTICAL_INSET,
+        ),
     )
 }
 

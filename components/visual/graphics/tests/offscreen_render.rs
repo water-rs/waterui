@@ -5,12 +5,18 @@ use waterui_graphics::{
     OffscreenSize,
 };
 
+const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+
 #[derive(Debug, Clone, Copy)]
 struct SolidClearRenderer {
     color: wgpu::Color,
 }
 
 impl GpuView for SolidClearRenderer {
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView setup runs on the UI-local GPU executor with a non-Send Environment"
+    )]
     async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -70,7 +76,6 @@ fn render_offscreen_returns_expected_rgba_and_png() {
     }
 
     let png = output.to_png().expect("png encoding should succeed");
-    const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
     assert!(png.len() >= PNG_SIGNATURE.len());
     assert_eq!(&png[..PNG_SIGNATURE.len()], &PNG_SIGNATURE);
 }

@@ -130,7 +130,7 @@ impl Default for FilterHandlerRegistry {
 
 impl core::fmt::Debug for FilterHandlerRegistry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let count = self.handlers.read().map(|guard| guard.len()).unwrap_or(0);
+        let count = self.handlers.read().map_or(0, |guard| guard.len());
         f.debug_struct("FilterHandlerRegistry")
             .field("registered_filters", &count)
             .finish()
@@ -184,7 +184,7 @@ impl FilterHandlerRegistry {
 
     /// Number of registered handlers. Cheap, mostly useful for testing.
     pub fn len(&self) -> usize {
-        self.handlers.read().map(|guard| guard.len()).unwrap_or(0)
+        self.handlers.read().map_or(0, |guard| guard.len())
     }
 
     /// Whether any handler is registered.
@@ -250,14 +250,14 @@ pub(crate) fn lower_filtered<F: Effect>(content: AnyView, filter: F, env: &Envir
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::cell::Cell;
-    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use waterui_core::{AnyView, Environment};
 
-    /// A toy effect (not GPU-backed) for testing the registry's TypeId
+    /// A toy effect (not GPU-backed) for testing the registry's `TypeId`
     /// dispatch. We never actually run it.
     #[derive(Clone, Copy, Debug)]
-    struct DummyEffect(u32);
+    struct DummyEffect;
 
     impl Effect for DummyEffect {
         fn setup(
@@ -277,21 +277,15 @@ mod tests {
     }
 
     struct CountingHandler {
-        calls: Rc<Cell<u32>>,
+        calls: Arc<AtomicU32>,
     }
 
     impl FilterHandler<DummyEffect> for CountingHandler {
         fn lower(&self, content: AnyView, _filter: DummyEffect, _env: &Environment) -> AnyView {
-            self.calls.set(self.calls.get() + 1);
+            self.calls.fetch_add(1, Ordering::Relaxed);
             content
         }
     }
-
-    // SAFETY: tests are single-threaded; Rc<Cell<...>> is fine for the
-    // synchronous registry exercise. Wrap CountingHandler in Send+Sync via
-    // an unsafe impl just for the test fixture.
-    unsafe impl Send for CountingHandler {}
-    unsafe impl Sync for CountingHandler {}
 
     #[test]
     fn registry_starts_empty() {
@@ -303,9 +297,8 @@ mod tests {
     #[test]
     fn registry_registers_and_unregisters_by_typeid() {
         let r = FilterHandlerRegistry::new();
-        let calls = Rc::new(Cell::new(0));
         r.register::<DummyEffect, _>(CountingHandler {
-            calls: calls.clone(),
+            calls: Arc::new(AtomicU32::new(0)),
         });
         assert_eq!(r.len(), 1);
         assert!(r.unregister::<DummyEffect>());
@@ -319,16 +312,16 @@ mod tests {
     #[test]
     fn registry_dispatches_to_matching_handler() {
         let r = FilterHandlerRegistry::new();
-        let calls = Rc::new(Cell::new(0));
+        let calls = Arc::new(AtomicU32::new(0));
         r.register::<DummyEffect, _>(CountingHandler {
-            calls: calls.clone(),
+            calls: Arc::clone(&calls),
         });
 
         let env = Environment::new();
         let content = AnyView::new(());
-        let result = r.lower(content, DummyEffect(42), &env);
+        let result = r.lower(content, DummyEffect, &env);
         assert!(result.is_ok(), "registered handler should claim the filter");
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -336,7 +329,7 @@ mod tests {
         let r = FilterHandlerRegistry::new();
         let env = Environment::new();
         let content = AnyView::new(());
-        let result = r.lower(content, DummyEffect(7), &env);
+        let result = r.lower(content, DummyEffect, &env);
         assert!(
             result.is_err(),
             "missing handler should signal fall-through"

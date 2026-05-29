@@ -12,6 +12,13 @@ pub(crate) struct InteractionFocus {
     visible: bool,
 }
 
+pub(crate) struct WidgetInteractionInput {
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) hovered: bool,
+    pub(crate) focus: Option<InteractionFocus>,
+    pub(crate) active_press_origin: Option<vello::kurbo::Point>,
+}
+
 impl InteractionFocus {
     pub(crate) const fn visible(visible: bool) -> Self {
         Self { visible }
@@ -73,15 +80,12 @@ impl InteractionEngine {
 
     pub(crate) fn bind_widget_state(
         &mut self,
-        bounds: vello::kurbo::Rect,
-        hovered: bool,
-        focus: Option<InteractionFocus>,
-        active_press_origin: Option<vello::kurbo::Point>,
+        input: WidgetInteractionInput,
         motion: &InteractionMotion,
         animation_controller: &mut AnimationController,
         now: Instant,
     ) -> (WidgetInteractionState, PressSlot) {
-        let focus_progress = focus.map_or(0.0, |focus| {
+        let focus_progress = input.focus.map_or(0.0, |focus| {
             animation_controller
                 .bind_scalar_target(
                     if focus.visible { 1.0 } else { 0.0 },
@@ -95,10 +99,13 @@ impl InteractionEngine {
                 .sample(now)
         });
         let (press_slot, slot_pressed) = self.press_controller.bind();
-        let active_bounds_pressed =
-            active_press_origin.is_some_and(|origin| bounds.contains(origin));
+        let active_bounds_pressed = input
+            .active_press_origin
+            .is_some_and(|origin| input.bounds.contains(origin));
         let slot = &mut self.press_controller.slots[press_slot.index];
-        let slot_origin_in_bounds = slot.origin.is_some_and(|origin| bounds.contains(origin));
+        let slot_origin_in_bounds = slot
+            .origin
+            .is_some_and(|origin| input.bounds.contains(origin));
         let slot_pressed = slot_pressed && slot_origin_in_bounds;
         let released_press_visible =
             slot_origin_in_bounds && released_before_minimum_press_duration(slot, now, motion);
@@ -109,13 +116,17 @@ impl InteractionEngine {
             slot.released_at = None;
         }
         let press_origin = if active_bounds_pressed {
-            active_press_origin.or(slot.origin)
+            input.active_press_origin.or(slot.origin)
         } else if slot_origin_in_bounds {
             slot.origin
         } else {
             None
         };
-        let target_opacity = if hovered { motion.hover_opacity } else { 0.0 };
+        let target_opacity = if input.hovered {
+            motion.hover_opacity
+        } else {
+            0.0
+        };
         let alpha_handle = animation_controller.bind_scalar_target(
             target_opacity,
             state_layer_animation(target_opacity, motion),
@@ -140,9 +151,9 @@ impl InteractionEngine {
         let press_progress = press_progress_handle.sample(now);
         (
             WidgetInteractionState {
-                hovered,
+                hovered: input.hovered,
                 pressed: visual_pressed,
-                focus_visible: focus.is_some_and(|focus| focus.visible),
+                focus_visible: input.focus.is_some_and(|focus| focus.visible),
                 focus_progress,
                 state_layer_opacity,
                 press_layer_opacity,

@@ -693,11 +693,14 @@ mod tests {
     #[test]
     fn test_shared_context_creation() {
         // This will fail in CI without a GPU, but works locally
-        if let Ok(()) = init_shared_context() {
+        if init_shared_context().is_ok() {
             assert!(is_initialized());
-            let ctx = shared_context();
-            let guard = ctx.read();
-            assert!(!guard.adapter.get_info().name.is_empty());
+            let adapter_name = {
+                let ctx = shared_context();
+                let guard = ctx.read();
+                guard.adapter.get_info().name
+            };
+            assert!(!adapter_name.is_empty());
         }
     }
 

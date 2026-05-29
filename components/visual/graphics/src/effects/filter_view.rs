@@ -1097,17 +1097,17 @@ impl<F: Filter> FilterAdapter<F> {
     }
 
     #[cfg(test)]
-    fn has_setup_error(&self) -> bool {
+    const fn has_setup_error(&self) -> bool {
         self.setup_error.is_some()
     }
 
     #[cfg(test)]
-    fn last_render_used_direct_output(&self) -> bool {
+    const fn last_render_used_direct_output(&self) -> bool {
         self.last_render_used_direct_output
     }
 
     #[cfg(test)]
-    fn allocated_scratch_slots(&self) -> [bool; 2] {
+    const fn allocated_scratch_slots(&self) -> [bool; 2] {
         [
             self.scratch_views[0].is_some(),
             self.scratch_views[1].is_some(),
@@ -2292,6 +2292,10 @@ const fn spatial_uniform_layout_entry() -> wgpu::BindGroupLayoutEntry {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "public filter aliases stay at the end of the module; tests exercise private helpers above them"
+)]
 mod tests {
     use super::*;
     use image::RgbaImage;
@@ -2340,6 +2344,13 @@ mod tests {
         })
     }
 
+    fn assert_f32_eq(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= f32::EPSILON,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     fn readback_rgba8_pixel(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -2351,7 +2362,7 @@ mod tests {
         const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let unpadded_bpr = width * BYTES_PER_PIXEL;
         let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
-        let copy_size = (padded_bpr * height) as u64;
+        let copy_size = u64::from(padded_bpr) * u64::from(height);
 
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("filter gpu test readback buffer"),
@@ -2415,7 +2426,7 @@ mod tests {
         const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let unpadded_bpr = width * BYTES_PER_PIXEL;
         let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
-        let copy_size = (padded_bpr * height) as u64;
+        let copy_size = u64::from(padded_bpr) * u64::from(height);
 
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("filter gpu test full readback buffer"),
@@ -2481,32 +2492,70 @@ mod tests {
         img.save(path).expect("failed to save png");
     }
 
+    #[derive(Clone, Copy)]
+    struct FilterReadbackSize {
+        input: (u32, u32),
+        output: (u32, u32),
+    }
+
+    fn rgba_len(width: u32, height: u32) -> usize {
+        usize::try_from(u64::from(width) * u64::from(height) * 4)
+            .expect("rgba dimensions fit usize")
+    }
+
+    fn rgba_index(width: u32, x: u32, y: u32) -> usize {
+        usize::try_from((u64::from(y) * u64::from(width) + u64::from(x)) * 4)
+            .expect("rgba index fits usize")
+    }
+
+    fn scale_to_u8(numerator: u32, denominator: u32) -> u8 {
+        let value = u64::from(numerator) * 255 / u64::from(denominator.max(1));
+        u8::try_from(value).expect("scaled channel fits u8")
+    }
+
+    fn clamp_i32_to_u8(value: i32) -> u8 {
+        u8::try_from(value.clamp(0, i32::from(u8::MAX))).expect("clamped channel fits u8")
+    }
+
     fn create_test_input_rgba(width: u32, height: u32) -> Vec<u8> {
-        let mut data = vec![0u8; (width * height * 4) as usize];
+        let mut data = vec![0u8; rgba_len(width, height)];
+        let max_x = width.saturating_sub(1).max(1);
+        let max_y = height.saturating_sub(1).max(1);
+        let min_dimension = i64::from(width.min(height));
+        let inner_edge_radius = min_dimension * 28 / 100;
+        let outer_edge_radius = min_dimension * 32 / 100;
+        let inner_edge_radius_sq = inner_edge_radius * inner_edge_radius;
+        let outer_edge_radius_sq = outer_edge_radius * outer_edge_radius;
+        let center_x = i64::from(width) / 2;
+        let center_y = i64::from(height) / 2;
+
         for y in 0..height {
             for x in 0..width {
-                let idx = ((y * width + x) * 4) as usize;
-                let xf = x as f32 / (width.saturating_sub(1)).max(1) as f32;
-                let yf = y as f32 / (height.saturating_sub(1)).max(1) as f32;
+                let idx = rgba_index(width, x, y);
+                let x_gradient = scale_to_u8(x, max_x);
+                let y_gradient = scale_to_u8(y, max_y);
                 let checker = if ((x / 16) + (y / 16)) % 2 == 0 {
-                    32.0
+                    32
                 } else {
-                    -32.0
+                    -32
                 };
-                let ring = (((x as i32 - width as i32 / 2).pow(2)
-                    + (y as i32 - height as i32 / 2).pow(2)) as f32)
-                    .sqrt();
-                let edge = if ring > (width.min(height) as f32 * 0.28)
-                    && ring < (width.min(height) as f32 * 0.32)
-                {
-                    80.0
+                let dx = i64::from(x) - center_x;
+                let dy = i64::from(y) - center_y;
+                let ring_sq = dx * dx + dy * dy;
+                let edge = if ring_sq > inner_edge_radius_sq && ring_sq < outer_edge_radius_sq {
+                    80
                 } else {
-                    0.0
+                    0
                 };
+                let inverse_gradient = u8::try_from(
+                    u64::from(max_x - x) * u64::from(max_y - y) * 255
+                        / (u64::from(max_x) * u64::from(max_y)),
+                )
+                .expect("inverse channel fits u8");
 
-                let r = (xf * 255.0 + checker + edge).clamp(0.0, 255.0) as u8;
-                let g = (yf * 255.0 - checker + edge).clamp(0.0, 255.0) as u8;
-                let b = (((1.0 - xf) * (1.0 - yf) * 255.0) + edge).clamp(0.0, 255.0) as u8;
+                let r = clamp_i32_to_u8(i32::from(x_gradient) + checker + edge);
+                let g = clamp_i32_to_u8(i32::from(y_gradient) - checker + edge);
+                let b = clamp_i32_to_u8(i32::from(inverse_gradient) + edge);
 
                 data[idx] = r;
                 data[idx + 1] = g;
@@ -2517,91 +2566,16 @@ mod tests {
         data
     }
 
-    fn create_solid_rgba(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
-        let mut data = vec![0u8; (width * height * 4) as usize];
-        for chunk in data.chunks_exact_mut(4) {
-            chunk.copy_from_slice(&rgba);
-        }
-        data
-    }
-
-    fn create_horizontal_gradient_rgba(width: u32, height: u32) -> Vec<u8> {
-        let mut data = vec![0u8; (width * height * 4) as usize];
-        for y in 0..height {
-            for x in 0..width {
-                let idx = ((y * width + x) * 4) as usize;
-                let t = (x as f32 / (width.saturating_sub(1)).max(1) as f32 * 255.0) as u8;
-                data[idx] = t;
-                data[idx + 1] = t;
-                data[idx + 2] = t;
-                data[idx + 3] = 255;
-            }
-        }
-        data
-    }
-
-    fn create_center_peak_displacement_rg(width: u32, height: u32) -> Vec<u8> {
-        let mut data = vec![0u8; (width * height * 4) as usize];
-        let cx = width as f32 * 0.5;
-        let cy = height as f32 * 0.5;
-        let inv_radius = 1.0 / (width.min(height).max(1) as f32 * 0.5);
-        for y in 0..height {
-            for x in 0..width {
-                let idx = ((y * width + x) * 4) as usize;
-                let dx = x as f32 - cx;
-                let dy = y as f32 - cy;
-                let r = (dx * dx + dy * dy).sqrt() * inv_radius;
-                let strength = (1.0 - r).clamp(0.0, 1.0);
-                let disp_x = (0.5 + dx.signum() * 0.5 * strength).clamp(0.0, 1.0);
-                let disp_y = (0.5 + dy.signum() * 0.5 * strength).clamp(0.0, 1.0);
-                data[idx] = (disp_x * 255.0) as u8;
-                data[idx + 1] = (disp_y * 255.0) as u8;
-                data[idx + 2] = 128;
-                data[idx + 3] = 255;
-            }
-        }
-        data
-    }
-
-    fn create_test_lut_strip_rgba(size: u32) -> Vec<u8> {
-        assert!(size >= 2, "test lut size must be >= 2");
-        let width = size * size;
-        let height = size;
-        let mut data = vec![0u8; (width * height * 4) as usize];
-        let denom = (size - 1) as f32;
-        for b in 0..size {
-            for g in 0..size {
-                for r in 0..size {
-                    let x = b * size + r;
-                    let y = g;
-                    let idx = ((y * width + x) * 4) as usize;
-                    let rf = r as f32 / denom;
-                    let gf = g as f32 / denom;
-                    let bf = b as f32 / denom;
-                    let out_r = (rf.powf(0.8)).clamp(0.0, 1.0);
-                    let out_g = (gf * 0.9).clamp(0.0, 1.0);
-                    let out_b = (bf * 1.1).clamp(0.0, 1.0);
-                    data[idx] = (out_r * 255.0) as u8;
-                    data[idx + 1] = (out_g * 255.0) as u8;
-                    data[idx + 2] = (out_b * 255.0) as u8;
-                    data[idx + 3] = 255;
-                }
-            }
-        }
-        data
-    }
-
     fn run_filter_and_readback<G: Effect>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         input_texture: &wgpu::Texture,
-        input_width: u32,
-        input_height: u32,
-        output_width: u32,
-        output_height: u32,
+        size: FilterReadbackSize,
         mut filter: G,
-    ) -> Option<Vec<u8>> {
+    ) -> Vec<u8> {
         let format = wgpu::TextureFormat::Rgba8Unorm;
+        let (input_width, input_height) = size.input;
+        let (output_width, output_height) = size.output;
         let output_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("filter gallery output"),
             size: wgpu::Extent3d {
@@ -2624,7 +2598,7 @@ mod tests {
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(filter.setup(&ctx));
+        crate::pollster::block_on(filter.setup(&ctx)).expect("test filter setup should succeed");
 
         let input = EffectInput {
             device,
@@ -2646,13 +2620,7 @@ mod tests {
         };
 
         let _ = filter.render(&input, &output);
-        Some(readback_rgba8_image(
-            device,
-            queue,
-            &output_texture,
-            output_width,
-            output_height,
-        ))
+        readback_rgba8_image(device, queue, &output_texture, output_width, output_height)
     }
 
     fn count_nonblank_pixels(rgba: &[u8]) -> (usize, usize) {
@@ -2721,13 +2689,12 @@ mod tests {
             device,
             queue,
             &input_texture,
-            width,
-            height,
-            width,
-            height,
+            FilterReadbackSize {
+                input: (width, height),
+                output: (width, height),
+            },
             FilterAdapter::new(filtrate::filters::Sharpen(1.0f32)),
-        )
-        .expect("Sharpen render should succeed");
+        );
         let (sharpen_opaque, sharpen_nonzero) = count_nonblank_pixels(&sharpen_out);
         assert_eq!(sharpen_opaque, total, "Sharpen alpha must be opaque");
         assert!(
@@ -2739,13 +2706,12 @@ mod tests {
             device,
             queue,
             &input_texture,
-            width,
-            height,
-            width,
-            height,
+            FilterReadbackSize {
+                input: (width, height),
+                output: (width, height),
+            },
             FilterAdapter::new(filtrate::filters::Blur(2.0f32)),
-        )
-        .expect("Blur render should succeed");
+        );
         let (blur_opaque, blur_nonzero) = count_nonblank_pixels(&blur_out);
         assert_eq!(blur_opaque, total, "Blur alpha must be opaque");
         assert!(
@@ -2950,7 +2916,9 @@ mod tests {
 
     #[test]
     fn fast_fail_when_param_count_exceeds_uniform_limit() {
-        assert!(<HugeParams as ParamArray>::LEN > MAX_FILTER_PARAMS);
+        const {
+            assert!(<HugeParams as ParamArray>::LEN > MAX_FILTER_PARAMS);
+        }
 
         let mut adapter = FilterAdapter::new(HugeFilter);
         let needs_redraw = adapter.update_interpolated_params();
@@ -2997,22 +2965,22 @@ mod tests {
     fn spatial_uniform_data_uses_vec4_packed_layout() {
         let data = build_spatial_uniform_data(320, 240, 640, 480, &[2.0, 3.0]);
         assert_eq!(data.len(), 4 + MAX_FILTER_PARAMS);
-        assert_eq!(data[0], 320.0);
-        assert_eq!(data[1], 240.0);
-        assert_eq!(data[2], 640.0);
-        assert_eq!(data[3], 480.0);
-        assert_eq!(data[4], 2.0);
-        assert_eq!(data[5], 3.0);
+        assert_f32_eq(data[0], 320.0);
+        assert_f32_eq(data[1], 240.0);
+        assert_f32_eq(data[2], 640.0);
+        assert_f32_eq(data[3], 480.0);
+        assert_f32_eq(data[4], 2.0);
+        assert_f32_eq(data[5], 3.0);
     }
 
     #[test]
     fn color_uniform_data_uses_fixed_array_layout() {
         let data = build_color_uniform_data(800, 600, &[1.0, 2.0]);
         assert_eq!(data.len(), 4 + MAX_FILTER_PARAMS);
-        assert_eq!(data[0], 800.0);
-        assert_eq!(data[1], 600.0);
-        assert_eq!(data[4], 1.0);
-        assert_eq!(data[5], 2.0);
+        assert_f32_eq(data[0], 800.0);
+        assert_f32_eq(data[1], 600.0);
+        assert_f32_eq(data[4], 1.0);
+        assert_f32_eq(data[5], 2.0);
     }
 
     #[test]
@@ -3145,11 +3113,12 @@ mod tests {
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+            .expect("test filter setup should succeed");
 
         let input = EffectInput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &input_texture,
             view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3157,8 +3126,8 @@ mod tests {
             height,
         };
         let output = EffectOutput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &output_texture,
             view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3174,6 +3143,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "GPU integration test keeps setup, render, and readback assertions in one scenario"
+    )]
     fn gpu_spatial_filter_supports_mismatched_input_output_sizes() {
         let Some(gpu) = create_test_device() else {
             eprintln!("Skipping GPU test: no compatible adapter/device");
@@ -3248,7 +3221,8 @@ mod tests {
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+            .expect("test filter setup should succeed");
         if adapter.has_setup_error() {
             eprintln!(
                 "Skipping spatial GPU test on adapter {} ({:?}): unsupported capability ({:?})",
@@ -3266,8 +3240,8 @@ mod tests {
         );
 
         let input = EffectInput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &input_texture,
             view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3275,8 +3249,8 @@ mod tests {
             height: in_height,
         };
         let output = EffectOutput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &output_texture,
             view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3295,6 +3269,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "GPU integration test keeps setup, render, and fallback assertions in one scenario"
+    )]
     fn gpu_spatial_filter_uses_direct_output_when_storage_binding_is_available() {
         let Some(gpu) = create_test_device() else {
             eprintln!("Skipping GPU test: no compatible adapter/device");
@@ -3366,7 +3344,8 @@ mod tests {
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+            .expect("test filter setup should succeed");
         if adapter.has_setup_error() {
             eprintln!(
                 "Skipping GPU test: setup failed ({:?})",
@@ -3377,8 +3356,8 @@ mod tests {
         let expected_direct_output = adapter.final_spatial_output.is_some();
 
         let input = EffectInput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &input_texture,
             view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3386,8 +3365,8 @@ mod tests {
             height,
         };
         let output = EffectOutput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &output_texture,
             view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3485,7 +3464,8 @@ mod tests {
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+            .expect("test filter setup should succeed");
         if adapter.has_setup_error() {
             eprintln!(
                 "Skipping GPU test: setup failed ({:?})",
@@ -3495,8 +3475,8 @@ mod tests {
         }
 
         let input = EffectInput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &input_texture,
             view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3504,8 +3484,8 @@ mod tests {
             height,
         };
         let output = EffectOutput {
-            device: &device,
-            queue: &queue,
+            device,
+            queue,
             texture: &output_texture,
             view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format,
@@ -3523,6 +3503,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "gallery export intentionally enumerates every filter case in one visual artifact generator"
+    )]
     fn gpu_export_filter_gallery_images() {
         let Some(gpu) = create_test_device() else {
             eprintln!("Skipping GPU gallery test: no compatible adapter/device");
@@ -3585,13 +3569,12 @@ mod tests {
                     device,
                     queue,
                     &input_texture,
-                    input_width,
-                    input_height,
-                    $ow,
-                    $oh,
+                    FilterReadbackSize {
+                        input: (input_width, input_height),
+                        output: ($ow, $oh),
+                    },
                     $filter,
-                )
-                .expect("filter execution should succeed");
+                );
                 write_png(&output_dir.join($name), $ow, $oh, &result);
             }};
         }

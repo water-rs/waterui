@@ -153,7 +153,7 @@ mod tests {
         .generate();
         let analysis = ImageAnalysis::new(&image);
         let range = analysis.min_max_luma();
-        assert_eq!(range.min, 0.0);
-        assert_eq!(range.max, 1.0);
+        assert!(range.min.abs() < f32::EPSILON);
+        assert!((range.max - 1.0).abs() < f32::EPSILON);
     }
 }

@@ -169,7 +169,7 @@ impl<T: ThemeInstaller> UiBuilder<T> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DriverMode {
+pub enum DriverMode {
     Semantic,
     Offscreen,
 }
@@ -222,6 +222,10 @@ impl OffscreenApp {
     }
 
     /// Captures the latest RGBA snapshot from the offscreen renderer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the offscreen driver does not produce a snapshot.
     pub fn snapshot(&mut self) -> Snapshot {
         let outcome = self.app.driver.pump(&self.app.content, &self.app.env, true);
 

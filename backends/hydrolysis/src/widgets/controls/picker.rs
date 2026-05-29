@@ -1,8 +1,8 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry, RenderContext,
-    WidgetRenderContext, measure_picker_intrinsic, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
+    RenderContext, WidgetRenderContext, measure_picker_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -323,15 +323,15 @@ pub(crate) fn render_menu_picker(
                     renderer.dismiss_active_popup_menu();
                     false
                 } else {
-                    renderer.show_picker_menu(
-                        menu_entries.clone(),
-                        picker_selection.clone(),
-                        Rc::clone(&field_open_state),
-                        menu_origin,
-                        menu_width,
+                    renderer.show_picker_menu(PickerMenuRequest {
+                        entries: menu_entries.clone(),
+                        selection: picker_selection.clone(),
+                        open: Rc::clone(&field_open_state),
+                        origin: menu_origin,
+                        width: menu_width,
                         row_height,
                         selected,
-                    )
+                    })
                 }
             },
         );
