@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::driver::{A11yDriver, DriverPumpResult};
 use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
+use hydrolysis_m3::install as install_m3;
 use vello::kurbo::Shape;
 use waterui::Computed;
 use waterui::View as _;
@@ -205,6 +206,12 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     String::from("<non-string panic>")
 }
 
+fn themed_environment() -> Environment {
+    let mut env = Environment::new();
+    install_m3(&mut env);
+    env
+}
+
 #[test]
 fn smoke_snapshot_size_matches_target() {
     let host = TestHost::new(Environment::new(), 64, 48);
@@ -216,7 +223,7 @@ fn smoke_snapshot_size_matches_target() {
 
 #[test]
 fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
-    let mut env = Environment::new();
+    let mut env = themed_environment();
     theme::install_color_signal::<theme::color::Foreground>(
         &mut env,
         Computed::constant(ResolvedColor {
@@ -265,7 +272,7 @@ fn semantic_builder_does_not_require_theme_package() {
 fn themed_builder_exposes_offscreen_perf_closure_api() {
     let report = ui()
         .viewport(96, 72)
-        .theme(|_: &mut Environment| {})
+        .theme(install_m3)
         .perf_config(PerfConfig {
             warmups: 1,
             samples: 3,
@@ -296,7 +303,7 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
 fn themed_builder_default_perf_requests_redraw() {
     let report = ui()
         .viewport(96, 72)
-        .theme(|_: &mut Environment| {})
+        .theme(install_m3)
         .perf_config(PerfConfig {
             warmups: 1,
             samples: 3,
@@ -318,7 +325,7 @@ fn themed_builder_default_perf_requests_redraw() {
 
 #[test]
 fn ui_test_environment_builder_preserves_custom_theme() {
-    let mut env = Environment::new();
+    let mut env = themed_environment();
     theme::install_color_signal::<theme::color::Foreground>(
         &mut env,
         Computed::constant(ResolvedColor {
@@ -354,16 +361,13 @@ fn ui_test_environment_builder_preserves_custom_theme() {
 
 #[test]
 fn smoke_text_color_snapshot_preserves_semantic_labels() {
-    let mut app = ui()
-        .viewport(240, 120)
-        .theme(|_: &mut Environment| {})
-        .mount(|| {
-            vstack((
-                text("Explicit color").body().color(Srgb::WHITE),
-                text("Explicit color").body().color(Srgb::WHITE),
-            ))
-            .background(Srgb::BLACK)
-        });
+    let mut app = ui().viewport(240, 120).theme(install_m3).mount(|| {
+        vstack((
+            text("Explicit color").body().color(Srgb::WHITE),
+            text("Explicit color").body().color(Srgb::WHITE),
+        ))
+        .background(Srgb::BLACK)
+    });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -431,28 +435,25 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
 
 #[test]
 fn ui_test_snapshot_renders_text_after_canvas() {
-    let mut app = ui()
-        .viewport(320, 320)
-        .theme(|_: &mut Environment| {})
-        .mount(|| {
-            vstack((
-                Canvas::new(|ctx| {
-                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
-                })
-                .size(240.0, 180.0)
-                .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-                .a11y_label("Canvas layer"),
-                text("W")
-                    .size(48.0)
-                    .color(Srgb::WHITE)
-                    .body()
-                    .padding_with(6.0)
-                    .a11y_label("Letter W"),
-            ))
-            .spacing(6.0)
-            .background(Srgb::BLACK)
-        });
+    let mut app = ui().viewport(320, 320).theme(install_m3).mount(|| {
+        vstack((
+            Canvas::new(|ctx| {
+                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
+                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+            })
+            .size(240.0, 180.0)
+            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+            .a11y_label("Canvas layer"),
+            text("W")
+                .size(48.0)
+                .color(Srgb::WHITE)
+                .body()
+                .padding_with(6.0)
+                .a11y_label("Letter W"),
+        ))
+        .spacing(6.0)
+        .background(Srgb::BLACK)
+    });
     app.query()
         .role(Role::IMAGE)
         .label("Canvas layer")
@@ -468,17 +469,14 @@ fn ui_test_snapshot_renders_text_after_canvas() {
 
 #[test]
 fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
-    let mut app = ui()
-        .viewport(96, 72)
-        .theme(|_: &mut Environment| {})
-        .mount(|| {
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-                ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
-            })
-            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-            .a11y_label("Canvas smoke")
-        });
+    let mut app = ui().viewport(96, 72).theme(install_m3).mount(|| {
+        Canvas::new(|ctx| {
+            ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
+            ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
+        })
+        .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+        .a11y_label("Canvas smoke")
+    });
     app.query()
         .role(Role::IMAGE)
         .label("Canvas smoke")
@@ -904,7 +902,7 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
     let status = Binding::container(String::from("idle"));
     let status_for_view = status.clone();
 
-    let mut app = ui().theme(|_: &mut Environment| {}).mount(move || {
+    let mut app = ui().theme(install_m3).mount(move || {
         waterui::text!("{status_for_view}")
             .on_appear(|status: waterui::State<Binding<String>>| {
                 spawn_local(async move {
