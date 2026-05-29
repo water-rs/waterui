@@ -18,6 +18,7 @@ waterui-graphics.workspace = true
 num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
+hydrolysis-m3.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
 
