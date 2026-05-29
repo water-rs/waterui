@@ -93,7 +93,7 @@ impl ListItemSink {
         self.entries.is_empty()
     }
 
-    /// Pushes one entry built from a clonable builder.
+    /// Pushes one entry built from a cloneable builder.
     pub fn push(&mut self, builder: AnyViewBuilder<ListItem>) {
         self.entries.push((builder, None));
     }

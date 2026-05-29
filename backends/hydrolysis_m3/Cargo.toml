@@ -23,7 +23,6 @@ waterui-form.workspace = true
 waterui-graphics.workspace = true
 
 [dev-dependencies]
-tracing.workspace = true
 waterui-testing.workspace = true
 
 [package.metadata.waterui.assets]
