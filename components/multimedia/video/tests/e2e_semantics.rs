@@ -2,8 +2,10 @@
 
 use std::time::Duration;
 
+use hydrolysis_m3::install as install_m3;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
+use waterui::env::Environment;
 use waterui::{Binding, View};
 use waterui_testing::{Role, Selector, SemanticApp, WaitOptions, WaitResult, ui};
 use waterui_video::{Url, Video, VideoPlayer};
@@ -55,6 +57,12 @@ fn raw_video_view() -> impl View {
         .a11y_label("Raw video")
 }
 
+fn themed_environment() -> Environment {
+    let mut env = Environment::new();
+    install_m3(&mut env);
+    env
+}
+
 #[waterui::test(raw_video_view)]
 fn raw_video_exposes_explicit_accessibility_image(app: &mut SemanticApp) {
     assert_eq!(
@@ -81,12 +89,15 @@ fn video_player_controls_are_accessible_and_reactive() {
     let has_previous_for_view = has_previous.clone();
     let has_next_for_view = has_next.clone();
 
-    let mut app = ui().viewport(480, 320).mount(move || {
-        VideoPlayer::new(missing_video_url())
-            .has_previous(&has_previous_for_view)
-            .has_next(&has_next_for_view)
-            .size(420.0, 260.0)
-    });
+    let mut app = ui()
+        .environment(themed_environment())
+        .viewport(480, 320)
+        .mount(move || {
+            VideoPlayer::new(missing_video_url())
+                .has_previous(&has_previous_for_view)
+                .has_next(&has_next_for_view)
+                .size(420.0, 260.0)
+        });
 
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();

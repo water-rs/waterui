@@ -43,6 +43,7 @@ zenwave = { workspace = true, features = ["rustls"] }
 default = []
 
 [dev-dependencies]
+hydrolysis-m3.workspace = true
 tracing-subscriber.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true

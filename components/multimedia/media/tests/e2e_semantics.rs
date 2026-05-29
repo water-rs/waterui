@@ -1,9 +1,11 @@
 use std::time::Duration;
 
+use hydrolysis_m3::install as install_m3;
 use image::ImageEncoder as _;
 use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
+use waterui::env::Environment;
 use waterui_media::{
     LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
 };
@@ -47,6 +49,12 @@ fn live_photo_view(source: LivePhotoSource) -> impl waterui::View {
         .a11y_label("Sample live photo")
 }
 
+fn themed_environment() -> Environment {
+    let mut env = Environment::new();
+    install_m3(&mut env);
+    env
+}
+
 fn assert_image_eventually_exists(app: &mut UiTestApp, label: &str) {
     if app.wait_for(
         &[app.expect_exists(Selector::default().role(Role::IMAGE).label(label))],
@@ -83,7 +91,7 @@ fn photo_exposes_accessibility_image_after_load() {
     let last_event = Binding::container(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
-    let mut app = ui().mount(move || {
+    let mut app = ui().environment(themed_environment()).mount(move || {
         let loaded_for_event = loaded_for_view.clone();
         let last_event_for_event = last_event_for_view.clone();
         Photo::from_path(sample_path.clone())
@@ -115,7 +123,7 @@ fn photo_exposes_accessibility_image_after_load() {
 #[test]
 fn media_image_exposes_accessibility_image_after_load() {
     let sample_path = sample_image_path();
-    let mut app = ui().mount(move || {
+    let mut app = ui().environment(themed_environment()).mount(move || {
         Media::Image(Url::from_file_path_str(sample_path.clone()))
             .a11y_role(AccessibilityRole::Image)
             .a11y_label("Media image")
@@ -125,7 +133,10 @@ fn media_image_exposes_accessibility_image_after_load() {
 
 #[test]
 fn media_video_uses_video_player_accessibility_controls() {
-    let mut app = ui().viewport(480, 320).mount(media_video_view);
+    let mut app = ui()
+        .environment(themed_environment())
+        .viewport(480, 320)
+        .mount(media_video_view);
 
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();
@@ -140,7 +151,9 @@ fn media_video_uses_video_player_accessibility_controls() {
 fn live_photo_exposes_still_image_accessibility_before_activation() {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
-    let mut app = ui().mount(move || live_photo_view(source.clone()));
+    let mut app = ui()
+        .environment(themed_environment())
+        .mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");
 }
