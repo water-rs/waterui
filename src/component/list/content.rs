@@ -75,7 +75,7 @@ impl core::fmt::Debug for ListItemSink {
 impl ListItemSink {
     /// Creates an empty sink.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
@@ -83,13 +83,13 @@ impl ListItemSink {
 
     /// Returns the number of entries collected so far.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Returns whether the sink has collected no entries yet.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
@@ -238,7 +238,7 @@ impl core::fmt::Debug for Row {
             .field("layout", &self.layout)
             .field("has_value_color", &self.value_color.is_some())
             .field("deletable_override", &self.deletable)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

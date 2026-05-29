@@ -74,17 +74,13 @@ impl HydroNativeView for Native<Dynamic> {
                 })
             }) {
                 Some(Some(dimensions)) => dimensions,
-                Some(None) | None => {
-                    state
-                        .dynamic_intrinsic_cache
-                        .get(&identity)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "hydrolysis Dynamic intrinsic cache miss for connected dynamic node"
-                            )
-                        })
-                }
+                Some(None) | None => state
+                    .dynamic_intrinsic_cache
+                    .get(&identity)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node")
+                    }),
             },
         };
         state

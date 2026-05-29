@@ -197,9 +197,7 @@ fn p9_spatial_zero_param_visit_signals<F: Filter + Default>(b: Bencher) {
 
 #[divan::bench]
 fn convolution3x3_params(b: Bencher) {
-    let conv = Convolution3x3([
-        0.0_f32, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0,
-    ]);
+    let conv = Convolution3x3([0.0_f32, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0]);
     b.bench_local(|| divan::black_box(conv.params()));
 }
 

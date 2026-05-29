@@ -37,7 +37,6 @@ fn snapshot_range_f32(
     snapshot_f32(start)..snapshot_f32(end)
 }
 
-
 impl ParticleSystem {
     /// Create a new particle system with a maximum particle count.
     #[must_use]

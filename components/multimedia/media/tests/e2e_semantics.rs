@@ -7,7 +7,7 @@ use waterui::accessibility::AccessibilityRole;
 use waterui_media::{
     LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
 };
-use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
+use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
 
 fn sample_image_path() -> String {
     let unique = std::time::SystemTime::now()
@@ -74,7 +74,7 @@ fn assert_image_eventually_exists(app: &mut UiTestApp, label: &str) {
     );
 }
 
-type UiTestApp = waterui_testing::MountedApp;
+type UiTestApp = waterui_testing::SemanticApp;
 
 #[test]
 fn photo_exposes_accessibility_image_after_load() {
@@ -83,7 +83,7 @@ fn photo_exposes_accessibility_image_after_load() {
     let last_event = Binding::container(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
-    let mut app = UiTest::new().mount(move || {
+    let mut app = ui().mount(move || {
         let loaded_for_event = loaded_for_view.clone();
         let last_event_for_event = last_event_for_view.clone();
         Photo::from_path(sample_path.clone())
@@ -100,22 +100,22 @@ fn photo_exposes_accessibility_image_after_load() {
             .a11y_label("Sample photo")
     });
 
-    let deadline = std::time::Instant::now() + Duration::from_millis(750);
-    while !loaded.get() && std::time::Instant::now() < deadline {
-        let _ = app.snapshot();
-    }
+    assert_image_eventually_exists(&mut app, "Sample photo");
     assert!(
         !last_event.get().starts_with("error:"),
         "photo_exposes_accessibility_image_after_load: {event}",
         event = last_event.get()
     );
-    assert_image_eventually_exists(&mut app, "Sample photo");
+    assert!(
+        loaded.get(),
+        "photo load event should mark the image as loaded"
+    );
 }
 
 #[test]
 fn media_image_exposes_accessibility_image_after_load() {
     let sample_path = sample_image_path();
-    let mut app = UiTest::new().mount(move || {
+    let mut app = ui().mount(move || {
         Media::Image(Url::from_file_path_str(sample_path.clone()))
             .a11y_role(AccessibilityRole::Image)
             .a11y_label("Media image")
@@ -125,7 +125,7 @@ fn media_image_exposes_accessibility_image_after_load() {
 
 #[test]
 fn media_video_uses_video_player_accessibility_controls() {
-    let mut app = UiTest::new().viewport(480, 320).mount(media_video_view);
+    let mut app = ui().viewport(480, 320).mount(media_video_view);
 
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();
@@ -140,7 +140,7 @@ fn media_video_uses_video_player_accessibility_controls() {
 fn live_photo_exposes_still_image_accessibility_before_activation() {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
-    let mut app = UiTest::new().mount(move || live_photo_view(source.clone()));
+    let mut app = ui().mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");
 }

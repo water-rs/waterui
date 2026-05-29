@@ -1,6 +1,6 @@
 //! # The Resolve Pattern
 //!
-//! The resolve pattern is WaterUI's core abstraction for **dynamic, reactive configuration**.
+//! The resolve pattern is `WaterUI`'s core abstraction for **dynamic, reactive configuration**.
 //! Instead of hard-coding values, types implement [`Resolvable`](crate::resolve::Resolvable) to look up their actual
 //! values from an [`Environment`] at runtime, returning a **reactive signal** that
 //! automatically updates when the environment changes.
@@ -9,7 +9,7 @@
 //!
 //! ### What is Resolvable?
 //!
-//! When you use a `Color` or `Font` in WaterUI, you're not specifying a fixed value—you're
+//! When you use a `Color` or `Font` in `WaterUI`, you're not specifying a fixed value—you're
 //! specifying something that will be **resolved** against the current environment. This
 //! enables powerful features like theming and dark mode.
 //!
@@ -106,7 +106,7 @@
 //!
 //! ### The nami Signal System
 //!
-//! This module integrates with [nami](https://github.com/aspect-rs/nami), WaterUI's reactive
+//! This module integrates with [nami](https://github.com/aspect-rs/nami), `WaterUI`'s reactive
 //! primitives library. Key concepts:
 //!
 //! - `Signal` - A trait for values that can change over time

@@ -2,7 +2,7 @@ use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
 use waterui::text::{styled, text};
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 
 fn plain_text_view() -> impl waterui::View {
     text("Visible content")
@@ -25,7 +25,7 @@ fn styled_text_view() -> impl waterui::View {
 }
 
 #[waterui::test(plain_text_view)]
-fn text_renders_visible_content(app: &mut MountedApp) {
+fn text_renders_visible_content(app: &mut SemanticApp) {
     app.query()
         .role(Role::LABEL)
         .label("Visible content")
@@ -33,7 +33,7 @@ fn text_renders_visible_content(app: &mut MountedApp) {
 }
 
 #[waterui::test(styled_text_view)]
-fn styled_text_renders_multiple_styles(app: &mut MountedApp) {
+fn styled_text_renders_multiple_styles(app: &mut SemanticApp) {
     app.query()
         .role(Role::LABEL)
         .label("Plain italic bold code")

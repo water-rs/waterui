@@ -75,7 +75,9 @@ impl AnimationTrack {
         };
 
         active.elapsed = active.elapsed.saturating_add(delta);
-        self.current = active.interpolator.interpolate(active.from, active.to, active.elapsed);
+        self.current = active
+            .interpolator
+            .interpolate(active.from, active.to, active.elapsed);
 
         if active.interpolator.is_complete(active.elapsed) {
             self.current = active.to;
@@ -98,6 +100,6 @@ impl core::fmt::Debug for AnimationTrack {
         f.debug_struct("AnimationTrack")
             .field("current", &self.current)
             .field("is_active", &self.is_active())
-            .finish()
+            .finish_non_exhaustive()
     }
 }

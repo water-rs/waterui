@@ -3,9 +3,11 @@
 use crate::Filter;
 
 /// Per-channel 5x5 convolution with an arbitrary 25-element kernel
-/// (row-major, top-left to bottom-right). Counterpart to
-/// [`Convolution3x3`](crate::filters::Convolution3x3) when a wider support
-/// is needed (gaussian approximations, larger emboss, custom blurs).
+/// (row-major, top-left to bottom-right).
+///
+/// Counterpart to [`Convolution3x3`](crate::filters::Convolution3x3) when a
+/// wider support is needed (gaussian approximations, larger emboss, custom
+/// blurs).
 ///
 /// Note: 25 floats consume nearly half of the 64-float pipeline parameter
 /// budget — chaining a `Convolution5x5` with another large filter may

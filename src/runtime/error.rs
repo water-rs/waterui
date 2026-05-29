@@ -1,4 +1,4 @@
-//! Utilities for displaying runtime errors inside WaterUI views.
+//! Utilities for displaying runtime errors inside `WaterUI` views.
 //!
 //! The types in this module let applications convert any `std::error::Error`
 //! into a `View` that can be rendered by the UI, optionally leveraging a

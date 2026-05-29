@@ -175,11 +175,11 @@ impl View for Photo {
             return match preloaded {
                 Ok(image) => {
                     if let Some(mut on_event) = on_event {
-                        let env = env_for_event.clone();
+                        let env = env_for_event;
                         AnyView::new(Metadata::new(
                             image,
                             LifeCycleHook::new(LifeCycle::Appear, move || {
-                                on_event(Event::Loaded, &env)
+                                on_event(Event::Loaded, &env);
                             }),
                         ))
                     } else {
@@ -189,7 +189,7 @@ impl View for Photo {
                 Err(error) => on_event.map_or_else(
                     || AnyView::new(()),
                     |mut on_event| {
-                        let env = env_for_event.clone();
+                        let env = env_for_event;
                         AnyView::new(Metadata::new(
                             (),
                             LifeCycleHook::new(LifeCycle::Appear, move || {
