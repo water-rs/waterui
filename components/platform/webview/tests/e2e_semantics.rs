@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use cookie::Cookie;
+use hydrolysis_m3::install as install_m3;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::{button, vstack};
@@ -205,6 +206,7 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
     webview.go_to(DOCS_URL);
 
     let mut env = Environment::new();
+    install_m3(&mut env);
     env.insert(controller);
     let mut app = ui()
         .environment(env)

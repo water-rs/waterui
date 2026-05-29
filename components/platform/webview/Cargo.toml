@@ -19,6 +19,7 @@ thiserror.workspace = true
 cookie = "0.18.1"
 
 [dev-dependencies]
+hydrolysis-m3.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
 
