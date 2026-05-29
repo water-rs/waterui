@@ -1,7 +1,7 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext,
+    HydroNativeView, HydroState, HydrolysisRenderer, RetainScrollFrameRequest, WidgetRenderContext,
     measure_view_dimensions_with_proposal, measure_view_intrinsic, normalize_layout_view,
     transformed_rect,
 };
@@ -98,17 +98,17 @@ pub(crate) fn render_scroll_view(
         env,
         content,
     );
-    renderer.retain_scroll_frame(
-        handle.clone(),
-        handle.cache_key(),
+    renderer.retain_scroll_frame(RetainScrollFrameRequest {
+        handle: handle.clone(),
+        cache_key: handle.cache_key(),
         axis,
         viewport,
         transform,
-        content_render.dynamic_morphs,
-        content_render.has_frame_images,
+        content_dynamic_morphs: content_render.dynamic_morphs,
+        content_has_frame_images: content_render.has_frame_images,
         active_layers,
-        exclusive_root_scroll,
-    );
+        exclusive_root: exclusive_root_scroll,
+    });
     ctx.renderer_mut().pop_lazy_viewport("render_scroll_view");
     if needs_viewport_clip {
         ctx.pop_layer();

@@ -344,16 +344,20 @@ fn gradient_rgba(width: u32, height: u32) -> Vec<u8> {
     let max_y = height.saturating_sub(1).max(1);
     for y in 0..height {
         for x in 0..width {
-            out.push(((x * 255) / max_x) as u8);
-            out.push(((y * 255) / max_y) as u8);
-            out.push((((x ^ y) & 0xff) as u8).saturating_add(32));
+            out.push(u8::try_from((x * 255) / max_x).expect("x channel fits u8"));
+            out.push(u8::try_from((y * 255) / max_y).expect("y channel fits u8"));
+            out.push(
+                u8::try_from((x ^ y) & 0xff)
+                    .expect("xor channel fits u8")
+                    .saturating_add(32),
+            );
             out.push(255);
         }
     }
     out
 }
 
-fn identity_kernel_5x5() -> [f32; 25] {
+const fn identity_kernel_5x5() -> [f32; 25] {
     let mut kernel = [0.0; 25];
     kernel[12] = 1.0;
     kernel

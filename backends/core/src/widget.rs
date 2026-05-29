@@ -533,30 +533,98 @@ pub struct ListMetrics {
     pub trailing_control_vertical_inset: f64,
 }
 
-impl ListMetrics {
-    /// Create list layout metrics.
+/// Row metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListRowMetrics {
+    /// Minimum one-line row height.
+    pub one_line_row_height: f64,
+    /// Horizontal content inset.
+    pub horizontal_inset: f64,
+    /// Vertical content inset.
+    pub vertical_inset: f64,
+}
+
+impl ListRowMetrics {
+    /// Create list row layout metrics.
     #[must_use]
-    pub const fn new(
-        one_line_row_height: f64,
-        horizontal_inset: f64,
-        vertical_inset: f64,
-        divider_leading_inset: f64,
-        divider_trailing_inset: f64,
-        move_control_width: f64,
-        delete_control_width: f64,
-        trailing_control_spacing: f64,
-        trailing_control_vertical_inset: f64,
-    ) -> Self {
+    pub const fn new(one_line_row_height: f64, horizontal_inset: f64, vertical_inset: f64) -> Self {
         Self {
             one_line_row_height,
             horizontal_inset,
             vertical_inset,
-            divider_leading_inset,
-            divider_trailing_inset,
-            move_control_width,
-            delete_control_width,
-            trailing_control_spacing,
-            trailing_control_vertical_inset,
+        }
+    }
+}
+
+/// Divider metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListDividerMetrics {
+    /// Divider leading inset.
+    pub leading_inset: f64,
+    /// Divider trailing inset.
+    pub trailing_inset: f64,
+}
+
+impl ListDividerMetrics {
+    /// Create list divider layout metrics.
+    #[must_use]
+    pub const fn new(leading_inset: f64, trailing_inset: f64) -> Self {
+        Self {
+            leading_inset,
+            trailing_inset,
+        }
+    }
+}
+
+/// Trailing control metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListTrailingControlMetrics {
+    /// Width of the row move affordance.
+    pub move_width: f64,
+    /// Width of the row delete affordance.
+    pub delete_width: f64,
+    /// Gap between trailing row affordances.
+    pub spacing: f64,
+    /// Vertical inset for trailing row affordances.
+    pub vertical_inset: f64,
+}
+
+impl ListTrailingControlMetrics {
+    /// Create list trailing control layout metrics.
+    #[must_use]
+    pub const fn new(
+        move_width: f64,
+        delete_width: f64,
+        spacing: f64,
+        vertical_inset: f64,
+    ) -> Self {
+        Self {
+            move_width,
+            delete_width,
+            spacing,
+            vertical_inset,
+        }
+    }
+}
+
+impl ListMetrics {
+    /// Create list layout metrics.
+    #[must_use]
+    pub const fn new(
+        row: ListRowMetrics,
+        divider: ListDividerMetrics,
+        trailing_controls: ListTrailingControlMetrics,
+    ) -> Self {
+        Self {
+            one_line_row_height: row.one_line_row_height,
+            horizontal_inset: row.horizontal_inset,
+            vertical_inset: row.vertical_inset,
+            divider_leading_inset: divider.leading_inset,
+            divider_trailing_inset: divider.trailing_inset,
+            move_control_width: trailing_controls.move_width,
+            delete_control_width: trailing_controls.delete_width,
+            trailing_control_spacing: trailing_controls.spacing,
+            trailing_control_vertical_inset: trailing_controls.vertical_inset,
         }
     }
 }

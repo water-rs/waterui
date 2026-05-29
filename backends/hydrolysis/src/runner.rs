@@ -1739,22 +1739,22 @@ impl HeadlessRuntime {
                 self.local_executor.drain()
             })
         });
-        if capture_snapshot && !self.popup_windows.is_empty() {
-            if let Some(snapshot) = render_result
+        if capture_snapshot
+            && !self.popup_windows.is_empty()
+            && let Some(snapshot) = render_result
                 .as_mut()
                 .and_then(|result| result.snapshot.as_mut())
-            {
-                for popup in &mut self.popup_windows {
-                    let Some(popup_snapshot) =
-                        render_window_with_capture(popup, &self.env, true, &mut || {
-                            self.local_executor.drain()
-                        })
-                        .snapshot
-                    else {
-                        continue;
-                    };
-                    composite_popup_snapshot(snapshot, &popup_snapshot, popup.window.frame.get());
-                }
+        {
+            for popup in &mut self.popup_windows {
+                let Some(popup_snapshot) =
+                    render_window_with_capture(popup, &self.env, true, &mut || {
+                        self.local_executor.drain()
+                    })
+                    .snapshot
+                else {
+                    continue;
+                };
+                composite_popup_snapshot(snapshot, &popup_snapshot, popup.window.frame.get());
             }
         }
         let executor_after_started_at = Instant::now();

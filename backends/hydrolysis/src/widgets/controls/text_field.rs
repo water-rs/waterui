@@ -300,8 +300,7 @@ pub(crate) fn render_text_field(
             label_progress,
         );
     }
-    let content_alpha =
-        material_input_content_alpha(label_height > 0.0, label_target, label_progress);
+    let content_alpha = material_input_content_alpha(label_height > 0.0, label_progress);
     let display = if use_placeholder {
         prompt
     } else {
@@ -531,8 +530,7 @@ pub(crate) fn render_secure_field(
             label_progress,
         );
     }
-    let content_alpha =
-        material_input_content_alpha(label_height > 0.0, label_target, label_progress);
+    let content_alpha = material_input_content_alpha(label_height > 0.0, label_progress);
     let text_bounds = material_input_text_rect(
         field_rect,
         input_metrics.horizontal_inset,
@@ -692,16 +690,12 @@ fn dispatch_material_label(
     );
 }
 
-fn material_input_content_alpha(has_label: bool, target: f32, progress: f32) -> f32 {
+fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {
     if !has_label {
         return 1.0;
     }
     let progress = progress.clamp(0.0, 1.0);
-    if target > 0.0 {
-        ((progress - CONTENT_ENTER_DELAY_PORTION) / CONTENT_VISIBLE_PORTION).clamp(0.0, 1.0)
-    } else {
-        ((progress - CONTENT_ENTER_DELAY_PORTION) / CONTENT_VISIBLE_PORTION).clamp(0.0, 1.0)
-    }
+    ((progress - CONTENT_ENTER_DELAY_PORTION) / CONTENT_VISIBLE_PORTION).clamp(0.0, 1.0)
 }
 
 fn material_input_text_rect(
@@ -763,35 +757,34 @@ mod tests {
 
     #[test]
     fn material_input_content_enter_matches_material_web_delay() {
-        assert_eq!(material_input_content_alpha(true, 1.0, 0.0), 0.0);
+        assert_eq!(material_input_content_alpha(true, 0.0), 0.0);
         assert_eq!(
-            material_input_content_alpha(true, 1.0, CONTENT_ENTER_DELAY_PORTION),
+            material_input_content_alpha(true, CONTENT_ENTER_DELAY_PORTION),
             0.0
         );
-        assert_eq!(material_input_content_alpha(true, 1.0, 1.0), 1.0);
+        assert_eq!(material_input_content_alpha(true, 1.0), 1.0);
     }
 
     #[test]
     fn material_input_content_exit_matches_material_web_visible_window() {
-        assert_eq!(material_input_content_alpha(true, 0.0, 1.0), 1.0);
+        assert_eq!(material_input_content_alpha(true, 1.0), 1.0);
         assert_eq!(
             material_input_content_alpha(
                 true,
-                0.0,
                 CONTENT_ENTER_DELAY_PORTION + (CONTENT_VISIBLE_PORTION * 0.5),
             ),
             0.5
         );
         assert_eq!(
-            material_input_content_alpha(true, 0.0, CONTENT_ENTER_DELAY_PORTION),
+            material_input_content_alpha(true, CONTENT_ENTER_DELAY_PORTION),
             0.0
         );
-        assert_eq!(material_input_content_alpha(true, 0.0, 0.0), 0.0);
+        assert_eq!(material_input_content_alpha(true, 0.0), 0.0);
     }
 
     #[test]
     fn material_input_without_label_keeps_content_visible() {
-        assert_eq!(material_input_content_alpha(false, 0.0, 0.0), 1.0);
+        assert_eq!(material_input_content_alpha(false, 0.0), 1.0);
     }
 
     #[test]

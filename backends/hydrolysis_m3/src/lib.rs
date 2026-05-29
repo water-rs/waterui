@@ -41,10 +41,10 @@ use waterui::text::font::Font;
 use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
-    InteractionMotion, ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics,
-    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics,
-    TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-    WidgetInteractionState, WidgetTheme,
+    InteractionMotion, ListDividerMetrics, ListMetrics, ListRowMetrics, ListTrailingControlMetrics,
+    NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
+    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion,
+    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;

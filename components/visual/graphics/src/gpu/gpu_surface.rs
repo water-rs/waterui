@@ -1934,6 +1934,10 @@ mod tests {
         }
 
         impl GpuView for FrameProbe {
+            #[expect(
+                clippy::future_not_send,
+                reason = "GpuView setup runs on the UI-local GPU executor with non-Send test state"
+            )]
             async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
             }
 

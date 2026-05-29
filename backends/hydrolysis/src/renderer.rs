@@ -20,11 +20,10 @@ pub use render::HydrolysisRenderTarget;
 pub(crate) use render::WidgetRenderContext;
 pub(crate) use render::*;
 pub(crate) use render::{
-    anchor_point, circle_arc_path, effective_stretch_axis, estimate_layout_intrinsic,
-    gesture_group_identity, normalize_layout_view, normalize_view_for_render, parley_alignment,
-    parley_font_weight, passthrough_content, path_commands_to_path, resolved_color_to_peniko,
-    resolved_color_to_rgba8, resolved_gradient_to_brush, resolved_morph_shape_to_path,
-    resolved_shape_to_path, rgba8_to_peniko, transformed_rect,
+    anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
+    normalize_layout_view, normalize_view_for_render, passthrough_content, path_commands_to_path,
+    resolved_color_to_peniko, resolved_gradient_to_brush, resolved_morph_shape_to_path,
+    resolved_shape_to_path, transformed_rect,
 };
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -329,6 +328,18 @@ struct RetainedScrollFrame {
     transform: vello::kurbo::Affine,
     content_dynamic_morphs: Vec<DynamicMorphDraw>,
     active_layers: Vec<ActiveSceneLayer>,
+}
+
+pub(crate) struct RetainScrollFrameRequest {
+    pub(crate) handle: crate::scroll::ScrollHandle,
+    pub(crate) cache_key: usize,
+    pub(crate) axis: ScrollAxis,
+    pub(crate) viewport: vello::kurbo::Rect,
+    pub(crate) transform: vello::kurbo::Affine,
+    pub(crate) content_dynamic_morphs: Vec<DynamicMorphDraw>,
+    pub(crate) content_has_frame_images: bool,
+    pub(crate) active_layers: Vec<ActiveSceneLayer>,
+    pub(crate) exclusive_root: bool,
 }
 
 struct ScrollContentCache {
@@ -2609,7 +2620,7 @@ impl HydrolysisRenderer {
         renderer.scene.draw_blurred_rounded_rect(
             ctx.transform,
             shadow_rect,
-            shadow_color.into(),
+            shadow_color,
             blur,
             blur,
         );
@@ -3139,36 +3150,25 @@ impl HydrolysisRenderer {
             && (viewport.y1 - self.window_bounds.y1).abs() <= f64::EPSILON
     }
 
-    pub(crate) fn retain_scroll_frame(
-        &mut self,
-        handle: crate::scroll::ScrollHandle,
-        cache_key: usize,
-        axis: ScrollAxis,
-        viewport: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        content_dynamic_morphs: Vec<DynamicMorphDraw>,
-        content_has_frame_images: bool,
-        active_layers: Vec<ActiveSceneLayer>,
-        exclusive_root: bool,
-    ) {
+    pub(crate) fn retain_scroll_frame(&mut self, request: RetainScrollFrameRequest) {
         if self.retained_scroll_frame.is_some() {
             self.retained_scroll_frame = None;
             self.retained_scroll_frame_conflicted = true;
             return;
         }
-        let viewport_matches_window = self.viewport_matches_window_bounds(viewport);
-        if !viewport_matches_window || !exclusive_root || content_has_frame_images {
+        let viewport_matches_window = self.viewport_matches_window_bounds(request.viewport);
+        if !viewport_matches_window || !request.exclusive_root || request.content_has_frame_images {
             self.retained_scroll_frame_conflicted = true;
             return;
         }
         self.retained_scroll_frame = Some(RetainedScrollFrame {
-            handle,
-            cache_key,
-            axis,
-            viewport,
-            transform,
-            content_dynamic_morphs,
-            active_layers,
+            handle: request.handle,
+            cache_key: request.cache_key,
+            axis: request.axis,
+            viewport: request.viewport,
+            transform: request.transform,
+            content_dynamic_morphs: request.content_dynamic_morphs,
+            active_layers: request.active_layers,
         });
     }
 
@@ -4015,7 +4015,6 @@ fn remap_accessibility_node_references(
     }
 }
 
-pub(crate) use input::*;
 pub use render::HydroState;
 use render::HydroSubview;
 pub use render::RenderContext;

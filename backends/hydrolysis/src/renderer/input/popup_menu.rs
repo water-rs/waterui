@@ -54,6 +54,16 @@ pub(crate) struct PickerMenuEntry {
     pub(crate) tag: Id,
 }
 
+pub(crate) struct PickerMenuRequest {
+    pub(crate) entries: Vec<PickerMenuEntry>,
+    pub(crate) selection: Binding<Id>,
+    pub(crate) open: Rc<Cell<bool>>,
+    pub(crate) origin: LayoutPoint,
+    pub(crate) width: f64,
+    pub(crate) row_height: f64,
+    pub(crate) selected: Id,
+}
+
 #[derive(Clone)]
 pub(crate) struct PickerMenuOverlay {
     pub(crate) bounds: vello::kurbo::Rect,
@@ -440,35 +450,32 @@ impl HydrolysisRenderer {
         true
     }
 
-    pub(crate) fn show_picker_menu(
-        &mut self,
-        entries: Vec<PickerMenuEntry>,
-        selection: Binding<Id>,
-        open: Rc<Cell<bool>>,
-        origin: LayoutPoint,
-        width: f64,
-        row_height: f64,
-        selected: Id,
-    ) -> bool {
-        if entries.is_empty() {
+    pub(crate) fn show_picker_menu(&mut self, request: PickerMenuRequest) -> bool {
+        if request.entries.is_empty() {
             return false;
         }
         self.dismiss_active_popup_menu();
-        open.set(true);
+        request.open.set(true);
         let bounds = vello::kurbo::Rect::new(
-            f64::from(origin.x),
-            f64::from(origin.y),
-            f64::from(origin.x) + width,
-            f64::from(origin.y) + row_height * entries.len() as f64,
+            f64::from(request.origin.x),
+            f64::from(request.origin.y),
+            f64::from(request.origin.x) + request.width,
+            f64::from(request.origin.y) + request.row_height * request.entries.len() as f64,
         );
-        let rows = entries
+        let rows = request
+            .entries
             .into_iter()
             .enumerate()
             .map(|(index, entry)| {
-                let y0 = bounds.y0 + row_height * index as f64;
+                let y0 = bounds.y0 + request.row_height * index as f64;
                 PickerMenuOverlayRow {
-                    bounds: vello::kurbo::Rect::new(bounds.x0, y0, bounds.x1, y0 + row_height),
-                    selected: entry.tag == selected,
+                    bounds: vello::kurbo::Rect::new(
+                        bounds.x0,
+                        y0,
+                        bounds.x1,
+                        y0 + request.row_height,
+                    ),
+                    selected: entry.tag == request.selected,
                     entry,
                 }
             })
@@ -476,8 +483,8 @@ impl HydrolysisRenderer {
         self.popup_menu.active_picker_menu_overlay = Some(PickerMenuOverlay {
             bounds,
             rows,
-            selection,
-            open,
+            selection: request.selection,
+            open: request.open,
             opened_at: self.frame_instant(),
         });
         self.request_rebuild();

@@ -89,6 +89,16 @@ pub struct HydrolysisRenderTarget<'a> {
     pub base_color: vello::peniko::Color,
 }
 
+pub(crate) struct DirectGpuSurfaceTarget<'a> {
+    pub(crate) device: &'a wgpu::Device,
+    pub(crate) queue: &'a wgpu::Queue,
+    pub(crate) texture: &'a wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
 pub(crate) struct EmbeddedLayerTarget {
     pub(crate) format: wgpu::TextureFormat,
     pub(crate) width: u32,
@@ -398,17 +408,8 @@ impl EmbeddedGpuSurfaceRuntime {
         }
     }
 
-    pub(crate) fn render_direct_to_target(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        texture: &wgpu::Texture,
-        view: wgpu::TextureView,
-        format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-    ) -> bool {
-        self.ensure_setup(device, queue, format);
+    pub(crate) fn render_direct_to_target(&mut self, target: DirectGpuSurfaceTarget<'_>) -> bool {
+        self.ensure_setup(target.device, target.queue, target.format);
 
         let now = Instant::now();
         let elapsed = now.duration_since(self.start_time);
@@ -417,13 +418,13 @@ impl EmbeddedGpuSurfaceRuntime {
             .min(Duration::from_millis(100));
         self.last_frame_time = now;
         let mut frame = GpuFrame::new(
-            device,
-            queue,
-            texture,
-            view,
-            format,
-            width,
-            height,
+            target.device,
+            target.queue,
+            target.texture,
+            target.view,
+            target.format,
+            target.width,
+            target.height,
             PointerState::default(),
             GestureState::new(),
             elapsed,
@@ -821,15 +822,15 @@ impl HydrolysisRenderer {
                 .unwrap_or_else(|| {
                     panic!("hydrolysis gpu surface slot {} missing", layer.slot_index)
                 })
-                .render_direct_to_target(
-                    target.device,
-                    target.queue,
+                .render_direct_to_target(DirectGpuSurfaceTarget {
+                    device: target.device,
+                    queue: target.queue,
                     texture,
-                    target.view.clone(),
-                    target.format,
-                    target.width,
-                    target.height,
-                );
+                    view: target.view.clone(),
+                    format: target.format,
+                    width: target.width,
+                    height: target.height,
+                });
             self.compositor.render_layers = render_layers;
             if needs_redraw {
                 self.request_redraw();
