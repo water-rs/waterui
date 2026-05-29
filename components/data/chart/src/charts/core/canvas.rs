@@ -11,7 +11,8 @@ use nami::{Signal, SignalExt as _};
 use num_traits::ToPrimitive as _;
 use waterui_canvas::{Canvas, DrawingContext, Path};
 use waterui_core::{
-    Environment, Metadata,
+    AnyView, Environment, Metadata, View,
+    accessibility::{AccessibilityHidden, AccessibilityRole},
     event::{Event, HoverEvent, OnEvent},
     gesture::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, GesturePoint, TapEvent, TapGesture,
@@ -67,6 +68,28 @@ fn u32_to_f32(value: u32) -> f32 {
 
 fn u32_to_usize(value: u32) -> usize {
     usize::try_from(value).expect("chart dimension should fit usize")
+}
+
+struct ChartCanvasAccessibilityBoundary {
+    content: AnyView,
+}
+
+impl ChartCanvasAccessibilityBoundary {
+    fn new(content: impl View + 'static) -> Self {
+        Self {
+            content: AnyView::new(content),
+        }
+    }
+}
+
+impl View for ChartCanvasAccessibilityBoundary {
+    fn body(self, env: &Environment) -> impl View {
+        let mut canvas_env = env.clone();
+        if canvas_env.get::<AccessibilityRole>().is_some() {
+            canvas_env.insert(AccessibilityHidden::new(true));
+        }
+        Metadata::new(self.content, canvas_env)
+    }
 }
 
 #[derive(Debug)]
@@ -496,6 +519,7 @@ where
             },
         )
     };
+    let canvas = ChartCanvasAccessibilityBoundary::new(canvas);
     let canvas = Metadata::new(
         canvas,
         GestureObserver::new(TapGesture::new(), {
@@ -826,6 +850,7 @@ where
             ctx.restore();
         })
     };
+    let canvas = ChartCanvasAccessibilityBoundary::new(canvas);
     let canvas = Metadata::new(
         canvas,
         GestureObserver::new(TapGesture::new(), {
