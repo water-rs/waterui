@@ -47,6 +47,7 @@ extern crate alloc;
 extern crate std;
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -87,12 +88,7 @@ trait ErasedFilterHandler: Send + Sync + 'static {
 
     /// Lower the filter. `filter` must wrap the same concrete type the
     /// handler was registered against; otherwise the implementation panics.
-    fn lower_erased(
-        &self,
-        content: AnyView,
-        filter: Box<dyn Any>,
-        env: &Environment,
-    ) -> AnyView;
+    fn lower_erased(&self, content: AnyView, filter: Box<dyn Any>, env: &Environment) -> AnyView;
 }
 
 struct HandlerErasure<F: Effect, H: FilterHandler<F>> {
@@ -108,12 +104,7 @@ impl<F: Effect, H: FilterHandler<F>> ErasedFilterHandler for HandlerErasure<F, H
         self.handler.matches(filter, env)
     }
 
-    fn lower_erased(
-        &self,
-        content: AnyView,
-        filter: Box<dyn Any>,
-        env: &Environment,
-    ) -> AnyView {
+    fn lower_erased(&self, content: AnyView, filter: Box<dyn Any>, env: &Environment) -> AnyView {
         let filter: Box<F> = filter
             .downcast::<F>()
             .expect("FilterHandlerRegistry: handler invoked with wrong concrete filter type");
@@ -128,7 +119,7 @@ impl<F: Effect, H: FilterHandler<F>> ErasedFilterHandler for HandlerErasure<F, H
 /// function). Views that emit filtered subtrees consult the registry via
 /// [`FilterHandlerRegistry::lower`] when their `body()` runs.
 pub struct FilterHandlerRegistry {
-    handlers: RwLock<HashMap<TypeId, Box<dyn ErasedFilterHandler>>>,
+    handlers: RwLock<HashMap<TypeId, Arc<dyn ErasedFilterHandler>>>,
 }
 
 impl Default for FilterHandlerRegistry {
@@ -139,11 +130,7 @@ impl Default for FilterHandlerRegistry {
 
 impl core::fmt::Debug for FilterHandlerRegistry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let count = self
-            .handlers
-            .read()
-            .map(|guard| guard.len())
-            .unwrap_or(0);
+        let count = self.handlers.read().map(|guard| guard.len()).unwrap_or(0);
         f.debug_struct("FilterHandlerRegistry")
             .field("registered_filters", &count)
             .finish()
@@ -166,6 +153,10 @@ impl FilterHandlerRegistry {
     ///
     /// Registering twice for the same `F` replaces the previous handler;
     /// the most recent registration wins.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry write lock is poisoned.
     pub fn register<F: Effect, H: FilterHandler<F>>(&self, handler: H) {
         let erasure = HandlerErasure::<F, H> {
             handler,
@@ -175,10 +166,14 @@ impl FilterHandlerRegistry {
             .handlers
             .write()
             .expect("FilterHandlerRegistry: write lock poisoned");
-        guard.insert(TypeId::of::<F>(), Box::new(erasure));
+        guard.insert(TypeId::of::<F>(), Arc::new(erasure));
     }
 
     /// Remove the handler registered for `F`, if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry write lock is poisoned.
     pub fn unregister<F: Effect>(&self) -> bool {
         let mut guard = self
             .handlers
@@ -189,10 +184,7 @@ impl FilterHandlerRegistry {
 
     /// Number of registered handlers. Cheap, mostly useful for testing.
     pub fn len(&self) -> usize {
-        self.handlers
-            .read()
-            .map(|guard| guard.len())
-            .unwrap_or(0)
+        self.handlers.read().map(|guard| guard.len()).unwrap_or(0)
     }
 
     /// Whether any handler is registered.
@@ -202,46 +194,57 @@ impl FilterHandlerRegistry {
 
     /// Try to lower the given filter via a registered native handler.
     ///
-    /// Returns `Some(view)` when a matching handler took ownership;
-    /// returns `None` to signal that the caller should fall through to the
-    /// default wgpu pipeline (`Metadata<AppliedFilter>`).
+    /// # Errors
+    ///
+    /// Returns the original `(content, filter)` when no registered handler
+    /// claims this filter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry read lock is poisoned.
     pub fn lower<F: Effect>(
         &self,
         content: AnyView,
         filter: F,
         env: &Environment,
     ) -> Result<AnyView, (AnyView, F)> {
-        let guard = self
-            .handlers
-            .read()
-            .expect("FilterHandlerRegistry: read lock poisoned");
-        let Some(handler) = guard.get(&TypeId::of::<F>()) else {
+        let handler = {
+            let guard = self
+                .handlers
+                .read()
+                .expect("FilterHandlerRegistry: read lock poisoned");
+            guard.get(&TypeId::of::<F>()).cloned()
+        };
+        let Some(handler) = handler else {
             return Err((content, filter));
         };
         if !handler.matches_erased(&filter, env) {
             return Err((content, filter));
         }
-        Ok(handler.lower_erased(content, Box::new(filter), env))
+        let lowered = handler.lower_erased(content, Box::new(filter), env);
+        Ok(lowered)
     }
 }
 
 /// Default lowering used by [`FilteredView::body`]. Routes through the
 /// registry first; falls back to the wgpu `AppliedFilter` metadata path
 /// when no handler claims the filter.
-pub(crate) fn lower_filtered<F: Effect>(
-    content: AnyView,
-    filter: F,
-    env: &Environment,
-) -> AnyView {
+pub(crate) fn lower_filtered<F: Effect>(content: AnyView, filter: F, env: &Environment) -> AnyView {
     if let Some(registry) = env.get::<FilterHandlerRegistry>() {
         match registry.lower(content, filter, env) {
             Ok(view) => return view,
             Err((content, filter)) => {
-                return AnyView::new(waterui_core::Metadata::new(content, AppliedFilter::new(filter)));
+                return AnyView::new(waterui_core::Metadata::new(
+                    content,
+                    AppliedFilter::new(filter),
+                ));
             }
         }
     }
-    AnyView::new(waterui_core::Metadata::new(content, AppliedFilter::new(filter)))
+    AnyView::new(waterui_core::Metadata::new(
+        content,
+        AppliedFilter::new(filter),
+    ))
 }
 
 #[cfg(test)]
@@ -307,7 +310,10 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r.unregister::<DummyEffect>());
         assert!(r.is_empty());
-        assert!(!r.unregister::<DummyEffect>(), "second unregister is a no-op");
+        assert!(
+            !r.unregister::<DummyEffect>(),
+            "second unregister is a no-op"
+        );
     }
 
     #[test]
@@ -331,6 +337,9 @@ mod tests {
         let env = Environment::new();
         let content = AnyView::new(());
         let result = r.lower(content, DummyEffect(7), &env);
-        assert!(result.is_err(), "missing handler should signal fall-through");
+        assert!(
+            result.is_err(),
+            "missing handler should signal fall-through"
+        );
     }
 }

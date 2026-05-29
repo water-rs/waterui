@@ -1,4 +1,4 @@
-//! GPU-animated flowing gradient using ShaderSurface.
+//! GPU-animated flowing gradient using `ShaderSurface`.
 
 use crate::shader_surface::ShaderSurface;
 use core::fmt;

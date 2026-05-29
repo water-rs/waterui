@@ -1,10 +1,10 @@
 //! Material Design 3 top app bar navigation API.
 
 use crate::semantics::label_plain_text;
-use waterui::component::IntoLabel;
-use waterui::{Environment, Str, ViewExt as _};
 use waterui::View;
+use waterui::component::IntoLabel;
 use waterui::navigation::{NavigationTitleDisplayMode, NavigationView};
+use waterui::{Environment, Str, ViewExt as _};
 
 /// A Material Design 3 navigation view with top app bar chrome.
 #[derive(Debug)]

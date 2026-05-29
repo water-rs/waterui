@@ -4,19 +4,17 @@ use waterui::graphics::color::Srgb;
 use waterui::text::text;
 use waterui_layout::scroll;
 use waterui_layout::stack::{hstack, vstack, zstack};
-use waterui_testing::{MountedApp, Role, UiTest};
+use waterui_testing::{Role, SemanticApp, ui};
 
 const VIEWPORT_WIDTH: u32 = 180;
 const VIEWPORT_HEIGHT: u32 = 180;
 
-fn mount_view<V, F>(build: F) -> MountedApp
+fn mount_view<V, F>(build: F) -> SemanticApp
 where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    UiTest::new()
-        .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
-        .mount(build)
+    ui().viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT).mount(build)
 }
 
 fn visual_shell<V: View>(content: V) -> impl View {

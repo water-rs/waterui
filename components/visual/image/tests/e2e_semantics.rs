@@ -2,7 +2,7 @@ use image::ImageEncoder as _;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui_image::Image;
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 
 fn gpu_image_view() -> impl waterui::View {
     Image::new(
@@ -37,7 +37,7 @@ fn decoded_image_view() -> impl waterui::View {
 }
 
 #[waterui::test(gpu_image_view)]
-fn gpu_image_exposes_accessibility_image(app: &mut MountedApp) {
+fn gpu_image_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
         .label("GPU image")
@@ -45,7 +45,7 @@ fn gpu_image_exposes_accessibility_image(app: &mut MountedApp) {
 }
 
 #[waterui::test(decoded_image_view)]
-fn decoded_image_exposes_accessibility_image(app: &mut MountedApp) {
+fn decoded_image_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
         .label("Decoded image")

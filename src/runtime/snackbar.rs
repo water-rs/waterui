@@ -607,13 +607,7 @@ impl View for SnackbarView {
                         .clone()
                         .with_animation(enter_animation.clone()),
                 )
-                .offset(
-                    0.0,
-                    presentation
-                        .offset_y
-                        .clone()
-                        .with_animation(enter_animation),
-                ),
+                .offset(0.0, presentation.offset_y.with_animation(enter_animation)),
         )
         .alignment(position.to_alignment())
         .padding_with(theme.viewport_padding) // Safe area inset

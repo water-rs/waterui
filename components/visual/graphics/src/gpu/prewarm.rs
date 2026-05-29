@@ -67,13 +67,22 @@ const fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 /// Shared WGSL prelude prepended to fragment-only shader surfaces.
-pub const SHADER_SURFACE_PRELUDE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/prelude.wgsl"));
+pub const SHADER_SURFACE_PRELUDE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/shaders/prelude.wgsl"
+));
 
 static FLOWING_GRADIENT_SHADER_SURFACE: ShaderSource = ShaderSource::new(
     "shaders/flowing_gradient.wgsl#shader_surface",
     concat!(
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/prelude.wgsl")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/flowing_gradient.wgsl"))
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/prelude.wgsl"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/flowing_gradient.wgsl"
+        ))
     ),
 );
 
@@ -81,13 +90,25 @@ static FLOWING_GRADIENT_SHADER_SURFACE: ShaderSource = ShaderSource::new(
 pub static BUILTIN_SHADER_SOURCES: &[ShaderSource] = &[
     ShaderSource::new(
         "shaders/animated_mesh_gradient.wgsl",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/animated_mesh_gradient.wgsl")),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/animated_mesh_gradient.wgsl"
+        )),
     ),
     ShaderSource::new(
         "shaders/mesh_gradient.wgsl",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/mesh_gradient.wgsl")),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/mesh_gradient.wgsl"
+        )),
     ),
-    ShaderSource::new("shaders/blit.wgsl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/blit.wgsl"))),
+    ShaderSource::new(
+        "shaders/blit.wgsl",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/blit.wgsl"
+        )),
+    ),
     FLOWING_GRADIENT_SHADER_SURFACE,
 ];
 

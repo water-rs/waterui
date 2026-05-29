@@ -7,7 +7,7 @@ use waterui::preview;
 use waterui::reactive::{binding, impl_constant, Binding};
 use waterui::view_builder;
 use waterui_chart::{
-    AreaChart, AreaData, AreaSeries, ArcAngles, AxisConfig, BarChart, BubbleChart, BubblePoint,
+    ArcAngles, AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint,
     Candle, CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint,
     DepthChart, DepthData, DepthLevel, GaugeChart, GaugeData, GaugeRadii, GaugeRegion,
     HeatmapChart, HeatmapData, LineChart, PieChart, RadarChart, RadarData, RadarSeries,

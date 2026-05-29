@@ -84,7 +84,7 @@ impl WebViewProxy {
     /// The returned future is intentionally thread-local because native
     /// web views are main-thread-affine.
     #[allow(clippy::future_not_send)]
-    #[must_use] 
+    #[must_use]
     pub fn run_javascript<'a>(
         &'a self,
         script: &'a str,
@@ -125,10 +125,7 @@ impl Extractor for WebViewProxy {
         })
     }
 
-    fn extract_from_action(
-        env: &Environment,
-        _state: &mut ExtractionState,
-    ) -> Result<Self, Error> {
+    fn extract_from_action(env: &Environment, _state: &mut ExtractionState) -> Result<Self, Error> {
         Self::extract(env)
     }
 }

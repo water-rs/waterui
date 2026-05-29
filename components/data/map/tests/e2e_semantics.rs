@@ -4,28 +4,35 @@ use std::time::Duration;
 
 use waterui::ViewExt as _;
 use waterui::{Binding, View};
-use waterui_map::{Annotation, Coordinate, Map, Region};
-use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
+use waterui_map::{Annotation, Coordinate, Latitude, Longitude, Map, Region};
+use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
+
+const fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
+    Coordinate::new(
+        Latitude::new_unchecked(latitude),
+        Longitude::new_unchecked(longitude),
+    )
+}
 
 const fn initial_region() -> Region {
-    Region::new(Coordinate::new(37.7749, -122.4194), 0.12, 0.12)
+    Region::new(coordinate(37.7749, -122.4194), 0.12, 0.12)
 }
 
 const fn updated_region() -> Region {
-    Region::new(Coordinate::new(35.6764, 139.6500), 0.20, 0.20)
+    Region::new(coordinate(35.6764, 139.6500), 0.20, 0.20)
 }
 
 fn initial_annotations() -> Vec<Annotation> {
     vec![Annotation::new(
-        Coordinate::new(37.7749, -122.4194),
+        coordinate(37.7749, -122.4194),
         "San Francisco",
     )]
 }
 
 fn updated_annotations() -> Vec<Annotation> {
     vec![
-        Annotation::new(Coordinate::new(35.6764, 139.6500), "Tokyo Station").subtitle("Transit"),
-        Annotation::new(Coordinate::new(35.6895, 139.6917), "Shinjuku"),
+        Annotation::new(coordinate(35.6764, 139.6500), "Tokyo Station").subtitle("Transit"),
+        Annotation::new(coordinate(35.6895, 139.6917), "Shinjuku"),
     ]
 }
 
@@ -36,7 +43,7 @@ fn map_exposes_accessibility_surface_and_reactive_annotations() {
     let region_for_view = region.clone();
     let annotations_for_view = annotations.clone();
 
-    let mut app = UiTest::new()
+    let mut app = ui()
         .viewport(420, 320)
         .mount(move || map_view(region_for_view.clone(), annotations_for_view.clone()));
 

@@ -73,6 +73,19 @@ impl A11yDriver for NoopDriver {
         false
     }
 
+    fn text_input(&mut self, _text: String, _env: &Environment) -> bool {
+        false
+    }
+
+    fn key_press(
+        &mut self,
+        _key: hydrolysis::KeyCode,
+        _modifiers: hydrolysis::Modifiers,
+        _env: &Environment,
+    ) -> bool {
+        false
+    }
+
     fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) -> bool {
         false
     }
@@ -536,6 +549,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
         device: surface.device(),
         queue: surface.queue(),
+        texture: Some(frame.texture()),
         view: frame.view(),
         format: surface.format(),
         width: 96,

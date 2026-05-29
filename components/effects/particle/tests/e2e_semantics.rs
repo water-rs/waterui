@@ -2,7 +2,7 @@ use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
 use waterui_particle::ParticleSystem;
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 
 fn particle_system_view() -> impl waterui::View {
     ParticleSystem::new(128)
@@ -21,7 +21,7 @@ fn particle_system_view() -> impl waterui::View {
 }
 
 #[waterui::test(particle_system_view)]
-fn particle_system_exposes_accessibility_image(app: &mut MountedApp) {
+fn particle_system_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
         .label("Particle system")

@@ -44,6 +44,13 @@ use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
+type ReactiveParam = Reactive<Computed<f32>>;
+type ChainedFilter<V, F, Next> = Filtered<V, FilterAdapter<Chain<F, Next>>>;
+type TemperatureTintFilter = filtrate::filters::TemperatureTint<ReactiveParam, ReactiveParam>;
+type HighlightsShadowsFilter = filtrate::filters::HighlightsShadows<ReactiveParam, ReactiveParam>;
+type VignetteFilter = filtrate::filters::Vignette<ReactiveParam, ReactiveParam>;
+type MotionBlurFilter = filtrate::filters::MotionBlur<ReactiveParam, ReactiveParam>;
+
 /// Type-erased filter for FFI boundary.
 ///
 /// This wraps a `Box<dyn ErasedEffect>` and implements `MetadataKey`, allowing
@@ -260,18 +267,7 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
         self,
         temperature: T,
         tint: U,
-    ) -> Filtered<
-        V,
-        FilterAdapter<
-            Chain<
-                F,
-                filtrate::filters::TemperatureTint<
-                    Reactive<Computed<f32>>,
-                    Reactive<Computed<f32>>,
-                >,
-            >,
-        >,
-    > {
+    ) -> ChainedFilter<V, F, TemperatureTintFilter> {
         self.then(filtrate::filters::TemperatureTint(
             Reactive(temperature.into_signal_f32().computed()),
             Reactive(tint.into_signal_f32().computed()),
@@ -284,18 +280,7 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
         self,
         highlights: H,
         shadows: S,
-    ) -> Filtered<
-        V,
-        FilterAdapter<
-            Chain<
-                F,
-                filtrate::filters::HighlightsShadows<
-                    Reactive<Computed<f32>>,
-                    Reactive<Computed<f32>>,
-                >,
-            >,
-        >,
-    > {
+    ) -> ChainedFilter<V, F, HighlightsShadowsFilter> {
         self.then(filtrate::filters::HighlightsShadows(
             Reactive(highlights.into_signal_f32().computed()),
             Reactive(shadows.into_signal_f32().computed()),
@@ -308,12 +293,7 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
         self,
         radius: R,
         softness: S,
-    ) -> Filtered<
-        V,
-        FilterAdapter<
-            Chain<F, filtrate::filters::Vignette<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>,
-        >,
-    > {
+    ) -> ChainedFilter<V, F, VignetteFilter> {
         self.then(filtrate::filters::Vignette(
             Reactive(radius.into_signal_f32().computed()),
             Reactive(softness.into_signal_f32().computed()),
@@ -326,15 +306,7 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
         self,
         radius: R,
         angle: A,
-    ) -> Filtered<
-        V,
-        FilterAdapter<
-            Chain<
-                F,
-                filtrate::filters::MotionBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>>,
-            >,
-        >,
-    > {
+    ) -> ChainedFilter<V, F, MotionBlurFilter> {
         self.then(filtrate::filters::MotionBlur(
             Reactive(radius.into_signal_f32().computed()),
             Reactive(angle.into_signal_f32().computed()),
@@ -2278,7 +2250,7 @@ fn build_spatial_uniform_data(
     data
 }
 
-fn spatial_source_layout_entry() -> wgpu::BindGroupLayoutEntry {
+const fn spatial_source_layout_entry() -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 0,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -2291,7 +2263,9 @@ fn spatial_source_layout_entry() -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn spatial_target_layout_entry(storage_format: wgpu::TextureFormat) -> wgpu::BindGroupLayoutEntry {
+const fn spatial_target_layout_entry(
+    storage_format: wgpu::TextureFormat,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 1,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -2304,7 +2278,7 @@ fn spatial_target_layout_entry(storage_format: wgpu::TextureFormat) -> wgpu::Bin
     }
 }
 
-fn spatial_uniform_layout_entry() -> wgpu::BindGroupLayoutEntry {
+const fn spatial_uniform_layout_entry() -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 2,
         visibility: wgpu::ShaderStages::COMPUTE,

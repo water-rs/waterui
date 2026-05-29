@@ -35,6 +35,7 @@ use core::fmt;
 use std::sync::mpsc;
 
 use filtrate::{Effect, EffectContext, EffectInput, EffectOutput};
+use num_traits::ToPrimitive;
 
 use crate::pollster;
 
@@ -50,7 +51,7 @@ impl fmt::Debug for ParityHarness {
         f.debug_struct("ParityHarness")
             .field("adapter", &self.adapter_info.name)
             .field("backend", &self.adapter_info.backend)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -96,6 +97,11 @@ impl ParityHarness {
 
     /// Render `filter` against `input_rgba` and return the output RGBA8
     /// buffer. Returns `None` only if the filter setup or render fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `input_rgba` is not exactly `input_width * input_height * 4`
+    /// bytes.
     pub fn render<F: Effect>(
         &self,
         mut filter: F,
@@ -294,7 +300,13 @@ pub fn pixel_mean_abs_diff(reference: &[u8], candidate: &[u8]) -> f64 {
         .zip(candidate.iter())
         .map(|(&a, &b)| u64::from(a.abs_diff(b)))
         .sum();
-    total as f64 / reference.len() as f64
+    let Some(total) = total.to_f64() else {
+        return f64::INFINITY;
+    };
+    let Some(len) = reference.len().to_f64() else {
+        return f64::INFINITY;
+    };
+    total / len
 }
 
 #[cfg(test)]

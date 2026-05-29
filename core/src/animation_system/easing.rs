@@ -1,6 +1,6 @@
-//! Unified easing system for WaterUI animations.
+//! Unified easing system for `WaterUI` animations.
 //!
-//! This module provides the core easing curve types used across all WaterUI
+//! This module provides the core easing curve types used across all `WaterUI`
 //! components for consistent animation behavior. GPU renderers can use these
 //! curves for shader-based interpolation, while native animations use them
 //! for system animation configuration.

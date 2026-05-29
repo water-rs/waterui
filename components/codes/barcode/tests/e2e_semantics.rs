@@ -1,7 +1,7 @@
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui_barcode::Barcode;
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 
 fn qr_barcode_view() -> impl waterui::View {
     Barcode::qr("https://waterui.dev/testing")
@@ -11,7 +11,7 @@ fn qr_barcode_view() -> impl waterui::View {
 }
 
 #[waterui::test(qr_barcode_view)]
-fn qr_barcode_exposes_accessible_image_node(app: &mut MountedApp) {
+fn qr_barcode_exposes_accessible_image_node(app: &mut SemanticApp) {
     let node = app.query().role(Role::IMAGE).label("barcode-qr").single();
     let bounds = node.bounds();
     assert!(bounds.width() > 0.0, "barcode-qr: width must be positive");
@@ -26,7 +26,7 @@ fn code128_barcode_view() -> impl waterui::View {
 }
 
 #[waterui::test(code128_barcode_view)]
-fn code128_barcode_exposes_accessible_image_node(app: &mut MountedApp) {
+fn code128_barcode_exposes_accessible_image_node(app: &mut SemanticApp) {
     let node = app
         .query()
         .role(Role::IMAGE)

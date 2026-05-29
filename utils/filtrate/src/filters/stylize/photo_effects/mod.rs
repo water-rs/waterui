@@ -1,6 +1,6 @@
-mod photo_effects;
+mod presets;
 
-pub use photo_effects::{
+pub use presets::{
     PhotoEffectChrome, PhotoEffectFade, PhotoEffectInstant, PhotoEffectMono, PhotoEffectNoir,
     PhotoEffectProcess, PhotoEffectTonal, PhotoEffectTransfer,
 };

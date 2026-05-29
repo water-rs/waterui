@@ -69,11 +69,11 @@ pub use icon_button::{
 };
 pub use material_badge::{MaterialBadge, material_badge};
 pub use material_card::{MaterialCard, material_card};
-pub use material_divider::{MaterialDivider, material_divider};
 pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
     variant::Variant as MaterialColorVariant,
 };
+pub use material_divider::{MaterialDivider, material_divider};
 pub use material_list::{MaterialList, MaterialListItem, material_list, material_list_item};
 pub use material_menu::{
     MaterialMenu, MaterialMenuCommand, MaterialMenuItem, MaterialMenuItemBuilder, material_menu,

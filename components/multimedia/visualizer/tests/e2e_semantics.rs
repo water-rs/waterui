@@ -1,6 +1,6 @@
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 use waterui_visualizer::{AudioCapture, Waveform};
 
 fn waveform_view() -> impl waterui::View {
@@ -12,7 +12,7 @@ fn waveform_view() -> impl waterui::View {
 }
 
 #[waterui::test(waveform_view)]
-fn waveform_exposes_accessibility_image(app: &mut MountedApp) {
+fn waveform_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
         .label("Waveform")

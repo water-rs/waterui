@@ -33,7 +33,7 @@ pub type WuiExternalDropFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 use waterui_graphics::shared_context::shared_context;
 use waterui_graphics::view_effect::{
-    ViewEffectContext, ViewEffectInput, ViewEffectOutput, OutputSize, ViewEffectErased,
+    OutputSize, ViewEffectContext, ViewEffectErased, ViewEffectInput, ViewEffectOutput,
 };
 
 use crate::components::pixel_upload::prepare_rgba8_upload;

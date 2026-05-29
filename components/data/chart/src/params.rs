@@ -244,17 +244,23 @@ impl ArcAngles {
     /// Fail-fast factory for arc angles in radians. Panics on invalid input.
     ///
     /// Use [`ArcAngles::try_radians`] when the failure must be handled.
+    ///
+    /// # Panics
+    ///
+    /// Panics when either angle is non-finite or `end <= start`.
     #[must_use]
     pub fn from_radians(start: f32, end: f32) -> Self {
-        Self::try_radians(start, end)
-            .unwrap_or_else(|err| panic!("ArcAngles from_radians: {err}"))
+        Self::try_radians(start, end).unwrap_or_else(|err| panic!("ArcAngles from_radians: {err}"))
     }
 
     /// Fail-fast factory for arc angles in degrees. Panics on invalid input.
+    ///
+    /// # Panics
+    ///
+    /// Panics when either angle is non-finite or `end <= start`.
     #[must_use]
     pub fn from_degrees(start: f32, end: f32) -> Self {
-        Self::try_degrees(start, end)
-            .unwrap_or_else(|err| panic!("ArcAngles from_degrees: {err}"))
+        Self::try_degrees(start, end).unwrap_or_else(|err| panic!("ArcAngles from_degrees: {err}"))
     }
 
     /// Arc start angle in radians.
@@ -324,6 +330,11 @@ impl GaugeRadii {
 
     /// Fail-fast factory. Panics on invalid input. Use [`Self::try_new`] when
     /// the failure must be handled.
+    ///
+    /// # Panics
+    ///
+    /// Panics when either radius is non-finite or the radii do not satisfy
+    /// `0.0 <= inner < outer <= 0.5`.
     #[must_use]
     pub fn new(inner: f32, outer: f32) -> Self {
         Self::try_new(inner, outer).unwrap_or_else(|err| panic!("GaugeRadii::new: {err}"))

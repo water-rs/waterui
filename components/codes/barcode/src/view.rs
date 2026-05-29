@@ -176,7 +176,11 @@ impl View for Barcode {
             BarcodeFill::Solid(dark) => {
                 let resolved_dark = dark.resolve(env).get();
                 let resolved_light = light_color.resolve(env).get();
-                AnyView::new(render_solid_bitmap(&mut source, resolved_dark, resolved_light))
+                AnyView::new(render_solid_bitmap(
+                    &mut source,
+                    resolved_dark,
+                    resolved_light,
+                ))
             }
             // Gradients still need shader interpolation across modules, so
             // they keep the original GPU rasterizer path.

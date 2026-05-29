@@ -210,8 +210,18 @@ pub trait ErasedEffect: 'static {
     /// Drive `Effect::setup` through a boxed future.
     fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> EffectSetupFuture<'a>;
     /// Drive `Effect::render`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the concrete effect cannot encode or submit its
+    /// render work for the provided input/output targets.
     fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult;
     /// Drive `Effect::encode_render`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the concrete effect cannot encode render commands
+    /// into the provided command encoder.
     fn encode_render(
         &mut self,
         input: &EffectInput,

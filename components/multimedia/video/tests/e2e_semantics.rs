@@ -5,7 +5,7 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::{Binding, View};
-use waterui_testing::{MountedApp, Role, Selector, UiTest, WaitOptions, WaitResult};
+use waterui_testing::{Role, Selector, SemanticApp, WaitOptions, WaitResult, ui};
 use waterui_video::{Url, Video, VideoPlayer};
 
 fn missing_video_url() -> Url {
@@ -15,7 +15,7 @@ fn missing_video_url() -> Url {
     ))
 }
 
-fn tree_debug(app: &mut waterui_testing::MountedApp) -> String {
+fn tree_debug(app: &mut waterui_testing::SemanticApp) -> String {
     let buttons = app
         .query()
         .role(Role::BUTTON)
@@ -56,7 +56,7 @@ fn raw_video_view() -> impl View {
 }
 
 #[waterui::test(raw_video_view)]
-fn raw_video_exposes_explicit_accessibility_image(app: &mut MountedApp) {
+fn raw_video_exposes_explicit_accessibility_image(app: &mut SemanticApp) {
     assert_eq!(
         app.query().role(Role::IMAGE).all().len(),
         1,
@@ -81,7 +81,7 @@ fn video_player_controls_are_accessible_and_reactive() {
     let has_previous_for_view = has_previous.clone();
     let has_next_for_view = has_next.clone();
 
-    let mut app = UiTest::new().viewport(480, 320).mount(move || {
+    let mut app = ui().viewport(480, 320).mount(move || {
         VideoPlayer::new(missing_video_url())
             .has_previous(&has_previous_for_view)
             .has_next(&has_next_for_view)

@@ -8,7 +8,7 @@ use waterui::graphics::color::Srgb;
 use waterui::layout::{PositionExt, UnitPoint, absolute};
 use waterui::{Binding, SignalExt as _, View, ViewExt as _};
 use waterui_chart::LineChart;
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 
 use support::{
     CHART_HEIGHT, CHART_WIDTH, assert_chart_accessibility_ready, assert_label_exists,
@@ -25,7 +25,7 @@ fn overlay_badge(label: &'static str) -> impl View {
         .a11y_label(label)
 }
 
-fn assert_label_bounds(app: &mut MountedApp, label: &str) {
+fn assert_label_bounds(app: &mut SemanticApp, label: &str) {
     let badge = app.query().role(Role::LABEL).label(label).single();
     let bounds = badge.bounds();
     assert!(

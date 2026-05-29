@@ -12,11 +12,15 @@ use waterui::preview;
 use waterui::reactive::binding;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
 
+fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
+    Coordinate::from_degrees(latitude, longitude).expect("example coordinates should be valid")
+}
+
 /// Main view with map and controls
 #[preview]
 fn main_view() -> impl View {
     // San Francisco coordinates
-    let sf = Coordinate::new(37.7749, -122.4194);
+    let sf = coordinate(37.7749, -122.4194);
     let region: Binding<Region> = binding(Region::new(sf, 0.1, 0.1));
 
     // Create map with reactive region

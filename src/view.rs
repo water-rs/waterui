@@ -9,8 +9,6 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
-#[cfg(feature = "std")]
-use executor_core::spawn;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
@@ -28,7 +26,7 @@ use waterui_graphics::color::Color;
 
 /// All view-level GPU filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
-/// makes them part of the WaterUI prelude alongside [`ViewExt`], so a single
+/// makes them part of the `WaterUI` prelude alongside [`ViewExt`], so a single
 /// `use waterui::prelude::*;` is enough.
 pub use waterui_graphics::filter_view::FilterViewExt;
 
@@ -70,10 +68,9 @@ use waterui_core::id::TaggedView;
 
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
-    spawn(async move {
-        let _ = Haptic::impact(intensity).await;
-    })
-    .detach();
+    if let Err(error) = Haptic::impact(intensity) {
+        tracing::debug!(%error, "failed to trigger impact haptic");
+    }
 }
 
 /// Extension trait for views, adding common styling and configuration methods.

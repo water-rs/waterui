@@ -533,8 +533,9 @@ fn measure_seek_recovery(
             let stream = decoder.decode(&sample_data);
             for frame_result in stream {
                 let frame = frame_result.map_err(|error| error.to_string())?;
-                let frame_pts = if frame.timestamp_ns() > 0 {
-                    Duration::from_nanos(frame.timestamp_ns())
+                let frame_timestamp = frame.timestamp();
+                let frame_pts = if frame_timestamp > Duration::ZERO {
+                    frame_timestamp
                 } else {
                     sample_pts_duration
                 };
@@ -654,8 +655,9 @@ fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
                 ));
             }
 
-            let frame_pts = if frame.timestamp_ns() > 0 {
-                Duration::from_nanos(frame.timestamp_ns())
+            let frame_timestamp = frame.timestamp();
+            let frame_pts = if frame_timestamp > Duration::ZERO {
+                frame_timestamp
             } else {
                 sample_pts_duration
             };

@@ -162,7 +162,7 @@ impl List<BuiltViews> {
     /// `ListContent` accepts [`ListItem`], [`Row`] (the [`row`] / [`detail_row`]
     /// helpers produce one), [`Section<C>`], tuples, arrays, vectors, and
     /// `Option<T>`, so heterogeneous content composes structurally just like
-    /// SwiftUI's `Section { row; row }` form. For dynamic identity-keyed data,
+    /// `SwiftUI`'s `Section { row; row }` form. For dynamic identity-keyed data,
     /// use [`List::for_each`] instead; for any pre-built [`Views`]
     /// implementation, use [`List::new`].
     #[must_use]
@@ -215,9 +215,7 @@ impl Views for BuiltViews {
     fn get_view(&self, index: usize) -> Option<Self::View> {
         let (builder, section) = self.entries.get(index)?;
         let mut item = builder.build();
-        if let Some(section) = section {
-            item.section = Some(section.clone());
-        }
+        item.section = section;
         Some(item)
     }
 

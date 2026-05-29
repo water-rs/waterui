@@ -1,4 +1,4 @@
-//! VectorArithmetic trait for types that can be linearly interpolated.
+//! `VectorArithmetic` trait for types that can be linearly interpolated.
 //!
 //! This module provides the foundation for animation interpolation. The native
 //! animation system uses these traits to interpolate between values when

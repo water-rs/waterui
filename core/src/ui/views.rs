@@ -396,12 +396,7 @@ where
         watcher: impl for<'a> Fn(Context<&'a [Self::Item]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.data.watch(range, move |ctx| {
-            let ctx = ctx.map(|value| {
-                value
-                    .iter()
-                    .map(Identifiable::id)
-                    .collect::<Vec<_>>()
-            });
+            let ctx = ctx.map(|value| value.iter().map(Identifiable::id).collect::<Vec<_>>());
 
             watcher(ctx.as_deref());
         })
@@ -433,12 +428,7 @@ where
         watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.data.watch(range, move |ctx| {
-            let ctx = ctx.map(|value| {
-                value
-                    .iter()
-                    .map(Identifiable::id)
-                    .collect::<Vec<_>>()
-            });
+            let ctx = ctx.map(|value| value.iter().map(Identifiable::id).collect::<Vec<_>>());
 
             watcher(ctx.as_deref());
         })

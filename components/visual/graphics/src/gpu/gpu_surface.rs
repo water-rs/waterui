@@ -1084,14 +1084,7 @@ impl GpuSurface {
         env: &mut waterui_core::Environment,
         frame_count: NonZeroU32,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
-        if !matches!(
-            config.format,
-            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
-        ) {
-            return Err(OffscreenRenderError::UnsupportedReadbackFormat(
-                config.format,
-            ));
-        }
+        validate_rgba_readback_format(config.format)?;
 
         crate::shared_context::init_shared_context().map_err(|e| match e {
             SharedContextError::NoAdapter => OffscreenRenderError::NoAdapter,
@@ -1355,6 +1348,19 @@ impl GpuSurface {
     #[must_use]
     pub fn require_main_thread(&self) -> bool {
         self.renderer.require_main_thread()
+    }
+}
+
+const fn validate_rgba_readback_format(
+    format: wgpu::TextureFormat,
+) -> Result<(), OffscreenRenderError> {
+    if matches!(
+        format,
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+    ) {
+        Ok(())
+    } else {
+        Err(OffscreenRenderError::UnsupportedReadbackFormat(format))
     }
 }
 

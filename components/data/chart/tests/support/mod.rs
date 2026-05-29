@@ -13,7 +13,7 @@ use waterui_chart::{
     AreaData, AreaDatum, AreaSeries, BubblePoint, Candle, ChartAnchor, DataBounds, DataPoint,
     DepthData, DepthDatum, DepthLevel, DepthSide, HitResult, SliceDatum,
 };
-use waterui_testing::{MountedApp, Role, Selector, UiTest};
+use waterui_testing::{Role, Selector, SemanticApp, ui};
 
 pub const VIEWPORT_WIDTH: u32 = 320;
 pub const VIEWPORT_HEIGHT: u32 = 320;
@@ -126,14 +126,12 @@ pub fn snapshot_suite(name: &str) -> String {
     format!("chart/{name}")
 }
 
-pub fn mount_view<V, F>(build: F) -> MountedApp
+pub fn mount_view<V, F>(build: F) -> SemanticApp
 where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    UiTest::new()
-        .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
-        .mount(build)
+    ui().viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT).mount(build)
 }
 
 pub fn chart_surface<V: View>(name: &str, chart: V) -> impl View {
@@ -188,7 +186,7 @@ pub fn image_selector(name: &str) -> Selector {
         .label(chart_label(name))
 }
 
-pub fn assert_chart_accessibility_ready(app: &mut MountedApp, name: &str) -> String {
+pub fn assert_chart_accessibility_ready(app: &mut SemanticApp, name: &str) -> String {
     let selector = image_selector(name);
     assert!(
         app.wait_for_existence(&selector, Duration::from_secs(1)),
@@ -208,7 +206,7 @@ pub fn assert_chart_accessibility_ready(app: &mut MountedApp, name: &str) -> Str
     chart_label(name)
 }
 
-pub fn assert_label_exists(app: &mut MountedApp, label: &str) {
+pub fn assert_label_exists(app: &mut SemanticApp, label: &str) {
     let selector = Selector::default()
         .role(Role::LABEL)
         .label(label.to_owned());
