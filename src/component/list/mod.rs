@@ -176,7 +176,7 @@ impl List<BuiltViews> {
 /// `Views` adapter that materializes the entries collected by a
 /// [`ListContent`] tree on demand.
 ///
-/// Each entry stores a clonable builder that produces a fresh [`ListItem`]
+/// Each entry stores a cloneable builder that produces a fresh [`ListItem`]
 /// every time `Views::get_view` is called, plus an optional [`ListSection`]
 /// marker attached by [`Section`].
 pub struct BuiltViews {
