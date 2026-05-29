@@ -129,17 +129,20 @@ impl ImageGenerator for CheckerboardGenerator {
         );
         let [lr, lg, lb] = srgb_rgb_literal(self.light);
         let [dr, dg, db] = srgb_rgb_literal(self.dark);
-        let fragment = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/generators/checkerboard.wgsl"))
-            .replace("__LIGHT_R__", &lr)
-            .replace("__LIGHT_G__", &lg)
-            .replace("__LIGHT_B__", &lb)
-            .replace("__DARK_R__", &dr)
-            .replace("__DARK_G__", &dg)
-            .replace("__DARK_B__", &db)
-            .replace("__CELL_W__", &self.cell_size.to_string())
-            .replace("__CELL_H__", &self.cell_size.to_string())
-            .replace("__OFFSET_X__", &self.offset_x.to_string())
-            .replace("__OFFSET_Y__", &self.offset_y.to_string());
+        let fragment = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/generators/checkerboard.wgsl"
+        ))
+        .replace("__LIGHT_R__", &lr)
+        .replace("__LIGHT_G__", &lg)
+        .replace("__LIGHT_B__", &lb)
+        .replace("__DARK_R__", &dr)
+        .replace("__DARK_G__", &dg)
+        .replace("__DARK_B__", &db)
+        .replace("__CELL_W__", &self.cell_size.to_string())
+        .replace("__CELL_H__", &self.cell_size.to_string())
+        .replace("__OFFSET_X__", &self.offset_x.to_string())
+        .replace("__OFFSET_Y__", &self.offset_y.to_string());
         render_fragment(self.width, self.height, fragment)
     }
 }
@@ -171,19 +174,22 @@ impl ImageGenerator for StripeGenerator {
         );
         let [pr, pg, pb] = srgb_rgb_literal(self.primary);
         let [sr, sg, sb] = srgb_rgb_literal(self.secondary);
-        let fragment = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/generators/stripes.wgsl"))
-            .replace("__PRIMARY_R__", &pr)
-            .replace("__PRIMARY_G__", &pg)
-            .replace("__PRIMARY_B__", &pb)
-            .replace("__SECONDARY_R__", &sr)
-            .replace("__SECONDARY_G__", &sg)
-            .replace("__SECONDARY_B__", &sb)
-            .replace("__STRIPE_WIDTH__", &self.stripe_width.to_string())
-            .replace(
-                "__HORIZONTAL__",
-                if self.horizontal { "true" } else { "false" },
-            )
-            .replace("__OFFSET__", &self.offset.to_string());
+        let fragment = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/generators/stripes.wgsl"
+        ))
+        .replace("__PRIMARY_R__", &pr)
+        .replace("__PRIMARY_G__", &pg)
+        .replace("__PRIMARY_B__", &pb)
+        .replace("__SECONDARY_R__", &sr)
+        .replace("__SECONDARY_G__", &sg)
+        .replace("__SECONDARY_B__", &sb)
+        .replace("__STRIPE_WIDTH__", &self.stripe_width.to_string())
+        .replace(
+            "__HORIZONTAL__",
+            if self.horizontal { "true" } else { "false" },
+        )
+        .replace("__OFFSET__", &self.offset.to_string());
         render_fragment(self.width, self.height, fragment)
     }
 }
@@ -210,15 +216,18 @@ impl ImageGenerator for DotGridGenerator {
         assert!(self.spacing > 0, "DotGridGenerator: spacing must be > 0");
         let [fr, fg, fb] = srgb_rgb_literal(self.foreground);
         let [br, bg, bb] = srgb_rgb_literal(self.background);
-        let fragment = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/generators/dot_grid.wgsl"))
-            .replace("__FG_R__", &fr)
-            .replace("__FG_G__", &fg)
-            .replace("__FG_B__", &fb)
-            .replace("__BG_R__", &br)
-            .replace("__BG_G__", &bg)
-            .replace("__BG_B__", &bb)
-            .replace("__SPACING__", &self.spacing.to_string())
-            .replace("__RADIUS__", &self.radius.to_string());
+        let fragment = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/generators/dot_grid.wgsl"
+        ))
+        .replace("__FG_R__", &fr)
+        .replace("__FG_G__", &fg)
+        .replace("__FG_B__", &fb)
+        .replace("__BG_R__", &br)
+        .replace("__BG_G__", &bg)
+        .replace("__BG_B__", &bb)
+        .replace("__SPACING__", &self.spacing.to_string())
+        .replace("__RADIUS__", &self.radius.to_string());
         render_fragment(self.width, self.height, fragment)
     }
 }
@@ -236,8 +245,11 @@ pub struct NoiseGenerator {
 
 impl ImageGenerator for NoiseGenerator {
     fn generate(&mut self) -> GeneratedImage {
-        let fragment = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/generators/noise.wgsl"))
-            .replace("__SEED__", &self.seed.to_string());
+        let fragment = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/generators/noise.wgsl"
+        ))
+        .replace("__SEED__", &self.seed.to_string());
         render_fragment(self.width, self.height, fragment)
     }
 }
@@ -263,17 +275,20 @@ impl ImageGenerator for LinearGradientGenerator {
     fn generate(&mut self) -> GeneratedImage {
         let [sr, sg, sb] = srgb_rgb_literal(self.start_color);
         let [er, eg, eb] = srgb_rgb_literal(self.end_color);
-        let fragment = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/generators/linear_gradient.wgsl"))
-            .replace("__START_R__", &sr)
-            .replace("__START_G__", &sg)
-            .replace("__START_B__", &sb)
-            .replace("__END_R__", &er)
-            .replace("__END_G__", &eg)
-            .replace("__END_B__", &eb)
-            .replace("__START_X__", &self.start_point[0].to_string())
-            .replace("__START_Y__", &self.start_point[1].to_string())
-            .replace("__END_X__", &self.end_point[0].to_string())
-            .replace("__END_Y__", &self.end_point[1].to_string());
+        let fragment = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/generators/linear_gradient.wgsl"
+        ))
+        .replace("__START_R__", &sr)
+        .replace("__START_G__", &sg)
+        .replace("__START_B__", &sb)
+        .replace("__END_R__", &er)
+        .replace("__END_G__", &eg)
+        .replace("__END_B__", &eb)
+        .replace("__START_X__", &self.start_point[0].to_string())
+        .replace("__START_Y__", &self.start_point[1].to_string())
+        .replace("__END_X__", &self.end_point[0].to_string())
+        .replace("__END_Y__", &self.end_point[1].to_string());
         render_fragment(self.width, self.height, fragment)
     }
 }
@@ -299,16 +314,19 @@ impl ImageGenerator for RadialGradientGenerator {
     fn generate(&mut self) -> GeneratedImage {
         let [ir, ig, ib] = srgb_rgb_literal(self.inner_color);
         let [or, og, ob] = srgb_rgb_literal(self.outer_color);
-        let fragment = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/generators/radial_gradient.wgsl"))
-            .replace("__INNER_R__", &ir)
-            .replace("__INNER_G__", &ig)
-            .replace("__INNER_B__", &ib)
-            .replace("__OUTER_R__", &or)
-            .replace("__OUTER_G__", &og)
-            .replace("__OUTER_B__", &ob)
-            .replace("__CENTER_X__", &self.center[0].to_string())
-            .replace("__CENTER_Y__", &self.center[1].to_string())
-            .replace("__RADIUS__", &self.radius.to_string());
+        let fragment = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/generators/radial_gradient.wgsl"
+        ))
+        .replace("__INNER_R__", &ir)
+        .replace("__INNER_G__", &ig)
+        .replace("__INNER_B__", &ib)
+        .replace("__OUTER_R__", &or)
+        .replace("__OUTER_G__", &og)
+        .replace("__OUTER_B__", &ob)
+        .replace("__CENTER_X__", &self.center[0].to_string())
+        .replace("__CENTER_Y__", &self.center[1].to_string())
+        .replace("__RADIUS__", &self.radius.to_string());
         render_fragment(self.width, self.height, fragment)
     }
 }

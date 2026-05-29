@@ -1,11 +1,11 @@
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
-use waterui_testing::{MountedApp, UiTest};
+use waterui_testing::{SemanticApp, ui};
 
 pub const VIEWPORT_WIDTH: u32 = 320;
 pub const VIEWPORT_HEIGHT: u32 = 240;
 
-pub fn mount_view<V, F>(build: F) -> MountedApp
+pub fn mount_view<V, F>(build: F) -> SemanticApp
 where
     V: View + 'static,
     F: Fn() -> V + 'static,
@@ -13,8 +13,7 @@ where
     let mut env = Environment::new();
     hydrolysis_m3::install(&mut env);
 
-    UiTest::new()
-        .environment(env)
+    ui().environment(env)
         .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
         .mount(build)
 }

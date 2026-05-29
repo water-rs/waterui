@@ -76,7 +76,7 @@ impl Calendar {
     /// calendar grid. The semantic identity is always retained for assistive
     /// technology.
     #[must_use]
-    pub fn label_style(mut self, mode: LabelDisplayMode) -> Self {
+    pub const fn label_style(mut self, mode: LabelDisplayMode) -> Self {
         self.label.set_display_mode(mode);
         self
     }
@@ -84,7 +84,7 @@ impl Calendar {
     /// Visually hides the label above the calendar grid while preserving its
     /// semantic text for assistive technology.
     #[must_use]
-    pub fn hide_label(self) -> Self {
+    pub const fn hide_label(self) -> Self {
         self.label_style(LabelDisplayMode::Hidden)
     }
 }

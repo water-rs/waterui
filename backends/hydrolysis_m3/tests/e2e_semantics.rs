@@ -21,9 +21,9 @@ use waterui::navigation::NavigationView;
 use waterui::{Binding, Str};
 use waterui_controls::{Slider, Stepper, TextField, button, toggle};
 use waterui_core::View;
-use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
+use waterui_testing::{OffscreenApp, Role, Selector, SemanticApp, WaitOptions, WaitResult, ui};
 
-fn mount_m3<V, F>(build: F) -> waterui_testing::MountedApp
+fn mount_m3<V, F>(build: F) -> SemanticApp
 where
     V: View + 'static,
     F: Fn() -> V + 'static,
@@ -31,15 +31,25 @@ where
     let mut env = Environment::new();
     install(&mut env);
 
-    UiTest::new()
-        .environment(env)
-        .viewport(360, 320)
-        .mount(move || {
-            vstack((build(),))
-                .spacing(12.0)
-                .padding_with(16.0)
-                .background(Srgb::WHITE)
-        })
+    ui().environment(env).viewport(360, 320).mount(move || {
+        vstack((build(),))
+            .spacing(12.0)
+            .padding_with(16.0)
+            .background(Srgb::WHITE)
+    })
+}
+
+fn mount_m3_offscreen<V, F>(build: F) -> OffscreenApp
+where
+    V: View + 'static,
+    F: Fn() -> V + 'static,
+{
+    ui().viewport(360, 320).theme(install).mount(move || {
+        vstack((build(),))
+            .spacing(12.0)
+            .padding_with(16.0)
+            .background(Srgb::WHITE)
+    })
 }
 
 fn tab_id(value: i32) -> Id {
@@ -725,7 +735,7 @@ fn material_navigation_view_preserves_title_and_content_semantics() {
 fn material_focused_text_field_snapshot() {
     let name = Binding::container(Str::from("Hydrolysis"));
     let name_for_view = name.clone();
-    let mut app = mount_m3(move || TextField::new(&name_for_view).label("Project"));
+    let mut app = mount_m3_offscreen(move || TextField::new(&name_for_view).label("Project"));
 
     assert!(
         app.query().role(Role::TEXT_INPUT).label("Project").focus(),

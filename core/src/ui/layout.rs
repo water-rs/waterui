@@ -1104,8 +1104,22 @@ impl Affine2 {
 
     /// Constructs an affine transform from raw coefficients.
     #[must_use]
-    pub const fn new(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Self {
-        Self { a, b, c, d, e, f }
+    pub const fn new(
+        scale_x: f32,
+        shear_y: f32,
+        shear_x: f32,
+        scale_y: f32,
+        translate_x: f32,
+        translate_y: f32,
+    ) -> Self {
+        Self {
+            a: scale_x,
+            b: shear_y,
+            c: shear_x,
+            d: scale_y,
+            e: translate_x,
+            f: translate_y,
+        }
     }
 
     /// Pure translation by `(tx, ty)`.
@@ -1150,8 +1164,15 @@ impl Affine2 {
 }
 
 impl From<[f32; 6]> for Affine2 {
-    fn from([a, b, c, d, e, f]: [f32; 6]) -> Self {
-        Self { a, b, c, d, e, f }
+    fn from(coefficients: [f32; 6]) -> Self {
+        Self {
+            a: coefficients[0],
+            b: coefficients[1],
+            c: coefficients[2],
+            d: coefficients[3],
+            e: coefficients[4],
+            f: coefficients[5],
+        }
     }
 }
 

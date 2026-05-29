@@ -2,7 +2,7 @@ use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
 use waterui_shape::{Circle, RoundedRectangle, ShapeExt};
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 
 fn filled_circle_view() -> impl waterui::View {
     Circle
@@ -24,7 +24,7 @@ fn morph_shape_view() -> impl waterui::View {
 }
 
 #[waterui::test(filled_circle_view)]
-fn filled_shape_exposes_accessibility_image(app: &mut MountedApp) {
+fn filled_shape_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
         .label("Filled circle")
@@ -32,7 +32,7 @@ fn filled_shape_exposes_accessibility_image(app: &mut MountedApp) {
 }
 
 #[waterui::test(morph_shape_view)]
-fn morph_shape_exposes_accessibility_image(app: &mut MountedApp) {
+fn morph_shape_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
         .label("Morph shape")

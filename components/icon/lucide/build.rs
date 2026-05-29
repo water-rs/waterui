@@ -139,20 +139,21 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
                 paths.push(format!("M{x1},{y1} L{x2},{y2}"));
             }
         } else if (element_type == "polyline" || element_type == "polygon")
-            && let Some(serde_json::Value::String(points)) = attrs.get("points") {
-                let coords: Vec<&str> = points.split_whitespace().collect();
-                if !coords.is_empty() {
-                    let mut path = String::new();
-                    for (i, coord) in coords.iter().enumerate() {
-                        let prefix = if i == 0 { "M" } else { "L" };
-                        path.push_str(&format!("{prefix}{coord} "));
-                    }
-                    if element_type == "polygon" {
-                        path.push('Z');
-                    }
-                    paths.push(path.trim().to_string());
+            && let Some(serde_json::Value::String(points)) = attrs.get("points")
+        {
+            let coords: Vec<&str> = points.split_whitespace().collect();
+            if !coords.is_empty() {
+                let mut path = String::new();
+                for (i, coord) in coords.iter().enumerate() {
+                    let prefix = if i == 0 { "M" } else { "L" };
+                    path.push_str(&format!("{prefix}{coord} "));
                 }
+                if element_type == "polygon" {
+                    path.push('Z');
+                }
+                paths.push(path.trim().to_string());
             }
+        }
     }
 
     if paths.is_empty() {

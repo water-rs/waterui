@@ -3,7 +3,7 @@ use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
 use waterui::layout::{Point, Rect, Size};
 use waterui_canvas::Canvas;
-use waterui_testing::{MountedApp, Role};
+use waterui_testing::{Role, SemanticApp};
 
 fn canvas_fill_rect_view() -> impl waterui::View {
     Canvas::new(|ctx| {
@@ -17,7 +17,7 @@ fn canvas_fill_rect_view() -> impl waterui::View {
 }
 
 #[waterui::test(canvas_fill_rect_view)]
-fn canvas_fill_rect_exposes_accessibility_node(app: &mut MountedApp) {
+fn canvas_fill_rect_exposes_accessibility_node(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
         .label("Filled rect canvas")

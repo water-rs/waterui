@@ -7,19 +7,19 @@
 //! ## Example
 //!
 //! ```ignore
-//! use waterui_map::{Map, Coordinate, Region, Annotation};
+//! use waterui_map::{Annotation, Coordinate, Map, Region};
 //!
 //! // Display a map centered on San Francisco
-//! let region = Region::new(
-//!     Coordinate::new(37.7749, -122.4194),  // San Francisco
-//!     0.1, 0.1  // span in degrees
-//! );
+//! # fn example() -> Result<(), waterui_map::OutOfRange> {
+//! let san_francisco = Coordinate::from_degrees(37.7749, -122.4194)?;
+//! let region = Region::new(san_francisco, 0.1, 0.1);
 //!
 //! let map = Map::new(region)
-//!     .annotations(vec![
-//!         Annotation::new(Coordinate::new(37.7749, -122.4194), "San Francisco"),
-//!     ])
+//!     .annotations(vec![Annotation::new(san_francisco, "San Francisco")])
 //!     .shows_user_location(true);
+//! # let _ = map;
+//! # Ok(())
+//! # }
 //! ```
 
 extern crate alloc;
@@ -31,26 +31,39 @@ use waterui_str::Str;
 
 // Re-export waterkit-location for downstream convenience.
 pub use waterkit_location as location;
-// Commonly used location type re-export.
-pub use waterkit_location::Location;
+// Commonly used location types re-export.
+pub use waterkit_location::{Latitude, Location, Longitude, OutOfRange};
 
 /// A geographic coordinate with latitude and longitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Coordinate {
     /// Latitude in degrees (-90 to 90).
-    pub latitude: f64,
+    pub latitude: Latitude,
     /// Longitude in degrees (-180 to 180).
-    pub longitude: f64,
+    pub longitude: Longitude,
 }
 
 impl Coordinate {
     /// Creates a new coordinate.
     #[must_use]
-    pub const fn new(latitude: f64, longitude: f64) -> Self {
+    pub const fn new(latitude: Latitude, longitude: Longitude) -> Self {
         Self {
             latitude,
             longitude,
         }
+    }
+
+    /// Creates a coordinate from raw degree values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OutOfRange`] if either coordinate is `NaN` or outside its
+    /// valid range.
+    pub fn from_degrees(latitude: f64, longitude: f64) -> Result<Self, OutOfRange> {
+        Ok(Self::new(
+            Latitude::new(latitude)?,
+            Longitude::new(longitude)?,
+        ))
     }
 
     /// Creates a coordinate from a `waterkit_location::Location`.
@@ -78,7 +91,7 @@ impl From<&Location> for Coordinate {
 impl Default for Coordinate {
     fn default() -> Self {
         // Default to null island (0, 0)
-        Self::new(0.0, 0.0)
+        Self::new(Latitude::new_unchecked(0.0), Longitude::new_unchecked(0.0))
     }
 }
 

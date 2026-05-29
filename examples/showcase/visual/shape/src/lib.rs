@@ -228,8 +228,10 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
         text("HDR Shapes").size(18.0),
         "Extended range colors via headroom",
         Toggle::new(&show_hdr).label("Show HDR"),
-        when(show_hdr.clone(), || hdr_shapes().color_space(ColorSpace::Hdr))
-            .otherwise(|| hdr_shapes().color_space(ColorSpace::Sdr)),
+        when(show_hdr.clone(), || {
+            hdr_shapes().color_space(ColorSpace::Hdr)
+        })
+        .otherwise(|| hdr_shapes().color_space(ColorSpace::Sdr)),
     ))
     .padding()
 }

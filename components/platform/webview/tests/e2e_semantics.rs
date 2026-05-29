@@ -3,12 +3,12 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use cookie::Cookie;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::{button, vstack};
 use waterui::{Environment, SignalExt, View};
-use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
-use cookie::Cookie;
+use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
 use waterui_webview::{
     CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent,
     WebViewHandle,
@@ -206,7 +206,7 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
 
     let mut env = Environment::new();
     env.insert(controller);
-    let mut app = UiTest::new()
+    let mut app = ui()
         .environment(env)
         .viewport(420, 420)
         .mount(move || webview_test_view(webview.clone()));

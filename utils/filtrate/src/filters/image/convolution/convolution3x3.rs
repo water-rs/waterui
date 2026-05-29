@@ -3,9 +3,10 @@
 use crate::Filter;
 
 /// Per-channel 3x3 convolution with an arbitrary 9-element kernel
-/// (row-major, top-left to bottom-right). The kernel is not auto-normalised
-/// — callers choose weights that match their intent (edge enhance, blur,
-/// emboss, etc.).
+/// (row-major, top-left to bottom-right).
+///
+/// The kernel is not auto-normalised — callers choose weights that match
+/// their intent (edge enhance, blur, emboss, etc.).
 ///
 /// # Example
 ///

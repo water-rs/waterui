@@ -61,14 +61,13 @@ pub struct CardStyleTokens {
 impl CardTheme {
     /// Returns the tokens for a card style.
     #[must_use]
-    pub fn tokens(&self, style: CardStyle) -> &CardStyleTokens {
+    pub const fn tokens(&self, style: CardStyle) -> &CardStyleTokens {
         match match style {
             CardStyle::Automatic => self.default_style,
             other => other,
         } {
-            CardStyle::Automatic => &self.filled,
+            CardStyle::Automatic | CardStyle::Filled => &self.filled,
             CardStyle::Elevated => &self.elevated,
-            CardStyle::Filled => &self.filled,
             CardStyle::Outlined => &self.outlined,
         }
     }

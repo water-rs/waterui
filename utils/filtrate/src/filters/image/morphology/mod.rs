@@ -1,3 +1,3 @@
-mod morphology;
+mod operators;
 
-pub use morphology::{MorphologyGradient, MorphologyMax, MorphologyMin};
+pub use operators::{MorphologyGradient, MorphologyMax, MorphologyMin};

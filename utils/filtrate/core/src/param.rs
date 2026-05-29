@@ -49,10 +49,11 @@ impl FilterParam for f32 {
     }
 }
 
-/// Boxed callback type passed to [`FilterParam::watch_animated`]. The
-/// callback is invoked on every observed change, so it is `Fn` rather than
-/// `FnMut` — implementations needing mutable state should rely on interior
-/// mutability (`Mutex`, `Cell`, …).
+/// Boxed callback type passed to [`FilterParam::watch_animated`].
+///
+/// The callback is invoked on every observed change, so it is `Fn` rather
+/// than `FnMut` — implementations needing mutable state should rely on
+/// interior mutability (`Mutex`, `Cell`, …).
 pub type AnimatedCallback = Box<dyn Fn(AnimatedTarget) + Send + Sync>;
 
 /// Carries a new target value plus optional animation interpolator from a

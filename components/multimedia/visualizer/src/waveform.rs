@@ -5,9 +5,7 @@ use std::borrow::Cow;
 use waterui_core::{
     Binding, IntoSignal, IntoSignalF32, Signal, binding, env::Environment, view::View,
 };
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, impl_gpu_subview,
-};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, impl_gpu_subview};
 
 /// Resolved configuration for GPU rendering.
 #[derive(Debug, Clone, Copy)]

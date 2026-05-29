@@ -20,11 +20,11 @@ struct RuntimeLocaleState {
 }
 
 impl RuntimeLocaleState {
-    fn has_listener(&self) -> bool {
+    const fn has_listener(&self) -> bool {
         self.listener.is_some()
     }
 
-    fn set_listener(&mut self, listener: ListenerHandle) {
+    const fn set_listener(&mut self, listener: ListenerHandle) {
         self.listener = Some(ManuallyDrop::new(listener));
     }
 
