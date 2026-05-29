@@ -33,7 +33,7 @@ impl GtkComponent for Native<ButtonConfig> {
         button.set_has_frame(!borderless);
 
         // Render the label view and set as button child
-        let label_widget = renderer.render_any(config.label, env);
+        let label_widget = renderer.render(config.label, env);
         button.set_child(Some(&label_widget));
 
         // Connect click handler using RefCell for interior mutability

@@ -16,8 +16,8 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Str};
 use waterui_webview::{
-    CustomWebViewController, ScriptInjectionTime, Url, WebViewController, WebViewError,
-    WebViewEvent, WebViewHandle, cookie::Cookie,
+    Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController, WebViewError,
+    WebViewEvent, WebViewHandle,
 };
 
 type Watcher = Rc<dyn Fn(WebViewEvent)>;

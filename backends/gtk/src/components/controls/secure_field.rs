@@ -23,7 +23,7 @@ impl GtkComponent for Native<SecureFieldConfig> {
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
         // Render the label
-        let label_widget = renderer.render_any(config.label, env);
+        let label_widget = renderer.render(config.label, env);
         container.append(&label_widget);
 
         // Create the password entry

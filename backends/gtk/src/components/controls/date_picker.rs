@@ -15,7 +15,7 @@ impl GtkComponent for Native<DatePickerConfig> {
         let config = self.into_inner();
 
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-        let label = renderer.render_any(config.label, env);
+        let label = renderer.render(config.label, env);
         root.append(&label);
 
         let calendar = Calendar::new();

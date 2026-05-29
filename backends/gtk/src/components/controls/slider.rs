@@ -23,7 +23,7 @@ impl GtkComponent for Native<SliderConfig> {
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
         // Render the label if present
-        let label_widget = renderer.render_any(config.label, env);
+        let label_widget = renderer.render(config.label, env);
         container.append(&label_widget);
 
         // Create horizontal box for min label + scale + max label

@@ -25,6 +25,7 @@
 mod controller;
 
 pub use controller::*;
+pub use cookie::Cookie;
 use std::fmt;
 mod handler;
 pub use handler::*;

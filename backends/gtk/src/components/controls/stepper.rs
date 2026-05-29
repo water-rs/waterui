@@ -18,7 +18,7 @@ impl GtkComponent for Native<StepperConfig> {
         let container = GtkBox::new(Orientation::Horizontal, 8);
 
         // Render the label
-        let label_widget = renderer.render_any(config.label, env);
+        let label_widget = renderer.render(config.label, env);
         container.append(&label_widget);
 
         // Create the spin button (stepper)
