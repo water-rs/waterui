@@ -25,9 +25,10 @@ executor-core.workspace = true
 sysinfo.workspace = true
 
 [dev-dependencies]
+bitflags.workspace = true
 hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }
 
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["executor-core"]
+ignored = ["bitflags", "executor-core"]

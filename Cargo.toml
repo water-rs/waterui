@@ -88,6 +88,8 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 [workspace.dependencies]
+# dispatch2 0.3.1 exceeds rustc's macro recursion limit with bitflags 2.12 on Apple.
+bitflags = "=2.11.1"
 executor-core = { version = "0.7.1", features = ["std"]}
 futures = "0.3"
 # Local vendored dependency overrides via git submodule.
