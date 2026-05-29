@@ -24,7 +24,7 @@ impl GtkComponent for Native<ToggleConfig> {
         container.set_hexpand(true);
 
         // Render the label
-        let label_widget = renderer.render_any(config.label, env);
+        let label_widget = renderer.render(config.label, env);
         container.append(&label_widget);
 
         // Add spacer
