@@ -37,6 +37,7 @@ pub(crate) enum AccessibilityActionTarget {
         value: nami::Binding<DateTime>,
         range: RangeInclusive<DateTime>,
         ty: DatePickerType,
+        origin: LayoutPoint,
     },
     TextField {
         value: nami::Binding<StyledStr>,
@@ -44,10 +45,6 @@ pub(crate) enum AccessibilityActionTarget {
     },
     SecureField {
         value: nami::Binding<FormSecure>,
-    },
-    PickerCycle {
-        selection: nami::Binding<waterui_core::id::Id>,
-        ids: Vec<waterui_core::id::Id>,
     },
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
@@ -371,9 +368,21 @@ impl HydrolysisRenderer {
                     action_data,
                 )
             }
-            AccessibilityActionTarget::DatePicker { value, range, ty } => {
-                handle_accessibility_date_picker_action(&value, &range, ty, action, action_data)
-            }
+            AccessibilityActionTarget::DatePicker {
+                value,
+                range,
+                ty,
+                origin,
+            } => handle_accessibility_date_picker_action(
+                self,
+                &value,
+                &range,
+                ty,
+                origin,
+                action,
+                action_data,
+                env,
+            ),
             AccessibilityActionTarget::TextField { value, line_limit } => {
                 handle_accessibility_text_field_action(
                     self,
@@ -392,9 +401,6 @@ impl HydrolysisRenderer {
                     action,
                     action_data,
                 )
-            }
-            AccessibilityActionTarget::PickerCycle { selection, ids } => {
-                handle_accessibility_picker_cycle_action(&selection, &ids, action)
             }
             AccessibilityActionTarget::PickerSelect { selection, target } => {
                 handle_accessibility_picker_select_action(&selection, target, action)
@@ -647,11 +653,19 @@ fn transform_accessibility_action_target(
                 range: range.clone(),
             }
         }
-        AccessibilityActionTarget::DatePicker { value, range, ty } => {
+        AccessibilityActionTarget::DatePicker {
+            value,
+            range,
+            ty,
+            origin,
+        } => {
+            let transformed =
+                transform * vello::kurbo::Point::new(f64::from(origin.x), f64::from(origin.y));
             AccessibilityActionTarget::DatePicker {
                 value: value.clone(),
                 range: range.clone(),
                 ty: *ty,
+                origin: LayoutPoint::new(transformed.x as f32, transformed.y as f32),
             }
         }
         AccessibilityActionTarget::TextField { value, line_limit } => {
@@ -663,12 +677,6 @@ fn transform_accessibility_action_target(
         AccessibilityActionTarget::SecureField { value } => {
             AccessibilityActionTarget::SecureField {
                 value: value.clone(),
-            }
-        }
-        AccessibilityActionTarget::PickerCycle { selection, ids } => {
-            AccessibilityActionTarget::PickerCycle {
-                selection: selection.clone(),
-                ids: ids.clone(),
             }
         }
         AccessibilityActionTarget::PickerSelect { selection, target } => {
@@ -879,14 +887,20 @@ fn handle_accessibility_stepper_action(
 
 #[cfg(feature = "accessibility")]
 fn handle_accessibility_date_picker_action(
+    renderer: &mut HydrolysisRenderer,
     value: &nami::Binding<DateTime>,
     range: &RangeInclusive<DateTime>,
     ty: DatePickerType,
+    origin: LayoutPoint,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
+    env: &Environment,
 ) -> bool {
     match action {
-        AccessibilityAction::Click | AccessibilityAction::Focus => true,
+        AccessibilityAction::Click => {
+            renderer.show_date_picker(value.clone(), range.clone(), ty, origin, env)
+        }
+        AccessibilityAction::Focus => true,
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
                 panic!("hydrolysis accessibility date picker SetValue requires Value data");
@@ -1002,37 +1016,6 @@ fn handle_accessibility_secure_field_action(
         }
         _ => panic!(
             "hydrolysis accessibility secure field does not support action {:?}",
-            action
-        ),
-    }
-}
-
-#[cfg(feature = "accessibility")]
-fn handle_accessibility_picker_cycle_action(
-    selection: &nami::Binding<waterui_core::id::Id>,
-    ids: &[waterui_core::id::Id],
-    action: AccessibilityAction,
-) -> bool {
-    match action {
-        AccessibilityAction::Click => {
-            assert!(
-                !(ids.is_empty()),
-                "hydrolysis accessibility picker cycle requires non-empty options"
-            );
-            let current = selection.get();
-            let index = ids.iter().position(|id| *id == current).unwrap_or_else(|| {
-                panic!("hydrolysis accessibility picker selection is not present in options")
-            });
-            let next = ids[(index + 1) % ids.len()];
-            if next == current {
-                return false;
-            }
-            selection.set(next);
-            true
-        }
-        AccessibilityAction::Focus => true,
-        _ => panic!(
-            "hydrolysis accessibility picker cycle does not support action {:?}",
             action
         ),
     }

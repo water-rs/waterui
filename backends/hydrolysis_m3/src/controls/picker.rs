@@ -6,9 +6,9 @@ use crate::dimensions::{
     PICKER_RADIO_ROW_SPACING, PICKER_SEGMENTED_CONTAINER_RADIUS, PICKER_SEGMENTED_HORIZONTAL_INSET,
     PICKER_SEGMENTED_MIN_HEIGHT, PICKER_SEGMENTED_OUTLINE_WIDTH, PICKER_VERTICAL_INSET,
 };
-use crate::theme::colors::MaterialColorScheme;
+use crate::theme::colors::{MaterialColorScheme, MaterialRoleColor};
 use crate::theme::state_layer;
-use crate::{Brush, DrawContext, PickerMetrics, WidgetInteractionState};
+use crate::{Brush, DrawContext, PickerMetrics, RadioIndicatorState, WidgetInteractionState};
 use waterui_form::picker::PickerStyle;
 
 pub fn metrics(style: PickerStyle) -> PickerMetrics {
@@ -159,26 +159,52 @@ pub fn draw_radio_indicator(
     draw: &mut dyn DrawContext,
     center: vello::kurbo::Point,
     radius: f64,
-    selected: bool,
+    state: RadioIndicatorState,
 ) {
+    let outer_selected_progress = state.outer_selected_progress.clamp(0.0, 1.0);
+    let inner_scale = state.inner_scale.clamp(0.0, 1.0);
+    let inner_opacity = state.inner_opacity.clamp(0.0, 1.0);
     let outer_ring_center_radius = radius - PICKER_RADIO_OUTER_RING_WIDTH / 2.0;
     draw.stroke_circle(
         center,
         outer_ring_center_radius,
-        &Brush::from(if selected {
-            colors.primary.peniko()
-        } else {
-            colors.on_surface_variant.peniko()
-        }),
+        &Brush::from(blend_role_color(
+            colors.on_surface_variant,
+            colors.primary,
+            outer_selected_progress,
+        )),
         PICKER_RADIO_OUTER_RING_WIDTH,
     );
-    if selected {
+    let inner_radius = PICKER_RADIO_INNER_DOT_RADIUS * f64::from(inner_scale);
+    if inner_radius > 0.0 && inner_opacity > 0.0 {
         draw.fill_circle(
             center,
-            PICKER_RADIO_INNER_DOT_RADIUS,
-            &Brush::from(colors.primary.peniko()),
+            inner_radius,
+            &Brush::from(colors.primary.peniko().with_alpha(inner_opacity)),
         );
     }
+}
+
+fn blend_role_color(
+    from: MaterialRoleColor,
+    to: MaterialRoleColor,
+    progress: f32,
+) -> vello::peniko::Color {
+    let progress = progress.clamp(0.0, 1.0);
+    let from = from.argb();
+    let to = to.argb();
+    vello::peniko::Color::new([
+        blend_channel(from.red(), to.red(), progress),
+        blend_channel(from.green(), to.green(), progress),
+        blend_channel(from.blue(), to.blue(), progress),
+        blend_channel(from.alpha(), to.alpha(), progress),
+    ])
+}
+
+fn blend_channel(from: u8, to: u8, progress: f32) -> f32 {
+    let from = f32::from(from) / 255.0;
+    let to = f32::from(to) / 255.0;
+    from.mul_add(1.0 - progress, to * progress)
 }
 
 #[cfg(test)]
@@ -187,9 +213,9 @@ mod tests {
     use vello::peniko::Color;
 
     use super::{
-        MaterialColorScheme, draw_popup_row_background, draw_radio_indicator,
-        draw_segmented_container, draw_segmented_segment, draw_separator, material_metrics,
-        segmented_metrics,
+        MaterialColorScheme, RadioIndicatorState, blend_role_color, draw_popup_row_background,
+        draw_radio_indicator, draw_segmented_container, draw_segmented_segment, draw_separator,
+        material_metrics, segmented_metrics,
     };
     use crate::dimensions::{
         PICKER_LABEL_SPACING, PICKER_MENU_POPUP_CORNER_RADIUS, PICKER_MENU_POPUP_ROW_HEIGHT,
@@ -201,8 +227,8 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingDrawContext {
-        circle_fills: Vec<f64>,
-        circle_strokes: Vec<(f64, f64)>,
+        circle_fills: Vec<(f64, Color)>,
+        circle_strokes: Vec<(f64, f64, Color)>,
         rect_fills: Vec<Color>,
         rounded_strokes: Vec<(RoundedRectRadii, Color, f64)>,
         line_strokes: Vec<(Color, f64)>,
@@ -240,12 +266,18 @@ mod tests {
             self.line_strokes.push((*color, width));
         }
 
-        fn stroke_circle(&mut self, _center: Point, radius: f64, _brush: &Brush, width: f64) {
-            self.circle_strokes.push((radius, width));
+        fn stroke_circle(&mut self, _center: Point, radius: f64, brush: &Brush, width: f64) {
+            let Brush::Solid(color) = brush else {
+                panic!("Material picker token circle strokes must be solid colors");
+            };
+            self.circle_strokes.push((radius, width, *color));
         }
 
-        fn fill_circle(&mut self, _center: Point, radius: f64, _brush: &Brush) {
-            self.circle_fills.push(radius);
+        fn fill_circle(&mut self, _center: Point, radius: f64, brush: &Brush) {
+            let Brush::Solid(color) = brush else {
+                panic!("Material picker token circle fills must be solid colors");
+            };
+            self.circle_fills.push((radius, *color));
         }
 
         fn fill_path(&mut self, _path: &BezPath, _brush: &Brush) {}
@@ -282,15 +314,99 @@ mod tests {
         let center = Point::new(10.0, 10.0);
 
         let mut unselected = RecordingDrawContext::default();
-        draw_radio_indicator(&colors, &mut unselected, center, 10.0, false);
+        draw_radio_indicator(
+            &colors,
+            &mut unselected,
+            center,
+            10.0,
+            RadioIndicatorState {
+                selected: false,
+                outer_selected_progress: 0.0,
+                inner_scale: 1.0,
+                inner_opacity: 0.0,
+            },
+        );
 
         let mut selected = RecordingDrawContext::default();
-        draw_radio_indicator(&colors, &mut selected, center, 10.0, true);
+        draw_radio_indicator(
+            &colors,
+            &mut selected,
+            center,
+            10.0,
+            RadioIndicatorState {
+                selected: true,
+                outer_selected_progress: 1.0,
+                inner_scale: 1.0,
+                inner_opacity: 1.0,
+            },
+        );
 
-        assert_eq!(unselected.circle_fills, Vec::<f64>::new());
-        assert_eq!(unselected.circle_strokes, vec![(9.0, 2.0)]);
-        assert_eq!(selected.circle_strokes, vec![(9.0, 2.0)]);
-        assert_eq!(selected.circle_fills, vec![5.0]);
+        assert_eq!(unselected.circle_fills, Vec::<(f64, Color)>::new());
+        assert_eq!(
+            unselected.circle_strokes,
+            vec![(9.0, 2.0, colors.on_surface_variant.peniko())]
+        );
+        assert_eq!(
+            selected.circle_strokes,
+            vec![(9.0, 2.0, colors.primary.peniko())]
+        );
+        assert_eq!(selected.circle_fills, vec![(5.0, colors.primary.peniko())]);
+    }
+
+    #[test]
+    fn radio_indicator_inner_dot_uses_material_web_scale_and_opacity() {
+        let colors = MaterialColorScheme::baseline_light();
+        let center = Point::new(10.0, 10.0);
+        let mut draw = RecordingDrawContext::default();
+
+        draw_radio_indicator(
+            &colors,
+            &mut draw,
+            center,
+            10.0,
+            RadioIndicatorState {
+                selected: true,
+                outer_selected_progress: 1.0,
+                inner_scale: 0.4,
+                inner_opacity: 0.25,
+            },
+        );
+
+        assert_eq!(draw.circle_fills.len(), 1);
+        assert!((draw.circle_fills[0].0 - 2.0).abs() < 0.000_001);
+        assert_eq!(
+            draw.circle_fills[0].1,
+            colors.primary.peniko().with_alpha(0.25)
+        );
+    }
+
+    #[test]
+    fn radio_indicator_outer_ring_color_interpolates_with_material_web_transition() {
+        let colors = MaterialColorScheme::baseline_light();
+        let center = Point::new(10.0, 10.0);
+        let mut draw = RecordingDrawContext::default();
+
+        draw_radio_indicator(
+            &colors,
+            &mut draw,
+            center,
+            10.0,
+            RadioIndicatorState {
+                selected: true,
+                outer_selected_progress: 0.5,
+                inner_scale: 0.0,
+                inner_opacity: 0.0,
+            },
+        );
+
+        assert_eq!(
+            draw.circle_strokes,
+            vec![(
+                9.0,
+                2.0,
+                blend_role_color(colors.on_surface_variant, colors.primary, 0.5)
+            )]
+        );
     }
 
     #[test]

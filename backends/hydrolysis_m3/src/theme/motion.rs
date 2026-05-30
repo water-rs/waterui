@@ -2,7 +2,7 @@ use core::time::Duration;
 
 use waterui::animation::Animation;
 use waterui_backend_core::widget::{
-    InteractionMotion, NavigationMotion, ProgressMotion, TextCaretMotion,
+    InteractionMotion, NavigationMotion, ProgressMotion, RadioSelectionMotion, TextCaretMotion,
 };
 
 const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
@@ -81,9 +81,20 @@ pub(crate) fn toggle_value() -> Animation {
     Animation::spring(300.0, 20.0)
 }
 
+pub(crate) fn radio_selection() -> RadioSelectionMotion {
+    RadioSelectionMotion {
+        inner_grow: Animation::bezier(Duration::from_millis(300), 0.05, 0.7, 0.1, 1.0),
+        inner_opacity: Animation::linear(Duration::from_millis(50)),
+        outer_color: Animation::linear(Duration::from_millis(50)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{interaction, navigation, navigation_drawer, progress, text_caret, toggle_value};
+    use super::{
+        interaction, navigation, navigation_drawer, progress, radio_selection, text_caret,
+        toggle_value,
+    };
     use core::time::Duration;
     use waterui::animation::Animation;
 
@@ -171,5 +182,23 @@ mod tests {
     #[test]
     fn material_toggle_motion_uses_hydrolysis_animation_engine_policy() {
         assert_eq!(toggle_value(), Animation::spring(300.0, 20.0));
+    }
+
+    #[test]
+    fn material_radio_selection_motion_matches_material_web() {
+        let motion = radio_selection();
+
+        assert_eq!(
+            motion.inner_grow,
+            Animation::bezier(Duration::from_millis(300), 0.05, 0.7, 0.1, 1.0)
+        );
+        assert_eq!(
+            motion.inner_opacity,
+            Animation::linear(Duration::from_millis(50))
+        );
+        assert_eq!(
+            motion.outer_color,
+            Animation::linear(Duration::from_millis(50))
+        );
     }
 }

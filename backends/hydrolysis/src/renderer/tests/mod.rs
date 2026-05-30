@@ -6,7 +6,7 @@ use waterui::{Binding, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
-use waterui_core::dynamic::Dynamic;
+use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
 use waterui_form::picker::PickerStyle;
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
@@ -15,8 +15,9 @@ use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
     BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion, ListMetrics,
     NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
-    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
+    ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics, StepperMetrics,
+    TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+    WidgetInteractionState,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -256,6 +257,51 @@ fn dynamic_initial_content_builds_real_subtree_before_second_rebuild() {
 }
 
 #[test]
+fn dynamic_body_snapshot_after_render_does_not_schedule_rebuild() {
+    let env = Environment::new();
+    let (handler, dynamic) = Dynamic::new();
+    handler.set_with_metadata(
+        "Hydrolysis dynamic",
+        nami::watcher::Metadata::new().with(DynamicInitialContent),
+    );
+    let mut renderer = test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(dynamic, &env, bounds);
+
+    handler.set_with_metadata(
+        "Hydrolysis dynamic snapshot",
+        nami::watcher::Metadata::new().with(DynamicInitialContent),
+    );
+    assert!(
+        !renderer.take_rebuild_request(),
+        "body-time Dynamic snapshots after the node rendered must not schedule rebuild loops"
+    );
+    let pending_is_empty = renderer
+        .lifecycle
+        .dynamic_nodes
+        .values()
+        .next()
+        .expect("rendered Dynamic must register a lifecycle node")
+        .pending_view
+        .borrow()
+        .is_none();
+    assert!(
+        pending_is_empty,
+        "body-time Dynamic snapshots after render must not leave stale pending content"
+    );
+
+    handler.set("Hydrolysis dynamic update");
+    assert!(
+        renderer.take_rebuild_request(),
+        "real Dynamic updates after render must still schedule a rebuild"
+    );
+    renderer.finish_rebuild_frame();
+}
+
+#[test]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
     let state = WidgetInteractionState {
         press_origin: Some(Point::new(125.0, 84.0)),
@@ -491,6 +537,14 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
+    fn radio_selection_motion(&self) -> RadioSelectionMotion {
+        RadioSelectionMotion {
+            inner_grow: Animation::linear(Duration::from_millis(1)),
+            inner_opacity: Animation::linear(Duration::from_millis(1)),
+            outer_color: Animation::linear(Duration::from_millis(1)),
+        }
+    }
+
     fn draw_picker_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
     fn draw_picker_popup(&self, _draw: &mut dyn DrawContext, _popup_rect: Rect) {}
@@ -510,7 +564,7 @@ impl WidgetTheme for MinimalTestTheme {
         _draw: &mut dyn DrawContext,
         _center: Point,
         _radius: f64,
-        _selected: bool,
+        _state: RadioIndicatorState,
     ) {
     }
 

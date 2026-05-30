@@ -8,13 +8,13 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use waterui_backend_core::widget::WidgetInteractionState;
 use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
+use crate::renderer::local_interaction_state;
 use crate::widgets::util::{inset_rect, widget_theme};
 
 impl HydroNativeView for Native<DatePickerConfig> {
@@ -53,6 +53,7 @@ impl HydroNativeView for Native<DatePickerConfig> {
             node.add_action(AccessibilityAction::Click);
             node.add_action(AccessibilityAction::SetValue);
             let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let origin = waterui_core::layout::Point::new(bounds.x0 as f32, bounds.y1 as f32);
             let _ = renderer.register_accessibility_node(
                 node,
                 bounds,
@@ -61,6 +62,7 @@ impl HydroNativeView for Native<DatePickerConfig> {
                     value: date_picker.value.clone(),
                     range: date_picker.range.clone(),
                     ty: date_picker.ty,
+                    origin,
                 }),
             );
         }
@@ -113,9 +115,13 @@ pub(crate) fn render_date_picker(
             .clamp(*date_picker.range.start(), *date_picker.range.end()),
     );
 
+    let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_bounds, WidgetInteractionState::NONE);
+        theme.draw_input_field(&mut draw, field_bounds, interaction);
+        theme.draw_picker_state_layer(&mut draw, field_bounds, interaction);
         theme.draw_picker_indicator(&mut draw, field_bounds);
     }
 
@@ -137,9 +143,15 @@ pub(crate) fn render_date_picker(
         text_bounds,
     );
 
-    let hit_transform = ctx.hit_transform;
-    ctx.renderer_mut().register_pointer_target(
-        transformed_rect(hit_transform, field_bounds),
-        move |_renderer, _point, _env| true,
+    let value = date_picker.value.clone();
+    let range = date_picker.range.clone();
+    let ty = date_picker.ty;
+    let origin = waterui_core::layout::Point::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
+    ctx.renderer_mut().register_interactive_pointer_target(
+        hit_bounds,
+        press_slot,
+        move |renderer, _point, env| {
+            renderer.show_date_picker(value.clone(), range.clone(), ty, origin, env)
+        },
     );
 }

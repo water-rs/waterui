@@ -50,6 +50,7 @@ pub(crate) struct DynamicSubtree {
     pub(crate) hover_targets: Vec<HoverTarget>,
     pub(crate) text_input_targets: Vec<TextInputTarget>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
+    pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
     #[cfg(feature = "accessibility")]
     pub(crate) accessibility: DynamicAccessibilitySubtree,
 }
@@ -276,6 +277,7 @@ impl HydrolysisRenderer {
         let mut subtree_hover_targets = Vec::new();
         let mut subtree_text_input_targets = Vec::new();
         let mut subtree_scroll_targets = Vec::new();
+        let mut subtree_context_menu_targets = Vec::new();
         let mut subtree_hover_controller = HoverController::default();
         #[cfg(feature = "accessibility")]
         let mut subtree_accessibility_nodes = Vec::new();
@@ -316,6 +318,10 @@ impl HydrolysisRenderer {
             &mut renderer.hit_test.scroll_targets,
             &mut subtree_scroll_targets,
         );
+        core::mem::swap(
+            &mut renderer.hit_test.context_menu_targets,
+            &mut subtree_context_menu_targets,
+        );
         #[cfg(feature = "accessibility")]
         {
             renderer.accessibility.swap_render_state(
@@ -341,6 +347,10 @@ impl HydrolysisRenderer {
         #[cfg(not(feature = "accessibility"))]
         renderer.dispatch_boxed_with_render_depth(content, env, ctx);
 
+        core::mem::swap(
+            &mut renderer.hit_test.context_menu_targets,
+            &mut subtree_context_menu_targets,
+        );
         core::mem::swap(
             &mut renderer.hit_test.scroll_targets,
             &mut subtree_scroll_targets,
@@ -384,6 +394,7 @@ impl HydrolysisRenderer {
             hover_targets: subtree_hover_targets,
             text_input_targets: subtree_text_input_targets,
             scroll_targets: subtree_scroll_targets,
+            context_menu_targets: subtree_context_menu_targets,
             #[cfg(feature = "accessibility")]
             accessibility: DynamicAccessibilitySubtree {
                 nodes: subtree_accessibility_nodes,
@@ -493,6 +504,14 @@ impl HydrolysisRenderer {
             self.register_scroll_target_action(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 Rc::clone(&target.action),
+            );
+        }
+        for target in &subtree.context_menu_targets {
+            let depth = self.replay_target_depth(subtree.depth_base, target.depth);
+            self.register_context_menu_target_data(
+                transformed_rect(ctx.hit_transform, target.bounds),
+                target.items.clone(),
+                depth,
             );
         }
     }
