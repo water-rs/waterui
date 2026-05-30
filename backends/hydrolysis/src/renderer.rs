@@ -65,8 +65,8 @@ use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui::navigation::{
-    CustomNavigationController, NavigationSplitLayout, NavigationStack, NavigationTransition,
-    NavigationView,
+    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
+    NavigationTransition, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
@@ -80,7 +80,7 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 use waterui_controls::toggle::ToggleConfig;
-use waterui_core::dynamic::Dynamic;
+use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
 use waterui_core::layout::{
@@ -127,7 +127,10 @@ use waterui_video::{VideoConfig, VideoPlayerConfig};
 use waterui_webview::WebView;
 
 use crate::animation::AnimationController;
-use crate::engine::{TextCaretMotion, TextContextMenuMetrics, vello_backend::VelloDrawContext};
+use crate::engine::{
+    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
+    vello_backend::VelloDrawContext,
+};
 use crate::gesture::{GestureEngine, GestureTarget};
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
@@ -326,6 +329,7 @@ struct RetainedScrollFrame {
     axis: ScrollAxis,
     viewport: vello::kurbo::Rect,
     transform: vello::kurbo::Affine,
+    hit_transform: vello::kurbo::Affine,
     content_dynamic_morphs: Vec<DynamicMorphDraw>,
     active_layers: Vec<ActiveSceneLayer>,
 }
@@ -336,6 +340,7 @@ pub(crate) struct RetainScrollFrameRequest {
     pub(crate) axis: ScrollAxis,
     pub(crate) viewport: vello::kurbo::Rect,
     pub(crate) transform: vello::kurbo::Affine,
+    pub(crate) hit_transform: vello::kurbo::Affine,
     pub(crate) content_dynamic_morphs: Vec<DynamicMorphDraw>,
     pub(crate) content_has_frame_images: bool,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
@@ -1296,6 +1301,15 @@ impl HydrolysisRenderer {
             .sample(now)
     }
 
+    pub(crate) fn sample_radio_indicator_state(
+        &mut self,
+        selected: bool,
+        motion: &RadioSelectionMotion,
+    ) -> RadioIndicatorState {
+        self.animation_controller
+            .bind_radio_indicator(selected, motion, self.frame_instant)
+    }
+
     pub(crate) fn sample_morph_progress(
         &mut self,
         animation: waterui_shape::MorphAnimation,
@@ -1919,9 +1933,20 @@ impl HydrolysisRenderer {
                     let rebuild_in_progress = Rc::clone(&rebuild_in_progress);
                     let render_generation = Rc::clone(&render_generation);
                     move |update| {
+                        let is_initial_content = update
+                            .metadata()
+                            .try_get::<DynamicInitialContent>()
+                            .is_some();
+                        if is_initial_content
+                            && rebuild_in_progress.get()
+                            && render_generation.get() == rebuild_generation.get()
+                        {
+                            return;
+                        }
                         *pending_view.borrow_mut() = Some(update.into_value());
-                        if (!rebuild_in_progress.get()
-                            || render_generation.get() == rebuild_generation.get())
+                        if !is_initial_content
+                            && (!rebuild_in_progress.get()
+                                || render_generation.get() == rebuild_generation.get())
                             && !rebuild_requested.get()
                         {
                             rebuild_requested.set(true);
@@ -3167,6 +3192,7 @@ impl HydrolysisRenderer {
             axis: request.axis,
             viewport: request.viewport,
             transform: request.transform,
+            hit_transform: request.hit_transform,
             content_dynamic_morphs: request.content_dynamic_morphs,
             active_layers: request.active_layers,
         });
@@ -3181,11 +3207,13 @@ impl HydrolysisRenderer {
         }
 
         self.reset_scene();
+        #[cfg(feature = "accessibility")]
+        self.accessibility.begin_rebuild_frame();
         let background_color =
             resolved_color_to_peniko(Color::new(theme::color::Background).resolve(env).get());
         self.scene.fill(
             vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
+            frame.transform,
             background_color,
             None,
             &self.window_bounds,
@@ -3214,12 +3242,17 @@ impl HydrolysisRenderer {
         }
 
         let metrics = frame.handle.metrics();
-        let content_transform = frame.transform
-            * vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+        let scroll_content_transform =
+            vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+        let content_transform = frame.transform * scroll_content_transform;
+        let content_hit_transform = frame.hit_transform * scroll_content_transform;
         let content_bounds =
             vello::kurbo::Rect::new(0.0, 0.0, metrics.content_width, metrics.content_height);
-        let content_ctx =
-            RenderContext::with_transforms(content_bounds, content_transform, content_transform);
+        let content_ctx = RenderContext::with_transforms(
+            content_bounds,
+            content_transform,
+            content_hit_transform,
+        );
         if let Some(cache) = self.scroll_content_caches.remove(&frame.cache_key) {
             self.replay_dynamic_subtree(content_ctx, &cache.subtree);
             self.scroll_content_caches.insert(frame.cache_key, cache);
@@ -3235,7 +3268,8 @@ impl HydrolysisRenderer {
             self.pop_layer();
         }
 
-        let ctx = RenderContext::with_transforms(frame.viewport, frame.transform, frame.transform);
+        let ctx =
+            RenderContext::with_transforms(frame.viewport, frame.transform, frame.hit_transform);
         let target_handle = frame.handle.clone();
         self.register_scroll_target(
             transformed_rect(ctx.hit_transform, frame.viewport),
@@ -3257,6 +3291,8 @@ impl HydrolysisRenderer {
             metrics,
             frame.axis,
         );
+        #[cfg(feature = "accessibility")]
+        self.finalize_accessibility_tree_update();
         self.flush_vello_scene_layer();
         true
     }

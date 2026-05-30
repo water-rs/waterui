@@ -11,6 +11,7 @@ pub(crate) struct NavigationState {
 
 pub(crate) struct NavigationSlot {
     pub(crate) entries: NavigationEntries,
+    pub(crate) controller: NavigationController,
     pub(crate) last_depth: usize,
     pub(crate) last_scene: Option<vello::Scene>,
     pub(crate) transition: Option<NavigationTransitionState>,
@@ -49,9 +50,16 @@ impl NavigationState {
 }
 
 impl NavigationSlot {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(rebuild_requested: Rc<Cell<bool>>) -> Self {
+        let entries = Rc::new(RefCell::new(Vec::new()));
+        let controller = NavigationController::new(HydroNavigationController {
+            entries: Rc::clone(&entries),
+            rebuild_requested,
+        });
+
         Self {
-            entries: Rc::new(RefCell::new(Vec::new())),
+            entries,
+            controller,
             last_depth: 0,
             last_scene: None,
             transition: None,
@@ -117,7 +125,9 @@ impl HydrolysisRenderer {
             .expect("navigation slot cursor overflow");
 
         if index == self.navigation.slots.len() {
-            self.navigation.slots.push(NavigationSlot::new());
+            self.navigation
+                .slots
+                .push(NavigationSlot::new(Rc::clone(&self.rebuild_requested)));
         }
 
         (index, Rc::clone(&self.navigation.slots[index].entries))

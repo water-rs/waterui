@@ -21,6 +21,8 @@ use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
 
+#[cfg(feature = "accessibility")]
+use crate::renderer::accessibility_activation_point;
 use crate::renderer::local_interaction_state;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::PickerMetrics;
@@ -116,15 +118,13 @@ impl HydroNativeView for Native<PickerConfig> {
                             node.push_child(option_id);
                         }
                     }
-                    let ids = items.iter().map(|item| item.tag).collect::<Vec<_>>();
                     let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
                     let _ = renderer.register_accessibility_node(
                         node,
                         bounds,
                         env,
-                        Some(AccessibilityActionTarget::PickerCycle {
-                            selection: picker.selection.clone(),
-                            ids,
+                        Some(AccessibilityActionTarget::PointerPrimaryClick {
+                            point: accessibility_activation_point(bounds),
                         }),
                     );
                 }
@@ -318,20 +318,23 @@ pub(crate) fn render_menu_picker(
         ctx.renderer_mut().register_interactive_pointer_target(
             hit_bounds,
             press_slot,
-            move |renderer, _point, _env| {
+            move |renderer, _point, env| {
                 if field_open_state.get() {
                     renderer.dismiss_active_popup_menu();
                     false
                 } else {
-                    renderer.show_picker_menu(PickerMenuRequest {
-                        entries: menu_entries.clone(),
-                        selection: picker_selection.clone(),
-                        open: Rc::clone(&field_open_state),
-                        origin: menu_origin,
-                        width: menu_width,
-                        row_height,
-                        selected,
-                    })
+                    renderer.show_picker_menu(
+                        PickerMenuRequest {
+                            entries: menu_entries.clone(),
+                            selection: picker_selection.clone(),
+                            open: Rc::clone(&field_open_state),
+                            origin: menu_origin,
+                            width: menu_width,
+                            row_height,
+                            selected,
+                        },
+                        env,
+                    )
                 }
             },
         );
@@ -364,6 +367,7 @@ pub(crate) fn render_radio_picker(
 ) {
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Radio);
+    let radio_motion = theme.radio_selection_motion();
     let selected = ctx.renderer_mut().read_signal(&selection);
     let bounds = ctx.bounds;
     let mut row_y = bounds.y0 + metrics.vertical_inset;
@@ -391,6 +395,9 @@ pub(crate) fn render_radio_picker(
         );
         let indicator_radius = metrics.radio_indicator_size / 2.0;
         let is_selected = item.tag == selected;
+        let radio_indicator_state = ctx
+            .renderer_mut()
+            .sample_radio_indicator_state(is_selected, &radio_motion);
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
         let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
@@ -403,7 +410,12 @@ pub(crate) fn render_radio_picker(
                 is_selected,
                 interaction,
             );
-            theme.draw_radio_indicator(&mut draw, indicator_center, indicator_radius, is_selected);
+            theme.draw_radio_indicator(
+                &mut draw,
+                indicator_center,
+                indicator_radius,
+                radio_indicator_state,
+            );
         }
 
         let label_rect = vello::kurbo::Rect::new(

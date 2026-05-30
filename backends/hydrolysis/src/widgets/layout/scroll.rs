@@ -66,6 +66,7 @@ pub(crate) fn render_scroll_view(
     );
     let metrics = handle.metrics();
     let transform = ctx.transform;
+    let hit_transform = ctx.hit_transform;
     let active_layers = ctx.renderer_mut().active_scene_layers_snapshot();
     let exclusive_root_scroll = active_layers.is_empty() && ctx.renderer_mut().scene_is_empty();
     let needs_viewport_clip =
@@ -104,6 +105,7 @@ pub(crate) fn render_scroll_view(
         axis,
         viewport,
         transform,
+        hit_transform,
         content_dynamic_morphs: content_render.dynamic_morphs,
         content_has_frame_images: content_render.has_frame_images,
         active_layers,
@@ -115,7 +117,6 @@ pub(crate) fn render_scroll_view(
     }
 
     let target_handle = handle.clone();
-    let hit_transform = ctx.hit_transform;
     ctx.renderer_mut().register_scroll_target(
         transformed_rect(hit_transform, viewport),
         move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
