@@ -1,3 +1,5 @@
+//! End-to-end semantic tests for navigation components.
+
 use core::convert::TryFrom;
 use std::time::Duration;
 
@@ -7,8 +9,16 @@ use waterui::layout::stack::vstack;
 use waterui::text::Text;
 use waterui::{AnyView, Binding, Environment, View};
 use waterui_navigation::tab::{Tab, Tabs};
-use waterui_navigation::{NavigationLink, NavigationSplitView, NavigationStack, NavigationView};
+use waterui_navigation::{
+    NavigationLink, NavigationPath, NavigationSplitView, NavigationStack, NavigationView,
+};
 use waterui_testing::{Role, Selector, SemanticApp, ui};
+
+#[derive(Clone, PartialEq, Eq)]
+enum TestRoute {
+    First,
+    Second,
+}
 
 fn mount_view<V, F>(build: F) -> SemanticApp
 where
@@ -53,6 +63,25 @@ fn stack_view() -> impl View {
             NavigationView::new("Detail", Text::new("detail content"))
         }),)),
     ))
+}
+
+fn path_stack_nested_value_link_view() -> impl View {
+    let path = NavigationPath::new();
+
+    NavigationStack::with(
+        path,
+        NavigationView::new(
+            "Root",
+            vstack((NavigationLink::value("Open First", TestRoute::First),)),
+        ),
+    )
+    .destination(|route| match route {
+        TestRoute::First => NavigationView::new(
+            "First",
+            vstack((NavigationLink::value("Open Second", TestRoute::Second),)),
+        ),
+        TestRoute::Second => NavigationView::new("Second", Text::new("second content")),
+    })
 }
 
 fn split_view() -> impl View {
@@ -141,6 +170,34 @@ fn navigation_link_push_and_back_pop_update_content() {
             waterui_testing::WaitOptions::new(Duration::from_millis(200)),
         ) == waterui_testing::WaitResult::Completed,
         "root navigation content should return after back"
+    );
+}
+
+#[test]
+fn path_stack_keeps_value_links_active_inside_destination() {
+    let mut app = mount_view(path_stack_nested_value_link_view);
+    assert!(
+        app.query().role(Role::BUTTON).label("Open First").tap(),
+        "root value link tap should succeed"
+    );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Second")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Open Second").tap(),
+        "destination value link tap should succeed"
+    );
+    assert!(
+        app.wait_for(
+            &[app.expect_exists(
+                Selector::default()
+                    .role(Role::LABEL)
+                    .label("second content")
+            )],
+            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
+        ) == waterui_testing::WaitResult::Completed,
+        "second destination content should appear after nested value link tap"
     );
 }
 

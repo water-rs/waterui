@@ -1138,7 +1138,19 @@ mod winit_impl {
                 waterui::window::WindowStyle::Borderless
             ));
             let frame = window.frame.get();
-            let target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
+            let target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
+            let mut target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
+            if let Some(monitor) = self.window.current_monitor() {
+                let scale_factor = self.window.scale_factor();
+                let monitor_position = monitor.position().to_logical::<f64>(scale_factor);
+                let monitor_size = monitor.size().to_logical::<f64>(scale_factor);
+                let max_x = (monitor_position.x + monitor_size.width - target_size.width)
+                    .max(monitor_position.x);
+                let max_y = (monitor_position.y + monitor_size.height - target_size.height)
+                    .max(monitor_position.y);
+                target_position.x = target_position.x.clamp(monitor_position.x, max_x);
+                target_position.y = target_position.y.clamp(monitor_position.y, max_y);
+            }
             let current_position = self
                 .window
                 .outer_position()
@@ -1150,7 +1162,6 @@ mod winit_impl {
             }) {
                 self.window.set_outer_position(target_position);
             }
-            let target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
             let current_size = self
                 .window
                 .inner_size()

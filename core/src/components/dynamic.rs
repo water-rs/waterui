@@ -56,6 +56,10 @@ enum DynamicHandlerState {
 
 type Receiver = Box<dyn Fn(Context<AnyView>)>;
 
+/// Metadata marker for the body-time snapshot installed by [`Dynamic::watch`].
+#[derive(Clone, Copy, Debug)]
+pub struct DynamicInitialContent;
+
 impl_debug!(Dynamic);
 impl_debug!(DynamicHandler);
 
@@ -286,7 +290,10 @@ where
         let dynamic = runtime.1.clone();
         let f = Rc::new(self.f);
 
-        handle.set(f(self.value.get()));
+        handle.set_with_metadata(
+            f(self.value.get()),
+            WatcherMetadata::new().with(DynamicInitialContent),
+        );
 
         let guard = self.value.watch({
             let f = Rc::clone(&f);

@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use nami::watcher::Context;
 use waterui::animation::{Animation, AnimationTrack};
+use waterui_backend_core::widget::{RadioIndicatorState, RadioSelectionMotion};
 
 use crate::time::Instant;
 
@@ -12,14 +13,21 @@ const VALUE_EPSILON: f32 = 0.000_01;
 #[derive(Debug, Default)]
 pub struct AnimationController {
     slots: Vec<AnimatedScalarSlot>,
+    radio_indicator_slots: Vec<AnimatedRadioIndicatorSlot>,
     repeating_slots: Vec<RepeatingPhaseSlot>,
     cursor: usize,
+    radio_indicator_cursor: usize,
     repeating_cursor: usize,
 }
 
 #[derive(Debug)]
 struct AnimatedScalarSlot {
     state: Rc<RefCell<AnimatedScalarState>>,
+}
+
+#[derive(Debug)]
+struct AnimatedRadioIndicatorSlot {
+    state: Rc<RefCell<AnimatedRadioIndicatorState>>,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +45,15 @@ struct AnimatedScalarState {
 }
 
 #[derive(Debug)]
+struct AnimatedRadioIndicatorState {
+    selected: bool,
+    inner_scale: AnimationTrack<f32>,
+    inner_opacity: AnimationTrack<f32>,
+    outer_color: AnimationTrack<f32>,
+    last_tick: Instant,
+}
+
+#[derive(Debug)]
 struct RepeatingPhaseSlot {
     started_at: Instant,
     cycle: Duration,
@@ -46,11 +63,14 @@ struct RepeatingPhaseSlot {
 impl AnimationController {
     pub fn begin_rebuild_frame(&mut self) {
         self.cursor = 0;
+        self.radio_indicator_cursor = 0;
         self.repeating_cursor = 0;
     }
 
     pub fn finish_rebuild_frame(&mut self) {
         self.slots.truncate(self.cursor);
+        self.radio_indicator_slots
+            .truncate(self.radio_indicator_cursor);
         self.repeating_slots.truncate(self.repeating_cursor);
     }
 
@@ -97,9 +117,40 @@ impl AnimationController {
         handle
     }
 
+    pub fn bind_radio_indicator(
+        &mut self,
+        selected: bool,
+        motion: &RadioSelectionMotion,
+        now: Instant,
+    ) -> RadioIndicatorState {
+        let index = self.radio_indicator_cursor;
+        self.radio_indicator_cursor = self
+            .radio_indicator_cursor
+            .checked_add(1)
+            .expect("animation controller radio indicator cursor overflow");
+
+        if index == self.radio_indicator_slots.len() {
+            self.radio_indicator_slots.push(AnimatedRadioIndicatorSlot {
+                state: Rc::new(RefCell::new(AnimatedRadioIndicatorState::new(
+                    selected, now,
+                ))),
+            });
+        }
+
+        self.radio_indicator_slots[index]
+            .state
+            .borrow_mut()
+            .prepare(selected, motion, now)
+    }
+
     pub fn tick(&mut self, now: Instant) -> bool {
         let mut has_active = false;
         for slot in &self.slots {
+            if slot.state.borrow_mut().advance(now) {
+                has_active = true;
+            }
+        }
+        for slot in &self.radio_indicator_slots {
             if slot.state.borrow_mut().advance(now) {
                 has_active = true;
             }
@@ -114,6 +165,10 @@ impl AnimationController {
         self.slots
             .iter()
             .any(|slot| slot.state.borrow().is_active())
+            || self
+                .radio_indicator_slots
+                .iter()
+                .any(|slot| slot.state.borrow().is_active())
             || self.repeating_slots.iter().any(|slot| {
                 slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
             })
@@ -259,6 +314,68 @@ impl AnimatedScalarState {
     }
 }
 
+impl AnimatedRadioIndicatorState {
+    fn new(selected: bool, now: Instant) -> Self {
+        let selected_progress = if selected { 1.0 } else { 0.0 };
+        Self {
+            selected,
+            inner_scale: AnimationTrack::new(1.0),
+            inner_opacity: AnimationTrack::new(selected_progress),
+            outer_color: AnimationTrack::new(selected_progress),
+            last_tick: now,
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        selected: bool,
+        motion: &RadioSelectionMotion,
+        now: Instant,
+    ) -> RadioIndicatorState {
+        let _ = self.advance(now);
+        if self.selected != selected {
+            if selected {
+                self.inner_scale.set_target(0.0, None);
+                self.inner_scale
+                    .set_target(1.0, Some(motion.inner_grow.clone()));
+            } else {
+                self.inner_scale.set_target(1.0, None);
+            }
+            let selected_progress = if selected { 1.0 } else { 0.0 };
+            self.inner_opacity
+                .set_target(selected_progress, Some(motion.inner_opacity.clone()));
+            self.outer_color
+                .set_target(selected_progress, Some(motion.outer_color.clone()));
+            self.selected = selected;
+        }
+        self.sample()
+    }
+
+    fn advance(&mut self, now: Instant) -> bool {
+        let delta = now.saturating_duration_since(self.last_tick);
+        self.last_tick = now;
+        let scale_active = self.inner_scale.advance(delta);
+        let opacity_active = self.inner_opacity.advance(delta);
+        let color_active = self.outer_color.advance(delta);
+        scale_active || opacity_active || color_active
+    }
+
+    fn is_active(&self) -> bool {
+        self.inner_scale.is_active()
+            || self.inner_opacity.is_active()
+            || self.outer_color.is_active()
+    }
+
+    fn sample(&self) -> RadioIndicatorState {
+        RadioIndicatorState {
+            selected: self.selected,
+            outer_selected_progress: self.outer_color.value().clamp(0.0, 1.0),
+            inner_scale: self.inner_scale.value().clamp(0.0, 1.0),
+            inner_opacity: self.inner_opacity.value().clamp(0.0, 1.0),
+        }
+    }
+}
+
 const fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() <= VALUE_EPSILON
 }
@@ -269,6 +386,7 @@ mod tests {
     use std::time::Instant;
 
     use waterui::animation::Animation;
+    use waterui_backend_core::widget::RadioSelectionMotion;
 
     use super::AnimationController;
 
@@ -369,5 +487,78 @@ mod tests {
         let final_value = third.sample(start + Duration::from_millis(200));
         assert!((final_value - 1.0).abs() < 0.0001);
         assert!(!controller.tick(start + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn radio_indicator_selection_grows_dot_and_fades_color() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        let motion = RadioSelectionMotion {
+            inner_grow: Animation::linear(Duration::from_millis(300)),
+            inner_opacity: Animation::linear(Duration::from_millis(50)),
+            outer_color: Animation::linear(Duration::from_millis(50)),
+        };
+
+        controller.begin_rebuild_frame();
+        let initial = controller.bind_radio_indicator(false, &motion, start);
+        controller.finish_rebuild_frame();
+
+        assert!(!initial.selected);
+        assert_eq!(initial.inner_scale, 1.0);
+        assert_eq!(initial.inner_opacity, 0.0);
+        assert_eq!(initial.outer_selected_progress, 0.0);
+
+        controller.begin_rebuild_frame();
+        let changed = controller.bind_radio_indicator(true, &motion, start);
+        controller.finish_rebuild_frame();
+
+        assert!(changed.selected);
+        assert_eq!(changed.inner_scale, 0.0);
+        assert_eq!(changed.inner_opacity, 0.0);
+        assert_eq!(changed.outer_selected_progress, 0.0);
+
+        let mid = start + Duration::from_millis(25);
+        controller.begin_rebuild_frame();
+        let mid_state = controller.bind_radio_indicator(true, &motion, mid);
+        controller.finish_rebuild_frame();
+
+        assert!(mid_state.inner_scale > 0.0 && mid_state.inner_scale < 1.0);
+        assert!(mid_state.inner_opacity > 0.0 && mid_state.inner_opacity < 1.0);
+        assert!(mid_state.outer_selected_progress > 0.0 && mid_state.outer_selected_progress < 1.0);
+    }
+
+    #[test]
+    fn radio_indicator_deselection_fades_dot_without_shrinking() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        let motion = RadioSelectionMotion {
+            inner_grow: Animation::linear(Duration::from_millis(300)),
+            inner_opacity: Animation::linear(Duration::from_millis(50)),
+            outer_color: Animation::linear(Duration::from_millis(50)),
+        };
+
+        controller.begin_rebuild_frame();
+        let initial = controller.bind_radio_indicator(true, &motion, start);
+        controller.finish_rebuild_frame();
+
+        assert!(initial.selected);
+        assert_eq!(initial.inner_scale, 1.0);
+        assert_eq!(initial.inner_opacity, 1.0);
+
+        controller.begin_rebuild_frame();
+        let changed = controller.bind_radio_indicator(false, &motion, start);
+        controller.finish_rebuild_frame();
+
+        assert!(!changed.selected);
+        assert_eq!(changed.inner_scale, 1.0);
+        assert_eq!(changed.inner_opacity, 1.0);
+
+        let mid = start + Duration::from_millis(25);
+        controller.begin_rebuild_frame();
+        let mid_state = controller.bind_radio_indicator(false, &motion, mid);
+        controller.finish_rebuild_frame();
+
+        assert_eq!(mid_state.inner_scale, 1.0);
+        assert!(mid_state.inner_opacity > 0.0 && mid_state.inner_opacity < 1.0);
     }
 }

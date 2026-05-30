@@ -65,7 +65,11 @@ pub trait CustomNavigationController: 'static {
 /// A receiver that handles navigation actions.
 /// For renderers to implement navigation handling.
 #[derive(Clone)]
-pub struct NavigationController(Rc<RefCell<dyn CustomNavigationController>>);
+pub struct NavigationController {
+    receiver: Rc<RefCell<dyn CustomNavigationController>>,
+    retained: Rc<RefCell<Option<Retain>>>,
+    retained_environment: Rc<RefCell<Option<Environment>>>,
+}
 
 impl_extractor!(NavigationController);
 
@@ -82,7 +86,11 @@ impl NavigationController {
     ///
     /// * `receiver` - An implementation of `CustomNavigationController`
     pub fn new(receiver: impl CustomNavigationController) -> Self {
-        Self(Rc::new(RefCell::new(receiver)))
+        Self {
+            receiver: Rc::new(RefCell::new(receiver)),
+            retained: Rc::new(RefCell::new(None)),
+            retained_environment: Rc::new(RefCell::new(None)),
+        }
     }
 
     /// Pushes a new navigation view onto the stack.
@@ -91,17 +99,36 @@ impl NavigationController {
     ///
     /// * `content` - The navigation view to push
     pub fn push(&self, content: NavigationView) {
-        self.0.borrow_mut().push(content);
+        self.receiver.borrow_mut().push(content);
     }
 
     /// Pushes a destination builder onto the stack.
     pub fn push_builder(&self, content: AnyViewBuilder<NavigationView>) {
-        self.0.borrow_mut().push_builder(content);
+        self.receiver.borrow_mut().push_builder(content);
     }
 
     /// Pops the top navigation view off the stack.
     pub fn pop(&self) {
-        self.0.borrow_mut().pop();
+        self.receiver.borrow_mut().pop();
+    }
+
+    /// Replaces the controller-scoped retained value.
+    ///
+    /// Path-backed navigation stacks use this to keep their path watcher alive
+    /// while destinations are active and the root view is no longer rendered.
+    pub fn retain(&self, retained: Retain) {
+        *self.retained.borrow_mut() = Some(retained);
+    }
+
+    /// Replaces the controller-scoped environment overlay.
+    pub fn retain_environment(&self, env: Environment) {
+        *self.retained_environment.borrow_mut() = Some(env);
+    }
+
+    /// Returns the controller-scoped environment overlay.
+    #[must_use]
+    pub fn retained_environment(&self) -> Option<Environment> {
+        self.retained_environment.borrow().clone()
     }
 }
 
@@ -361,17 +388,18 @@ where
                 }
 
                 let destination = Rc::clone(&destination);
+                let watch_receiver = receiver.clone();
                 let guard = path.watch(.., move |slice| {
                     let next_path = slice.into_value().to_vec();
                     let mut current_path = current_path.borrow_mut();
                     let shared_prefix = shared_prefix_len(&current_path, &next_path);
 
                     for _ in shared_prefix..current_path.len() {
-                        receiver.pop();
+                        watch_receiver.pop();
                     }
 
                     for item in next_path.iter().skip(shared_prefix) {
-                        receiver.push_builder(path_destination_builder(
+                        watch_receiver.push_builder(path_destination_builder(
                             Rc::clone(&destination),
                             item.clone(),
                         ));
@@ -380,8 +408,12 @@ where
                     *current_path = next_path;
                 });
 
+                let mut retained_env = Environment::new();
+                retained_env.insert(path_controller.clone());
+                receiver.retain_environment(retained_env);
+                receiver.retain(Retain::new(guard));
                 local_env.insert(path_controller.clone());
-                Metadata::new(Metadata::new(root, Retain::new(guard)), local_env)
+                Metadata::new(root, local_env)
             },
         ))
         .transition(transition)

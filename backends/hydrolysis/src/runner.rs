@@ -32,7 +32,7 @@ use waterui_core::view::Hook;
 use crate::env::{parse_bool_env, parse_positive_u64_env};
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
+use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 use crate::time::Instant;
 
 fn init_main_thread_executors() {
@@ -775,9 +775,6 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime
             .renderer
             .render_active_text_context_menu_overlay(env, root_transform);
-        runtime
-            .renderer
-            .render_active_picker_menu_overlay(env, root_transform);
         phases.scene_dispatch += scene_dispatch_started_at.elapsed();
         let scene_finish_started_at = Instant::now();
         runtime.renderer.finish_rebuild_frame();
@@ -1080,7 +1077,16 @@ fn handle_input_events<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> bool {
-    handle_input_events_with(runtime, env, |_runtime, env| env.clone())
+    handle_input_events_with(runtime, env, |runtime, env| {
+        env.extending(runtime_window_origin(runtime))
+    })
+}
+
+fn runtime_window_origin<P: PlatformWindow>(runtime: &RuntimeWindow<P>) -> HydrolysisWindowOrigin {
+    HydrolysisWindowOrigin {
+        x: runtime.window.frame.get().x(),
+        y: runtime.window.frame.get().y(),
+    }
 }
 
 fn handle_input_events_with<P, F>(
@@ -1623,10 +1629,11 @@ impl HeadlessRuntime {
 
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
+        let action_env = self.env.extending(runtime_window_origin(&self.runtime));
         let changed = self
             .runtime
             .renderer
-            .handle_accessibility_action(request, &self.env);
+            .handle_accessibility_action(request, &action_env);
         if changed {
             self.runtime.needs_rebuild = true;
             self.runtime.platform.request_redraw();
@@ -2407,7 +2414,7 @@ mod winit_runner {
     };
     use crate::runner::{
         RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
-        pump_window_semantics, render_window,
+        pump_window_semantics, render_window, runtime_window_origin,
     };
 
     #[derive(Debug)]
@@ -2500,6 +2507,7 @@ mod winit_runner {
             pending_window_queue,
             windows: HashMap::new(),
             accesskit_adapters: HashMap::new(),
+            last_accessibility_updates: HashMap::new(),
             accessibility_enabled: super::probe_accessibility_runtime(),
             local_runnable_rx,
             event_proxy,
@@ -2519,6 +2527,7 @@ mod winit_runner {
         pending_window_queue: Rc<RefCell<Vec<Window>>>,
         windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
         accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
+        last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
         accessibility_enabled: bool,
         local_runnable_rx: mpsc::Receiver<Runnable>,
         event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
@@ -2555,8 +2564,7 @@ mod winit_runner {
                 };
             }
             HydrolysisWindowOrigin {
-                x: runtime.window.frame.get().x(),
-                y: runtime.window.frame.get().y(),
+                ..runtime_window_origin(runtime)
             }
         }
         fn create_runtime_window(
@@ -2598,6 +2606,7 @@ mod winit_runner {
                 let initial_tree_update = runtime.renderer.take_accessibility_tree_update().expect(
                     "hydrolysis winit accessibility: initial tree update missing after initial semantic rebuild",
                 );
+                let last_tree_update = initial_tree_update.clone();
                 let adapter = AccessKitAdapter::with_mixed_handlers(
                     event_loop,
                     runtime.platform.native_window(),
@@ -2612,6 +2621,8 @@ mod winit_runner {
                     title = runtime.window.title.get().as_str(),
                     "created accesskit adapter for window"
                 );
+                self.last_accessibility_updates
+                    .insert(runtime.platform.id(), last_tree_update);
                 Some(adapter)
             } else {
                 tracing::warn!(
@@ -2667,10 +2678,23 @@ mod winit_runner {
             for id in close_ids {
                 self.windows.remove(&id);
                 self.accesskit_adapters.remove(&id);
+                self.last_accessibility_updates.remove(&id);
             }
 
             if self.windows.is_empty() && self.pending_windows.is_empty() {
                 self.exit_after_runtime_cleanup(event_loop);
+            }
+        }
+
+        fn flush_cross_window_rebuild_requests(&mut self) {
+            for runtime in self.windows.values_mut() {
+                if runtime.renderer.take_rebuild_request() {
+                    runtime.renderer.invalidate_retained_scroll_content();
+                    runtime.scroll_only_rebuild = false;
+                    runtime.needs_rebuild = true;
+                    runtime.effect_only_rebuild_pending = false;
+                    runtime.platform.request_redraw();
+                }
             }
         }
     }
@@ -2706,9 +2730,12 @@ mod winit_runner {
                 self.mount_pending_windows(event_loop);
             }
 
+            self.flush_cross_window_rebuild_requests();
+
             if should_close {
                 self.windows.remove(&window_id);
                 self.accesskit_adapters.remove(&window_id);
+                self.last_accessibility_updates.remove(&window_id);
                 if self.windows.is_empty() && self.pending_windows.is_empty() {
                     self.exit_after_runtime_cleanup(event_loop);
                 }
@@ -2724,6 +2751,8 @@ mod winit_runner {
                 });
                 if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
                     if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                        self.last_accessibility_updates
+                            .insert(window_id, update.clone());
                         tracing::trace!(
                             target: "waterui::hydrolysis::a11y",
                             window_id = ?window_id,
@@ -2786,10 +2815,23 @@ mod winit_runner {
                             );
                             if let Some(update) = runtime.renderer.take_accessibility_tree_update()
                             {
+                                self.last_accessibility_updates
+                                    .insert(event.window_id, update.clone());
                                 tracing::trace!(
                                     target: "waterui::hydrolysis::a11y",
                                     window_id = ?event.window_id,
                                     "publishing accessibility tree update for initial request"
+                                );
+                                adapter.update_if_active(|| update);
+                            } else if let Some(update) = self
+                                .last_accessibility_updates
+                                .get(&event.window_id)
+                                .cloned()
+                            {
+                                tracing::trace!(
+                                    target: "waterui::hydrolysis::a11y",
+                                    window_id = ?event.window_id,
+                                    "replaying cached accessibility tree update for initial request"
                                 );
                                 adapter.update_if_active(|| update);
                             } else {
@@ -2810,13 +2852,16 @@ mod winit_runner {
                                 target = ?request.target_node,
                                 "accesskit action requested"
                             );
+                            let action_env =
+                                self.env.extending(Self::current_window_origin(runtime));
                             if runtime
                                 .renderer
-                                .handle_accessibility_action(request, &self.env)
+                                .handle_accessibility_action(request, &action_env)
                             {
                                 runtime.needs_rebuild = true;
                                 runtime.platform.request_redraw();
                             }
+                            self.flush_cross_window_rebuild_requests();
                         }
                         AccessKitWindowEvent::AccessibilityDeactivated => {}
                     }

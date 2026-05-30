@@ -211,6 +211,31 @@ pub struct ProgressMotion {
     pub circular_indeterminate_cycle: Duration,
 }
 
+/// Motion policy for radio selection indicators.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadioSelectionMotion {
+    /// Animation used when the selected inner dot grows.
+    pub inner_grow: Animation,
+    /// Animation used when the inner dot fades in or out.
+    pub inner_opacity: Animation,
+    /// Animation used when the outer ring changes between selected and
+    /// unselected colors.
+    pub outer_color: Animation,
+}
+
+/// Animated visual state for a radio indicator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadioIndicatorState {
+    /// Whether the radio option is currently selected semantically.
+    pub selected: bool,
+    /// Progress from unselected outer-ring color to selected outer-ring color.
+    pub outer_selected_progress: f32,
+    /// Inner dot radius progress in the 0.0..=1.0 range.
+    pub inner_scale: f32,
+    /// Inner dot opacity in the 0.0..=1.0 range.
+    pub inner_opacity: f32,
+}
+
 /// Motion policy for text input carets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextCaretMotion {
@@ -854,6 +879,8 @@ pub trait WidgetTheme {
 
     /// Return picker metrics for a style.
     fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics;
+    /// Return the motion policy for radio picker selection changes.
+    fn radio_selection_motion(&self) -> RadioSelectionMotion;
     /// Draw the picker indicator.
     fn draw_picker_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
     /// Draw picker field state layer.
@@ -890,7 +917,7 @@ pub trait WidgetTheme {
         draw: &mut dyn DrawContext,
         center: Point,
         radius: f64,
-        selected: bool,
+        state: RadioIndicatorState,
     );
     /// Draw radio picker state layer.
     fn draw_radio_state_layer(

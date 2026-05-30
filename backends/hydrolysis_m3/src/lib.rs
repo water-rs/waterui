@@ -43,8 +43,9 @@ pub use waterui_backend_core::widget::{
     BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
     InteractionMotion, ListDividerMetrics, ListMetrics, ListRowMetrics, ListTrailingControlMetrics,
     NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
-    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics, StepperMetrics,
+    TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+    WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -363,6 +364,10 @@ impl WidgetTheme for MaterialTheme {
         picker::metrics(style)
     }
 
+    fn radio_selection_motion(&self) -> RadioSelectionMotion {
+        theme::motion::radio_selection()
+    }
+
     fn draw_picker_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
         picker::draw_indicator(&self.colors, draw, bounds);
     }
@@ -408,9 +413,9 @@ impl WidgetTheme for MaterialTheme {
         draw: &mut dyn DrawContext,
         center: Point,
         radius: f64,
-        selected: bool,
+        state: RadioIndicatorState,
     ) {
-        picker::draw_radio_indicator(&self.colors, draw, center, radius, selected);
+        picker::draw_radio_indicator(&self.colors, draw, center, radius, state);
     }
 
     fn draw_radio_state_layer(

@@ -20,6 +20,8 @@
     <string>1</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSQuitAlwaysKeepsWindows</key>
+    <false/>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
 </dict>

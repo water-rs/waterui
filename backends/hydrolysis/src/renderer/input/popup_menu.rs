@@ -1,13 +1,20 @@
 use super::*;
+use core::ops::RangeInclusive;
 use core::time::Duration;
+use waterui::form::Calendar;
 use waterui::shape::{RoundedRectangle, ShapeExt as _};
 use waterui::theme::color::Surface;
-use waterui_backend_core::widget::WidgetInteractionState;
+use waterui_backend_core::widget::PickerMetrics;
 use waterui_controls::label::LabelDisplayMode;
+use waterui_controls::stepper::Stepper;
 use waterui_core::{AnimationExt as _, id::Id};
 use waterui_form::picker::PickerStyle;
+use waterui_form::picker::date::{Date, DatePickerType, DateTime};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
+use waterui_layout::spacer::spacer;
+use waterui_layout::stack::hstack;
+use waterui_text::text;
 
 #[derive(Clone)]
 pub(crate) struct ContextMenuTarget {
@@ -39,7 +46,6 @@ pub(crate) struct PopupMenuStateGroup(pub(crate) Rc<RefCell<Vec<Binding<WindowSt
 #[derive(Default)]
 pub(crate) struct PopupMenuState {
     pub(crate) active_popup_menu_group: Option<PopupMenuStateGroup>,
-    pub(crate) active_picker_menu_overlay: Option<PickerMenuOverlay>,
     pub(crate) picker_menu_slots: Vec<PickerMenuSlot>,
     pub(crate) picker_menu_cursor: usize,
 }
@@ -62,22 +68,6 @@ pub(crate) struct PickerMenuRequest {
     pub(crate) width: f64,
     pub(crate) row_height: f64,
     pub(crate) selected: Id,
-}
-
-#[derive(Clone)]
-pub(crate) struct PickerMenuOverlay {
-    pub(crate) bounds: vello::kurbo::Rect,
-    pub(crate) rows: Vec<PickerMenuOverlayRow>,
-    pub(crate) selection: Binding<Id>,
-    pub(crate) open: Rc<Cell<bool>>,
-    pub(crate) opened_at: Instant,
-}
-
-#[derive(Clone)]
-pub(crate) struct PickerMenuOverlayRow {
-    pub(crate) bounds: vello::kurbo::Rect,
-    pub(crate) entry: PickerMenuEntry,
-    pub(crate) selected: bool,
 }
 
 impl PopupMenuState {
@@ -133,6 +123,14 @@ impl PickerMenuSlot {
             open: Rc::new(Cell::new(false)),
         }
     }
+}
+
+fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> LayoutPoint {
+    let window_origin = env
+        .get::<HydrolysisWindowOrigin>()
+        .copied()
+        .expect("hydrolysis popup windows require HydrolysisWindowOrigin in environment");
+    LayoutPoint::new(window_origin.x + origin.x, window_origin.y + origin.y)
 }
 
 fn popup_enter_animation() -> Animation {
@@ -271,6 +269,72 @@ pub(crate) fn popup_menu_window(
     (popup, state)
 }
 
+pub(crate) fn picker_menu_window(
+    entries: Vec<PickerMenuEntry>,
+    selection: Binding<Id>,
+    open: Rc<Cell<bool>>,
+    origin: LayoutPoint,
+    width: f64,
+    row_height: f64,
+    selected: Id,
+    group: PopupMenuStateGroup,
+    metrics: PickerMetrics,
+) -> (Window, Binding<WindowState>) {
+    let state = Binding::container(WindowState::Normal);
+    let height = row_height * entries.len() as f64;
+    let state_for_content = state.clone();
+    let group_for_content = group.clone();
+    let entries_for_content = entries.clone();
+    let popup_content = move || {
+        let mut rows = Vec::with_capacity(entries_for_content.len());
+        for entry in entries_for_content.clone() {
+            let label = entry.label.clone();
+            let target = entry.tag;
+            let row_selection = selection.clone();
+            let row_group = group_for_content.clone();
+            let row_open = Rc::clone(&open);
+            let row = Frame::new(Button::new(label).style(ButtonStyle::Borderless).action(
+                move || {
+                    if row_selection.get() != target {
+                        row_selection.set(target);
+                    }
+                    row_open.set(false);
+                    row_group.close_all();
+                },
+            ))
+            .width(width as f32)
+            .height(row_height as f32);
+            if target == selected {
+                rows.push(AnyView::new(row.background(
+                    RoundedRectangle::new(0.0).fill(Color::new(Surface).with_opacity(0.84)),
+                )));
+            } else {
+                rows.push(AnyView::new(row));
+            }
+        }
+        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+            rows.into_iter().collect();
+        let panel = menu_content
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(0.0)
+            .background(
+                RoundedRectangle::new((metrics.popup_corner_radius / width) as f32)
+                    .fill(Color::new(Surface).with_opacity(0.96)),
+            );
+        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
+    };
+    let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
+        .style(WindowStyle::Borderless)
+        .resizable(false)
+        .background(Color::transparent());
+    popup.closable = false;
+    popup.frame.set(LayoutRect::new(
+        origin,
+        LayoutSize::new(width as f32, height as f32),
+    ));
+    (popup, state)
+}
+
 fn color_picker_palette() -> [(&'static str, Color); 12] {
     [
         ("Red", Color::srgb(0xba, 0x1a, 0x1a)),
@@ -393,17 +457,165 @@ pub(crate) fn color_picker_window(
     (popup, state)
 }
 
+fn time_part_binding(
+    value: &Binding<i32>,
+    range: RangeInclusive<i32>,
+    label: &'static str,
+) -> Stepper {
+    Stepper::new(label, value)
+        .range(range)
+        .value_formatter(|part| format!("{part:02}"))
+}
+
+fn apply_staged_date_time(
+    value: &Binding<DateTime>,
+    range: &RangeInclusive<DateTime>,
+    date: Date,
+    hour: i32,
+    minute: i32,
+    second: i32,
+) {
+    let hour = i8::try_from(hour).expect("date picker staged hour must fit i8");
+    let minute = i8::try_from(minute).expect("date picker staged minute must fit i8");
+    let second = i8::try_from(second).expect("date picker staged second must fit i8");
+    let current = value.get();
+    let time = current.time();
+    let next = date
+        .at(hour, minute, second, time.subsec_nanosecond())
+        .clamp(*range.start(), *range.end());
+    value.set(next);
+}
+
+pub(crate) fn date_picker_window(
+    value: Binding<DateTime>,
+    range: RangeInclusive<DateTime>,
+    ty: DatePickerType,
+    origin: LayoutPoint,
+    group: PopupMenuStateGroup,
+) -> (Window, Binding<WindowState>) {
+    let state = Binding::container(WindowState::Normal);
+    let current = value.get().clamp(*range.start(), *range.end());
+    let staged_date = Binding::container(current.date());
+    let current_time = current.time();
+    let staged_hour = Binding::container(i32::from(current_time.hour()));
+    let staged_minute = Binding::container(i32::from(current_time.minute()));
+    let staged_second = Binding::container(i32::from(current_time.second()));
+    let uses_date = matches!(
+        ty,
+        DatePickerType::Date
+            | DatePickerType::DateHourAndMinute
+            | DatePickerType::DateHourMinuteAndSecond
+    );
+    let uses_time = !matches!(ty, DatePickerType::Date);
+    let uses_second = matches!(
+        ty,
+        DatePickerType::HourMinuteAndSecond | DatePickerType::DateHourMinuteAndSecond
+    );
+    let width = 360.0;
+    let height = if uses_date && uses_time {
+        520.0
+    } else if uses_date {
+        430.0
+    } else {
+        260.0
+    };
+    let range_start = *range.start();
+    let range_end = *range.end();
+    let group_for_content = group.clone();
+    let state_for_content = state.clone();
+    let popup_content = move || {
+        let mut sections = Vec::new();
+        sections.push(AnyView::new(text("Select date").headline()));
+        if uses_date {
+            sections.push(AnyView::new(
+                Calendar::new("Date", &staged_date)
+                    .range(range_start.date()..=range_end.date())
+                    .hide_label(),
+            ));
+        }
+        if uses_time {
+            let mut time_controls = Vec::new();
+            time_controls.push(AnyView::new(time_part_binding(
+                &staged_hour,
+                0..=23,
+                "Hour",
+            )));
+            time_controls.push(AnyView::new(time_part_binding(
+                &staged_minute,
+                0..=59,
+                "Minute",
+            )));
+            if uses_second {
+                time_controls.push(AnyView::new(time_part_binding(
+                    &staged_second,
+                    0..=59,
+                    "Second",
+                )));
+            }
+            let time_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+                time_controls.into_iter().collect();
+            sections.push(AnyView::new(time_content.spacing(8.0)));
+        }
+        let cancel_group = group_for_content.clone();
+        let apply_group = group_for_content.clone();
+        let apply_value = value.clone();
+        let apply_range = range.clone();
+        let apply_date = staged_date.clone();
+        let apply_hour = staged_hour.clone();
+        let apply_minute = staged_minute.clone();
+        let apply_second = staged_second.clone();
+        sections.push(AnyView::new(
+            hstack((
+                spacer(),
+                Button::new("Cancel")
+                    .style(ButtonStyle::Borderless)
+                    .action(move || {
+                        cancel_group.close_all();
+                    }),
+                Button::new("OK")
+                    .style(ButtonStyle::Borderless)
+                    .action(move || {
+                        apply_staged_date_time(
+                            &apply_value,
+                            &apply_range,
+                            apply_date.get(),
+                            apply_hour.get(),
+                            apply_minute.get(),
+                            if uses_second { apply_second.get() } else { 0 },
+                        );
+                        apply_group.close_all();
+                    }),
+            ))
+            .spacing(8.0),
+        ));
+
+        let content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+            sections.into_iter().collect();
+        let panel = content
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(16.0)
+            .padding_with(EdgeInsets::all(24.0))
+            .background(RoundedRectangle::new(0.04).fill(Color::new(Surface).with_opacity(0.96)));
+        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
+    };
+    let mut popup = Window::new("WaterUI Date Picker", state_for_content, popup_content)
+        .style(WindowStyle::Borderless)
+        .resizable(false)
+        .background(Color::transparent());
+    popup.closable = false;
+    popup.frame.set(LayoutRect::new(
+        origin,
+        LayoutSize::new(width as f32, height as f32),
+    ));
+    (popup, state)
+}
+
 impl HydrolysisRenderer {
     pub(crate) fn active_popup_menu_visible(&self) -> bool {
         self.popup_menu.active_popup_menu_group.is_some()
-            || self.popup_menu.active_picker_menu_overlay.is_some()
     }
 
     pub(crate) fn dismiss_active_popup_menu(&mut self) {
-        if let Some(overlay) = self.popup_menu.active_picker_menu_overlay.take() {
-            overlay.open.set(false);
-            self.request_rebuild();
-        }
         if let Some(group) = self.popup_menu.active_popup_menu_group.take() {
             group.close_all();
         }
@@ -441,7 +653,8 @@ impl HydrolysisRenderer {
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let metrics = widget_theme(env).text_context_menu_metrics();
-        let (window, state) = popup_menu_window(nodes, origin, group.clone(), 0, metrics);
+        let popup_origin = popup_window_origin(origin, env);
+        let (window, state) = popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics);
         group.push(state);
         env.get::<WindowManager>()
             .expect("hydrolysis popup menus require WindowManager in environment")
@@ -450,43 +663,35 @@ impl HydrolysisRenderer {
         true
     }
 
-    pub(crate) fn show_picker_menu(&mut self, request: PickerMenuRequest) -> bool {
+    pub(crate) fn show_picker_menu(
+        &mut self,
+        request: PickerMenuRequest,
+        env: &Environment,
+    ) -> bool {
         if request.entries.is_empty() {
             return false;
         }
         self.dismiss_active_popup_menu();
         request.open.set(true);
-        let bounds = vello::kurbo::Rect::new(
-            f64::from(request.origin.x),
-            f64::from(request.origin.y),
-            f64::from(request.origin.x) + request.width,
-            f64::from(request.origin.y) + request.row_height * request.entries.len() as f64,
+        let group = PopupMenuStateGroup::new();
+        let metrics = widget_theme(env).picker_metrics(PickerStyle::Menu);
+        let popup_origin = popup_window_origin(request.origin, env);
+        let (window, state) = picker_menu_window(
+            request.entries,
+            request.selection,
+            request.open,
+            popup_origin,
+            request.width,
+            request.row_height,
+            request.selected,
+            group.clone(),
+            metrics,
         );
-        let rows = request
-            .entries
-            .into_iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let y0 = bounds.y0 + request.row_height * index as f64;
-                PickerMenuOverlayRow {
-                    bounds: vello::kurbo::Rect::new(
-                        bounds.x0,
-                        y0,
-                        bounds.x1,
-                        y0 + request.row_height,
-                    ),
-                    selected: entry.tag == request.selected,
-                    entry,
-                }
-            })
-            .collect();
-        self.popup_menu.active_picker_menu_overlay = Some(PickerMenuOverlay {
-            bounds,
-            rows,
-            selection: request.selection,
-            open: request.open,
-            opened_at: self.frame_instant(),
-        });
+        group.push(state);
+        env.get::<WindowManager>()
+            .expect("hydrolysis picker menus require WindowManager in environment")
+            .show(window);
+        self.popup_menu.active_popup_menu_group = Some(group);
         self.request_rebuild();
         true
     }
@@ -501,8 +706,14 @@ impl HydrolysisRenderer {
     ) -> bool {
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
-        let (window, state) =
-            color_picker_window(value, support_alpha, support_hdr, origin, group.clone());
+        let popup_origin = popup_window_origin(origin, env);
+        let (window, state) = color_picker_window(
+            value,
+            support_alpha,
+            support_hdr,
+            popup_origin,
+            group.clone(),
+        );
         group.push(state);
         env.get::<WindowManager>()
             .expect("hydrolysis color picker requires WindowManager in environment")
@@ -511,104 +722,23 @@ impl HydrolysisRenderer {
         true
     }
 
-    pub(crate) fn render_active_picker_menu_overlay(
+    pub(crate) fn show_date_picker(
         &mut self,
+        value: Binding<DateTime>,
+        range: RangeInclusive<DateTime>,
+        ty: DatePickerType,
+        origin: LayoutPoint,
         env: &Environment,
-        transform: vello::kurbo::Affine,
-    ) {
-        let Some(overlay) = self.popup_menu.active_picker_menu_overlay.clone() else {
-            return;
-        };
-        let animation = popup_enter_animation();
-        let elapsed = self.frame_instant().duration_since(overlay.opened_at);
-        let progress = animation.progress(elapsed);
-        if !animation.is_complete(elapsed) {
-            self.request_rebuild();
-        }
-
-        let alpha = 0.96 * progress;
-        let scale = f64::from(animation.interpolate(&0.96_f32, &1.0_f32, elapsed));
-        let anchor = vello::kurbo::Point::new(overlay.bounds.x0, overlay.bounds.y0);
-        let menu_transform = transform
-            * vello::kurbo::Affine::translate((anchor.x, anchor.y))
-            * vello::kurbo::Affine::scale(scale)
-            * vello::kurbo::Affine::translate((-anchor.x, -anchor.y));
-
-        self.push_layer_rect(alpha, transform, overlay.bounds);
-        let theme = widget_theme(env);
-        {
-            let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, menu_transform);
-            theme.draw_picker_popup(&mut draw, overlay.bounds);
-        }
-        for (index, row) in overlay.rows.iter().enumerate() {
-            let metrics = theme.picker_metrics(PickerStyle::Menu);
-            {
-                let mut draw =
-                    VelloDrawContext::with_root_transform(&mut self.scene, menu_transform);
-                theme.draw_picker_popup_row_background(&mut draw, row.bounds, row.selected);
-                theme.draw_picker_popup_row_state_layer(
-                    &mut draw,
-                    row.bounds,
-                    row.selected,
-                    WidgetInteractionState::NONE,
-                );
-            }
-            if index + 1 < overlay.rows.len() {
-                let separator = vello::kurbo::Rect::new(
-                    row.bounds.x0,
-                    row.bounds.y1,
-                    row.bounds.x1,
-                    row.bounds.y1 + 1.0,
-                );
-                let mut draw =
-                    VelloDrawContext::with_root_transform(&mut self.scene, menu_transform);
-                theme.draw_picker_separator(&mut draw, separator);
-            }
-            let text_bounds =
-                inset_rect(row.bounds, metrics.horizontal_inset, metrics.vertical_inset);
-            let ctx = RenderContext {
-                transform: menu_transform,
-                hit_transform: vello::kurbo::Affine::IDENTITY,
-                bounds: overlay.bounds,
-            }
-            .child(
-                vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
-                vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
-            );
-            let (state, scene) = self.state_and_scene_mut();
-            Self::render_styled_text(
-                state,
-                scene,
-                ctx,
-                StyledStr::plain(row.entry.label.clone()),
-                HorizontalAlignment::Leading,
-                env,
-            );
-        }
-        self.pop_layer();
-    }
-
-    pub(crate) fn handle_picker_menu_overlay_pointer_down(
-        &mut self,
-        point: vello::kurbo::Point,
     ) -> bool {
-        let Some(overlay) = self.popup_menu.active_picker_menu_overlay.clone() else {
-            return false;
-        };
-        if !overlay.bounds.contains(point) {
-            self.dismiss_active_popup_menu();
-            return false;
-        }
-        for row in &overlay.rows {
-            if !row.bounds.contains(point) {
-                continue;
-            }
-            if overlay.selection.get() != row.entry.tag {
-                overlay.selection.set(row.entry.tag);
-            }
-            self.dismiss_active_popup_menu();
-            return true;
-        }
+        self.dismiss_active_popup_menu();
+        let group = PopupMenuStateGroup::new();
+        let popup_origin = popup_window_origin(origin, env);
+        let (window, state) = date_picker_window(value, range, ty, popup_origin, group.clone());
+        group.push(state);
+        env.get::<WindowManager>()
+            .expect("hydrolysis date picker requires WindowManager in environment")
+            .show(window);
+        self.popup_menu.active_popup_menu_group = Some(group);
         true
     }
 
@@ -617,13 +747,22 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         items: nami::Computed<Vec<ResolvedMenuItem>>,
     ) {
+        self.register_context_menu_target_data(bounds, items, self.render_depth);
+    }
+
+    pub(crate) fn register_context_menu_target_data(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        items: nami::Computed<Vec<ResolvedMenuItem>>,
+        depth: usize,
+    ) {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
         let order = self.hit_test.next_hit_test_order();
         self.hit_test.context_menu_targets.push(ContextMenuTarget {
             bounds,
-            depth: self.render_depth,
+            depth,
             order,
             items,
         });

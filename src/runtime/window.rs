@@ -196,10 +196,14 @@ impl Window {
         let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
         let (snackbar_manager, snackbar_view) = SnackbarManager::new();
         let content = AnyViewBuilder::new(move || {
+            let overlay_manager = overlay_manager.clone();
+            let snackbar_manager = snackbar_manager.clone();
             AnyView::new(
                 zstack((content.build(), overlay_view.clone(), snackbar_view.clone()))
                     .with(overlay_manager.clone())
-                    .with(snackbar_manager.clone()),
+                    .with(snackbar_manager.clone())
+                    .state(&overlay_manager)
+                    .state(&snackbar_manager),
             )
         });
 

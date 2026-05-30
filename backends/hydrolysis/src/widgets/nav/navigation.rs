@@ -3,7 +3,7 @@ use crate::engine::Brush;
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility_activation_point;
-use crate::renderer::navigation_state::{HydroNavigationController, NavigationTransitionDirection};
+use crate::renderer::navigation_state::NavigationTransitionDirection;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     local_state_child_env, measure_navigation_view_intrinsic,
@@ -18,8 +18,7 @@ use accesskit::{
 use nami::Signal;
 use std::rc::Rc;
 use waterui::navigation::{
-    NavigationController, NavigationSplitLayout, NavigationStack, NavigationTransition,
-    NavigationView,
+    NavigationSplitLayout, NavigationStack, NavigationTransition, NavigationView,
 };
 use waterui_controls::text_field::TextField;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -453,10 +452,18 @@ pub(crate) fn render_navigation_stack(
         .take_pending_navigation_entries("render_navigation_stack");
 
     let mut local_env = env.clone();
-    local_env.insert(NavigationController::new(HydroNavigationController {
-        entries: Rc::clone(&entries),
-        rebuild_requested: Rc::clone(&ctx.renderer_mut().rebuild_requested),
-    }));
+    let controller = ctx
+        .renderer_mut()
+        .navigation
+        .slots
+        .get(slot_index)
+        .expect("hydrolysis navigation slot missing")
+        .controller
+        .clone();
+    if let Some(retained_env) = controller.retained_environment() {
+        local_env = retained_env.layered_on(&local_env);
+    }
+    local_env.insert(controller);
 
     let (active, depth) = {
         let entries_ref = entries.borrow();
