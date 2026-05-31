@@ -681,11 +681,11 @@ async fn augment_event_with_crash_report(
     use std::fmt::Write as _;
 
     match event {
-        Some(DeviceEvent::Exited) => {
+        Some(DeviceEvent::Exited(exit)) => {
             if let Some(report) = find_latest_ips_report(ctx).await {
                 return Some(DeviceEvent::Crashed(report.to_string()));
             }
-            Some(DeviceEvent::Exited)
+            Some(DeviceEvent::Exited(exit))
         }
         Some(DeviceEvent::Crashed(mut msg)) => {
             if !msg.contains("Crash report:")
@@ -1158,9 +1158,9 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> Resul
             shell::device_log(platform_name, level, message);
             Ok(false)
         }
-        Some(DeviceEvent::Exited) => {
-            error!("Application exited unexpectedly");
-            bail!("application exited unexpectedly")
+        Some(DeviceEvent::Exited(exit)) => {
+            shell::status("o", exit.terminal_message());
+            Ok(true)
         }
         Some(DeviceEvent::Crashed(msg)) => {
             // Use panic_report for panic messages, regular error for others
@@ -1178,10 +1178,11 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendAvailability, TargetBackend, TargetPlatform, resolve_backend,
+        BackendAvailability, TargetBackend, TargetPlatform, handle_device_event, resolve_backend,
         resolve_default_backend_for_project, resolve_platform,
         validate_desktop_backend_platform_on_host, validate_device_arg,
     };
+    use waterui_cli::device::{ApplicationExit, DeviceEvent};
 
     #[test]
     fn rejects_device_with_desktop_backend() {
@@ -1202,6 +1203,17 @@ mod tests {
         assert!(
             validate_device_arg(TargetPlatform::Ios, TargetBackend::Apple, Some("sim-1")).is_ok()
         );
+    }
+
+    #[test]
+    fn clean_device_exit_stops_without_error() {
+        crate::shell::init(false);
+        let should_stop = handle_device_event(
+            Some(DeviceEvent::Exited(ApplicationExit::completed())),
+            "test",
+        )
+        .expect("clean device exit should not fail water run");
+        assert!(should_stop);
     }
 
     #[test]

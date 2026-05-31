@@ -12,7 +12,9 @@ use std::sync::OnceLock;
 use crate::{
     android::platform::AndroidAbi,
     android::toolchain::AndroidSdk,
-    device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
+    device::{
+        ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running,
+    },
     utils::{parse_whitespace_separated_u32s, run_command_os, run_command_output_os},
 };
 
@@ -547,7 +549,9 @@ async fn monitor_android_process(
 
                 let _ = sender.send(DeviceEvent::Crashed(error_msg)).await;
             } else {
-                let _ = sender.send(DeviceEvent::Exited).await;
+                let _ = sender
+                    .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                    .await;
             }
             break;
         }

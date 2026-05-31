@@ -22,7 +22,8 @@ use std::path::Path;
 use crate::{
     debug,
     device::{
-        Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running, format_panic_message,
+        ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running,
+        format_panic_message,
     },
     utils::run_command,
 };
@@ -198,7 +199,7 @@ fn spawn_simulator_exit_monitor(
             return;
         }
 
-        let _ = sender.try_send(DeviceEvent::Exited);
+        let _ = sender.try_send(DeviceEvent::Exited(ApplicationExit::user_closed()));
     })
     .detach();
 }

@@ -313,6 +313,54 @@ pub enum FailToRun {
     Crashed(String),
 }
 
+/// A clean application exit observed by the runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplicationExit {
+    reason: ApplicationExitReason,
+}
+
+impl ApplicationExit {
+    /// The application process finished with a successful process status.
+    #[must_use]
+    pub const fn completed() -> Self {
+        Self {
+            reason: ApplicationExitReason::Completed,
+        }
+    }
+
+    /// A GUI application window or process closed without crash evidence.
+    #[must_use]
+    pub const fn user_closed() -> Self {
+        Self {
+            reason: ApplicationExitReason::UserClosed,
+        }
+    }
+
+    /// Human-readable message for terminal status output.
+    #[must_use]
+    pub const fn terminal_message(self) -> &'static str {
+        match self.reason {
+            ApplicationExitReason::Completed => "Application exited",
+            ApplicationExitReason::UserClosed => "Application closed",
+        }
+    }
+
+    /// Return the classified clean-exit reason.
+    #[must_use]
+    pub const fn reason(self) -> ApplicationExitReason {
+        self.reason
+    }
+}
+
+/// Reason attached to a clean application exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationExitReason {
+    /// The launched process returned a successful exit status.
+    Completed,
+    /// The GUI app was closed and no crash report or panic log was found.
+    UserClosed,
+}
+
 /// Events emitted by a running application on a device
 #[derive(Debug)]
 pub enum DeviceEvent {
@@ -339,8 +387,8 @@ pub enum DeviceEvent {
         message: String,
     },
 
-    /// Unexpected exit of the application, may triggered by user quitting
-    Exited,
+    /// Clean exit of the application.
+    Exited(ApplicationExit),
 
     /// Application crashed with error message
     Crashed(String),
@@ -1013,7 +1061,7 @@ fn spawn_macos_bundle_monitor(
                 }
             }
             futures::future::Either::Right((None, _)) => {
-                let _ = sender.try_send(DeviceEvent::Exited);
+                let _ = sender.try_send(DeviceEvent::Exited(ApplicationExit::user_closed()));
             }
         }
     })
@@ -1066,7 +1114,7 @@ async fn handle_macos_open_exit(
         return;
     }
 
-    let _ = sender.try_send(DeviceEvent::Exited);
+    let _ = sender.try_send(DeviceEvent::Exited(ApplicationExit::user_closed()));
 }
 
 /// Run a macOS .app bundle using the `open` command.
@@ -1270,7 +1318,7 @@ fn emit_binary_exit_event(
 ) {
     match status {
         Ok(exit_status) if exit_status.success() => {
-            let _ = sender.try_send(DeviceEvent::Exited);
+            let _ = sender.try_send(DeviceEvent::Exited(ApplicationExit::completed()));
         }
         Ok(exit_status) => {
             let _ = sender.try_send(DeviceEvent::Crashed(binary_crash_message(
@@ -1384,5 +1432,106 @@ fn parse_log_level(line: &str) -> tracing::Level {
         tracing::Level::TRACE
     } else {
         tracing::Level::INFO
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::ExitStatus;
+
+    use smol::channel::unbounded;
+
+    use super::{
+        ApplicationExit, ApplicationExitReason, DeviceEvent, emit_binary_exit_event,
+        parse_log_level,
+    };
+
+    #[cfg(unix)]
+    fn successful_exit_status() -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+
+        ExitStatus::from_raw(0)
+    }
+
+    #[cfg(windows)]
+    fn successful_exit_status() -> ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+
+        ExitStatus::from_raw(0)
+    }
+
+    #[cfg(unix)]
+    fn failing_exit_status(code: i32) -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+
+        ExitStatus::from_raw(code << 8)
+    }
+
+    #[cfg(windows)]
+    fn failing_exit_status(code: u32) -> ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+
+        ExitStatus::from_raw(code)
+    }
+
+    #[test]
+    fn application_exit_messages_are_reason_specific() {
+        assert_eq!(
+            ApplicationExit::completed().reason(),
+            ApplicationExitReason::Completed
+        );
+        assert_eq!(
+            ApplicationExit::completed().terminal_message(),
+            "Application exited"
+        );
+        assert_eq!(
+            ApplicationExit::user_closed().reason(),
+            ApplicationExitReason::UserClosed
+        );
+        assert_eq!(
+            ApplicationExit::user_closed().terminal_message(),
+            "Application closed"
+        );
+    }
+
+    #[test]
+    fn successful_binary_status_emits_completed_exit() {
+        let (sender, receiver) = unbounded();
+        emit_binary_exit_event(&sender, Ok(successful_exit_status()), None);
+
+        let event = receiver
+            .try_recv()
+            .expect("successful status should emit an event");
+        let DeviceEvent::Exited(exit) = event else {
+            panic!("successful status should emit a clean exit");
+        };
+        assert_eq!(exit.reason(), ApplicationExitReason::Completed);
+    }
+
+    #[test]
+    fn failing_binary_status_emits_crash_message() {
+        let (sender, receiver) = unbounded();
+        emit_binary_exit_event(
+            &sender,
+            Ok(failing_exit_status(7)),
+            Some("backend panic".to_string()),
+        );
+
+        let event = receiver
+            .try_recv()
+            .expect("failing status should emit an event");
+        let DeviceEvent::Crashed(message) = event else {
+            panic!("failing status should emit a crash event");
+        };
+        assert!(message.contains("backend panic"));
+        assert!(message.contains("7"));
+    }
+
+    #[test]
+    fn parse_log_level_detects_panic_as_error() {
+        assert_eq!(
+            parse_log_level("thread panicked at app.rs"),
+            tracing::Level::ERROR
+        );
     }
 }
