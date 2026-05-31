@@ -3,7 +3,7 @@
 use nami::Binding;
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
-use waterui_core::configurable;
+use waterui_core::{Environment, configurable};
 use waterui_graphics::color::Color;
 
 #[derive(Debug)]
@@ -40,8 +40,17 @@ configurable!(
     // ═══════════════════════════════════════════════════════════════════════════
     //
     ColorPicker,
-    ColorPickerConfig
+    ColorPickerConfig,
+    resolve |config, env| config.resolve(env)
 );
+
+impl ColorPickerConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
 
 impl ColorPicker {
     /// Creates a new `ColorPicker` with the given semantic label and value

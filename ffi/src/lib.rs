@@ -523,7 +523,7 @@ pub struct WuiLabel {
 impl crate::IntoFFI for waterui_controls::label::Label {
     type FFI = WuiLabel;
     fn into_ffi(self) -> Self::FFI {
-        let accessibility_label = self.semantic_text().content();
+        let accessibility_label = self.accessibility_label();
         let display_mode = self.display_mode_preference().into_ffi();
         let view = waterui::AnyView::new(self).into_ffi();
         WuiLabel {

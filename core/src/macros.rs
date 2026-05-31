@@ -90,6 +90,17 @@ macro_rules! raw_view {
 macro_rules! configurable {
     // Internal implementation with stretch axis
     (@impl $(#[$meta:meta])*; $view:ident, $config:ty, $axis:expr) => {
+        $crate::configurable!(
+            @impl $(#[$meta])*;
+            $view,
+            $config,
+            $axis,
+            |config: $config, _env: &$crate::Environment| config
+        );
+    };
+
+    // Internal implementation with stretch axis and a native payload resolver.
+    (@impl $(#[$meta:meta])*; $view:ident, $config:ty, $axis:expr, $resolve_native:expr) => {
         $(#[$meta])*
         pub struct $view($config);
 
@@ -120,7 +131,7 @@ macro_rules! configurable {
                 if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
                     $crate::AnyView::new(hook.apply(env, config))
                 } else {
-                    $crate::AnyView::new($crate::Native::new(config))
+                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
                 }
             }
 
@@ -180,9 +191,31 @@ macro_rules! configurable {
         $crate::configurable!(@impl_dynamic $(#[$meta])*; $view, $config, |$param: &$config| $body);
     };
 
+    // Explicit stretch axis with a native payload resolver.
+    ($(#[$meta:meta])* $view:ident, $config:ty, $axis:expr, resolve |$config_param:ident, $env_param:ident| $body:expr) => {
+        $crate::configurable!(
+            @impl $(#[$meta])*;
+            $view,
+            $config,
+            $axis,
+            |$config_param: $config, $env_param: &$crate::Environment| $body
+        );
+    };
+
     // With explicit stretch axis
     ($(#[$meta:meta])* $view:ident, $config:ty, $axis:expr) => {
         $crate::configurable!(@impl $(#[$meta])*; $view, $config, $axis);
+    };
+
+    // Default stretch axis with a native payload resolver.
+    ($(#[$meta:meta])* $view:ident, $config:ty, resolve |$config_param:ident, $env_param:ident| $body:expr) => {
+        $crate::configurable!(
+            @impl $(#[$meta])*;
+            $view,
+            $config,
+            $crate::layout::StretchAxis::None,
+            |$config_param: $config, $env_param: &$crate::Environment| $body
+        );
     };
 
     // Default stretch axis (None)

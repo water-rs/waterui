@@ -145,13 +145,21 @@ impl NativeView for DatePickerConfig {
     }
 }
 
+impl DatePickerConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
+
 impl View for DatePicker {
     fn body(self, env: &Environment) -> impl View {
         let config = self.0;
         if let Some(hook) = env.get::<Hook<DatePickerConfig>>() {
             AnyView::new(hook.apply(env, config))
         } else {
-            AnyView::new(Native::new(config))
+            AnyView::new(Native::new(config.resolve(env)))
         }
     }
 
