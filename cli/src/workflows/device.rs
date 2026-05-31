@@ -1,7 +1,7 @@
 //! Device management and application running utilities for `WaterUI` CLI.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fmt::Debug,
     path::{Path, PathBuf},
 };
@@ -714,8 +714,14 @@ impl Device for Local {
 }
 
 #[cfg(target_os = "macos")]
-async fn list_matching_pids(executable_path: &std::path::Path) -> Result<Vec<u32>, FailToRun> {
-    let executable = executable_path.to_string_lossy();
+#[derive(Debug)]
+struct MacosProcess {
+    pid: u32,
+    command: String,
+}
+
+#[cfg(target_os = "macos")]
+async fn list_macos_processes() -> Result<Vec<MacosProcess>, FailToRun> {
     let output = Command::new("ps")
         .args(["-axo", "pid=,command="])
         .output()
@@ -730,7 +736,7 @@ async fn list_matching_pids(executable_path: &std::path::Path) -> Result<Vec<u32
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut pids = Vec::new();
+    let mut processes = Vec::new();
     for line in stdout.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
@@ -744,18 +750,131 @@ async fn list_matching_pids(executable_path: &std::path::Path) -> Result<Vec<u32
         let Some(command) = fields.next() else {
             continue;
         };
-        let command = command.trim_start();
-        if command == executable || command.starts_with(&format!("{executable} ")) {
-            let pid = pid_str.parse::<u32>().map_err(|e| {
-                FailToRun::Launch(eyre::eyre!(
-                    "Failed to parse process id '{pid_str}' from ps output: {e}"
-                ))
+
+        let pid = pid_str.parse::<u32>().map_err(|e| {
+            FailToRun::Launch(eyre::eyre!(
+                "Failed to parse process id '{pid_str}' from ps output: {e}"
+            ))
+        })?;
+        processes.push(MacosProcess {
+            pid,
+            command: command.trim_start().to_string(),
+        });
+    }
+
+    Ok(processes)
+}
+
+#[cfg(target_os = "macos")]
+fn command_runs_executable(command: &str, executable_path: &Path) -> bool {
+    let executable = executable_path.to_string_lossy();
+    command == executable || command.starts_with(&format!("{executable} "))
+}
+
+#[cfg(target_os = "macos")]
+async fn list_matching_pids(executable_path: &Path) -> Result<Vec<u32>, FailToRun> {
+    Ok(list_macos_processes()
+        .await?
+        .into_iter()
+        .filter(|process| command_runs_executable(&process.command, executable_path))
+        .map(|process| process.pid)
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+async fn read_macos_bundle_identifier(app_path: &Path) -> Result<String, FailToRun> {
+    let plist_path = app_path.join("Contents").join("Info.plist");
+    smol::unblock({
+        let plist_path = plist_path.clone();
+        move || -> eyre::Result<String> {
+            let plist = plist::Value::from_file(&plist_path).map_err(|error| {
+                eyre::eyre!(
+                    "Failed to read bundle Info.plist at '{}': {error}",
+                    plist_path.display()
+                )
             })?;
-            pids.push(pid);
+            let dictionary = plist.into_dictionary().ok_or_else(|| {
+                eyre::eyre!(
+                    "Bundle Info.plist at '{}' must contain a dictionary root",
+                    plist_path.display()
+                )
+            })?;
+            dictionary
+                .get("CFBundleIdentifier")
+                .and_then(plist::Value::as_string)
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "Bundle Info.plist at '{}' is missing CFBundleIdentifier",
+                        plist_path.display()
+                    )
+                })
+        }
+    })
+    .await
+    .map_err(FailToRun::Launch)
+}
+
+#[cfg(target_os = "macos")]
+fn command_app_bundle_path_for_executable(command: &str, executable_name: &str) -> Option<PathBuf> {
+    const BUNDLE_SUFFIX: &str = ".app";
+    const EXECUTABLE_MARKER: &str = ".app/Contents/MacOS/";
+
+    let command = command.trim_start();
+    if !command.starts_with('/') {
+        return None;
+    }
+    let marker_start = command.find(EXECUTABLE_MARKER)?;
+    let executable_start = marker_start + EXECUTABLE_MARKER.len();
+    let executable_end = executable_start.checked_add(executable_name.len())?;
+    if !command[executable_start..].starts_with(executable_name) {
+        return None;
+    }
+    if command
+        .as_bytes()
+        .get(executable_end)
+        .is_some_and(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
+    {
+        return None;
+    }
+
+    let app_end = marker_start + BUNDLE_SUFFIX.len();
+    Some(PathBuf::from(&command[..app_end]))
+}
+
+#[cfg(target_os = "macos")]
+async fn list_conflicting_macos_app_pids(
+    launch: &MacosBundleLaunchContext,
+) -> Result<Vec<u32>, FailToRun> {
+    let executable_name = launch
+        .executable_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            FailToRun::Launch(eyre::eyre!(
+                "Failed to determine executable name for '{}'",
+                launch.executable_path.display()
+            ))
+        })?;
+
+    let mut pids = BTreeSet::new();
+    for process in list_macos_processes().await? {
+        if command_runs_executable(&process.command, &launch.executable_path) {
+            pids.insert(process.pid);
+            continue;
+        }
+
+        let Some(app_path) =
+            command_app_bundle_path_for_executable(&process.command, executable_name)
+        else {
+            continue;
+        };
+        if read_macos_bundle_identifier(&app_path).await? == launch.bundle_id {
+            pids.insert(process.pid);
         }
     }
 
-    Ok(pids)
+    Ok(pids.into_iter().collect())
 }
 
 #[cfg(target_os = "macos")]
@@ -951,7 +1070,11 @@ async fn launch_macos_bundle_process(
 ) -> Result<MacosRunningProcess, FailToRun> {
     use tracing::info;
 
-    let existing_pids = list_matching_pids(&launch.executable_path).await?;
+    let existing_pids = if options.replace_existing_macos_app_instances() {
+        list_conflicting_macos_app_pids(launch).await?
+    } else {
+        list_matching_pids(&launch.executable_path).await?
+    };
     if options.replace_existing_macos_app_instances() {
         terminate_pids(&existing_pids).await?;
     }
@@ -1445,6 +1568,8 @@ mod tests {
         ApplicationExit, ApplicationExitReason, DeviceEvent, emit_binary_exit_event,
         parse_log_level,
     };
+    #[cfg(target_os = "macos")]
+    use super::{command_app_bundle_path_for_executable, command_runs_executable};
 
     #[cfg(unix)]
     fn successful_exit_status() -> ExitStatus {
@@ -1533,5 +1658,41 @@ mod tests {
             parse_log_level("thread panicked at app.rs"),
             tracing::Level::ERROR
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_command_extracts_app_path_with_spaces() {
+        let app_path = command_app_bundle_path_for_executable(
+            "/tmp/water build/My App.app/Contents/MacOS/my-app --flag",
+            "my-app",
+        )
+        .expect("app path should be extracted");
+        assert_eq!(
+            app_path,
+            std::path::PathBuf::from("/tmp/water build/My App.app")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_command_rejects_nonmatching_executable_prefix() {
+        assert!(
+            command_app_bundle_path_for_executable(
+                "/tmp/My App.app/Contents/MacOS/my-app-helper",
+                "my-app",
+            )
+            .is_none()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_command_matches_exact_executable_path() {
+        let executable = std::path::Path::new("/tmp/My App.app/Contents/MacOS/my-app");
+        assert!(command_runs_executable(
+            "/tmp/My App.app/Contents/MacOS/my-app --flag",
+            executable,
+        ));
     }
 }
