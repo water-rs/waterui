@@ -16,7 +16,9 @@ These are constraints on every WaterUI feature, refactor, and review — not jus
 
 5. **Fine-grained reactivity is non-negotiable.** WaterUI uses precise per-`Binding` / `Computed` updates, not SwiftUI-style structural diff. APIs that would force a structural recompute on every state change (e.g. requiring rebuild of an entire subtree to update a single text value) are rejected. New API surfaces must accept signals (`impl IntoComputed<T>`, `impl Signal<Output = T>`, `Binding<T>`) rather than plain values when the underlying state is dynamic.
 
-6. **Do not change WaterUI foundations without user approval.** Do not modify `core/`, foundational animation/reactivity/layout primitives, or shared backend contracts unless the user explicitly approves that foundation change in the current task. External references are evidence for values, semantics, and behavior; they are not permission to import another framework's abstraction model into WaterUI.
+6. **React-style local state slots are forbidden.** Do not introduce or depend on renderer-provided local state slot mechanisms such as `LocalStateScope`, `LocalStateStore`, `local_binding`, `with_local_binding_factory`, hook-like slot storage, body-position keys, or cursor-indexed state to preserve component-local state across body evaluation. WaterUI is not React: component identity and state must not be inferred from view body call order. Mutable UI state must be explicit `Binding` / `Computed` / `impl Signal` state owned at the correct semantic level and passed through the API or backend semantic object. If existing code needs renderer local slots to work, refactor that component/state model; do not add backend support for the slot mechanism.
+
+7. **Do not change WaterUI foundations without user approval.** Do not modify `core/`, foundational animation/reactivity/layout primitives, or shared backend contracts unless the user explicitly approves that foundation change in the current task. External references are evidence for values, semantics, and behavior; they are not permission to import another framework's abstraction model into WaterUI.
 
 ## Engagement Rules
 
@@ -240,6 +242,10 @@ Uses `nami` crate for fine-grained reactivity:
 
 <important>
     WaterUI uses precise fine-grained reactivity with Vue-like reconstruction semantics. A component's `.body` may be heavy and may perform one-time initialization for that component instance. After initialization, dynamic behavior is expected to be driven precisely through `Binding`, `Computed`, and other `impl Signal` inputs. If a component is recreated by control flow such as `when(...)`, `watch(...)`, or other parent-driven reconstruction, losing that component instance's local state is expected and correct because a new instance is being initialized. Do not preserve component-local state across rebuilds unless that state is explicitly owned at the correct reactive level.
+</important>
+
+<important>
+    React-style local state slots are architecturally banned. Do not use `LocalStateScope`, `LocalStateStore`, `local_binding`, `with_local_binding_factory`, hook-like slot storage, body-position keys, or cursor-indexed state as a WaterUI component state model. Do not fix a crash by teaching a backend to support this mechanism. The correct fix is to move the state into explicit `Binding` / `Computed` / `impl Signal` inputs or into a backend-owned semantic object whose lifetime is independent of Rust body evaluation order.
 </important>
 
 <important>
