@@ -262,7 +262,15 @@ impl_debug!(ButtonConfig);
 
 impl NativeView for ButtonConfig {}
 
-fn render_button_config<Action>(button: Button<Action>, _env: &Environment) -> ButtonConfig
+impl ButtonConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
+
+fn render_button_config<Action>(button: Button<Action>) -> ButtonConfig
 where
     Action: FnMut(&Environment) + 'static,
 {
@@ -278,11 +286,11 @@ where
     Action: FnMut(&Environment) + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let config = render_button_config(self, env);
+        let config = render_button_config(self);
         if let Some(hook) = env.get::<Hook<ButtonConfig>>() {
             AnyView::new(hook.apply(env, config))
         } else {
-            AnyView::new(Native::new(config))
+            AnyView::new(Native::new(config.resolve(env)))
         }
     }
 
