@@ -946,7 +946,7 @@ async fn preview_connection_result_from_device_event(
             info!("App crashed after {}ms", start.elapsed().as_millis());
             Some(ConnectionWaitResult::Crashed(message))
         }
-        DeviceEvent::Exited => {
+        DeviceEvent::Exited(_) => {
             info!("App exited after {}ms", start.elapsed().as_millis());
             Some(ConnectionWaitResult::Exited)
         }
@@ -986,7 +986,7 @@ async fn drain_terminal_preview_event(running: &mut Pin<Box<Running>>) -> Connec
     {
         match event {
             DeviceEvent::Crashed(message) => return ConnectionWaitResult::Crashed(message),
-            DeviceEvent::Exited => return ConnectionWaitResult::Exited,
+            DeviceEvent::Exited(_) => return ConnectionWaitResult::Exited,
             _ => {}
         }
     }
