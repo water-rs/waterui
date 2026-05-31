@@ -22,6 +22,7 @@ use waterui_core::{
     view::{ConfigurableView, Hook, ViewConfiguration},
     views::{ForEach, SharedAnyViews},
 };
+use waterui_locale::locale_binding;
 use waterui_text::{IntoText, Text};
 
 use crate::{AnyView, Environment, View, views::Views};
@@ -34,6 +35,25 @@ pub struct TableConfig {
 }
 
 impl NativeView for TableConfig {}
+
+impl TableConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        let env = env.clone();
+        let locale = locale_binding(&env);
+        self.columns = self
+            .columns
+            .zip(&locale)
+            .map(move |(columns, _locale)| {
+                columns
+                    .into_iter()
+                    .map(|column| column.resolve(&env))
+                    .collect()
+            })
+            .computed();
+        self
+    }
+}
 
 /// A tabular layout component composed of reactive text columns.
 #[derive(Debug)]
@@ -80,6 +100,7 @@ fn render_table_config(config: TableConfig, env: &Environment) -> impl View {
     if let Some(hook) = env.get::<Hook<TableConfig>>() {
         AnyView::new(hook.apply(env, config))
     } else {
+        let config = config.resolve(env);
         let fallback = DefaultTableView::new(config.columns.clone());
         AnyView::new(Native::new(config).with_fallback(fallback))
     }
@@ -136,6 +157,12 @@ impl TableColumn {
     /// Returns the label of this column.
     pub fn label(&self) -> Text {
         self.label.clone()
+    }
+
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = Text::from(self.label.resolve_reactive(env));
+        self
     }
 }
 

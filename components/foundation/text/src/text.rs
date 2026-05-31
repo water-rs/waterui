@@ -91,6 +91,12 @@ impl IntoText for Text {
     }
 }
 
+impl From<TextConfig> for Text {
+    fn from(config: TextConfig) -> Self {
+        Self(TextKind::Raw(config))
+    }
+}
+
 impl IntoText for &'static str {
     fn into_text(self) -> Text {
         Text::localized(self)
@@ -285,6 +291,24 @@ impl Text {
     #[must_use]
     pub fn resolve(&self, env: &Environment) -> TextConfig {
         self.resolve_signal(env).get()
+    }
+
+    /// Resolves semantic text into a raw config while preserving reactive
+    /// content and alignment updates.
+    #[must_use]
+    pub fn resolve_reactive(&self, env: &Environment) -> TextConfig {
+        match &self.0 {
+            TextKind::Raw(config) => config.clone(),
+            TextKind::Signal { resolver } => {
+                let config = resolver(env);
+                TextConfig {
+                    content: flatten_signal(config.map(|config| config.content)),
+                    paragraph_alignment: flatten_signal(
+                        config.map(|config| config.paragraph_alignment),
+                    ),
+                }
+            }
+        }
     }
 
     /// Converts text into an FFI-ready raw config without an environment.

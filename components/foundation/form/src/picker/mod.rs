@@ -10,9 +10,10 @@ use alloc::vec::Vec;
 use nami::SignalExt;
 use nami::signal::IntoComputed;
 use nami::{Binding, Computed};
-use waterui_core::configurable;
+use waterui_core::{Environment, configurable};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
+use waterui_locale::locale_binding;
 
 use waterui_text::Text;
 
@@ -72,11 +73,33 @@ configurable!(
     // ═══════════════════════════════════════════════════════════════════════════
     //
     Picker,
-    PickerConfig
+    PickerConfig,
+    resolve |config, env| config.resolve(env)
 );
 
 /// A picker item that associates a value of type `T` with a text display.
 pub type PickerItem<T> = TaggedView<T, Text>;
+
+impl PickerConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        let env = env.clone();
+        let locale = locale_binding(&env);
+        self.items = self
+            .items
+            .zip(&locale)
+            .map(move |(items, _locale)| {
+                items
+                    .into_iter()
+                    .map(|item| {
+                        TaggedView::new(item.tag, Text::from(item.content.resolve_reactive(&env)))
+                    })
+                    .collect()
+            })
+            .computed();
+        self
+    }
+}
 
 impl Picker {
     /// Creates a new `Picker` with the given items and selection binding.

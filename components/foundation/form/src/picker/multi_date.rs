@@ -61,6 +61,14 @@ impl waterui_core::NativeView for MultiDatePickerConfig {
     }
 }
 
+impl MultiDatePickerConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
+
 impl MultiDatePicker {
     /// Creates a new `MultiDatePicker` with the given semantic label and a
     /// binding for the selected dates.
@@ -104,7 +112,7 @@ impl View for MultiDatePicker {
         if let Some(hook) = env.get::<Hook<MultiDatePickerConfig>>() {
             AnyView::new(hook.apply(env, config))
         } else {
-            AnyView::new(MultiDatePickerFallback::from_config(config))
+            AnyView::new(MultiDatePickerFallback::from_config(config.resolve(env)))
         }
     }
 

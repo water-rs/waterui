@@ -9,7 +9,7 @@ use core::ops::RangeInclusive;
 
 use crate::label::{IntoLabel, Label, impl_label_style_methods};
 use nami::Binding;
-use waterui_core::{AnyView, configurable, layout::StretchAxis};
+use waterui_core::{AnyView, Environment, configurable, layout::StretchAxis};
 
 /// Configuration for the [`Slider`] widget.
 #[derive(Debug)]
@@ -64,8 +64,17 @@ configurable!(
     //
     Slider,
     SliderConfig,
-    StretchAxis::Horizontal
+    StretchAxis::Horizontal,
+    resolve |config, env| config.resolve(env)
 );
+
+impl SliderConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
 
 impl Slider {
     /// Creates a new [`Slider`] with the given semantic label, bound to `value`.

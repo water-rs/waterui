@@ -3,7 +3,7 @@
 //! ![Toggle](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/toggle.svg)
 
 use nami::Binding;
-use waterui_core::configurable;
+use waterui_core::{Environment, configurable};
 
 use crate::label::{IntoLabel, Label, impl_label_style_methods};
 
@@ -73,8 +73,17 @@ configurable!(
     //
     Toggle,
     ToggleConfig,
-    waterui_core::layout::StretchAxis::Horizontal
+    waterui_core::layout::StretchAxis::Horizontal,
+    resolve |config, env| config.resolve(env)
 );
+
+impl ToggleConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
 
 impl Toggle {
     #[must_use]

@@ -10,7 +10,7 @@ use alloc::string::{String, ToString};
 use nami::Binding;
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
-use waterui_core::{configurable, layout::StretchAxis};
+use waterui_core::{Environment, configurable, layout::StretchAxis};
 use zeroize::Zeroize;
 
 /// A wrapper type for securely handling sensitive string data.
@@ -118,8 +118,17 @@ configurable!(
     //
     SecureField,
     SecureFieldConfig,
-    StretchAxis::Horizontal
+    StretchAxis::Horizontal,
+    resolve |config, env| config.resolve(env)
 );
+
+impl SecureFieldConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
 
 impl SecureField {
     /// Creates a new `SecureField` instance.

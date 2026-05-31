@@ -192,6 +192,7 @@ pub struct Label {
     spacing: f32,
     display_mode: LabelDisplayMode,
     font: Option<Font>,
+    accessibility_label: Option<Computed<StyledStr>>,
 }
 
 /// Conversion trait for semantic labels.
@@ -265,6 +266,7 @@ impl Label {
             spacing: 6.0,
             display_mode: LabelDisplayMode::Automatic,
             font: None,
+            accessibility_label: None,
         }
     }
 
@@ -272,6 +274,7 @@ impl Label {
     #[must_use]
     pub fn text(mut self, text: impl IntoText) -> Self {
         self.text = text.into_text();
+        self.accessibility_label = None;
         self
     }
 
@@ -400,12 +403,34 @@ impl Label {
         &self.text
     }
 
+    /// Returns the resolved accessibility label carried by this label.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called before an environment-dependent label has been
+    /// resolved in a component `body(env)` path.
+    #[must_use]
+    pub fn accessibility_label(&self) -> Computed<StyledStr> {
+        self.accessibility_label
+            .clone()
+            .unwrap_or_else(|| self.text.content())
+    }
+
     /// Returns the semantic system icon carried by this label.
     ///
     /// Custom icon views are visual-only and therefore return `None` here.
     #[must_use]
     pub fn semantic_icon(&self) -> Option<SystemIcon> {
         self.icon.as_ref().and_then(|icon| icon.system_icon.clone())
+    }
+
+    /// Resolves environment-dependent label presentation before crossing into
+    /// a native backend payload.
+    #[must_use]
+    pub fn resolve(mut self, env: &Environment) -> Self {
+        self.display_mode = self.effective_display_mode(env);
+        self.accessibility_label = Some(self.text.resolve_reactive(env).content);
+        self
     }
 }
 
@@ -422,6 +447,7 @@ impl View for Label {
             icon_position,
             spacing,
             font,
+            accessibility_label: _,
             ..
         } = self;
         let text = if let Some(font) = font {

@@ -146,7 +146,7 @@ impl View for TextField {
         let selection_menu = resolve_menu_items(&self.0.selection_menu, env);
 
         AnyView::new(ResolvedTextField(ResolvedTextFieldConfig {
-            label: self.0.label,
+            label: self.0.label.resolve(env),
             value: self.0.value,
             prompt: self.0.prompt.resolve(env),
             keyboard: self.0.keyboard,

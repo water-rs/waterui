@@ -7,7 +7,7 @@ use core::ops::{Bound, RangeBounds, RangeInclusive};
 use crate::label::{IntoLabel, Label, impl_label_style_methods};
 use alloc::rc::Rc;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_core::configurable;
+use waterui_core::{Environment, configurable};
 use waterui_text::styled::StyledStr;
 
 #[derive(Debug)]
@@ -72,8 +72,17 @@ configurable!(
     //
     Stepper,
     StepperConfig,
-    waterui_core::layout::StretchAxis::Horizontal
+    waterui_core::layout::StretchAxis::Horizontal,
+    resolve |config, env| config.resolve(env)
 );
+
+impl StepperConfig {
+    #[must_use]
+    fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
+        self
+    }
+}
 
 impl Stepper {
     /// Creates a new `Stepper` with the given semantic label and binding value.
