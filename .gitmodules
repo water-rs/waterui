@@ -1,16 +1,16 @@
 [submodule "backends/android"]
 	path = backends/android
-	url = https://github.com/water-rs/android-backend.git
-	branch = dev
+	url = https://github.com/maxi-tools/android-backend.git
+	branch = waterui-pin
 [submodule "backends/apple"]
 	path = backends/apple
-	url = https://github.com/water-rs/apple-backend.git
-	branch = dev
+	url = https://github.com/maxi-tools/apple-backend.git
+	branch = waterui-pin
 [submodule "kit"]
 	path = kit
-	url = https://github.com/water-rs/waterkit.git
-	branch = dev
+	url = https://github.com/maxi-tools/waterkit.git
+	branch = waterui-pin-tip-fix
 [submodule "utils/nami"]
 	path = utils/nami
-	url = https://github.com/water-rs/nami.git
-	branch = dev
+	url = https://github.com/maxi-tools/nami.git
+	branch = waterui-pin
