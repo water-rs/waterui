@@ -20,6 +20,10 @@
     <string>1</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+{% for usage in usage_descriptions %}
+    <key>{{ usage.plist_key }}</key>
+    <string>{{ usage.description }}</string>
+{% endfor %}
     <key>NSQuitAlwaysKeepsWindows</key>
     <false/>
     <key>LSMinimumSystemVersion</key>

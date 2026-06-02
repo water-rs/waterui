@@ -1626,3 +1626,32 @@ fn test_hstack_horizontal_stretch_textfield() {
     );
     assert_eq!(rects[2].width(), 80.0, "Button should keep intrinsic width");
 }
+
+#[test]
+fn test_hstack_preserves_horizontal_stretch_min_width_when_fixed_content_overflows() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: 8.0,
+    };
+
+    let mut leading = FixedSizeView {
+        size: Size::new(120.0, 36.0),
+    };
+    let mut slider = HorizontalStretchView {
+        min_width: 72.0,
+        height: 34.0,
+    };
+    let mut trailing = FixedSizeView {
+        size: Size::new(120.0, 36.0),
+    };
+
+    let bounds = Rect::new(Point::zero(), Size::new(180.0, 48.0));
+    let children: Vec<&dyn SubView> = vec![&mut leading, &mut slider, &mut trailing];
+    let rects = layout.place(bounds, &children);
+
+    assert_eq!(
+        rects[1].width(),
+        72.0,
+        "Horizontal stretch controls such as Slider must keep their intrinsic minimum width"
+    );
+}

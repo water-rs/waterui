@@ -19,7 +19,7 @@
 //! let count = Binding::container(0);
 //! let counter_view = watch(count, |value| format!("Count: {}", value));
 use crate::components::metadata::Retain;
-use crate::{AnyView, Environment, LocalStateScope, LocalStateStore, Metadata, View};
+use crate::{AnyView, Environment, Metadata, View};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -258,19 +258,6 @@ impl Dynamic {
     }
 }
 
-fn local_scope(env: &Environment) -> LocalStateScope {
-    env.get::<LocalStateScope>()
-        .unwrap_or_else(|| panic!("Dynamic::watch requires renderer LocalStateScope support"))
-        .clone()
-}
-
-fn local_shared<T: 'static>(env: &Environment, init: impl FnOnce() -> T + 'static) -> Rc<T> {
-    let scope = local_scope(env);
-    env.get::<LocalStateStore>()
-        .unwrap_or_else(|| panic!("Dynamic::watch requires renderer LocalStateStore support"))
-        .get_or_init(&scope, init)
-}
-
 struct WatchedDynamic<T, S, F> {
     value: S,
     f: F,
@@ -284,10 +271,8 @@ where
     F: Fn(T) -> V + 'static,
     V: View + 'static,
 {
-    fn body(self, env: &Environment) -> impl View {
-        let runtime = local_shared(env, Dynamic::new);
-        let handle = runtime.0.clone();
-        let dynamic = runtime.1.clone();
+    fn body(self, _env: &Environment) -> impl View {
+        let (handle, dynamic) = Dynamic::new();
         let f = Rc::new(self.f);
 
         handle.set_with_metadata(

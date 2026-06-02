@@ -12,19 +12,19 @@ use waterui::prelude::*;
 use waterui::reactive::binding;
 
 fn main() -> impl View {
-    // Sample video URLs (Big Buck Bunny - open source test videos)
+    // Sample video URLs (open source test videos)
     let sample_videos = [
         (
-            "Big Buck Bunny",
-            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+            "Big Buck Bunny 1MB",
+            "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4",
         ),
         (
-            "Elephant Dream",
-            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+            "Big Buck Bunny 5MB",
+            "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_5MB.mp4",
         ),
         (
             "Sintel",
-            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
+            "https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4",
         ),
     ];
 
@@ -89,8 +89,8 @@ fn main() -> impl View {
             spacer_min(20.0),
             // Video selector pills
             hstack((
-                pill_button("Big Buck Bunny", 0, &selected_index),
-                pill_button("Elephant Dream", 1, &selected_index),
+                pill_button("BBB 1MB", 0, &selected_index),
+                pill_button("BBB 5MB", 1, &selected_index),
                 pill_button("Sintel", 2, &selected_index),
             ))
             .spacing(12.0),
@@ -111,14 +111,15 @@ pub fn app(env: Environment) -> App {
 fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> impl View {
     let is_selected = selected.clone().map(move |s| s == index);
     let selected_for_action = selected.clone();
-    let bg = is_selected.select(
-        Srgb::WHITE.with_opacity(0.35),
-        Srgb::WHITE.with_opacity(0.15),
-    );
+    let selected_bg_opacity = is_selected.clone().select(1.0, 0.0);
+    let idle_bg_opacity = is_selected.select(0.0, 1.0);
 
-    button(label)
-        .action(move |State(s): State<Binding<usize>>| s.set(index))
-        .state(&selected_for_action)
-        .foreground(Srgb::WHITE)
-        .background(bg.computed())
+    zstack((
+        Srgb::WHITE.with_opacity(0.15).opacity(idle_bg_opacity),
+        Srgb::WHITE.with_opacity(0.35).opacity(selected_bg_opacity),
+        button(label)
+            .action(move |State(s): State<Binding<usize>>| s.set(index))
+            .state(&selected_for_action)
+            .foreground(Srgb::WHITE),
+    ))
 }

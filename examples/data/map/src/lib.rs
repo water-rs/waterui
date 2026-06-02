@@ -42,7 +42,8 @@ fn main_view() -> impl View {
                         current.longitude_delta * 0.5,
                     ));
                 })
-                .state(&region),
+                .state(&region)
+                .width(112.0),
             button("Zoom Out")
                 .action(|State(r): State<Binding<Region>>| {
                     let current = r.get();
@@ -52,13 +53,14 @@ fn main_view() -> impl View {
                         current.longitude_delta * 2.0,
                     ));
                 })
-                .state(&region),
+                .state(&region)
+                .width(112.0),
         ))
         .spacing(8.0),
     ))
     .spacing(12.0)
     .padding()
-    .width(200.0);
+    .width(264.0);
 
     hstack((map, controls))
 }

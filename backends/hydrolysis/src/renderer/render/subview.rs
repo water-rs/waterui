@@ -47,7 +47,7 @@ impl SubView for HydroSubview<'_> {
 
         if self.stretch_axis.stretches_horizontal() {
             if let Some(width) = proposal.width {
-                dimensions.size.width = width;
+                dimensions.size.width = dimensions.size.width.max(width);
             }
         } else if let Some(width) = proposal.width {
             dimensions.size.width = dimensions.size.width.min(width);
@@ -55,7 +55,7 @@ impl SubView for HydroSubview<'_> {
 
         if self.stretch_axis.stretches_vertical() {
             if let Some(height) = proposal.height {
-                dimensions.size.height = height;
+                dimensions.size.height = dimensions.size.height.max(height);
             }
         } else if let Some(height) = proposal.height {
             dimensions.size.height = dimensions.size.height.min(height);

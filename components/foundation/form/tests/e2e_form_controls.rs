@@ -92,6 +92,26 @@ fn picker_selection_flow() {
 }
 
 #[test]
+fn picker_initial_non_first_selection_uses_matching_item_id() {
+    let selection = Binding::container("Beta");
+    let selection_for_view = selection.clone();
+
+    let mut app = mount_view(move || {
+        form_shell(Picker::new(picker_items(), &selection_for_view).style(PickerStyle::Menu))
+    });
+
+    app.query()
+        .role(Role::COMBOBOX)
+        .value("Beta")
+        .assert_exists();
+    app.query()
+        .role(Role::OPTION)
+        .label("Beta")
+        .selected(true)
+        .assert_exists();
+}
+
+#[test]
 fn date_picker_accessibility() {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let selected_date_for_view = selected_date.clone();
@@ -154,12 +174,18 @@ fn color_picker_accessibility_tap_is_handled() {
 #[test]
 fn calendar_navigation_and_selection_update_binding() {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
+    let visible_month = Binding::container(Date::new(2025, 1, 1).unwrap());
     let selected_date_for_view = selected_date.clone();
+    let visible_month_for_view = visible_month.clone();
 
     let mut app = mount_view(move || {
         form_shell(
-            Calendar::new("Event Calendar", &selected_date_for_view)
-                .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 2, 28).unwrap()),
+            Calendar::new(
+                "Event Calendar",
+                &selected_date_for_view,
+                &visible_month_for_view,
+            )
+            .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 2, 28).unwrap()),
         )
     });
 

@@ -496,6 +496,7 @@ pub(crate) fn date_picker_window(
     let state = Binding::container(WindowState::Normal);
     let current = value.get().clamp(*range.start(), *range.end());
     let staged_date = Binding::container(current.date());
+    let staged_visible_month = Binding::container(current.date());
     let current_time = current.time();
     let staged_hour = Binding::container(i32::from(current_time.hour()));
     let staged_minute = Binding::container(i32::from(current_time.minute()));
@@ -527,8 +528,9 @@ pub(crate) fn date_picker_window(
         let mut sections = Vec::new();
         sections.push(AnyView::new(text("Select date").headline()));
         if uses_date {
+            let visible_month = staged_visible_month.clone();
             sections.push(AnyView::new(
-                Calendar::new("Date", &staged_date)
+                Calendar::new("Date", &staged_date, &visible_month)
                     .range(range_start.date()..=range_end.date())
                     .hide_label(),
             ));

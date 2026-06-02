@@ -99,11 +99,13 @@ impl NavigationController {
     ///
     /// * `content` - The navigation view to push
     pub fn push(&self, content: NavigationView) {
+        let content = self.with_retained_environment(content);
         self.receiver.borrow_mut().push(content);
     }
 
     /// Pushes a destination builder onto the stack.
     pub fn push_builder(&self, content: AnyViewBuilder<NavigationView>) {
+        let content = self.with_retained_environment_builder(content);
         self.receiver.borrow_mut().push_builder(content);
     }
 
@@ -120,16 +122,50 @@ impl NavigationController {
         *self.retained.borrow_mut() = Some(retained);
     }
 
-    /// Replaces the controller-scoped environment overlay.
+    /// Replaces the controller-scoped environment.
     pub fn retain_environment(&self, env: Environment) {
         *self.retained_environment.borrow_mut() = Some(env);
     }
 
-    /// Returns the controller-scoped environment overlay.
+    /// Returns the controller-scoped environment.
     #[must_use]
     pub fn retained_environment(&self) -> Option<Environment> {
         self.retained_environment.borrow().clone()
     }
+
+    fn with_retained_environment(&self, content: NavigationView) -> NavigationView {
+        if let Some(env) = self.retained_environment() {
+            navigation_view_with_environment(content, &env)
+        } else {
+            content
+        }
+    }
+
+    fn with_retained_environment_builder(
+        &self,
+        content: AnyViewBuilder<NavigationView>,
+    ) -> AnyViewBuilder<NavigationView> {
+        if let Some(env) = self.retained_environment() {
+            AnyViewBuilder::new(move || navigation_view_with_environment(content.build(), &env))
+        } else {
+            content
+        }
+    }
+}
+
+fn navigation_slot_with_environment(content: AnyView, env: &Environment) -> AnyView {
+    AnyView::new(Metadata::new(content, env.clone()))
+}
+
+fn navigation_view_with_environment(
+    mut content: NavigationView,
+    env: &Environment,
+) -> NavigationView {
+    content.bar.title = navigation_slot_with_environment(content.bar.title, env);
+    content.bar.leading = navigation_slot_with_environment(content.bar.leading, env);
+    content.bar.trailing = navigation_slot_with_environment(content.bar.trailing, env);
+    content.content = navigation_slot_with_environment(content.content, env);
+    content
 }
 
 /// Programmatic controller for a typed navigation path.
@@ -381,6 +417,8 @@ where
         NavigationStack::new(use_env(
             move |(receiver, mut local_env): (NavigationController, Environment)| {
                 let path = path.inner;
+                local_env.insert(path_controller.clone());
+                receiver.retain_environment(local_env.clone());
                 let current_path = RefCell::new(path.snapshot());
                 for component in current_path.borrow().iter().cloned() {
                     receiver
@@ -408,11 +446,7 @@ where
                     *current_path = next_path;
                 });
 
-                let mut retained_env = Environment::new();
-                retained_env.insert(path_controller.clone());
-                receiver.retain_environment(retained_env);
                 receiver.retain(Retain::new(guard));
-                local_env.insert(path_controller.clone());
                 Metadata::new(root, local_env)
             },
         ))
@@ -635,9 +669,15 @@ fn shared_prefix_len<T: PartialEq>(left: &[T], right: &[T]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use alloc::rc::Rc;
     use alloc::vec;
+    use core::cell::RefCell;
 
-    use super::shared_prefix_len;
+    use super::{
+        CustomNavigationController, NavigationController, NavigationLink, NavigationPath,
+        NavigationPathController, NavigationView, shared_prefix_len,
+    };
+    use waterui_core::{Environment, Metadata, handler::AnyViewBuilder};
 
     #[test]
     fn shared_prefix_is_entire_prefix() {
@@ -658,5 +698,62 @@ mod tests {
         let left = vec![1, 2, 3];
         let right = vec![1, 2, 3];
         assert_eq!(shared_prefix_len(&left, &right), 3);
+    }
+
+    #[derive(Clone, PartialEq, Eq)]
+    enum TestRoute {
+        Second,
+    }
+
+    struct BaseMarker;
+
+    struct RecordingNavigationController {
+        pushed: Rc<RefCell<Option<NavigationView>>>,
+    }
+
+    impl CustomNavigationController for RecordingNavigationController {
+        fn push(&mut self, content: NavigationView) {
+            *self.pushed.borrow_mut() = Some(content);
+        }
+
+        fn pop(&mut self) {}
+    }
+
+    #[test]
+    fn retained_navigation_environment_is_layered_on_pushed_content() {
+        let pushed = Rc::new(RefCell::new(None));
+        let controller = NavigationController::new(RecordingNavigationController {
+            pushed: Rc::clone(&pushed),
+        });
+
+        let mut base_env = Environment::new();
+        base_env.insert(BaseMarker);
+        let mut retained_env = base_env.clone();
+        retained_env.insert(NavigationPathController(NavigationPath::<TestRoute>::new()));
+        controller.retain_environment(retained_env);
+
+        controller.push_builder(AnyViewBuilder::new(|| {
+            NavigationView::new(
+                "First",
+                NavigationLink::value("Open Second", TestRoute::Second),
+            )
+        }));
+
+        let nav_view = pushed
+            .borrow_mut()
+            .take()
+            .expect("pushed navigation view should be recorded");
+        let metadata = nav_view
+            .content
+            .downcast::<Metadata<Environment>>()
+            .expect("pushed content should carry retained navigation environment");
+
+        assert!(metadata.value.get::<BaseMarker>().is_some());
+        assert!(
+            metadata
+                .value
+                .get::<NavigationPathController<TestRoute>>()
+                .is_some()
+        );
     }
 }

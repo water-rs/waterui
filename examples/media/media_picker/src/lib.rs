@@ -6,6 +6,8 @@
 //! - Displaying loaded media (Photo, Video, LivePhoto)
 //! - Filter options for different media types
 
+use std::rc::Rc;
+
 use waterui::app::App;
 use waterui::component::Dynamic;
 use waterui::media::live::LivePhotoSource;
@@ -14,7 +16,7 @@ use waterui::media::{LivePhoto, Media};
 use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
 use waterui::reactive::{binding, impl_constant};
-use waterui::{view, view_builder};
+use waterui::{AnyView, Signal};
 
 /// Combined state for the media display area
 #[derive(Debug, Clone, PartialEq)]
@@ -62,7 +64,7 @@ fn main() -> impl View {
         .padding_with(16.0),
         // Divider
         Divider,
-        // Media display area - single Dynamic::watch, no nesting
+        // Media display area
         media_display_area(display_state.clone()),
         spacer(),
     ))
@@ -109,42 +111,58 @@ fn picker_button(
         })
 }
 
-/// Displays the loaded media or a placeholder - single Dynamic::watch
+/// Displays the loaded media or a placeholder.
 fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
-    Dynamic::watch(display_state, move |state| {
-        view! {
-            match state {
-                DisplayState::Empty => vstack((
-                    text("No media selected")
-                        .sub_headline()
-                        .foreground(MutedForeground),
-                    text("Tap a button above to select media")
-                        .body()
-                        .foreground(MutedForeground),
-                ))
-                .spacing(8.0),
-
-                DisplayState::Loaded(media) => media_view(media),
-
-                DisplayState::Error(message) => vstack((
-                    text("Error").sub_headline().bold().foreground(Accent),
-                    text(message).body().foreground(MutedForeground),
-                ))
-                .spacing(8.0)
-                .padding_with(16.0),
-            }
-        }
+    signal_driven_display(display_state, |state| match state {
+        DisplayState::Empty => AnyView::new(
+            vstack((
+                text("No media selected")
+                    .sub_headline()
+                    .foreground(MutedForeground),
+                text("Tap a button above to select media")
+                    .body()
+                    .foreground(MutedForeground),
+            ))
+            .spacing(8.0),
+        ),
+        DisplayState::Loaded(media) => AnyView::new(media_view(media)),
+        DisplayState::Error(message) => AnyView::new(
+            vstack((
+                text("Error").sub_headline().bold().foreground(Accent),
+                text(message).body().foreground(MutedForeground),
+            ))
+            .spacing(8.0)
+            .padding_with(16.0),
+        ),
     })
 }
 
 /// Creates a view for the loaded media based on its type
-#[view_builder]
-fn media_view(media: Media) -> impl View {
+fn media_view(media: Media) -> AnyView {
     match media {
-        Media::Image(url) => image_view(url),
-        Media::Video(url) => video_view(url),
-        Media::LivePhoto(source) => live_photo_view(source),
+        Media::Image(url) => AnyView::new(image_view(url)),
+        Media::Video(url) => AnyView::new(video_view(url)),
+        Media::LivePhoto(source) => AnyView::new(live_photo_view(source)),
     }
+}
+
+fn signal_driven_display(
+    source: Binding<DisplayState>,
+    build: impl Fn(DisplayState) -> AnyView + 'static,
+) -> impl View {
+    let (handler, dynamic) = Dynamic::new();
+    let build = Rc::new(build);
+    handler.set(build(source.get()));
+
+    let guard = source.watch({
+        let build = Rc::clone(&build);
+        move |ctx| {
+            let metadata = ctx.metadata().clone();
+            handler.set_with_metadata(build(ctx.into_value()), metadata);
+        }
+    });
+
+    dynamic.retain((guard, source, build))
 }
 
 fn image_view(url: Url) -> impl View {

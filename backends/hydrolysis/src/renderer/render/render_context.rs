@@ -143,6 +143,23 @@ impl<'a> WidgetRenderContext<'a> {
         );
     }
 
+    pub(crate) fn render_styled_text_single_line_centered(
+        &mut self,
+        styled: StyledStr,
+        env: &Environment,
+        bounds: vello::kurbo::Rect,
+    ) {
+        let child_ctx = self.child(
+            vello::kurbo::Affine::translate((bounds.x0, bounds.y0)),
+            vello::kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
+        );
+        let renderer = self.renderer_mut();
+        let (state, scene) = renderer.state_and_scene_mut();
+        HydrolysisRenderer::render_styled_text_single_line_centered(
+            state, scene, child_ctx, styled, env,
+        );
+    }
+
     pub(crate) fn append_scene(&mut self, scene: &vello::Scene) {
         self.renderer
             .scene_mut()

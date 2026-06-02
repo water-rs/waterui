@@ -5,9 +5,13 @@ use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::{Binding, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::ButtonStyle;
+use waterui_controls::slider::slider;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
 use waterui_form::picker::PickerStyle;
+use waterui_graphics::filter_view::FilterViewExt as _;
+use waterui_layout::scroll;
+use waterui_layout::stack::{VStackLayout, vstack};
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
@@ -98,6 +102,138 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
         dimensions.explicit_horizontal(HorizontalAlignment::Leading),
         Some(10.0)
     );
+}
+
+#[test]
+fn scale_metadata_is_layout_transparent() {
+    let env = Environment::default();
+    let scale = Binding::f32(1.0);
+    let view = normalize_layout_view(
+        AnyView::new(
+            ().size(80.0, 80.0)
+                .scale(scale.clone(), scale.clone())
+                .min_height(120.0),
+        ),
+        &env,
+    );
+
+    let mut state = HydroState::default();
+    let initial = measure_view_dimensions(&view, &mut state, &env).size;
+
+    scale.set(2.0);
+    let mut state = HydroState::default();
+    let scaled = measure_view_dimensions(&view, &mut state, &env).size;
+
+    assert_eq!(initial, LayoutSize::new(80.0, 120.0));
+    assert_eq!(scaled, initial);
+}
+
+#[test]
+fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
+        native_executor::NativeExecutor::new(),
+    ));
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let value = Binding::f64(0.5);
+    let view = normalize_layout_view(
+        AnyView::new(slider("Playback position", &value).hide_label()),
+        &env,
+    );
+    let mut state = HydroState::default();
+    let state = RefCell::new(&mut state);
+    let subview = HydroSubview::from_view(&view, &state, &env);
+
+    let measured = subview.measure(ProposalSize::new(Some(0.0), None));
+
+    assert!(
+        measured.size.width > 0.0,
+        "Hydrolysis stretch controls must preserve their intrinsic minimum under constrained measurement"
+    );
+}
+
+#[test]
+fn render_layout_container_places_non_stretch_layout_at_intrinsic_size() {
+    #[derive(Debug)]
+    struct RecordingLayout {
+        placed_bounds: Rc<RefCell<Option<LayoutRect>>>,
+    }
+
+    impl Layout for RecordingLayout {
+        fn size_that_fits(
+            &self,
+            _proposal: ProposalSize,
+            _children: &[&dyn SubView],
+        ) -> LayoutSize {
+            LayoutSize::new(80.0, 40.0)
+        }
+
+        fn place(&self, bounds: LayoutRect, _children: &[&dyn SubView]) -> Vec<LayoutRect> {
+            *self.placed_bounds.borrow_mut() = Some(bounds);
+            Vec::new()
+        }
+    }
+
+    let placed_bounds = Rc::new(RefCell::new(None));
+    let layout = RecordingLayout {
+        placed_bounds: Rc::clone(&placed_bounds),
+    };
+    let env = Environment::new();
+    let mut renderer = test_renderer();
+    let ctx = RenderContext::with_transforms(
+        Rect::new(0.0, 0.0, 300.0, 300.0),
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+
+    HydrolysisRenderer::render_layout_container(
+        &mut renderer,
+        ctx,
+        Box::new(layout),
+        Vec::new(),
+        &env,
+    );
+
+    assert_eq!(
+        placed_bounds
+            .borrow()
+            .as_ref()
+            .map(LayoutRect::size)
+            .copied(),
+        Some(LayoutSize::new(80.0, 40.0))
+    );
+}
+
+#[test]
+fn draggable_metadata_delivers_drag_data_to_drop_destination() {
+    use std::{cell::RefCell, rc::Rc};
+    use waterui::drag_drop::DragData;
+    use waterui::prelude::hstack;
+
+    let dropped = Rc::new(RefCell::new(None::<String>));
+    let dropped_target = Rc::clone(&dropped);
+    let view = hstack((
+        ().size(60.0, 60.0).draggable(DragData::text("🍎 Apple")),
+        ().size(60.0, 60.0).drop_destination(move |data: DragData| {
+            *dropped_target.borrow_mut() = Some(data.as_str().to_owned());
+        }),
+    ))
+    .spacing(20.0);
+
+    let mut renderer = test_renderer();
+    let env = Environment::new();
+    let bounds = Rect::new(0.0, 0.0, 160.0, 80.0);
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(view, &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let _ = renderer.handle_pointer_down(30.0, 30.0, PointerButton::Primary, &env);
+    assert!(renderer.handle_pointer_move(110.0, 30.0, &env));
+    assert!(renderer.handle_pointer_up(110.0, 30.0, PointerButton::Primary, &env));
+    assert_eq!(dropped.borrow().as_deref(), Some("🍎 Apple"));
 }
 
 #[test]
@@ -299,6 +435,51 @@ fn dynamic_body_snapshot_after_render_does_not_schedule_rebuild() {
         "real Dynamic updates after render must still schedule a rebuild"
     );
     renderer.finish_rebuild_frame();
+}
+
+#[test]
+fn root_scroll_lazy_viewport_does_not_activate_offscreen_filters() {
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut renderer = test_renderer();
+    let view = scroll(vstack((
+        ().size(120.0, 600.0),
+        ().size(80.0, 80.0).blur(4.0),
+    )));
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(view, &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let (count, capture_us, effect_us) = renderer.applied_filter_stats();
+    assert_eq!(count, 0);
+    assert_eq!(capture_us, 0);
+    assert_eq!(effect_us, 0);
+}
+
+#[test]
+fn fixed_vstack_inside_scroll_does_not_use_lazy_stack_slots() {
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut renderer = test_renderer();
+    let view = scroll(vstack((
+        waterui_controls::button::button("Short"),
+        waterui_controls::button::button("A much longer button label"),
+        waterui_controls::button::button("Short again"),
+    )));
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(view, &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    assert!(
+        renderer.lazy.lazy_stack_controller.slots.is_empty(),
+        "FixedContainer layout must not be virtualized by Hydrolysis lazy stack slots"
+    );
 }
 
 #[test]

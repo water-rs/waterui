@@ -309,20 +309,15 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
 }
 
 fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView {
-    Dynamic::watch(search.clone(), move |query| {
-        let normalized_query = normalized_search_query(&query);
-        let (today_rows, upcoming_rows) = reminders_for(dest);
-        let today_rows = filter_reminders(today_rows, normalized_query.as_deref());
-        let upcoming_rows = filter_reminders(upcoming_rows, normalized_query.as_deref());
+    let (today_rows, upcoming_rows) = reminders_for(dest);
 
-        vstack((
-            content_header(dest),
-            Divider,
-            reminder_section("Today", today_rows),
-            (!upcoming_rows.is_empty()).then(|| reminder_section("Upcoming", upcoming_rows)),
-        ))
-        .background(Material::Regular)
-    })
+    vstack((
+        content_header(dest),
+        Divider,
+        reminder_section("Today", today_rows, search.clone()),
+        reminder_section("Upcoming", upcoming_rows, search.clone()),
+    ))
+    .background(Material::Regular)
     .title(dest.title())
     .searchable(&search, "Search reminders")
     .navigation_bar_trailing(
@@ -354,14 +349,44 @@ fn content_header(dest: SidebarDestination) -> impl View {
     .padding_with(EdgeInsets::new(14.0, 18.0, 12.0, 18.0))
 }
 
-fn reminder_section(title: &'static str, rows: Vec<ReminderRow>) -> impl View {
+fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
+    search
+        .map(move |query| {
+            normalized_search_query(&query)
+                .as_deref()
+                .is_none_or(|query| reminder_matches_query(&row, query))
+        })
+        .computed()
+}
+
+fn section_visible(search: Binding<Str>, rows: Vec<ReminderRow>) -> Computed<bool> {
+    search
+        .map(move |query| {
+            let normalized_query = normalized_search_query(&query);
+            match normalized_query.as_deref() {
+                Some(query) => rows
+                    .iter()
+                    .any(|reminder| reminder_matches_query(reminder, query)),
+                None => !rows.is_empty(),
+            }
+        })
+        .computed()
+}
+
+fn reminder_section(
+    title: &'static str,
+    rows: Vec<ReminderRow>,
+    search: Binding<Str>,
+) -> impl View {
+    let visible = section_visible(search.clone(), rows.clone());
     vstack((
         text(title)
             .caption()
             .bold()
             .foreground(MutedForeground)
             .padding_with(EdgeInsets::new(8.0, 18.0, 0.0, 18.0)),
-        List::for_each(rows, |row| {
+        List::for_each(rows, move |row| {
+            let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(
                 hstack((
                     SystemIcon::from_static("circle")
@@ -384,10 +409,12 @@ fn reminder_section(title: &'static str, rows: Vec<ReminderRow>) -> impl View {
                         }
                     },
                 ))
-                .padding_with(EdgeInsets::symmetric(10.0, 18.0)),
+                .padding_with(EdgeInsets::symmetric(10.0, 18.0))
+                .visible(visible),
             )
         }),
     ))
+    .visible(visible)
 }
 
 pub fn app(env: Environment) -> App {

@@ -13,6 +13,16 @@ struct InfoPlistTemplate<'a> {
     bundle_identifier: &'a str,
     app_name: &'a str,
     executable_name: &'a str,
+    usage_descriptions: &'a [MacOsUsageDescription],
+}
+
+/// Apple Info.plist usage-description entry for a macOS app bundle.
+#[derive(Debug, Clone)]
+pub struct MacOsUsageDescription {
+    /// Raw Info.plist key such as `NSCameraUsageDescription`.
+    pub plist_key: &'static str,
+    /// User-facing reason declared in `Water.toml`.
+    pub description: String,
 }
 
 /// Package a compiled binary as a macOS `.app` bundle.
@@ -25,6 +35,7 @@ pub async fn package_binary_as_app(
     binary_path: &Path,
     bundle_id: &str,
     app_name: &str,
+    usage_descriptions: &[MacOsUsageDescription],
     resources_dir: Option<&Path>,
     output_root: &Path,
 ) -> eyre::Result<PathBuf> {
@@ -69,6 +80,7 @@ pub async fn package_binary_as_app(
         bundle_identifier: bundle_id,
         app_name,
         executable_name,
+        usage_descriptions,
     }
     .render()
     .map_err(|error| eyre::eyre!("Failed to render Info.plist template: {error}"))?;

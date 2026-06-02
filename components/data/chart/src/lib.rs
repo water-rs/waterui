@@ -37,7 +37,6 @@ mod composition;
 pub mod data;
 pub mod interaction;
 pub mod legend;
-mod local_state;
 pub mod params;
 pub mod tooltip;
 
