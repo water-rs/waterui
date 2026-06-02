@@ -3,7 +3,7 @@
 use core::ops::RangeInclusive;
 
 use nami::{Binding, Computed, SignalExt as _};
-use waterui_core::{Environment, IntoSignalF32, layout::Point};
+use waterui_core::{IntoSignalF32, layout::Point};
 
 /// Stable screen-space anchor for chart readouts and overlays.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -791,12 +791,12 @@ impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
     }
 
     #[must_use]
-    pub fn persist_internal(mut self, env: &Environment) -> Self {
+    pub fn persist_internal(mut self) -> Self {
         if !self.focused_flags.external {
-            self.focused = crate::local_state::local_binding(env, || None::<HitResult<T>>);
+            self.focused = Binding::container(None::<HitResult<T>>);
         }
         if !self.selected_flags.external {
-            self.selected = crate::local_state::local_binding(env, || None::<HitResult<T>>);
+            self.selected = Binding::container(None::<HitResult<T>>);
         }
         self
     }
@@ -848,62 +848,20 @@ impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::collections::BTreeMap;
-    use alloc::rc::Rc;
-    use core::any::{Any, TypeId};
-    use core::cell::RefCell;
-
     use super::*;
     use nami::Signal;
-    use waterui_core::{LocalStateScope, LocalStateStore};
-
-    #[derive(Clone)]
-    struct Slot {
-        type_id: TypeId,
-        value: Rc<dyn Any>,
-    }
 
     #[test]
-    fn persistent_internal_selection_reuses_local_state_slot() {
-        let slots = Rc::new(RefCell::new(BTreeMap::<(u64, usize), Slot>::new()));
-        let store = LocalStateStore::new({
-            let slots = Rc::clone(&slots);
-            move |path, index, type_id, _type_name, init| {
-                let key = (path, index);
-                let mut slots = slots.borrow_mut();
-                if let Some(slot) = slots.get(&key) {
-                    assert_eq!(slot.type_id, type_id);
-                    return Rc::clone(&slot.value);
-                }
-                let value = init();
-                slots.insert(
-                    key,
-                    Slot {
-                        type_id,
-                        value: Rc::clone(&value),
-                    },
-                );
-                value
-            }
-        });
-        let scope = LocalStateScope::root();
-        let mut env = Environment::new();
-        env.insert(scope.clone());
-        env.insert(store);
-
+    fn internal_selection_state_belongs_to_selection_instance() {
         let first = SelectionBindings::<i32>::new()
             .activate_proxy()
-            .persist_internal(&env);
+            .persist_internal();
         first.set_selected(Some(HitResult::new(0, 0, 7, ChartAnchor::new(3.0, 4.0))));
 
-        env.insert(scope.reset());
         let second = SelectionBindings::<i32>::new()
             .activate_proxy()
-            .persist_internal(&env);
+            .persist_internal();
 
-        assert_eq!(
-            second.selected_signal().get(),
-            Some(HitResult::new(0, 0, 7, ChartAnchor::new(3.0, 4.0)))
-        );
+        assert_eq!(second.selected_signal().get(), None);
     }
 }

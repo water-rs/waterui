@@ -12,34 +12,43 @@ use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::{SignalExt, binding};
 
+const HOVER_CARD_WIDTH: f32 = 200.0;
+const HOVER_CARD_HEIGHT: f32 = 80.0;
+const DRAG_CARD_HEIGHT: f32 = 100.0;
+const CURSOR_CARD_WIDTH: f32 = 96.0;
+const CURSOR_CARD_HEIGHT: f32 = 44.0;
+
 /// Section demonstrating hover enter/exit events
 fn hover_events_section(hover_count: &Binding<i32>, is_hovered: &Binding<bool>) -> impl View {
     const ACTIVE: Srgb = Srgb::from_hex("#4CAF50");
     const INACTIVE: Srgb = Srgb::from_hex("#2196F3");
 
-    let bg = is_hovered.select(ACTIVE.with_opacity(0.5), INACTIVE.with_opacity(0.3));
+    let active_bg_opacity = is_hovered.clone().select(1.0, 0.0);
+    let inactive_bg_opacity = is_hovered.clone().select(0.0, 1.0);
 
     vstack((
         text("Hover Events").headline(),
         "Move your pointer in and out of the box",
         hstack(("Hover events: ", text!("Count: {hover_count}"))),
         hstack(("Currently hovered: ", text!("Status: {is_hovered}"))),
-        text("Hover Me!")
-            .padding()
-            .width(200.0)
-            .height(80.0)
-            .background(bg.computed())
-            .on_hover_enter(
-                |State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
-                    *count.get_mut() += 1;
-                    hovered.set(true);
-                },
-            )
-            .on_hover_exit(|_: Environment, State(hovered): State<Binding<bool>>| {
-                hovered.set(false);
-            })
-            .state(hover_count)
-            .state(is_hovered),
+        zstack((
+            INACTIVE.with_opacity(0.3).opacity(inactive_bg_opacity),
+            ACTIVE.with_opacity(0.5).opacity(active_bg_opacity),
+            text("Hover Me!").padding(),
+        ))
+        .width(HOVER_CARD_WIDTH)
+        .height(HOVER_CARD_HEIGHT)
+        .on_hover_enter(
+            |State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
+                *count.get_mut() += 1;
+                hovered.set(true);
+            },
+        )
+        .on_hover_exit(|_: Environment, State(hovered): State<Binding<bool>>| {
+            hovered.set(false);
+        })
+        .state(hover_count)
+        .state(is_hovered),
     ))
     .padding()
 }
@@ -51,6 +60,8 @@ fn cursor_styles_section() -> impl View {
         text(label)
             .caption()
             .padding()
+            .width(CURSOR_CARD_WIDTH)
+            .height(CURSOR_CARD_HEIGHT)
             .background(color.with_opacity(0.3))
             .cursor(style)
     }
@@ -87,7 +98,8 @@ fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View {
     const ACTIVE: Srgb = Srgb::from_hex("#FF5722");
     const INACTIVE: Srgb = Srgb::from_hex("#FF9800");
 
-    let bg = is_dragging.select(ACTIVE.with_opacity(0.5), INACTIVE.with_opacity(0.3));
+    let active_bg_opacity = is_dragging.clone().select(1.0, 0.0);
+    let inactive_bg_opacity = is_dragging.clone().select(0.0, 1.0);
     let cursor = is_dragging.select(CursorStyle::ClosedHand, CursorStyle::OpenHand);
     let opacity = is_dragging.select(0.8, 1.0).with(Animation::default());
 
@@ -96,16 +108,18 @@ fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View {
         "The cursor changes based on drag state",
         hstack(("State: ", text!("Dragging: {d}", d = is_dragging))),
         "(Hover to simulate drag state change)",
-        text("Drag Area")
-            .padding()
-            .width(200.0)
-            .height(100.0)
-            .background(bg.computed())
-            .cursor(cursor.computed())
-            .opacity(opacity)
-            .on_hover_enter(|State(dragging): State<Binding<bool>>| dragging.set(true))
-            .on_hover_exit(|State(dragging): State<Binding<bool>>| dragging.set(false))
-            .state(is_dragging),
+        zstack((
+            INACTIVE.with_opacity(0.3).opacity(inactive_bg_opacity),
+            ACTIVE.with_opacity(0.5).opacity(active_bg_opacity),
+            text("Drag Area").padding(),
+        ))
+        .width(HOVER_CARD_WIDTH)
+        .height(DRAG_CARD_HEIGHT)
+        .cursor(cursor.computed())
+        .opacity(opacity)
+        .on_hover_enter(|State(dragging): State<Binding<bool>>| dragging.set(true))
+        .on_hover_exit(|State(dragging): State<Binding<bool>>| dragging.set(false))
+        .state(is_dragging),
     ))
     .padding()
 }

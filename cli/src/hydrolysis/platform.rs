@@ -20,7 +20,7 @@ use crate::{
     build::BuildOptions,
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
-    macos_bundle::package_binary_as_app,
+    macos_bundle::{MacOsUsageDescription, package_binary_as_app},
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::TemplateContext,
@@ -274,10 +274,24 @@ pub async fn package_hydrolysis(
             };
             let dist_dir = backend_path.join("dist");
             fs::create_dir_all(&dist_dir).await?;
+            let usage_descriptions = project
+                .manifest()
+                .permissions
+                .iter()
+                .filter(|(_, entry)| entry.is_enabled())
+                .filter_map(|(key, entry)| {
+                    key.apple_usage_description_key()
+                        .map(|plist_key| MacOsUsageDescription {
+                            plist_key,
+                            description: entry.description().to_string(),
+                        })
+                })
+                .collect::<Vec<_>>();
             let app_path = package_binary_as_app(
                 &final_binary_path,
                 project.bundle_identifier(),
                 &app_name,
+                &usage_descriptions,
                 Some(&backend_path.join("resources")),
                 &dist_dir,
             )

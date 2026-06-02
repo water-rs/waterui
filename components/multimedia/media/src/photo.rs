@@ -9,11 +9,12 @@
 //! use waterui_media::Photo;
 //! use waterui_media::url::Url;
 //!
-//! let url = Url::parse("https://example.com/image.jpg").unwrap();
+//! let url = Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap();
 //! let photo = Photo::new(url);
 //! ```
 
 use alloc::borrow::ToOwned;
+use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
 
@@ -26,7 +27,8 @@ use std::path::Path;
 use waterkit_fs::WaterFs;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::event::{LifeCycle, LifeCycleHook};
-use waterui_core::{AnyView, Binding, Environment, Metadata, View};
+use waterui_core::reactive::signal::IntoComputed;
+use waterui_core::{AnyView, Binding, Computed, Environment, Metadata, Retain, Signal, View};
 use waterui_image::Image;
 use zenwave::{Client, Method, redirect::FollowRedirect};
 
@@ -40,13 +42,11 @@ use zenwave::{Client, Method, redirect::FollowRedirect};
 /// ```ignore
 /// use waterui_media::Photo;
 ///
-/// Photo::new("https://example.com/image.jpg")
+/// Photo::new("https://www.rust-lang.org/logos/rust-logo-512x512.png")
 /// ```
 pub struct Photo {
     /// The URL of the image to display.
-    url: Url,
-    /// Preloaded local image for file-backed sources on native targets.
-    preloaded_local: Option<Result<Image, String>>,
+    source: Computed<Url>,
     /// Event handler for photo loading events. Stored as a typed
     /// [`BoxedEventAction`] so the closure can extract `State<T>` /
     /// environment values, mirroring the [`Button::action`] pattern.
@@ -62,8 +62,7 @@ pub struct Photo {
 impl core::fmt::Debug for Photo {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Photo")
-            .field("url", &self.url)
-            .field("preloaded_local", &self.preloaded_local)
+            .field("source", &self.source)
             .field("on_event", &self.on_event.is_some())
             .field("content", &self.content)
             .field("content_handler", &self.content_handler)
@@ -88,25 +87,11 @@ impl Photo {
     ///
     /// * `source` - The URL of the image to display.
     #[must_use]
-    pub fn new(source: impl Into<Url>) -> Self {
+    pub fn new(source: impl IntoComputed<Url>) -> Self {
         let (content_handler, content) = Dynamic::new();
         content_handler.set(());
-        let url = source.into();
-        #[cfg(not(target_arch = "wasm32"))]
-        let preloaded_local = if url.is_local() {
-            Some(
-                std::fs::read(url.as_str())
-                    .map_err(|error| error.to_string())
-                    .and_then(|bytes| Image::from_encoded(&bytes)),
-            )
-        } else {
-            None
-        };
-        #[cfg(target_arch = "wasm32")]
-        let preloaded_local = None;
         Self {
-            url,
-            preloaded_local,
+            source: source.into_computed(),
             on_event: None,
             content,
             content_handler,
@@ -135,8 +120,8 @@ impl Photo {
     ///
     /// // Plain callback — no extractors.
     /// let photo = Photo::new(url).on_event(|event: Event| match event {
-    ///     Event::Loaded => println!("Image loaded!"),
-    ///     Event::Error(msg) => println!("Error: {msg}"),
+    ///     Event::Loaded => tracing::debug!("Image loaded!"),
+    ///     Event::Error(msg) => tracing::debug!("Error: {msg}"),
     /// });
     ///
     /// // Extractor-based callback — pulls a binding via `State<T>`.
@@ -160,84 +145,93 @@ impl Photo {
 impl View for Photo {
     fn body(self, env: &Environment) -> impl View {
         let Self {
-            url,
-            preloaded_local,
+            source,
             on_event,
             content,
             content_handler,
             load_started,
         } = self;
-        // Bake the rendering environment into a shared invoker so async load
-        // tasks and `LifeCycleHook` callbacks (both `Fn`-shaped) can drive the
-        // typed `EventHandler` without re-deriving the env at fire time.
         let env_for_event = env.clone();
-        if let Some(preloaded) = preloaded_local {
-            return match preloaded {
-                Ok(image) => {
-                    if let Some(mut on_event) = on_event {
-                        let env = env_for_event;
-                        AnyView::new(Metadata::new(
-                            image,
-                            LifeCycleHook::new(LifeCycle::Appear, move || {
-                                on_event(Event::Loaded, &env);
-                            }),
-                        ))
-                    } else {
-                        AnyView::new(image)
-                    }
-                }
-                Err(error) => on_event.map_or_else(
-                    || AnyView::new(()),
-                    |mut on_event| {
-                        let env = env_for_event;
-                        AnyView::new(Metadata::new(
-                            (),
-                            LifeCycleHook::new(LifeCycle::Appear, move || {
-                                on_event(Event::Error(error.clone()), &env);
-                            }),
-                        ))
-                    },
-                ),
-            };
-        }
-        let on_event = RefCell::new(on_event);
+        let on_event = Rc::new(RefCell::new(on_event));
+        let generation = Binding::usize(0);
+
+        let guard = source.watch({
+            let on_event = Rc::clone(&on_event);
+            let content_handler = content_handler.clone();
+            let generation = generation.clone();
+            let env = env_for_event.clone();
+            move |ctx| {
+                start_load_task(
+                    ctx.into_value(),
+                    Rc::clone(&on_event),
+                    content_handler.clone(),
+                    env.clone(),
+                    generation.clone(),
+                );
+            }
+        });
 
         AnyView::new(Metadata::new(
-            content,
-            LifeCycleHook::new(LifeCycle::Appear, move || {
-                if load_started.get() {
-                    return;
-                }
-                load_started.set(true);
-                spawn_load_task(
-                    url.clone(),
-                    on_event.borrow_mut().take(),
-                    content_handler.clone(),
-                    env_for_event.clone(),
-                );
-            }),
+            Metadata::new(
+                content,
+                LifeCycleHook::new(LifeCycle::Appear, {
+                    let source = source.clone();
+                    let on_event = Rc::clone(&on_event);
+                    let content_handler = content_handler.clone();
+                    let generation = generation.clone();
+                    move || {
+                        if load_started.get() {
+                            return;
+                        }
+                        load_started.set(true);
+                        start_load_task(
+                            source.get(),
+                            Rc::clone(&on_event),
+                            content_handler.clone(),
+                            env_for_event.clone(),
+                            generation.clone(),
+                        );
+                    }
+                }),
+            ),
+            Retain::new((guard, source, on_event, generation)),
         ))
     }
 }
 
-fn spawn_load_task(
+type PhotoEventHandler = Rc<RefCell<Option<waterui_core::handler::BoxedEventAction<Event>>>>;
+
+fn start_load_task(
     url: Url,
-    on_event: Option<waterui_core::handler::BoxedEventAction<Event>>,
+    on_event: PhotoEventHandler,
     handler: DynamicHandler,
     env: Environment,
+    generation: Binding<usize>,
 ) {
+    let token = generation.get().saturating_add(1);
+    generation.set(token);
+    handler.set(());
     spawn_local(async move {
-        match fetch_and_decode_streaming(url, move |image| publish_decoded_frame(&handler, image))
-            .await
+        let frame_generation = generation.clone();
+        match fetch_and_decode_streaming(url, move |image| {
+            if frame_generation.get() == token {
+                publish_decoded_frame(&handler, image);
+            }
+        })
+        .await
         {
             Ok(()) => {
-                if let Some(mut on_event) = on_event {
+                if generation.get() == token
+                    && let Some(on_event) = on_event.borrow_mut().as_mut()
+                {
                     on_event(Event::Loaded, &env);
                 }
             }
             Err(e) => {
                 tracing::error!("[Photo] Failed to load: {}", e);
-                if let Some(mut on_event) = on_event {
+                if generation.get() == token
+                    && let Some(on_event) = on_event.borrow_mut().as_mut()
+                {
                     on_event(Event::Error(e), &env);
                 }
             }
@@ -311,7 +305,7 @@ fn publish_decoded_frame(handler: &DynamicHandler, image: Image) {
 
 /// Convenience constructor for building a `Photo` component inline.
 #[must_use]
-pub fn photo(source: impl Into<Url>) -> Photo {
+pub fn photo(source: impl IntoComputed<Url>) -> Photo {
     Photo::new(source)
 }
 

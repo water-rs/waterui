@@ -8,11 +8,13 @@
 //! - ColorPicker with alpha and HDR support
 //! - FilePicker for file selection and import
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, rc::Rc};
 
 use jiff::civil::{Date, DateTime, Time};
+use waterui::Signal;
 use waterui::app::App;
 use waterui::color::Srgb;
+use waterui::component::Dynamic;
 use waterui::form::Calendar;
 use waterui::form::picker::color::ColorPicker;
 use waterui::form::picker::date::{DatePicker, DatePickerType};
@@ -23,7 +25,7 @@ use waterui::media::Url;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::{Rectangle, RoundedRectangle, ShapeExt};
 
 const PICKER_BLUE: Srgb = Srgb::from_hex("#3380CC");
 const PICKER_PINK: Srgb = Srgb::from_hex("#FF4D80");
@@ -85,7 +87,9 @@ fn main() -> impl View {
     let time_only: Binding<Time> = binding(fixed_time(14, 30, 0));
     let datetime: Binding<DateTime> = binding(fixed_date_time(2025, 6, 15, 9, 45, 30));
     let calendar_date: Binding<Date> = binding(fixed_date(2025, 6, 15));
+    let calendar_visible_month: Binding<Date> = binding(fixed_date(2025, 6, 1));
     let available_dates = binding(BTreeSet::<Date>::new());
+    let available_visible_month: Binding<Date> = binding(fixed_date(2025, 1, 1));
     let available_date_count = available_dates
         .map(|dates: BTreeSet<Date>| dates.len())
         .computed();
@@ -149,7 +153,7 @@ fn main() -> impl View {
                 text("Month-grid calendar with single-date selection and passive decorations")
                     .body(),
                 spacer(),
-                Calendar::new("Trip Date", &calendar_date)
+                Calendar::new("Trip Date", &calendar_date, &calendar_visible_month)
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
                     .decorated(decorated_dates.clone()),
                 text!("Selected calendar date: {calendar_date}"),
@@ -160,9 +164,13 @@ fn main() -> impl View {
                 text("Multi-Date Picker").headline(),
                 text("Month-grid calendar for selecting multiple dates").body(),
                 spacer(),
-                MultiDatePicker::new("Available Dates", &available_dates)
-                    .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
-                    .decorated(decorated_dates),
+                MultiDatePicker::new(
+                    "Available Dates",
+                    &available_dates,
+                    &available_visible_month,
+                )
+                .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
+                .decorated(decorated_dates),
                 text!("Selected dates: {available_date_count}"),
             ))
             .padding_with(EdgeInsets::all(12.0)),
@@ -207,20 +215,51 @@ fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
 }
 
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
-    use waterui::shape::{Rectangle, ShapeExt};
-    hstack((
-        text(label).bold(),
-        text(": "),
-        color
-            .clone()
-            .map(|c| {
-                Rectangle
-                    .fill(c)
-                    .size(64.0, 32.0)
-                    .clip(RoundedRectangle::new(0.1))
-            })
-            .computed(),
-    ))
+    hstack((text(label).bold(), text(": "), ColorSwatch::new(color)))
+}
+
+struct ColorSwatch {
+    color: Binding<Color>,
+}
+
+impl ColorSwatch {
+    fn new(color: &Binding<Color>) -> Self {
+        Self {
+            color: color.clone(),
+        }
+    }
+}
+
+impl View for ColorSwatch {
+    fn body(self, _env: &Environment) -> impl View {
+        signal_driven_view(self.color, |color| {
+            Rectangle
+                .fill(color)
+                .size(64.0, 32.0)
+                .clip(RoundedRectangle::new(0.1))
+        })
+    }
+}
+
+fn signal_driven_view<T, S, V>(source: S, build: impl Fn(T) -> V + 'static) -> impl View
+where
+    S: Signal<Output = T> + Clone + 'static,
+    T: 'static,
+    V: View,
+{
+    let (handler, dynamic) = Dynamic::new();
+    let build = Rc::new(build);
+    handler.set(build(source.get()));
+
+    let guard = source.watch({
+        let build = Rc::clone(&build);
+        move |ctx| {
+            let metadata = ctx.metadata().clone();
+            handler.set_with_metadata(build(ctx.into_value()), metadata);
+        }
+    });
+
+    dynamic.retain((guard, source, build))
 }
 
 fn file_list(files: &Binding<Vec<Url>>) -> impl View {

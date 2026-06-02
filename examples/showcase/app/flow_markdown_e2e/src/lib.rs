@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use waterui::animation::Animation;
 use waterui::app::App;
+use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 use waterui::prelude::*;
 use waterui::task::{sleep, spawn_local};
 
@@ -28,6 +29,10 @@ const MARKDOWN_DOCUMENTS: [MarkdownDocument; 3] = [
 
 const STREAM_CPS_MIN: i32 = 4;
 const STREAM_CPS_MAX: i32 = 128;
+const PRIMARY_CONTROL_WIDTH: f32 = 132.0;
+const SECONDARY_CONTROL_WIDTH: f32 = 92.0;
+const WIDE_CONTROL_WIDTH: f32 = 152.0;
+const TOKEN_CONTROL_WIDTH: f32 = 172.0;
 
 fn stream_interval_ms(stream_cps: i32) -> u64 {
     let cps = stream_cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX) as u64;
@@ -153,13 +158,12 @@ fn preset_label(index: i32) -> &'static str {
     }
 }
 
-fn configured_flow(
-    view: FlowMarkdown,
+fn configured_flow_config(
     preset_index: i32,
     cps: i32,
     stream_cps: i32,
     token_fade_enabled: bool,
-) -> FlowMarkdown {
+) -> FlowMarkdownConfig {
     let cps = cps.clamp(8, 256) as u32;
     let batch_ms = stream_interval_ms(stream_cps).clamp(8, 40);
     let token_fade = token_fade_animation(stream_cps, token_fade_enabled);
@@ -169,7 +173,7 @@ fn configured_flow(
         fade_in: token_fade.clone(),
     };
 
-    let mut configured = view
+    let mut configured = FlowMarkdownConfig::default()
         .stream(FlowStreamMode::AppendOnly)
         .preset(preset_from_index(preset_index))
         .table_policy(FlowTablePolicy::NoAnimationReadablePending)
@@ -249,6 +253,14 @@ fn main() -> impl View {
     let flow_preset = flow_summary.clone().map(|(preset, _, _)| preset);
     let flow_cps = flow_summary.clone().map(|(_, cps, _)| cps);
     let flow_fade_label = flow_summary.clone().map(|(_, _, fade_label)| fade_label);
+    let flow_config = animation_preset
+        .zip(&animation_cps)
+        .zip(&stream_cps)
+        .zip(&token_fade_enabled)
+        .map(|(((preset, cps), stream_cps), token_fade_enabled)| {
+            configured_flow_config(preset, cps, stream_cps, token_fade_enabled)
+        })
+        .computed();
     let token_fade_label = token_fade_enabled.clone().map(|enabled| {
         if enabled {
             "Token fade on"
@@ -295,14 +307,16 @@ fn main() -> impl View {
                         c.document_index.set(c.document_index.get() - 1);
                         reset_stream(&c.markdown, &c.char_progress);
                     })
-                    .state(&control),
+                    .state(&control)
+                    .width(PRIMARY_CONTROL_WIDTH),
                 button("Next doc")
                     .action(|State(c): State<StreamControl>| {
                         cancel_stream(&c.streaming, &c.stream_revision);
                         c.document_index.set(c.document_index.get() + 1);
                         reset_stream(&c.markdown, &c.char_progress);
                     })
-                    .state(&control),
+                    .state(&control)
+                    .width(WIDE_CONTROL_WIDTH),
                 button("Start stream")
                     .bordered_prominent()
                     .action(|State(c): State<StreamControl>| {
@@ -315,7 +329,8 @@ fn main() -> impl View {
                             c.stream_cps.clone(),
                         );
                     })
-                    .state(&control),
+                    .state(&control)
+                    .width(PRIMARY_CONTROL_WIDTH),
                 button("Load full")
                     .action(|State(c): State<StreamControl>| {
                         load_full_document(
@@ -326,15 +341,17 @@ fn main() -> impl View {
                             c.document_index.get(),
                         );
                     })
-                    .state(&control),
+                    .state(&control)
+                    .width(PRIMARY_CONTROL_WIDTH),
                 button("Reset")
                     .action(|State(c): State<StreamControl>| {
                         cancel_stream(&c.streaming, &c.stream_revision);
                         reset_stream(&c.markdown, &c.char_progress);
                     })
-                    .state(&control),
+                    .state(&control)
+                    .width(PRIMARY_CONTROL_WIDTH),
             ))
-            .spacing(10.0),
+            .spacing(8.0),
             text!(
                 "Flow animation preset: {preset} | token reveal CPS: {cps} | token fade: {fade_label}",
                 preset = flow_preset_text,
@@ -343,47 +360,49 @@ fn main() -> impl View {
             )
             .caption(),
             hstack((
-                button("LLM CPS -").action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                }).state(&stream_cps),
-                button("LLM CPS +").action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                }).state(&stream_cps),
-                button("Preset").action(|State(preset): State<Binding<i32>>| {
-                    preset.set((preset.get() + 1).rem_euclid(3));
-                }).state(&animation_preset),
-                button("CPS -").action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() - 8).clamp(8, 256));
-                }).state(&animation_cps),
-                button("CPS +").action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() + 8).clamp(8, 256));
-                }).state(&animation_cps),
-                button(text!("{token_fade_label}")).action(|State(enabled): State<Binding<bool>>| {
-                    enabled.set(!enabled.get());
-                }).state(&token_fade_enabled),
+                button("LLM CPS -")
+                    .action(|State(cps): State<Binding<i32>>| {
+                        cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+                    })
+                    .state(&stream_cps)
+                    .width(WIDE_CONTROL_WIDTH),
+                button("LLM CPS +")
+                    .action(|State(cps): State<Binding<i32>>| {
+                        cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+                    })
+                    .state(&stream_cps)
+                    .width(WIDE_CONTROL_WIDTH),
+                button("Preset")
+                    .action(|State(preset): State<Binding<i32>>| {
+                        preset.set((preset.get() + 1).rem_euclid(3));
+                    })
+                    .state(&animation_preset)
+                    .width(SECONDARY_CONTROL_WIDTH),
+                button("CPS -")
+                    .action(|State(cps): State<Binding<i32>>| {
+                        cps.set((cps.get() - 8).clamp(8, 256));
+                    })
+                    .state(&animation_cps)
+                    .width(SECONDARY_CONTROL_WIDTH),
+                button("CPS +")
+                    .action(|State(cps): State<Binding<i32>>| {
+                        cps.set((cps.get() + 8).clamp(8, 256));
+                    })
+                    .state(&animation_cps)
+                    .width(SECONDARY_CONTROL_WIDTH),
+                button(text!("{token_fade_label}"))
+                    .action(|State(enabled): State<Binding<bool>>| {
+                        enabled.set(!enabled.get());
+                    })
+                    .state(&token_fade_enabled)
+                    .width(TOKEN_CONTROL_WIDTH),
             ))
-            .spacing(10.0),
+            .spacing(8.0),
             Divider,
-            Dynamic::watch(
-                animation_preset
-                    .zip(&animation_cps)
-                    .zip(&stream_cps)
-                    .zip(&token_fade_enabled),
-                {
-                    let markdown = markdown.clone();
-                    move |(((preset, cps), stream_cps), token_fade_enabled)| {
-                        configured_flow(
-                            flow_markdown(markdown.clone()),
-                            preset,
-                            cps,
-                            stream_cps,
-                            token_fade_enabled,
-                        )
-                        .padding()
-                        .border(Grey, 1.0)
-                    }
-                },
-            ),
+            flow_markdown(markdown)
+                .configuration(flow_config)
+                .padding()
+                .border(Grey, 1.0),
         ))
         .padding(),
     )

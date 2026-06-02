@@ -622,8 +622,8 @@ pub struct BackgroundColor;
 impl Resolvable for ForegroundColor {
     type Resolved = ResolvedColor;
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        env.query::<Self, ResolvedColor>()
-            .copied()
+        env.query::<Self, Computed<ResolvedColor>>()
+            .cloned()
             .expect("ForegroundColor not found in environment")
     }
 }
@@ -631,8 +631,8 @@ impl Resolvable for ForegroundColor {
 impl Resolvable for BackgroundColor {
     type Resolved = ResolvedColor;
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        env.query::<Self, ResolvedColor>()
-            .copied()
+        env.query::<Self, Computed<ResolvedColor>>()
+            .cloned()
             .expect("BackgroundColor not found in environment")
     }
 }

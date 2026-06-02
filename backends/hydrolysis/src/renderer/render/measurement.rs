@@ -404,6 +404,30 @@ impl HydrolysisRenderer {
         Self::draw_text_layout(scene, ctx, &layout, max_lines);
     }
 
+    pub(crate) fn render_styled_text_single_line_centered(
+        state: &mut HydroState,
+        scene: &mut vello::Scene,
+        ctx: RenderContext,
+        styled: StyledStr,
+        env: &Environment,
+    ) {
+        let layout =
+            Self::build_text_layout(state, styled, HorizontalAlignment::Leading, env, None);
+        let Some(line) = layout.lines().next() else {
+            return;
+        };
+        let metrics = line.metrics();
+        let width = f64::from(metrics.advance);
+        let height = f64::from(metrics.line_height);
+        let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
+        let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
+        let child_ctx = ctx.child(
+            vello::kurbo::Affine::translate((x, y)),
+            vello::kurbo::Rect::new(0.0, 0.0, width, height),
+        );
+        Self::draw_text_layout(scene, child_ctx, &layout, Some(1));
+    }
+
     fn draw_text_layout(
         scene: &mut vello::Scene,
         ctx: RenderContext,

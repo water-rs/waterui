@@ -1,13 +1,11 @@
 extern crate alloc;
 
-use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
 use core::f32::consts::{FRAC_PI_2, TAU};
 use core::time::Duration;
 use std::time::Instant;
 
-use nami::{Signal, SignalExt as _};
+use nami::{Binding, Signal, SignalExt as _};
 use num_traits::ToPrimitive as _;
 use waterui_canvas::{Canvas, DrawingContext, Path};
 use waterui_core::{
@@ -33,7 +31,6 @@ use crate::{
         DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum, RegionDatum, SelectionBindings,
         SliceDatum,
     },
-    local_state::{local_binding, local_shared},
 };
 
 const PLOT_PADDING_RATIO: f32 = 0.1;
@@ -92,7 +89,7 @@ impl View for ChartCanvasAccessibilityBoundary {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ChartTransitionState<D> {
     epoch: Instant,
     animator: ChartAnimator,
@@ -444,7 +441,7 @@ fn normalized_scalar_range(start: f32, end: f32) -> core::ops::RangeInclusive<f3
     reason = "This internal adapter owns generic callbacks and bindings so they can move into Canvas' static event closures without extra type erasure"
 )]
 pub(crate) fn interactive_cartesian_signal_canvas<S, D, T, B, G, F>(
-    env: &Environment,
+    _env: &Environment,
     signal: S,
     bounds_of: B,
     build_geometry: G,
@@ -469,20 +466,20 @@ where
         selection = selection.activate_proxy();
     }
     if selection.is_active() {
-        selection = selection.persist_internal(env);
+        selection = selection.persist_internal();
     }
-    let transition = local_shared(env, || RefCell::new(ChartTransitionState::<D>::new()));
-    let geometry = local_shared(env, || RefCell::new(None::<CartesianGeometry<T>>));
-    let base_bounds = local_shared(env, || RefCell::new(DataBounds::default()));
-    let chart_frame = local_binding(env, ChartViewport::default);
-    let plot_area_frame = local_binding(env, ChartViewport::default);
-    let x_range_start = local_binding(env, || None::<f32>);
-    let y_range_start = local_binding(env, || None::<f32>);
+    let transition = Binding::container(ChartTransitionState::<D>::new());
+    let geometry = Binding::container(None::<CartesianGeometry<T>>);
+    let base_bounds = Binding::container(DataBounds::default());
+    let chart_frame = Binding::container(ChartViewport::default());
+    let plot_area_frame = Binding::container(ChartViewport::default());
+    let x_range_start = Binding::container(None::<f32>);
+    let y_range_start = Binding::container(None::<f32>);
     let viewport_state = cartesian_viewport.state_signal();
     let canvas = {
-        let transition = Rc::clone(&transition);
-        let geometry = Rc::clone(&geometry);
-        let base_bounds = Rc::clone(&base_bounds);
+        let transition = transition.clone();
+        let geometry = geometry.clone();
+        let base_bounds = base_bounds.clone();
         let chart_frame = chart_frame.clone();
         let plot_area_frame = plot_area_frame.clone();
         let cartesian_viewport = cartesian_viewport.clone();
@@ -490,11 +487,11 @@ where
             signal.zip(&viewport_state),
             move |ctx, (data, viewport_state)| {
                 let current_base_bounds = normalize_bounds(bounds_of(&data));
-                *base_bounds.borrow_mut() = current_base_bounds;
+                base_bounds.set(current_base_bounds);
                 let visible_bounds =
                     cartesian_viewport.resolve_bounds(current_base_bounds, viewport_state);
                 let chart_geometry = build_geometry(ctx, &data, visible_bounds);
-                *geometry.borrow_mut() = Some(chart_geometry.clone());
+                geometry.set(Some(chart_geometry.clone()));
                 let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
                 if chart_frame.get() != current_chart_frame {
                     chart_frame.set(current_chart_frame);
@@ -504,10 +501,11 @@ where
                     plot_area_frame.set(current_plot_area);
                 }
                 let (progress, animating) = {
-                    let mut transition = transition.borrow_mut();
-                    let progress = transition.progress_for(&data);
-                    let animating = transition.is_animating();
-                    (progress, animating)
+                    transition.with_mut(|transition| {
+                        let progress = transition.progress_for(&data);
+                        let animating = transition.is_animating();
+                        (progress, animating)
+                    })
                 };
                 if animating {
                     ctx.request_next_frame();
@@ -523,7 +521,7 @@ where
     let canvas = Metadata::new(
         canvas,
         GestureObserver::new(TapGesture::new(), {
-            let geometry = Rc::clone(&geometry);
+            let geometry = geometry.clone();
             let selection = selection.clone();
             let cartesian_selection = cartesian_selection.clone();
             move |env: Environment| {
@@ -534,18 +532,19 @@ where
                     .get::<TapEvent>()
                     .expect("interactive_cartesian_signal_canvas: TapEvent missing from gesture environment");
                 let point = gesture_point_to_point(tap.location);
-                let geometry_ref = geometry.borrow();
-                let Some(geometry) = geometry_ref.as_ref() else {
+                let Some(geometry) = geometry.get() else {
                     return;
                 };
                 let hit = geometry.hit_test(point);
                 selection.set_focus(hit.clone());
                 selection.set_selected(hit);
                 if cartesian_selection.tracks_x_value() {
-                    cartesian_selection.set_x_value(cartesian_x_from_point(geometry, point, false));
+                    cartesian_selection
+                        .set_x_value(cartesian_x_from_point(&geometry, point, false));
                 }
                 if cartesian_selection.tracks_y_value() {
-                    cartesian_selection.set_y_value(cartesian_y_from_point(geometry, point, false));
+                    cartesian_selection
+                        .set_y_value(cartesian_y_from_point(&geometry, point, false));
                 }
             }
         }),
@@ -553,8 +552,8 @@ where
     let canvas = Metadata::new(
         canvas,
         GestureObserver::new(DragGesture::new(0.0), {
-            let geometry = Rc::clone(&geometry);
-            let base_bounds = Rc::clone(&base_bounds);
+            let geometry = geometry.clone();
+            let base_bounds = base_bounds.clone();
             let selection = selection.clone();
             let cartesian_selection = cartesian_selection;
             let cartesian_viewport = cartesian_viewport;
@@ -575,8 +574,7 @@ where
                 let drag_event = env.get::<DragEvent>().expect(
                     "interactive_cartesian_signal_canvas: DragEvent missing from gesture environment",
                 );
-                let geometry_ref = geometry.borrow();
-                let Some(geometry) = geometry_ref.as_ref() else {
+                let Some(geometry) = geometry.get() else {
                     return;
                 };
                 let point = gesture_point_to_point(drag_event.location);
@@ -592,10 +590,11 @@ where
                             );
                             if cartesian_selection.tracks_x_range() {
                                 if let Some(start) =
-                                    cartesian_x_from_point(geometry, start_point, true)
+                                    cartesian_x_from_point(&geometry, start_point, true)
                                 {
                                     x_range_start.set(Some(start));
-                                    if let Some(end) = cartesian_x_from_point(geometry, point, true)
+                                    if let Some(end) =
+                                        cartesian_x_from_point(&geometry, point, true)
                                     {
                                         cartesian_selection
                                             .set_x_range(Some(normalized_scalar_range(start, end)));
@@ -603,14 +602,15 @@ where
                                 }
                             } else if cartesian_selection.tracks_x_value() {
                                 cartesian_selection
-                                    .set_x_value(cartesian_x_from_point(geometry, point, true));
+                                    .set_x_value(cartesian_x_from_point(&geometry, point, true));
                             }
                             if cartesian_selection.tracks_y_range() {
                                 if let Some(start) =
-                                    cartesian_y_from_point(geometry, start_point, true)
+                                    cartesian_y_from_point(&geometry, start_point, true)
                                 {
                                     y_range_start.set(Some(start));
-                                    if let Some(end) = cartesian_y_from_point(geometry, point, true)
+                                    if let Some(end) =
+                                        cartesian_y_from_point(&geometry, point, true)
                                     {
                                         cartesian_selection
                                             .set_y_range(Some(normalized_scalar_range(start, end)));
@@ -618,7 +618,7 @@ where
                                 }
                             } else if cartesian_selection.tracks_y_value() {
                                 cartesian_selection
-                                    .set_y_value(cartesian_y_from_point(geometry, point, true));
+                                    .set_y_value(cartesian_y_from_point(&geometry, point, true));
                             }
                         }
                         GesturePhase::Updated => {
@@ -627,26 +627,26 @@ where
                             if cartesian_selection.tracks_x_range() {
                                 if let (Some(start), Some(end)) = (
                                     x_range_start.get(),
-                                    cartesian_x_from_point(geometry, point, true),
+                                    cartesian_x_from_point(&geometry, point, true),
                                 ) {
                                     cartesian_selection
                                         .set_x_range(Some(normalized_scalar_range(start, end)));
                                 }
                             } else if cartesian_selection.tracks_x_value() {
                                 cartesian_selection
-                                    .set_x_value(cartesian_x_from_point(geometry, point, true));
+                                    .set_x_value(cartesian_x_from_point(&geometry, point, true));
                             }
                             if cartesian_selection.tracks_y_range() {
                                 if let (Some(start), Some(end)) = (
                                     y_range_start.get(),
-                                    cartesian_y_from_point(geometry, point, true),
+                                    cartesian_y_from_point(&geometry, point, true),
                                 ) {
                                     cartesian_selection
                                         .set_y_range(Some(normalized_scalar_range(start, end)));
                                 }
                             } else if cartesian_selection.tracks_y_value() {
                                 cartesian_selection
-                                    .set_y_value(cartesian_y_from_point(geometry, point, true));
+                                    .set_y_value(cartesian_y_from_point(&geometry, point, true));
                             }
                         }
                         GesturePhase::Ended => {
@@ -656,7 +656,7 @@ where
                             if cartesian_selection.tracks_x_range() {
                                 if let (Some(start), Some(end)) = (
                                     x_range_start.get(),
-                                    cartesian_x_from_point(geometry, point, true),
+                                    cartesian_x_from_point(&geometry, point, true),
                                 ) {
                                     cartesian_selection
                                         .set_x_range(Some(normalized_scalar_range(start, end)));
@@ -664,12 +664,12 @@ where
                                 x_range_start.set(None);
                             } else if cartesian_selection.tracks_x_value() {
                                 cartesian_selection
-                                    .set_x_value(cartesian_x_from_point(geometry, point, true));
+                                    .set_x_value(cartesian_x_from_point(&geometry, point, true));
                             }
                             if cartesian_selection.tracks_y_range() {
                                 if let (Some(start), Some(end)) = (
                                     y_range_start.get(),
-                                    cartesian_y_from_point(geometry, point, true),
+                                    cartesian_y_from_point(&geometry, point, true),
                                 ) {
                                     cartesian_selection
                                         .set_y_range(Some(normalized_scalar_range(start, end)));
@@ -677,7 +677,7 @@ where
                                 y_range_start.set(None);
                             } else if cartesian_selection.tracks_y_value() {
                                 cartesian_selection
-                                    .set_y_value(cartesian_y_from_point(geometry, point, true));
+                                    .set_y_value(cartesian_y_from_point(&geometry, point, true));
                             }
                         }
                         GesturePhase::Cancelled => {
@@ -693,7 +693,7 @@ where
                     return;
                 }
 
-                let base_bounds = *base_bounds.borrow();
+                let base_bounds = base_bounds.get();
                 let plot_viewport = geometry.viewport;
                 match drag_event.phase {
                     GesturePhase::Started => {
@@ -754,7 +754,7 @@ where
     let canvas = Metadata::new(
         canvas,
         OnEvent::new(Event::HoverMove, {
-            let geometry = Rc::clone(&geometry);
+            let geometry = geometry.clone();
             let selection = selection.clone();
             move |env: Environment| {
                 if !selection.is_active() {
@@ -764,8 +764,7 @@ where
                     "interactive_cartesian_signal_canvas: HoverEvent missing from event environment",
                 );
                 let hit = geometry
-                    .borrow()
-                    .as_ref()
+                    .get()
                     .and_then(|geometry| geometry.hit_test(hover.location));
                 selection.set_focus(hit);
             }
@@ -792,7 +791,7 @@ where
     reason = "This internal adapter keeps Canvas drawing and event wiring together while moving callback ownership into static closures"
 )]
 pub(crate) fn interactive_signal_canvas<S, D, G, T, B, F>(
-    env: &Environment,
+    _env: &Environment,
     signal: S,
     build_geometry: B,
     mut draw_chart: F,
@@ -812,21 +811,21 @@ where
         selection = selection.activate_proxy();
     }
     if selection.is_active() {
-        selection = selection.persist_internal(env);
+        selection = selection.persist_internal();
     }
 
-    let transition = local_shared(env, || RefCell::new(ChartTransitionState::<D>::new()));
-    let geometry = local_shared(env, || RefCell::new(None::<G>));
-    let chart_frame = local_binding(env, ChartViewport::default);
-    let plot_area_frame = local_binding(env, ChartViewport::default);
+    let transition = Binding::container(ChartTransitionState::<D>::new());
+    let geometry = Binding::container(None::<G>);
+    let chart_frame = Binding::container(ChartViewport::default());
+    let plot_area_frame = Binding::container(ChartViewport::default());
     let canvas = {
-        let transition = Rc::clone(&transition);
-        let geometry = Rc::clone(&geometry);
+        let transition = transition.clone();
+        let geometry = geometry.clone();
         let chart_frame = chart_frame.clone();
         let plot_area_frame = plot_area_frame.clone();
         Canvas::with_signal(signal, move |ctx, data| {
             let chart_geometry = build_geometry(ctx, &data);
-            *geometry.borrow_mut() = Some(chart_geometry.clone());
+            geometry.set(Some(chart_geometry.clone()));
             let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
             if chart_frame.get() != current_chart_frame {
                 chart_frame.set(current_chart_frame);
@@ -836,10 +835,11 @@ where
                 plot_area_frame.set(current_plot_area);
             }
             let (progress, animating) = {
-                let mut transition = transition.borrow_mut();
-                let progress = transition.progress_for(&data);
-                let animating = transition.is_animating();
-                (progress, animating)
+                transition.with_mut(|transition| {
+                    let progress = transition.progress_for(&data);
+                    let animating = transition.is_animating();
+                    (progress, animating)
+                })
             };
             if animating {
                 ctx.request_next_frame();
@@ -854,7 +854,7 @@ where
     let canvas = Metadata::new(
         canvas,
         GestureObserver::new(TapGesture::new(), {
-            let geometry = Rc::clone(&geometry);
+            let geometry = geometry.clone();
             let selection = selection.clone();
             move |env: Environment| {
                 if !selection.is_active() {
@@ -864,8 +864,7 @@ where
                     .get::<TapEvent>()
                     .expect("interactive_signal_canvas: TapEvent missing from gesture environment");
                 let hit = geometry
-                    .borrow()
-                    .as_ref()
+                    .get()
                     .and_then(|geometry| geometry.hit_test(gesture_point_to_point(tap.location)));
                 selection.set_focus(hit.clone());
                 selection.set_selected(hit);
@@ -875,7 +874,7 @@ where
     let canvas = Metadata::new(
         canvas,
         GestureObserver::new(DragGesture::new(0.0), {
-            let geometry = Rc::clone(&geometry);
+            let geometry = geometry.clone();
             let selection = selection.clone();
             move |env: Environment| {
                 if !selection.is_active() {
@@ -886,13 +885,13 @@ where
                 );
                 match drag_event.phase {
                     GesturePhase::Started | GesturePhase::Updated => {
-                        let hit = geometry.borrow().as_ref().and_then(|geometry| {
+                        let hit = geometry.get().and_then(|geometry| {
                             geometry.hit_test(gesture_point_to_point(drag_event.location))
                         });
                         selection.set_focus(hit);
                     }
                     GesturePhase::Ended => {
-                        let hit = geometry.borrow().as_ref().and_then(|geometry| {
+                        let hit = geometry.get().and_then(|geometry| {
                             geometry.hit_test(gesture_point_to_point(drag_event.location))
                         });
                         selection.set_selected(hit);
@@ -906,7 +905,7 @@ where
     let canvas = Metadata::new(
         canvas,
         OnEvent::new(Event::HoverMove, {
-            let geometry = Rc::clone(&geometry);
+            let geometry = geometry.clone();
             let selection = selection.clone();
             move |env: Environment| {
                 if !selection.is_active() {
@@ -916,8 +915,7 @@ where
                     .get::<HoverEvent>()
                     .expect("interactive_signal_canvas: HoverEvent missing from event environment");
                 let hit = geometry
-                    .borrow()
-                    .as_ref()
+                    .get()
                     .and_then(|geometry| geometry.hit_test(hover.location));
                 selection.set_focus(hit);
             }

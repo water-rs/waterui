@@ -6,22 +6,40 @@
 
 use waterui::View;
 use waterui::color::{Color, ResolvedColor, WithOpacity};
-use waterui::reactive::{Computed, Signal, impl_constant};
+use waterui::reactive::{Computed, Signal, SignalExt as _, impl_constant};
+use waterui::theme::{ColorScheme, current_color_scheme};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use crate::theme::colors::{MaterialColorScheme, MaterialRoleColor};
+use crate::theme::colors::{MaterialColorScheme, MaterialColorSchemes, MaterialRoleColor};
 
 fn resolve_role(
     env: &Environment,
     token: &'static str,
     role: fn(&MaterialColorScheme) -> MaterialRoleColor,
 ) -> Computed<ResolvedColor> {
+    if let Some(schemes) = env.get::<MaterialColorSchemes>() {
+        let schemes = schemes.clone();
+        return current_color_scheme(env)
+            .map(move |mode| role(&material_scheme_for_color_scheme(&schemes, mode)).resolved())
+            .computed();
+    }
+
     let scheme = env.get::<MaterialColorScheme>().unwrap_or_else(|| {
         panic!(
             "hydrolysis_m3::color::{token} requires hydrolysis_m3::install or install_with_colors"
         )
     });
     Computed::constant(role(scheme).resolved())
+}
+
+fn material_scheme_for_color_scheme(
+    schemes: &MaterialColorSchemes,
+    mode: ColorScheme,
+) -> MaterialColorScheme {
+    match mode {
+        ColorScheme::Light => schemes.light(),
+        ColorScheme::Dark => schemes.dark(),
+    }
 }
 
 macro_rules! define_material_color_tokens {

@@ -81,11 +81,7 @@ pub(crate) fn render_scroll_view(
         metrics.offset_x + viewport.width(),
         metrics.offset_y + viewport.height(),
     );
-    let lazy_viewport = if exclusive_root_scroll && !needs_viewport_clip {
-        content_bounds
-    } else {
-        visible_lazy_viewport
-    };
+    let lazy_viewport = visible_lazy_viewport;
     if needs_viewport_clip {
         ctx.push_layer_rect(1.0, viewport);
     }
@@ -104,10 +100,10 @@ pub(crate) fn render_scroll_view(
         cache_key: handle.cache_key(),
         axis,
         viewport,
+        lazy_viewport,
         transform,
         hit_transform,
         content_dynamic_morphs: content_render.dynamic_morphs,
-        content_has_frame_images: content_render.has_frame_images,
         active_layers,
         exclusive_root: exclusive_root_scroll,
     });

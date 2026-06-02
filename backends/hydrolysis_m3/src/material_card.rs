@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn material_card_tokens_match_material_web_v0_192_cards() {
-        let theme = crate::layout::card::theme(MaterialTheme::new().colors());
+        let theme = crate::layout::card::theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.default_style, CardStyle::Filled);
         assert_eq!(theme.elevated.corner_radius, 12.0);

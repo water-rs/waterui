@@ -643,7 +643,8 @@ impl WuiStr {
 impl IntoRust for WuiStr {
     type Rust = Str;
     unsafe fn into_rust(self) -> Self::Rust {
-        let bytes = unsafe { self.0.into_rust() };
+        let bytes = self.0.as_slice().to_vec();
+        self.0.consume();
         // Safety: We assume the input bytes are valid UTF-8
         unsafe { Str::from_utf8_unchecked(bytes) }
     }

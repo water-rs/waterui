@@ -115,7 +115,7 @@ impl Picker {
                 .map(move |items| {
                     items
                         .into_iter()
-                        .map(|item| item.mapping(&mapping))
+                        .map(|item| item.map(|value| mapping.to_id(value)))
                         .collect::<Vec<_>>()
                 })
                 .computed()
