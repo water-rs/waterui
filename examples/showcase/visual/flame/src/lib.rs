@@ -9,11 +9,18 @@ use waterui::preview;
 #[preview]
 fn main() -> impl View {
     vstack((
-        text("Cinematic HDR Flame (GpuSurface)").size(24),
-        text("HDR film buffer + bloom + ACES tonemap").size(14),
+        text("Cinematic HDR Flame (GpuSurface)")
+            .size(24)
+            .foreground(Color::srgb(245, 247, 250)),
+        text("HDR film buffer + bloom + ACES tonemap")
+            .size(14)
+            .foreground(Color::srgb(210, 216, 224)),
         GpuSurface::new(FlameRenderer::default()).size(400.0, 500.0),
-        text("Rendered at 120fps").size(12),
+        text("Rendered at 120fps")
+            .size(12)
+            .foreground(Color::srgb(210, 216, 224)),
     ))
+    .background(Color::srgb(31, 35, 38))
     .padding()
 }
 
