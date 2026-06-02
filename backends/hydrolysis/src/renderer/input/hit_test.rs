@@ -1,6 +1,29 @@
 use super::*;
 use crate::widgets::util::widget_theme;
+use nami::{Computed, Signal as _};
+use waterui::drag_drop::DragData;
 use waterui_backend_core::widget::WidgetInteractionState;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DropTargetKey {
+    depth: usize,
+    order: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct DropTarget {
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) key: DropTargetKey,
+    pub(crate) env: Environment,
+    pub(crate) on_drop: Rc<RefCell<BoxedAction<()>>>,
+    pub(crate) on_enter: Option<Rc<RefCell<BoxedAction<()>>>>,
+    pub(crate) on_exit: Option<Rc<RefCell<BoxedAction<()>>>>,
+}
+
+pub(crate) struct ActiveDrag {
+    pub(crate) data: DragData,
+    pub(crate) hovered_target: Option<DropTargetKey>,
+}
 
 #[derive(Clone)]
 pub(crate) struct PointerTarget {
@@ -46,6 +69,8 @@ pub(crate) struct HitTestState {
     pub(crate) active_pointer_drag_signature: Option<(usize, usize)>,
     pub(crate) cursor_targets: Vec<CursorTarget>,
     pub(crate) hover_targets: Vec<HoverTarget>,
+    pub(crate) drop_targets: Vec<DropTarget>,
+    pub(crate) active_drag: Option<ActiveDrag>,
     pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
     pub(crate) interaction: InteractionEngine,
     pub(crate) active_press_bounds: Option<vello::kurbo::Rect>,
@@ -60,6 +85,7 @@ impl HitTestState {
         self.pointer_targets.clear();
         self.cursor_targets.clear();
         self.hover_targets.clear();
+        self.drop_targets.clear();
         self.context_menu_targets.clear();
         self.scroll_targets.clear();
     }
@@ -123,9 +149,138 @@ impl HitTestState {
         }
         changed
     }
+
+    fn topmost_drop_target_index_at_point(&self, point: vello::kurbo::Point) -> Option<usize> {
+        self.drop_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .max_by(|(left_index, left), (right_index, right)| {
+                HydrolysisRenderer::target_hit_priority(left.key.depth, left.key.order, *left_index)
+                    .cmp(&HydrolysisRenderer::target_hit_priority(
+                        right.key.depth,
+                        right.key.order,
+                        *right_index,
+                    ))
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn drop_target_with_key(&self, key: DropTargetKey) -> Option<DropTarget> {
+        self.drop_targets
+            .iter()
+            .find(|target| target.key == key)
+            .cloned()
+    }
 }
 
 impl HydrolysisRenderer {
+    fn call_drop_action(
+        action: &Rc<RefCell<BoxedAction<()>>>,
+        captured_env: &Environment,
+        runtime_env: &Environment,
+        data: &DragData,
+    ) {
+        let drag_env = runtime_env.extending(data.clone());
+        let action_env = captured_env.layered_on(&drag_env);
+        (action.borrow_mut())(&action_env);
+    }
+
+    fn sync_active_drag_hover(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
+        let Some(active_drag) = self.hit_test.active_drag.as_ref() else {
+            return false;
+        };
+        let data = active_drag.data.clone();
+        let previous_key = active_drag.hovered_target;
+        let current_target = self
+            .hit_test
+            .topmost_drop_target_index_at_point(point)
+            .map(|index| self.hit_test.drop_targets[index].clone());
+        let current_key = current_target.as_ref().map(|target| target.key);
+        if previous_key == current_key {
+            return false;
+        }
+
+        let previous_target = previous_key.and_then(|key| self.hit_test.drop_target_with_key(key));
+        if let Some(active_drag) = self.hit_test.active_drag.as_mut() {
+            active_drag.hovered_target = current_key;
+        }
+
+        let mut changed = previous_key.is_some() || current_key.is_some();
+        if let Some(target) = previous_target
+            && let Some(on_exit) = target.on_exit.as_ref()
+        {
+            Self::call_drop_action(on_exit, &target.env, env, &data);
+            changed = true;
+        }
+        if let Some(target) = current_target
+            && let Some(on_enter) = target.on_enter.as_ref()
+        {
+            Self::call_drop_action(on_enter, &target.env, env, &data);
+            changed = true;
+        }
+        changed
+    }
+
+    fn begin_or_update_drag(
+        &mut self,
+        data: DragData,
+        point: vello::kurbo::Point,
+        env: &Environment,
+    ) -> bool {
+        if let Some(active_drag) = self.hit_test.active_drag.as_mut() {
+            active_drag.data = data;
+        } else {
+            self.hit_test.active_drag = Some(ActiveDrag {
+                data,
+                hovered_target: None,
+            });
+        }
+        self.sync_active_drag_hover(point, env)
+    }
+
+    fn finish_active_drag(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
+        let Some(active_drag) = self.hit_test.active_drag.take() else {
+            return false;
+        };
+        let drop_target = self
+            .hit_test
+            .topmost_drop_target_index_at_point(point)
+            .map(|index| self.hit_test.drop_targets[index].clone());
+        let exit_target = active_drag
+            .hovered_target
+            .and_then(|key| self.hit_test.drop_target_with_key(key));
+
+        let mut changed = false;
+        if let Some(target) = drop_target {
+            Self::call_drop_action(&target.on_drop, &target.env, env, &active_drag.data);
+            changed = true;
+        }
+        if let Some(target) = exit_target
+            && let Some(on_exit) = target.on_exit.as_ref()
+        {
+            Self::call_drop_action(on_exit, &target.env, env, &active_drag.data);
+            changed = true;
+        }
+        changed
+    }
+
+    fn cancel_active_drag(&mut self, env: &Environment) -> bool {
+        let Some(active_drag) = self.hit_test.active_drag.take() else {
+            return false;
+        };
+        let exit_target = active_drag
+            .hovered_target
+            .and_then(|key| self.hit_test.drop_target_with_key(key));
+        if let Some(target) = exit_target
+            && let Some(on_exit) = target.on_exit.as_ref()
+        {
+            Self::call_drop_action(on_exit, &target.env, env, &active_drag.data);
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn sync_active_pointer_drag_target_after_layout(
         &mut self,
         pointer: Option<vello::kurbo::Point>,
@@ -193,6 +348,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
+        rebuild_requested |= self.cancel_active_drag(env);
         rebuild_requested |= self.hit_test.interaction.clear_all_presses(at);
         if rebuild_requested {
             self.request_rebuild();
@@ -383,6 +539,11 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
         let mut changed = self.handle_pointer_move(x, y, env);
+        let drop_changed = self.finish_active_drag(point, env);
+        if drop_changed {
+            self.request_rebuild();
+        }
+        changed |= drop_changed;
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
@@ -471,6 +632,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
+        rebuild_requested |= self.cancel_active_drag(env);
         let press_changed = self.hit_test.interaction.clear_all_presses(at);
         if press_changed {
             self.request_rebuild();
@@ -540,6 +702,53 @@ impl HydrolysisRenderer {
             order,
             press_slot,
             action,
+        });
+    }
+
+    pub(crate) fn register_draggable_target(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        data: Computed<DragData>,
+    ) {
+        self.register_pointer_target_action(
+            bounds,
+            true,
+            None,
+            Rc::new(RefCell::new(
+                move |renderer: &mut HydrolysisRenderer,
+                      point: vello::kurbo::Point,
+                      env: &Environment| {
+                    renderer.begin_or_update_drag(data.get(), point, env)
+                },
+            )),
+            self.render_depth,
+        );
+    }
+
+    pub(crate) fn register_drop_destination_target(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        destination: DropDestination,
+        env: &Environment,
+    ) {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        let order = self.hit_test.next_hit_test_order();
+        self.hit_test.drop_targets.push(DropTarget {
+            bounds,
+            key: DropTargetKey {
+                depth: self.render_depth,
+                order,
+            },
+            env: env.clone(),
+            on_drop: Rc::new(RefCell::new(destination.on_drop)),
+            on_enter: destination
+                .on_enter
+                .map(|handler| Rc::new(RefCell::new(handler))),
+            on_exit: destination
+                .on_exit
+                .map(|handler| Rc::new(RefCell::new(handler))),
         });
     }
 

@@ -74,12 +74,14 @@ impl HydrolysisBackend {
             CargoManifest::<cargo_toml::Value>::from_path(&cargo_toml_path).map_err(|error| {
                 eyre::eyre!("failed to parse {}: {error}", cargo_toml_path.display())
             })?;
-        let main_supports_preview = std::fs::read_to_string(&main_rs_path)
-            .map(|content| {
-                content.contains("feature = \"waterui-preview-mode\"")
-                    && content.contains("mod preview_symbol;")
-            })
-            .unwrap_or(false);
+        let main_rs = std::fs::read_to_string(&main_rs_path).unwrap_or_default();
+        let lib_rs = std::fs::read_to_string(&lib_rs_path).unwrap_or_default();
+        let main_supports_preview = {
+            main_rs.contains("feature = \"waterui-preview-mode\"")
+                && main_rs.contains("mod preview_symbol;")
+        };
+        let main_installs_theme_after_app = runtime_installs_theme_after_app(&main_rs);
+        let lib_installs_theme_after_app = runtime_installs_theme_after_app(&lib_rs);
         let preview_runtime_supports_symbol = std::fs::read_to_string(&preview_runtime_path)
             .map(|content| {
                 content.contains("use crate::preview_symbol;")
@@ -95,7 +97,34 @@ impl HydrolysisBackend {
             || !preview_symbol_path.exists()
             || !web_index_path.exists()
             || !main_supports_preview
+            || !main_installs_theme_after_app
+            || !lib_installs_theme_after_app
             || !preview_runtime_supports_symbol)
+    }
+}
+
+fn runtime_installs_theme_after_app(content: &str) -> bool {
+    content.contains("let mut app =")
+        && content.contains("hydrolysis_m3::install_defaults(&mut app.env);")
+        && content.contains("hydrolysis::run(app);")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_installs_theme_after_app;
+
+    #[test]
+    fn runtime_install_check_accepts_post_app_default_theme_install() {
+        let content = "let env = waterui::configure_environment!(waterui::env::Environment::new()); let mut app = form_example::app(env); hydrolysis_m3::install_defaults(&mut app.env); hydrolysis::run(app);";
+
+        assert!(runtime_installs_theme_after_app(content));
+    }
+
+    #[test]
+    fn runtime_install_check_rejects_pre_app_theme_install() {
+        let content = "let mut env = waterui::configure_environment!(waterui::env::Environment::new()); hydrolysis_m3::install(&mut env); let app = form_example::app(env); hydrolysis::run(app);";
+
+        assert!(!runtime_installs_theme_after_app(content));
     }
 }
 

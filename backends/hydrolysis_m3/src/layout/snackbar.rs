@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn snackbar_theme_matches_material_web_v0_192_tokens() {
-        let theme = theme(MaterialTheme::new().colors());
+        let theme = theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.content_padding.leading(), SNACKBAR_HORIZONTAL_PADDING);
         assert_eq!(

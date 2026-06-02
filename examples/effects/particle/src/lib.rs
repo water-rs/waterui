@@ -7,8 +7,7 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{binding, Binding};
-use waterui::view;
+use waterui::reactive::{Binding, binding};
 use waterui_particle::{ParticleShape, ParticleSystem};
 
 // --- Demos ---
@@ -280,6 +279,50 @@ fn bounce_box() -> impl View {
         .softness(0.25)
 }
 
+fn mode_opacity(mode: &Binding<i32>, target: i32) -> Computed<f32> {
+    mode.clone()
+        .map(move |current| if current == target { 1.0 } else { 0.0 })
+        .computed()
+}
+
+fn background_layers(mode: &Binding<i32>) -> impl View {
+    zstack((
+        Color::srgb_hex("#0F172A").opacity(
+            mode.clone()
+                .map(|m| if matches!(m, 0 | 1) { 1.0 } else { 0.0 })
+                .computed(),
+        ),
+        Color::srgb_hex("#1a221a").opacity(mode_opacity(mode, 2)),
+        Color::from(Srgb::BLACK).opacity(
+            mode.clone()
+                .map(|m| if matches!(m, 3 | 4 | 6) { 1.0 } else { 0.0 })
+                .computed(),
+        ),
+        Color::srgb_hex("#F0F4F8").opacity(mode_opacity(mode, 5)),
+        Color::srgb_hex("#08111E").opacity(mode_opacity(mode, 7)),
+    ))
+}
+
+fn particle_layers(mode: &Binding<i32>) -> impl View {
+    zstack((
+        rain().opacity(mode_opacity(mode, 0)),
+        snow().opacity(mode_opacity(mode, 1)),
+        fog().opacity(mode_opacity(mode, 2)),
+        flame().opacity(mode_opacity(mode, 3)),
+        firework().opacity(mode_opacity(mode, 4)),
+        confetti_view().opacity(mode_opacity(mode, 5)),
+        explosion().opacity(mode_opacity(mode, 6)),
+        bounce_box().opacity(mode_opacity(mode, 7)),
+    ))
+}
+
+fn particle_button(mode: &Binding<i32>, label: &'static str, target: i32, width: f32) -> impl View {
+    Button::new(text(label))
+        .action(move |State(m): State<Binding<i32>>| m.set(target))
+        .state(mode)
+        .width(width)
+}
+
 /// Main View
 #[preview]
 fn main() -> impl View {
@@ -287,34 +330,8 @@ fn main() -> impl View {
     let is_confetti = mode.clone().map(|m| m == 5);
 
     zstack((
-        // Background
-        mode.clone()
-            .map(|m| match m {
-                0 | 1 => Color::srgb_hex("#0F172A"),   // Rain/Snow
-                2 => Color::srgb_hex("#1a221a"),       // Fog
-                3 | 4 | 6 => Color::from(Srgb::BLACK), // Flame/Firework/Explosion
-                7 => Color::srgb_hex("#08111E"),       // Bounce Box
-                5 => Color::srgb_hex("#F0F4F8"),       // Confetti (Light BG)
-                _ => Color::from(Srgb::BLACK),
-            })
-            .computed(),
-        // Particle System
-        watch(mode.clone(), |m| {
-            view! {
-                match m {
-                    0 => rain(),
-                    1 => snow(),
-                    2 => fog(),
-                    3 => flame(),
-                    4 => firework(),
-                    5 => confetti_view(), // Use the manually unrolled one to ensure stability
-                    6 => explosion(),
-                    7 => bounce_box(),
-                    _ => rain(),
-                }
-            }
-        }),
-        // UI Overlay
+        background_layers(&mode),
+        particle_layers(&mode),
         vstack((
             zstack((
                 title_label(Color::from(Srgb::BLACK)).opacity(is_confetti.clone().select(1.0, 0.0)),
@@ -322,36 +339,20 @@ fn main() -> impl View {
             )),
             vstack((
                 hstack((
-                    Button::new(text("Rain"))
-                        .action(|State(m): State<Binding<i32>>| m.set(0))
-                        .state(&mode),
-                    Button::new(text("Snow"))
-                        .action(|State(m): State<Binding<i32>>| m.set(1))
-                        .state(&mode),
-                    Button::new(text("Fog"))
-                        .action(|State(m): State<Binding<i32>>| m.set(2))
-                        .state(&mode),
+                    particle_button(&mode, "Rain", 0, 96.0),
+                    particle_button(&mode, "Snow", 1, 96.0),
+                    particle_button(&mode, "Fog", 2, 96.0),
                 ))
                 .spacing(10.0),
                 hstack((
-                    Button::new(text("Flame"))
-                        .action(|State(m): State<Binding<i32>>| m.set(3))
-                        .state(&mode),
-                    Button::new(text("Firework"))
-                        .action(|State(m): State<Binding<i32>>| m.set(4))
-                        .state(&mode),
+                    particle_button(&mode, "Flame", 3, 112.0),
+                    particle_button(&mode, "Firework", 4, 128.0),
                 ))
                 .spacing(10.0),
                 hstack((
-                    Button::new(text("Confetti"))
-                        .action(|State(m): State<Binding<i32>>| m.set(5))
-                        .state(&mode),
-                    Button::new(text("Explosion"))
-                        .action(|State(m): State<Binding<i32>>| m.set(6))
-                        .state(&mode),
-                    Button::new(text("Bounce Box"))
-                        .action(|State(m): State<Binding<i32>>| m.set(7))
-                        .state(&mode),
+                    particle_button(&mode, "Confetti", 5, 128.0),
+                    particle_button(&mode, "Explosion", 6, 136.0),
+                    particle_button(&mode, "Bounce Box", 7, 152.0),
                 ))
                 .spacing(10.0),
             ))

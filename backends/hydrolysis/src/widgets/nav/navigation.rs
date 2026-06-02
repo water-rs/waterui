@@ -6,7 +6,7 @@ use crate::renderer::accessibility_activation_point;
 use crate::renderer::navigation_state::NavigationTransitionDirection;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    local_state_child_env, measure_navigation_view_intrinsic,
+    local_state_child_env, local_state_overlay_env, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_intrinsic, measure_view_intrinsic, navigation_back_button_rect,
     navigation_base_bar_height_for_display_mode, normalize_layout_view, resolved_color_to_peniko,
     split_compact_threshold, transformed_rect,
@@ -461,7 +461,7 @@ pub(crate) fn render_navigation_stack(
         .controller
         .clone();
     if let Some(retained_env) = controller.retained_environment() {
-        local_env = retained_env.layered_on(&local_env);
+        local_env = local_state_overlay_env(&retained_env, &local_env);
     }
     local_env.insert(controller);
 

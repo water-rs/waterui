@@ -2,10 +2,10 @@
 
 use waterui::app::App;
 use waterui::color::Srgb;
+use waterui::layout::grid::{grid as layout_grid, row};
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{binding, impl_constant, Binding};
-use waterui::view_builder;
+use waterui::reactive::{Binding, binding, impl_constant};
 use waterui_chart::{
     ArcAngles, AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint,
     Candle, CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint,
@@ -45,27 +45,6 @@ enum ChartMode {
 impl_constant!(ChartMode);
 
 impl ChartMode {
-    const BASIC: &[Self] = &[
-        Self::Bar,
-        Self::Line,
-        Self::Pie,
-        Self::Scatter,
-        Self::Candlestick,
-        Self::Depth,
-        Self::Heatmap,
-        Self::Contour,
-        Self::Radar,
-        Self::Bubble,
-        Self::Area,
-        Self::Gauge,
-    ];
-
-    const STRESS: &[Self] = &[
-        Self::StressScatter10K,
-        Self::StressLine1K,
-        Self::StressHeatmap10K,
-    ];
-
     const fn label(self) -> &'static str {
         match self {
             Self::Bar => "Bar",
@@ -86,40 +65,88 @@ impl ChartMode {
         }
     }
 
-    #[view_builder]
-    fn render(self) -> impl View {
+    const fn button_width(self) -> f32 {
         match self {
-            Self::Bar => bar_chart_preview(),
-            Self::Line => line_chart_preview(),
-            Self::Pie => pie_chart_preview(),
-            Self::Scatter => scatter_chart_preview(),
-            Self::Candlestick => candlestick_chart_preview(),
-            Self::Depth => depth_chart_preview(),
-            Self::Heatmap => heatmap_chart_preview(),
-            Self::Contour => contour_chart_preview(),
-            Self::Radar => radar_chart_preview(),
-            Self::Bubble => bubble_chart_preview(),
-            Self::Area => area_chart_preview(),
-            Self::Gauge => gauge_chart_preview(),
-            Self::StressScatter10K => scatter_stress_preview(),
-            Self::StressLine1K => line_stress_preview(),
-            Self::StressHeatmap10K => heatmap_stress_preview(),
+            Self::Bar | Self::Line | Self::Pie => 92.0,
+            Self::Scatter => 128.0,
+            Self::StressScatter10K | Self::StressHeatmap10K => 168.0,
+            Self::StressLine1K => 132.0,
+            _ => 128.0,
         }
     }
 }
 
-fn mode_buttons(modes: &[ChartMode], mode: &Binding<ChartMode>) -> HStack<(Vec<AnyView>,)> {
-    modes
-        .iter()
-        .map(|&target| {
-            button(target.label())
-                .action(move |State(m): State<Binding<ChartMode>>| m.set(target))
-                .state(mode)
-        })
-        .collect()
+fn mode_button(mode: &Binding<ChartMode>, target: ChartMode) -> impl View {
+    button(target.label())
+        .action(move |State(m): State<Binding<ChartMode>>| m.set(target))
+        .state(mode)
+        .width(target.button_width())
+}
+
+fn mode_controls(mode: &Binding<ChartMode>) -> impl View {
+    layout_grid(
+        3,
+        [
+            row((
+                mode_button(mode, ChartMode::Bar),
+                mode_button(mode, ChartMode::Line),
+                mode_button(mode, ChartMode::Pie),
+            )),
+            row((
+                mode_button(mode, ChartMode::Scatter),
+                mode_button(mode, ChartMode::Candlestick),
+                mode_button(mode, ChartMode::Depth),
+            )),
+            row((
+                mode_button(mode, ChartMode::Heatmap),
+                mode_button(mode, ChartMode::Contour),
+                mode_button(mode, ChartMode::Radar),
+            )),
+            row((
+                mode_button(mode, ChartMode::Bubble),
+                mode_button(mode, ChartMode::Area),
+                mode_button(mode, ChartMode::Gauge),
+            )),
+            row((
+                mode_button(mode, ChartMode::StressScatter10K),
+                mode_button(mode, ChartMode::StressLine1K),
+                mode_button(mode, ChartMode::StressHeatmap10K),
+            )),
+        ],
+    )
+    .spacing(10.0)
+    .width(560.0)
+}
+
+fn chart_layer(mode: &Binding<ChartMode>, target: ChartMode, chart: impl View) -> impl View {
+    chart.opacity(
+        mode.clone()
+            .map(move |current| if current == target { 1.0 } else { 0.0 }),
+    )
+}
+
+fn chart_layers(mode: &Binding<ChartMode>) -> impl View {
+    zstack((
+        chart_layer(mode, ChartMode::Bar, bar_chart_preview()),
+        chart_layer(mode, ChartMode::Line, line_chart_preview()),
+        chart_layer(mode, ChartMode::Pie, pie_chart_preview()),
+        chart_layer(mode, ChartMode::Scatter, scatter_chart_preview()),
+        chart_layer(mode, ChartMode::Candlestick, candlestick_chart_preview()),
+        chart_layer(mode, ChartMode::Depth, depth_chart_preview()),
+        chart_layer(mode, ChartMode::Heatmap, heatmap_chart_preview()),
+        chart_layer(mode, ChartMode::Contour, contour_chart_preview()),
+        chart_layer(mode, ChartMode::Radar, radar_chart_preview()),
+        chart_layer(mode, ChartMode::Bubble, bubble_chart_preview()),
+        chart_layer(mode, ChartMode::Area, area_chart_preview()),
+        chart_layer(mode, ChartMode::Gauge, gauge_chart_preview()),
+        chart_layer(mode, ChartMode::StressScatter10K, scatter_stress_preview()),
+        chart_layer(mode, ChartMode::StressLine1K, line_stress_preview()),
+        chart_layer(mode, ChartMode::StressHeatmap10K, heatmap_stress_preview()),
+    ))
 }
 
 /// Main View - demonstrates different chart types
+#[preview]
 fn main() -> impl View {
     let mode = binding(ChartMode::default());
 
@@ -127,11 +154,9 @@ fn main() -> impl View {
         Color::srgb_hex("#1a1a2e"),
         vstack((
             text("Charts Demo").title().bold().foreground(Srgb::WHITE),
-            mode_buttons(ChartMode::BASIC, &mode),
-            // GPU stress test buttons (data loads that choke Swift Charts)
-            mode_buttons(ChartMode::STRESS, &mode),
+            mode_controls(&mode),
             spacer(),
-            watch(mode.clone(), ChartMode::render),
+            chart_layers(&mode),
             spacer(),
         ))
         .padding_with(EdgeInsets::all(20.0)),

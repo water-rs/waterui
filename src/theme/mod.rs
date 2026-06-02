@@ -92,7 +92,7 @@
 //! 2. Create `Computed<ResolvedColor>` signals that react to color scheme changes
 //! 3. Install via `Theme::new().color_scheme(binding).colors(ColorSettings::new()...)`
 
-use core::marker::PhantomData;
+use core::{any::TypeId, marker::PhantomData};
 
 use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
@@ -566,7 +566,18 @@ pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
 /// install_color_signal::<color::Foreground>(&mut env, dark_mode_color);
 /// ```
 pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<ResolvedColor>) {
-    env.insert(ColorSlotValue::<T>::new(signal));
+    env.insert(ColorSlotValue::<T>::new(signal.clone()));
+    if TypeId::of::<T>() == TypeId::of::<color::Foreground>() {
+        env.insert(Store::<
+            waterui_graphics::color::ForegroundColor,
+            Computed<ResolvedColor>,
+        >::new(signal));
+    } else if TypeId::of::<T>() == TypeId::of::<color::Background>() {
+        env.insert(Store::<
+            waterui_graphics::color::BackgroundColor,
+            Computed<ResolvedColor>,
+        >::new(signal));
+    }
 }
 
 /// Returns an installed color signal for the requested slot when one exists.

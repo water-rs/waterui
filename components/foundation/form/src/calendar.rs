@@ -2,6 +2,7 @@
 
 use alloc::{
     collections::BTreeSet,
+    rc::Rc,
     string::{String, ToString},
     vec::Vec,
 };
@@ -11,16 +12,18 @@ use jiff::{
     Timestamp, ToSpan,
     civil::{Date, Weekday},
 };
-use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{IntoLabel, button};
-use waterui_core::{AnyView, Environment, LocalStateScope, LocalStateStore, View};
+use waterui_core::{AnyView, Dynamic, Environment, Metadata, Retain, View};
 use waterui_graphics::color::Color;
+use waterui_layout::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
-use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack, vstack, zstack};
+use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack, vstack};
 use waterui_locale::format::date::{format_calendar_month_year, format_calendar_weekday};
 use waterui_locale::{Locale, locale_binding};
+use waterui_shape::{Circle, ShapeExt};
 use waterui_text::{
     Text,
     styled::{Style, StyledStr},
@@ -28,6 +31,7 @@ use waterui_text::{
 };
 
 const CALENDAR_DAY_SIZE: f32 = 40.0;
+const CALENDAR_SELECTED_DAY_SIZE: f32 = 36.0;
 const CALENDAR_CELL_SPACING: f32 = 8.0;
 const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 
@@ -38,29 +42,35 @@ pub struct Calendar {
     value: Binding<Date>,
     range: RangeInclusive<Date>,
     decorated: Computed<BTreeSet<Date>>,
+    visible_month: Binding<VisibleMonth>,
 }
 
 impl Calendar {
-    /// Creates a new `Calendar` with the given semantic label and selected
-    /// date binding.
+    /// Creates a new `Calendar` with the given semantic label, selected date
+    /// binding, and visible month binding.
     ///
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(label: impl IntoLabel, date: &Binding<Date>) -> Self {
+    pub fn new(label: impl IntoLabel, date: &Binding<Date>, visible_month: &Binding<Date>) -> Self {
         let range = Date::MIN..=Date::MAX;
         Self {
             label: label.into_label(),
             value: date.clone(),
             range,
             decorated: Computed::constant(BTreeSet::new()),
+            visible_month: map_visible_month_binding(visible_month),
         }
     }
 
     /// Sets the valid date range.
     #[must_use]
-    pub const fn range(mut self, range: RangeInclusive<Date>) -> Self {
+    pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
+        if !visible_month_in_range(self.visible_month.get(), &range) {
+            self.visible_month
+                .set(initial_visible_month(Some(self.value.get()), &range));
+        }
         self.range = range;
         self
     }
@@ -95,18 +105,16 @@ impl View for Calendar {
         let selection = self.value;
         let range = self.range;
         let decorated = self.decorated;
+        let visible_month = self.visible_month;
         let locale = resolve_locale(env);
-        let visible_month = local_binding(env, {
-            let selection = selection.clone();
-            let range = range.clone();
-            move || initial_visible_month(Some(selection.get()), &range)
-        });
 
-        let selection_and_decorated = selection.zip(&decorated);
-        let calendar = visible_month
+        let calendar_state = visible_month
             .clone()
-            .zip(&selection_and_decorated)
-            .map(move |(month, (selected_date, decorated_dates))| {
+            .zip(&selection.zip(&decorated))
+            .computed();
+        let calendar = signal_driven_view(
+            calendar_state,
+            move |(month, (selected_date, decorated_dates))| {
                 let cell_range = range.clone();
                 let cell_selection = selection.clone();
                 CalendarBody::new(
@@ -124,8 +132,8 @@ impl View for Calendar {
                         )
                     }),
                 )
-            })
-            .computed();
+            },
+        );
 
         vstack((label, calendar)).spacing(10.0)
     }
@@ -282,21 +290,47 @@ pub(crate) fn initial_visible_month(
     VisibleMonth::from_date(*range.start())
 }
 
+pub(crate) fn visible_month_in_range(month: VisibleMonth, range: &RangeInclusive<Date>) -> bool {
+    let first_day = month.first_day();
+    first_day >= month_start(*range.start()) && first_day <= month_start(*range.end())
+}
+
+pub(crate) fn map_visible_month_binding(month: &Binding<Date>) -> Binding<VisibleMonth> {
+    Binding::mapping(
+        month,
+        VisibleMonth::from_date,
+        |binding, month: VisibleMonth| {
+            binding.set(month.first_day());
+        },
+    )
+}
+
 pub(crate) fn resolve_locale(env: &Environment) -> Locale {
     locale_binding(env).get()
 }
 
-pub(crate) fn local_binding<T: Clone + 'static>(
-    env: &Environment,
-    init: impl FnOnce() -> T + 'static,
-) -> Binding<T> {
-    let scope = env
-        .get::<LocalStateScope>()
-        .unwrap_or_else(|| panic!("waterui-form requires renderer LocalStateScope support"))
-        .clone();
-    env.get::<LocalStateStore>()
-        .unwrap_or_else(|| panic!("waterui-form requires renderer LocalStateStore support"))
-        .binding(&scope, init)
+pub(crate) fn signal_driven_view<T, S, V>(
+    source: S,
+    build: impl Fn(T) -> V + 'static,
+) -> Metadata<Retain>
+where
+    S: Signal<Output = T> + Clone + 'static,
+    T: 'static,
+    V: View,
+{
+    let (handler, dynamic) = Dynamic::new();
+    let build = Rc::new(build);
+    handler.set(build(source.get()));
+
+    let guard = source.watch({
+        let build = Rc::clone(&build);
+        move |ctx| {
+            let metadata = ctx.metadata().clone();
+            handler.set_with_metadata(build(ctx.into_value()), metadata);
+        }
+    });
+
+    Metadata::new(dynamic, Retain::new((guard, source, build)))
 }
 
 fn build_month_header(
@@ -376,35 +410,9 @@ fn single_day_cell_content(
     let decorated = decorated_dates.contains(&cell.date);
 
     if is_selectable {
-        let accessibility_label = day_cell_accessibility_label(cell.date);
-        let hit_target = if is_selected {
-            AnyView::new(
-                button(accessibility_label)
-                    .bordered_prominent()
-                    .hide_label()
-                    .action(move || {
-                        selection.set(cell.date);
-                    }),
-            )
-        } else {
-            AnyView::new(
-                button(accessibility_label)
-                    .borderless()
-                    .hide_label()
-                    .action(move || {
-                        selection.set(cell.date);
-                    }),
-            )
-        };
-
-        AnyView::new(
-            Frame::new(zstack((
-                hit_target,
-                day_cell_visual_label(cell.date, decorated, is_selected),
-            )))
-            .width(CALENDAR_DAY_SIZE)
-            .height(CALENDAR_DAY_SIZE),
-        )
+        selectable_day_cell(cell.date, decorated, is_selected, move || {
+            selection.set(cell.date);
+        })
     } else {
         AnyView::new(
             Frame::new(day_cell_placeholder(cell, decorated))
@@ -427,49 +435,45 @@ pub(crate) fn multi_day_cell_content(
     let decorated = decorated_dates.contains(&cell.date);
 
     if is_selectable {
-        let accessibility_label = day_cell_accessibility_label(cell.date);
-        let hit_target = if is_selected {
-            AnyView::new(
-                button(accessibility_label)
-                    .bordered_prominent()
-                    .hide_label()
-                    .action(move || {
-                        let mut dates = selection.get();
-                        if !dates.insert(cell.date) {
-                            dates.remove(&cell.date);
-                        }
-                        selection.set(dates);
-                    }),
-            )
-        } else {
-            AnyView::new(
-                button(accessibility_label)
-                    .borderless()
-                    .hide_label()
-                    .action(move || {
-                        let mut dates = selection.get();
-                        if !dates.insert(cell.date) {
-                            dates.remove(&cell.date);
-                        }
-                        selection.set(dates);
-                    }),
-            )
-        };
-
-        AnyView::new(
-            Frame::new(zstack((
-                hit_target,
-                day_cell_visual_label(cell.date, decorated, is_selected),
-            )))
-            .width(CALENDAR_DAY_SIZE)
-            .height(CALENDAR_DAY_SIZE),
-        )
+        selectable_day_cell(cell.date, decorated, is_selected, move || {
+            let mut dates = selection.get();
+            if !dates.insert(cell.date) {
+                dates.remove(&cell.date);
+            }
+            selection.set(dates);
+        })
     } else {
         AnyView::new(
             Frame::new(day_cell_placeholder(cell, decorated))
                 .width(CALENDAR_DAY_SIZE)
                 .height(CALENDAR_DAY_SIZE),
         )
+    }
+}
+
+fn selectable_day_cell(
+    date: Date,
+    decorated: bool,
+    is_selected: bool,
+    action: impl FnMut() + 'static,
+) -> AnyView {
+    let button = button(day_cell_visual_label(date, decorated, is_selected))
+        .plain()
+        .accessibility_label(day_cell_accessibility_label(date))
+        .action(action);
+    let content = Frame::new(button)
+        .width(CALENDAR_DAY_SIZE)
+        .height(CALENDAR_DAY_SIZE);
+
+    if is_selected {
+        AnyView::new(BackgroundView::new(
+            content,
+            Frame::new(Circle.fill(Color::srgb(103, 80, 164)))
+                .width(CALENDAR_SELECTED_DAY_SIZE)
+                .height(CALENDAR_SELECTED_DAY_SIZE),
+        ))
+    } else {
+        AnyView::new(content)
     }
 }
 

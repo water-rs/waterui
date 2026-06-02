@@ -20,6 +20,19 @@ use waterui::preview;
 use waterui::reactive::Binding;
 use waterui::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
 
+const SCALE_BOX_SIDE: f32 = 80.0;
+const SCALE_STAGE_SIDE: f32 = SCALE_BOX_SIDE * 2.25;
+const ROTATION_BOX_SIDE: f32 = 60.0;
+const ROTATION_STAGE_SIDE: f32 = ROTATION_BOX_SIDE * 1.8;
+const TRANSLATION_BOX_SIDE: f32 = 50.0;
+const TRANSLATION_STAGE_SIDE: f32 = TRANSLATION_BOX_SIDE * 3.0;
+const COMBINED_BOX_SIDE: f32 = 60.0;
+const COMBINED_STAGE_SIDE: f32 = COMBINED_BOX_SIDE * 3.0;
+
+fn transform_stage(content: impl View, side: f32) -> impl View {
+    content.size(side, side)
+}
+
 fn set_f32_button(label: &'static str, value: f32, binding: &Binding<f32>) -> impl View {
     button(label)
         .action(move |State(current): State<Binding<f32>>| current.set(value))
@@ -39,9 +52,11 @@ fn scale_animation_section(scale: &Binding<f32>) -> impl View {
     vstack((
         text("Scale Animation").headline(),
         text("Click buttons to scale the box with spring physics").body(),
-        Blue.size(80.0, 80.0)
-            .scale(animated_scale.clone(), animated_scale.clone())
-            .min_height(120.0),
+        transform_stage(
+            Blue.size(SCALE_BOX_SIDE, SCALE_BOX_SIDE)
+                .scale(animated_scale.clone(), animated_scale.clone()),
+            SCALE_STAGE_SIDE,
+        ),
         hstack((
             set_f32_button("0.5x", 0.5, scale),
             set_f32_button("1x", 1.0, scale),
@@ -59,10 +74,12 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
     vstack((
         text("Rotation Animation").headline(),
         text("Rotate the box smoothly").body(),
-        Green
-            .size(60.0, 60.0)
-            .rotation(animated_rotation)
-            .min_height(100.0),
+        transform_stage(
+            Green
+                .size(ROTATION_BOX_SIDE, ROTATION_BOX_SIDE)
+                .rotation(animated_rotation),
+            ROTATION_STAGE_SIDE,
+        ),
         vstack((
             hstack((
                 button("-90°")
@@ -94,10 +111,12 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
     vstack((
         text("Translation Animation").headline(),
         text("Move the box with spring physics").body(),
-        Purple
-            .size(50.0, 50.0)
-            .offset(animated_x, animated_y)
-            .min_height(150.0),
+        transform_stage(
+            Purple
+                .size(TRANSLATION_BOX_SIDE, TRANSLATION_BOX_SIDE)
+                .offset(animated_x, animated_y),
+            TRANSLATION_STAGE_SIDE,
+        ),
         vstack((
             hstack((
                 button("Center")
@@ -133,11 +152,13 @@ fn combined_transform_section(
     vstack((
         text("Combined Transforms").headline(),
         text("Scale and rotation together").body(),
-        Orange
-            .size(60.0, 60.0)
-            .scale(animated_scale.clone(), animated_scale.clone())
-            .rotation(animated_rotation)
-            .min_height(150.0),
+        transform_stage(
+            Orange
+                .size(COMBINED_BOX_SIDE, COMBINED_BOX_SIDE)
+                .scale(animated_scale.clone(), animated_scale.clone())
+                .rotation(animated_rotation),
+            COMBINED_STAGE_SIDE,
+        ),
         hstack((
             button("Reset")
                 .action(

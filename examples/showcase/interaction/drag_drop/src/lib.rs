@@ -15,11 +15,14 @@ use waterui::prelude::*;
 use waterui::reactive::Binding;
 use waterui::task::{sleep, spawn_local};
 
+const FRUIT_CARD_WIDTH: f32 = 152.0;
+
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View {
     hstack((text(emoji).size(28.0), text(label).size(16.0)))
         .spacing(8.0)
         .padding()
+        .width(FRUIT_CARD_WIDTH)
         .background(color.with_opacity(0.9))
         .draggable(DragData::text(format!("{} {}", emoji, label)))
 }

@@ -11,8 +11,8 @@ use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, View};
 
 use crate::calendar::{
-    CalendarBody, calendar_rows, initial_visible_month, local_binding, multi_day_cell_content,
-    resolve_locale,
+    CalendarBody, VisibleMonth, calendar_rows, initial_visible_month, map_visible_month_binding,
+    multi_day_cell_content, resolve_locale, signal_driven_view, visible_month_in_range,
 };
 
 /// Configuration for the `MultiDatePicker` component.
@@ -27,6 +27,7 @@ pub struct MultiDatePickerConfig {
     pub range: RangeInclusive<Date>,
     /// Passively decorated dates.
     pub decorated: Computed<Vec<Date>>,
+    visible_month: Binding<VisibleMonth>,
 }
 
 /// A control for selecting multiple dates.
@@ -70,25 +71,37 @@ impl MultiDatePickerConfig {
 }
 
 impl MultiDatePicker {
-    /// Creates a new `MultiDatePicker` with the given semantic label and a
-    /// binding for the selected dates.
+    /// Creates a new `MultiDatePicker` with the given semantic label, selected
+    /// dates binding, and visible month binding.
     ///
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(label: impl IntoLabel, date: &Binding<BTreeSet<Date>>) -> Self {
+    pub fn new(
+        label: impl IntoLabel,
+        date: &Binding<BTreeSet<Date>>,
+        visible_month: &Binding<Date>,
+    ) -> Self {
+        let range = Date::MIN..=Date::MAX;
         Self(MultiDatePickerConfig {
             label: label.into_label(),
             value: map_multi_date_binding(date),
-            range: Date::MIN..=Date::MAX,
+            range,
             decorated: Computed::constant(Vec::new()),
+            visible_month: map_visible_month_binding(visible_month),
         })
     }
 
     /// Sets the valid date range for the picker.
     #[must_use]
-    pub const fn range(mut self, range: RangeInclusive<Date>) -> Self {
+    pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
+        if !visible_month_in_range(self.0.visible_month.get(), &range) {
+            self.0.visible_month.set(initial_visible_month(
+                self.0.value.get().into_iter().next(),
+                &range,
+            ));
+        }
         self.0.range = range;
         self
     }
@@ -127,6 +140,7 @@ struct MultiDatePickerFallback {
     value: Binding<BTreeSet<Date>>,
     range: RangeInclusive<Date>,
     decorated: Computed<BTreeSet<Date>>,
+    visible_month: Binding<VisibleMonth>,
 }
 
 impl MultiDatePickerFallback {
@@ -146,6 +160,7 @@ impl MultiDatePickerFallback {
                 .decorated
                 .map(|dates: Vec<Date>| dates.into_iter().collect::<BTreeSet<_>>())
                 .computed(),
+            visible_month: config.visible_month,
         }
     }
 }
@@ -156,18 +171,16 @@ impl View for MultiDatePickerFallback {
         let selection = self.value;
         let range = self.range;
         let decorated = self.decorated;
+        let visible_month = self.visible_month;
         let locale = resolve_locale(env);
-        let visible_month = local_binding(env, {
-            let selection = selection.clone();
-            let range = range.clone();
-            move || initial_visible_month(selection.get().iter().next().copied(), &range)
-        });
 
-        let selection_and_decorated = selection.zip(&decorated);
-        let calendar = visible_month
+        let calendar_state = visible_month
             .clone()
-            .zip(&selection_and_decorated)
-            .map(move |(month, (selected_dates, decorated_dates))| {
+            .zip(&selection.zip(&decorated))
+            .computed();
+        let calendar = signal_driven_view(
+            calendar_state,
+            move |(month, (selected_dates, decorated_dates))| {
                 let cell_range = range.clone();
                 let cell_selection = selection.clone();
                 CalendarBody::new(
@@ -185,8 +198,8 @@ impl View for MultiDatePickerFallback {
                         )
                     }),
                 )
-            })
-            .computed();
+            },
+        );
 
         waterui_layout::stack::vstack((label, calendar)).spacing(10.0)
     }

@@ -553,6 +553,24 @@ impl HydrolysisRenderer {
         if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
             return Some(icon.as_inner().name.as_str().to_owned());
         }
+        if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
+            let (_, children) = container.as_inner().as_parts();
+            let labels = children
+                .iter()
+                .filter_map(|child| {
+                    self.accessibility_label_from_view_with_budget(
+                        child,
+                        &scoped_env,
+                        remaining - 1,
+                    )
+                    .map(|label| label.trim().to_owned())
+                    .filter(|label| !label.is_empty())
+                })
+                .collect::<Vec<_>>();
+            if !labels.is_empty() {
+                return Some(labels.join(" "));
+            }
+        }
         None
     }
 

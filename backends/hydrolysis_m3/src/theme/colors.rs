@@ -192,6 +192,20 @@ pub struct MaterialColorSchemes {
 }
 
 impl MaterialColorSchemes {
+    /// Create paired light and dark Material color schemes from a source.
+    #[must_use]
+    pub const fn new(
+        source: MaterialColorSource,
+        light: MaterialColorScheme,
+        dark: MaterialColorScheme,
+    ) -> Self {
+        Self {
+            source,
+            light,
+            dark,
+        }
+    }
+
     /// Return the source configuration used to generate the schemes.
     #[must_use]
     pub const fn source(&self) -> MaterialColorSource {

@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn card_theme_matches_material_web_v0_192_tokens() {
-        let theme = theme(MaterialTheme::new().colors());
+        let theme = theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.default_style, CardStyle::Filled);
         assert_eq!(theme.content_padding, CARD_CONTENT_PADDING);

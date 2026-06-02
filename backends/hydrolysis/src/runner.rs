@@ -21,6 +21,7 @@ use nami::Signal as _;
 use waterui::app::App;
 use waterui::component::table::TableConfig;
 use waterui::graphics::Color;
+use waterui::theme;
 use waterui::window::WindowManager;
 use waterui::window::{Window, WindowBackground};
 use waterui_core::AnyView;
@@ -203,6 +204,7 @@ fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
 }
 
 fn install_native_component_hooks(env: &mut Environment) {
+    waterui_video::install_rust_player_hooks(env);
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
@@ -249,11 +251,17 @@ impl RenderDiagnosticsConfig {
 
 struct RenderPhaseSample {
     rebuild: Duration,
+    build_content: Duration,
+    scene_dispatch: Duration,
+    scene_finish: Duration,
     acquire: Duration,
     render: Duration,
     present: Duration,
     total: Duration,
     rebuild_iterations: u32,
+    applied_filter_count: u32,
+    applied_filter_capture_us: u64,
+    applied_filter_effect_us: u64,
     rebuilt: bool,
 }
 
@@ -264,10 +272,16 @@ struct RenderPhaseTotals {
     rebuild_iterations: u64,
     slow_frames: u64,
     rebuild: Duration,
+    build_content: Duration,
+    scene_dispatch: Duration,
+    scene_finish: Duration,
     acquire: Duration,
     render: Duration,
     present: Duration,
     total: Duration,
+    applied_filter_count: u64,
+    applied_filter_capture: Duration,
+    applied_filter_effect: Duration,
 }
 
 struct RenderDiagnostics {
@@ -312,10 +326,21 @@ impl RenderDiagnostics {
             .checked_add(u64::from(sample.rebuild_iterations))
             .expect("hydrolysis runner: render diagnostics rebuild iteration counter overflow");
         self.totals.rebuild += sample.rebuild;
+        self.totals.build_content += sample.build_content;
+        self.totals.scene_dispatch += sample.scene_dispatch;
+        self.totals.scene_finish += sample.scene_finish;
         self.totals.acquire += sample.acquire;
         self.totals.render += sample.render;
         self.totals.present += sample.present;
         self.totals.total += sample.total;
+        self.totals.applied_filter_count = self
+            .totals
+            .applied_filter_count
+            .checked_add(u64::from(sample.applied_filter_count))
+            .expect("hydrolysis runner: render diagnostics applied filter counter overflow");
+        self.totals.applied_filter_capture +=
+            Duration::from_micros(sample.applied_filter_capture_us);
+        self.totals.applied_filter_effect += Duration::from_micros(sample.applied_filter_effect_us);
 
         if sample.total >= self.config.slow_frame_threshold {
             self.totals.slow_frames = self
@@ -328,10 +353,18 @@ impl RenderDiagnostics {
                 window_title = %window_title,
                 total_ms = duration_ms(sample.total),
                 rebuild_ms = duration_ms(sample.rebuild),
+                build_content_ms = duration_ms(sample.build_content),
+                scene_dispatch_ms = duration_ms(sample.scene_dispatch),
+                scene_finish_ms = duration_ms(sample.scene_finish),
                 acquire_ms = duration_ms(sample.acquire),
                 render_ms = duration_ms(sample.render),
                 present_ms = duration_ms(sample.present),
                 rebuild_iterations = sample.rebuild_iterations,
+                applied_filter_count = sample.applied_filter_count,
+                applied_filter_capture_ms =
+                    duration_ms(Duration::from_micros(sample.applied_filter_capture_us)),
+                applied_filter_effect_ms =
+                    duration_ms(Duration::from_micros(sample.applied_filter_effect_us)),
                 "Hydrolysis slow frame detected"
             );
         }
@@ -353,9 +386,17 @@ impl RenderDiagnostics {
         let frame_count = self.totals.frames as f64;
         let avg_total_ms = duration_ms(self.totals.total) / frame_count;
         let avg_rebuild_ms = duration_ms(self.totals.rebuild) / frame_count;
+        let avg_build_content_ms = duration_ms(self.totals.build_content) / frame_count;
+        let avg_scene_dispatch_ms = duration_ms(self.totals.scene_dispatch) / frame_count;
+        let avg_scene_finish_ms = duration_ms(self.totals.scene_finish) / frame_count;
         let avg_acquire_ms = duration_ms(self.totals.acquire) / frame_count;
         let avg_render_ms = duration_ms(self.totals.render) / frame_count;
         let avg_present_ms = duration_ms(self.totals.present) / frame_count;
+        let avg_applied_filter_count = self.totals.applied_filter_count as f64 / frame_count;
+        let avg_applied_filter_capture_ms =
+            duration_ms(self.totals.applied_filter_capture) / frame_count;
+        let avg_applied_filter_effect_ms =
+            duration_ms(self.totals.applied_filter_effect) / frame_count;
         let rebuild_ratio = self.totals.rebuild_frames as f64 / frame_count;
         let avg_rebuild_iterations = self.totals.rebuild_iterations as f64 / frame_count;
         let fps = self.totals.frames as f64 / elapsed.as_secs_f64();
@@ -371,9 +412,15 @@ impl RenderDiagnostics {
             avg_rebuild_iterations,
             avg_total_ms,
             avg_rebuild_ms,
+            avg_build_content_ms,
+            avg_scene_dispatch_ms,
+            avg_scene_finish_ms,
             avg_acquire_ms,
             avg_render_ms,
             avg_present_ms,
+            avg_applied_filter_count,
+            avg_applied_filter_capture_ms,
+            avg_applied_filter_effect_ms,
             slow_frames = self.totals.slow_frames,
             slow_frame_threshold_ms = duration_ms(self.config.slow_frame_threshold),
             "Hydrolysis render diagnostics"
@@ -517,6 +564,7 @@ struct RuntimeWindow<P: PlatformWindow> {
     needs_rebuild: bool,
     scroll_only_rebuild: bool,
     effect_only_rebuild_pending: bool,
+    visual_animation_rebuild_pending: bool,
     pointer_position: Option<(f32, f32)>,
     render_diagnostics: RenderDiagnostics,
 }
@@ -535,6 +583,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             needs_rebuild: true,
             scroll_only_rebuild: false,
             effect_only_rebuild_pending: false,
+            visual_animation_rebuild_pending: false,
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
         }
@@ -640,6 +689,7 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
     } else {
         runtime.renderer.request_redraw();
     }
@@ -655,10 +705,12 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
     } else {
         runtime.scroll_only_rebuild = true;
         runtime.needs_rebuild = false;
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
     }
     runtime.platform.request_redraw();
 }
@@ -678,13 +730,17 @@ fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Re
 
 fn window_clear_color(window: &Window, env: &Environment) -> vello::peniko::Color {
     match &window.background {
-        WindowBackground::Opaque => vello::peniko::Color::WHITE,
-        WindowBackground::Color(color) => {
-            let resolved = color.resolve(env).get();
-            let srgb = resolved.to_srgb_with_headroom();
-            vello::peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
+        WindowBackground::Opaque => {
+            resolve_window_clear_color(Color::new(theme::color::Background), env)
         }
+        WindowBackground::Color(color) => resolve_window_clear_color(color.clone(), env),
     }
+}
+
+fn resolve_window_clear_color(color: Color, env: &Environment) -> vello::peniko::Color {
+    let resolved = color.resolve(env).get();
+    let srgb = resolved.to_srgb_with_headroom();
+    vello::peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
 }
 
 #[cfg(feature = "winit")]
@@ -721,9 +777,15 @@ fn rebuild_window_scene<P: PlatformWindow>(
     let mut phases = FramePhases::default();
     let animations_active = runtime.renderer.advance_animations();
     if animations_active {
-        runtime.scroll_only_rebuild = false;
+        let explicit_rebuild_pending = (runtime.needs_rebuild
+            && !runtime.visual_animation_rebuild_pending
+            && !runtime.effect_only_rebuild_pending)
+            || runtime.scroll_only_rebuild
+            || runtime.renderer.has_rebuild_request();
+        if !explicit_rebuild_pending {
+            runtime.visual_animation_rebuild_pending = true;
+        }
         runtime.needs_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
     }
 
     let mut rebuilt = false;
@@ -734,14 +796,13 @@ fn rebuild_window_scene<P: PlatformWindow>(
             runtime.renderer.invalidate_retained_scroll_content();
             runtime.scroll_only_rebuild = false;
             runtime.effect_only_rebuild_pending = false;
+            runtime.visual_animation_rebuild_pending = false;
         }
         let should_rebuild = runtime.needs_rebuild || renderer_requested_rebuild;
         if !should_rebuild {
             break;
         }
-        let reuse_filter_inputs = runtime.effect_only_rebuild_pending
-            && !renderer_requested_rebuild
-            && !runtime.scroll_only_rebuild;
+        let reuse_filter_inputs = !renderer_requested_rebuild && !runtime.scroll_only_rebuild;
         rebuild_iterations = rebuild_iterations
             .checked_add(1)
             .expect("hydrolysis runner: rebuild iteration counter overflow");
@@ -750,9 +811,9 @@ fn rebuild_window_scene<P: PlatformWindow>(
             "hydrolysis runner: rebuild loop exceeded 64 iterations in a single pump"
         );
         runtime.renderer.reset_scene();
-        runtime
-            .renderer
-            .set_scroll_content_cache_reuse(runtime.scroll_only_rebuild);
+        runtime.renderer.set_scroll_content_cache_reuse(
+            runtime.scroll_only_rebuild || runtime.visual_animation_rebuild_pending,
+        );
         runtime
             .renderer
             .set_applied_filter_input_cache_reuse(reuse_filter_inputs);
@@ -784,6 +845,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
         phases.scene_finish += scene_finish_started_at.elapsed();
         runtime.needs_rebuild = false;
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
         rebuilt = true;
         if let Some((x, y)) = runtime.pointer_position
             && runtime.renderer.sync_pointer_hover_state(x, y, env)
@@ -792,6 +854,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
                 runtime.scroll_only_rebuild = false;
                 runtime.needs_rebuild = true;
                 runtime.effect_only_rebuild_pending = false;
+                runtime.visual_animation_rebuild_pending = false;
             } else {
                 runtime.renderer.request_redraw();
             }
@@ -804,13 +867,16 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime.effect_only_rebuild_pending =
             !runtime.needs_rebuild && !runtime.scroll_only_rebuild;
         runtime.needs_rebuild = true;
+        runtime.visual_animation_rebuild_pending = false;
         runtime.platform.request_redraw();
     } else if runtime.renderer.animations_active() && !runtime.needs_rebuild {
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = true;
         runtime.needs_rebuild = true;
         runtime.platform.request_redraw();
     } else if !runtime.needs_rebuild {
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
     }
     phases.rebuild = rebuild_started_at.elapsed();
     (rebuilt, rebuild_iterations, phases)
@@ -1035,11 +1101,17 @@ fn render_window_with_capture<P: PlatformWindow>(
                 window_title.as_str(),
                 RenderPhaseSample {
                     rebuild: rebuild_phases.rebuild,
+                    build_content: rebuild_phases.build_content,
+                    scene_dispatch: rebuild_phases.scene_dispatch,
+                    scene_finish: rebuild_phases.scene_finish,
                     acquire: acquire_duration,
                     render: render_duration,
                     present: present_duration,
                     total: elapsed_or_zero(frame_started_at),
                     rebuild_iterations,
+                    applied_filter_count,
+                    applied_filter_capture_us,
+                    applied_filter_effect_us,
                     rebuilt: rebuild_iterations > 0,
                 },
             );
@@ -1316,12 +1388,19 @@ fn advance_runtime<P: PlatformWindow>(
     if runtime.renderer.handle_gesture_tick(now, env) {
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
     }
     let animations_active = runtime.renderer.advance_animations();
     if animations_active {
-        runtime.scroll_only_rebuild = false;
+        let explicit_rebuild_pending = (runtime.needs_rebuild
+            && !runtime.visual_animation_rebuild_pending
+            && !runtime.effect_only_rebuild_pending)
+            || runtime.scroll_only_rebuild
+            || runtime.renderer.has_rebuild_request();
+        if !explicit_rebuild_pending {
+            runtime.visual_animation_rebuild_pending = true;
+        }
         runtime.needs_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
     }
     if runtime.renderer.advance_text_caret_animation(now) {
         runtime.renderer.request_redraw();
@@ -1330,6 +1409,7 @@ fn advance_runtime<P: PlatformWindow>(
     if runtime.renderer.retained_scroll_dynamic_morphs_active() && !runtime.needs_rebuild {
         runtime.scroll_only_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
         runtime.platform.request_redraw();
     }
     let rebuild_requested = runtime.renderer.take_rebuild_request();
@@ -1338,6 +1418,7 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.scroll_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
     if runtime.needs_rebuild {

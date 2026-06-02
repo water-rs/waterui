@@ -34,7 +34,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct FlowMarkdown {
     source: Computed<Str>,
-    config: FlowMarkdownConfig,
+    config: Computed<FlowMarkdownConfig>,
 }
 
 /// Convenience constructor for [`FlowMarkdown`].
@@ -49,14 +49,25 @@ impl FlowMarkdown {
     pub fn new(source: impl IntoComputed<Str>) -> Self {
         Self {
             source: source.into_computed(),
-            config: FlowMarkdownConfig::default(),
+            config: Computed::constant(FlowMarkdownConfig::default()),
         }
+    }
+
+    /// Sets the dynamic configuration for this markdown view.
+    #[must_use]
+    pub fn configuration(mut self, config: impl IntoComputed<FlowMarkdownConfig>) -> Self {
+        self.config = config.into_computed();
+        self
     }
 
     /// Sets the animation preset.
     #[must_use]
-    pub const fn preset(mut self, preset: FlowAnimationPreset) -> Self {
-        self.config.preset = preset;
+    pub fn preset(mut self, preset: FlowAnimationPreset) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.preset = preset;
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
@@ -67,28 +78,44 @@ impl FlowMarkdown {
         kind: FlowElementKind,
         policy: FlowAnimationPolicy,
     ) -> Self {
-        self.config.overrides.insert(kind, policy);
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.overrides.insert(kind, policy.clone());
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
     /// Sets stream mode.
     #[must_use]
-    pub const fn stream(mut self, mode: FlowStreamMode) -> Self {
-        self.config.stream_mode = mode;
+    pub fn stream(mut self, mode: FlowStreamMode) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.stream_mode = mode;
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
     /// Sets max pending bytes kept for partial parsing.
     #[must_use]
     pub fn max_pending_bytes(mut self, bytes: usize) -> Self {
-        self.config.max_pending_bytes = bytes.max(256);
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.max_pending_bytes = bytes.max(256);
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
     /// Sets table rendering policy for incomplete streamed tables.
     #[must_use]
-    pub const fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
-        self.config.table_policy = policy;
+    pub fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.table_policy = policy;
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
@@ -96,8 +123,12 @@ impl FlowMarkdown {
     ///
     /// Use `None` to disable token fade-in.
     #[must_use]
-    pub const fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
-        self.config.typewriter_token_fade_in = animation;
+    pub fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.typewriter_token_fade_in = animation.clone();
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 }
@@ -106,7 +137,7 @@ impl View for FlowMarkdown {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self { source, config } = self;
         let (handler, dynamic) = Dynamic::new();
-        let state = Rc::new(RefCell::new(FlowMarkdownState::new(config)));
+        let state = Rc::new(RefCell::new(FlowMarkdownState::new(config.get())));
 
         let initial = source.get();
         let initial_update = state
@@ -117,8 +148,10 @@ impl View for FlowMarkdown {
         spawn_typewriter_reveal_if_needed(&state, &handler, initial_typewriter);
 
         let guard_source = source.clone();
-        let guard = source.watch({
+        let guard_config = config.clone();
+        let source_guard = source.watch({
             let state = Rc::clone(&state);
+            let handler = handler.clone();
             move |ctx: Context<Str>| {
                 let metadata = ctx.metadata().clone();
                 let markdown = ctx.into_value();
@@ -128,8 +161,28 @@ impl View for FlowMarkdown {
                 spawn_typewriter_reveal_if_needed(&state, &handler, typewriter);
             }
         });
+        let config_guard = config.watch({
+            let state = Rc::clone(&state);
+            let handler = handler.clone();
+            move |ctx: Context<FlowMarkdownConfig>| {
+                let metadata = ctx.metadata().clone();
+                let update = state.borrow_mut().reconfigure(ctx.into_value(), metadata);
+                let typewriter = update.typewriter.clone();
+                handler.set_with_metadata(update.view, update.metadata);
+                spawn_typewriter_reveal_if_needed(&state, &handler, typewriter);
+            }
+        });
 
-        Metadata::new(dynamic, Retain::new((guard, guard_source, state)))
+        Metadata::new(
+            dynamic,
+            Retain::new((
+                source_guard,
+                config_guard,
+                guard_source,
+                guard_config,
+                state,
+            )),
+        )
     }
 }
 
@@ -185,6 +238,56 @@ impl Default for FlowMarkdownConfig {
             table_policy: FlowTablePolicy::NoAnimationReadablePending,
             typewriter_token_fade_in: None,
         }
+    }
+}
+
+impl FlowMarkdownConfig {
+    /// Sets the animation preset.
+    #[must_use]
+    pub const fn preset(mut self, preset: FlowAnimationPreset) -> Self {
+        self.preset = preset;
+        self
+    }
+
+    /// Overrides animation policy for a specific element kind.
+    #[must_use]
+    pub fn override_animation(
+        mut self,
+        kind: FlowElementKind,
+        policy: FlowAnimationPolicy,
+    ) -> Self {
+        self.overrides.insert(kind, policy);
+        self
+    }
+
+    /// Sets stream mode.
+    #[must_use]
+    pub const fn stream(mut self, mode: FlowStreamMode) -> Self {
+        self.stream_mode = mode;
+        self
+    }
+
+    /// Sets max pending bytes kept for partial parsing.
+    #[must_use]
+    pub const fn max_pending_bytes(mut self, bytes: usize) -> Self {
+        self.max_pending_bytes = if bytes > 256 { bytes } else { 256 };
+        self
+    }
+
+    /// Sets table rendering policy for incomplete streamed tables.
+    #[must_use]
+    pub const fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
+        self.table_policy = policy;
+        self
+    }
+
+    /// Sets fade animation for newly revealed typewriter token batches.
+    ///
+    /// Use `None` to disable token fade-in.
+    #[must_use]
+    pub fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
+        self.typewriter_token_fade_in = animation;
+        self
     }
 }
 
@@ -450,6 +553,23 @@ impl FlowMarkdownState {
         self.typewriter_visible_chars =
             (self.typewriter_visible_chars + batch_chars.max(1)).min(self.typewriter_target_chars);
         Some(self.build_current_view())
+    }
+
+    fn reconfigure(
+        &mut self,
+        config: FlowMarkdownConfig,
+        upstream_metadata: WatcherMetadata,
+    ) -> FlowUpdate {
+        self.config = config;
+        self.typewriter_revision = self.typewriter_revision.wrapping_add(1);
+        let full_typewriter_chars = self.total_typewriter_char_count(&self.blocks);
+        self.typewriter_visible_chars = self.typewriter_visible_chars.min(full_typewriter_chars);
+        self.typewriter_target_chars = full_typewriter_chars;
+        FlowUpdate {
+            view: self.build_current_view(),
+            metadata: upstream_metadata,
+            typewriter: None,
+        }
     }
 
     fn build_current_view(&self) -> AnyView {

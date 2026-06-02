@@ -296,7 +296,7 @@ fn table_cell(content: Text, alignment: MarkdownTableAlignment) -> impl View {
     .then(spacer);
     let trailing_spacer = matches!(alignment, MarkdownTableAlignment::Center).then(spacer);
 
-    hstack((leading_spacer, content, trailing_spacer)).max_width(f32::MAX)
+    hstack((leading_spacer, content, trailing_spacer))
 }
 
 /// Converts a `RichTextElement` to plain `Text` for table cells.

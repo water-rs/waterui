@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn material_snackbar_tokens_match_material_web_v0_192() {
-        let theme = crate::layout::snackbar::theme(MaterialTheme::new().colors());
+        let theme = crate::layout::snackbar::theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.single_line_min_height, 48.0);
         assert_eq!(theme.corner_radius, 4.0);

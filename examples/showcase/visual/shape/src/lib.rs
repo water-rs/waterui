@@ -18,7 +18,9 @@ use waterui::reactive::binding;
 use waterui::shape::{
     Capsule, Circle, Ellipse, Path, Rectangle, RoundedRectangle, ShapeExt, UnevenRoundedRectangle,
 };
-use waterui::widget::condition::when;
+
+const HDR_SHAPES_WIDTH: f32 = 284.0;
+const HDR_SHAPES_HEIGHT: f32 = 60.0;
 
 /// Demo: Circle shape
 fn circle_demo() -> impl View {
@@ -224,14 +226,22 @@ fn hdr_shapes() -> impl View {
 /// Demo: HDR shapes
 fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
     let show_hdr = show_hdr.clone();
+    let hdr_opacity = show_hdr.clone().select(1.0, 0.0);
+    let sdr_opacity = show_hdr.clone().select(0.0, 1.0);
+
     vstack((
         text("HDR Shapes").size(18.0),
         "Extended range colors via headroom",
         Toggle::new(&show_hdr).label("Show HDR"),
-        when(show_hdr.clone(), || {
-            hdr_shapes().color_space(ColorSpace::Hdr)
-        })
-        .otherwise(|| hdr_shapes().color_space(ColorSpace::Sdr)),
+        zstack((
+            hdr_shapes()
+                .color_space(ColorSpace::Sdr)
+                .opacity(sdr_opacity),
+            hdr_shapes()
+                .color_space(ColorSpace::Hdr)
+                .opacity(hdr_opacity),
+        ))
+        .size(HDR_SHAPES_WIDTH, HDR_SHAPES_HEIGHT),
     ))
     .padding()
 }

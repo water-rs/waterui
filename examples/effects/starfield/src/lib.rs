@@ -1,9 +1,9 @@
-//! Flame animation example using ShaderSurface.
+//! Starfield animation example using `ShaderSurface`.
 //!
 //! This example demonstrates the simplest way to create GPU-rendered content
 //! using the `shader!` macro.
 //!
-//! The flame effect uses fractal Brownian motion (fBm) noise for realistic fire.
+//! The starfield effect uses a GPU shader to render layered stars and nebulae.
 
 use waterui::app::App;
 use waterui::graphics::shader;
@@ -13,12 +13,18 @@ use waterui::preview;
 #[preview]
 fn main() -> impl View {
     vstack((
-        text!("Flame Animation").title(),
-        text!("GPU-rendered procedural fire").headline(),
-        // Just one line to load and render a shader!
+        text("Starfield Animation")
+            .size(24)
+            .foreground(Color::srgb(245, 247, 250)),
+        text("GPU-rendered procedural starfield")
+            .size(14)
+            .foreground(Color::srgb(210, 216, 224)),
         shader!("starfield.wgsl").size(400.0, 500.0),
-        text!("Rendered at 120fps"),
+        text("Rendered at 120fps")
+            .size(12)
+            .foreground(Color::srgb(210, 216, 224)),
     ))
+    .background(Color::srgb(31, 35, 38))
     .padding()
 }
 

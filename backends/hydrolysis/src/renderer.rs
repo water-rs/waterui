@@ -21,7 +21,7 @@ pub(crate) use render::WidgetRenderContext;
 pub(crate) use render::*;
 pub(crate) use render::{
     anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
-    normalize_layout_view, normalize_view_for_render, passthrough_content, path_commands_to_path,
+    normalize_layout_view, normalize_view_for_render, path_commands_to_path,
     resolved_color_to_peniko, resolved_gradient_to_brush, resolved_morph_shape_to_path,
     resolved_shape_to_path, transformed_rect,
 };
@@ -109,21 +109,16 @@ use waterui_graphics::{
     ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
 };
 use waterui_icon::SystemIcon;
-use waterui_layout::background::BackgroundLayout as LayoutBackgroundLayout;
 use waterui_layout::container::{FixedContainer, LazyContainer};
-use waterui_layout::frame::FrameLayout;
-use waterui_layout::padding::PaddingLayout;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_layout::stack::{HStackLayout, VStackLayout};
 use waterui_map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
-use waterui_video::{VideoConfig, VideoPlayerConfig};
 use waterui_webview::WebView;
 
 use crate::animation::AnimationController;
@@ -328,6 +323,7 @@ struct RetainedScrollFrame {
     cache_key: usize,
     axis: ScrollAxis,
     viewport: vello::kurbo::Rect,
+    lazy_viewport: vello::kurbo::Rect,
     transform: vello::kurbo::Affine,
     hit_transform: vello::kurbo::Affine,
     content_dynamic_morphs: Vec<DynamicMorphDraw>,
@@ -339,10 +335,10 @@ pub(crate) struct RetainScrollFrameRequest {
     pub(crate) cache_key: usize,
     pub(crate) axis: ScrollAxis,
     pub(crate) viewport: vello::kurbo::Rect,
+    pub(crate) lazy_viewport: vello::kurbo::Rect,
     pub(crate) transform: vello::kurbo::Affine,
     pub(crate) hit_transform: vello::kurbo::Affine,
     pub(crate) content_dynamic_morphs: Vec<DynamicMorphDraw>,
-    pub(crate) content_has_frame_images: bool,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
     pub(crate) exclusive_root: bool,
 }
@@ -350,6 +346,7 @@ pub(crate) struct RetainScrollFrameRequest {
 struct ScrollContentCache {
     lazy_viewport: vello::kurbo::Rect,
     subtree: DynamicSubtree,
+    active_filters: Vec<ActiveAppliedFilter>,
 }
 
 #[derive(Clone)]
@@ -362,13 +359,13 @@ pub(crate) struct DynamicMorphDraw {
 
 pub(crate) struct ScrollContentRender {
     pub(crate) dynamic_morphs: Vec<DynamicMorphDraw>,
-    pub(crate) has_frame_images: bool,
 }
 
 struct AppliedFilterRuntime {
     filter: AppliedFilter,
     setup_complete: bool,
     input_texture: Option<AppliedFilterInputTexture>,
+    output_texture: Option<AppliedFilterOutputTexture>,
     output_image: Option<vello::peniko::ImageData>,
 }
 
@@ -378,6 +375,7 @@ impl AppliedFilterRuntime {
             filter,
             setup_complete: false,
             input_texture: None,
+            output_texture: None,
             output_image: None,
         }
     }
@@ -386,6 +384,8 @@ impl AppliedFilterRuntime {
         self.filter = filter;
         self.setup_complete = false;
         self.input_texture = None;
+        self.output_texture = None;
+        self.output_image = None;
     }
 
     fn input_texture(
@@ -436,6 +436,49 @@ impl AppliedFilterRuntime {
             .is_some_and(|texture| texture.width == width && texture.height == height)
     }
 
+    fn output_texture(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (&wgpu::Texture, &wgpu::TextureView) {
+        if self
+            .output_texture
+            .as_ref()
+            .is_none_or(|texture| texture.width != width || texture.height != height)
+        {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("hydrolysis_applied_filter_output"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::STORAGE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.output_texture = Some(AppliedFilterOutputTexture {
+                width,
+                height,
+                texture,
+                view,
+            });
+        }
+
+        let Some(texture) = self.output_texture.as_ref() else {
+            panic!("hydrolysis AppliedFilter output texture cache missing after allocation");
+        };
+        (&texture.texture, &texture.view)
+    }
+
     fn needs_redraw_refresh(&mut self) -> bool {
         self.filter.sync_targets();
         self.filter.redraw_hint()
@@ -484,32 +527,21 @@ impl AppliedFilterRuntime {
         }
         self.filter.sync_targets();
         let (output_width, output_height) = self.filter.output_size(width, height);
-        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_applied_filter_output"),
-            size: wgpu::Extent3d {
-                width: output_width,
-                height: output_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
-        });
-
-        let Some(input_texture) = self.input_texture.as_ref() else {
-            panic!("hydrolysis AppliedFilter input texture missing before render");
+        let (input_texture, input_view) = {
+            let Some(input_texture) = self.input_texture.as_ref() else {
+                panic!("hydrolysis AppliedFilter input texture missing before render");
+            };
+            (input_texture.texture.clone(), input_texture.view.clone())
+        };
+        let (output_texture, output_view) = {
+            let (texture, view) = self.output_texture(device, output_width, output_height);
+            (texture.clone(), view.clone())
         };
         let input = EffectInput {
             device,
             queue,
-            texture: &input_texture.texture,
-            view: input_texture.view.clone(),
+            texture: &input_texture,
+            view: input_view,
             format: wgpu::TextureFormat::Rgba8Unorm,
             width,
             height,
@@ -518,7 +550,7 @@ impl AppliedFilterRuntime {
             device,
             queue,
             texture: &output_texture,
-            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            view: output_view,
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: output_width,
             height: output_height,
@@ -559,6 +591,14 @@ struct AppliedFilterInputTexture {
     view: wgpu::TextureView,
 }
 
+struct AppliedFilterOutputTexture {
+    width: u32,
+    height: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[derive(Clone)]
 struct ActiveAppliedFilter {
     runtime: Rc<RefCell<AppliedFilterRuntime>>,
     width: u32,
@@ -761,8 +801,6 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ResolvedGradient>);
         $macro!(Native<ResolvedShape>);
         $macro!(Native<ResolvedMorphShape>);
-        $macro!(Native<VideoConfig>);
-        $macro!(Native<VideoPlayerConfig>);
         $macro!(Native<MapConfig>);
         $macro!(WebView);
     };
@@ -902,8 +940,9 @@ impl HydrolysisRenderer {
         Self::register_passthrough_metadata::<ContextMenu>(dispatcher);
         dispatcher
             .register_renderer::<Metadata<ResolvedContextMenu>>(Self::render_context_menu_metadata);
-        Self::register_passthrough_metadata::<Draggable>(dispatcher);
-        Self::register_passthrough_metadata::<DropDestination>(dispatcher);
+        dispatcher.register_renderer::<Metadata<Draggable>>(Self::render_draggable_metadata);
+        dispatcher
+            .register_renderer::<Metadata<DropDestination>>(Self::render_drop_destination_metadata);
         Self::register_passthrough_metadata::<Background>(dispatcher);
 
         Self::register_passthrough_ignorable_metadata::<MaterialBackground>(dispatcher);
@@ -1401,15 +1440,6 @@ impl HydrolysisRenderer {
             .bind_repeating_phase(cycle, self.frame_instant)
     }
 
-    fn layout_requires_render_measurement_prewarm(layout: &dyn Layout) -> bool {
-        let layout = layout as &dyn Any;
-        !(layout.is::<PaddingLayout>()
-            || layout.is::<LayoutBackgroundLayout>()
-            || layout.is::<FrameLayout>()
-            || layout.is::<HStackLayout>()
-            || layout.is::<VStackLayout>())
-    }
-
     fn rects_intersect(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
         a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
     }
@@ -1457,151 +1487,6 @@ impl HydrolysisRenderer {
         !Self::rects_intersect(child_rect, viewport)
     }
 
-    fn vstack_child_stretches_main_axis(axis: StretchAxis) -> bool {
-        matches!(
-            axis,
-            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
-        )
-    }
-
-    fn local_lazy_viewport_for_context(
-        renderer: &HydrolysisRenderer,
-        ctx: RenderContext,
-    ) -> Option<vello::kurbo::Rect> {
-        let viewport = renderer.lazy.lazy_viewport_stack.last().copied()?;
-        let [scale_x, skew_y, skew_x, scale_y, translate_x, translate_y] =
-            ctx.transform.as_coeffs();
-        if skew_x.abs() > f64::EPSILON
-            || skew_y.abs() > f64::EPSILON
-            || scale_x <= 0.0
-            || scale_y <= 0.0
-        {
-            return None;
-        }
-        Some(vello::kurbo::Rect::new(
-            (viewport.x0 - translate_x) / scale_x,
-            (viewport.y0 - translate_y) / scale_y,
-            (viewport.x1 - translate_x) / scale_x,
-            (viewport.y1 - translate_y) / scale_y,
-        ))
-    }
-
-    fn can_render_lazy_viewport_vstack_container(
-        renderer: &HydrolysisRenderer,
-        ctx: RenderContext,
-        layout: VStackLayout,
-        _children: &[AnyView],
-    ) -> bool {
-        layout.spacing >= 0.0 && Self::local_lazy_viewport_for_context(renderer, ctx).is_some()
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    fn render_lazy_viewport_vstack_container(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        layout: VStackLayout,
-        children: Vec<AnyView>,
-        env: &Environment,
-    ) {
-        let visible_bounds = Self::local_lazy_viewport_for_context(renderer, ctx)
-            .expect("hydrolysis lazy fixed VStackLayout requires a local lazy viewport");
-        let count = children.len();
-        if count == 0 {
-            return;
-        }
-
-        let slot_key = renderer.lazy_stack_slot_key(ctx);
-        renderer
-            .lazy
-            .lazy_stack_controller
-            .bind(slot_key)
-            .prepare_len(count);
-
-        let spacing = f64::from(layout.spacing);
-        let mut cursor = ctx.bounds.y0;
-        let mut children = children.into_iter();
-        for index in 0..count {
-            if index > 0 {
-                cursor += spacing;
-            }
-
-            let cached_extent = {
-                renderer
-                    .lazy
-                    .lazy_stack_controller
-                    .slot(slot_key)
-                    .item_extents[index]
-            };
-            if let Some(extent) = cached_extent
-                && cursor + extent < visible_bounds.y0
-            {
-                cursor += extent;
-                let _ = children.next().unwrap_or_else(|| {
-                    panic!("hydrolysis fixed VStack child cache advanced past child {index}")
-                });
-                continue;
-            }
-            if cursor > visible_bounds.y1 {
-                break;
-            }
-
-            let child = children.next().unwrap_or_else(|| {
-                panic!("hydrolysis fixed VStack child iterator ended at index {index}")
-            });
-            let child_env = local_state_child_env(env, index);
-            let child = normalize_layout_view(child, &child_env);
-            let proposal = ProposalSize::new(Some(ctx.bounds.width() as f32), None);
-            let (size, stretch_axis) = {
-                let state = RefCell::new(&mut renderer.state);
-                let subview = HydroSubview::from_view(&child, &state, &child_env);
-                (subview.measure(proposal).size, subview.stretch_axis())
-            };
-            let child_width = if matches!(
-                stretch_axis,
-                StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
-            ) || size.width.is_infinite()
-            {
-                ctx.bounds.width()
-            } else {
-                f64::from(size.width).min(ctx.bounds.width())
-            };
-            let child_height = if Self::vstack_child_stretches_main_axis(stretch_axis) {
-                0.0
-            } else {
-                f64::from(size.height)
-            };
-            renderer
-                .lazy
-                .lazy_stack_controller
-                .slot_mut(slot_key)
-                .item_extents[index] = Some(child_height);
-
-            let child_rect = {
-                let x = if layout.alignment == HorizontalAlignment::Leading {
-                    ctx.bounds.x0
-                } else if layout.alignment == HorizontalAlignment::Trailing {
-                    ctx.bounds.x1 - child_width
-                } else {
-                    ctx.bounds.x0 + (ctx.bounds.width() - child_width) / 2.0
-                };
-                vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
-            };
-
-            if Self::rects_intersect(child_rect, visible_bounds) {
-                Self::dispatch_any(
-                    renderer,
-                    ctx.child(
-                        vello::kurbo::Affine::translate((child_rect.x0, child_rect.y0)),
-                        vello::kurbo::Rect::new(0.0, 0.0, child_width, child_height),
-                    ),
-                    &child_env,
-                    child,
-                );
-            }
-            cursor += child_height;
-        }
-    }
-
     fn render_layout_container(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -1609,25 +1494,6 @@ impl HydrolysisRenderer {
         children: Vec<AnyView>,
         env: &Environment,
     ) {
-        let layout_any = layout.as_ref() as &dyn Any;
-        if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>()
-            && Self::can_render_lazy_viewport_vstack_container(
-                renderer,
-                ctx,
-                vstack.clone(),
-                &children,
-            )
-        {
-            Self::render_lazy_viewport_vstack_container(
-                renderer,
-                ctx,
-                vstack.clone(),
-                children,
-                env,
-            );
-            return;
-        }
-
         let mut resolved_children = Vec::with_capacity(children.len());
         let mut child_envs = Vec::with_capacity(children.len());
         for (index, child) in children.into_iter().enumerate() {
@@ -1647,13 +1513,19 @@ impl HydrolysisRenderer {
             Some(ctx.bounds.width() as f32),
             Some(ctx.bounds.height() as f32),
         );
-        if Self::layout_requires_render_measurement_prewarm(layout.as_ref()) {
-            let _ = layout.size_that_fits(proposal, &refs);
-        }
-        let bounds = LayoutRect::from_size(LayoutSize::new(
-            ctx.bounds.width() as f32,
-            ctx.bounds.height() as f32,
-        ));
+        let layout_size = layout.size_that_fits(proposal, &refs);
+        let stretch_axis = layout.stretch_axis();
+        let width = if matches!(stretch_axis, StretchAxis::Horizontal | StretchAxis::Both) {
+            ctx.bounds.width() as f32
+        } else {
+            layout_size.width.min(ctx.bounds.width() as f32)
+        };
+        let height = if matches!(stretch_axis, StretchAxis::Vertical | StretchAxis::Both) {
+            ctx.bounds.height() as f32
+        } else {
+            layout_size.height.min(ctx.bounds.height() as f32)
+        };
+        let bounds = LayoutRect::from_size(LayoutSize::new(width, height));
         let child_rects = layout.place(bounds, &refs);
 
         for ((index, child), rect) in resolved_children.into_iter().enumerate().zip(child_rects) {
@@ -2108,12 +1980,17 @@ impl HydrolysisRenderer {
             .content
             .set_invalidator(Some(Rc::new(move || rebuild_handle.set(true))));
 
-        let mut scene2d = VelloScene2D::new(&mut renderer.scene);
+        let mut scene = vello::Scene::new();
+        let mut scene2d = VelloScene2D::new(&mut scene);
         #[allow(clippy::cast_precision_loss)]
         let needs_next_frame = runtime.content.build_scene(
             &mut scene2d,
             ctx.bounds.width() as f32,
             ctx.bounds.height() as f32,
+        );
+        renderer.scene.append(
+            &scene,
+            Some(ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
         );
         if needs_next_frame {
             renderer.request_next_frame_rebuild();
@@ -2416,15 +2293,14 @@ impl HydrolysisRenderer {
             let runtime = runtime.borrow();
             !renderer.reuse_applied_filter_inputs || !runtime.has_input_texture(width, height)
         };
-        let capture_started_at = Instant::now();
-        let subtree_scene = Self::render_subtree_scene(renderer, ctx, env, content);
-
         let input_view = {
             let mut runtime = runtime.borrow_mut();
             let (_, view) = runtime.input_texture(&device, width, height);
             view.clone()
         };
         if should_capture_input {
+            let capture_started_at = Instant::now();
+            let subtree_scene = Self::render_subtree_scene(renderer, ctx, env, content);
             renderer
                 .vello_renderer
                 .render_to_texture(
@@ -2440,8 +2316,8 @@ impl HydrolysisRenderer {
                     },
                 )
                 .expect("hydrolysis AppliedFilter: failed to render subtree");
+            renderer.frame_applied_filter_capture += capture_started_at.elapsed();
         }
-        renderer.frame_applied_filter_capture += capture_started_at.elapsed();
 
         let effect_started_at = Instant::now();
         let (image, needs_redraw) = runtime.borrow_mut().render_output(
@@ -2865,6 +2741,30 @@ impl HydrolysisRenderer {
         Self::dispatch_any(renderer, ctx, env, content);
     }
 
+    fn render_draggable_metadata(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        metadata: Metadata<Draggable>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        renderer.register_draggable_target(bounds, value.data);
+        Self::dispatch_any(renderer, ctx, env, content);
+    }
+
+    fn render_drop_destination_metadata(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        metadata: Metadata<DropDestination>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        renderer.register_drop_destination_target(bounds, value, env);
+        Self::dispatch_any(renderer, ctx, env, content);
+    }
+
     fn render_passthrough_metadata<T: MetadataKey>(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -3068,16 +2968,19 @@ impl HydrolysisRenderer {
         width: u32,
         height: u32,
     ) {
+        self.remember_active_applied_filter_entry(ActiveAppliedFilter {
+            runtime,
+            width,
+            height,
+        });
+    }
+
+    fn remember_active_applied_filter_entry(&mut self, active: ActiveAppliedFilter) {
         let index = self.active_applied_filter_cursor;
         self.active_applied_filter_cursor = self
             .active_applied_filter_cursor
             .checked_add(1)
             .expect("hydrolysis active AppliedFilter cursor overflow");
-        let active = ActiveAppliedFilter {
-            runtime,
-            width,
-            height,
-        };
         if index == self.active_applied_filters.len() {
             self.active_applied_filters.push(active);
         } else {
@@ -3182,7 +3085,7 @@ impl HydrolysisRenderer {
             return;
         }
         let viewport_matches_window = self.viewport_matches_window_bounds(request.viewport);
-        if !viewport_matches_window || !request.exclusive_root || request.content_has_frame_images {
+        if !viewport_matches_window || !request.exclusive_root {
             self.retained_scroll_frame_conflicted = true;
             return;
         }
@@ -3191,6 +3094,7 @@ impl HydrolysisRenderer {
             cache_key: request.cache_key,
             axis: request.axis,
             viewport: request.viewport,
+            lazy_viewport: request.lazy_viewport,
             transform: request.transform,
             hit_transform: request.hit_transform,
             content_dynamic_morphs: request.content_dynamic_morphs,
@@ -3242,6 +3146,15 @@ impl HydrolysisRenderer {
         }
 
         let metrics = frame.handle.metrics();
+        let visible_lazy_viewport = vello::kurbo::Rect::new(
+            metrics.offset_x,
+            metrics.offset_y,
+            metrics.offset_x + frame.viewport.width(),
+            metrics.offset_y + frame.viewport.height(),
+        );
+        if !rect_near(frame.lazy_viewport, visible_lazy_viewport) {
+            return false;
+        }
         let scroll_content_transform =
             vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
         let content_transform = frame.transform * scroll_content_transform;
@@ -3310,15 +3223,17 @@ impl HydrolysisRenderer {
             && rect_near(cache.lazy_viewport, lazy_viewport)
         {
             self.replay_dynamic_subtree(ctx, &cache.subtree);
+            for active_filter in cache.active_filters.iter().cloned() {
+                self.remember_active_applied_filter_entry(active_filter);
+            }
             self.scroll_content_caches.insert(cache_key, cache);
             return ScrollContentRender {
                 dynamic_morphs: Vec::new(),
-                has_frame_images: false,
             };
         }
 
         let local_ctx = ctx.with_identity_transforms(ctx.bounds);
-        let filter_image_count = self.compositor.active_filter_images.len();
+        let active_filter_start = self.active_applied_filter_cursor;
         let previous_morphs = core::mem::take(&mut self.dynamic_morph_draws);
         self.dynamic_morph_capture_depth = self
             .dynamic_morph_capture_depth
@@ -3334,17 +3249,18 @@ impl HydrolysisRenderer {
         let dynamic_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
         self.replay_dynamic_subtree(ctx, &subtree);
         self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
+        let active_filters = self.active_applied_filters
+            [active_filter_start..self.active_applied_filter_cursor]
+            .to_vec();
         self.scroll_content_caches.insert(
             cache_key,
             ScrollContentCache {
                 lazy_viewport,
                 subtree,
+                active_filters,
             },
         );
-        ScrollContentRender {
-            dynamic_morphs,
-            has_frame_images: self.compositor.active_filter_images.len() > filter_image_count,
-        }
+        ScrollContentRender { dynamic_morphs }
     }
 
     pub fn finish_rebuild_frame(&mut self) {

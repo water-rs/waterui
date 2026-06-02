@@ -1,7 +1,10 @@
 //! FFI bindings for event and lifecycle types.
 
 use crate::IntoFFI;
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_core::{
+    event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent},
+    layout::Point,
+};
 
 // ============================================================================
 // LifeCycle (one-time handlers for appear/disappear)
@@ -96,6 +99,7 @@ pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifeCycleH
 #[repr(C)]
 pub enum WuiEvent {
     HoverEnter,
+    HoverMove,
     HoverExit,
 }
 
@@ -104,6 +108,7 @@ impl IntoFFI for Event {
     fn into_ffi(self) -> Self::FFI {
         match self {
             Event::HoverEnter => WuiEvent::HoverEnter,
+            Event::HoverMove => WuiEvent::HoverMove,
             Event::HoverExit => WuiEvent::HoverExit,
             _ => panic!("unsupported Event variant for FFI"),
         }
@@ -150,6 +155,28 @@ pub unsafe extern "C" fn waterui_call_on_event(
     let env = unsafe { crate::expect_non_null(env, "waterui_call_on_event", "env") };
     let _ = crate::ffi_boundary("waterui_call_on_event", || {
         handler.0.handle(env);
+    });
+}
+
+/// Calls an OnEvent hover-move handler with the given local pointer position.
+///
+/// # Safety
+///
+/// * `handler` must be a valid pointer to a WuiOnEventHandler.
+/// * `env` must be a valid pointer to a WuiEnv.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_on_hover_event(
+    handler: *mut WuiOnEventHandler,
+    env: *const crate::WuiEnv,
+    x: f32,
+    y: f32,
+) {
+    let handler =
+        unsafe { crate::expect_non_null_mut(handler, "waterui_call_on_hover_event", "handler") };
+    let env = unsafe { crate::expect_non_null(env, "waterui_call_on_hover_event", "env") };
+    let _ = crate::ffi_boundary("waterui_call_on_hover_event", || {
+        let env_with_hover = env.0.extending(HoverEvent::new(Point::new(x, y)));
+        handler.0.handle(&env_with_hover);
     });
 }
 

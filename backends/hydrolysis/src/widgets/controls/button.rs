@@ -13,7 +13,7 @@ use accesskit::{
 use nami::Signal;
 use waterui::ViewExt as _;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
-use waterui_controls::label::Label;
+use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
@@ -145,10 +145,20 @@ pub(crate) fn render_button(
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
     let label = styled_button_label(theme, style, button.label);
-    let label_view = button_label_view(theme.button_label_color(style), AnyView::new(label));
-    if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
+    if matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
+        && label_bounds.width() > 0.0
+        && label_bounds.height() > 0.0
+    {
+        let mut styled = ctx.renderer_mut().read_signal(&label.accessibility_label());
+        if let Some(color) = theme.button_label_color(style) {
+            styled = styled.foreground(color);
+        }
+        ctx.render_styled_text_single_line_centered(styled, env, label_bounds);
+    } else if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
+        let label_view = button_label_view(theme.button_label_color(style), AnyView::new(label));
         ctx.dispatch_in_rect_without_accessibility(env, label_view, label_bounds);
     } else {
+        let label_view = button_label_view(theme.button_label_color(style), AnyView::new(label));
         let render_ctx = ctx.render_context();
         let renderer = ctx.renderer_mut();
         HydrolysisRenderer::dispatch_any_without_accessibility(
@@ -193,10 +203,21 @@ pub(crate) fn render_menu(
 
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
-    let label = button_label_view(theme.button_label_color(style), label);
-    if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
+    if let Some(label) = label.downcast_ref::<Label>()
+        && matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
+        && label_bounds.width() > 0.0
+        && label_bounds.height() > 0.0
+    {
+        let mut styled = ctx.renderer_mut().read_signal(&label.accessibility_label());
+        if let Some(color) = theme.button_label_color(style) {
+            styled = styled.foreground(color);
+        }
+        ctx.render_styled_text_single_line_centered(styled, env, label_bounds);
+    } else if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
+        let label = button_label_view(theme.button_label_color(style), label);
         ctx.dispatch_in_rect_without_accessibility(env, label, label_bounds);
     } else {
+        let label = button_label_view(theme.button_label_color(style), label);
         let render_ctx = ctx.render_context();
         let renderer = ctx.renderer_mut();
         HydrolysisRenderer::dispatch_any_without_accessibility(renderer, render_ctx, env, label);

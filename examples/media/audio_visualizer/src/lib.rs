@@ -44,9 +44,11 @@ fn main() -> impl View {
         spacer(),
         // Bottom control panel
         vstack((
-            text("WaterUI Audio Visualizer").bold(),
+            text("WaterUI Audio Visualizer")
+                .bold()
+                .foreground(Srgb::WHITE),
             spacer_min(16.0),
-            text("Theme"),
+            text("Theme").foreground(Srgb::WHITE),
             hstack((
                 button("Cyber")
                     .action(
@@ -81,12 +83,12 @@ fn main() -> impl View {
             ))
             .spacing(12.0),
             spacer_min(16.0),
-            text("Sensitivity"),
+            text("Sensitivity").foreground(Srgb::WHITE),
             Slider::new("Sensitivity", &sensitivity)
                 .range(0.5..=3.0)
                 .hide_label(),
             spacer_min(8.0),
-            text!("{mode_text}"),
+            text!("{mode_text}").foreground(Srgb::WHITE),
         ))
         .padding_with(EdgeInsets::all(24.0))
         .background(Srgb::BLACK.with_opacity(0.7)),

@@ -607,6 +607,34 @@ pub unsafe extern "C" fn waterui_set_binding_styled_str_plain(
     unsafe { (*binding).set(StyledStr::plain(plain)) };
 }
 
+#[cfg(feature = "c-api")]
+/// Sets a `Binding<StyledStr>` using borrowed UTF-8 bytes.
+///
+/// Native text controls can pass their current editor string without first
+/// constructing an owned FFI `WuiStr`.
+///
+/// # Safety
+/// `binding` must be a valid pointer to `WuiBinding<StyledStr>`. `bytes` must
+/// point to `len` valid UTF-8 bytes unless `len` is zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_set_binding_styled_str_utf8(
+    binding: *mut WuiBinding<StyledStr>,
+    bytes: *const u8,
+    len: usize,
+) {
+    assert!(
+        len == 0 || !bytes.is_null(),
+        "waterui_set_binding_styled_str_utf8 received null bytes with non-zero length"
+    );
+    let bytes = if len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(bytes, len) }
+    };
+    let plain = unsafe { Str::from_utf8_unchecked(bytes.to_vec()) };
+    unsafe { (*binding).set(StyledStr::plain(plain)) };
+}
+
 ffi_reactive!(AnyView, *mut WuiAnyView);
 
 // Note: Kotlin uses different naming for Binding vs Computed:

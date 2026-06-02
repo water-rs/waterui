@@ -50,6 +50,15 @@ type TemperatureTintFilter = filtrate::filters::TemperatureTint<ReactiveParam, R
 type HighlightsShadowsFilter = filtrate::filters::HighlightsShadows<ReactiveParam, ReactiveParam>;
 type VignetteFilter = filtrate::filters::Vignette<ReactiveParam, ReactiveParam>;
 type MotionBlurFilter = filtrate::filters::MotionBlur<ReactiveParam, ReactiveParam>;
+type WhitePointFilter = filtrate::filters::WhitePoint<ReactiveParam, ReactiveParam, ReactiveParam>;
+type ZoomBlurFilter = filtrate::filters::ZoomBlur<ReactiveParam, ReactiveParam, ReactiveParam>;
+
+fn temperature_tint_filter(
+    temperature: ReactiveParam,
+    tint: ReactiveParam,
+) -> TemperatureTintFilter {
+    filtrate::filters::TemperatureTint(temperature, tint)
+}
 
 /// Type-erased filter for FFI boundary.
 ///
@@ -268,7 +277,7 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
         temperature: T,
         tint: U,
     ) -> ChainedFilter<V, F, TemperatureTintFilter> {
-        self.then(filtrate::filters::TemperatureTint(
+        self.then(temperature_tint_filter(
             Reactive(temperature.into_signal_f32().computed()),
             Reactive(tint.into_signal_f32().computed()),
         ))
@@ -3791,9 +3800,8 @@ pub type GaussianBlur = FilterAdapter<filtrate::filters::GaussianBlur<Reactive<C
 /// Alias for a saturation adjustment filter.
 pub type Saturation = FilterAdapter<filtrate::filters::Saturation<Reactive<Computed<f32>>>>;
 /// Alias for a temperature/tint adjustment filter.
-pub type TemperatureTint = FilterAdapter<
-    filtrate::filters::TemperatureTint<Reactive<Computed<f32>>, Reactive<Computed<f32>>>,
->;
+pub type TemperatureTintFilterAdapter = FilterAdapter<TemperatureTintFilter>;
+pub use TemperatureTintFilterAdapter as TemperatureTint;
 /// Alias for a grayscale mix filter.
 pub type Grayscale = FilterAdapter<filtrate::filters::Grayscale<Reactive<Computed<f32>>>>;
 /// Alias for a bloom filter.
@@ -3801,9 +3809,8 @@ pub type Bloom = FilterAdapter<filtrate::filters::Bloom<Reactive<Computed<f32>>>
 /// Alias for a gloom filter.
 pub type Gloom = FilterAdapter<filtrate::filters::Gloom<Reactive<Computed<f32>>>>;
 /// Alias for a highlights/shadows adjustment filter.
-pub type HighlightsShadows = FilterAdapter<
-    filtrate::filters::HighlightsShadows<Reactive<Computed<f32>>, Reactive<Computed<f32>>>,
->;
+pub type HighlightsShadowsFilterAdapter = FilterAdapter<HighlightsShadowsFilter>;
+pub use HighlightsShadowsFilterAdapter as HighlightsShadows;
 /// Alias for a hue-rotation filter.
 pub type HueRotation = FilterAdapter<filtrate::filters::HueRotation<Reactive<Computed<f32>>>>;
 /// Alias for a color inversion filter.
@@ -3841,8 +3848,8 @@ pub type PhotoEffectTonal = FilterAdapter<filtrate::filters::PhotoEffectTonal>;
 /// Alias for the transfer photo preset.
 pub type PhotoEffectTransfer = FilterAdapter<filtrate::filters::PhotoEffectTransfer>;
 /// Alias for a motion blur filter.
-pub type MotionBlur =
-    FilterAdapter<filtrate::filters::MotionBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
+pub type MotionBlurFilterAdapter = FilterAdapter<MotionBlurFilter>;
+pub use MotionBlurFilterAdapter as MotionBlur;
 /// Alias for a bump distortion filter.
 pub type BumpDistortion = FilterAdapter<filtrate::filters::BumpDistortion<Reactive<Computed<f32>>>>;
 /// Alias for a pinch distortion filter.
@@ -3881,24 +3888,14 @@ pub type UnsharpMask = FilterAdapter<filtrate::filters::UnsharpMask<Reactive<Com
 /// Alias for a sharpen filter.
 pub type Sharpen = FilterAdapter<filtrate::filters::Sharpen<Reactive<Computed<f32>>>>;
 /// Alias for a vignette filter.
-pub type Vignette =
-    FilterAdapter<filtrate::filters::Vignette<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
+pub type VignetteFilterAdapter = FilterAdapter<VignetteFilter>;
+pub use VignetteFilterAdapter as Vignette;
 /// Alias for a white-point adjustment filter.
-pub type WhitePoint = FilterAdapter<
-    filtrate::filters::WhitePoint<
-        Reactive<Computed<f32>>,
-        Reactive<Computed<f32>>,
-        Reactive<Computed<f32>>,
-    >,
->;
+pub type WhitePointFilterAdapter = FilterAdapter<WhitePointFilter>;
+pub use WhitePointFilterAdapter as WhitePoint;
 /// Alias for a zoom-blur filter.
-pub type ZoomBlur = FilterAdapter<
-    filtrate::filters::ZoomBlur<
-        Reactive<Computed<f32>>,
-        Reactive<Computed<f32>>,
-        Reactive<Computed<f32>>,
-    >,
->;
+pub type ZoomBlurFilterAdapter = FilterAdapter<ZoomBlurFilter>;
+pub use ZoomBlurFilterAdapter as ZoomBlur;
 
 impl Blur {
     /// Returns the reactive blur radius signal driving this filter.
@@ -4186,7 +4183,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, TemperatureTint> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate::filters::TemperatureTint(
+            FilterAdapter::new(temperature_tint_filter(
                 Reactive(temperature.into_signal_f32().computed()),
                 Reactive(tint.into_signal_f32().computed()),
             )),

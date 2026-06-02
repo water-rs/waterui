@@ -10,7 +10,7 @@ extern crate alloc;
 mod scene_renderer;
 mod vello_renderer;
 
-use waterui_core::{AnyView, Environment, Signal, SignalExt, View};
+use waterui_core::{AnyView, Computed, Environment, Signal, SignalExt, View};
 use waterui_graphics::SceneView;
 use waterui_graphics::color::Color;
 use waterui_layout::frame::Frame;
@@ -215,10 +215,19 @@ impl View for Svg {
             return self.to_reactive_framed_scene_view(color_signal);
         }
 
-        // No explicit tint: use foreground color if present, else white.
-        let color_hex = env
-            .query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>().map_or_else(|| "#ffffff".into(), Self::resolved_color_to_svg_color);
-        self.to_framed_scene_view(&color_hex)
+        if let Some(color_signal) = env
+            .query::<
+                waterui_graphics::color::ForegroundColor,
+                Computed<waterui_graphics::color::ResolvedColor>,
+            >()
+            .cloned()
+        {
+            return self.to_reactive_framed_scene_view(
+                color_signal.map(|resolved| Self::resolved_color_to_svg_color(&resolved)),
+            );
+        }
+
+        self.to_framed_scene_view("#000000")
     }
 }
 

@@ -88,7 +88,7 @@ impl ChartAnimation {
 }
 
 /// Manages animation state for chart transitions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChartAnimator {
     /// Start instant (as duration since some epoch).
     start_time: Option<Duration>,

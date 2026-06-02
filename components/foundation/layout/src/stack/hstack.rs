@@ -139,6 +139,20 @@ fn hstack_container_guide_offset(
     }
 }
 
+fn hstack_stretch_allocations(
+    stretch_indices: &[usize],
+    available_for_children: f32,
+    fixed_width: f32,
+) -> Vec<(usize, f32)> {
+    if stretch_indices.is_empty() {
+        return Vec::new();
+    }
+
+    let width = (available_for_children - fixed_width).max(0.0) / stretch_indices.len() as f32;
+
+    stretch_indices.iter().map(|&idx| (idx, width)).collect()
+}
+
 #[allow(clippy::cast_precision_loss)]
 #[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
@@ -272,14 +286,17 @@ impl Layout for HStackLayout {
                 .map(|(_, m)| m.size().width)
                 .sum();
 
-            let remaining_width = (available_for_children - fixed_width).max(0.0);
-            let stretch_width = remaining_width / main_axis_stretch_count as f32;
+            let allocations = hstack_stretch_allocations(
+                &main_axis_stretch_indices,
+                available_for_children,
+                fixed_width,
+            );
 
-            for idx in main_axis_stretch_indices {
+            for (idx, stretch_width) in allocations {
                 let constrained_proposal = ProposalSize::new(Some(stretch_width), proposal.height);
                 measurements[idx].dimensions = children[idx].measure(constrained_proposal);
                 measurements[idx].dimensions.size.width =
-                    measurements[idx].size().width.min(stretch_width);
+                    measurements[idx].size().width.max(stretch_width);
             }
         }
 
@@ -390,21 +407,20 @@ impl Layout for HStackLayout {
             .map(|(_, m)| m.size().width)
             .sum();
 
-        let remaining_width = (available_width - actual_fixed_width).max(0.0);
-        let stretch_width = if main_axis_stretch_count > 0 {
-            remaining_width / main_axis_stretch_count as f32
-        } else {
-            0.0
-        };
+        let stretch_allocations = hstack_stretch_allocations(
+            &main_axis_stretch_indices,
+            available_width,
+            actual_fixed_width,
+        );
 
         // Measure stretching children with their allocated width so cross-axis sizing is accurate.
         if main_axis_stretch_count > 0 {
-            for idx in &main_axis_stretch_indices {
+            for &(idx, stretch_width) in &stretch_allocations {
                 let constrained_proposal =
                     ProposalSize::new(Some(stretch_width), Some(bounds.height()));
-                measurements[*idx].dimensions = children[*idx].measure(constrained_proposal);
-                measurements[*idx].dimensions.size.width =
-                    measurements[*idx].size().width.min(stretch_width);
+                measurements[idx].dimensions = children[idx].measure(constrained_proposal);
+                measurements[idx].dimensions.size.width =
+                    measurements[idx].size().width.max(stretch_width);
             }
         }
 
@@ -432,11 +448,7 @@ impl Layout for HStackLayout {
                 measurement.size().height.min(bounds.height())
             };
 
-            let child_width = if measurement.stretches_main_axis() {
-                stretch_width
-            } else {
-                measurement.size().width
-            };
+            let child_width = measurement.size().width;
 
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = Size::new(child_width, child_height);
