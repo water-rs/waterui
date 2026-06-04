@@ -15,6 +15,7 @@ use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 use waterui::media::{LivePhoto, Media};
 use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::{binding, impl_constant};
 use waterui::{AnyView, Signal};
 
@@ -28,6 +29,7 @@ enum DisplayState {
 
 impl_constant!(DisplayState);
 
+#[preview]
 fn main() -> impl View {
     // Single state binding for cleaner reactivity
     let display_state: Binding<DisplayState> = binding(DisplayState::Empty);

@@ -10,6 +10,7 @@
 
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
 use waterui::webview::{ScriptInjectionTime, WebView, WebViewController, WebViewEvent};
@@ -299,6 +300,11 @@ fn missing_controller_view() -> impl View {
     ))
     .spacing(8.0)
     .padding()
+}
+
+#[preview]
+fn webview_unavailable_preview() -> impl View {
+    missing_controller_view()
 }
 
 pub fn app(env: Environment) -> App {

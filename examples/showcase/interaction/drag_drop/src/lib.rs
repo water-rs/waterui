@@ -12,6 +12,7 @@ use waterui::app::App;
 use waterui::drag_drop::DragData;
 use waterui::prelude::font::Title;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::Binding;
 use waterui::task::{sleep, spawn_local};
 
@@ -109,6 +110,7 @@ fn fruit_basket(
     .state(&bounce)
 }
 
+#[preview]
 fn main() -> impl View {
     let is_hovering = Binding::bool(false);
     let collected: Binding<Vec<String>> = Binding::container(Vec::new());

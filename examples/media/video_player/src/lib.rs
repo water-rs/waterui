@@ -9,25 +9,25 @@
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 
-fn main() -> impl View {
-    // Sample video URLs (open source test videos)
-    let sample_videos = [
-        (
-            "Big Buck Bunny 1MB",
-            "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4",
-        ),
-        (
-            "Big Buck Bunny 5MB",
-            "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_5MB.mp4",
-        ),
-        (
-            "Sintel",
-            "https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4",
-        ),
-    ];
+const SAMPLE_VIDEOS: [(&str, &str); 3] = [
+    (
+        "Big Buck Bunny 1MB",
+        "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4",
+    ),
+    (
+        "Big Buck Bunny 5MB",
+        "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_5MB.mp4",
+    ),
+    (
+        "Sintel",
+        "https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4",
+    ),
+];
 
+fn main() -> impl View {
     // Track which video is selected
     let selected_index = Binding::usize(0);
 
@@ -36,7 +36,7 @@ fn main() -> impl View {
 
     // Create reactive video URL
     let video_url = selected_index.clone().map(move |idx| {
-        let (_, url_str) = sample_videos[idx];
+        let (_, url_str) = SAMPLE_VIDEOS[idx];
         Url::parse(url_str).expect("Invalid video URL")
     });
 
@@ -60,11 +60,11 @@ fn main() -> impl View {
                 | video::Event::BufferLevel { .. }
                 | video::Event::PlaybackMetrics { .. } => {}
                 video::Event::NextRequested => {
-                    selected_index.set((selected_index.get() + 1) % sample_videos.len());
+                    selected_index.set((selected_index.get() + 1) % SAMPLE_VIDEOS.len());
                 }
                 video::Event::PreviousRequested => {
                     selected_index.set(
-                        (selected_index.get() + sample_videos.len() - 1) % sample_videos.len(),
+                        (selected_index.get() + SAMPLE_VIDEOS.len() - 1) % SAMPLE_VIDEOS.len(),
                     );
                 }
                 video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
@@ -73,8 +73,27 @@ fn main() -> impl View {
 
     // Video with buffering overlay
     let video_layer = overlay(player, buffering_overlay);
+    video_player_shell(video_layer, selected_index)
+}
 
-    let title_signal = selected_index.clone().map(move |idx| sample_videos[idx].0);
+#[preview]
+fn video_player_preview() -> impl View {
+    let selected_index = Binding::usize(0);
+    let video_layer = zstack((
+        Srgb::BLACK,
+        vstack((
+            text("Video Preview").title().foreground(Srgb::WHITE),
+            text("Static preview frame for Hydrolysis perf")
+                .caption()
+                .foreground(Srgb::WHITE.with_opacity(0.8)),
+        ))
+        .spacing(12.0),
+    ));
+    video_player_shell(video_layer, selected_index)
+}
+
+fn video_player_shell(video_layer: impl View, selected_index: Binding<usize>) -> impl View {
+    let title_signal = selected_index.clone().map(move |idx| SAMPLE_VIDEOS[idx].0);
 
     // Bottom controls overlay
     let controls_overlay = vstack((

@@ -14,6 +14,7 @@ use core::f32::consts::{FRAC_PI_2, PI};
 use waterui::app::App;
 use waterui::metadata::secure::ColorSpace;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 use waterui::shape::{
     Capsule, Circle, Ellipse, Path, Rectangle, RoundedRectangle, ShapeExt, UnevenRoundedRectangle,
@@ -383,6 +384,7 @@ fn morph_demo() -> impl View {
     .padding()
 }
 
+#[preview]
 fn main() -> impl View {
     let show_hdr = binding(true);
 

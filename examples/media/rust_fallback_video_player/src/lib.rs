@@ -1,5 +1,6 @@
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 
 #[derive(Clone, Copy)]
 struct Sample {
@@ -8,39 +9,36 @@ struct Sample {
     url: &'static str,
 }
 
+const SAMPLES: [Sample; 4] = [
+    Sample {
+        title: "Big Buck Bunny (SDR)",
+        profile: "SDR / BT.709",
+        url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+    },
+    Sample {
+        title: "Sintel (SDR)",
+        profile: "SDR / BT.709",
+        url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
+    },
+    Sample {
+        title: "Jellyfin HDR10 1080p 3M",
+        profile: "HDR10 / BT.2020 + PQ",
+        url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%203M.mp4",
+    },
+    Sample {
+        title: "Jellyfin HDR10 1080p 10M",
+        profile: "HDR10 / BT.2020 + PQ",
+        url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%2010M.mp4",
+    },
+];
+
 fn main() -> impl View {
     let selected = Binding::usize(2);
     let status = Binding::container(Str::from("Loading fallback video pipeline..."));
     let is_buffering = Binding::bool(true);
-
-    let samples = [
-        Sample {
-            title: "Big Buck Bunny (SDR)",
-            profile: "SDR / BT.709",
-            url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-        },
-        Sample {
-            title: "Sintel (SDR)",
-            profile: "SDR / BT.709",
-            url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
-        },
-        Sample {
-            title: "Jellyfin HDR10 1080p 3M",
-            profile: "HDR10 / BT.2020 + PQ",
-            url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%203M.mp4",
-        },
-        Sample {
-            title: "Jellyfin HDR10 1080p 10M",
-            profile: "HDR10 / BT.2020 + PQ",
-            url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%2010M.mp4",
-        },
-    ];
-
-    let title = selected.clone().map(move |index| samples[index].title);
-    let source_profile = selected.clone().map(move |index| samples[index].profile);
     let source = selected
         .clone()
-        .map(move |index| Url::parse(samples[index].url).expect("sample URL should be valid"));
+        .map(move |index| Url::parse(SAMPLES[index].url).expect("sample URL should be valid"));
 
     let player = VideoPlayer::new(source)
         .show_controls(true)
@@ -71,10 +69,10 @@ fn main() -> impl View {
                 }
                 video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
                 video::Event::NextRequested => {
-                    selected.set((selected.get() + 1) % samples.len());
+                    selected.set((selected.get() + 1) % SAMPLES.len());
                 }
                 video::Event::PreviousRequested => {
-                    selected.set((selected.get() + samples.len() - 1) % samples.len());
+                    selected.set((selected.get() + SAMPLES.len() - 1) % SAMPLES.len());
                 }
                 video::Event::Ended => {
                     is_buffering.set(false);
@@ -86,6 +84,39 @@ fn main() -> impl View {
                 }
             }
         });
+
+    fallback_player_shell(player, selected, status, is_buffering)
+}
+
+#[preview]
+fn rust_fallback_video_player_preview() -> impl View {
+    let selected = Binding::usize(2);
+    let status = Binding::container(Str::from("Preview ready"));
+    let is_buffering = Binding::bool(false);
+    let preview_frame = zstack((
+        Srgb::BLACK,
+        vstack((
+            text("Rust Fallback Video Preview")
+                .headline()
+                .foreground(Srgb::WHITE),
+            text("Static frame for Hydrolysis perf")
+                .caption()
+                .foreground(Srgb::WHITE.with_opacity(0.8)),
+        ))
+        .spacing(8.0),
+    ));
+
+    fallback_player_shell(preview_frame, selected, status, is_buffering)
+}
+
+fn fallback_player_shell(
+    player: impl View,
+    selected: Binding<usize>,
+    status: Binding<Str>,
+    is_buffering: Binding<bool>,
+) -> impl View {
+    let title = selected.clone().map(move |index| SAMPLES[index].title);
+    let source_profile = selected.clone().map(move |index| SAMPLES[index].profile);
 
     let status_overlay = text("Buffering...")
         .body()

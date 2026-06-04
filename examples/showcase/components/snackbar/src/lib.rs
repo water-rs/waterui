@@ -3,9 +3,11 @@
 use core::time::Duration;
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 use waterui_icon::system_icon;
 
+#[preview]
 fn main() -> impl View {
     scroll(
         vstack((
