@@ -107,6 +107,8 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
 fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32>) -> impl View {
     let animated_x = offset_x.with(Animation::spring(200.0, 20.0));
     let animated_y = offset_y.with(Animation::spring(200.0, 20.0));
+    let center_x = offset_x.clone();
+    let center_y = offset_y.clone();
 
     vstack((
         text("Translation Animation").headline(),
@@ -119,15 +121,10 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
         ),
         vstack((
             hstack((
-                button("Center")
-                    .action(
-                        |State(x): State<Binding<f32>>, State(y): State<Binding<f32>>| {
-                            x.set(0.0);
-                            y.set(0.0);
-                        },
-                    )
-                    .state(offset_x)
-                    .state(offset_y),
+                button("Center").action(move || {
+                    center_x.set(0.0);
+                    center_y.set(0.0);
+                }),
                 set_f32_button("Left", -50.0, offset_x),
                 set_f32_button("Right", 50.0, offset_x),
             )),
@@ -148,6 +145,10 @@ fn combined_transform_section(
     let animated_scale = combined_scale.with(Animation::spring(250.0, 18.0));
     let animated_rotation =
         combined_rotation.with(Animation::ease_in_out(Duration::from_millis(400)));
+    let reset_scale = combined_scale.clone();
+    let reset_rotation = combined_rotation.clone();
+    let grow_scale = combined_scale.clone();
+    let grow_rotation = combined_rotation.clone();
 
     vstack((
         text("Combined Transforms").headline(),
@@ -160,24 +161,14 @@ fn combined_transform_section(
             COMBINED_STAGE_SIDE,
         ),
         hstack((
-            button("Reset")
-                .action(
-                    |State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
-                        s.set(1.0);
-                        r.set(0.0);
-                    },
-                )
-                .state(combined_scale)
-                .state(combined_rotation),
-            button("Grow + Spin")
-                .action(
-                    |State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
-                        s.set(1.8);
-                        r.set(r.get() + 180.0);
-                    },
-                )
-                .state(combined_scale)
-                .state(combined_rotation),
+            button("Reset").action(move || {
+                reset_scale.set(1.0);
+                reset_rotation.set(0.0);
+            }),
+            button("Grow + Spin").action(move || {
+                grow_scale.set(1.8);
+                grow_rotation.set(grow_rotation.get() + 180.0);
+            }),
             button("Pulse")
                 .action(|State(s): State<Binding<f32>>| {
                     if s.get() > 1.2 {
