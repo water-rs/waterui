@@ -1,5 +1,11 @@
 use super::*;
+use crate::animation::AnimationKey;
 use waterui_backend_core::widget::{InteractionMotion, WidgetInteractionState};
+
+const INTERACTION_FOCUS_KEY: usize = 0;
+const INTERACTION_STATE_LAYER_KEY: usize = 1;
+const INTERACTION_PRESS_OPACITY_KEY: usize = 2;
+const INTERACTION_PRESS_PROGRESS_KEY: usize = 3;
 
 #[derive(Debug, Default)]
 pub(crate) struct InteractionEngine {
@@ -85,9 +91,15 @@ impl InteractionEngine {
         animation_controller: &mut AnimationController,
         now: Instant,
     ) -> (WidgetInteractionState, PressSlot) {
+        let (press_slot, slot_pressed) = self.press_controller.bind();
+        let animation_key_base = press_slot
+            .index
+            .checked_mul(4)
+            .expect("interaction animation key overflow");
         let focus_progress = input.focus.map_or(0.0, |focus| {
             animation_controller
                 .bind_scalar_target(
+                    AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_FOCUS_KEY),
                     if focus.visible { 1.0 } else { 0.0 },
                     if focus.visible {
                         motion.focus_enter.clone()
@@ -98,7 +110,6 @@ impl InteractionEngine {
                 )
                 .sample(now)
         });
-        let (press_slot, slot_pressed) = self.press_controller.bind();
         let active_bounds_pressed = input
             .active_press_origin
             .is_some_and(|origin| input.bounds.contains(origin));
@@ -128,12 +139,14 @@ impl InteractionEngine {
             0.0
         };
         let alpha_handle = animation_controller.bind_scalar_target(
+            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_STATE_LAYER_KEY),
             target_opacity,
             state_layer_animation(target_opacity, motion),
             now,
         );
         let state_layer_opacity = alpha_handle.sample(now);
         let press_opacity_handle = animation_controller.bind_scalar_target(
+            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_PRESS_OPACITY_KEY),
             if visual_pressed {
                 motion.pressed_opacity
             } else {
@@ -144,6 +157,9 @@ impl InteractionEngine {
         );
         let press_layer_opacity = press_opacity_handle.sample(now);
         let press_progress_handle = animation_controller.bind_scalar_target(
+            AnimationKey::renderer_local_scalar(
+                animation_key_base + INTERACTION_PRESS_PROGRESS_KEY,
+            ),
             if press_origin.is_some() { 1.0 } else { 0.0 },
             motion.press_grow.clone(),
             now,
