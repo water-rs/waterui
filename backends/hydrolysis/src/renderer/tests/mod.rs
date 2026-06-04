@@ -8,6 +8,7 @@ use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::slider::slider;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
+use waterui_core::id::SelfId;
 use waterui_form::picker::PickerStyle;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
@@ -557,6 +558,74 @@ fn fixed_scroll_content_keeps_offscreen_children_registered() {
             .iter()
             .any(|target| target.bounds.y0 >= 600.0),
         "fixed scroll content must not unload offscreen children; only explicit lazy containers may virtualize children"
+    );
+}
+
+#[test]
+fn fixed_scroll_content_refreshes_retained_scene_after_offset_change() {
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut renderer = test_renderer();
+    let view = scroll(vstack((
+        ().size(120.0, 600.0),
+        button("Offscreen").action(|| {}),
+    )));
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    renderer.set_window_bounds(bounds);
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(view, &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let handle = renderer
+        .retained_scroll_frame
+        .as_ref()
+        .expect("root fixed scroll must retain a scroll frame")
+        .handle
+        .clone();
+    assert!(handle.apply_scroll_delta(0.0, -48.0, false));
+
+    assert!(
+        renderer.refresh_retained_scroll_scene(&env),
+        "fixed scroll content cache is viewport-independent and must refresh by translating retained content"
+    );
+}
+
+#[test]
+fn lazy_scroll_content_rejects_retained_scene_after_offset_change() {
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut renderer = test_renderer();
+    let rows = (0..40).map(SelfId::new).collect::<Vec<_>>();
+    let view = scroll(waterui_layout::stack::VStack::for_each(rows, |_| {
+        ().size(120.0, 40.0)
+    }));
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    renderer.set_window_bounds(bounds);
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(view, &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let frame = renderer
+        .retained_scroll_frame
+        .as_ref()
+        .expect("root lazy scroll must retain a scroll frame");
+    assert!(
+        renderer
+            .scroll_content_caches
+            .get(&frame.cache_key)
+            .expect("lazy scroll content cache must be stored")
+            .viewport_dependent
+    );
+    let handle = frame.handle.clone();
+    assert!(handle.apply_scroll_delta(0.0, -48.0, false));
+
+    assert!(
+        !renderer.refresh_retained_scroll_scene(&env),
+        "lazy scroll content depends on viewport materialization and must not reuse a stale retained viewport"
     );
 }
 

@@ -308,6 +308,8 @@ pub struct HydrolysisRenderer {
     scroll_controller: ScrollController,
     scroll_content_caches: BTreeMap<usize, ScrollContentCache>,
     reuse_scroll_content_caches: bool,
+    scroll_content_capture_depth: usize,
+    scroll_content_viewport_dependent: bool,
     retained_scroll_frame: Option<RetainedScrollFrame>,
     retained_scroll_frame_conflicted: bool,
     dynamic_morph_capture_depth: u32,
@@ -353,6 +355,7 @@ pub(crate) struct RetainScrollFrameRequest {
 
 struct ScrollContentCache {
     lazy_viewport: vello::kurbo::Rect,
+    viewport_dependent: bool,
     subtree: DynamicSubtree,
     active_filters: Vec<ActiveAppliedFilter>,
 }
@@ -892,6 +895,8 @@ impl HydrolysisRenderer {
             scroll_controller: ScrollController::default(),
             scroll_content_caches: BTreeMap::new(),
             reuse_scroll_content_caches: false,
+            scroll_content_capture_depth: 0,
+            scroll_content_viewport_dependent: false,
             retained_scroll_frame: None,
             retained_scroll_frame_conflicted: false,
             dynamic_morph_capture_depth: 0,
@@ -1579,6 +1584,7 @@ impl HydrolysisRenderer {
         container: Native<LazyContainer>,
         env: &Environment,
     ) {
+        renderer.mark_scroll_content_viewport_dependent();
         let (layout, children) = container.into_inner().into_inner();
         let axis_config = lazy_stack_axis_config(layout.as_ref());
         let count = children.len().get();
@@ -3124,6 +3130,12 @@ impl HydrolysisRenderer {
         });
     }
 
+    fn mark_scroll_content_viewport_dependent(&mut self) {
+        if self.scroll_content_capture_depth > 0 {
+            self.scroll_content_viewport_dependent = true;
+        }
+    }
+
     pub(crate) fn refresh_retained_scroll_scene(&mut self, env: &Environment) -> bool {
         let Some(frame) = self.retained_scroll_frame.clone() else {
             return false;
@@ -3174,9 +3186,6 @@ impl HydrolysisRenderer {
             metrics.offset_x + frame.viewport.width(),
             metrics.offset_y + frame.viewport.height(),
         );
-        if !rect_near(frame.lazy_viewport, visible_lazy_viewport) {
-            return false;
-        }
         let scroll_content_transform =
             vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
         let content_transform = frame.transform * scroll_content_transform;
@@ -3189,6 +3198,10 @@ impl HydrolysisRenderer {
             content_hit_transform,
         );
         if let Some(cache) = self.scroll_content_caches.remove(&frame.cache_key) {
+            if cache.viewport_dependent && !rect_near(frame.lazy_viewport, visible_lazy_viewport) {
+                self.scroll_content_caches.insert(frame.cache_key, cache);
+                return false;
+            }
             self.replay_dynamic_subtree(content_ctx, &cache.subtree);
             self.scroll_content_caches.insert(frame.cache_key, cache);
         } else {
@@ -3242,21 +3255,29 @@ impl HydrolysisRenderer {
     ) -> ScrollContentRender {
         if self.reuse_scroll_content_caches
             && let Some(cache) = self.scroll_content_caches.remove(&cache_key)
-            && rect_near(cache.lazy_viewport, lazy_viewport)
         {
-            self.replay_dynamic_subtree(ctx, &cache.subtree);
-            for active_filter in cache.active_filters.iter().cloned() {
-                self.remember_active_applied_filter_entry(active_filter);
+            if !cache.viewport_dependent || rect_near(cache.lazy_viewport, lazy_viewport) {
+                self.replay_dynamic_subtree(ctx, &cache.subtree);
+                for active_filter in cache.active_filters.iter().cloned() {
+                    self.remember_active_applied_filter_entry(active_filter);
+                }
+                self.scroll_content_caches.insert(cache_key, cache);
+                return ScrollContentRender {
+                    dynamic_morphs: Vec::new(),
+                };
             }
             self.scroll_content_caches.insert(cache_key, cache);
-            return ScrollContentRender {
-                dynamic_morphs: Vec::new(),
-            };
         }
 
         let local_ctx = ctx.with_identity_transforms(ctx.bounds);
         let active_filter_start = self.active_applied_filter_cursor;
         let previous_morphs = core::mem::take(&mut self.dynamic_morph_draws);
+        let previous_scroll_content_viewport_dependent = self.scroll_content_viewport_dependent;
+        self.scroll_content_viewport_dependent = false;
+        self.scroll_content_capture_depth = self
+            .scroll_content_capture_depth
+            .checked_add(1)
+            .expect("hydrolysis scroll content capture depth overflow");
         self.dynamic_morph_capture_depth = self
             .dynamic_morph_capture_depth
             .checked_add(1)
@@ -3268,6 +3289,12 @@ impl HydrolysisRenderer {
             .dynamic_morph_capture_depth
             .checked_sub(1)
             .expect("hydrolysis dynamic morph capture depth underflow");
+        self.scroll_content_capture_depth = self
+            .scroll_content_capture_depth
+            .checked_sub(1)
+            .expect("hydrolysis scroll content capture depth underflow");
+        let viewport_dependent = self.scroll_content_viewport_dependent;
+        self.scroll_content_viewport_dependent = previous_scroll_content_viewport_dependent;
         let dynamic_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
         self.replay_dynamic_subtree(ctx, &subtree);
         self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
@@ -3278,6 +3305,7 @@ impl HydrolysisRenderer {
             cache_key,
             ScrollContentCache {
                 lazy_viewport,
+                viewport_dependent,
                 subtree,
                 active_filters,
             },
@@ -3308,7 +3336,8 @@ impl HydrolysisRenderer {
             self.text_editing.active_text_selection_drag = None;
         }
 
-        self.animation_controller.finish_rebuild_frame();
+        self.animation_controller
+            .finish_rebuild_frame_with_inactive_slot_retention(self.reuse_scroll_content_caches);
         self.scroll_controller.finish_rebuild_frame();
         self.hit_test.finish_rebuild_frame();
         self.lazy.finish_rebuild_frame();

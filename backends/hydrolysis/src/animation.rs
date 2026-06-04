@@ -151,7 +151,13 @@ impl AnimationController {
         self.active_repeating_slots.clear();
     }
 
-    pub fn finish_rebuild_frame(&mut self) {
+    pub fn finish_rebuild_frame_with_inactive_slot_retention(
+        &mut self,
+        retain_inactive_slots: bool,
+    ) {
+        if retain_inactive_slots {
+            return;
+        }
         self.slots.retain(|key, _| self.active_slots.contains(key));
         self.radio_indicator_slots
             .retain(|key, _| self.active_radio_indicator_slots.contains(key));
@@ -498,7 +504,7 @@ mod tests {
         let start = Instant::now();
         controller.begin_rebuild_frame();
         let handle = controller.bind_scalar(scalar_key(1), 0.0, start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         handle.apply_target(
             1.0,
@@ -521,11 +527,11 @@ mod tests {
         let start = Instant::now();
         controller.begin_rebuild_frame();
         let stale = controller.bind_scalar(scalar_key(1), 0.0, start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         controller.begin_rebuild_frame();
         let current = controller.bind_scalar(scalar_key(1), 0.0, start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         stale.apply_target(1.0, None, start);
         assert!((current.sample(start) - 0.0).abs() < 0.0001);
@@ -541,7 +547,7 @@ mod tests {
             Animation::ease_in_out(Duration::from_millis(1)),
             Instant::now(),
         );
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         assert!((first.sample(Instant::now()) - 0.0).abs() < 0.0001);
 
         let start = Instant::now();
@@ -552,7 +558,7 @@ mod tests {
             Animation::ease_in_out(Duration::from_millis(120)),
             start,
         );
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         let mid = second.sample(start + Duration::from_millis(60));
         assert!(mid > 0.0 && mid < 1.0);
@@ -569,7 +575,7 @@ mod tests {
             Animation::ease_in_out(Duration::from_millis(120)),
             start,
         );
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         assert!((first.sample(start) - 0.0).abs() < 0.0001);
 
         controller.begin_rebuild_frame();
@@ -579,7 +585,7 @@ mod tests {
             Animation::ease_in_out(Duration::from_millis(120)),
             start,
         );
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         assert!(second.sample(start + Duration::from_millis(60)) > 0.0);
 
         controller.begin_rebuild_frame();
@@ -589,11 +595,36 @@ mod tests {
             Animation::ease_in_out(Duration::from_millis(120)),
             start + Duration::from_millis(60),
         );
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         let final_value = third.sample(start + Duration::from_millis(200));
         assert!((final_value - 1.0).abs() < 0.0001);
         assert!(!controller.tick(start + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn retained_inactive_scalar_slot_keeps_in_flight_target() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        let animation = Animation::ease_in_out(Duration::from_millis(120));
+
+        controller.begin_rebuild_frame();
+        let handle = controller.bind_scalar(scalar_key(1), 0.0, start);
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+        handle.apply_target(1.0, Some(animation), start);
+
+        controller.begin_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(true);
+
+        controller.begin_rebuild_frame();
+        let rebound = controller.bind_scalar(scalar_key(1), 1.0, start);
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+
+        let mid = rebound.sample(start + Duration::from_millis(60));
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "retained cache replay must not make an in-flight scalar snap to its observed target"
+        );
     }
 
     #[test]
@@ -605,7 +636,7 @@ mod tests {
         controller.begin_rebuild_frame();
         let first_a = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
         let first_b = controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         assert!((first_a.sample(start) - 0.0).abs() < 0.0001);
         assert!((first_b.sample(start) - 0.0).abs() < 0.0001);
 
@@ -613,7 +644,7 @@ mod tests {
         let animating_a =
             controller.bind_scalar_target(scalar_key(1), 1.0, animation.clone(), start);
         let steady_b = controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         assert!(animating_a.sample(start + Duration::from_millis(60)) > 0.0);
         assert!((steady_b.sample(start + Duration::from_millis(60)) - 0.0).abs() < 0.0001);
 
@@ -623,7 +654,7 @@ mod tests {
             controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), reordered_at);
         let reordered_a =
             controller.bind_scalar_target(scalar_key(1), 1.0, animation, reordered_at);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert!(
             (reordered_b.sample(reordered_at) - 0.0).abs() < 0.0001,
@@ -648,7 +679,7 @@ mod tests {
 
         controller.begin_rebuild_frame();
         let initial = controller.bind_radio_indicator(radio_key(1), false, &motion, start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert!(!initial.selected);
         assert_eq!(initial.inner_scale, 1.0);
@@ -657,7 +688,7 @@ mod tests {
 
         controller.begin_rebuild_frame();
         let changed = controller.bind_radio_indicator(radio_key(1), true, &motion, start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert!(changed.selected);
         assert_eq!(changed.inner_scale, 0.0);
@@ -667,7 +698,7 @@ mod tests {
         let mid = start + Duration::from_millis(25);
         controller.begin_rebuild_frame();
         let mid_state = controller.bind_radio_indicator(radio_key(1), true, &motion, mid);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert!(mid_state.inner_scale > 0.0 && mid_state.inner_scale < 1.0);
         assert!(mid_state.inner_opacity > 0.0 && mid_state.inner_opacity < 1.0);
@@ -686,7 +717,7 @@ mod tests {
 
         controller.begin_rebuild_frame();
         let initial = controller.bind_radio_indicator(radio_key(1), true, &motion, start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert!(initial.selected);
         assert_eq!(initial.inner_scale, 1.0);
@@ -694,7 +725,7 @@ mod tests {
 
         controller.begin_rebuild_frame();
         let changed = controller.bind_radio_indicator(radio_key(1), false, &motion, start);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert!(!changed.selected);
         assert_eq!(changed.inner_scale, 1.0);
@@ -703,7 +734,7 @@ mod tests {
         let mid = start + Duration::from_millis(25);
         controller.begin_rebuild_frame();
         let mid_state = controller.bind_radio_indicator(radio_key(1), false, &motion, mid);
-        controller.finish_rebuild_frame();
+        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert_eq!(mid_state.inner_scale, 1.0);
         assert!(mid_state.inner_opacity > 0.0 && mid_state.inner_opacity < 1.0);
