@@ -1,3 +1,4 @@
+use crate::animation::AnimationKey;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     circle_arc_path, measure_progress_intrinsic, measure_view_intrinsic, normalize_view_for_render,
@@ -5,6 +6,7 @@ use crate::renderer::{
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 use core::f64::consts::{FRAC_PI_2, TAU};
+use nami::Signal;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui_backend_core::widget::ProgressIndicatorStyle;
 use waterui_core::Environment;
@@ -12,6 +14,9 @@ use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
 
 use crate::widgets::util::widget_theme;
+
+const LINEAR_DETERMINATE_ANIMATION_KEY: usize = 1;
+const CIRCULAR_DETERMINATE_ANIMATION_KEY: usize = 2;
 
 impl HydroNativeView for Native<ProgressConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -60,6 +65,7 @@ pub(crate) fn render_progress(
     let mut progress = progress.into_inner();
     progress.label = normalize_view_for_render(progress.label, env);
     progress.value_label = normalize_view_for_render(progress.value_label, env);
+    let value_identity = progress.value.identity();
     let value = ctx.renderer_mut().read_signal(&progress.value);
     let finite = value.is_finite();
     let clamped = value.clamp(0.0, 1.0) as f32;
@@ -96,9 +102,18 @@ pub(crate) fn render_progress(
                 theme.draw_progress_linear_track(&mut draw, bar_rect);
             }
             if finite {
-                let animated = ctx
-                    .renderer_mut()
-                    .sample_widget_scalar_target(clamped, motion.linear_determinate.clone());
+                let animated = if let Some(identity) = value_identity {
+                    ctx.renderer_mut().sample_widget_scalar_target(
+                        AnimationKey::scalar_with_discriminator(
+                            identity,
+                            LINEAR_DETERMINATE_ANIMATION_KEY,
+                        ),
+                        clamped,
+                        motion.linear_determinate.clone(),
+                    )
+                } else {
+                    clamped
+                };
                 let fill_rect = vello::kurbo::Rect::new(
                     bar_rect.x0,
                     bar_rect.y0,
@@ -147,9 +162,18 @@ pub(crate) fn render_progress(
                 (ctx.bounds.width().min(ctx.bounds.height()) - stroke_width).max(0.0) / 2.0;
             let motion = theme.progress_motion();
             if finite {
-                let animated = ctx
-                    .renderer_mut()
-                    .sample_widget_scalar_target(clamped, motion.circular_determinate.clone());
+                let animated = if let Some(identity) = value_identity {
+                    ctx.renderer_mut().sample_widget_scalar_target(
+                        AnimationKey::scalar_with_discriminator(
+                            identity,
+                            CIRCULAR_DETERMINATE_ANIMATION_KEY,
+                        ),
+                        clamped,
+                        motion.circular_determinate.clone(),
+                    )
+                } else {
+                    clamped
+                };
                 let arc = circle_arc_path(center, radius, -FRAC_PI_2, TAU * f64::from(animated));
                 let mut draw = ctx.draw_context();
                 theme.draw_progress_circular_track(&mut draw, center, radius, stroke_width);

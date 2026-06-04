@@ -121,7 +121,7 @@ use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
 
-use crate::animation::AnimationController;
+use crate::animation::{AnimationController, AnimationKey};
 use crate::engine::{
     RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
     vello_backend::VelloDrawContext,
@@ -1291,8 +1291,14 @@ impl HydrolysisRenderer {
     where
         S: Signal<Output = f32> + Clone + 'static,
     {
+        let Some(identity) = signal.identity() else {
+            return signal.get();
+        };
         let now = self.frame_instant;
-        let handle = self.animation_controller.bind_scalar(signal.get(), now);
+        let key = AnimationKey::scalar(identity);
+        let handle = self
+            .animation_controller
+            .bind_scalar(key, signal.get(), now);
         let watcher_handle = handle.clone();
         let frame_clock = Rc::clone(&self.frame_clock);
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
@@ -1312,11 +1318,18 @@ impl HydrolysisRenderer {
     where
         S: Signal<Output = bool> + Clone + 'static,
     {
+        let Some(identity) = signal.identity() else {
+            return if signal.get() { 1.0 } else { 0.0 };
+        };
         let now = self.frame_instant;
         let target = if signal.get() { 1.0 } else { 0.0 };
-        let handle =
-            self.animation_controller
-                .bind_scalar_target(target, default_animation.clone(), now);
+        let key = AnimationKey::scalar(identity);
+        let handle = self.animation_controller.bind_scalar_target(
+            key,
+            target,
+            default_animation.clone(),
+            now,
+        );
         let watcher_handle = handle.clone();
         let frame_clock = Rc::clone(&self.frame_clock);
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
@@ -1333,20 +1346,26 @@ impl HydrolysisRenderer {
         handle.sample(now).clamp(0.0, 1.0)
     }
 
-    pub(crate) fn sample_widget_scalar_target(&mut self, target: f32, animation: Animation) -> f32 {
+    pub(crate) fn sample_widget_scalar_target(
+        &mut self,
+        key: AnimationKey,
+        target: f32,
+        animation: Animation,
+    ) -> f32 {
         let now = self.frame_instant;
         self.animation_controller
-            .bind_scalar_target(target, animation, now)
+            .bind_scalar_target(key, target, animation, now)
             .sample(now)
     }
 
     pub(crate) fn sample_radio_indicator_state(
         &mut self,
+        key: AnimationKey,
         selected: bool,
         motion: &RadioSelectionMotion,
     ) -> RadioIndicatorState {
         self.animation_controller
-            .bind_radio_indicator(selected, motion, self.frame_instant)
+            .bind_radio_indicator(key, selected, motion, self.frame_instant)
     }
 
     pub(crate) fn sample_morph_progress(
@@ -1356,7 +1375,9 @@ impl HydrolysisRenderer {
         if animation.duration.is_zero() {
             return 1.0;
         }
+        let key = AnimationKey::renderer_local_repeating(self.render_depth);
         let elapsed = self.animation_controller.bind_timeline_phase(
+            key,
             animation.duration,
             animation.repeat,
             self.frame_instant,
@@ -1436,8 +1457,9 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration) -> Duration {
+        let key = AnimationKey::renderer_local_repeating(self.render_depth);
         self.animation_controller
-            .bind_repeating_phase(cycle, self.frame_instant)
+            .bind_repeating_phase(key, cycle, self.frame_instant)
     }
 
     fn rects_intersect(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {

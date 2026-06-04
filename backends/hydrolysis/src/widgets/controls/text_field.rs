@@ -1,3 +1,4 @@
+use crate::animation::AnimationKey;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TextInputModel,
@@ -6,6 +7,7 @@ use crate::renderer::{
     normalize_view_for_render, transformed_rect,
 };
 use core::num::NonZeroUsize;
+use nami::Signal;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
@@ -30,6 +32,8 @@ use crate::widgets::util::widget_theme;
 const FLOATING_LABEL_SCALE: f64 = 0.75;
 const CONTENT_VISIBLE_PORTION: f32 = 5.0 / 9.0;
 const CONTENT_ENTER_DELAY_PORTION: f32 = 1.0 - CONTENT_VISIBLE_PORTION;
+const TEXT_FIELD_LABEL_ANIMATION_KEY: usize = 1;
+const SECURE_FIELD_LABEL_ANIMATION_KEY: usize = 2;
 
 impl HydroNativeView for Native<ResolvedTextFieldConfig> {
     fn accessibility_is_render_driven() -> bool {
@@ -256,6 +260,7 @@ pub(crate) fn render_text_field(
     let prompt_signal = text_field.prompt.content.clone();
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
     let value_binding = text_field.value;
+    let value_identity = value_binding.identity();
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
         line_limit,
@@ -281,14 +286,19 @@ pub(crate) fn render_text_field(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
-        label_target,
-        if label_target > 0.0 {
-            interaction_motion.focus_enter
-        } else {
-            interaction_motion.focus_exit
-        },
-    );
+    let label_progress = if let Some(identity) = value_identity {
+        ctx.renderer_mut().sample_widget_scalar_target(
+            AnimationKey::scalar_with_discriminator(identity, TEXT_FIELD_LABEL_ANIMATION_KEY),
+            label_target,
+            if label_target > 0.0 {
+                interaction_motion.focus_enter
+            } else {
+                interaction_motion.focus_exit
+            },
+        )
+    } else {
+        label_target
+    };
     if label_height > 0.0 {
         dispatch_material_label(
             ctx,
@@ -485,6 +495,7 @@ pub(crate) fn render_secure_field(
     }
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
     let value_binding = secure_field.value;
+    let value_identity = value_binding.identity();
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
     };
@@ -511,14 +522,19 @@ pub(crate) fn render_secure_field(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
-        label_target,
-        if label_target > 0.0 {
-            interaction_motion.focus_enter
-        } else {
-            interaction_motion.focus_exit
-        },
-    );
+    let label_progress = if let Some(identity) = value_identity {
+        ctx.renderer_mut().sample_widget_scalar_target(
+            AnimationKey::scalar_with_discriminator(identity, SECURE_FIELD_LABEL_ANIMATION_KEY),
+            label_target,
+            if label_target > 0.0 {
+                interaction_motion.focus_enter
+            } else {
+                interaction_motion.focus_exit
+            },
+        )
+    } else {
+        label_target
+    };
     if label_height > 0.0 {
         dispatch_material_label(
             ctx,

@@ -1,7 +1,9 @@
 use core::time::Duration;
 use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use nami::SignalIdentity;
 use nami::watcher::Context;
 use waterui::animation::{Animation, AnimationTrack};
 use waterui_backend_core::widget::{RadioIndicatorState, RadioSelectionMotion};
@@ -9,15 +11,36 @@ use waterui_backend_core::widget::{RadioIndicatorState, RadioSelectionMotion};
 use crate::time::Instant;
 
 const VALUE_EPSILON: f32 = 0.000_01;
+const RENDERER_LOCAL_KEY_MASK: u64 = 1 << 63;
+
+const fn mix_identity(identity: usize, discriminator: usize) -> u64 {
+    (identity as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .rotate_left(7)
+        ^ (discriminator as u64).wrapping_add(0x517C_C1B7_2722_0A95)
+}
 
 #[derive(Debug, Default)]
 pub struct AnimationController {
-    slots: Vec<AnimatedScalarSlot>,
-    radio_indicator_slots: Vec<AnimatedRadioIndicatorSlot>,
-    repeating_slots: Vec<RepeatingPhaseSlot>,
-    cursor: usize,
-    radio_indicator_cursor: usize,
-    repeating_cursor: usize,
+    slots: BTreeMap<AnimationKey, AnimatedScalarSlot>,
+    radio_indicator_slots: BTreeMap<AnimationKey, AnimatedRadioIndicatorSlot>,
+    repeating_slots: BTreeMap<AnimationKey, RepeatingPhaseSlot>,
+    active_slots: BTreeSet<AnimationKey>,
+    active_radio_indicator_slots: BTreeSet<AnimationKey>,
+    active_repeating_slots: BTreeSet<AnimationKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct AnimationKey {
+    scope: AnimationKeyScope,
+    identity: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+enum AnimationKeyScope {
+    Scalar,
+    RadioIndicator,
+    Repeating,
 }
 
 #[derive(Debug)]
@@ -60,57 +83,119 @@ struct RepeatingPhaseSlot {
     repeat: bool,
 }
 
+impl AnimationKey {
+    #[must_use]
+    pub const fn scalar(identity: SignalIdentity) -> Self {
+        Self {
+            scope: AnimationKeyScope::Scalar,
+            identity: identity.raw() as u64,
+        }
+    }
+
+    #[must_use]
+    pub const fn scalar_with_discriminator(identity: SignalIdentity, discriminator: usize) -> Self {
+        Self {
+            scope: AnimationKeyScope::Scalar,
+            identity: mix_identity(identity.raw(), discriminator),
+        }
+    }
+
+    #[must_use]
+    pub const fn radio_indicator_with_discriminator(
+        identity: SignalIdentity,
+        discriminator: usize,
+    ) -> Self {
+        Self {
+            scope: AnimationKeyScope::RadioIndicator,
+            identity: mix_identity(identity.raw(), discriminator),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn renderer_local_scalar(identity: usize) -> Self {
+        Self {
+            scope: AnimationKeyScope::Scalar,
+            identity: RENDERER_LOCAL_KEY_MASK | identity as u64,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn renderer_local_repeating(identity: usize) -> Self {
+        Self {
+            scope: AnimationKeyScope::Repeating,
+            identity: RENDERER_LOCAL_KEY_MASK | identity as u64,
+        }
+    }
+
+    #[cfg(test)]
+    const fn test_scalar(identity: usize) -> Self {
+        Self {
+            scope: AnimationKeyScope::Scalar,
+            identity: identity as u64,
+        }
+    }
+
+    #[cfg(test)]
+    const fn test_radio_indicator(identity: usize) -> Self {
+        Self {
+            scope: AnimationKeyScope::RadioIndicator,
+            identity: identity as u64,
+        }
+    }
+}
+
 impl AnimationController {
     pub fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-        self.radio_indicator_cursor = 0;
-        self.repeating_cursor = 0;
+        self.active_slots.clear();
+        self.active_radio_indicator_slots.clear();
+        self.active_repeating_slots.clear();
     }
 
     pub fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
+        self.slots.retain(|key, _| self.active_slots.contains(key));
         self.radio_indicator_slots
-            .truncate(self.radio_indicator_cursor);
-        self.repeating_slots.truncate(self.repeating_cursor);
+            .retain(|key, _| self.active_radio_indicator_slots.contains(key));
+        self.repeating_slots
+            .retain(|key, _| self.active_repeating_slots.contains(key));
     }
 
-    pub fn bind_scalar(&mut self, observed_value: f32, now: Instant) -> AnimatedScalarHandle {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("animation controller scalar cursor overflow");
+    pub fn bind_scalar(
+        &mut self,
+        key: AnimationKey,
+        observed_value: f32,
+        now: Instant,
+    ) -> AnimatedScalarHandle {
+        assert!(
+            key.scope == AnimationKeyScope::Scalar,
+            "animation scalar key used with mismatched scope"
+        );
+        self.active_slots.insert(key);
+        let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
+            state: Rc::new(RefCell::new(AnimatedScalarState::new(observed_value, now))),
+        });
 
-        if index == self.slots.len() {
-            self.slots.push(AnimatedScalarSlot {
-                state: Rc::new(RefCell::new(AnimatedScalarState::new(observed_value, now))),
-            });
-        }
-
-        let state = Rc::clone(&self.slots[index].state);
+        let state = Rc::clone(&slot.state);
         let generation = state.borrow_mut().prepare_generation(observed_value);
         AnimatedScalarHandle { state, generation }
     }
 
     pub fn bind_scalar_target(
         &mut self,
+        key: AnimationKey,
         target: f32,
         animation: Animation,
         now: Instant,
     ) -> AnimatedScalarHandle {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("animation controller scalar cursor overflow");
+        assert!(
+            key.scope == AnimationKeyScope::Scalar,
+            "animation scalar target key used with mismatched scope"
+        );
+        self.active_slots.insert(key);
+        let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
+            state: Rc::new(RefCell::new(AnimatedScalarState::new(target, now))),
+        });
 
-        if index == self.slots.len() {
-            self.slots.push(AnimatedScalarSlot {
-                state: Rc::new(RefCell::new(AnimatedScalarState::new(target, now))),
-            });
-        }
-
-        let state = Rc::clone(&self.slots[index].state);
+        let state = Rc::clone(&slot.state);
         let generation = state.borrow_mut().prepare_target_generation();
         let handle = AnimatedScalarHandle { state, generation };
         handle.apply_target(target, Some(animation), now);
@@ -119,84 +204,93 @@ impl AnimationController {
 
     pub fn bind_radio_indicator(
         &mut self,
+        key: AnimationKey,
         selected: bool,
         motion: &RadioSelectionMotion,
         now: Instant,
     ) -> RadioIndicatorState {
-        let index = self.radio_indicator_cursor;
-        self.radio_indicator_cursor = self
-            .radio_indicator_cursor
-            .checked_add(1)
-            .expect("animation controller radio indicator cursor overflow");
+        assert!(
+            key.scope == AnimationKeyScope::RadioIndicator,
+            "animation radio indicator key used with mismatched scope"
+        );
+        self.active_radio_indicator_slots.insert(key);
+        let slot =
+            self.radio_indicator_slots
+                .entry(key)
+                .or_insert_with(|| AnimatedRadioIndicatorSlot {
+                    state: Rc::new(RefCell::new(AnimatedRadioIndicatorState::new(
+                        selected, now,
+                    ))),
+                });
 
-        if index == self.radio_indicator_slots.len() {
-            self.radio_indicator_slots.push(AnimatedRadioIndicatorSlot {
-                state: Rc::new(RefCell::new(AnimatedRadioIndicatorState::new(
-                    selected, now,
-                ))),
-            });
-        }
-
-        self.radio_indicator_slots[index]
-            .state
-            .borrow_mut()
-            .prepare(selected, motion, now)
+        slot.state.borrow_mut().prepare(selected, motion, now)
     }
 
     pub fn tick(&mut self, now: Instant) -> bool {
         let mut has_active = false;
-        for slot in &self.slots {
+        for slot in self.slots.values() {
             if slot.state.borrow_mut().advance(now) {
                 has_active = true;
             }
         }
-        for slot in &self.radio_indicator_slots {
+        for slot in self.radio_indicator_slots.values() {
             if slot.state.borrow_mut().advance(now) {
                 has_active = true;
             }
         }
         has_active
-            || self.repeating_slots.iter().any(|slot| {
+            || self.repeating_slots.values().any(|slot| {
                 slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
             })
     }
 
     pub fn has_active(&self, now: Instant) -> bool {
         self.slots
-            .iter()
+            .values()
             .any(|slot| slot.state.borrow().is_active())
             || self
                 .radio_indicator_slots
-                .iter()
+                .values()
                 .any(|slot| slot.state.borrow().is_active())
-            || self.repeating_slots.iter().any(|slot| {
+            || self.repeating_slots.values().any(|slot| {
                 slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
             })
     }
 
-    pub fn bind_repeating_phase(&mut self, cycle: Duration, now: Instant) -> Duration {
-        let elapsed = self.bind_timeline_phase(cycle, true, now);
+    pub fn bind_repeating_phase(
+        &mut self,
+        key: AnimationKey,
+        cycle: Duration,
+        now: Instant,
+    ) -> Duration {
+        let elapsed = self.bind_timeline_phase(key, cycle, true, now);
         Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
     }
 
-    pub fn bind_timeline_phase(&mut self, cycle: Duration, repeat: bool, now: Instant) -> Duration {
+    pub fn bind_timeline_phase(
+        &mut self,
+        key: AnimationKey,
+        cycle: Duration,
+        repeat: bool,
+        now: Instant,
+    ) -> Duration {
         assert!(
             !cycle.is_zero(),
             "animation repeating phase cycle must be non-zero"
         );
-        let index = self.repeating_cursor;
-        self.repeating_cursor = self
-            .repeating_cursor
-            .checked_add(1)
-            .expect("animation controller repeating cursor overflow");
-        if index == self.repeating_slots.len() {
-            self.repeating_slots.push(RepeatingPhaseSlot {
+        assert!(
+            key.scope == AnimationKeyScope::Repeating,
+            "animation repeating key used with mismatched scope"
+        );
+        self.active_repeating_slots.insert(key);
+        let slot = self
+            .repeating_slots
+            .entry(key)
+            .or_insert(RepeatingPhaseSlot {
                 started_at: now,
                 cycle,
                 repeat,
             });
-        }
-        let slot = &mut self.repeating_slots[index];
         if slot.cycle != cycle || slot.repeat != repeat {
             slot.started_at = now;
             slot.cycle = cycle;
@@ -388,14 +482,22 @@ mod tests {
     use waterui::animation::Animation;
     use waterui_backend_core::widget::RadioSelectionMotion;
 
-    use super::AnimationController;
+    use super::{AnimationController, AnimationKey};
+
+    const fn scalar_key(identity: usize) -> AnimationKey {
+        AnimationKey::test_scalar(identity)
+    }
+
+    const fn radio_key(identity: usize) -> AnimationKey {
+        AnimationKey::test_radio_indicator(identity)
+    }
 
     #[test]
     fn scalar_animation_advances_and_stops() {
         let mut controller = AnimationController::default();
         let start = Instant::now();
         controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(0.0, start);
+        let handle = controller.bind_scalar(scalar_key(1), 0.0, start);
         controller.finish_rebuild_frame();
 
         handle.apply_target(
@@ -418,11 +520,11 @@ mod tests {
         let mut controller = AnimationController::default();
         let start = Instant::now();
         controller.begin_rebuild_frame();
-        let stale = controller.bind_scalar(0.0, start);
+        let stale = controller.bind_scalar(scalar_key(1), 0.0, start);
         controller.finish_rebuild_frame();
 
         controller.begin_rebuild_frame();
-        let current = controller.bind_scalar(0.0, start);
+        let current = controller.bind_scalar(scalar_key(1), 0.0, start);
         controller.finish_rebuild_frame();
 
         stale.apply_target(1.0, None, start);
@@ -434,6 +536,7 @@ mod tests {
         let mut controller = AnimationController::default();
         controller.begin_rebuild_frame();
         let first = controller.bind_scalar_target(
+            scalar_key(1),
             0.0,
             Animation::ease_in_out(Duration::from_millis(1)),
             Instant::now(),
@@ -444,6 +547,7 @@ mod tests {
         let start = Instant::now();
         controller.begin_rebuild_frame();
         let second = controller.bind_scalar_target(
+            scalar_key(1),
             1.0,
             Animation::ease_in_out(Duration::from_millis(120)),
             start,
@@ -460,6 +564,7 @@ mod tests {
         let start = Instant::now();
         controller.begin_rebuild_frame();
         let first = controller.bind_scalar_target(
+            scalar_key(1),
             0.0,
             Animation::ease_in_out(Duration::from_millis(120)),
             start,
@@ -469,6 +574,7 @@ mod tests {
 
         controller.begin_rebuild_frame();
         let second = controller.bind_scalar_target(
+            scalar_key(1),
             1.0,
             Animation::ease_in_out(Duration::from_millis(120)),
             start,
@@ -478,6 +584,7 @@ mod tests {
 
         controller.begin_rebuild_frame();
         let third = controller.bind_scalar_target(
+            scalar_key(1),
             1.0,
             Animation::ease_in_out(Duration::from_millis(120)),
             start + Duration::from_millis(60),
@@ -487,6 +594,46 @@ mod tests {
         let final_value = third.sample(start + Duration::from_millis(200));
         assert!((final_value - 1.0).abs() < 0.0001);
         assert!(!controller.tick(start + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn scalar_target_keys_survive_reordered_render_pass() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        let animation = Animation::ease_in_out(Duration::from_millis(120));
+
+        controller.begin_rebuild_frame();
+        let first_a = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
+        let first_b = controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), start);
+        controller.finish_rebuild_frame();
+        assert!((first_a.sample(start) - 0.0).abs() < 0.0001);
+        assert!((first_b.sample(start) - 0.0).abs() < 0.0001);
+
+        controller.begin_rebuild_frame();
+        let animating_a =
+            controller.bind_scalar_target(scalar_key(1), 1.0, animation.clone(), start);
+        let steady_b = controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), start);
+        controller.finish_rebuild_frame();
+        assert!(animating_a.sample(start + Duration::from_millis(60)) > 0.0);
+        assert!((steady_b.sample(start + Duration::from_millis(60)) - 0.0).abs() < 0.0001);
+
+        let reordered_at = start + Duration::from_millis(60);
+        controller.begin_rebuild_frame();
+        let reordered_b =
+            controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), reordered_at);
+        let reordered_a =
+            controller.bind_scalar_target(scalar_key(1), 1.0, animation, reordered_at);
+        controller.finish_rebuild_frame();
+
+        assert!(
+            (reordered_b.sample(reordered_at) - 0.0).abs() < 0.0001,
+            "stable B must not inherit A's in-flight animation when render order changes"
+        );
+        let reordered_a_value = reordered_a.sample(reordered_at);
+        assert!(
+            reordered_a_value > 0.0 && reordered_a_value < 1.0,
+            "stable A must keep its in-flight animation when render order changes"
+        );
     }
 
     #[test]
@@ -500,7 +647,7 @@ mod tests {
         };
 
         controller.begin_rebuild_frame();
-        let initial = controller.bind_radio_indicator(false, &motion, start);
+        let initial = controller.bind_radio_indicator(radio_key(1), false, &motion, start);
         controller.finish_rebuild_frame();
 
         assert!(!initial.selected);
@@ -509,7 +656,7 @@ mod tests {
         assert_eq!(initial.outer_selected_progress, 0.0);
 
         controller.begin_rebuild_frame();
-        let changed = controller.bind_radio_indicator(true, &motion, start);
+        let changed = controller.bind_radio_indicator(radio_key(1), true, &motion, start);
         controller.finish_rebuild_frame();
 
         assert!(changed.selected);
@@ -519,7 +666,7 @@ mod tests {
 
         let mid = start + Duration::from_millis(25);
         controller.begin_rebuild_frame();
-        let mid_state = controller.bind_radio_indicator(true, &motion, mid);
+        let mid_state = controller.bind_radio_indicator(radio_key(1), true, &motion, mid);
         controller.finish_rebuild_frame();
 
         assert!(mid_state.inner_scale > 0.0 && mid_state.inner_scale < 1.0);
@@ -538,7 +685,7 @@ mod tests {
         };
 
         controller.begin_rebuild_frame();
-        let initial = controller.bind_radio_indicator(true, &motion, start);
+        let initial = controller.bind_radio_indicator(radio_key(1), true, &motion, start);
         controller.finish_rebuild_frame();
 
         assert!(initial.selected);
@@ -546,7 +693,7 @@ mod tests {
         assert_eq!(initial.inner_opacity, 1.0);
 
         controller.begin_rebuild_frame();
-        let changed = controller.bind_radio_indicator(false, &motion, start);
+        let changed = controller.bind_radio_indicator(radio_key(1), false, &motion, start);
         controller.finish_rebuild_frame();
 
         assert!(!changed.selected);
@@ -555,7 +702,7 @@ mod tests {
 
         let mid = start + Duration::from_millis(25);
         controller.begin_rebuild_frame();
-        let mid_state = controller.bind_radio_indicator(false, &motion, mid);
+        let mid_state = controller.bind_radio_indicator(radio_key(1), false, &motion, mid);
         controller.finish_rebuild_frame();
 
         assert_eq!(mid_state.inner_scale, 1.0);

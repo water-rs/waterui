@@ -9,9 +9,10 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
-use nami::Binding;
+use nami::{Binding, Signal};
 use std::rc::Rc;
 use waterui::ViewExt;
+use waterui_backend_core::widget::RadioIndicatorState;
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
@@ -368,10 +369,11 @@ pub(crate) fn render_radio_picker(
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Radio);
     let radio_motion = theme.radio_selection_motion();
+    let selection_identity = selection.identity();
     let selected = ctx.renderer_mut().read_signal(&selection);
     let bounds = ctx.bounds;
     let mut row_y = bounds.y0 + metrics.vertical_inset;
-    for item in items {
+    for (row_index, item) in items.into_iter().enumerate() {
         let label = ctx
             .renderer_mut()
             .read_resolved_text_styled(&item.content, env);
@@ -395,9 +397,21 @@ pub(crate) fn render_radio_picker(
         );
         let indicator_radius = metrics.radio_indicator_size / 2.0;
         let is_selected = item.tag == selected;
-        let radio_indicator_state = ctx
-            .renderer_mut()
-            .sample_radio_indicator_state(is_selected, &radio_motion);
+        let radio_indicator_state = if let Some(identity) = selection_identity {
+            ctx.renderer_mut().sample_radio_indicator_state(
+                AnimationKey::radio_indicator_with_discriminator(identity, row_index),
+                is_selected,
+                &radio_motion,
+            )
+        } else {
+            let selected_progress = if is_selected { 1.0 } else { 0.0 };
+            RadioIndicatorState {
+                selected: is_selected,
+                outer_selected_progress: selected_progress,
+                inner_scale: 1.0,
+                inner_opacity: selected_progress,
+            }
+        };
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
         let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
@@ -520,3 +534,4 @@ fn segmented_label_rect(
     let y0 = segment_rect.y0 + (segment_rect.height() - height) * 0.5;
     vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
+use crate::animation::AnimationKey;
