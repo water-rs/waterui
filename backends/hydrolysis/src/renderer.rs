@@ -3439,6 +3439,15 @@ impl HydrolysisRenderer {
         transform: vello::kurbo::Affine,
         bounds: vello::kurbo::Rect,
     ) {
+        if self
+            .compositor
+            .active_scene_layers
+            .iter()
+            .any(|layer| layer.alpha <= HIT_TEST_ALPHA_THRESHOLD)
+        {
+            return;
+        }
+
         self.flush_vello_scene_layer();
         let direct_to_target = self.compositor.render_layers.is_empty()
             && self.compositor.active_scene_layers.is_empty()

@@ -11,6 +11,7 @@ use waterui::app::App;
 use waterui::media::photo::Event as PhotoEvent;
 use waterui::media::{Image, Photo};
 use waterui::prelude::*;
+use waterui::preview;
 
 // Note: filtrate is re-exported through waterui::media as Filter
 
@@ -139,6 +140,36 @@ fn custom_url_section() -> impl View {
         )),
     ))
     .padding()
+}
+
+#[preview]
+fn image_preview() -> impl View {
+    let blur_value = Binding::f64(2.0);
+
+    scroll(
+        vstack((
+            text("GPU Image Processing").title(),
+            "Static image preview for Hydrolysis perf",
+            Divider,
+            text("Image Test").headline(),
+            original_image_section(),
+            Divider,
+            text("Static Photo Filter Preview").headline(),
+            vstack((
+                text("Generated image data; no network Photo load in preview").sub_headline(),
+                Image::new(generate_test_pattern(200, 150), 200, 150),
+                hstack((
+                    text("Blur:"),
+                    Slider::new("Blur radius", &blur_value)
+                        .range(0.0..=10.0)
+                        .hide_label(),
+                    text!("{blur_value:.1}"),
+                )),
+            ))
+            .padding(),
+        ))
+        .padding(),
+    )
 }
 
 fn main() -> impl View {

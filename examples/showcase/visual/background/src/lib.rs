@@ -10,6 +10,7 @@ use waterui::app::App;
 use waterui::cursor::CursorStyle;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::{SignalExt, binding};
 
 const HOVER_CARD_WIDTH: f32 = 200.0;
@@ -139,6 +140,7 @@ fn interactive_buttons_section() -> impl View {
     .padding()
 }
 
+#[preview]
 fn main() -> impl View {
     let hover_count = binding(0);
     let is_hovered = binding(false);

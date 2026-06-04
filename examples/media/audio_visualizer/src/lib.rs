@@ -12,9 +12,11 @@
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 use waterui_visualizer::{AudioCapture, Waveform, WaveformTheme};
 
+#[preview]
 fn main() -> impl View {
     // State for theme (directly as Binding<WaveformTheme>)
     let theme = binding(WaveformTheme::cyber());
