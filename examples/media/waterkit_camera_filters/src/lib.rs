@@ -15,21 +15,77 @@ use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;
+use waterui::preview;
+
+#[derive(Clone)]
+struct CameraLabState {
+    active_filter: Binding<usize>,
+    filter_strength: Binding<f64>,
+    reconnect_ticket: Binding<usize>,
+    preview_status: Binding<Str>,
+    waterkit_status: Binding<Str>,
+    permission_status: Binding<Str>,
+    camera_inventory: Binding<Str>,
+}
+
+impl CameraLabState {
+    fn live() -> Self {
+        Self {
+            active_filter: Binding::usize(0),
+            filter_strength: Binding::f64(0.75),
+            reconnect_ticket: Binding::usize(0),
+            preview_status: Binding::container(Str::from("Starting camera renderer...")),
+            waterkit_status: Binding::container(Str::from(
+                "Not synced. Tap the button below to query Waterkit.",
+            )),
+            permission_status: Binding::container(Str::from("Permission status: unknown")),
+            camera_inventory: Binding::container(Str::from("No camera inventory yet.")),
+        }
+    }
+
+    fn preview() -> Self {
+        Self {
+            active_filter: Binding::usize(0),
+            filter_strength: Binding::f64(0.75),
+            reconnect_ticket: Binding::usize(0),
+            preview_status: Binding::container(Str::from(
+                "Synthetic preview frame for Hydrolysis perf.",
+            )),
+            waterkit_status: Binding::container(Str::from(
+                "Preview does not query Waterkit camera devices.",
+            )),
+            permission_status: Binding::container(Str::from("Permission status: preview")),
+            camera_inventory: Binding::container(Str::from("Synthetic camera frame.")),
+        }
+    }
+}
 
 fn main() -> impl View {
-    let active_filter = Binding::usize(0);
-    let filter_strength = Binding::f64(0.75);
-    let reconnect_ticket = Binding::usize(0);
+    let state = CameraLabState::live();
+    let preview = camera_surface(
+        state.active_filter.clone(),
+        state.filter_strength.clone(),
+        state.reconnect_ticket.clone(),
+        state.preview_status.clone(),
+    );
+    camera_filter_lab(preview, state)
+}
 
-    let preview_status: Binding<Str> = Binding::container(Str::from("Starting camera renderer..."));
-    let waterkit_status: Binding<Str> = Binding::container(Str::from(
-        "Not synced. Tap the button below to query Waterkit.",
-    ));
-    let permission_status: Binding<Str> =
-        Binding::container(Str::from("Permission status: unknown"));
-    let camera_inventory: Binding<Str> = Binding::container(Str::from("No camera inventory yet."));
+#[preview]
+fn camera_filter_lab_preview() -> impl View {
+    let state = CameraLabState::preview();
+    let preview =
+        synthetic_camera_surface(state.active_filter.clone(), state.filter_strength.clone());
+    camera_filter_lab(preview, state)
+}
 
-    let filter_label = active_filter.clone().map(filter_name);
+fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
+    let filter_label = state.active_filter.clone().map(filter_name);
+    let filter_strength = state.filter_strength.clone();
+    let preview_status = state.preview_status.clone();
+    let waterkit_status = state.waterkit_status.clone();
+    let permission_status = state.permission_status.clone();
+    let camera_inventory = state.camera_inventory.clone();
 
     let header = vstack((
         text("WaterUI + Waterkit Camera Filter Lab").title().bold(),
@@ -42,12 +98,7 @@ fn main() -> impl View {
 
     let preview_section = vstack((
         text!("Filter: {filter_label}   |   Strength: {filter_strength:.2}").body(),
-        camera_surface(
-            active_filter.clone(),
-            filter_strength.clone(),
-            reconnect_ticket.clone(),
-            preview_status.clone(),
-        ),
+        preview,
         text!("{preview_status}")
             .caption()
             .foreground(MutedForeground),
@@ -59,23 +110,23 @@ fn main() -> impl View {
                     status.set(Str::from("Reconnecting camera stream..."));
                 },
             )
-            .state(&reconnect_ticket)
-            .state(&preview_status),)),
+            .state(&state.reconnect_ticket)
+            .state(&state.preview_status),)),
     ))
     .spacing(10.0);
 
     let filter_section = vstack((
         text("Filter Presets").headline(),
         hstack((
-            filter_button("Natural", 0, &active_filter),
-            filter_button("Cinematic", 1, &active_filter),
-            filter_button("Noir", 2, &active_filter),
-            filter_button("Vintage", 3, &active_filter),
-            filter_button("Neon", 4, &active_filter),
-            filter_button("Dream", 5, &active_filter),
+            filter_button("Natural", 0, &state.active_filter),
+            filter_button("Cinematic", 1, &state.active_filter),
+            filter_button("Noir", 2, &state.active_filter),
+            filter_button("Vintage", 3, &state.active_filter),
+            filter_button("Neon", 4, &state.active_filter),
+            filter_button("Dream", 5, &state.active_filter),
         ))
         .spacing(8.0),
-        Slider::new("Filter strength", &filter_strength).hide_label(),
+        Slider::new("Filter strength", &state.filter_strength).hide_label(),
     ))
     .spacing(8.0);
 
@@ -96,9 +147,9 @@ fn main() -> impl View {
                 },
             )
             .bordered_prominent()
-            .state(&waterkit_status)
-            .state(&permission_status)
-            .state(&camera_inventory),
+            .state(&state.waterkit_status)
+            .state(&state.permission_status)
+            .state(&state.camera_inventory),
     ))
     .spacing(8.0);
 
@@ -126,6 +177,19 @@ fn camera_surface(
     .padding_with(8.0)
 }
 
+fn synthetic_camera_surface(
+    active_filter: Binding<usize>,
+    filter_strength: Binding<f64>,
+) -> impl View {
+    GpuSurface::new(SyntheticCameraPreviewRenderer::new(
+        active_filter,
+        filter_strength,
+    ))
+    .size(960.0, 540.0)
+    .background(Surface)
+    .padding_with(8.0)
+}
+
 fn filter_button(
     label: &'static str,
     filter_index: usize,
@@ -134,6 +198,78 @@ fn filter_button(
     button(label)
         .action(move |State(selected): State<Binding<usize>>| selected.set(filter_index))
         .state(active_filter)
+}
+
+struct SyntheticCameraPreviewRenderer {
+    active_filter: Binding<usize>,
+    filter_strength: Binding<f64>,
+}
+
+impl SyntheticCameraPreviewRenderer {
+    fn new(active_filter: Binding<usize>, filter_strength: Binding<f64>) -> Self {
+        Self {
+            active_filter,
+            filter_strength,
+        }
+    }
+}
+
+impl GpuView for SyntheticCameraPreviewRenderer {
+    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui::Environment) {}
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        let (brightness, saturation, contrast, tint, vignette) =
+            filter_params(self.active_filter.get(), self.filter_strength.get() as f32);
+        let red = (0.32 + brightness + tint * 0.08).clamp(0.0, 1.0);
+        let green = (0.46 + brightness + saturation * 0.04 - vignette * 0.03).clamp(0.0, 1.0);
+        let blue = (0.58 + brightness - tint * 0.08 + contrast * 0.03).clamp(0.0, 1.0);
+
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Synthetic Camera Preview Encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Synthetic Camera Preview Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(red),
+                            g: f64::from(green),
+                            b: f64::from(blue),
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        frame.queue.submit([encoder.finish()]);
+    }
+}
+
+impl SubView for SyntheticCameraPreviewRenderer {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        ))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
 }
 
 struct CameraFilterRenderer {
@@ -625,76 +761,7 @@ fn filter_name(index: usize) -> &'static str {
     }
 }
 
-const CAMERA_FILTER_SHADER: &str = r#"
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
-    var positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -3.0),
-        vec2<f32>( 3.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-    );
-    var uvs = array<vec2<f32>, 3>(
-        vec2<f32>(0.0, 2.0),
-        vec2<f32>(2.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-    );
-
-    var out: VertexOut;
-    out.position = vec4<f32>(positions[index], 0.0, 1.0);
-    out.uv = uvs[index];
-    return out;
-}
-
-struct FilterUniforms {
-    tone: vec4<f32>,
-    extras: vec4<f32>,
-};
-
-@group(0) @binding(0)
-var input_tex: texture_2d<f32>;
-
-@group(0) @binding(1)
-var input_sampler: sampler;
-
-@group(0) @binding(2)
-var<uniform> filters: FilterUniforms;
-
-@fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let sampled = textureSample(input_tex, input_sampler, in.uv);
-
-    var rgb = sampled.rgb;
-    let luma = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
-
-    // Saturation
-    rgb = mix(vec3<f32>(luma), rgb, filters.tone.y);
-
-    // Contrast
-    rgb = (rgb - vec3<f32>(0.5)) * filters.tone.z + vec3<f32>(0.5);
-
-    // Brightness
-    rgb = rgb + vec3<f32>(filters.tone.x);
-
-    // Warm/Cool tint
-    rgb = rgb * vec3<f32>(
-        1.0 + filters.tone.w * 0.12,
-        1.0,
-        1.0 - filters.tone.w * 0.12,
-    );
-
-    // Vignette
-    let dist = distance(in.uv, vec2<f32>(0.5, 0.5));
-    let vignette = 1.0 - smoothstep(0.35, 0.75, dist) * filters.extras.x;
-    rgb = rgb * vignette;
-
-    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), sampled.a);
-}
-"#;
+const CAMERA_FILTER_SHADER: &str = include_str!("camera_filter.wgsl");
 
 pub fn app(env: Environment) -> App {
     App::new(main, env)

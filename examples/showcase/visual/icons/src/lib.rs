@@ -7,6 +7,7 @@
 
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 
 use waterui_icons_lucide as lucide;
 use waterui_icons_material_icon as mdi;
@@ -105,6 +106,7 @@ fn all_demos() -> impl View {
     icon_demos()
 }
 
+#[preview]
 fn main() -> impl View {
     scroll(
         vstack((

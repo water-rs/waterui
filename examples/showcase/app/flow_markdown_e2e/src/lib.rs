@@ -5,6 +5,7 @@ use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::task::{sleep, spawn_local};
 
 struct MarkdownDocument {
@@ -206,6 +207,7 @@ struct StreamControl {
     stream_cps: Binding<i32>,
 }
 
+#[preview]
 fn main() -> impl View {
     let markdown: Binding<Str> = Binding::container(Str::from_static(""));
     let document_index = Binding::i32(0);

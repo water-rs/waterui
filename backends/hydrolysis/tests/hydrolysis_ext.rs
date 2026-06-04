@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use hydrolysis::HydrolysisExt;
 use waterui::Color;
 use waterui::View;
@@ -55,6 +58,50 @@ impl GpuView for SolidClearRenderer {
 
 waterui_graphics::impl_gpu_subview!(SolidClearRenderer);
 
+#[derive(Debug)]
+struct CountingClearRenderer {
+    color: wgpu::Color,
+    calls: Rc<Cell<u32>>,
+}
+
+impl GpuView for CountingClearRenderer {
+    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        self.calls.set(
+            self.calls
+                .get()
+                .checked_add(1)
+                .expect("counting clear renderer call count overflow"),
+        );
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hydrolysis_ext_counting_gpu_surface_test_encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hydrolysis_ext_counting_gpu_surface_test_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        frame.queue.submit([encoder.finish()]);
+    }
+}
+
+waterui_graphics::impl_gpu_subview!(CountingClearRenderer);
+
 #[derive(Clone)]
 struct GpuSurfaceOpacityView;
 
@@ -69,6 +116,26 @@ impl View for GpuSurfaceOpacityView {
             },
         })
         .opacity(0.5)
+    }
+}
+
+#[derive(Clone)]
+struct TransparentGpuSurfaceOpacityView {
+    calls: Rc<Cell<u32>>,
+}
+
+impl View for TransparentGpuSurfaceOpacityView {
+    fn body(self, _env: &Environment) -> impl View {
+        GpuSurface::new(CountingClearRenderer {
+            color: wgpu::Color {
+                r: 0.9,
+                g: 0.3,
+                b: 0.2,
+                a: 1.0,
+            },
+            calls: self.calls,
+        })
+        .opacity(0.0)
     }
 }
 
@@ -147,6 +214,35 @@ fn hydrolysis_ext_renders_gpu_surface_inside_opacity_layer() {
         alpha > 90 && alpha < 180,
         "expected partially transparent output alpha, got {alpha}"
     );
+}
+
+#[test]
+fn hydrolysis_ext_skips_transparent_gpu_surface_inside_opacity_layer() {
+    let mut env = Environment::new();
+    let calls = Rc::new(Cell::new(0));
+    let view = TransparentGpuSurfaceOpacityView {
+        calls: Rc::clone(&calls),
+    }
+    .hydrolysis();
+
+    let Some(output) = skip_without_gpu(view.render_offscreen(
+        OffscreenRenderConfig::new(
+            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
+        ),
+        &mut env,
+    )) else {
+        return;
+    };
+
+    assert_eq!(
+        calls.get(),
+        0,
+        "transparent opacity layer should not render hidden GpuSurface content"
+    );
+    let center =
+        ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
+    let alpha = output.rgba8[center + 3];
+    assert_eq!(alpha, 0, "transparent output should keep alpha at zero");
 }
 
 #[test]

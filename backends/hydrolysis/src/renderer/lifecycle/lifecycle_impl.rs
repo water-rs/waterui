@@ -2,6 +2,7 @@ use super::*;
 
 use core::any::TypeId;
 use std::collections::BTreeSet;
+use std::rc::Weak;
 
 type LocalStateKey = (u64, usize);
 
@@ -165,7 +166,7 @@ impl LifecycleState {
 
     pub(crate) fn install_local_state_env(&self, env: &Environment) -> Environment {
         let mut local_env = env.clone();
-        let local_state_registry = Rc::clone(&self.local_state_registry);
+        let local_state_registry = Rc::downgrade(&self.local_state_registry);
         local_env.insert(
             env.get::<LocalStateScope>()
                 .cloned()
@@ -173,6 +174,12 @@ impl LifecycleState {
         );
         local_env.insert(LocalStateStore::new(
             move |path, index, type_id, type_name, init| {
+                let local_state_registry =
+                    Weak::upgrade(&local_state_registry).unwrap_or_else(|| {
+                        panic!(
+                            "hydrolysis local state registry was accessed after renderer shutdown"
+                        )
+                    });
                 local_state_registry
                     .borrow_mut()
                     .bind_slot(path, index, type_id, type_name, &*init)
@@ -583,5 +590,25 @@ mod tests {
             2,
             "install_local_state_env must preserve child scopes instead of rebasing them to root"
         );
+    }
+
+    #[test]
+    fn installed_local_state_env_does_not_keep_registry_alive() {
+        let lifecycle = LifecycleState::default();
+        let registry = Rc::downgrade(&lifecycle.local_state_registry);
+        let env = lifecycle.install_local_state_env(&Environment::new());
+
+        assert_eq!(
+            Rc::strong_count(&lifecycle.local_state_registry),
+            1,
+            "environment clones must not retain renderer-owned local state slots"
+        );
+
+        drop(lifecycle);
+        assert!(
+            registry.upgrade().is_none(),
+            "renderer-owned local state registry should drop before captured environments"
+        );
+        drop(env);
     }
 }

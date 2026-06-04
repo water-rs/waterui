@@ -10,9 +10,11 @@
 use waterui::app::App;
 use waterui::background::Material;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 use waterui::window::{Window, WindowState, WindowStyle, conditional_window};
 
+#[preview]
 fn main() -> impl View {
     // Reactive state to track window states. `WindowState::default()` is
     // `Closed`, so a fresh binding represents a window that has not yet been

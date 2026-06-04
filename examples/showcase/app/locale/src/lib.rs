@@ -19,6 +19,7 @@
 use waterui::app::App;
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
+use waterui::preview;
 use waterui_locale::format::date::{
     DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date,
     format_datetime_with_regional_context,
@@ -231,6 +232,11 @@ fn main(system_locale: Locale) -> impl View {
     .on_change(&selection, |code| {
         waterui::regional::set_locale_tag(code).expect("picker locale tag must be valid");
     })
+}
+
+#[preview]
+fn locale_preview() -> impl View {
+    main(locales::EN_US.clone())
 }
 
 pub fn app(env: Environment) -> App {
