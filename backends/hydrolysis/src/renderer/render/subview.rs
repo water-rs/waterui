@@ -45,12 +45,10 @@ impl SubView for HydroSubview<'_> {
         let mut dimensions =
             measure_view_dimensions_with_proposal(self.view, proposal, &mut state, &self.env);
 
-        if self.stretch_axis.stretches_horizontal() {
-            if let Some(width) = proposal.width {
-                dimensions.size.width = dimensions.size.width.max(width);
-            }
-        } else if let Some(width) = proposal.width {
-            dimensions.size.width = dimensions.size.width.min(width);
+        if self.stretch_axis.stretches_horizontal()
+            && let Some(width) = proposal.width
+        {
+            dimensions.size.width = dimensions.size.width.max(width);
         }
 
         if self.stretch_axis.stretches_vertical() {

@@ -4,14 +4,13 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::{Binding, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
-use waterui_controls::button::ButtonStyle;
+use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::slider::slider;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
 use waterui_form::picker::PickerStyle;
-use waterui_graphics::filter_view::FilterViewExt as _;
 use waterui_layout::scroll;
-use waterui_layout::stack::{VStackLayout, vstack};
+use waterui_layout::stack::{VStackLayout, hstack, vstack};
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
@@ -150,6 +149,104 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
     assert!(
         measured.size.width > 0.0,
         "Hydrolysis stretch controls must preserve their intrinsic minimum under constrained measurement"
+    );
+}
+
+#[test]
+fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposal() {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
+        native_executor::NativeExecutor::new(),
+    ));
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
+    let mut state = HydroState::default();
+    let state = RefCell::new(&mut state);
+    let subview = HydroSubview::from_view(&view, &state, &env);
+
+    let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
+    let constrained = subview.measure(ProposalSize::new(Some(0.0), None));
+
+    assert_eq!(
+        constrained.size.width, intrinsic.size.width,
+        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width"
+    );
+}
+
+#[test]
+fn state_wrapped_button_remains_non_stretch_for_layout() {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
+        native_executor::NativeExecutor::new(),
+    ));
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let expanded = Binding::bool(false);
+    let view = normalize_layout_view(
+        AnyView::new(
+            button("Toggle Bars")
+                .action(|waterui::State(value): waterui::State<Binding<bool>>| {
+                    value.set(!value.get());
+                })
+                .state(&expanded),
+        ),
+        &env,
+    );
+    let mut state = HydroState::default();
+    let state = RefCell::new(&mut state);
+    let subview = HydroSubview::from_view(&view, &state, &env);
+
+    let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
+    let proposed = subview.measure(ProposalSize::new(Some(720.0), None));
+
+    assert_eq!(subview.stretch_axis(), StretchAxis::None);
+    assert_eq!(
+        proposed.size.width, intrinsic.size.width,
+        "environment state metadata must not make a button stretch across its VStack row"
+    );
+}
+
+#[test]
+fn vstack_places_state_wrapped_button_at_intrinsic_width() {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
+        native_executor::NativeExecutor::new(),
+    ));
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let expanded = Binding::bool(false);
+    let view = vstack((
+        hstack((
+            ().size(50.0, 80.0).min_height(100.0).min_width(60.0),
+            ().size(50.0, 80.0).min_height(100.0).min_width(60.0),
+            ().size(50.0, 80.0).min_height(100.0).min_width(60.0),
+            ().size(50.0, 80.0).min_height(100.0).min_width(60.0),
+        )),
+        button("Toggle Bars")
+            .action(|waterui::State(value): waterui::State<Binding<bool>>| {
+                value.set(!value.get());
+            })
+            .state(&expanded),
+    ));
+    let mut renderer = test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 720.0, 320.0);
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(view, &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let target = renderer
+        .hit_test
+        .pointer_targets
+        .iter()
+        .next()
+        .expect("state-wrapped button should register a pointer target");
+    assert!(
+        target.bounds.width() < 200.0,
+        "state-wrapped button hit bounds must stay intrinsic, got width {}",
+        target.bounds.width()
     );
 }
 
@@ -438,13 +535,13 @@ fn dynamic_body_snapshot_after_render_does_not_schedule_rebuild() {
 }
 
 #[test]
-fn root_scroll_lazy_viewport_does_not_activate_offscreen_filters() {
+fn fixed_scroll_content_keeps_offscreen_children_registered() {
     let mut env = Environment::new();
     env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
     let mut renderer = test_renderer();
     let view = scroll(vstack((
         ().size(120.0, 600.0),
-        ().size(80.0, 80.0).blur(4.0),
+        button("Offscreen").action(|| {}),
     )));
     let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
 
@@ -453,10 +550,14 @@ fn root_scroll_lazy_viewport_does_not_activate_offscreen_filters() {
     renderer.dispatch(view, &env, bounds);
     renderer.finish_rebuild_frame();
 
-    let (count, capture_us, effect_us) = renderer.applied_filter_stats();
-    assert_eq!(count, 0);
-    assert_eq!(capture_us, 0);
-    assert_eq!(effect_us, 0);
+    assert!(
+        renderer
+            .hit_test
+            .pointer_targets
+            .iter()
+            .any(|target| target.bounds.y0 >= 600.0),
+        "fixed scroll content must not unload offscreen children; only explicit lazy containers may virtualize children"
+    );
 }
 
 #[test]

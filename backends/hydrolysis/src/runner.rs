@@ -811,9 +811,9 @@ fn rebuild_window_scene<P: PlatformWindow>(
             "hydrolysis runner: rebuild loop exceeded 64 iterations in a single pump"
         );
         runtime.renderer.reset_scene();
-        runtime.renderer.set_scroll_content_cache_reuse(
-            runtime.scroll_only_rebuild || runtime.visual_animation_rebuild_pending,
-        );
+        runtime
+            .renderer
+            .set_scroll_content_cache_reuse(runtime.scroll_only_rebuild);
         runtime
             .renderer
             .set_applied_filter_input_cache_reuse(reuse_filter_inputs);

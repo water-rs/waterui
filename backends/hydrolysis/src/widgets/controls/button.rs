@@ -19,6 +19,7 @@ use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::color::Color;
+use waterui_text::styled::StyledStr;
 
 use crate::renderer::local_interaction_state;
 use crate::widgets::util::{inset_rect, widget_theme};
@@ -149,7 +150,7 @@ pub(crate) fn render_button(
         && label_bounds.width() > 0.0
         && label_bounds.height() > 0.0
     {
-        let mut styled = ctx.renderer_mut().read_signal(&label.accessibility_label());
+        let mut styled = styled_button_title(theme, style, &label, env);
         if let Some(color) = theme.button_label_color(style) {
             styled = styled.foreground(color);
         }
@@ -208,7 +209,7 @@ pub(crate) fn render_menu(
         && label_bounds.width() > 0.0
         && label_bounds.height() > 0.0
     {
-        let mut styled = ctx.renderer_mut().read_signal(&label.accessibility_label());
+        let mut styled = styled_button_title(theme, style, label, env);
         if let Some(color) = theme.button_label_color(style) {
             styled = styled.foreground(color);
         }
@@ -240,8 +241,7 @@ pub(crate) fn measure_button_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.button_metrics(button.style);
-    let label = styled_button_label(theme, button.style, button.label.clone());
-    let label_size = measure_label_intrinsic(&label, state, env);
+    let label_size = measure_button_label_intrinsic(theme, button.style, &button.label, state, env);
     let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
     let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
     LayoutSize::new(
@@ -257,7 +257,14 @@ pub(crate) fn measure_menu_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.button_metrics(ButtonStyle::Borderless);
-    let label_size = measure_view_intrinsic(&menu.label, state, env);
+    let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
+        && matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
+    {
+        let styled = styled_button_title(theme, ButtonStyle::Borderless, label, env);
+        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
+    } else {
+        measure_view_intrinsic(&menu.label, state, env)
+    };
     let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
     let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
     LayoutSize::new(
@@ -271,6 +278,37 @@ fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
         Some(color) => AnyView::new(label.foreground(color)),
         None => label,
     }
+}
+
+fn measure_button_label_intrinsic(
+    theme: &dyn waterui_backend_core::widget::WidgetTheme,
+    style: ButtonStyle,
+    label: &Label,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    if matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly) {
+        let styled = styled_button_title(theme, style, label, env);
+        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
+    } else {
+        let label = styled_button_label(theme, style, label.clone());
+        measure_label_intrinsic(&label, state, env)
+    }
+}
+
+fn styled_button_title(
+    theme: &dyn waterui_backend_core::widget::WidgetTheme,
+    style: ButtonStyle,
+    label: &Label,
+    env: &Environment,
+) -> StyledStr {
+    let title = label.semantic_text().clone();
+    let title = if let Some(font) = theme.button_label_font(style) {
+        title.font(font)
+    } else {
+        title
+    };
+    title.resolve_reactive(env).content.get()
 }
 
 fn styled_button_label(
