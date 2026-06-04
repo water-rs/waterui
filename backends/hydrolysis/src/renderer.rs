@@ -134,6 +134,14 @@ use crate::scroll::{ScrollController, ScrollHandle};
 use crate::time::Instant;
 use crate::widgets::{inset_rect, widget_theme};
 
+const OPACITY_ANIMATION_KEY: usize = 0x0100_0001;
+const SCALE_X_ANIMATION_KEY: usize = 0x0100_0002;
+const SCALE_Y_ANIMATION_KEY: usize = 0x0100_0003;
+const ROTATION_ANIMATION_KEY: usize = 0x0100_0004;
+const OFFSET_X_ANIMATION_KEY: usize = 0x0100_0005;
+const OFFSET_Y_ANIMATION_KEY: usize = 0x0100_0006;
+const MORPH_PROGRESS_ANIMATION_KEY: usize = 0x0100_0007;
+
 #[cfg(feature = "accessibility")]
 pub(crate) use accessibility::{
     AccessibilityActionTarget, accessibility_activation_point,
@@ -1287,7 +1295,11 @@ impl HydrolysisRenderer {
         self.frame_instant
     }
 
-    fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
+    fn resolve_animated_scalar_with_discriminator<S>(
+        &mut self,
+        signal: &S,
+        discriminator: usize,
+    ) -> f32
     where
         S: Signal<Output = f32> + Clone + 'static,
     {
@@ -1295,7 +1307,7 @@ impl HydrolysisRenderer {
             return signal.get();
         };
         let now = self.frame_instant;
-        let key = AnimationKey::scalar(identity);
+        let key = AnimationKey::scalar_with_discriminator(identity, discriminator);
         let handle = self
             .animation_controller
             .bind_scalar(key, signal.get(), now);
@@ -1462,10 +1474,6 @@ impl HydrolysisRenderer {
             .bind_repeating_phase(key, cycle, self.frame_instant)
     }
 
-    fn rects_intersect(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
-        a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
-    }
-
     fn canonical_geometry_bits(value: f64) -> u64 {
         if value == 0.0 {
             0.0f64.to_bits()
@@ -1494,19 +1502,6 @@ impl HydrolysisRenderer {
                 Self::canonical_geometry_bits(ctx.bounds.y1),
             ],
         }
-    }
-
-    fn child_outside_lazy_viewport(
-        renderer: &HydrolysisRenderer,
-        ctx: RenderContext,
-        child_transform: vello::kurbo::Affine,
-        child_bounds: vello::kurbo::Rect,
-    ) -> bool {
-        let Some(viewport) = renderer.lazy.lazy_viewport_stack.last().copied() else {
-            return false;
-        };
-        let child_rect = transformed_rect(ctx.transform * child_transform, child_bounds);
-        !Self::rects_intersect(child_rect, viewport)
     }
 
     fn render_layout_container(
@@ -1559,9 +1554,6 @@ impl HydrolysisRenderer {
                 f64::from(rect.width()),
                 f64::from(rect.height()),
             );
-            if Self::child_outside_lazy_viewport(renderer, ctx, child_transform, child_bounds) {
-                continue;
-            }
             Self::dispatch_any(
                 renderer,
                 ctx.child(child_transform, child_bounds),
@@ -2228,7 +2220,8 @@ impl HydrolysisRenderer {
             return;
         }
         let progress = if let Some(progress) = resolved.progress.as_ref() {
-            renderer.resolve_animated_scalar(progress)
+            renderer
+                .resolve_animated_scalar_with_discriminator(progress, MORPH_PROGRESS_ANIMATION_KEY)
         } else {
             renderer.sample_morph_progress(resolved.animation)
         };
@@ -2270,7 +2263,10 @@ impl HydrolysisRenderer {
         metadata: Metadata<Opacity>,
         env: &Environment,
     ) {
-        let alpha = renderer.resolve_animated_scalar(&metadata.value.value);
+        let alpha = renderer.resolve_animated_scalar_with_discriminator(
+            &metadata.value.value,
+            OPACITY_ANIMATION_KEY,
+        );
         renderer.push_layer_rect(alpha, ctx.transform, ctx.bounds);
 
         let previous_opacity = renderer.hit_test.hit_test_opacity;
@@ -2380,8 +2376,8 @@ impl HydrolysisRenderer {
         let Metadata { content, value } = metadata;
         let center = anchor_point(ctx.bounds, value.anchor);
         let (scale_x, scale_y) = (
-            renderer.resolve_animated_scalar(&value.x),
-            renderer.resolve_animated_scalar(&value.y),
+            renderer.resolve_animated_scalar_with_discriminator(&value.x, SCALE_X_ANIMATION_KEY),
+            renderer.resolve_animated_scalar_with_discriminator(&value.y, SCALE_Y_ANIMATION_KEY),
         );
         let transform = vello::kurbo::Affine::translate((center.x, center.y))
             * vello::kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
@@ -2397,7 +2393,11 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let center = anchor_point(ctx.bounds, value.anchor);
-        let radians = f64::from(renderer.resolve_animated_scalar(&value.angle)).to_radians();
+        let radians = f64::from(
+            renderer
+                .resolve_animated_scalar_with_discriminator(&value.angle, ROTATION_ANIMATION_KEY),
+        )
+        .to_radians();
         let transform = vello::kurbo::Affine::translate((center.x, center.y))
             * vello::kurbo::Affine::rotate(radians)
             * vello::kurbo::Affine::translate((-center.x, -center.y));
@@ -2412,8 +2412,8 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let (offset_x, offset_y) = (
-            renderer.resolve_animated_scalar(&value.x),
-            renderer.resolve_animated_scalar(&value.y),
+            renderer.resolve_animated_scalar_with_discriminator(&value.x, OFFSET_X_ANIMATION_KEY),
+            renderer.resolve_animated_scalar_with_discriminator(&value.y, OFFSET_Y_ANIMATION_KEY),
         );
         let transform = vello::kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
         Self::dispatch_any(renderer, ctx.child(transform, ctx.bounds), env, content);
