@@ -39,6 +39,7 @@ pub struct AnimationKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum AnimationKeyScope {
     Scalar,
+    RendererLocalScalar,
     RadioIndicator,
     Repeating,
 }
@@ -55,6 +56,7 @@ struct AnimatedRadioIndicatorSlot {
 
 #[derive(Clone, Debug)]
 pub struct AnimatedScalarHandle {
+    key: AnimationKey,
     state: Rc<RefCell<AnimatedScalarState>>,
     generation: u64,
 }
@@ -114,9 +116,14 @@ impl AnimationKey {
     #[must_use]
     pub(crate) const fn renderer_local_scalar(identity: usize) -> Self {
         Self {
-            scope: AnimationKeyScope::Scalar,
-            identity: RENDERER_LOCAL_KEY_MASK | identity as u64,
+            scope: AnimationKeyScope::RendererLocalScalar,
+            identity: identity as u64,
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn is_renderer_local_scalar(self) -> bool {
+        matches!(self.scope, AnimationKeyScope::RendererLocalScalar)
     }
 
     #[must_use]
@@ -172,7 +179,10 @@ impl AnimationController {
         now: Instant,
     ) -> AnimatedScalarHandle {
         assert!(
-            key.scope == AnimationKeyScope::Scalar,
+            matches!(
+                key.scope,
+                AnimationKeyScope::Scalar | AnimationKeyScope::RendererLocalScalar
+            ),
             "animation scalar key used with mismatched scope"
         );
         self.active_slots.insert(key);
@@ -182,7 +192,11 @@ impl AnimationController {
 
         let state = Rc::clone(&slot.state);
         let generation = state.borrow_mut().prepare_generation(observed_value);
-        AnimatedScalarHandle { state, generation }
+        AnimatedScalarHandle {
+            key,
+            state,
+            generation,
+        }
     }
 
     pub fn bind_scalar_target(
@@ -193,7 +207,10 @@ impl AnimationController {
         now: Instant,
     ) -> AnimatedScalarHandle {
         assert!(
-            key.scope == AnimationKeyScope::Scalar,
+            matches!(
+                key.scope,
+                AnimationKeyScope::Scalar | AnimationKeyScope::RendererLocalScalar
+            ),
             "animation scalar target key used with mismatched scope"
         );
         self.active_slots.insert(key);
@@ -203,7 +220,11 @@ impl AnimationController {
 
         let state = Rc::clone(&slot.state);
         let generation = state.borrow_mut().prepare_target_generation();
-        let handle = AnimatedScalarHandle { state, generation };
+        let handle = AnimatedScalarHandle {
+            key,
+            state,
+            generation,
+        };
         handle.apply_target(target, Some(animation), now);
         handle
     }
@@ -263,6 +284,25 @@ impl AnimationController {
             })
     }
 
+    pub fn active_scalar_keys(&self) -> BTreeSet<AnimationKey> {
+        self.slots
+            .iter()
+            .filter_map(|(key, slot)| slot.state.borrow().is_active().then_some(*key))
+            .collect()
+    }
+
+    pub fn has_active_radio_indicator(&self) -> bool {
+        self.radio_indicator_slots
+            .values()
+            .any(|slot| slot.state.borrow().is_active())
+    }
+
+    pub fn has_active_repeating(&self, now: Instant) -> bool {
+        self.repeating_slots
+            .values()
+            .any(|slot| slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle)
+    }
+
     pub fn bind_repeating_phase(
         &mut self,
         key: AnimationKey,
@@ -308,6 +348,16 @@ impl AnimationController {
 }
 
 impl AnimatedScalarHandle {
+    #[must_use]
+    pub const fn key(&self) -> AnimationKey {
+        self.key
+    }
+
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.state.borrow().is_active()
+    }
+
     pub fn sample(&self, now: Instant) -> f32 {
         let mut state = self.state.borrow_mut();
         state.advance(now);

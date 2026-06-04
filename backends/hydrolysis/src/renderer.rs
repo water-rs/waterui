@@ -27,7 +27,7 @@ pub(crate) use render::{
 };
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
@@ -121,7 +121,7 @@ use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
 
-use crate::animation::{AnimationController, AnimationKey};
+use crate::animation::{AnimatedScalarHandle, AnimationController, AnimationKey};
 use crate::engine::{
     RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
     vello_backend::VelloDrawContext,
@@ -310,10 +310,13 @@ pub struct HydrolysisRenderer {
     reuse_scroll_content_caches: bool,
     scroll_content_capture_depth: usize,
     scroll_content_viewport_dependent: bool,
+    scroll_content_animation_dependent: bool,
     retained_scroll_frame: Option<RetainedScrollFrame>,
     retained_scroll_frame_conflicted: bool,
     dynamic_morph_capture_depth: u32,
     dynamic_morph_draws: Vec<DynamicMorphDraw>,
+    dynamic_transform_capture_depth: u32,
+    dynamic_transform_draws: Vec<DynamicTransformDraw>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     frame_applied_filter_count: u32,
@@ -333,7 +336,6 @@ struct RetainedScrollFrame {
     cache_key: usize,
     axis: ScrollAxis,
     viewport: vello::kurbo::Rect,
-    lazy_viewport: vello::kurbo::Rect,
     transform: vello::kurbo::Affine,
     hit_transform: vello::kurbo::Affine,
     content_dynamic_morphs: Vec<DynamicMorphDraw>,
@@ -345,7 +347,6 @@ pub(crate) struct RetainScrollFrameRequest {
     pub(crate) cache_key: usize,
     pub(crate) axis: ScrollAxis,
     pub(crate) viewport: vello::kurbo::Rect,
-    pub(crate) lazy_viewport: vello::kurbo::Rect,
     pub(crate) transform: vello::kurbo::Affine,
     pub(crate) hit_transform: vello::kurbo::Affine,
     pub(crate) content_dynamic_morphs: Vec<DynamicMorphDraw>,
@@ -356,8 +357,10 @@ pub(crate) struct RetainScrollFrameRequest {
 struct ScrollContentCache {
     lazy_viewport: vello::kurbo::Rect,
     viewport_dependent: bool,
+    animation_dependent: bool,
     subtree: DynamicSubtree,
     active_filters: Vec<ActiveAppliedFilter>,
+    dynamic_morphs: Vec<DynamicMorphDraw>,
 }
 
 #[derive(Clone)]
@@ -366,6 +369,142 @@ pub(crate) struct DynamicMorphDraw {
     bounds: vello::kurbo::Rect,
     transform: vello::kurbo::Affine,
     started_at: Instant,
+}
+
+struct DynamicTransformScalar {
+    value: f32,
+    handle: Option<AnimatedScalarHandle>,
+}
+
+struct DynamicScaleTransform {
+    x: DynamicTransformScalar,
+    y: DynamicTransformScalar,
+    center: vello::kurbo::Point,
+}
+
+struct DynamicRotationTransform {
+    angle: DynamicTransformScalar,
+    center: vello::kurbo::Point,
+}
+
+struct DynamicOffsetTransform {
+    x: DynamicTransformScalar,
+    y: DynamicTransformScalar,
+}
+
+struct DynamicTransformComponents {
+    scale: Option<DynamicScaleTransform>,
+    rotation: Option<DynamicRotationTransform>,
+    offset: Option<DynamicOffsetTransform>,
+}
+
+pub(crate) struct DynamicTransformDraw {
+    transform: DynamicTransformComponents,
+    base_transform: vello::kurbo::Affine,
+    base_hit_transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    subtree: DynamicSubtree,
+}
+
+impl DynamicTransformScalar {
+    fn sample(&self, now: Instant) -> f32 {
+        self.handle
+            .as_ref()
+            .map_or(self.value, |handle| handle.sample(now))
+    }
+
+    fn collect_active_key(&self, keys: &mut BTreeSet<AnimationKey>) {
+        if let Some(handle) = &self.handle
+            && handle.is_active()
+        {
+            keys.insert(handle.key());
+        }
+    }
+}
+
+impl DynamicTransformComponents {
+    fn scale(
+        x: DynamicTransformScalar,
+        y: DynamicTransformScalar,
+        center: vello::kurbo::Point,
+    ) -> Self {
+        Self {
+            scale: Some(DynamicScaleTransform { x, y, center }),
+            rotation: None,
+            offset: None,
+        }
+    }
+
+    fn rotation(angle: DynamicTransformScalar, center: vello::kurbo::Point) -> Self {
+        Self {
+            scale: None,
+            rotation: Some(DynamicRotationTransform { angle, center }),
+            offset: None,
+        }
+    }
+
+    fn offset(x: DynamicTransformScalar, y: DynamicTransformScalar) -> Self {
+        Self {
+            scale: None,
+            rotation: None,
+            offset: Some(DynamicOffsetTransform { x, y }),
+        }
+    }
+
+    fn affine(&self, now: Instant) -> vello::kurbo::Affine {
+        let active_components = usize::from(self.scale.is_some())
+            + usize::from(self.rotation.is_some())
+            + usize::from(self.offset.is_some());
+        assert!(
+            active_components == 1,
+            "hydrolysis dynamic transform draw must contain exactly one transform component"
+        );
+        if let Some(scale) = &self.scale {
+            return vello::kurbo::Affine::translate((scale.center.x, scale.center.y))
+                * vello::kurbo::Affine::scale_non_uniform(
+                    f64::from(scale.x.sample(now)),
+                    f64::from(scale.y.sample(now)),
+                )
+                * vello::kurbo::Affine::translate((-scale.center.x, -scale.center.y));
+        }
+        if let Some(rotation) = &self.rotation {
+            let radians = f64::from(rotation.angle.sample(now)).to_radians();
+            return vello::kurbo::Affine::translate((rotation.center.x, rotation.center.y))
+                * vello::kurbo::Affine::rotate(radians)
+                * vello::kurbo::Affine::translate((-rotation.center.x, -rotation.center.y));
+        }
+        let offset = self
+            .offset
+            .as_ref()
+            .expect("hydrolysis dynamic transform draw missing offset component");
+        vello::kurbo::Affine::translate((
+            f64::from(offset.x.sample(now)),
+            f64::from(offset.y.sample(now)),
+        ))
+    }
+
+    fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
+        if let Some(scale) = &self.scale {
+            scale.x.collect_active_key(keys);
+            scale.y.collect_active_key(keys);
+        }
+        if let Some(rotation) = &self.rotation {
+            rotation.angle.collect_active_key(keys);
+        }
+        if let Some(offset) = &self.offset {
+            offset.x.collect_active_key(keys);
+            offset.y.collect_active_key(keys);
+        }
+    }
+}
+
+impl DynamicTransformDraw {
+    fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
+        self.transform.collect_active_scalar_keys(keys);
+        for transform in &self.subtree.dynamic_transforms {
+            transform.collect_active_scalar_keys(keys);
+        }
+    }
 }
 
 pub(crate) struct ScrollContentRender {
@@ -897,10 +1036,13 @@ impl HydrolysisRenderer {
             reuse_scroll_content_caches: false,
             scroll_content_capture_depth: 0,
             scroll_content_viewport_dependent: false,
+            scroll_content_animation_dependent: false,
             retained_scroll_frame: None,
             retained_scroll_frame_conflicted: false,
             dynamic_morph_capture_depth: 0,
             dynamic_morph_draws: Vec::new(),
+            dynamic_transform_capture_depth: 0,
+            dynamic_transform_draws: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_applied_filter_count: 0,
@@ -1311,6 +1453,7 @@ impl HydrolysisRenderer {
         let Some(identity) = signal.identity() else {
             return signal.get();
         };
+        self.mark_scroll_content_animation_dependent();
         let now = self.frame_instant;
         let key = AnimationKey::scalar_with_discriminator(identity, discriminator);
         let handle = self
@@ -1318,13 +1461,67 @@ impl HydrolysisRenderer {
             .bind_scalar(key, signal.get(), now);
         let watcher_handle = handle.clone();
         let frame_clock = Rc::clone(&self.frame_clock);
-        let rebuild_requested = Rc::clone(&self.rebuild_requested);
+        let redraw_requested = Rc::clone(&self.redraw_requested);
         let guard = signal.watch(move |update| {
             watcher_handle.apply_update_from_context(update, frame_clock.get());
-            rebuild_requested.set(true);
+            redraw_requested.set(true);
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
         handle.sample(now)
+    }
+
+    fn dynamic_transform_scalar_with_discriminator<S>(
+        &mut self,
+        signal: &S,
+        discriminator: usize,
+    ) -> DynamicTransformScalar
+    where
+        S: Signal<Output = f32> + Clone + 'static,
+    {
+        let Some(identity) = signal.identity() else {
+            return DynamicTransformScalar {
+                value: signal.get(),
+                handle: None,
+            };
+        };
+        let now = self.frame_instant;
+        let key = AnimationKey::scalar_with_discriminator(identity, discriminator);
+        let handle = self
+            .animation_controller
+            .bind_scalar(key, signal.get(), now);
+        let watcher_handle = handle.clone();
+        let frame_clock = Rc::clone(&self.frame_clock);
+        let redraw_requested = Rc::clone(&self.redraw_requested);
+        let guard = signal.watch(move |update| {
+            watcher_handle.apply_update_from_context(update, frame_clock.get());
+            redraw_requested.set(true);
+        });
+        let value = handle.sample(now);
+        self.lifecycle.current_frame_retain.push(Retain::new(guard));
+        DynamicTransformScalar {
+            value,
+            handle: Some(handle),
+        }
+    }
+
+    fn capture_dynamic_transform(
+        &mut self,
+        ctx: RenderContext,
+        env: &Environment,
+        content: AnyView,
+        transform: DynamicTransformComponents,
+    ) {
+        let local_ctx = ctx.with_identity_transforms(ctx.bounds);
+        let subtree = Self::render_dynamic_subtree_with_local_interactions(
+            self, ctx, local_ctx, env, content,
+        );
+        self.dynamic_transform_draws.push(DynamicTransformDraw {
+            transform,
+            base_transform: ctx.transform,
+            base_hit_transform: ctx.hit_transform,
+            bounds: ctx.bounds,
+            subtree,
+        });
     }
 
     pub(crate) fn resolve_toggle_progress<S>(
@@ -1470,6 +1667,22 @@ impl HydrolysisRenderer {
                 None,
                 &path,
             );
+        }
+    }
+
+    fn draw_dynamic_transforms(
+        &mut self,
+        parent_ctx: RenderContext,
+        transforms: &[DynamicTransformDraw],
+    ) {
+        for draw in transforms {
+            let dynamic_transform = draw.transform.affine(self.frame_instant);
+            let ctx = RenderContext::with_transforms(
+                draw.bounds,
+                parent_ctx.transform * draw.base_transform * dynamic_transform,
+                parent_ctx.hit_transform * draw.base_hit_transform * dynamic_transform,
+            );
+            self.replay_dynamic_subtree(ctx, &draw.subtree);
         }
     }
 
@@ -2381,6 +2594,21 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let center = anchor_point(ctx.bounds, value.anchor);
+        if renderer.dynamic_transform_capture_depth > 0
+            && (value.x.identity().is_some() || value.y.identity().is_some())
+        {
+            let scale_x = renderer
+                .dynamic_transform_scalar_with_discriminator(&value.x, SCALE_X_ANIMATION_KEY);
+            let scale_y = renderer
+                .dynamic_transform_scalar_with_discriminator(&value.y, SCALE_Y_ANIMATION_KEY);
+            renderer.capture_dynamic_transform(
+                ctx,
+                env,
+                content,
+                DynamicTransformComponents::scale(scale_x, scale_y, center),
+            );
+            return;
+        }
         let (scale_x, scale_y) = (
             renderer.resolve_animated_scalar_with_discriminator(&value.x, SCALE_X_ANIMATION_KEY),
             renderer.resolve_animated_scalar_with_discriminator(&value.y, SCALE_Y_ANIMATION_KEY),
@@ -2399,6 +2627,17 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let center = anchor_point(ctx.bounds, value.anchor);
+        if renderer.dynamic_transform_capture_depth > 0 && value.angle.identity().is_some() {
+            let angle = renderer
+                .dynamic_transform_scalar_with_discriminator(&value.angle, ROTATION_ANIMATION_KEY);
+            renderer.capture_dynamic_transform(
+                ctx,
+                env,
+                content,
+                DynamicTransformComponents::rotation(angle, center),
+            );
+            return;
+        }
         let radians = f64::from(
             renderer
                 .resolve_animated_scalar_with_discriminator(&value.angle, ROTATION_ANIMATION_KEY),
@@ -2417,6 +2656,21 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let Metadata { content, value } = metadata;
+        if renderer.dynamic_transform_capture_depth > 0
+            && (value.x.identity().is_some() || value.y.identity().is_some())
+        {
+            let offset_x = renderer
+                .dynamic_transform_scalar_with_discriminator(&value.x, OFFSET_X_ANIMATION_KEY);
+            let offset_y = renderer
+                .dynamic_transform_scalar_with_discriminator(&value.y, OFFSET_Y_ANIMATION_KEY);
+            renderer.capture_dynamic_transform(
+                ctx,
+                env,
+                content,
+                DynamicTransformComponents::offset(offset_x, offset_y),
+            );
+            return;
+        }
         let (offset_x, offset_y) = (
             renderer.resolve_animated_scalar_with_discriminator(&value.x, OFFSET_X_ANIMATION_KEY),
             renderer.resolve_animated_scalar_with_discriminator(&value.y, OFFSET_Y_ANIMATION_KEY),
@@ -3091,6 +3345,56 @@ impl HydrolysisRenderer {
         })
     }
 
+    pub(crate) fn retained_scroll_can_drive_active_animations(&self) -> bool {
+        let Some(frame) = &self.retained_scroll_frame else {
+            return false;
+        };
+        if self.retained_scroll_frame_conflicted {
+            return false;
+        }
+        if self.navigation.slots.iter().any(|slot| {
+            slot.transition
+                .as_ref()
+                .is_some_and(|state| state.is_active(self.frame_instant))
+        }) {
+            return false;
+        }
+        if self.animation_controller.has_active_radio_indicator() {
+            return false;
+        }
+
+        let active_scalar_keys: BTreeSet<_> = self
+            .animation_controller
+            .active_scalar_keys()
+            .into_iter()
+            .filter(|key| !key.is_renderer_local_scalar())
+            .collect();
+        let has_active_repeating = self
+            .animation_controller
+            .has_active_repeating(self.frame_instant);
+        let retained_dynamic_morphs_active = self.retained_scroll_dynamic_morphs_active();
+        let Some(cache) = self.scroll_content_caches.get(&frame.cache_key) else {
+            return false;
+        };
+        if cache.animation_dependent {
+            return false;
+        }
+        let mut retained_scalar_keys = BTreeSet::new();
+        for transform in &cache.subtree.dynamic_transforms {
+            transform.collect_active_scalar_keys(&mut retained_scalar_keys);
+        }
+
+        let active_retained_scalar = active_scalar_keys
+            .iter()
+            .any(|key| retained_scalar_keys.contains(key));
+        let scalar_driven = active_scalar_keys.is_empty() || active_retained_scalar;
+        let repeating_driven = !has_active_repeating || retained_dynamic_morphs_active;
+        let has_retained_redraw_work =
+            active_retained_scalar || (has_active_repeating && retained_dynamic_morphs_active);
+
+        has_retained_redraw_work && scalar_driven && repeating_driven
+    }
+
     pub(crate) fn active_scene_layers_snapshot(&self) -> Vec<ActiveSceneLayer> {
         self.compositor.active_scene_layers.clone()
     }
@@ -3122,7 +3426,6 @@ impl HydrolysisRenderer {
             cache_key: request.cache_key,
             axis: request.axis,
             viewport: request.viewport,
-            lazy_viewport: request.lazy_viewport,
             transform: request.transform,
             hit_transform: request.hit_transform,
             content_dynamic_morphs: request.content_dynamic_morphs,
@@ -3134,6 +3437,23 @@ impl HydrolysisRenderer {
         if self.scroll_content_capture_depth > 0 {
             self.scroll_content_viewport_dependent = true;
         }
+    }
+
+    fn mark_scroll_content_animation_dependent(&mut self) {
+        if self.scroll_content_capture_depth > 0 {
+            self.scroll_content_animation_dependent = true;
+        }
+    }
+
+    fn can_reuse_scroll_content_cache(
+        &self,
+        cache: &ScrollContentCache,
+        lazy_viewport: vello::kurbo::Rect,
+    ) -> bool {
+        let viewport_reusable =
+            !cache.viewport_dependent || rect_near(cache.lazy_viewport, lazy_viewport);
+        let animation_reusable = !cache.animation_dependent || !self.animations_active();
+        viewport_reusable && animation_reusable
     }
 
     pub(crate) fn refresh_retained_scroll_scene(&mut self, env: &Environment) -> bool {
@@ -3198,7 +3518,7 @@ impl HydrolysisRenderer {
             content_hit_transform,
         );
         if let Some(cache) = self.scroll_content_caches.remove(&frame.cache_key) {
-            if cache.viewport_dependent && !rect_near(frame.lazy_viewport, visible_lazy_viewport) {
+            if !self.can_reuse_scroll_content_cache(&cache, visible_lazy_viewport) {
                 self.scroll_content_caches.insert(frame.cache_key, cache);
                 return false;
             }
@@ -3256,15 +3576,15 @@ impl HydrolysisRenderer {
         if self.reuse_scroll_content_caches
             && let Some(cache) = self.scroll_content_caches.remove(&cache_key)
         {
-            if !cache.viewport_dependent || rect_near(cache.lazy_viewport, lazy_viewport) {
+            if self.can_reuse_scroll_content_cache(&cache, lazy_viewport) {
                 self.replay_dynamic_subtree(ctx, &cache.subtree);
+                let dynamic_morphs = cache.dynamic_morphs.clone();
+                self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
                 for active_filter in cache.active_filters.iter().cloned() {
                     self.remember_active_applied_filter_entry(active_filter);
                 }
                 self.scroll_content_caches.insert(cache_key, cache);
-                return ScrollContentRender {
-                    dynamic_morphs: Vec::new(),
-                };
+                return ScrollContentRender { dynamic_morphs };
             }
             self.scroll_content_caches.insert(cache_key, cache);
         }
@@ -3273,7 +3593,9 @@ impl HydrolysisRenderer {
         let active_filter_start = self.active_applied_filter_cursor;
         let previous_morphs = core::mem::take(&mut self.dynamic_morph_draws);
         let previous_scroll_content_viewport_dependent = self.scroll_content_viewport_dependent;
+        let previous_scroll_content_animation_dependent = self.scroll_content_animation_dependent;
         self.scroll_content_viewport_dependent = false;
+        self.scroll_content_animation_dependent = false;
         self.scroll_content_capture_depth = self
             .scroll_content_capture_depth
             .checked_add(1)
@@ -3282,9 +3604,17 @@ impl HydrolysisRenderer {
             .dynamic_morph_capture_depth
             .checked_add(1)
             .expect("hydrolysis dynamic morph capture depth overflow");
+        self.dynamic_transform_capture_depth = self
+            .dynamic_transform_capture_depth
+            .checked_add(1)
+            .expect("hydrolysis dynamic transform capture depth overflow");
         let subtree = Self::render_dynamic_subtree_with_local_interactions(
             self, ctx, local_ctx, env, content,
         );
+        self.dynamic_transform_capture_depth = self
+            .dynamic_transform_capture_depth
+            .checked_sub(1)
+            .expect("hydrolysis dynamic transform capture depth underflow");
         self.dynamic_morph_capture_depth = self
             .dynamic_morph_capture_depth
             .checked_sub(1)
@@ -3294,7 +3624,9 @@ impl HydrolysisRenderer {
             .checked_sub(1)
             .expect("hydrolysis scroll content capture depth underflow");
         let viewport_dependent = self.scroll_content_viewport_dependent;
+        let animation_dependent = self.scroll_content_animation_dependent;
         self.scroll_content_viewport_dependent = previous_scroll_content_viewport_dependent;
+        self.scroll_content_animation_dependent = previous_scroll_content_animation_dependent;
         let dynamic_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
         self.replay_dynamic_subtree(ctx, &subtree);
         self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
@@ -3306,8 +3638,10 @@ impl HydrolysisRenderer {
             ScrollContentCache {
                 lazy_viewport,
                 viewport_dependent,
+                animation_dependent,
                 subtree,
                 active_filters,
+                dynamic_morphs: dynamic_morphs.clone(),
             },
         );
         ScrollContentRender { dynamic_morphs }

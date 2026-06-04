@@ -2,7 +2,8 @@ use super::*;
 use std::borrow::Cow;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
-use waterui::{Binding, SignalExt as _, ViewExt as _};
+use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
+use waterui::{Binding, Color, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::slider::slider;
@@ -589,6 +590,191 @@ fn fixed_scroll_content_refreshes_retained_scene_after_offset_change() {
     assert!(
         renderer.refresh_retained_scroll_scene(&env),
         "fixed scroll content cache is viewport-independent and must refresh by translating retained content"
+    );
+}
+
+#[test]
+fn scroll_content_cache_replay_preserves_dynamic_morphs() {
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut renderer = test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    let make_view = || {
+        scroll(vstack((
+            Circle
+                .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
+                .duration(Duration::from_millis(1_100))
+                .size(60.0, 60.0),
+            ().size(120.0, 600.0),
+        )))
+    };
+
+    renderer.set_window_bounds(bounds);
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(make_view(), &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let frame = renderer
+        .retained_scroll_frame
+        .as_ref()
+        .expect("root scroll must retain a scroll frame");
+    assert!(
+        !renderer
+            .scroll_content_caches
+            .get(&frame.cache_key)
+            .expect("scroll content cache must be stored")
+            .dynamic_morphs
+            .is_empty(),
+        "scroll content cache must retain renderer-side dynamic morph draws"
+    );
+
+    renderer.set_scroll_content_cache_reuse(true);
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(make_view(), &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    assert!(
+        !renderer
+            .retained_scroll_frame
+            .as_ref()
+            .expect("cache replay must retain a scroll frame")
+            .content_dynamic_morphs
+            .is_empty(),
+        "scroll cache replay must return cached dynamic morphs for the next retained scroll frame"
+    );
+}
+
+#[test]
+fn animated_transform_scroll_content_cache_replays_while_animation_is_active() {
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut renderer = test_renderer();
+    let scale = Binding::f32(1.0);
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    let make_view = || {
+        let animated_scale = scale
+            .clone()
+            .with(Animation::linear(Duration::from_millis(1_000)));
+        scroll(vstack((
+            ().size(60.0, 60.0)
+                .scale(animated_scale.clone(), animated_scale),
+            ().size(120.0, 600.0),
+        )))
+    };
+
+    renderer.set_window_bounds(bounds);
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(make_view(), &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let frame = renderer
+        .retained_scroll_frame
+        .as_ref()
+        .expect("root scroll must retain a scroll frame");
+    let cache_key = frame.cache_key;
+    let cache = renderer
+        .scroll_content_caches
+        .get(&cache_key)
+        .expect("scroll content cache must be stored");
+    assert!(
+        !cache.animation_dependent,
+        "captured dynamic transform metadata must not poison scroll content cache reuse"
+    );
+    assert!(
+        !cache.subtree.dynamic_transforms.is_empty(),
+        "animated transform metadata must be captured as replayable dynamic transform draw"
+    );
+    let lazy_viewport = cache.lazy_viewport;
+
+    scale.set(2.0);
+    assert!(
+        renderer.animations_active(),
+        "changing an animated transform signal must leave the animation controller active"
+    );
+    assert!(
+        renderer.retained_scroll_can_drive_active_animations(),
+        "retained scroll frame must be able to redraw captured transform animations without scene dispatch"
+    );
+    renderer.animation_controller.bind_scalar_target(
+        AnimationKey::renderer_local_scalar(usize::MAX - 1),
+        1.0,
+        Animation::linear(Duration::from_millis(250)),
+        renderer.frame_instant(),
+    );
+    assert!(
+        renderer.retained_scroll_can_drive_active_animations(),
+        "renderer-local interaction animations must not force captured transform animations back through scene dispatch"
+    );
+    let cache = renderer
+        .scroll_content_caches
+        .get(&cache_key)
+        .expect("scroll content cache must remain stored");
+    assert!(
+        renderer.can_reuse_scroll_content_cache(cache, lazy_viewport),
+        "active transform animation should reuse cached scroll content through dynamic transform replay"
+    );
+}
+
+#[test]
+fn animated_opacity_scroll_content_cache_is_not_reused_while_animation_is_active() {
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut renderer = test_renderer();
+    let opacity = Binding::f32(1.0);
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    let make_view = || {
+        let animated_opacity = opacity
+            .clone()
+            .with(Animation::linear(Duration::from_millis(1_000)));
+        scroll(vstack((
+            ().size(60.0, 60.0).opacity(animated_opacity),
+            ().size(120.0, 600.0),
+        )))
+    };
+
+    renderer.set_window_bounds(bounds);
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(make_view(), &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let frame = renderer
+        .retained_scroll_frame
+        .as_ref()
+        .expect("root scroll must retain a scroll frame");
+    let cache_key = frame.cache_key;
+    let cache = renderer
+        .scroll_content_caches
+        .get(&cache_key)
+        .expect("scroll content cache must be stored");
+    assert!(
+        cache.animation_dependent,
+        "non-transform animated metadata is still baked into scroll content and must block active cache reuse"
+    );
+    let lazy_viewport = cache.lazy_viewport;
+
+    opacity.set(0.35);
+    assert!(
+        renderer.animations_active(),
+        "changing animated opacity must leave the animation controller active"
+    );
+    assert!(
+        !renderer.retained_scroll_can_drive_active_animations(),
+        "retained scroll frame must not claim to drive non-transform baked animations"
+    );
+    let cache = renderer
+        .scroll_content_caches
+        .get(&cache_key)
+        .expect("scroll content cache must remain stored");
+    assert!(
+        !renderer.can_reuse_scroll_content_cache(cache, lazy_viewport),
+        "active baked animation must force fresh scroll content dispatch instead of replaying stale geometry"
     );
 }
 

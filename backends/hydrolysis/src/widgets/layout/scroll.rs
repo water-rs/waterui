@@ -100,7 +100,6 @@ pub(crate) fn render_scroll_view(
         cache_key: handle.cache_key(),
         axis,
         viewport,
-        lazy_viewport,
         transform,
         hit_transform,
         content_dynamic_morphs: content_render.dynamic_morphs,
