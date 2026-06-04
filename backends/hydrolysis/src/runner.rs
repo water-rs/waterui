@@ -590,6 +590,34 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
+fn schedule_animation_update<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    animations_active: bool,
+) {
+    if !animations_active {
+        return;
+    }
+    let explicit_rebuild_pending = (runtime.needs_rebuild
+        && !runtime.visual_animation_rebuild_pending
+        && !runtime.effect_only_rebuild_pending
+        && !runtime.scroll_only_rebuild)
+        || runtime.renderer.has_rebuild_request();
+    if !explicit_rebuild_pending
+        && runtime
+            .renderer
+            .retained_scroll_can_drive_active_animations()
+    {
+        runtime.scroll_only_rebuild = true;
+        runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
+        return;
+    }
+    if !explicit_rebuild_pending {
+        runtime.visual_animation_rebuild_pending = true;
+    }
+    runtime.needs_rebuild = true;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadlessSnapshot {
     pub width: u32,
@@ -776,17 +804,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
     let rebuild_started_at = Instant::now();
     let mut phases = FramePhases::default();
     let animations_active = runtime.renderer.advance_animations();
-    if animations_active {
-        let explicit_rebuild_pending = (runtime.needs_rebuild
-            && !runtime.visual_animation_rebuild_pending
-            && !runtime.effect_only_rebuild_pending)
-            || runtime.scroll_only_rebuild
-            || runtime.renderer.has_rebuild_request();
-        if !explicit_rebuild_pending {
-            runtime.visual_animation_rebuild_pending = true;
-        }
-        runtime.needs_rebuild = true;
-    }
+    schedule_animation_update(runtime, animations_active);
 
     let mut rebuilt = false;
     let mut rebuild_iterations = 0u32;
@@ -870,9 +888,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime.visual_animation_rebuild_pending = false;
         runtime.platform.request_redraw();
     } else if runtime.renderer.animations_active() && !runtime.needs_rebuild {
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = true;
-        runtime.needs_rebuild = true;
+        schedule_animation_update(runtime, true);
         runtime.platform.request_redraw();
     } else if !runtime.needs_rebuild {
         runtime.effect_only_rebuild_pending = false;
@@ -1391,22 +1407,15 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.visual_animation_rebuild_pending = false;
     }
     let animations_active = runtime.renderer.advance_animations();
-    if animations_active {
-        let explicit_rebuild_pending = (runtime.needs_rebuild
-            && !runtime.visual_animation_rebuild_pending
-            && !runtime.effect_only_rebuild_pending)
-            || runtime.scroll_only_rebuild
-            || runtime.renderer.has_rebuild_request();
-        if !explicit_rebuild_pending {
-            runtime.visual_animation_rebuild_pending = true;
-        }
-        runtime.needs_rebuild = true;
-    }
+    schedule_animation_update(runtime, animations_active);
     if runtime.renderer.advance_text_caret_animation(now) {
         runtime.renderer.request_redraw();
         runtime.platform.request_redraw();
     }
-    if runtime.renderer.retained_scroll_dynamic_morphs_active() && !runtime.needs_rebuild {
+    if runtime.renderer.retained_scroll_dynamic_morphs_active()
+        && !runtime.needs_rebuild
+        && !runtime.scroll_only_rebuild
+    {
         runtime.scroll_only_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
         runtime.visual_animation_rebuild_pending = false;
@@ -1421,7 +1430,7 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.visual_animation_rebuild_pending = false;
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
-    if runtime.needs_rebuild {
+    if runtime.needs_rebuild || runtime.scroll_only_rebuild {
         runtime.platform.request_redraw();
     }
     next_deadline

@@ -174,7 +174,7 @@ pub(crate) fn render_button(
         press_slot,
         move |_renderer, _point, _env| {
             action(&action_env);
-            true
+            false
         },
     );
 }

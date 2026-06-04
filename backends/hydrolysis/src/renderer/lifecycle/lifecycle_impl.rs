@@ -44,6 +44,7 @@ pub(crate) struct DynamicNode {
 pub(crate) struct DynamicSubtree {
     pub(crate) scene: vello::Scene,
     pub(crate) depth_base: usize,
+    pub(crate) dynamic_transforms: Vec<DynamicTransformDraw>,
     pub(crate) retains: Vec<Retain>,
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) gesture_targets: Vec<GestureTarget>,
@@ -277,6 +278,7 @@ impl HydrolysisRenderer {
     ) -> DynamicSubtree {
         let subtree_depth_base = renderer.render_depth;
         let mut subtree_scene = vello::Scene::new();
+        let mut subtree_dynamic_transforms = Vec::new();
         let mut subtree_retains = Vec::new();
         let mut subtree_pointer_targets = Vec::new();
         let mut subtree_gesture_targets = Vec::new();
@@ -294,6 +296,10 @@ impl HydrolysisRenderer {
         let mut subtree_accessibility_actions = BTreeMap::new();
 
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+        core::mem::swap(
+            &mut renderer.dynamic_transform_draws,
+            &mut subtree_dynamic_transforms,
+        );
         core::mem::swap(
             &mut renderer.lifecycle.current_frame_retain,
             &mut subtree_retains,
@@ -389,11 +395,16 @@ impl HydrolysisRenderer {
             &mut renderer.lifecycle.current_frame_retain,
             &mut subtree_retains,
         );
+        core::mem::swap(
+            &mut renderer.dynamic_transform_draws,
+            &mut subtree_dynamic_transforms,
+        );
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
 
         DynamicSubtree {
             scene: subtree_scene,
             depth_base: subtree_depth_base,
+            dynamic_transforms: subtree_dynamic_transforms,
             retains: subtree_retains,
             pointer_targets: subtree_pointer_targets,
             gesture_targets: subtree_gesture_targets,
@@ -434,6 +445,7 @@ impl HydrolysisRenderer {
     pub(crate) fn replay_dynamic_subtree(&mut self, ctx: RenderContext, subtree: &DynamicSubtree) {
         let _retained_watcher_count = subtree.retains.len();
         self.scene.append(&subtree.scene, Some(ctx.transform));
+        self.draw_dynamic_transforms(ctx, &subtree.dynamic_transforms);
         let mut gesture_group_remap = BTreeMap::new();
 
         for target in &subtree.pointer_targets {
