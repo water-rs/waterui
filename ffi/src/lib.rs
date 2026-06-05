@@ -147,6 +147,9 @@ macro_rules! export {
                 }
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 $crate::waterui_video::install_platform_hooks(&mut env);
+                // Give `Dynamic::watch` the renderer-side slot storage it requires; the
+                // FFI root env has no rebuild loop to install it otherwise.
+                $crate::install_local_state(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
 
@@ -251,6 +254,61 @@ pub unsafe fn __init() {
     unsafe {
         __init_impl();
     }
+}
+
+/// Installs renderer-side local-state machinery into the FFI environment.
+///
+/// `Dynamic::watch` requires a [`LocalStateScope`](waterui_core::LocalStateScope) and
+/// [`LocalStateStore`](waterui_core::LocalStateStore) in the environment to keep its
+/// internal `Dynamic` runtime alive across repeated `body()` expansion. Rich renderers
+/// (e.g. hydrolysis) install these as part of their rebuild loop; the FFI root env built
+/// by `waterui_init` has no such loop, so `watch` views panic without this.
+///
+/// FFI backends don't run a frame-based rebuild traversal, so slots persist for the life
+/// of the environment rather than being GC'd per frame — sufficient for the bounded set
+/// of `watch` views an FFI host mounts, at the cost of not reclaiming slots for views that
+/// disappear.
+#[doc(hidden)]
+pub fn install_local_state(env: &mut waterui::Environment) {
+    use alloc::collections::BTreeMap;
+    use alloc::rc::Rc;
+    use core::any::{Any, TypeId};
+    use core::cell::RefCell;
+
+    struct Slot {
+        type_id: TypeId,
+        type_name: &'static str,
+        value: Rc<dyn Any>,
+    }
+
+    let registry: Rc<RefCell<BTreeMap<(u64, usize), Slot>>> =
+        Rc::new(RefCell::new(BTreeMap::new()));
+
+    env.insert(waterui_core::LocalStateScope::root());
+    env.insert(waterui_core::LocalStateStore::new(
+        move |path, index, type_id, type_name, init| {
+            let key = (path, index);
+            let mut slots = registry.borrow_mut();
+            if let Some(slot) = slots.get(&key) {
+                assert!(
+                    slot.type_id == type_id,
+                    "waterui-ffi local state slot type mismatch at path {path} slot {index}: existing={}, requested={type_name}",
+                    slot.type_name,
+                );
+                return Rc::clone(&slot.value);
+            }
+            let value = init();
+            slots.insert(
+                key,
+                Slot {
+                    type_id,
+                    type_name,
+                    value: Rc::clone(&value),
+                },
+            );
+            value
+        },
+    ));
 }
 
 /// # Safety
