@@ -45,6 +45,7 @@ pub(crate) struct DynamicSubtree {
     pub(crate) scene: vello::Scene,
     pub(crate) depth_base: usize,
     pub(crate) dynamic_transforms: Vec<DynamicTransformDraw>,
+    pub(crate) dynamic_opacities: Vec<DynamicOpacityDraw>,
     pub(crate) retains: Vec<Retain>,
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) gesture_targets: Vec<GestureTarget>,
@@ -279,6 +280,7 @@ impl HydrolysisRenderer {
         let subtree_depth_base = renderer.render_depth;
         let mut subtree_scene = vello::Scene::new();
         let mut subtree_dynamic_transforms = Vec::new();
+        let mut subtree_dynamic_opacities = Vec::new();
         let mut subtree_retains = Vec::new();
         let mut subtree_pointer_targets = Vec::new();
         let mut subtree_gesture_targets = Vec::new();
@@ -299,6 +301,10 @@ impl HydrolysisRenderer {
         core::mem::swap(
             &mut renderer.dynamic_transform_draws,
             &mut subtree_dynamic_transforms,
+        );
+        core::mem::swap(
+            &mut renderer.dynamic_opacity_draws,
+            &mut subtree_dynamic_opacities,
         );
         core::mem::swap(
             &mut renderer.lifecycle.current_frame_retain,
@@ -399,12 +405,17 @@ impl HydrolysisRenderer {
             &mut renderer.dynamic_transform_draws,
             &mut subtree_dynamic_transforms,
         );
+        core::mem::swap(
+            &mut renderer.dynamic_opacity_draws,
+            &mut subtree_dynamic_opacities,
+        );
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
 
         DynamicSubtree {
             scene: subtree_scene,
             depth_base: subtree_depth_base,
             dynamic_transforms: subtree_dynamic_transforms,
+            dynamic_opacities: subtree_dynamic_opacities,
             retains: subtree_retains,
             pointer_targets: subtree_pointer_targets,
             gesture_targets: subtree_gesture_targets,
@@ -446,6 +457,7 @@ impl HydrolysisRenderer {
         let _retained_watcher_count = subtree.retains.len();
         self.scene.append(&subtree.scene, Some(ctx.transform));
         self.draw_dynamic_transforms(ctx, &subtree.dynamic_transforms);
+        self.draw_dynamic_opacities(ctx, &subtree.dynamic_opacities);
         let mut gesture_group_remap = BTreeMap::new();
 
         for target in &subtree.pointer_targets {
