@@ -563,6 +563,7 @@ struct RuntimeWindow<P: PlatformWindow> {
     renderer: HydrolysisRenderer,
     needs_rebuild: bool,
     scroll_only_rebuild: bool,
+    window_only_rebuild: bool,
     effect_only_rebuild_pending: bool,
     visual_animation_rebuild_pending: bool,
     pointer_position: Option<(f32, f32)>,
@@ -582,6 +583,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             renderer,
             needs_rebuild: true,
             scroll_only_rebuild: false,
+            window_only_rebuild: false,
             effect_only_rebuild_pending: false,
             visual_animation_rebuild_pending: false,
             pointer_position: None,
@@ -600,7 +602,8 @@ fn schedule_animation_update<P: PlatformWindow>(
     let explicit_rebuild_pending = (runtime.needs_rebuild
         && !runtime.visual_animation_rebuild_pending
         && !runtime.effect_only_rebuild_pending
-        && !runtime.scroll_only_rebuild)
+        && !runtime.scroll_only_rebuild
+        && !runtime.window_only_rebuild)
         || runtime.renderer.has_rebuild_request();
     if !explicit_rebuild_pending
         && runtime
@@ -608,6 +611,18 @@ fn schedule_animation_update<P: PlatformWindow>(
             .retained_scroll_can_drive_active_animations()
     {
         runtime.scroll_only_rebuild = true;
+        runtime.window_only_rebuild = false;
+        runtime.effect_only_rebuild_pending = false;
+        runtime.visual_animation_rebuild_pending = false;
+        return;
+    }
+    if !explicit_rebuild_pending
+        && runtime
+            .renderer
+            .retained_window_can_drive_active_animations()
+    {
+        runtime.window_only_rebuild = true;
+        runtime.scroll_only_rebuild = false;
         runtime.effect_only_rebuild_pending = false;
         runtime.visual_animation_rebuild_pending = false;
         return;
@@ -715,6 +730,7 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
     if runtime.renderer.take_rebuild_request() {
         runtime.renderer.invalidate_retained_scroll_content();
         runtime.scroll_only_rebuild = false;
+        runtime.window_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
         runtime.visual_animation_rebuild_pending = false;
@@ -731,11 +747,13 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
     if runtime.renderer.take_rebuild_request() {
         runtime.renderer.invalidate_retained_scroll_content();
         runtime.scroll_only_rebuild = false;
+        runtime.window_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
         runtime.visual_animation_rebuild_pending = false;
     } else {
         runtime.scroll_only_rebuild = true;
+        runtime.window_only_rebuild = false;
         runtime.needs_rebuild = false;
         runtime.effect_only_rebuild_pending = false;
         runtime.visual_animation_rebuild_pending = false;
@@ -813,6 +831,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
         if renderer_requested_rebuild {
             runtime.renderer.invalidate_retained_scroll_content();
             runtime.scroll_only_rebuild = false;
+            runtime.window_only_rebuild = false;
             runtime.effect_only_rebuild_pending = false;
             runtime.visual_animation_rebuild_pending = false;
         }
@@ -844,7 +863,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
         phases.build_content += build_content_started_at.elapsed();
         let _ = drain_local_tasks();
         let scene_dispatch_started_at = Instant::now();
-        runtime.renderer.dispatch_with_transform(
+        runtime.renderer.capture_window_scene(
             content,
             env,
             bounds,
@@ -870,6 +889,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
         {
             if runtime.renderer.take_rebuild_request() {
                 runtime.scroll_only_rebuild = false;
+                runtime.window_only_rebuild = false;
                 runtime.needs_rebuild = true;
                 runtime.effect_only_rebuild_pending = false;
                 runtime.visual_animation_rebuild_pending = false;
@@ -880,11 +900,14 @@ fn rebuild_window_scene<P: PlatformWindow>(
     }
     if rebuilt {
         runtime.scroll_only_rebuild = false;
+        runtime.window_only_rebuild = false;
     }
     if runtime.renderer.take_next_frame_rebuild_request() {
-        runtime.effect_only_rebuild_pending =
-            !runtime.needs_rebuild && !runtime.scroll_only_rebuild;
+        runtime.effect_only_rebuild_pending = !runtime.needs_rebuild
+            && !runtime.scroll_only_rebuild
+            && !runtime.window_only_rebuild;
         runtime.needs_rebuild = true;
+        runtime.window_only_rebuild = false;
         runtime.visual_animation_rebuild_pending = false;
         runtime.platform.request_redraw();
     } else if runtime.renderer.animations_active() && !runtime.needs_rebuild {
@@ -912,6 +935,7 @@ fn pump_window_semantics<P: PlatformWindow>(
     if renderer_requested_rebuild {
         runtime.renderer.invalidate_retained_scroll_content();
         runtime.scroll_only_rebuild = false;
+        runtime.window_only_rebuild = false;
         runtime.effect_only_rebuild_pending = false;
     }
     let should_rebuild = runtime.needs_rebuild || renderer_requested_rebuild;
@@ -976,6 +1000,27 @@ fn render_window_with_capture<P: PlatformWindow>(
                 rebuild_phases.scene_dispatch += fallback_duration.scene_dispatch;
                 rebuild_phases.scene_finish += fallback_duration.scene_finish;
                 runtime.scroll_only_rebuild = false;
+            }
+        } else if runtime.window_only_rebuild {
+            let refresh_started_at = Instant::now();
+            if runtime.renderer.refresh_window_frame(env) {
+                let refresh_duration = refresh_started_at.elapsed();
+                rebuild_phases.rebuild += refresh_duration;
+                rebuild_phases.scene_dispatch += refresh_duration;
+                runtime.window_only_rebuild = false;
+            } else {
+                runtime.window_only_rebuild = false;
+                runtime.needs_rebuild = true;
+                let (fallback_rebuilt, fallback_iterations, fallback_duration) =
+                    rebuild_window_scene(runtime, env, drain_local_tasks);
+                rebuilt |= fallback_rebuilt;
+                rebuild_iterations = rebuild_iterations
+                    .checked_add(fallback_iterations)
+                    .expect("hydrolysis runner: rebuild iteration counter overflow");
+                rebuild_phases.rebuild += fallback_duration.rebuild;
+                rebuild_phases.build_content += fallback_duration.build_content;
+                rebuild_phases.scene_dispatch += fallback_duration.scene_dispatch;
+                rebuild_phases.scene_finish += fallback_duration.scene_finish;
             }
         }
 
@@ -1403,6 +1448,7 @@ fn advance_runtime<P: PlatformWindow>(
     }
     if runtime.renderer.handle_gesture_tick(now, env) {
         runtime.needs_rebuild = true;
+        runtime.window_only_rebuild = false;
         runtime.effect_only_rebuild_pending = false;
         runtime.visual_animation_rebuild_pending = false;
     }
@@ -1425,12 +1471,13 @@ fn advance_runtime<P: PlatformWindow>(
     if rebuild_requested {
         runtime.renderer.invalidate_retained_scroll_content();
         runtime.scroll_only_rebuild = false;
+        runtime.window_only_rebuild = false;
         runtime.needs_rebuild = true;
         runtime.effect_only_rebuild_pending = false;
         runtime.visual_animation_rebuild_pending = false;
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
-    if runtime.needs_rebuild || runtime.scroll_only_rebuild {
+    if runtime.needs_rebuild || runtime.scroll_only_rebuild || runtime.window_only_rebuild {
         runtime.platform.request_redraw();
     }
     next_deadline
@@ -2781,6 +2828,7 @@ mod winit_runner {
                 if runtime.renderer.take_rebuild_request() {
                     runtime.renderer.invalidate_retained_scroll_content();
                     runtime.scroll_only_rebuild = false;
+                    runtime.window_only_rebuild = false;
                     runtime.needs_rebuild = true;
                     runtime.effect_only_rebuild_pending = false;
                     runtime.platform.request_redraw();
