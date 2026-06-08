@@ -318,6 +318,7 @@ pub struct HydrolysisRenderer {
     dynamic_morph_draws: Vec<DynamicMorphDraw>,
     dynamic_transform_capture_depth: u32,
     dynamic_transform_draws: Vec<DynamicTransformDraw>,
+    dynamic_opacity_draws: Vec<DynamicOpacityDraw>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     frame_applied_filter_count: u32,
@@ -524,8 +525,37 @@ impl DynamicTransformComponents {
 impl DynamicTransformDraw {
     fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
         self.transform.collect_active_scalar_keys(keys);
-        for transform in &self.subtree.dynamic_transforms {
+        self.subtree.collect_active_scalar_keys(keys);
+    }
+}
+
+/// A replayable opacity layer captured during a dynamic subtree capture. Its alpha is
+/// re-sampled at replay time so animated opacity re-renders without re-dispatching the
+/// wrapped content, the opacity counterpart of [`DynamicTransformDraw`].
+pub(crate) struct DynamicOpacityDraw {
+    alpha: DynamicTransformScalar,
+    base_transform: vello::kurbo::Affine,
+    base_hit_transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    subtree: DynamicSubtree,
+}
+
+impl DynamicOpacityDraw {
+    fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
+        self.alpha.collect_active_key(keys);
+        self.subtree.collect_active_scalar_keys(keys);
+    }
+}
+
+impl DynamicSubtree {
+    /// Collects the animation keys of every active replayable scalar (transform and
+    /// opacity) anywhere in this subtree, recursing into nested dynamic draws.
+    pub(crate) fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
+        for transform in &self.dynamic_transforms {
             transform.collect_active_scalar_keys(keys);
+        }
+        for opacity in &self.dynamic_opacities {
+            opacity.collect_active_scalar_keys(keys);
         }
     }
 }
@@ -1067,6 +1097,7 @@ impl HydrolysisRenderer {
             dynamic_morph_draws: Vec::new(),
             dynamic_transform_capture_depth: 0,
             dynamic_transform_draws: Vec::new(),
+            dynamic_opacity_draws: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_applied_filter_count: 0,
@@ -1548,6 +1579,26 @@ impl HydrolysisRenderer {
         });
     }
 
+    fn capture_dynamic_opacity(
+        &mut self,
+        ctx: RenderContext,
+        env: &Environment,
+        content: AnyView,
+        alpha: DynamicTransformScalar,
+    ) {
+        let local_ctx = ctx.with_identity_transforms(ctx.bounds);
+        let subtree = Self::render_dynamic_subtree_with_local_interactions(
+            self, ctx, local_ctx, env, content,
+        );
+        self.dynamic_opacity_draws.push(DynamicOpacityDraw {
+            alpha,
+            base_transform: ctx.transform,
+            base_hit_transform: ctx.hit_transform,
+            bounds: ctx.bounds,
+            subtree,
+        });
+    }
+
     pub(crate) fn resolve_toggle_progress<S>(
         &mut self,
         signal: &S,
@@ -1707,6 +1758,25 @@ impl HydrolysisRenderer {
                 parent_ctx.hit_transform * draw.base_hit_transform * dynamic_transform,
             );
             self.replay_dynamic_subtree(ctx, &draw.subtree);
+        }
+    }
+
+    fn draw_dynamic_opacities(
+        &mut self,
+        parent_ctx: RenderContext,
+        opacities: &[DynamicOpacityDraw],
+    ) {
+        for draw in opacities {
+            let alpha = draw.alpha.sample(self.frame_instant).clamp(0.0, 1.0);
+            let transform = parent_ctx.transform * draw.base_transform;
+            let hit_transform = parent_ctx.hit_transform * draw.base_hit_transform;
+            self.push_layer_rect(alpha, transform, draw.bounds);
+            let previous_opacity = self.hit_test.hit_test_opacity;
+            self.hit_test.hit_test_opacity = previous_opacity * alpha;
+            let ctx = RenderContext::with_transforms(draw.bounds, transform, hit_transform);
+            self.replay_dynamic_subtree(ctx, &draw.subtree);
+            self.hit_test.hit_test_opacity = previous_opacity;
+            self.pop_layer();
         }
     }
 
@@ -2506,15 +2576,23 @@ impl HydrolysisRenderer {
         metadata: Metadata<Opacity>,
         env: &Environment,
     ) {
-        let alpha = renderer.resolve_animated_scalar_with_discriminator(
-            &metadata.value.value,
-            OPACITY_ANIMATION_KEY,
-        );
+        let Metadata { content, value } = metadata;
+        // Inside a dynamic-subtree capture, an animated opacity is captured as a
+        // replayable dynamic layer (re-sampled at replay) instead of baked into the
+        // scene, so animation-only frames can refresh by replay without re-dispatch.
+        if renderer.dynamic_transform_capture_depth > 0 && value.value.identity().is_some() {
+            let alpha = renderer
+                .dynamic_transform_scalar_with_discriminator(&value.value, OPACITY_ANIMATION_KEY);
+            renderer.capture_dynamic_opacity(ctx, env, content, alpha);
+            return;
+        }
+        let alpha =
+            renderer.resolve_animated_scalar_with_discriminator(&value.value, OPACITY_ANIMATION_KEY);
         renderer.push_layer_rect(alpha, ctx.transform, ctx.bounds);
 
         let previous_opacity = renderer.hit_test.hit_test_opacity;
         renderer.hit_test.hit_test_opacity = previous_opacity * alpha;
-        renderer.dispatch_boxed_with_render_depth(metadata.content, env, ctx);
+        renderer.dispatch_boxed_with_render_depth(content, env, ctx);
         renderer.hit_test.hit_test_opacity = previous_opacity;
 
         renderer.pop_layer();
@@ -3406,9 +3484,7 @@ impl HydrolysisRenderer {
             return false;
         }
         let mut retained_scalar_keys = BTreeSet::new();
-        for transform in &cache.subtree.dynamic_transforms {
-            transform.collect_active_scalar_keys(&mut retained_scalar_keys);
-        }
+        cache.subtree.collect_active_scalar_keys(&mut retained_scalar_keys);
 
         let active_retained_scalar = active_scalar_keys
             .iter()
@@ -3781,12 +3857,10 @@ impl HydrolysisRenderer {
             return false;
         }
         // All animations driving this frame must be captured as replayable dynamic
-        // transforms (renderer-local interaction scalars replay too). Any active
-        // top-level scalar that is not captured would render stale under replay.
+        // draws (transform/opacity; renderer-local interaction scalars replay too).
+        // Any active top-level scalar that is not captured would render stale.
         let mut retained_scalar_keys = BTreeSet::new();
-        for transform in &frame.subtree.dynamic_transforms {
-            transform.collect_active_scalar_keys(&mut retained_scalar_keys);
-        }
+        frame.subtree.collect_active_scalar_keys(&mut retained_scalar_keys);
         let active_scalar_keys: BTreeSet<_> = self
             .animation_controller
             .active_scalar_keys()

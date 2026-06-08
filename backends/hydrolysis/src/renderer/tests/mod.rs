@@ -723,7 +723,7 @@ fn animated_transform_scroll_content_cache_replays_while_animation_is_active() {
 }
 
 #[test]
-fn animated_opacity_scroll_content_cache_is_not_reused_while_animation_is_active() {
+fn animated_opacity_scroll_content_cache_replays_while_animation_is_active() {
     let mut env = Environment::new();
     env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
     let mut renderer = test_renderer();
@@ -756,8 +756,12 @@ fn animated_opacity_scroll_content_cache_is_not_reused_while_animation_is_active
         .get(&cache_key)
         .expect("scroll content cache must be stored");
     assert!(
-        cache.animation_dependent,
-        "non-transform animated metadata is still baked into scroll content and must block active cache reuse"
+        !cache.animation_dependent,
+        "animated opacity is captured as a replayable dynamic opacity layer and must not poison cache reuse"
+    );
+    assert!(
+        !cache.subtree.dynamic_opacities.is_empty(),
+        "animated opacity must be captured as a replayable dynamic opacity draw"
     );
     let lazy_viewport = cache.lazy_viewport;
 
@@ -767,16 +771,16 @@ fn animated_opacity_scroll_content_cache_is_not_reused_while_animation_is_active
         "changing animated opacity must leave the animation controller active"
     );
     assert!(
-        !renderer.retained_scroll_can_drive_active_animations(),
-        "retained scroll frame must not claim to drive non-transform baked animations"
+        renderer.retained_scroll_can_drive_active_animations(),
+        "retained scroll frame must redraw captured opacity animations without scene dispatch"
     );
     let cache = renderer
         .scroll_content_caches
         .get(&cache_key)
         .expect("scroll content cache must remain stored");
     assert!(
-        !renderer.can_reuse_scroll_content_cache(cache, lazy_viewport),
-        "active baked animation must force fresh scroll content dispatch instead of replaying stale geometry"
+        renderer.can_reuse_scroll_content_cache(cache, lazy_viewport),
+        "active opacity animation should reuse cached scroll content through dynamic opacity replay"
     );
 }
 

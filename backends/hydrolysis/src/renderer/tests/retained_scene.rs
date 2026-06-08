@@ -131,36 +131,37 @@ fn run_scenario(
 
 const PARAMETRIC_FRAMES: u32 = 20;
 
-/// BASELINE LOCK (legacy engine): an opacity animation at the window root forces a
-/// full scene rebuild — and therefore a full re-measure — on every animation frame.
-/// The refactor must flip both counts to zero.
+/// Phase 2B: an opacity animation at the window root is captured as a replayable
+/// dynamic opacity layer and replays through the window frame without a rebuild or
+/// re-measure (legacy baked opacity and rebuilt every frame).
 #[test]
-fn baseline_opacity_at_root_rebuilds_every_frame() {
+fn opacity_at_root_never_rebuilds() {
     let metrics = run_scenario(opacity_at_root, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
     assert_eq!(
-        metrics.frames_rebuilt, PARAMETRIC_FRAMES,
-        "BASELINE: root opacity animation rebuilds the full scene every frame: {metrics:?}"
+        metrics.frames_rebuilt, 0,
+        "root opacity animation must replay through the window frame, not rebuild: {metrics:?}"
     );
-    assert!(
-        metrics.measurement_misses > 0,
-        "BASELINE: root opacity animation re-measures every frame: {metrics:?}"
+    assert_eq!(
+        metrics.measurement_misses, 0,
+        "root opacity animation must not re-measure the tree: {metrics:?}"
     );
 }
 
-/// BASELINE LOCK (legacy engine): an opacity animation inside a scroll view bails
-/// the retained-scroll cache and rebuilds the whole scene every frame.
+/// Phase 2B: an opacity animation inside a scroll view replays through the retained
+/// scroll cache without a rebuild — the case that previously forced a full rebuild
+/// (and the flashing) on every animation/scroll frame.
 #[test]
-fn baseline_opacity_in_scroll_rebuilds_every_frame() {
+fn opacity_in_scroll_never_rebuilds() {
     let metrics = run_scenario(opacity_in_scroll, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
     assert_eq!(
-        metrics.frames_rebuilt, PARAMETRIC_FRAMES,
-        "BASELINE: in-scroll opacity animation rebuilds the full scene every frame: {metrics:?}"
+        metrics.frames_rebuilt, 0,
+        "in-scroll opacity animation must replay, not rebuild every frame: {metrics:?}"
     );
-    assert!(
-        metrics.measurement_misses > 0,
-        "BASELINE: in-scroll opacity animation re-measures every frame: {metrics:?}"
+    assert_eq!(
+        metrics.measurement_misses, 0,
+        "in-scroll opacity animation must not re-measure the tree: {metrics:?}"
     );
 }
 
