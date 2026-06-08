@@ -319,6 +319,7 @@ pub struct HydrolysisRenderer {
     dynamic_transform_capture_depth: u32,
     dynamic_transform_draws: Vec<DynamicTransformDraw>,
     dynamic_opacity_draws: Vec<DynamicOpacityDraw>,
+    dynamic_node_draws: Vec<DynamicNodeDraw>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     frame_applied_filter_count: u32,
@@ -522,13 +523,6 @@ impl DynamicTransformComponents {
     }
 }
 
-impl DynamicTransformDraw {
-    fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
-        self.transform.collect_active_scalar_keys(keys);
-        self.subtree.collect_active_scalar_keys(keys);
-    }
-}
-
 /// A replayable opacity layer captured during a dynamic subtree capture. Its alpha is
 /// re-sampled at replay time so animated opacity re-renders without re-dispatching the
 /// wrapped content, the opacity counterpart of [`DynamicTransformDraw`].
@@ -540,24 +534,17 @@ pub(crate) struct DynamicOpacityDraw {
     subtree: DynamicSubtree,
 }
 
-impl DynamicOpacityDraw {
-    fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
-        self.alpha.collect_active_key(keys);
-        self.subtree.collect_active_scalar_keys(keys);
-    }
-}
-
-impl DynamicSubtree {
-    /// Collects the animation keys of every active replayable scalar (transform and
-    /// opacity) anywhere in this subtree, recursing into nested dynamic draws.
-    pub(crate) fn collect_active_scalar_keys(&self, keys: &mut BTreeSet<AnimationKey>) {
-        for transform in &self.dynamic_transforms {
-            transform.collect_active_scalar_keys(keys);
-        }
-        for opacity in &self.dynamic_opacities {
-            opacity.collect_active_scalar_keys(keys);
-        }
-    }
+/// A placement of a `Dynamic` node within a captured subtree. The node's content is
+/// not baked into the parent scene; instead it is composited from the node's own
+/// retained `cached_subtree` (keyed by `identity` in `lifecycle.dynamic_nodes`) at
+/// replay time. This is what makes fine-grained reactive patching possible: when one
+/// `Dynamic` node's content changes, only that node is re-dispatched and the window is
+/// re-composited from the unchanged placements of every other node.
+pub(crate) struct DynamicNodeDraw {
+    identity: usize,
+    base_transform: vello::kurbo::Affine,
+    base_hit_transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
 }
 
 pub(crate) struct ScrollContentRender {
@@ -1098,6 +1085,7 @@ impl HydrolysisRenderer {
             dynamic_transform_capture_depth: 0,
             dynamic_transform_draws: Vec::new(),
             dynamic_opacity_draws: Vec::new(),
+            dynamic_node_draws: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_applied_filter_count: 0,
@@ -1780,6 +1768,66 @@ impl HydrolysisRenderer {
         }
     }
 
+    /// Composites each placed `Dynamic` node from its retained `cached_subtree`. The
+    /// subtree is taken out, replayed, and returned, so a content change to one node
+    /// (which only refreshes that node's `cached_subtree`) is picked up here without
+    /// touching any other node's placement.
+    fn replay_dynamic_node_placements(
+        &mut self,
+        parent_ctx: RenderContext,
+        placements: &[DynamicNodeDraw],
+    ) {
+        for placement in placements {
+            let Some(subtree) = self
+                .lifecycle
+                .dynamic_nodes
+                .get_mut(&placement.identity)
+                .and_then(|node| node.cached_subtree.take())
+            else {
+                continue;
+            };
+            let ctx = RenderContext::with_transforms(
+                placement.bounds,
+                parent_ctx.transform * placement.base_transform,
+                parent_ctx.hit_transform * placement.base_hit_transform,
+            );
+            self.replay_dynamic_subtree(ctx, &subtree);
+            self.lifecycle
+                .dynamic_nodes
+                .get_mut(&placement.identity)
+                .expect("hydrolysis dynamic node missing after placement replay")
+                .cached_subtree = Some(subtree);
+        }
+    }
+
+    /// Collects the animation keys of every active replayable scalar (transform and
+    /// opacity) reachable from `subtree`, recursing through nested dynamic draws and
+    /// through placed `Dynamic` nodes (whose content lives in their `cached_subtree`).
+    fn collect_subtree_active_scalar_keys(
+        &self,
+        subtree: &DynamicSubtree,
+        keys: &mut BTreeSet<AnimationKey>,
+    ) {
+        for transform in &subtree.dynamic_transforms {
+            transform.transform.collect_active_scalar_keys(keys);
+            self.collect_subtree_active_scalar_keys(&transform.subtree, keys);
+        }
+        for opacity in &subtree.dynamic_opacities {
+            opacity.alpha.collect_active_key(keys);
+            self.collect_subtree_active_scalar_keys(&opacity.subtree, keys);
+        }
+        for placement in &subtree.dynamic_node_draws {
+            if let Some(cached) = self
+                .lifecycle
+                .dynamic_nodes
+                .get(&placement.identity)
+                .and_then(|node| node.cached_subtree.as_ref())
+            {
+                self.collect_subtree_active_scalar_keys(cached, keys);
+            }
+        }
+    }
+
     pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration) -> Duration {
         let key = AnimationKey::renderer_local_repeating(self.render_depth);
         self.animation_controller
@@ -2233,6 +2281,20 @@ impl HydrolysisRenderer {
                 .get_mut(&identity)
                 .expect("hydrolysis dynamic node missing after empty subtree initialization")
                 .cached_subtree = Some(subtree);
+        }
+
+        // Inside a retained capture, record a placement instead of baking the node's
+        // content into the parent scene. The content stays in `cached_subtree` and is
+        // composited at replay, so a later content change to this node can be patched
+        // in isolation without re-walking the rest of the window.
+        if renderer.dynamic_transform_capture_depth > 0 {
+            renderer.dynamic_node_draws.push(DynamicNodeDraw {
+                identity,
+                base_transform: ctx.transform,
+                base_hit_transform: ctx.hit_transform,
+                bounds: ctx.bounds,
+            });
+            return;
         }
 
         let subtree = renderer
@@ -3484,7 +3546,7 @@ impl HydrolysisRenderer {
             return false;
         }
         let mut retained_scalar_keys = BTreeSet::new();
-        cache.subtree.collect_active_scalar_keys(&mut retained_scalar_keys);
+        self.collect_subtree_active_scalar_keys(&cache.subtree, &mut retained_scalar_keys);
 
         let active_retained_scalar = active_scalar_keys
             .iter()
@@ -3860,7 +3922,7 @@ impl HydrolysisRenderer {
         // draws (transform/opacity; renderer-local interaction scalars replay too).
         // Any active top-level scalar that is not captured would render stale.
         let mut retained_scalar_keys = BTreeSet::new();
-        frame.subtree.collect_active_scalar_keys(&mut retained_scalar_keys);
+        self.collect_subtree_active_scalar_keys(&frame.subtree, &mut retained_scalar_keys);
         let active_scalar_keys: BTreeSet<_> = self
             .animation_controller
             .active_scalar_keys()
