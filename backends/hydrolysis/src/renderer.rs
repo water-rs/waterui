@@ -313,6 +313,7 @@ pub struct HydrolysisRenderer {
     scroll_content_animation_dependent: bool,
     retained_scroll_frame: Option<RetainedScrollFrame>,
     retained_scroll_frame_conflicted: bool,
+    retained_window_frame: Option<RetainedWindowFrame>,
     dynamic_morph_capture_depth: u32,
     dynamic_morph_draws: Vec<DynamicMorphDraw>,
     dynamic_transform_capture_depth: u32,
@@ -340,6 +341,28 @@ struct RetainedScrollFrame {
     hit_transform: vello::kurbo::Affine,
     content_dynamic_morphs: Vec<DynamicMorphDraw>,
     active_layers: Vec<ActiveSceneLayer>,
+}
+
+/// A retained snapshot of the entire window content captured during a structural
+/// rebuild. Parametric frames (animation ticks) re-render by replaying this subtree
+/// — re-sampling animated transforms/morphs at the new frame instant — instead of
+/// re-walking and re-measuring the WaterUI view tree.
+///
+/// The subtree is captured in real (already-DPI-scaled) coordinates, so it replays
+/// under an identity context. This is the general, non-scroll counterpart of
+/// [`RetainedScrollFrame`]; scrolling is subsumed into it in a later phase.
+struct RetainedWindowFrame {
+    subtree: DynamicSubtree,
+    /// The static root transform (device scale factor) used for the background fill.
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    active_layers: Vec<ActiveSceneLayer>,
+    content_morphs: Vec<DynamicMorphDraw>,
+    /// Whether this frame can be re-rendered by pure replay. False when the content
+    /// baked an animated non-transform value (e.g. opacity), bound a GPU surface, or
+    /// used an applied filter — those cannot be reproduced without a real dispatch, so
+    /// such frames fall back to a structural rebuild.
+    drivable: bool,
 }
 
 pub(crate) struct RetainScrollFrameRequest {
@@ -1039,6 +1062,7 @@ impl HydrolysisRenderer {
             scroll_content_animation_dependent: false,
             retained_scroll_frame: None,
             retained_scroll_frame_conflicted: false,
+            retained_window_frame: None,
             dynamic_morph_capture_depth: 0,
             dynamic_morph_draws: Vec::new(),
             dynamic_transform_capture_depth: 0,
@@ -3204,6 +3228,7 @@ impl HydrolysisRenderer {
         }
         self.retained_scroll_frame = None;
         self.retained_scroll_frame_conflicted = false;
+        self.retained_window_frame = None;
         self.state.measurement_cache.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
@@ -3333,6 +3358,7 @@ impl HydrolysisRenderer {
         self.scroll_content_caches.clear();
         self.retained_scroll_frame = None;
         self.retained_scroll_frame_conflicted = true;
+        self.retained_window_frame = None;
     }
 
     pub(crate) fn retained_scroll_dynamic_morphs_active(&self) -> bool {
@@ -3645,6 +3671,176 @@ impl HydrolysisRenderer {
             },
         );
         ScrollContentRender { dynamic_morphs }
+    }
+
+    /// Dispatches the whole window content while capturing it as a retained,
+    /// replayable [`DynamicSubtree`], then renders this frame by replaying that
+    /// capture. Animated transforms and morphs are captured as replayable dynamic
+    /// draws (not baked), so later animation-only frames can refresh via
+    /// [`Self::refresh_window_frame`] without re-walking or re-measuring the view tree.
+    ///
+    /// The subtree is captured in real (DPI-scaled) coordinates so it replays under an
+    /// identity context; this keeps any nested scroll retention working in real space.
+    pub fn capture_window_scene<V: View>(
+        &mut self,
+        view: V,
+        env: &Environment,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        hit_transform: vello::kurbo::Affine,
+    ) {
+        self.retained_window_frame = None;
+        #[cfg(feature = "accessibility")]
+        {
+            self.accessibility.root_bounds = transformed_rect(hit_transform, bounds);
+        }
+        let local_env = self.lifecycle.install_local_state_env(env);
+        let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
+        self.render_depth = 0;
+
+        let gpu_surface_cursor_start = self.compositor.gpu_surface_cursor;
+        let active_filter_start = self.active_applied_filter_cursor;
+        let previous_morphs = core::mem::take(&mut self.dynamic_morph_draws);
+        let previous_viewport_dependent = self.scroll_content_viewport_dependent;
+        let previous_animation_dependent = self.scroll_content_animation_dependent;
+        self.scroll_content_viewport_dependent = false;
+        self.scroll_content_animation_dependent = false;
+        self.scroll_content_capture_depth = self
+            .scroll_content_capture_depth
+            .checked_add(1)
+            .expect("hydrolysis window scene capture depth overflow");
+        self.dynamic_morph_capture_depth = self
+            .dynamic_morph_capture_depth
+            .checked_add(1)
+            .expect("hydrolysis window morph capture depth overflow");
+        self.dynamic_transform_capture_depth = self
+            .dynamic_transform_capture_depth
+            .checked_add(1)
+            .expect("hydrolysis window transform capture depth overflow");
+        let subtree = Self::render_dynamic_subtree(self, ctx, &local_env, AnyView::new(view));
+        self.dynamic_transform_capture_depth = self
+            .dynamic_transform_capture_depth
+            .checked_sub(1)
+            .expect("hydrolysis window transform capture depth underflow");
+        self.dynamic_morph_capture_depth = self
+            .dynamic_morph_capture_depth
+            .checked_sub(1)
+            .expect("hydrolysis window morph capture depth underflow");
+        self.scroll_content_capture_depth = self
+            .scroll_content_capture_depth
+            .checked_sub(1)
+            .expect("hydrolysis window scene capture depth underflow");
+        let animation_dependent = self.scroll_content_animation_dependent;
+        self.scroll_content_viewport_dependent = previous_viewport_dependent;
+        self.scroll_content_animation_dependent = previous_animation_dependent;
+        let content_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
+
+        let used_gpu_surface = self.compositor.gpu_surface_cursor != gpu_surface_cursor_start;
+        let used_applied_filter = self.active_applied_filter_cursor != active_filter_start;
+        let drivable = !animation_dependent && !used_gpu_surface && !used_applied_filter;
+        let active_layers = self.active_scene_layers_snapshot();
+
+        // Replay immediately so this structural frame renders pixels identical to a
+        // direct dispatch. Captured in real coordinates, so replay uses identity.
+        let replay_ctx = RenderContext::with_transforms(
+            bounds,
+            vello::kurbo::Affine::IDENTITY,
+            vello::kurbo::Affine::IDENTITY,
+        );
+        self.replay_dynamic_subtree(replay_ctx, &subtree);
+        self.draw_dynamic_morphs(&content_morphs, vello::kurbo::Affine::IDENTITY);
+
+        self.retained_window_frame = Some(RetainedWindowFrame {
+            subtree,
+            transform,
+            bounds,
+            active_layers,
+            content_morphs,
+            drivable,
+        });
+    }
+
+    /// Whether the retained window frame can re-render active animations by pure
+    /// replay this frame (no structural rebuild). Mirrors
+    /// [`Self::retained_scroll_can_drive_active_animations`] but for non-scroll roots.
+    pub(crate) fn retained_window_can_drive_active_animations(&self) -> bool {
+        let Some(frame) = &self.retained_window_frame else {
+            return false;
+        };
+        if !frame.drivable {
+            return false;
+        }
+        if self.navigation.slots.iter().any(|slot| {
+            slot.transition
+                .as_ref()
+                .is_some_and(|state| state.is_active(self.frame_instant))
+        }) {
+            return false;
+        }
+        if self.animation_controller.has_active_radio_indicator() {
+            return false;
+        }
+        // All animations driving this frame must be captured as replayable dynamic
+        // transforms (renderer-local interaction scalars replay too). Any active
+        // top-level scalar that is not captured would render stale under replay.
+        let mut retained_scalar_keys = BTreeSet::new();
+        for transform in &frame.subtree.dynamic_transforms {
+            transform.collect_active_scalar_keys(&mut retained_scalar_keys);
+        }
+        let active_scalar_keys: BTreeSet<_> = self
+            .animation_controller
+            .active_scalar_keys()
+            .into_iter()
+            .filter(|key| !key.is_renderer_local_scalar())
+            .collect();
+        active_scalar_keys
+            .iter()
+            .all(|key| retained_scalar_keys.contains(key))
+    }
+
+    /// Re-renders the retained window frame by replaying its captured subtree at the
+    /// current frame instant — re-sampling animated transforms and morphs — without
+    /// re-dispatching or re-measuring. Returns `false` when the frame cannot be driven
+    /// by replay, in which case the caller must fall back to a structural rebuild.
+    pub(crate) fn refresh_window_frame(&mut self, env: &Environment) -> bool {
+        let Some(frame) = self.retained_window_frame.take() else {
+            return false;
+        };
+        if !frame.drivable {
+            self.retained_window_frame = Some(frame);
+            return false;
+        }
+        self.reset_scene();
+        #[cfg(feature = "accessibility")]
+        self.accessibility.begin_rebuild_frame();
+        let background_color =
+            resolved_color_to_peniko(Color::new(theme::color::Background).resolve(env).get());
+        self.scene.fill(
+            vello::peniko::Fill::NonZero,
+            frame.transform,
+            background_color,
+            None,
+            &self.window_bounds,
+        );
+        for layer in &frame.active_layers {
+            layer.push_to_scene(&mut self.scene);
+            self.compositor.active_scene_layers.push(layer.clone());
+        }
+        let replay_ctx = RenderContext::with_transforms(
+            frame.bounds,
+            vello::kurbo::Affine::IDENTITY,
+            vello::kurbo::Affine::IDENTITY,
+        );
+        self.replay_dynamic_subtree(replay_ctx, &frame.subtree);
+        self.draw_dynamic_morphs(&frame.content_morphs, vello::kurbo::Affine::IDENTITY);
+        while !self.compositor.active_scene_layers.is_empty() {
+            self.pop_layer();
+        }
+        #[cfg(feature = "accessibility")]
+        self.finalize_accessibility_tree_update();
+        self.flush_vello_scene_layer();
+        self.retained_window_frame = Some(frame);
+        true
     }
 
     pub fn finish_rebuild_frame(&mut self) {

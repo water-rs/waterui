@@ -1,5 +1,7 @@
 use super::*;
 use std::borrow::Cow;
+
+mod retained_scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
