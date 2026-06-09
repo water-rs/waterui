@@ -11,6 +11,7 @@ mod env;
 mod gesture;
 mod gpu_view;
 mod platform;
+mod readback;
 mod renderer;
 mod runner;
 mod scroll;
