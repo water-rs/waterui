@@ -1,5 +1,4 @@
 use super::*;
-use rustc_hash::FxHashMap;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
