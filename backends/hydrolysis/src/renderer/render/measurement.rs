@@ -121,23 +121,18 @@ pub(crate) fn measure_view_dimensions_with_proposal(
 ) -> ViewDimensions {
     let identity = view.stable_ptr() as usize;
     let env_identity = env.identity();
-    let cache_key = (
-        identity,
-        env_identity,
-        proposal.width.map(f32::to_bits),
-        proposal.height.map(f32::to_bits),
-    );
-    if let Some(dimensions) = state.measurement_cache.get(&cache_key) {
-        state.measurement_cache_hits += 1;
-        return dimensions.clone();
+    if let Some(dimensions) = state
+        .measurement
+        .view_dimensions(identity, env_identity, proposal)
+    {
+        return dimensions;
     }
-    state.measurement_cache_misses += 1;
 
     let dimensions =
         measure_view_dimensions_with_proposal_with_budget(view, proposal, state, env, 256);
     state
-        .measurement_cache
-        .insert(cache_key, dimensions.clone());
+        .measurement
+        .store_view_dimensions(identity, env_identity, proposal, dimensions.clone());
     dimensions
 }
 
