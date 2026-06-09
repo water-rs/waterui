@@ -131,4 +131,3 @@ pub(crate) fn remap_accessibility_node_references(
         node.set_popup_for(remap_accessibility_node_id(node_id, id_map));
     }
 }
-

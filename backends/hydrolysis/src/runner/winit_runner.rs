@@ -33,9 +33,7 @@ use winit::platform::wayland::EventLoopExtWayland;
 use winit::window::{Window as NativeWindow, WindowId};
 
 use crate::platform::{PlatformWindow, WinitWindow};
-use crate::renderer::{
-    HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
-};
+use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
@@ -281,10 +279,7 @@ impl WinitRunner {
         }
     }
 
-    fn handle_input_events(
-        runtime: &mut RuntimeWindow<WinitWindow>,
-        env: &Environment,
-    ) -> bool {
+    fn handle_input_events(runtime: &mut RuntimeWindow<WinitWindow>, env: &Environment) -> bool {
         handle_input_events_with(runtime, env, |runtime, env| {
             env.extending(Self::current_window_origin(runtime))
         })
@@ -434,8 +429,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                             window_id = ?event.window_id,
                             "accesskit initial tree requested"
                         );
-                        if let Some(update) = runtime.renderer.take_accessibility_tree_update()
-                        {
+                        if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
                             self.last_accessibility_updates
                                 .insert(event.window_id, update.clone());
                             tracing::trace!(
@@ -473,8 +467,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                             target = ?request.target_node,
                             "accesskit action requested"
                         );
-                        let action_env =
-                            self.env.extending(Self::current_window_origin(runtime));
+                        let action_env = self.env.extending(Self::current_window_origin(runtime));
                         if runtime
                             .renderer
                             .handle_accessibility_action(request, &action_env)

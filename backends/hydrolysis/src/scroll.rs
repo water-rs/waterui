@@ -288,7 +288,9 @@ mod tests {
         let rebound = controller.bind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0);
         // The stale handle's generation no longer matches: input is dropped.
         assert!(!handle.apply_scroll_delta(0.0, -10.0, false));
-        assert!(rebound.apply_scroll_delta(0.0, -10.0, false) || rebound.metrics().offset_y == 10.0);
+        assert!(
+            rebound.apply_scroll_delta(0.0, -10.0, false) || rebound.metrics().offset_y == 10.0
+        );
         assert_eq!(rebound.metrics().offset_y, 10.0);
     }
 

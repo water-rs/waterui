@@ -121,10 +121,7 @@ impl FrameSignals {
         {
             return;
         }
-        self.inner
-            .dirty_dynamic_nodes
-            .borrow_mut()
-            .insert(identity);
+        self.inner.dirty_dynamic_nodes.borrow_mut().insert(identity);
         self.inner.patch_requested.set(true);
     }
 
@@ -197,7 +194,10 @@ mod tests {
         signals.mark_dynamic_dirty(7, signals.rebuild_generation());
         assert!(signals.has_patch_request());
         assert_eq!(
-            signals.take_dirty_dynamic_nodes().into_iter().collect::<Vec<_>>(),
+            signals
+                .take_dirty_dynamic_nodes()
+                .into_iter()
+                .collect::<Vec<_>>(),
             vec![7]
         );
         assert!(signals.take_patch_request());

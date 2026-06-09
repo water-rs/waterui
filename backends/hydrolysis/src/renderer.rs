@@ -29,9 +29,9 @@ mod navigation;
 mod render;
 mod retained;
 mod signals;
-mod views;
 #[cfg(test)]
 mod tests;
+mod views;
 
 pub(crate) use dispatch::*;
 pub(crate) use effects::*;
@@ -187,7 +187,6 @@ pub(crate) use input::{
     text_editing,
 };
 
-
 /// Core hydrolysis renderer state.
 pub struct HydrolysisRenderer {
     dispatcher: HydroDispatcher,
@@ -236,16 +235,11 @@ pub struct HydrolysisRenderer {
     accessibility: AccessibilityBuilder,
 }
 
-
-
-
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
 const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
-
-
 
 impl HydrolysisRenderer {
     #[must_use]
@@ -315,46 +309,7 @@ impl HydrolysisRenderer {
             accessibility: AccessibilityBuilder::default(),
         }
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 }
-
-
-
-
 
 pub use render::HydroState;
 use render::HydroSubview;

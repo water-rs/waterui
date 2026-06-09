@@ -41,8 +41,8 @@ impl HydrolysisRenderer {
             renderer.capture_dynamic_opacity(ctx, env, content, alpha);
             return;
         }
-        let alpha =
-            renderer.resolve_animated_scalar_with_discriminator(&value.value, OPACITY_ANIMATION_KEY);
+        let alpha = renderer
+            .resolve_animated_scalar_with_discriminator(&value.value, OPACITY_ANIMATION_KEY);
         renderer.push_layer_rect(alpha, ctx.transform, ctx.bounds);
 
         let previous_opacity = renderer.hit_test.hit_test_opacity;

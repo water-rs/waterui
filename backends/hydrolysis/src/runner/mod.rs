@@ -56,14 +56,14 @@ use diagnostics::*;
 use fonts::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
-pub use window::{FrameCounters, FramePhases, FrameProfile, HeadlessSnapshot};
 use window::*;
+pub use window::{FrameCounters, FramePhases, FrameProfile, HeadlessSnapshot};
 
 use crate::env::{parse_bool_env, parse_positive_u64_env};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::readback::readback_texture_rgba8;
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::readback::readback_texture_rgba8;
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 use crate::time::Instant;
 

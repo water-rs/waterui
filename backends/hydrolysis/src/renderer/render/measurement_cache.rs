@@ -213,7 +213,11 @@ mod tests {
         let mut caches = MeasurementCaches::default();
         caches.store_view_dimensions(1, 2, ProposalSize::UNSPECIFIED, dimensions(1.0, 1.0));
         caches.store_dynamic_dimensions(7, ProposalSize::UNSPECIFIED, dimensions(2.0, 2.0));
-        caches.store_dynamic_dimensions(7, ProposalSize::new(Some(50.0), None), dimensions(3.0, 3.0));
+        caches.store_dynamic_dimensions(
+            7,
+            ProposalSize::new(Some(50.0), None),
+            dimensions(3.0, 3.0),
+        );
 
         caches.begin_rebuild_frame();
 
@@ -255,7 +259,11 @@ mod tests {
     fn pruning_drops_dead_dynamic_identities() {
         let mut caches = MeasurementCaches::default();
         caches.store_dynamic_dimensions(1, ProposalSize::UNSPECIFIED, dimensions(1.0, 1.0));
-        caches.store_dynamic_dimensions(2, ProposalSize::new(Some(4.0), None), dimensions(2.0, 2.0));
+        caches.store_dynamic_dimensions(
+            2,
+            ProposalSize::new(Some(4.0), None),
+            dimensions(2.0, 2.0),
+        );
         caches.retain_dynamic_identities(|identity| identity == 1);
         assert!(caches.dynamic_intrinsic(1).is_some());
         assert!(

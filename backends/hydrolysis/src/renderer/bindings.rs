@@ -4,11 +4,18 @@
 use super::*;
 
 impl HydrolysisRenderer {
-    pub(super) fn target_hit_priority(depth: usize, order: usize, index: usize) -> (usize, usize, usize) {
+    pub(super) fn target_hit_priority(
+        depth: usize,
+        order: usize,
+        index: usize,
+    ) -> (usize, usize, usize) {
         (order, depth, index)
     }
 
-    pub(super) fn topmost_text_input_index_at_point(&self, point: vello::kurbo::Point) -> Option<usize> {
+    pub(super) fn topmost_text_input_index_at_point(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<usize> {
         self.text_editing
             .text_input_targets
             .iter()
@@ -30,7 +37,10 @@ impl HydrolysisRenderer {
     }
 
     #[cfg(feature = "accessibility")]
-    pub(super) fn focus_text_input_for_accessibility_node(&mut self, node_id: AccessibilityNodeId) -> bool {
+    pub(super) fn focus_text_input_for_accessibility_node(
+        &mut self,
+        node_id: AccessibilityNodeId,
+    ) -> bool {
         let focused = self
             .text_editing
             .text_input_targets
@@ -295,7 +305,10 @@ impl HydrolysisRenderer {
         });
     }
 
-    pub(super) fn register_text_input_target_data(&mut self, data: text_editing::TextInputTargetData) {
+    pub(super) fn register_text_input_target_data(
+        &mut self,
+        data: text_editing::TextInputTargetData,
+    ) {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
