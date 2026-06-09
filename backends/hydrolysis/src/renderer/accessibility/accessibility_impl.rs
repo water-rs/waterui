@@ -485,8 +485,12 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) -> Option<String> {
         use waterui_core::Signal;
-        let resolved = label.semantic_text().clone().resolve(env);
-        let plain = resolved.content.get().to_plain();
+        let plain = label
+            .clone()
+            .resolve(env)
+            .accessibility_label()
+            .get()
+            .to_plain();
         let trimmed = plain.as_str().trim();
         if trimmed.is_empty() {
             None

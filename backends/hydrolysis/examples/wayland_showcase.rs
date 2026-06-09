@@ -14,6 +14,7 @@ use waterui::id::SelfId;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::window::Window;
+use waterui_controls::{slider::slider, stepper::stepper};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 enum RenderMode {
@@ -61,8 +62,8 @@ fn main_view() -> impl View {
                 .prompt("Type your name"),
             SecureField::new("Password", &password),
             Toggle::new(&toggle_value).label("Realtime rebuild"),
-            Slider::new("Animation blend", &slider_value),
-            Stepper::new("Detail level", &stepper_value).range(1..=12),
+            slider("Animation blend", &slider_value),
+            stepper("Detail level", &stepper_value).range(1..=12),
             hstack((loading(), text("Background task running").size(14.0))).spacing(12.0),
             Picker::new(picker_items, &render_mode).style(PickerStyle::Menu),
             Toggle::new(&list_editing).label("List editing"),

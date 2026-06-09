@@ -317,7 +317,7 @@ fn particle_layers(mode: &Binding<i32>) -> impl View {
 }
 
 fn particle_button(mode: &Binding<i32>, label: &'static str, target: i32, width: f32) -> impl View {
-    Button::new(text(label))
+    button(text(label))
         .action(move |State(m): State<Binding<i32>>| m.set(target))
         .state(mode)
         .width(width)

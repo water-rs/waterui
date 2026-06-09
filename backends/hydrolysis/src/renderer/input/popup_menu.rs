@@ -6,7 +6,7 @@ use waterui::shape::{RoundedRectangle, ShapeExt as _};
 use waterui::theme::color::Surface;
 use waterui_backend_core::widget::PickerMetrics;
 use waterui_controls::label::LabelDisplayMode;
-use waterui_controls::stepper::Stepper;
+use waterui_controls::{Stepper, button, stepper::stepper};
 use waterui_core::{AnimationExt as _, id::Id};
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::{Date, DatePickerType, DateTime};
@@ -285,44 +285,45 @@ pub(crate) fn picker_menu_window(
     let state_for_content = state.clone();
     let group_for_content = group.clone();
     let entries_for_content = entries.clone();
-    let popup_content = move || {
-        let mut rows = Vec::with_capacity(entries_for_content.len());
-        for entry in entries_for_content.clone() {
-            let label = entry.label.clone();
-            let target = entry.tag;
-            let row_selection = selection.clone();
-            let row_group = group_for_content.clone();
-            let row_open = Rc::clone(&open);
-            let row = Frame::new(Button::new(label).style(ButtonStyle::Borderless).action(
-                move || {
-                    if row_selection.get() != target {
-                        row_selection.set(target);
-                    }
-                    row_open.set(false);
-                    row_group.close_all();
-                },
-            ))
-            .width(width as f32)
-            .height(row_height as f32);
-            if target == selected {
-                rows.push(AnyView::new(row.background(
-                    RoundedRectangle::new(0.0).fill(Color::new(Surface).with_opacity(0.84)),
-                )));
-            } else {
-                rows.push(AnyView::new(row));
+    let popup_content =
+        move || {
+            let mut rows = Vec::with_capacity(entries_for_content.len());
+            for entry in entries_for_content.clone() {
+                let label = entry.label.clone();
+                let target = entry.tag;
+                let row_selection = selection.clone();
+                let row_group = group_for_content.clone();
+                let row_open = Rc::clone(&open);
+                let row = Frame::new(button(label).style(ButtonStyle::Borderless).action(
+                    move || {
+                        if row_selection.get() != target {
+                            row_selection.set(target);
+                        }
+                        row_open.set(false);
+                        row_group.close_all();
+                    },
+                ))
+                .width(width as f32)
+                .height(row_height as f32);
+                if target == selected {
+                    rows.push(AnyView::new(row.background(
+                        RoundedRectangle::new(0.0).fill(Color::new(Surface).with_opacity(0.84)),
+                    )));
+                } else {
+                    rows.push(AnyView::new(row));
+                }
             }
-        }
-        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-            rows.into_iter().collect();
-        let panel = menu_content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(0.0)
-            .background(
-                RoundedRectangle::new((metrics.popup_corner_radius / width) as f32)
-                    .fill(Color::new(Surface).with_opacity(0.96)),
-            );
-        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
-    };
+            let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+                rows.into_iter().collect();
+            let panel = menu_content
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(0.0)
+                .background(
+                    RoundedRectangle::new((metrics.popup_corner_radius / width) as f32)
+                        .fill(Color::new(Surface).with_opacity(0.96)),
+                );
+            AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
+        };
     let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
@@ -382,7 +383,7 @@ pub(crate) fn color_picker_window(
                 let swatch_color = color.clone();
                 swatches.push(AnyView::new(
                     Frame::new(
-                        Button::new(label)
+                        button(label)
                             .style(ButtonStyle::Borderless)
                             .action(move || {
                                 selected.set(color.clone());
@@ -404,15 +405,13 @@ pub(crate) fn color_picker_window(
             let selected = value.clone();
             let group = group_for_content.clone();
             row_views.push(AnyView::new(
-                Frame::new(
-                    Button::new("50% opacity")
-                        .style(ButtonStyle::Borderless)
-                        .action(move || {
-                            let current = selected.get();
-                            selected.set(current.with_opacity(0.5));
-                            group.close_all();
-                        }),
-                )
+                Frame::new(button("50% opacity").style(ButtonStyle::Borderless).action(
+                    move || {
+                        let current = selected.get();
+                        selected.set(current.with_opacity(0.5));
+                        group.close_all();
+                    },
+                ))
                 .width((width - 32.0) as f32)
                 .height(40.0),
             ));
@@ -423,7 +422,7 @@ pub(crate) fn color_picker_window(
             let group = group_for_content.clone();
             row_views.push(AnyView::new(
                 Frame::new(
-                    Button::new("HDR headroom")
+                    button("HDR headroom")
                         .style(ButtonStyle::Borderless)
                         .action(move || {
                             let current = selected.get();
@@ -462,7 +461,7 @@ fn time_part_binding(
     range: RangeInclusive<i32>,
     label: &'static str,
 ) -> Stepper {
-    Stepper::new(label, value)
+    stepper(label, value)
         .range(range)
         .value_formatter(|part| format!("{part:02}"))
 }
@@ -569,24 +568,22 @@ pub(crate) fn date_picker_window(
         sections.push(AnyView::new(
             hstack((
                 spacer(),
-                Button::new("Cancel")
+                button("Cancel")
                     .style(ButtonStyle::Borderless)
                     .action(move || {
                         cancel_group.close_all();
                     }),
-                Button::new("OK")
-                    .style(ButtonStyle::Borderless)
-                    .action(move || {
-                        apply_staged_date_time(
-                            &apply_value,
-                            &apply_range,
-                            apply_date.get(),
-                            apply_hour.get(),
-                            apply_minute.get(),
-                            if uses_second { apply_second.get() } else { 0 },
-                        );
-                        apply_group.close_all();
-                    }),
+                button("OK").style(ButtonStyle::Borderless).action(move || {
+                    apply_staged_date_time(
+                        &apply_value,
+                        &apply_range,
+                        apply_date.get(),
+                        apply_hour.get(),
+                        apply_minute.get(),
+                        if uses_second { apply_second.get() } else { 0 },
+                    );
+                    apply_group.close_all();
+                }),
             ))
             .spacing(8.0),
         ));

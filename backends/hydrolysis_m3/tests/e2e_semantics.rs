@@ -19,7 +19,7 @@ use waterui::graphics::color::Srgb;
 use waterui::id::Id;
 use waterui::navigation::NavigationView;
 use waterui::{Binding, Str};
-use waterui_controls::{Slider, Stepper, TextField, button, toggle};
+use waterui_controls::{TextField, button, slider::slider, stepper::stepper, toggle};
 use waterui_core::View;
 use waterui_testing::{OffscreenApp, Role, Selector, SemanticApp, WaitOptions, WaitResult, ui};
 
@@ -71,8 +71,8 @@ fn material_controls_expose_accessibility_semantics() {
         vstack((
             button("Save").action(|| {}),
             toggle("Wi-Fi", &enabled_for_view),
-            Slider::new("Volume", &value_for_view),
-            Stepper::new("Quantity", &count_for_view),
+            slider("Volume", &value_for_view),
+            stepper("Quantity", &count_for_view),
             TextField::new(&name_for_view).label("Project"),
         ))
         .spacing(12.0)
