@@ -557,15 +557,73 @@ fn probe_accessibility_runtime() -> bool {
     }
 }
 
+/// The work scheduled for the next pump of a window. Exactly one mode is active at a
+/// time; `Rebuild` always takes precedence over the parametric refreshes, so a pending
+/// rebuild can never be silently dropped by a later refresh request.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FrameMode {
+    /// Nothing scheduled.
+    Idle,
+    /// Full structural rebuild (re-dispatch the view tree). `downgradable` is true when
+    /// the rebuild was requested only by an animation/visual effect, so animation
+    /// scheduling may downgrade it to a parametric refresh; false for an explicit
+    /// structural rebuild that must run. `reuse_scroll` is true for a rebuild that fell
+    /// back from a failed scroll refresh and may reuse retained scroll-content caches.
+    Rebuild {
+        downgradable: bool,
+        reuse_scroll: bool,
+    },
+    /// Parametric refresh of the retained scroll scene at the new scroll offset.
+    ScrollRefresh,
+    /// Parametric refresh of the retained window frame (animation replay / reactive patch).
+    WindowRefresh,
+}
+
+impl FrameMode {
+    const fn is_pending(self) -> bool {
+        !matches!(self, FrameMode::Idle)
+    }
+
+    const fn is_rebuild(self) -> bool {
+        matches!(self, FrameMode::Rebuild { .. })
+    }
+
+    const fn is_explicit_rebuild(self) -> bool {
+        matches!(
+            self,
+            FrameMode::Rebuild {
+                downgradable: false,
+                ..
+            }
+        )
+    }
+
+    const fn is_scroll_refresh(self) -> bool {
+        matches!(self, FrameMode::ScrollRefresh)
+    }
+
+    const fn is_window_refresh(self) -> bool {
+        matches!(self, FrameMode::WindowRefresh)
+    }
+
+    /// Whether a rebuild in this mode may reuse retained scroll-content caches (a scroll
+    /// refresh that fell back to a rebuild) rather than invalidating them.
+    const fn reuses_scroll_caches(self) -> bool {
+        matches!(
+            self,
+            FrameMode::Rebuild {
+                reuse_scroll: true,
+                ..
+            }
+        )
+    }
+}
+
 struct RuntimeWindow<P: PlatformWindow> {
     window: Window,
     platform: P,
     renderer: HydrolysisRenderer,
-    needs_rebuild: bool,
-    scroll_only_rebuild: bool,
-    window_only_rebuild: bool,
-    effect_only_rebuild_pending: bool,
-    visual_animation_rebuild_pending: bool,
+    mode: FrameMode,
     pointer_position: Option<(f32, f32)>,
     render_diagnostics: RenderDiagnostics,
 }
@@ -581,14 +639,58 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             window,
             platform,
             renderer,
-            needs_rebuild: true,
-            scroll_only_rebuild: false,
-            window_only_rebuild: false,
-            effect_only_rebuild_pending: false,
-            visual_animation_rebuild_pending: false,
+            mode: FrameMode::Rebuild {
+                downgradable: false,
+                reuse_scroll: false,
+            },
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
         }
+    }
+
+    /// Schedules a full structural rebuild, superseding any pending parametric refresh.
+    fn request_structural_rebuild(&mut self) {
+        self.mode = FrameMode::Rebuild {
+            downgradable: false,
+            reuse_scroll: false,
+        };
+    }
+
+    /// Schedules a full structural rebuild and invalidates retained scroll content, used
+    /// when the renderer reports a structural change that retained content cannot reflect.
+    fn request_invalidating_rebuild(&mut self) {
+        self.renderer.invalidate_retained_scroll_content();
+        self.request_structural_rebuild();
+    }
+
+    /// Schedules a full rebuild that animation scheduling may still downgrade to a
+    /// parametric refresh.
+    fn request_downgradable_rebuild(&mut self) {
+        self.mode = FrameMode::Rebuild {
+            downgradable: true,
+            reuse_scroll: false,
+        };
+    }
+
+    /// Schedules a rebuild that fell back from a failed scroll refresh; the rebuild may
+    /// reuse retained scroll-content caches rather than re-dispatching them.
+    fn request_scroll_fallback_rebuild(&mut self) {
+        self.mode = FrameMode::Rebuild {
+            downgradable: false,
+            reuse_scroll: true,
+        };
+    }
+
+    fn request_scroll_refresh(&mut self) {
+        self.mode = FrameMode::ScrollRefresh;
+    }
+
+    fn request_window_refresh(&mut self) {
+        self.mode = FrameMode::WindowRefresh;
+    }
+
+    fn clear_frame_mode(&mut self) {
+        self.mode = FrameMode::Idle;
     }
 }
 
@@ -599,21 +701,14 @@ fn schedule_animation_update<P: PlatformWindow>(
     if !animations_active {
         return;
     }
-    let explicit_rebuild_pending = (runtime.needs_rebuild
-        && !runtime.visual_animation_rebuild_pending
-        && !runtime.effect_only_rebuild_pending
-        && !runtime.scroll_only_rebuild
-        && !runtime.window_only_rebuild)
-        || runtime.renderer.has_rebuild_request();
+    let explicit_rebuild_pending =
+        runtime.mode.is_explicit_rebuild() || runtime.renderer.has_rebuild_request();
     if !explicit_rebuild_pending
         && runtime
             .renderer
             .retained_scroll_can_drive_active_animations()
     {
-        runtime.scroll_only_rebuild = true;
-        runtime.window_only_rebuild = false;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.request_scroll_refresh();
         return;
     }
     if !explicit_rebuild_pending
@@ -621,16 +716,16 @@ fn schedule_animation_update<P: PlatformWindow>(
             .renderer
             .retained_window_can_drive_active_animations()
     {
-        runtime.window_only_rebuild = true;
-        runtime.scroll_only_rebuild = false;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.request_window_refresh();
         return;
     }
-    if !explicit_rebuild_pending {
-        runtime.visual_animation_rebuild_pending = true;
+    // The animation cannot be driven by a parametric refresh; force a rebuild. Keep it
+    // downgradable unless an explicit structural rebuild is already pending.
+    if explicit_rebuild_pending {
+        runtime.request_structural_rebuild();
+    } else {
+        runtime.request_downgradable_rebuild();
     }
-    runtime.needs_rebuild = true;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -728,12 +823,7 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
         return;
     }
     if runtime.renderer.take_rebuild_request() {
-        runtime.renderer.invalidate_retained_scroll_content();
-        runtime.scroll_only_rebuild = false;
-        runtime.window_only_rebuild = false;
-        runtime.needs_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.request_invalidating_rebuild();
     } else {
         runtime.renderer.request_redraw();
     }
@@ -745,18 +835,9 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
         return;
     }
     if runtime.renderer.take_rebuild_request() {
-        runtime.renderer.invalidate_retained_scroll_content();
-        runtime.scroll_only_rebuild = false;
-        runtime.window_only_rebuild = false;
-        runtime.needs_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.request_invalidating_rebuild();
     } else {
-        runtime.scroll_only_rebuild = true;
-        runtime.window_only_rebuild = false;
-        runtime.needs_rebuild = false;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.request_scroll_refresh();
     }
     runtime.platform.request_redraw();
 }
@@ -829,17 +910,13 @@ fn rebuild_window_scene<P: PlatformWindow>(
     loop {
         let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
         if renderer_requested_rebuild {
-            runtime.renderer.invalidate_retained_scroll_content();
-            runtime.scroll_only_rebuild = false;
-            runtime.window_only_rebuild = false;
-            runtime.effect_only_rebuild_pending = false;
-            runtime.visual_animation_rebuild_pending = false;
+            runtime.request_invalidating_rebuild();
         }
-        let should_rebuild = runtime.needs_rebuild || renderer_requested_rebuild;
-        if !should_rebuild {
+        if !runtime.mode.is_rebuild() {
             break;
         }
-        let reuse_filter_inputs = !renderer_requested_rebuild && !runtime.scroll_only_rebuild;
+        let reuse_filter_inputs =
+            !renderer_requested_rebuild && !runtime.mode.reuses_scroll_caches();
         rebuild_iterations = rebuild_iterations
             .checked_add(1)
             .expect("hydrolysis runner: rebuild iteration counter overflow");
@@ -850,7 +927,7 @@ fn rebuild_window_scene<P: PlatformWindow>(
         runtime.renderer.reset_scene();
         runtime
             .renderer
-            .set_scroll_content_cache_reuse(runtime.scroll_only_rebuild);
+            .set_scroll_content_cache_reuse(runtime.mode.reuses_scroll_caches());
         runtime
             .renderer
             .set_applied_filter_input_cache_reuse(reuse_filter_inputs);
@@ -880,42 +957,30 @@ fn rebuild_window_scene<P: PlatformWindow>(
             .renderer
             .sync_active_interactions_after_layout(runtime.pointer_position);
         phases.scene_finish += scene_finish_started_at.elapsed();
-        runtime.needs_rebuild = false;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.clear_frame_mode();
         rebuilt = true;
         if let Some((x, y)) = runtime.pointer_position
             && runtime.renderer.sync_pointer_hover_state(x, y, env)
         {
             if runtime.renderer.take_rebuild_request() {
-                runtime.scroll_only_rebuild = false;
-                runtime.window_only_rebuild = false;
-                runtime.needs_rebuild = true;
-                runtime.effect_only_rebuild_pending = false;
-                runtime.visual_animation_rebuild_pending = false;
+                runtime.request_structural_rebuild();
             } else {
                 runtime.renderer.request_redraw();
             }
         }
     }
-    if rebuilt {
-        runtime.scroll_only_rebuild = false;
-        runtime.window_only_rebuild = false;
-    }
     if runtime.renderer.take_next_frame_rebuild_request() {
-        runtime.effect_only_rebuild_pending = !runtime.needs_rebuild
-            && !runtime.scroll_only_rebuild
-            && !runtime.window_only_rebuild;
-        runtime.needs_rebuild = true;
-        runtime.window_only_rebuild = false;
-        runtime.visual_animation_rebuild_pending = false;
+        // An effect needs another frame. Keep it downgradable only if nothing else was
+        // already scheduled; an in-flight refresh/rebuild forces an explicit rebuild.
+        if runtime.mode.is_pending() {
+            runtime.request_structural_rebuild();
+        } else {
+            runtime.request_downgradable_rebuild();
+        }
         runtime.platform.request_redraw();
-    } else if runtime.renderer.animations_active() && !runtime.needs_rebuild {
+    } else if runtime.renderer.animations_active() && !runtime.mode.is_rebuild() {
         schedule_animation_update(runtime, true);
         runtime.platform.request_redraw();
-    } else if !runtime.needs_rebuild {
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
     }
     phases.rebuild = rebuild_started_at.elapsed();
     (rebuilt, rebuild_iterations, phases)
@@ -931,15 +996,10 @@ fn pump_window_semantics<P: PlatformWindow>(
         .renderer
         .set_accessibility_root_label(runtime.window.title.get().as_str());
 
-    let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
-    if renderer_requested_rebuild {
-        runtime.renderer.invalidate_retained_scroll_content();
-        runtime.scroll_only_rebuild = false;
-        runtime.window_only_rebuild = false;
-        runtime.effect_only_rebuild_pending = false;
+    if runtime.renderer.take_rebuild_request() {
+        runtime.request_invalidating_rebuild();
     }
-    let should_rebuild = runtime.needs_rebuild || renderer_requested_rebuild;
-    if !should_rebuild {
+    if !runtime.mode.is_rebuild() {
         return false;
     }
 
@@ -980,15 +1040,17 @@ fn render_window_with_capture<P: PlatformWindow>(
             rebuild_window_scene(runtime, env, drain_local_tasks);
         rebuilt |= scene_rebuilt;
         let clear_color = window_clear_color(&runtime.window, env);
-        if runtime.scroll_only_rebuild {
+        if runtime.mode.is_scroll_refresh() {
             let refresh_started_at = Instant::now();
             if runtime.renderer.refresh_retained_scroll_scene(env) {
                 let refresh_duration = refresh_started_at.elapsed();
                 rebuild_phases.rebuild += refresh_duration;
                 rebuild_phases.scene_dispatch += refresh_duration;
-                runtime.scroll_only_rebuild = false;
+                runtime.clear_frame_mode();
             } else {
-                runtime.needs_rebuild = true;
+                // The retained scroll scene could not refresh (e.g. lazy viewport
+                // changed); fall back to a rebuild that may still reuse scroll caches.
+                runtime.request_scroll_fallback_rebuild();
                 let (fallback_rebuilt, fallback_iterations, fallback_duration) =
                     rebuild_window_scene(runtime, env, drain_local_tasks);
                 rebuilt |= fallback_rebuilt;
@@ -999,18 +1061,18 @@ fn render_window_with_capture<P: PlatformWindow>(
                 rebuild_phases.build_content += fallback_duration.build_content;
                 rebuild_phases.scene_dispatch += fallback_duration.scene_dispatch;
                 rebuild_phases.scene_finish += fallback_duration.scene_finish;
-                runtime.scroll_only_rebuild = false;
             }
-        } else if runtime.window_only_rebuild {
+        } else if runtime.mode.is_window_refresh() {
             let refresh_started_at = Instant::now();
             if runtime.renderer.refresh_window_frame(env) {
                 let refresh_duration = refresh_started_at.elapsed();
                 rebuild_phases.rebuild += refresh_duration;
                 rebuild_phases.scene_dispatch += refresh_duration;
-                runtime.window_only_rebuild = false;
+                runtime.clear_frame_mode();
             } else {
-                runtime.window_only_rebuild = false;
-                runtime.needs_rebuild = true;
+                // The window frame could not be replayed (escalated patch or stale
+                // baked animation); fall back to a full structural rebuild.
+                runtime.request_structural_rebuild();
                 let (fallback_rebuilt, fallback_iterations, fallback_duration) =
                     rebuild_window_scene(runtime, env, drain_local_tasks);
                 rebuilt |= fallback_rebuilt;
@@ -1037,7 +1099,7 @@ fn render_window_with_capture<P: PlatformWindow>(
                 | wgpu::SurfaceError::Timeout
                 | wgpu::SurfaceError::Other,
             )) => {
-                runtime.needs_rebuild = true;
+                runtime.request_structural_rebuild();
                 runtime.platform.request_redraw();
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
@@ -1259,8 +1321,7 @@ where
                     waterui_core::layout::Size::new(logical_width, logical_height),
                 );
                 runtime.window.frame.set(frame);
-                runtime.needs_rebuild = true;
-                runtime.effect_only_rebuild_pending = false;
+                runtime.request_structural_rebuild();
                 runtime.platform.request_redraw();
             }
             InputEvent::PointerDown { x, y, button } => {
@@ -1447,10 +1508,7 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
     if runtime.renderer.handle_gesture_tick(now, env) {
-        runtime.needs_rebuild = true;
-        runtime.window_only_rebuild = false;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.request_structural_rebuild();
     }
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
@@ -1458,16 +1516,13 @@ fn advance_runtime<P: PlatformWindow>(
     // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
     // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
     if runtime.renderer.take_patch_request()
-        && !runtime.needs_rebuild
-        && !runtime.scroll_only_rebuild
+        && !runtime.mode.is_rebuild()
+        && !runtime.mode.is_scroll_refresh()
     {
         if runtime.renderer.has_retained_window_frame() {
-            runtime.window_only_rebuild = true;
-            runtime.effect_only_rebuild_pending = false;
-            runtime.visual_animation_rebuild_pending = false;
+            runtime.request_window_refresh();
         } else {
-            runtime.window_only_rebuild = false;
-            runtime.needs_rebuild = true;
+            runtime.request_structural_rebuild();
         }
         runtime.platform.request_redraw();
     }
@@ -1476,25 +1531,17 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
     if runtime.renderer.retained_scroll_dynamic_morphs_active()
-        && !runtime.needs_rebuild
-        && !runtime.scroll_only_rebuild
+        && !runtime.mode.is_rebuild()
+        && !runtime.mode.is_scroll_refresh()
     {
-        runtime.scroll_only_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+        runtime.request_scroll_refresh();
         runtime.platform.request_redraw();
     }
-    let rebuild_requested = runtime.renderer.take_rebuild_request();
-    if rebuild_requested {
-        runtime.renderer.invalidate_retained_scroll_content();
-        runtime.scroll_only_rebuild = false;
-        runtime.window_only_rebuild = false;
-        runtime.needs_rebuild = true;
-        runtime.effect_only_rebuild_pending = false;
-        runtime.visual_animation_rebuild_pending = false;
+    if runtime.renderer.take_rebuild_request() {
+        runtime.request_invalidating_rebuild();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
-    if runtime.needs_rebuild || runtime.scroll_only_rebuild || runtime.window_only_rebuild {
+    if runtime.mode.is_pending() {
         runtime.platform.request_redraw();
     }
     next_deadline
@@ -1789,7 +1836,7 @@ impl HeadlessRuntime {
             .renderer
             .handle_accessibility_action(request, &action_env);
         if changed {
-            self.runtime.needs_rebuild = true;
+            self.runtime.request_structural_rebuild();
             self.runtime.platform.request_redraw();
         }
         changed
@@ -1799,7 +1846,7 @@ impl HeadlessRuntime {
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {
-            self.runtime.needs_rebuild = true;
+            self.runtime.request_structural_rebuild();
             self.runtime.platform.request_redraw();
         }
         changed
@@ -1893,7 +1940,7 @@ impl HeadlessRuntime {
             let _ = advance_runtime(popup, &self.env, at);
         }
         let should_render = capture_snapshot
-            || self.runtime.needs_rebuild
+            || self.runtime.mode.is_rebuild()
             || self.runtime.platform.take_redraw_request();
         let mut render_result = should_render.then(|| {
             render_window_with_capture(&mut self.runtime, &self.env, capture_snapshot, &mut || {
@@ -2012,11 +2059,11 @@ mod tests {
     #[test]
     fn changed_redraw_only_input_wakes_platform_window() {
         let mut runtime = test_runtime_window();
-        runtime.needs_rebuild = false;
+        runtime.clear_frame_mode();
 
         schedule_redraw_or_rebuild(&mut runtime, true);
 
-        assert!(!runtime.needs_rebuild);
+        assert!(!runtime.mode.is_rebuild());
         assert!(runtime.renderer.take_redraw_request());
         assert!(runtime.platform.take_redraw_request());
     }
@@ -2024,12 +2071,12 @@ mod tests {
     #[test]
     fn changed_rebuild_input_wakes_platform_window() {
         let mut runtime = test_runtime_window();
-        runtime.needs_rebuild = false;
+        runtime.clear_frame_mode();
         runtime.renderer.request_rebuild();
 
         schedule_redraw_or_rebuild(&mut runtime, true);
 
-        assert!(runtime.needs_rebuild);
+        assert!(runtime.mode.is_rebuild());
         assert!(
             runtime.platform.take_redraw_request(),
             "rebuild input must wake the platform event loop for the next frame"
@@ -2039,12 +2086,12 @@ mod tests {
     #[test]
     fn changed_scroll_input_refreshes_retained_scene_and_wakes_platform_window() {
         let mut runtime = test_runtime_window();
-        runtime.needs_rebuild = false;
+        runtime.clear_frame_mode();
 
         schedule_scroll_scene_rebuild(&mut runtime, true);
 
-        assert!(!runtime.needs_rebuild);
-        assert!(runtime.scroll_only_rebuild);
+        assert!(!runtime.mode.is_rebuild());
+        assert!(runtime.mode.is_scroll_refresh());
         assert!(
             runtime.platform.take_redraw_request(),
             "scroll refreshes must wake the platform event loop for the next frame"
@@ -2064,7 +2111,7 @@ mod tests {
         runtime.renderer.set_text_caret_motion(motion);
         assert!(runtime.renderer.set_focused_text_input(Some(0)));
         assert!(runtime.renderer.take_rebuild_request());
-        runtime.needs_rebuild = false;
+        runtime.clear_frame_mode();
         assert!(!runtime.platform.take_redraw_request());
 
         let deadline = now
@@ -2073,7 +2120,7 @@ mod tests {
         let env = Environment::new();
 
         assert!(advance_runtime(&mut runtime, &env, deadline).is_some());
-        assert!(!runtime.needs_rebuild);
+        assert!(!runtime.mode.is_rebuild());
         assert!(runtime.renderer.take_redraw_request());
         assert!(runtime.platform.take_redraw_request());
     }
@@ -2843,11 +2890,7 @@ mod winit_runner {
         fn flush_cross_window_rebuild_requests(&mut self) {
             for runtime in self.windows.values_mut() {
                 if runtime.renderer.take_rebuild_request() {
-                    runtime.renderer.invalidate_retained_scroll_content();
-                    runtime.scroll_only_rebuild = false;
-                    runtime.window_only_rebuild = false;
-                    runtime.needs_rebuild = true;
-                    runtime.effect_only_rebuild_pending = false;
+                    runtime.request_invalidating_rebuild();
                     runtime.platform.request_redraw();
                 }
             }
@@ -2995,7 +3038,7 @@ mod winit_runner {
                                     window_id = ?event.window_id,
                                     "missing accessibility tree update for initial request, scheduling rebuild"
                                 );
-                                runtime.needs_rebuild = true;
+                                runtime.request_structural_rebuild();
                                 runtime.platform.request_redraw();
                             }
                         }
@@ -3013,7 +3056,7 @@ mod winit_runner {
                                 .renderer
                                 .handle_accessibility_action(request, &action_env)
                             {
-                                runtime.needs_rebuild = true;
+                                runtime.request_structural_rebuild();
                                 runtime.platform.request_redraw();
                             }
                             self.flush_cross_window_rebuild_requests();
