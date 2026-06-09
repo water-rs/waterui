@@ -275,6 +275,149 @@ pub(crate) fn local_shared<T: 'static>(
         .get_or_init(&scope, init)
 }
 
+impl DynamicSubtree {
+    /// Fresh, empty per-subtree storage about to receive a capture.
+    fn for_capture(depth_base: usize) -> Self {
+        Self {
+            scene: vello::Scene::new(),
+            depth_base,
+            dynamic_transforms: Vec::new(),
+            dynamic_opacities: Vec::new(),
+            dynamic_node_draws: Vec::new(),
+            dynamic_scroll_draws: Vec::new(),
+            retains: Vec::new(),
+            pointer_targets: Vec::new(),
+            gesture_targets: Vec::new(),
+            cursor_targets: Vec::new(),
+            hover_targets: Vec::new(),
+            text_input_targets: Vec::new(),
+            scroll_targets: Vec::new(),
+            context_menu_targets: Vec::new(),
+            #[cfg(feature = "accessibility")]
+            accessibility: DynamicAccessibilitySubtree {
+                nodes: Vec::new(),
+                root_children: Vec::new(),
+                actions: BTreeMap::new(),
+            },
+        }
+    }
+}
+
+/// Parks the surrounding frame's capture state while a dynamic subtree is
+/// dispatched into fresh storage.
+///
+/// [`SubtreeCaptureScope::exchange_with`] is the single source of truth for
+/// which renderer state participates in a capture: `begin` exchanges the
+/// renderer's live state with fresh storage, the caller dispatches the
+/// subtree content, and `finish` exchanges back and yields the captured
+/// [`DynamicSubtree`]. Begin/finish are deliberately explicit (not a `Drop`
+/// guard): a panic mid-dispatch is fatal to the renderer by design.
+struct SubtreeCaptureScope {
+    parked: DynamicSubtree,
+    hover_controller: HoverController,
+    #[cfg(feature = "accessibility")]
+    saved_next_node_id: u64,
+    #[cfg(feature = "accessibility")]
+    saved_suppression_depth: usize,
+}
+
+impl SubtreeCaptureScope {
+    fn begin(renderer: &mut HydrolysisRenderer) -> Self {
+        let mut scope = Self {
+            parked: DynamicSubtree::for_capture(renderer.render_depth),
+            hover_controller: HoverController::default(),
+            #[cfg(feature = "accessibility")]
+            saved_next_node_id: 0,
+            #[cfg(feature = "accessibility")]
+            saved_suppression_depth: 0,
+        };
+        scope.exchange_with(renderer);
+        #[cfg(feature = "accessibility")]
+        {
+            scope.saved_next_node_id = renderer.accessibility.next_node_id;
+            scope.saved_suppression_depth = renderer.accessibility.suppression_depth;
+            renderer.accessibility.next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
+            renderer.accessibility.suppression_depth = 0;
+        }
+        scope
+    }
+
+    fn finish(mut self, renderer: &mut HydrolysisRenderer) -> DynamicSubtree {
+        #[cfg(feature = "accessibility")]
+        {
+            renderer.accessibility.suppression_depth = self.saved_suppression_depth;
+            renderer.accessibility.next_node_id = self.saved_next_node_id;
+        }
+        self.exchange_with(renderer);
+        self.parked
+    }
+
+    /// Exchange the renderer's live capture state with this scope's parked
+    /// state. Called exactly twice per capture, so every field listed here is
+    /// guaranteed to be restored.
+    fn exchange_with(&mut self, renderer: &mut HydrolysisRenderer) {
+        let parked = &mut self.parked;
+        core::mem::swap(&mut renderer.scene, &mut parked.scene);
+        core::mem::swap(
+            &mut renderer.dynamic_transform_draws,
+            &mut parked.dynamic_transforms,
+        );
+        core::mem::swap(
+            &mut renderer.dynamic_opacity_draws,
+            &mut parked.dynamic_opacities,
+        );
+        core::mem::swap(
+            &mut renderer.dynamic_node_draws,
+            &mut parked.dynamic_node_draws,
+        );
+        core::mem::swap(
+            &mut renderer.dynamic_scroll_draws,
+            &mut parked.dynamic_scroll_draws,
+        );
+        core::mem::swap(
+            &mut renderer.lifecycle.current_frame_retain,
+            &mut parked.retains,
+        );
+        core::mem::swap(
+            &mut renderer.hit_test.pointer_targets,
+            &mut parked.pointer_targets,
+        );
+        renderer
+            .gesture_engine
+            .swap_targets(&mut parked.gesture_targets);
+        core::mem::swap(
+            &mut renderer.hit_test.cursor_targets,
+            &mut parked.cursor_targets,
+        );
+        core::mem::swap(
+            &mut renderer.hit_test.hover_targets,
+            &mut parked.hover_targets,
+        );
+        renderer
+            .hit_test
+            .interaction
+            .swap_hover_controller(&mut self.hover_controller);
+        core::mem::swap(
+            &mut renderer.text_editing.text_input_targets,
+            &mut parked.text_input_targets,
+        );
+        core::mem::swap(
+            &mut renderer.hit_test.scroll_targets,
+            &mut parked.scroll_targets,
+        );
+        core::mem::swap(
+            &mut renderer.hit_test.context_menu_targets,
+            &mut parked.context_menu_targets,
+        );
+        #[cfg(feature = "accessibility")]
+        renderer.accessibility.swap_render_state(
+            &mut parked.accessibility.nodes,
+            &mut parked.accessibility.root_children,
+            &mut parked.accessibility.actions,
+        );
+    }
+}
+
 impl HydrolysisRenderer {
     pub(crate) fn render_dynamic_subtree(
         renderer: &mut HydrolysisRenderer,
@@ -282,180 +425,9 @@ impl HydrolysisRenderer {
         env: &Environment,
         content: AnyView,
     ) -> DynamicSubtree {
-        let subtree_depth_base = renderer.render_depth;
-        let mut subtree_scene = vello::Scene::new();
-        let mut subtree_dynamic_transforms = Vec::new();
-        let mut subtree_dynamic_opacities = Vec::new();
-        let mut subtree_dynamic_node_draws = Vec::new();
-        let mut subtree_dynamic_scroll_draws = Vec::new();
-        let mut subtree_retains = Vec::new();
-        let mut subtree_pointer_targets = Vec::new();
-        let mut subtree_gesture_targets = Vec::new();
-        let mut subtree_cursor_targets = Vec::new();
-        let mut subtree_hover_targets = Vec::new();
-        let mut subtree_text_input_targets = Vec::new();
-        let mut subtree_scroll_targets = Vec::new();
-        let mut subtree_context_menu_targets = Vec::new();
-        let mut subtree_hover_controller = HoverController::default();
-        #[cfg(feature = "accessibility")]
-        let mut subtree_accessibility_nodes = Vec::new();
-        #[cfg(feature = "accessibility")]
-        let mut subtree_accessibility_root_children = Vec::new();
-        #[cfg(feature = "accessibility")]
-        let mut subtree_accessibility_actions = BTreeMap::new();
-
-        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
-        core::mem::swap(
-            &mut renderer.dynamic_transform_draws,
-            &mut subtree_dynamic_transforms,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_opacity_draws,
-            &mut subtree_dynamic_opacities,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_node_draws,
-            &mut subtree_dynamic_node_draws,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_scroll_draws,
-            &mut subtree_dynamic_scroll_draws,
-        );
-        core::mem::swap(
-            &mut renderer.lifecycle.current_frame_retain,
-            &mut subtree_retains,
-        );
-        core::mem::swap(
-            &mut renderer.hit_test.pointer_targets,
-            &mut subtree_pointer_targets,
-        );
-        renderer
-            .gesture_engine
-            .swap_targets(&mut subtree_gesture_targets);
-        core::mem::swap(
-            &mut renderer.hit_test.cursor_targets,
-            &mut subtree_cursor_targets,
-        );
-        core::mem::swap(
-            &mut renderer.hit_test.hover_targets,
-            &mut subtree_hover_targets,
-        );
-        renderer
-            .hit_test
-            .interaction
-            .swap_hover_controller(&mut subtree_hover_controller);
-        core::mem::swap(
-            &mut renderer.text_editing.text_input_targets,
-            &mut subtree_text_input_targets,
-        );
-        core::mem::swap(
-            &mut renderer.hit_test.scroll_targets,
-            &mut subtree_scroll_targets,
-        );
-        core::mem::swap(
-            &mut renderer.hit_test.context_menu_targets,
-            &mut subtree_context_menu_targets,
-        );
-        #[cfg(feature = "accessibility")]
-        {
-            renderer.accessibility.swap_render_state(
-                &mut subtree_accessibility_nodes,
-                &mut subtree_accessibility_root_children,
-                &mut subtree_accessibility_actions,
-            );
-
-            let previous_next_node_id = renderer.accessibility.next_node_id;
-            let previous_suppression_depth = renderer.accessibility.suppression_depth;
-            renderer.accessibility.next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
-            renderer.accessibility.suppression_depth = 0;
-            renderer.dispatch_boxed_with_render_depth(content, env, ctx);
-            renderer.accessibility.suppression_depth = previous_suppression_depth;
-            renderer.accessibility.next_node_id = previous_next_node_id;
-
-            renderer.accessibility.swap_render_state(
-                &mut subtree_accessibility_nodes,
-                &mut subtree_accessibility_root_children,
-                &mut subtree_accessibility_actions,
-            );
-        }
-        #[cfg(not(feature = "accessibility"))]
+        let scope = SubtreeCaptureScope::begin(renderer);
         renderer.dispatch_boxed_with_render_depth(content, env, ctx);
-
-        core::mem::swap(
-            &mut renderer.hit_test.context_menu_targets,
-            &mut subtree_context_menu_targets,
-        );
-        core::mem::swap(
-            &mut renderer.hit_test.scroll_targets,
-            &mut subtree_scroll_targets,
-        );
-        core::mem::swap(
-            &mut renderer.text_editing.text_input_targets,
-            &mut subtree_text_input_targets,
-        );
-        renderer
-            .hit_test
-            .interaction
-            .swap_hover_controller(&mut subtree_hover_controller);
-        core::mem::swap(
-            &mut renderer.hit_test.hover_targets,
-            &mut subtree_hover_targets,
-        );
-        core::mem::swap(
-            &mut renderer.hit_test.cursor_targets,
-            &mut subtree_cursor_targets,
-        );
-        renderer
-            .gesture_engine
-            .swap_targets(&mut subtree_gesture_targets);
-        core::mem::swap(
-            &mut renderer.hit_test.pointer_targets,
-            &mut subtree_pointer_targets,
-        );
-        core::mem::swap(
-            &mut renderer.lifecycle.current_frame_retain,
-            &mut subtree_retains,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_transform_draws,
-            &mut subtree_dynamic_transforms,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_opacity_draws,
-            &mut subtree_dynamic_opacities,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_node_draws,
-            &mut subtree_dynamic_node_draws,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_scroll_draws,
-            &mut subtree_dynamic_scroll_draws,
-        );
-        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
-
-        DynamicSubtree {
-            scene: subtree_scene,
-            depth_base: subtree_depth_base,
-            dynamic_transforms: subtree_dynamic_transforms,
-            dynamic_opacities: subtree_dynamic_opacities,
-            dynamic_node_draws: subtree_dynamic_node_draws,
-            dynamic_scroll_draws: subtree_dynamic_scroll_draws,
-            retains: subtree_retains,
-            pointer_targets: subtree_pointer_targets,
-            gesture_targets: subtree_gesture_targets,
-            cursor_targets: subtree_cursor_targets,
-            hover_targets: subtree_hover_targets,
-            text_input_targets: subtree_text_input_targets,
-            scroll_targets: subtree_scroll_targets,
-            context_menu_targets: subtree_context_menu_targets,
-            #[cfg(feature = "accessibility")]
-            accessibility: DynamicAccessibilitySubtree {
-                nodes: subtree_accessibility_nodes,
-                root_children: subtree_accessibility_root_children,
-                actions: subtree_accessibility_actions,
-            },
-        }
+        scope.finish(renderer)
     }
 
     pub(crate) fn render_dynamic_subtree_with_local_interactions(
