@@ -303,16 +303,27 @@ fn apple_linker_flags_from_build_output(output: &str) -> Vec<String> {
             }
         } else if let Some(arg) = line.strip_prefix("cargo:rustc-link-arg=") {
             if let Some(flag) = pending_arg_flag.take() {
-                push_unique_flag(&mut flags, format!("{flag} {arg}"));
-            } else if linker_arg_requires_value(arg) {
-                pending_arg_flag = Some(arg.to_string());
+                if arg.starts_with('-') {
+                    push_unique_flag(&mut flags, flag);
+                    push_link_arg(&mut flags, &mut pending_arg_flag, arg);
+                } else {
+                    push_unique_flag(&mut flags, format!("{flag} {arg}"));
+                }
             } else {
-                push_unique_flag(&mut flags, arg.to_string());
+                push_link_arg(&mut flags, &mut pending_arg_flag, arg);
             }
         }
     }
     flush_pending_link_arg(&mut flags, &mut pending_arg_flag);
     flags
+}
+
+fn push_link_arg(flags: &mut Vec<String>, pending_arg_flag: &mut Option<String>, arg: &str) {
+    if linker_arg_requires_value(arg) {
+        *pending_arg_flag = Some(arg.to_string());
+    } else {
+        push_unique_flag(flags, arg.to_string());
+    }
 }
 
 fn apple_link_lib_flag(link_lib: &str) -> Option<String> {
@@ -683,6 +694,16 @@ mod tests {
                 "-lc++".to_string(),
                 "-framework Foundation".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn does_not_pair_pending_link_arg_with_another_flag() {
+        let output = "cargo:rustc-link-arg=-rpath\ncargo:rustc-link-arg=-framework\ncargo:rustc-link-arg=AppKit\n";
+        let flags = apple_linker_flags_from_build_output(output);
+        assert_eq!(
+            flags,
+            vec!["-rpath".to_string(), "-framework AppKit".to_string()]
         );
     }
 
