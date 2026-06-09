@@ -291,7 +291,10 @@ impl FrameProfile {
     }
 }
 
-pub(super) fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
+pub(super) fn schedule_redraw_or_rebuild<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    changed: bool,
+) {
     if !changed {
         return;
     }
@@ -303,7 +306,10 @@ pub(super) fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut Runtim
     runtime.platform.request_redraw();
 }
 
-pub(super) fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
+pub(super) fn schedule_scroll_scene_rebuild<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    changed: bool,
+) {
     if !changed {
         return;
     }
@@ -733,7 +739,9 @@ pub(super) fn handle_input_events<P: PlatformWindow>(
     })
 }
 
-pub(super) fn runtime_window_origin<P: PlatformWindow>(runtime: &RuntimeWindow<P>) -> HydrolysisWindowOrigin {
+pub(super) fn runtime_window_origin<P: PlatformWindow>(
+    runtime: &RuntimeWindow<P>,
+) -> HydrolysisWindowOrigin {
     HydrolysisWindowOrigin {
         x: runtime.window.frame.get().x(),
         y: runtime.window.frame.get().y(),

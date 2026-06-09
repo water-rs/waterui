@@ -163,11 +163,9 @@ impl LifecycleState {
         if !preserve_inactive_state {
             self.dynamic_nodes
                 .retain(|identity, _| active_dynamic_identities.contains(identity));
-            state
-                .measurement
-                .retain_dynamic_identities(|identity| {
-                    active_dynamic_identities.contains(&identity)
-                });
+            state.measurement.retain_dynamic_identities(|identity| {
+                active_dynamic_identities.contains(&identity)
+            });
         }
     }
 

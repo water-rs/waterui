@@ -14,8 +14,8 @@ use executor_core::{
     async_task::{AsyncTask, Runnable},
     try_init_local_executor,
 };
-use parley::fontique::{Blob, FontInfoOverride};
 use js_sys::Uint8Array;
+use parley::fontique::{Blob, FontInfoOverride};
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
@@ -27,9 +27,7 @@ use web_sys::Response;
 use super::fonts::ResourceFontFamilies;
 use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
-use crate::runner::{
-    RenderDiagnosticsConfig, RuntimeWindow, handle_input_events, render_window,
-};
+use crate::runner::{RenderDiagnosticsConfig, RuntimeWindow, handle_input_events, render_window};
 
 const WEB_FONT_MANIFEST_PATH: &str = "fonts/waterui-fonts.json";
 
@@ -49,12 +47,10 @@ async fn fetch_response(path: &str) -> Response {
     let window = web_sys::window().expect("hydrolysis web font loader requires browser window");
     let response = JsFuture::from(window.fetch_with_str(path))
         .await
-        .unwrap_or_else(|error| {
-            panic!("hydrolysis web font fetch failed for `{path}`: {error:?}")
-        });
-    let response: Response = response.dyn_into().unwrap_or_else(|_| {
-        panic!("hydrolysis web font fetch returned non-Response for `{path}`")
-    });
+        .unwrap_or_else(|error| panic!("hydrolysis web font fetch failed for `{path}`: {error:?}"));
+    let response: Response = response
+        .dyn_into()
+        .unwrap_or_else(|_| panic!("hydrolysis web font fetch returned non-Response for `{path}`"));
     assert!(
         response.ok(),
         "hydrolysis web font fetch failed for `{path}` with HTTP status {}",
@@ -86,9 +82,9 @@ async fn fetch_text(path: &str) -> String {
 
 async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
     let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await;
-    let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(
-        |error| panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}"),
-    );
+    let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(|error| {
+        panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}")
+    });
 
     let mut default_family_ids = Vec::new();
     let mut resource_fonts = ResourceFontFamilies::default();
@@ -237,8 +233,7 @@ pub fn run(app: App) {
             runnable_queue: runnable_queue.clone(),
             schedule_frame: browser_schedule.clone(),
         };
-        let _ =
-            try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
+        let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
         let (windows, _menu_bar, env) = app.into_parts();
         let mut windows = windows.into_iter();
@@ -278,9 +273,8 @@ pub fn run(app: App) {
             raf_callback: RefCell::new(None),
         });
         let callback_handle = handle.clone();
-        let callback = Closure::wrap(
-            Box::new(move |_ts: f64| callback_handle.frame()) as Box<dyn FnMut(f64)>
-        );
+        let callback =
+            Closure::wrap(Box::new(move |_ts: f64| callback_handle.frame()) as Box<dyn FnMut(f64)>);
         *handle.raf_callback.borrow_mut() = Some(callback);
         *schedule_frame_ref.borrow_mut() = Some({
             let handle = handle.clone();
@@ -288,5 +282,4 @@ pub fn run(app: App) {
         });
         handle.schedule_frame();
     });
-}
 }
