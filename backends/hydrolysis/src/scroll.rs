@@ -222,3 +222,87 @@ fn clamp_scroll_offset(value: f64, max: f64) -> f64 {
 fn value_changed(old: f64, new: f64) -> bool {
     (old - new).abs() > SCROLL_EPSILON
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vertical_controller() -> (ScrollController, ScrollHandle) {
+        let mut controller = ScrollController::default();
+        controller.begin_rebuild_frame();
+        let handle = controller.bind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0);
+        (controller, handle)
+    }
+
+    #[test]
+    fn scroll_offsets_clamp_to_content_extent() {
+        let (_controller, handle) = vertical_controller();
+        assert!(handle.apply_scroll_delta(0.0, -50.0, false));
+        assert_eq!(handle.metrics().offset_y, 50.0);
+
+        // Overscroll clamps to max_y = content - viewport = 200.
+        assert!(handle.apply_scroll_delta(0.0, -10_000.0, false));
+        assert_eq!(handle.metrics().offset_y, 200.0);
+
+        // Clamped at the end: a further push changes nothing.
+        assert!(!handle.apply_scroll_delta(0.0, -1.0, false));
+
+        // Scrolling back past the top clamps to zero.
+        assert!(handle.apply_scroll_delta(0.0, 10_000.0, false));
+        assert_eq!(handle.metrics().offset_y, 0.0);
+    }
+
+    #[test]
+    fn vertical_axis_ignores_horizontal_delta() {
+        let (_controller, handle) = vertical_controller();
+        assert!(!handle.apply_scroll_delta(-30.0, 0.0, false));
+        assert_eq!(handle.metrics().offset_x, 0.0);
+    }
+
+    #[test]
+    fn line_deltas_scale_to_pixels() {
+        let (_controller, handle) = vertical_controller();
+        assert!(handle.apply_scroll_delta(0.0, -2.0, true));
+        assert_eq!(handle.metrics().offset_y, 80.0);
+    }
+
+    #[test]
+    fn rebinding_with_same_layout_keeps_offset_and_handle_validity() {
+        let (mut controller, handle) = vertical_controller();
+        assert!(handle.apply_scroll_delta(0.0, -50.0, false));
+        controller.finish_rebuild_frame();
+
+        controller.begin_rebuild_frame();
+        let rebound = controller.bind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0);
+        assert_eq!(rebound.metrics().offset_y, 50.0);
+        // The previous handle still targets the same generation.
+        assert!(handle.apply_scroll_delta(0.0, -10.0, false));
+    }
+
+    #[test]
+    fn layout_change_invalidates_stale_handles() {
+        let (mut controller, handle) = vertical_controller();
+        controller.finish_rebuild_frame();
+
+        controller.begin_rebuild_frame();
+        let rebound = controller.bind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0);
+        // The stale handle's generation no longer matches: input is dropped.
+        assert!(!handle.apply_scroll_delta(0.0, -10.0, false));
+        assert!(rebound.apply_scroll_delta(0.0, -10.0, false) || rebound.metrics().offset_y == 10.0);
+        assert_eq!(rebound.metrics().offset_y, 10.0);
+    }
+
+    #[test]
+    fn viewport_growth_reclamps_existing_offset() {
+        let (mut controller, handle) = vertical_controller();
+        assert!(handle.apply_scroll_delta(0.0, -10_000.0, false));
+        assert_eq!(handle.metrics().offset_y, 200.0);
+        controller.finish_rebuild_frame();
+
+        // The viewport now shows the whole content: the offset clamps home.
+        controller.begin_rebuild_frame();
+        let rebound = controller.bind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0);
+        assert_eq!(rebound.metrics().offset_y, 0.0);
+        assert_eq!(rebound.metrics().max_y, 0.0);
+    }
+}
