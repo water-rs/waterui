@@ -39,6 +39,10 @@ pub(crate) struct DynamicNode {
     pub(crate) pending_view: Rc<RefCell<Option<AnyView>>>,
     pub(crate) cached_subtree: Option<DynamicSubtree>,
     pub(crate) render_generation: Rc<Cell<u64>>,
+    /// The render context and environment this node was last dispatched with, used to
+    /// re-dispatch the node in isolation during a reactive patch.
+    pub(crate) dispatch_ctx: Option<RenderContext>,
+    pub(crate) dispatch_env: Option<Environment>,
 }
 
 pub(crate) struct DynamicSubtree {

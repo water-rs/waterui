@@ -532,8 +532,12 @@ fn dynamic_body_snapshot_after_render_does_not_schedule_rebuild() {
 
     handler.set("Hydrolysis dynamic update");
     assert!(
-        renderer.take_rebuild_request(),
-        "real Dynamic updates after render must still schedule a rebuild"
+        renderer.take_patch_request(),
+        "real Dynamic updates after render must schedule a fine-grained reactive patch"
+    );
+    assert!(
+        !renderer.take_rebuild_request(),
+        "an isolated Dynamic content change must not force a full structural rebuild"
     );
     renderer.finish_rebuild_frame();
 }

@@ -1454,6 +1454,23 @@ fn advance_runtime<P: PlatformWindow>(
     }
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
+    // A pending fine-grained reactive patch composites through the window-refresh path,
+    // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
+    // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
+    if runtime.renderer.take_patch_request()
+        && !runtime.needs_rebuild
+        && !runtime.scroll_only_rebuild
+    {
+        if runtime.renderer.has_retained_window_frame() {
+            runtime.window_only_rebuild = true;
+            runtime.effect_only_rebuild_pending = false;
+            runtime.visual_animation_rebuild_pending = false;
+        } else {
+            runtime.window_only_rebuild = false;
+            runtime.needs_rebuild = true;
+        }
+        runtime.platform.request_redraw();
+    }
     if runtime.renderer.advance_text_caret_animation(now) {
         runtime.renderer.request_redraw();
         runtime.platform.request_redraw();

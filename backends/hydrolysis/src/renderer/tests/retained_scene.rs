@@ -23,6 +23,9 @@ use waterui_core::{AnyView, Environment};
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, vstack};
 
+use waterui::graphics::Color;
+use waterui_core::dynamic::watch;
+
 use super::MinimalTestTheme;
 use crate::HeadlessRuntime;
 use crate::engine::WidgetTheme;
@@ -127,6 +130,78 @@ fn run_scenario(
         metrics.measurement_misses += counters.measurement_cache_misses;
     }
     metrics
+}
+
+/// A `Dynamic` node whose content changes color (but keeps a fixed size) with `value`,
+/// sitting above a long static list. A content change here keeps the surrounding layout
+/// stable, so it must be applied as an isolated reactive patch.
+fn dynamic_same_size(value: &Binding<i32>) -> AnyView {
+    let watched = watch(value.clone(), |v| {
+        let channel = if v % 2 == 0 { 40 } else { 200 };
+        Color::srgb(channel, 90, 160).size(80.0, 40.0)
+    });
+    AnyView::new(vstack((watched, padding_list())))
+}
+
+/// A `Dynamic` node whose content changes *height* with `value`. A content change here
+/// reflows the surrounding layout, so it must escalate to a full structural rebuild.
+fn dynamic_changing_size(value: &Binding<i32>) -> AnyView {
+    let watched = watch(value.clone(), |v| {
+        ().size(80.0, 40.0 + (v as f32) * 30.0)
+    });
+    AnyView::new(vstack((watched, padding_list())))
+}
+
+fn dynamic_runtime(make_view: fn(&Binding<i32>) -> AnyView, value: &Binding<i32>) -> HeadlessRuntime {
+    let builder = {
+        let value = value.clone();
+        AnyViewBuilder::<AnyView>::new(move || make_view(&value))
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    HeadlessRuntime::new_for_tests(env, builder, 400, 640)
+}
+
+/// Phase 3: a same-size content change to one `Dynamic` node is applied as an isolated
+/// reactive patch — only that node is re-dispatched, and the frame is re-composited
+/// without any structural rebuild of the rest of the window.
+#[test]
+fn dynamic_content_change_patches_without_rebuild() {
+    let value = Binding::container(0_i32);
+    let mut runtime = dynamic_runtime(dynamic_same_size, &value);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    value.set(1);
+    let result = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert_eq!(
+        result.profile.counters.rebuild_iterations, 0,
+        "a same-size Dynamic content change must patch in isolation, not rebuild: {:?}",
+        result.profile.counters
+    );
+    assert!(
+        !result.rebuilt,
+        "a reactive patch frame must not perform a structural rebuild"
+    );
+}
+
+/// Phase 3: a content change that reflows layout escalates to a full structural rebuild
+/// (the surrounding layout must be recomputed), proving the patch path is not silently
+/// dropping size-affecting changes.
+#[test]
+fn dynamic_size_change_escalates_to_rebuild() {
+    let value = Binding::container(0_i32);
+    let mut runtime = dynamic_runtime(dynamic_changing_size, &value);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    value.set(1);
+    let result = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert!(
+        result.profile.counters.rebuild_iterations > 0,
+        "a size-changing Dynamic content change must escalate to a structural rebuild: {:?}",
+        result.profile.counters
+    );
 }
 
 const PARAMETRIC_FRAMES: u32 = 20;
