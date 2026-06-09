@@ -2,6 +2,7 @@ use super::*;
 
 mod compositor;
 mod measurement;
+mod measurement_cache;
 mod render_context;
 mod state;
 mod subview;
@@ -10,6 +11,7 @@ mod view_helpers;
 pub use compositor::HydrolysisRenderTarget;
 pub(crate) use compositor::*;
 pub(crate) use measurement::*;
+pub(crate) use measurement_cache::MeasurementCaches;
 pub use render_context::RenderContext;
 pub(crate) use render_context::WidgetRenderContext;
 pub(crate) use render_context::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};

@@ -1867,18 +1867,15 @@ impl HydrolysisRenderer {
         );
         let proposal_dimensions =
             measure_view_dimensions_with_proposal(&content, proposal, &mut self.state, env);
-        let previous_dimensions = self.state.dynamic_intrinsic_cache.get(&identity).cloned();
-        self.state
-            .dynamic_intrinsic_cache
-            .insert(identity, dimensions.clone());
-        self.state.dynamic_dimensions_cache.insert(
-            (
-                identity,
-                proposal.width.map(f32::to_bits),
-                proposal.height.map(f32::to_bits),
-            ),
-            proposal_dimensions,
+        let previous_dimensions = self.state.measurement.dynamic_intrinsic(identity);
+        self.state.measurement.store_dynamic_dimensions(
+            identity,
+            ProposalSize::UNSPECIFIED,
+            dimensions.clone(),
         );
+        self.state
+            .measurement
+            .store_dynamic_dimensions(identity, proposal, proposal_dimensions);
         let local_ctx = ctx.with_identity_transforms(ctx.bounds);
         let subtree = Self::render_dynamic_subtree_with_local_interactions(
             self, ctx, local_ctx, env, content,
@@ -3437,8 +3434,7 @@ impl HydrolysisRenderer {
         self.scene.reset();
         self.compositor.render_layers.clear();
         self.compositor.active_scene_layers.clear();
-        self.state.measurement_cache_hits = 0;
-        self.state.measurement_cache_misses = 0;
+        self.state.measurement.reset_counters();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
         self.frame_applied_filter_count = 0;
@@ -3456,9 +3452,7 @@ impl HydrolysisRenderer {
             self.scroll_content_caches.clear();
         }
         self.retained_window_frame = None;
-        self.state.measurement_cache.clear();
-        self.state.measurement_cache_hits = 0;
-        self.state.measurement_cache_misses = 0;
+        self.state.measurement.begin_rebuild_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
         self.frame_applied_filter_count = 0;
@@ -3517,8 +3511,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn begin_redraw_frame(&mut self) {
-        self.state.measurement_cache_hits = 0;
-        self.state.measurement_cache_misses = 0;
+        self.state.measurement.reset_counters();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
         self.frame_applied_filter_count = 0;
@@ -4305,10 +4298,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn measurement_cache_stats(&self) -> (u32, u32) {
-        (
-            self.state.measurement_cache_hits,
-            self.state.measurement_cache_misses,
-        )
+        self.state.measurement.stats()
     }
 
     pub(crate) fn render_layer_stats(&self) -> (u32, u32, u32) {
