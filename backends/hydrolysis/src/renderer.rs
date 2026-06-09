@@ -1,10 +1,13 @@
 mod accessibility;
+mod frame_signals;
 mod input;
 mod lifecycle;
 mod navigation;
 mod render;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use frame_signals::FrameSignals;
 
 use accessibility::*;
 use core::any::Any;
@@ -296,21 +299,11 @@ pub struct HydrolysisRenderer {
     popup_menu: PopupMenuState,
     render_depth: usize,
     window_bounds: vello::kurbo::Rect,
-    redraw_requested: Rc<Cell<bool>>,
-    pub(crate) rebuild_requested: Rc<Cell<bool>>,
-    /// Set when a `Dynamic` node's content changed and can be patched in isolation
-    /// (fine-grained reactive update) rather than forcing a full structural rebuild.
-    patch_requested: Rc<Cell<bool>>,
-    /// Identities of `Dynamic` nodes whose content changed since the last frame and
-    /// must be re-dispatched in isolation on the next reactive-patch frame.
-    dirty_dynamic_nodes: Rc<RefCell<BTreeSet<usize>>>,
-    next_frame_rebuild_requested: Cell<bool>,
-    rebuild_generation: Rc<Cell<u64>>,
-    rebuild_in_progress: Rc<Cell<bool>>,
+    /// Frame triggers shared with reactive closures; see [`FrameSignals`].
+    signals: FrameSignals,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
-    frame_clock: Rc<Cell<Instant>>,
     scroll_controller: ScrollController,
     scroll_content_caches: BTreeMap<usize, ScrollContentCache>,
     reuse_scroll_content_caches: bool,
@@ -1094,17 +1087,10 @@ impl HydrolysisRenderer {
             popup_menu: PopupMenuState::default(),
             render_depth: 0,
             window_bounds: vello::kurbo::Rect::ZERO,
-            redraw_requested: Rc::new(Cell::new(false)),
-            rebuild_requested: Rc::new(Cell::new(false)),
-            patch_requested: Rc::new(Cell::new(false)),
-            dirty_dynamic_nodes: Rc::new(RefCell::new(BTreeSet::new())),
-            next_frame_rebuild_requested: Cell::new(false),
-            rebuild_generation: Rc::new(Cell::new(0)),
-            rebuild_in_progress: Rc::new(Cell::new(false)),
+            signals: FrameSignals::new(frame_instant),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,
-            frame_clock: Rc::new(Cell::new(frame_instant)),
             scroll_controller: ScrollController::default(),
             scroll_content_caches: BTreeMap::new(),
             reuse_scroll_content_caches: false,
@@ -1401,8 +1387,8 @@ impl HydrolysisRenderer {
     where
         S: Signal + Clone + 'static,
     {
-        let rebuild_requested = Rc::clone(&self.rebuild_requested);
-        let guard = signal.watch(move |_| rebuild_requested.set(true));
+        let signals = self.signals.clone();
+        let guard = signal.watch(move |_| signals.request_rebuild());
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
     }
 
@@ -1511,7 +1497,7 @@ impl HydrolysisRenderer {
 
     pub(crate) fn set_frame_instant(&mut self, at: Instant) {
         self.frame_instant = at;
-        self.frame_clock.set(at);
+        self.signals.set_frame_clock(at);
     }
 
     pub(crate) fn frame_instant(&self) -> Instant {
@@ -1536,11 +1522,10 @@ impl HydrolysisRenderer {
             .animation_controller
             .bind_scalar(key, signal.get(), now);
         let watcher_handle = handle.clone();
-        let frame_clock = Rc::clone(&self.frame_clock);
-        let redraw_requested = Rc::clone(&self.redraw_requested);
+        let signals = self.signals.clone();
         let guard = signal.watch(move |update| {
-            watcher_handle.apply_update_from_context(update, frame_clock.get());
-            redraw_requested.set(true);
+            watcher_handle.apply_update_from_context(update, signals.frame_clock());
+            signals.request_redraw();
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
         handle.sample(now)
@@ -1566,11 +1551,10 @@ impl HydrolysisRenderer {
             .animation_controller
             .bind_scalar(key, signal.get(), now);
         let watcher_handle = handle.clone();
-        let frame_clock = Rc::clone(&self.frame_clock);
-        let redraw_requested = Rc::clone(&self.redraw_requested);
+        let signals = self.signals.clone();
         let guard = signal.watch(move |update| {
-            watcher_handle.apply_update_from_context(update, frame_clock.get());
-            redraw_requested.set(true);
+            watcher_handle.apply_update_from_context(update, signals.frame_clock());
+            signals.request_redraw();
         });
         let value = handle.sample(now);
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
@@ -1641,16 +1625,15 @@ impl HydrolysisRenderer {
             now,
         );
         let watcher_handle = handle.clone();
-        let frame_clock = Rc::clone(&self.frame_clock);
-        let rebuild_requested = Rc::clone(&self.rebuild_requested);
+        let signals = self.signals.clone();
         let guard = signal.watch(move |update| {
             let target = if *update.value() { 1.0 } else { 0.0 };
             let animation = update
                 .metadata()
                 .try_get::<Animation>()
                 .unwrap_or_else(|| default_animation.clone());
-            watcher_handle.apply_target(target, Some(animation), frame_clock.get());
-            rebuild_requested.set(true);
+            watcher_handle.apply_target(target, Some(animation), signals.frame_clock());
+            signals.request_rebuild();
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
         handle.sample(now).clamp(0.0, 1.0)
@@ -1915,7 +1898,7 @@ impl HydrolysisRenderer {
     /// to a structural rebuild), in which case the caller must rebuild instead of
     /// compositing a patched frame.
     fn patch_dirty_dynamic_nodes(&mut self) -> bool {
-        let dirty = core::mem::take(&mut *self.dirty_dynamic_nodes.borrow_mut());
+        let dirty = self.signals.take_dirty_dynamic_nodes();
         for identity in dirty {
             let Some((pending_view, ctx, env)) =
                 self.lifecycle.dynamic_nodes.get(&identity).and_then(|node| {
@@ -1958,7 +1941,7 @@ impl HydrolysisRenderer {
                 .dynamic_transform_capture_depth
                 .checked_sub(1)
                 .expect("hydrolysis reactive patch transform capture depth underflow");
-            if self.rebuild_requested.get() {
+            if self.signals.has_rebuild_request() {
                 return false;
             }
         }
@@ -2306,17 +2289,10 @@ impl HydrolysisRenderer {
                 Rc::clone(&node.pending_view)
             } else {
                 let pending_view = Rc::new(RefCell::new(None::<AnyView>));
-                let patch_requested = Rc::clone(&renderer.patch_requested);
-                let dirty_dynamic_nodes = Rc::clone(&renderer.dirty_dynamic_nodes);
-                let rebuild_generation = Rc::clone(&renderer.rebuild_generation);
-                let rebuild_in_progress = Rc::clone(&renderer.rebuild_in_progress);
                 let render_generation = Rc::new(Cell::new(0));
                 dynamic.connect_with_pending_view(Rc::clone(&pending_view), {
                     let pending_view = Rc::clone(&pending_view);
-                    let patch_requested = Rc::clone(&patch_requested);
-                    let dirty_dynamic_nodes = Rc::clone(&dirty_dynamic_nodes);
-                    let rebuild_generation = Rc::clone(&rebuild_generation);
-                    let rebuild_in_progress = Rc::clone(&rebuild_in_progress);
+                    let signals = renderer.signals.clone();
                     let render_generation = Rc::clone(&render_generation);
                     move |update| {
                         let is_initial_content = update
@@ -2324,8 +2300,8 @@ impl HydrolysisRenderer {
                             .try_get::<DynamicInitialContent>()
                             .is_some();
                         if is_initial_content
-                            && rebuild_in_progress.get()
-                            && render_generation.get() == rebuild_generation.get()
+                            && signals
+                                .initial_dynamic_content_already_rendered(render_generation.get())
                         {
                             return;
                         }
@@ -2334,12 +2310,8 @@ impl HydrolysisRenderer {
                         // this node dirty so it can be re-dispatched in isolation. If the
                         // re-dispatch reflows layout, render_dynamic escalates to a full
                         // rebuild itself.
-                        if !is_initial_content
-                            && (!rebuild_in_progress.get()
-                                || render_generation.get() == rebuild_generation.get())
-                        {
-                            dirty_dynamic_nodes.borrow_mut().insert(identity);
-                            patch_requested.set(true);
+                        if !is_initial_content {
+                            signals.mark_dynamic_dirty(identity, render_generation.get());
                         }
                     }
                 });
@@ -2356,7 +2328,7 @@ impl HydrolysisRenderer {
                 pending_view
             }
         };
-        let current_generation = renderer.rebuild_generation.get();
+        let current_generation = renderer.signals.rebuild_generation();
         renderer
             .lifecycle
             .dynamic_nodes
@@ -2478,11 +2450,11 @@ impl HydrolysisRenderer {
                 runtime.replace_content(content);
             }
         }
-        let rebuild_handle = renderer.rebuild_handle();
+        let rebuild_signals = renderer.signals.clone();
         let mut runtime = runtime.borrow_mut();
         runtime
             .content
-            .set_invalidator(Some(Rc::new(move || rebuild_handle.set(true))));
+            .set_invalidator(Some(Rc::new(move || rebuild_signals.request_rebuild())));
 
         let mut scene = vello::Scene::new();
         let mut scene2d = VelloScene2D::new(&mut scene);
@@ -3477,15 +3449,13 @@ impl HydrolysisRenderer {
     }
 
     pub fn begin_rebuild_frame(&mut self) {
-        self.rebuild_in_progress.set(true);
+        // A full rebuild re-dispatches every Dynamic node, so any pending isolated
+        // reactive patch is subsumed by it.
+        self.signals.begin_rebuild();
         if !self.reuse_scroll_content_caches {
             self.scroll_content_caches.clear();
         }
         self.retained_window_frame = None;
-        // A full rebuild re-dispatches every Dynamic node, so any pending isolated
-        // reactive patch is subsumed by it.
-        self.patch_requested.set(false);
-        self.dirty_dynamic_nodes.borrow_mut().clear();
         self.state.measurement_cache.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
@@ -3495,12 +3465,6 @@ impl HydrolysisRenderer {
         self.frame_applied_filter_capture = Duration::ZERO;
         self.frame_applied_filter_effect = Duration::ZERO;
         self.active_applied_filter_cursor = 0;
-        self.rebuild_generation.set(
-            self.rebuild_generation
-                .get()
-                .checked_add(1)
-                .expect("hydrolysis renderer rebuild generation overflow"),
-        );
         self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
@@ -4114,7 +4078,7 @@ impl HydrolysisRenderer {
         self.text_editing
             .text_selection_slots
             .truncate(self.text_editing.text_selection_cursor);
-        self.rebuild_in_progress.set(false);
+        self.signals.finish_rebuild();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
     }
@@ -4286,49 +4250,49 @@ impl HydrolysisRenderer {
             }
         }
         if requested {
-            self.redraw_requested.set(true);
+            self.signals.request_redraw();
         }
         requested
     }
 
+    /// The shared frame-trigger handle for closures that outlive a borrow of
+    /// the renderer (navigation controllers, GPU-surface invalidators, …).
+    pub(crate) fn frame_signals(&self) -> FrameSignals {
+        self.signals.clone()
+    }
+
     pub fn request_redraw(&self) {
-        self.redraw_requested.set(true);
+        self.signals.request_redraw();
     }
 
     pub fn take_redraw_request(&self) -> bool {
-        self.redraw_requested.replace(false)
+        self.signals.take_redraw_request()
     }
 
     pub fn request_rebuild(&self) {
-        self.rebuild_requested.set(true);
+        self.signals.request_rebuild();
     }
 
     #[must_use]
     pub fn has_rebuild_request(&self) -> bool {
-        self.rebuild_requested.get()
+        self.signals.has_rebuild_request()
     }
 
     pub fn request_next_frame_rebuild(&self) {
-        self.next_frame_rebuild_requested.set(true);
-        self.redraw_requested.set(true);
-    }
-
-    #[must_use]
-    pub fn rebuild_handle(&self) -> Rc<Cell<bool>> {
-        Rc::clone(&self.rebuild_requested)
+        self.signals.request_next_frame_rebuild();
     }
 
     pub fn take_rebuild_request(&self) -> bool {
-        self.rebuild_requested.replace(false)
+        self.signals.take_rebuild_request()
     }
 
     #[must_use]
     pub fn has_patch_request(&self) -> bool {
-        self.patch_requested.get()
+        self.signals.has_patch_request()
     }
 
     pub fn take_patch_request(&self) -> bool {
-        self.patch_requested.replace(false)
+        self.signals.take_patch_request()
     }
 
     #[must_use]
@@ -4337,7 +4301,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn take_next_frame_rebuild_request(&self) -> bool {
-        self.next_frame_rebuild_requested.replace(false)
+        self.signals.take_next_frame_rebuild_request()
     }
 
     pub(crate) fn measurement_cache_stats(&self) -> (u32, u32) {

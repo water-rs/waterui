@@ -35,7 +35,7 @@ pub(crate) enum NavigationTransitionDirection {
 
 pub(crate) struct HydroNavigationController {
     pub(crate) entries: NavigationEntries,
-    pub(crate) rebuild_requested: Rc<Cell<bool>>,
+    pub(crate) signals: FrameSignals,
 }
 
 impl NavigationState {
@@ -50,11 +50,11 @@ impl NavigationState {
 }
 
 impl NavigationSlot {
-    pub(crate) fn new(rebuild_requested: Rc<Cell<bool>>) -> Self {
+    pub(crate) fn new(signals: FrameSignals) -> Self {
         let entries = Rc::new(RefCell::new(Vec::new()));
         let controller = NavigationController::new(HydroNavigationController {
             entries: Rc::clone(&entries),
-            rebuild_requested,
+            signals,
         });
 
         Self {
@@ -99,7 +99,7 @@ impl NavigationTransitionState {
 impl CustomNavigationController for HydroNavigationController {
     fn push_builder(&mut self, content: AnyViewBuilder<NavigationView>) {
         self.entries.borrow_mut().push(content);
-        self.rebuild_requested.set(true);
+        self.signals.request_rebuild();
     }
 
     fn push(&mut self, _content: NavigationView) {
@@ -110,7 +110,7 @@ impl CustomNavigationController for HydroNavigationController {
 
     fn pop(&mut self) {
         if self.entries.borrow_mut().pop().is_some() {
-            self.rebuild_requested.set(true);
+            self.signals.request_rebuild();
         }
     }
 }
@@ -127,7 +127,7 @@ impl HydrolysisRenderer {
         if index == self.navigation.slots.len() {
             self.navigation
                 .slots
-                .push(NavigationSlot::new(Rc::clone(&self.rebuild_requested)));
+                .push(NavigationSlot::new(self.signals.clone()));
         }
 
         (index, Rc::clone(&self.navigation.slots[index].entries))
