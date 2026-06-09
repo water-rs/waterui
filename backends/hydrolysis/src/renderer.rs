@@ -317,8 +317,6 @@ pub struct HydrolysisRenderer {
     scroll_content_capture_depth: usize,
     scroll_content_viewport_dependent: bool,
     scroll_content_animation_dependent: bool,
-    retained_scroll_frame: Option<RetainedScrollFrame>,
-    retained_scroll_frame_conflicted: bool,
     retained_window_frame: Option<RetainedWindowFrame>,
     dynamic_morph_capture_depth: u32,
     dynamic_morph_draws: Vec<DynamicMorphDraw>,
@@ -326,6 +324,7 @@ pub struct HydrolysisRenderer {
     dynamic_transform_draws: Vec<DynamicTransformDraw>,
     dynamic_opacity_draws: Vec<DynamicOpacityDraw>,
     dynamic_node_draws: Vec<DynamicNodeDraw>,
+    dynamic_scroll_draws: Vec<DynamicScrollDraw>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     frame_applied_filter_count: u32,
@@ -339,26 +338,14 @@ pub struct HydrolysisRenderer {
     accessibility: AccessibilityBuilder,
 }
 
-#[derive(Clone)]
-struct RetainedScrollFrame {
-    handle: crate::scroll::ScrollHandle,
-    cache_key: usize,
-    axis: ScrollAxis,
-    viewport: vello::kurbo::Rect,
-    transform: vello::kurbo::Affine,
-    hit_transform: vello::kurbo::Affine,
-    content_dynamic_morphs: Vec<DynamicMorphDraw>,
-    active_layers: Vec<ActiveSceneLayer>,
-}
-
 /// A retained snapshot of the entire window content captured during a structural
-/// rebuild. Parametric frames (animation ticks) re-render by replaying this subtree
-/// — re-sampling animated transforms/morphs at the new frame instant — instead of
-/// re-walking and re-measuring the WaterUI view tree.
+/// rebuild. Parametric frames (animation ticks, scroll offset changes) re-render by
+/// replaying this subtree — re-sampling animated transforms/morphs and applying current
+/// scroll offsets at the new frame instant — instead of re-walking and re-measuring the
+/// WaterUI view tree.
 ///
 /// The subtree is captured in real (already-DPI-scaled) coordinates, so it replays
-/// under an identity context. This is the general, non-scroll counterpart of
-/// [`RetainedScrollFrame`]; scrolling is subsumed into it in a later phase.
+/// under an identity context. Scrolling is subsumed into it via [`DynamicScrollDraw`].
 struct RetainedWindowFrame {
     subtree: DynamicSubtree,
     /// The static root transform (device scale factor) used for the background fill.
@@ -371,18 +358,6 @@ struct RetainedWindowFrame {
     /// used an applied filter — those cannot be reproduced without a real dispatch, so
     /// such frames fall back to a structural rebuild.
     drivable: bool,
-}
-
-pub(crate) struct RetainScrollFrameRequest {
-    pub(crate) handle: crate::scroll::ScrollHandle,
-    pub(crate) cache_key: usize,
-    pub(crate) axis: ScrollAxis,
-    pub(crate) viewport: vello::kurbo::Rect,
-    pub(crate) transform: vello::kurbo::Affine,
-    pub(crate) hit_transform: vello::kurbo::Affine,
-    pub(crate) content_dynamic_morphs: Vec<DynamicMorphDraw>,
-    pub(crate) active_layers: Vec<ActiveSceneLayer>,
-    pub(crate) exclusive_root: bool,
 }
 
 struct ScrollContentCache {
@@ -551,6 +526,57 @@ pub(crate) struct DynamicNodeDraw {
     base_transform: vello::kurbo::Affine,
     base_hit_transform: vello::kurbo::Affine,
     bounds: vello::kurbo::Rect,
+}
+
+/// A placement of a scroll view within a captured subtree. Its content is captured once
+/// (offset-independently) into `scroll_content_caches[cache_key]`; the current scroll
+/// offset is applied at replay, so scrolling re-composites the window frame without
+/// re-dispatching the view tree. This subsumes the former standalone retained-scroll
+/// fast-path into the single window-frame retention path. Lazy (viewport-dependent)
+/// content that scrolls beyond its captured window escalates to a structural rebuild.
+pub(crate) struct DynamicScrollDraw {
+    handle: crate::scroll::ScrollHandle,
+    cache_key: usize,
+    axis: ScrollAxis,
+    viewport: vello::kurbo::Rect,
+    content_width: f64,
+    content_height: f64,
+    base_transform: vello::kurbo::Affine,
+    base_hit_transform: vello::kurbo::Affine,
+    content_morphs: Vec<DynamicMorphDraw>,
+    needs_viewport_clip: bool,
+    env: Environment,
+}
+
+impl DynamicScrollDraw {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        handle: crate::scroll::ScrollHandle,
+        cache_key: usize,
+        axis: ScrollAxis,
+        viewport: vello::kurbo::Rect,
+        content_width: f64,
+        content_height: f64,
+        base_transform: vello::kurbo::Affine,
+        base_hit_transform: vello::kurbo::Affine,
+        content_morphs: Vec<DynamicMorphDraw>,
+        needs_viewport_clip: bool,
+        env: Environment,
+    ) -> Self {
+        Self {
+            handle,
+            cache_key,
+            axis,
+            viewport,
+            content_width,
+            content_height,
+            base_transform,
+            base_hit_transform,
+            content_morphs,
+            needs_viewport_clip,
+            env,
+        }
+    }
 }
 
 pub(crate) struct ScrollContentRender {
@@ -1085,8 +1111,6 @@ impl HydrolysisRenderer {
             scroll_content_capture_depth: 0,
             scroll_content_viewport_dependent: false,
             scroll_content_animation_dependent: false,
-            retained_scroll_frame: None,
-            retained_scroll_frame_conflicted: false,
             retained_window_frame: None,
             dynamic_morph_capture_depth: 0,
             dynamic_morph_draws: Vec::new(),
@@ -1094,6 +1118,7 @@ impl HydrolysisRenderer {
             dynamic_transform_draws: Vec::new(),
             dynamic_opacity_draws: Vec::new(),
             dynamic_node_draws: Vec::new(),
+            dynamic_scroll_draws: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_applied_filter_count: 0,
@@ -1832,6 +1857,11 @@ impl HydrolysisRenderer {
                 .and_then(|node| node.cached_subtree.as_ref())
             {
                 self.collect_subtree_active_scalar_keys(cached, keys);
+            }
+        }
+        for scroll in &subtree.dynamic_scroll_draws {
+            if let Some(cache) = self.scroll_content_caches.get(&scroll.cache_key) {
+                self.collect_subtree_active_scalar_keys(&cache.subtree, keys);
             }
         }
     }
@@ -3451,8 +3481,6 @@ impl HydrolysisRenderer {
         if !self.reuse_scroll_content_caches {
             self.scroll_content_caches.clear();
         }
-        self.retained_scroll_frame = None;
-        self.retained_scroll_frame_conflicted = false;
         self.retained_window_frame = None;
         // A full rebuild re-dispatches every Dynamic node, so any pending isolated
         // reactive patch is subsumed by it.
@@ -3585,67 +3613,32 @@ impl HydrolysisRenderer {
 
     pub(crate) fn invalidate_retained_scroll_content(&mut self) {
         self.scroll_content_caches.clear();
-        self.retained_scroll_frame = None;
-        self.retained_scroll_frame_conflicted = true;
         self.retained_window_frame = None;
     }
 
-    pub(crate) fn retained_scroll_dynamic_morphs_active(&self) -> bool {
-        self.retained_scroll_frame.as_ref().is_some_and(|frame| {
-            !self.retained_scroll_frame_conflicted
-                && frame
-                    .content_dynamic_morphs
-                    .iter()
-                    .any(|draw| self.dynamic_morph_is_active(draw))
-        })
+    /// Whether the retained window frame has any active (repeating or in-flight) dynamic
+    /// morph — at the window root or inside a scroll draw — so the runner keeps issuing
+    /// parametric refreshes to advance the morph animation.
+    pub(crate) fn window_dynamic_morphs_active(&self) -> bool {
+        let Some(frame) = &self.retained_window_frame else {
+            return false;
+        };
+        if frame
+            .content_morphs
+            .iter()
+            .any(|draw| self.dynamic_morph_is_active(draw))
+        {
+            return true;
+        }
+        self.subtree_scroll_morphs_active(&frame.subtree)
     }
 
-    pub(crate) fn retained_scroll_can_drive_active_animations(&self) -> bool {
-        let Some(frame) = &self.retained_scroll_frame else {
-            return false;
-        };
-        if self.retained_scroll_frame_conflicted {
-            return false;
-        }
-        if self.navigation.slots.iter().any(|slot| {
-            slot.transition
-                .as_ref()
-                .is_some_and(|state| state.is_active(self.frame_instant))
-        }) {
-            return false;
-        }
-        if self.animation_controller.has_active_radio_indicator() {
-            return false;
-        }
-
-        let active_scalar_keys: BTreeSet<_> = self
-            .animation_controller
-            .active_scalar_keys()
-            .into_iter()
-            .filter(|key| !key.is_renderer_local_scalar())
-            .collect();
-        let has_active_repeating = self
-            .animation_controller
-            .has_active_repeating(self.frame_instant);
-        let retained_dynamic_morphs_active = self.retained_scroll_dynamic_morphs_active();
-        let Some(cache) = self.scroll_content_caches.get(&frame.cache_key) else {
-            return false;
-        };
-        if cache.animation_dependent {
-            return false;
-        }
-        let mut retained_scalar_keys = BTreeSet::new();
-        self.collect_subtree_active_scalar_keys(&cache.subtree, &mut retained_scalar_keys);
-
-        let active_retained_scalar = active_scalar_keys
-            .iter()
-            .any(|key| retained_scalar_keys.contains(key));
-        let scalar_driven = active_scalar_keys.is_empty() || active_retained_scalar;
-        let repeating_driven = !has_active_repeating || retained_dynamic_morphs_active;
-        let has_retained_redraw_work =
-            active_retained_scalar || (has_active_repeating && retained_dynamic_morphs_active);
-
-        has_retained_redraw_work && scalar_driven && repeating_driven
+    fn subtree_scroll_morphs_active(&self, subtree: &DynamicSubtree) -> bool {
+        subtree.dynamic_scroll_draws.iter().any(|draw| {
+            draw.content_morphs
+                .iter()
+                .any(|morph| self.dynamic_morph_is_active(morph))
+        })
     }
 
     pub(crate) fn active_scene_layers_snapshot(&self) -> Vec<ActiveSceneLayer> {
@@ -3663,27 +3656,135 @@ impl HydrolysisRenderer {
             && (viewport.y1 - self.window_bounds.y1).abs() <= f64::EPSILON
     }
 
-    pub(crate) fn retain_scroll_frame(&mut self, request: RetainScrollFrameRequest) {
-        if self.retained_scroll_frame.is_some() {
-            self.retained_scroll_frame = None;
-            self.retained_scroll_frame_conflicted = true;
-            return;
+    pub(crate) fn push_dynamic_scroll_draw(&mut self, draw: DynamicScrollDraw) {
+        self.dynamic_scroll_draws.push(draw);
+    }
+
+    /// Composites each scroll view from its retained offset-independent content cache,
+    /// applying the current scroll offset, viewport clip, content morphs, scroll target,
+    /// accessibility node, and indicators. This is the per-frame body of the former
+    /// `refresh_retained_scroll_scene`, generalized to run inside the window-frame replay
+    /// for any number of (possibly nested) scroll views.
+    fn replay_dynamic_scroll_draws(
+        &mut self,
+        parent_ctx: RenderContext,
+        draws: &[DynamicScrollDraw],
+    ) {
+        for draw in draws {
+            let transform = parent_ctx.transform * draw.base_transform;
+            let hit_transform = parent_ctx.hit_transform * draw.base_hit_transform;
+            if draw.needs_viewport_clip {
+                self.record_clip_layer_push();
+                self.scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &draw.viewport,
+                );
+                self.compositor.active_scene_layers.push(ActiveSceneLayer {
+                    alpha: 1.0,
+                    transform,
+                    shape: LayerShape::Rect(draw.viewport),
+                });
+            }
+            let metrics = draw.handle.metrics();
+            let scroll_content_transform =
+                vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+            let content_transform = transform * scroll_content_transform;
+            let content_hit_transform = hit_transform * scroll_content_transform;
+            let content_bounds =
+                vello::kurbo::Rect::new(0.0, 0.0, draw.content_width, draw.content_height);
+            let content_ctx = RenderContext::with_transforms(
+                content_bounds,
+                content_transform,
+                content_hit_transform,
+            );
+            if let Some(cache) = self.scroll_content_caches.remove(&draw.cache_key) {
+                self.replay_dynamic_subtree(content_ctx, &cache.subtree);
+                self.scroll_content_caches.insert(draw.cache_key, cache);
+            }
+            self.draw_dynamic_morphs(&draw.content_morphs, content_transform);
+            if draw.needs_viewport_clip {
+                self.pop_layer();
+            }
+            let target_handle = draw.handle.clone();
+            self.register_scroll_target(
+                transformed_rect(hit_transform, draw.viewport),
+                move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
+            );
+            crate::widgets::scroll::register_scroll_accessibility_node(
+                self,
+                &draw.env,
+                transformed_rect(hit_transform, draw.viewport),
+                &draw.handle,
+                metrics,
+                draw.axis,
+            );
+            let scroll_ctx =
+                RenderContext::with_transforms(draw.viewport, transform, hit_transform);
+            let mut widget_ctx = WidgetRenderContext::new(self, scroll_ctx);
+            crate::widgets::draw_scroll_indicators(
+                &mut widget_ctx,
+                &draw.env,
+                draw.viewport,
+                metrics,
+                draw.axis,
+            );
         }
-        let viewport_matches_window = self.viewport_matches_window_bounds(request.viewport);
-        if !viewport_matches_window || !request.exclusive_root {
-            self.retained_scroll_frame_conflicted = true;
-            return;
+    }
+
+    /// Whether every scroll view reachable from the retained window frame can be
+    /// re-composited from its cached content at the current scroll offset. Lazy
+    /// (viewport-dependent) content that scrolled beyond its captured window returns
+    /// false, forcing a structural rebuild that re-materializes the visible items.
+    pub(crate) fn window_scroll_draws_reusable(&self) -> bool {
+        match &self.retained_window_frame {
+            Some(frame) => self.subtree_scroll_draws_reusable(&frame.subtree),
+            None => true,
         }
-        self.retained_scroll_frame = Some(RetainedScrollFrame {
-            handle: request.handle,
-            cache_key: request.cache_key,
-            axis: request.axis,
-            viewport: request.viewport,
-            transform: request.transform,
-            hit_transform: request.hit_transform,
-            content_dynamic_morphs: request.content_dynamic_morphs,
-            active_layers: request.active_layers,
-        });
+    }
+
+    fn subtree_scroll_draws_reusable(&self, subtree: &DynamicSubtree) -> bool {
+        for draw in &subtree.dynamic_scroll_draws {
+            let metrics = draw.handle.metrics();
+            let lazy_viewport = vello::kurbo::Rect::new(
+                metrics.offset_x,
+                metrics.offset_y,
+                metrics.offset_x + draw.viewport.width(),
+                metrics.offset_y + draw.viewport.height(),
+            );
+            let Some(cache) = self.scroll_content_caches.get(&draw.cache_key) else {
+                return false;
+            };
+            if !self.can_reuse_scroll_content_cache(cache, lazy_viewport)
+                || !self.subtree_scroll_draws_reusable(&cache.subtree)
+            {
+                return false;
+            }
+        }
+        for placement in &subtree.dynamic_node_draws {
+            if let Some(cached) = self
+                .lifecycle
+                .dynamic_nodes
+                .get(&placement.identity)
+                .and_then(|node| node.cached_subtree.as_ref())
+                && !self.subtree_scroll_draws_reusable(cached)
+            {
+                return false;
+            }
+        }
+        for transform in &subtree.dynamic_transforms {
+            if !self.subtree_scroll_draws_reusable(&transform.subtree) {
+                return false;
+            }
+        }
+        for opacity in &subtree.dynamic_opacities {
+            if !self.subtree_scroll_draws_reusable(&opacity.subtree) {
+                return false;
+            }
+        }
+        true
     }
 
     fn mark_scroll_content_viewport_dependent(&mut self) {
@@ -3709,115 +3810,6 @@ impl HydrolysisRenderer {
         viewport_reusable && animation_reusable
     }
 
-    pub(crate) fn refresh_retained_scroll_scene(&mut self, env: &Environment) -> bool {
-        let Some(frame) = self.retained_scroll_frame.clone() else {
-            return false;
-        };
-        if self.retained_scroll_frame_conflicted {
-            return false;
-        }
-
-        self.reset_scene();
-        #[cfg(feature = "accessibility")]
-        self.accessibility.begin_rebuild_frame();
-        let background_color =
-            resolved_color_to_peniko(Color::new(theme::color::Background).resolve(env).get());
-        self.scene.fill(
-            vello::peniko::Fill::NonZero,
-            frame.transform,
-            background_color,
-            None,
-            &self.window_bounds,
-        );
-
-        for layer in &frame.active_layers {
-            layer.push_to_scene(&mut self.scene);
-            self.compositor.active_scene_layers.push(layer.clone());
-        }
-
-        let needs_viewport_clip = !self.viewport_matches_window_bounds(frame.viewport);
-        if needs_viewport_clip {
-            self.record_clip_layer_push();
-            self.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                frame.transform,
-                &frame.viewport,
-            );
-            self.compositor.active_scene_layers.push(ActiveSceneLayer {
-                alpha: 1.0,
-                transform: frame.transform,
-                shape: LayerShape::Rect(frame.viewport),
-            });
-        }
-
-        let metrics = frame.handle.metrics();
-        let visible_lazy_viewport = vello::kurbo::Rect::new(
-            metrics.offset_x,
-            metrics.offset_y,
-            metrics.offset_x + frame.viewport.width(),
-            metrics.offset_y + frame.viewport.height(),
-        );
-        let scroll_content_transform =
-            vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
-        let content_transform = frame.transform * scroll_content_transform;
-        let content_hit_transform = frame.hit_transform * scroll_content_transform;
-        let content_bounds =
-            vello::kurbo::Rect::new(0.0, 0.0, metrics.content_width, metrics.content_height);
-        let content_ctx = RenderContext::with_transforms(
-            content_bounds,
-            content_transform,
-            content_hit_transform,
-        );
-        if let Some(cache) = self.scroll_content_caches.remove(&frame.cache_key) {
-            if !self.can_reuse_scroll_content_cache(&cache, visible_lazy_viewport) {
-                self.scroll_content_caches.insert(frame.cache_key, cache);
-                return false;
-            }
-            self.replay_dynamic_subtree(content_ctx, &cache.subtree);
-            self.scroll_content_caches.insert(frame.cache_key, cache);
-        } else {
-            return false;
-        }
-        self.draw_dynamic_morphs(&frame.content_dynamic_morphs, content_transform);
-        if needs_viewport_clip {
-            self.pop_layer();
-        }
-
-        while !self.compositor.active_scene_layers.is_empty() {
-            self.pop_layer();
-        }
-
-        let ctx =
-            RenderContext::with_transforms(frame.viewport, frame.transform, frame.hit_transform);
-        let target_handle = frame.handle.clone();
-        self.register_scroll_target(
-            transformed_rect(ctx.hit_transform, frame.viewport),
-            move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
-        );
-        crate::widgets::scroll::register_scroll_accessibility_node(
-            self,
-            env,
-            transformed_rect(ctx.hit_transform, frame.viewport),
-            &frame.handle,
-            metrics,
-            frame.axis,
-        );
-        let mut widget_ctx = WidgetRenderContext::new(self, ctx);
-        crate::widgets::draw_scroll_indicators(
-            &mut widget_ctx,
-            env,
-            frame.viewport,
-            metrics,
-            frame.axis,
-        );
-        #[cfg(feature = "accessibility")]
-        self.finalize_accessibility_tree_update();
-        self.flush_vello_scene_layer();
-        true
-    }
-
     pub(crate) fn render_scroll_content(
         &mut self,
         cache_key: usize,
@@ -3830,9 +3822,10 @@ impl HydrolysisRenderer {
             && let Some(cache) = self.scroll_content_caches.remove(&cache_key)
         {
             if self.can_reuse_scroll_content_cache(&cache, lazy_viewport) {
-                self.replay_dynamic_subtree(ctx, &cache.subtree);
+                // Capture-only: the content is composited by the scroll draw at replay,
+                // not baked into the parent scene here. Re-register applied filters since
+                // no dispatch happened to advance them this frame.
                 let dynamic_morphs = cache.dynamic_morphs.clone();
-                self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
                 for active_filter in cache.active_filters.iter().cloned() {
                     self.remember_active_applied_filter_entry(active_filter);
                 }
@@ -3881,8 +3874,8 @@ impl HydrolysisRenderer {
         self.scroll_content_viewport_dependent = previous_scroll_content_viewport_dependent;
         self.scroll_content_animation_dependent = previous_scroll_content_animation_dependent;
         let dynamic_morphs = core::mem::replace(&mut self.dynamic_morph_draws, previous_morphs);
-        self.replay_dynamic_subtree(ctx, &subtree);
-        self.draw_dynamic_morphs(&dynamic_morphs, ctx.transform);
+        // Capture-only: do not bake content into the parent scene; the scroll draw
+        // composites it from the cache at replay, applying the current scroll offset.
         let active_filters = self.active_applied_filters
             [active_filter_start..self.active_applied_filter_cursor]
             .to_vec();
@@ -4034,6 +4027,11 @@ impl HydrolysisRenderer {
         // Apply any pending fine-grained reactive patches before compositing. If a patch
         // reflowed layout it escalates to a full rebuild, so bail to the rebuild path.
         if !self.patch_dirty_dynamic_nodes() {
+            return false;
+        }
+        // A scroll that moved a lazy (viewport-dependent) list beyond its captured window
+        // cannot be re-composited from the cache; escalate to a rebuild that re-materializes.
+        if !self.window_scroll_draws_reusable() {
             return false;
         }
         let Some(frame) = self.retained_window_frame.take() else {

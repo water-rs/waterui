@@ -204,6 +204,45 @@ fn dynamic_size_change_escalates_to_rebuild() {
     );
 }
 
+/// Phase 4: scrolling a fixed (non-lazy) list re-composites the retained window frame at
+/// the new offset — the scroll fast-path is subsumed into the window frame — with no
+/// structural rebuild.
+#[test]
+fn fixed_scroll_refreshes_window_frame_without_rebuild() {
+    use crate::platform::InputEvent;
+
+    let builder = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(scroll(vstack((
+            ().size(360.0, 1_200.0),
+            ().size(360.0, 200.0),
+        ))))
+    });
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
+
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    runtime.push_input_event(InputEvent::Scroll {
+        x: 200.0,
+        y: 320.0,
+        dx: 0.0,
+        dy: -120.0,
+        is_line_delta: false,
+    });
+    let result = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert_eq!(
+        result.profile.counters.rebuild_iterations, 0,
+        "fixed scroll must re-composite via the window frame, not rebuild: {:?}",
+        result.profile.counters
+    );
+    assert!(
+        !result.rebuilt,
+        "a fixed scroll refresh frame must not perform a structural rebuild"
+    );
+}
+
 const PARAMETRIC_FRAMES: u32 = 20;
 
 /// Phase 2B: an opacity animation at the window root is captured as a replayable
