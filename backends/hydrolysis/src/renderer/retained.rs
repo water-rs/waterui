@@ -600,8 +600,11 @@ impl HydrolysisRenderer {
     pub(super) fn patch_dirty_dynamic_nodes(&mut self) -> bool {
         let dirty = self.signals.take_dirty_dynamic_nodes();
         for identity in dirty {
-            let Some((pending_view, ctx, env)) =
-                self.lifecycle.dynamic_nodes.get(&identity).and_then(|node| {
+            let Some((pending_view, ctx, env)) = self
+                .lifecycle
+                .dynamic_nodes
+                .get(&identity)
+                .and_then(|node| {
                     Some((
                         Rc::clone(&node.pending_view),
                         node.dispatch_ctx?,
@@ -875,7 +878,9 @@ impl HydrolysisRenderer {
             let target_handle = draw.handle.clone();
             self.register_scroll_target(
                 transformed_rect(hit_transform, draw.viewport),
-                move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
+                move |dx, dy, is_line_delta| {
+                    target_handle.apply_scroll_delta(dx, dy, is_line_delta)
+                },
             );
             crate::widgets::scroll::register_scroll_accessibility_node(
                 self,

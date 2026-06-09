@@ -16,7 +16,9 @@ fn measure_dynamic(
     proposal: ProposalSize,
 ) -> ViewDimensions {
     let identity = dynamic.identity();
-    state.measurement.begin_dynamic_measurement(identity, proposal);
+    state
+        .measurement
+        .begin_dynamic_measurement(identity, proposal);
     let measure_content = |slot: &mut Option<waterui_core::AnyView>, state: &mut HydroState| {
         slot.take().map(|content| {
             let normalized = normalize_layout_view(content, env);

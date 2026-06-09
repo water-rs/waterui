@@ -345,7 +345,9 @@ impl HydrolysisRenderer {
         dispatcher.register_renderer::<Metadata<T>>(Self::render_passthrough_metadata::<T>);
     }
 
-    pub(super) fn register_passthrough_ignorable_metadata<T: MetadataKey>(dispatcher: &mut HydroDispatcher) {
+    pub(super) fn register_passthrough_ignorable_metadata<T: MetadataKey>(
+        dispatcher: &mut HydroDispatcher,
+    ) {
         dispatcher.register_renderer::<IgnorableMetadata<T>>(
             Self::render_passthrough_ignorable_metadata::<T>,
         );
@@ -403,7 +405,11 @@ impl HydrolysisRenderer {
         self.pop_render_depth();
     }
 
-    pub(super) fn replay_target_depth(&self, subtree_depth_base: usize, target_depth: usize) -> usize {
+    pub(super) fn replay_target_depth(
+        &self,
+        subtree_depth_base: usize,
+        target_depth: usize,
+    ) -> usize {
         let relative_depth = target_depth
             .checked_sub(subtree_depth_base)
             .expect("hydrolysis dynamic subtree target depth underflow");

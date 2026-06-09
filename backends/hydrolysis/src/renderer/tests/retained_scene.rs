@@ -146,13 +146,14 @@ fn dynamic_same_size(value: &Binding<i32>) -> AnyView {
 /// A `Dynamic` node whose content changes *height* with `value`. A content change here
 /// reflows the surrounding layout, so it must escalate to a full structural rebuild.
 fn dynamic_changing_size(value: &Binding<i32>) -> AnyView {
-    let watched = watch(value.clone(), |v| {
-        ().size(80.0, 40.0 + (v as f32) * 30.0)
-    });
+    let watched = watch(value.clone(), |v| ().size(80.0, 40.0 + (v as f32) * 30.0));
     AnyView::new(vstack((watched, padding_list())))
 }
 
-fn dynamic_runtime(make_view: fn(&Binding<i32>) -> AnyView, value: &Binding<i32>) -> HeadlessRuntime {
+fn dynamic_runtime(
+    make_view: fn(&Binding<i32>) -> AnyView,
+    value: &Binding<i32>,
+) -> HeadlessRuntime {
     let builder = {
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))

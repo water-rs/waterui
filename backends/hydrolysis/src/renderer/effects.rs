@@ -645,7 +645,11 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(super) fn bind_gpu_surface_slot(&mut self, surface: GpuSurface, env: &Environment) -> usize {
+    pub(super) fn bind_gpu_surface_slot(
+        &mut self,
+        surface: GpuSurface,
+        env: &Environment,
+    ) -> usize {
         let index = self.compositor.gpu_surface_cursor;
         self.compositor.gpu_surface_cursor = self
             .compositor
