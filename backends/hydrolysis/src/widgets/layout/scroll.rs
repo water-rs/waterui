@@ -1,9 +1,8 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RetainScrollFrameRequest, WidgetRenderContext,
+    HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext,
     measure_view_dimensions_with_proposal, measure_view_intrinsic, normalize_layout_view,
-    transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -72,19 +71,19 @@ pub(crate) fn render_scroll_view(
     let needs_viewport_clip =
         !exclusive_root_scroll || !ctx.renderer_mut().viewport_matches_window_bounds(viewport);
 
+    // Capture the content offset-independently into the scroll-content cache, then record
+    // a DynamicScrollDraw. The current offset, viewport clip, scroll target, accessibility
+    // node and indicators are all applied when the window frame replays the scroll draw,
+    // so scrolling re-composites without re-walking the view tree.
     let content_transform = vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
     let content_bounds =
         vello::kurbo::Rect::new(0.0, 0.0, metrics.content_width, metrics.content_height);
-    let visible_lazy_viewport = vello::kurbo::Rect::new(
+    let lazy_viewport = vello::kurbo::Rect::new(
         metrics.offset_x,
         metrics.offset_y,
         metrics.offset_x + viewport.width(),
         metrics.offset_y + viewport.height(),
     );
-    let lazy_viewport = visible_lazy_viewport;
-    if needs_viewport_clip {
-        ctx.push_layer_rect(1.0, viewport);
-    }
     ctx.renderer_mut().push_lazy_viewport(lazy_viewport);
     let content_ctx = ctx.child(content_transform, content_bounds);
     let renderer = ctx.renderer_mut();
@@ -95,37 +94,20 @@ pub(crate) fn render_scroll_view(
         env,
         content,
     );
-    renderer.retain_scroll_frame(RetainScrollFrameRequest {
-        handle: handle.clone(),
-        cache_key: handle.cache_key(),
+    renderer.push_dynamic_scroll_draw(crate::renderer::DynamicScrollDraw::new(
+        handle.clone(),
+        handle.cache_key(),
         axis,
         viewport,
+        metrics.content_width,
+        metrics.content_height,
         transform,
         hit_transform,
-        content_dynamic_morphs: content_render.dynamic_morphs,
-        active_layers,
-        exclusive_root: exclusive_root_scroll,
-    });
+        content_render.dynamic_morphs,
+        needs_viewport_clip,
+        env.clone(),
+    ));
     ctx.renderer_mut().pop_lazy_viewport("render_scroll_view");
-    if needs_viewport_clip {
-        ctx.pop_layer();
-    }
-
-    let target_handle = handle.clone();
-    ctx.renderer_mut().register_scroll_target(
-        transformed_rect(hit_transform, viewport),
-        move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
-    );
-    register_scroll_accessibility_node(
-        ctx.renderer_mut(),
-        env,
-        transformed_rect(hit_transform, viewport),
-        &handle,
-        metrics,
-        axis,
-    );
-
-    draw_scroll_indicators(ctx, env, viewport, metrics, axis);
 }
 
 fn measure_scroll_content_intrinsic(
