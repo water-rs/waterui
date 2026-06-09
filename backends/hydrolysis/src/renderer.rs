@@ -298,6 +298,12 @@ pub struct HydrolysisRenderer {
     window_bounds: vello::kurbo::Rect,
     redraw_requested: Rc<Cell<bool>>,
     pub(crate) rebuild_requested: Rc<Cell<bool>>,
+    /// Set when a `Dynamic` node's content changed and can be patched in isolation
+    /// (fine-grained reactive update) rather than forcing a full structural rebuild.
+    patch_requested: Rc<Cell<bool>>,
+    /// Identities of `Dynamic` nodes whose content changed since the last frame and
+    /// must be re-dispatched in isolation on the next reactive-patch frame.
+    dirty_dynamic_nodes: Rc<RefCell<BTreeSet<usize>>>,
     next_frame_rebuild_requested: Cell<bool>,
     rebuild_generation: Rc<Cell<u64>>,
     rebuild_in_progress: Rc<Cell<bool>>,
@@ -1064,6 +1070,8 @@ impl HydrolysisRenderer {
             window_bounds: vello::kurbo::Rect::ZERO,
             redraw_requested: Rc::new(Cell::new(false)),
             rebuild_requested: Rc::new(Cell::new(false)),
+            patch_requested: Rc::new(Cell::new(false)),
+            dirty_dynamic_nodes: Rc::new(RefCell::new(BTreeSet::new())),
             next_frame_rebuild_requested: Cell::new(false),
             rebuild_generation: Rc::new(Cell::new(0)),
             rebuild_in_progress: Rc::new(Cell::new(false)),
@@ -1828,6 +1836,105 @@ impl HydrolysisRenderer {
         }
     }
 
+    /// Re-dispatches a `Dynamic` node's content into its `cached_subtree`, refreshing the
+    /// intrinsic/proposal dimension caches. If the content's intrinsic size changed, the
+    /// surrounding layout must reflow, so this escalates to a full structural rebuild.
+    fn capture_dynamic_node_content(
+        &mut self,
+        identity: usize,
+        content: AnyView,
+        ctx: RenderContext,
+        env: &Environment,
+    ) {
+        let content = normalize_layout_view(content, env);
+        let dimensions = measure_view_dimensions(&content, &mut self.state, env);
+        let proposal = ProposalSize::new(
+            Some(ctx.bounds.width() as f32),
+            Some(ctx.bounds.height() as f32),
+        );
+        let proposal_dimensions =
+            measure_view_dimensions_with_proposal(&content, proposal, &mut self.state, env);
+        let previous_dimensions = self.state.dynamic_intrinsic_cache.get(&identity).cloned();
+        self.state
+            .dynamic_intrinsic_cache
+            .insert(identity, dimensions.clone());
+        self.state.dynamic_dimensions_cache.insert(
+            (
+                identity,
+                proposal.width.map(f32::to_bits),
+                proposal.height.map(f32::to_bits),
+            ),
+            proposal_dimensions,
+        );
+        let local_ctx = ctx.with_identity_transforms(ctx.bounds);
+        let subtree = Self::render_dynamic_subtree_with_local_interactions(
+            self, ctx, local_ctx, env, content,
+        );
+        self.lifecycle
+            .dynamic_nodes
+            .get_mut(&identity)
+            .expect("hydrolysis dynamic node missing after connect")
+            .cached_subtree = Some(subtree);
+        if previous_dimensions.is_some() && previous_dimensions.as_ref() != Some(&dimensions) {
+            self.request_rebuild();
+        }
+    }
+
+    /// Re-dispatches every dirty `Dynamic` node in isolation, refreshing only those
+    /// nodes' cached subtrees. Returns `false` if any patch reflowed layout (escalating
+    /// to a structural rebuild), in which case the caller must rebuild instead of
+    /// compositing a patched frame.
+    fn patch_dirty_dynamic_nodes(&mut self) -> bool {
+        let dirty = core::mem::take(&mut *self.dirty_dynamic_nodes.borrow_mut());
+        for identity in dirty {
+            let Some((pending_view, ctx, env)) =
+                self.lifecycle.dynamic_nodes.get(&identity).and_then(|node| {
+                    Some((
+                        Rc::clone(&node.pending_view),
+                        node.dispatch_ctx?,
+                        node.dispatch_env.clone()?,
+                    ))
+                })
+            else {
+                continue;
+            };
+            let Some(content) = pending_view.borrow_mut().take() else {
+                continue;
+            };
+            // Re-dispatch under a retained capture so nested dynamic draws and Dynamic
+            // node placements inside the patched content are captured, not baked.
+            self.dynamic_transform_capture_depth = self
+                .dynamic_transform_capture_depth
+                .checked_add(1)
+                .expect("hydrolysis reactive patch transform capture depth overflow");
+            self.dynamic_morph_capture_depth = self
+                .dynamic_morph_capture_depth
+                .checked_add(1)
+                .expect("hydrolysis reactive patch morph capture depth overflow");
+            self.scroll_content_capture_depth = self
+                .scroll_content_capture_depth
+                .checked_add(1)
+                .expect("hydrolysis reactive patch scroll capture depth overflow");
+            self.capture_dynamic_node_content(identity, content, ctx, &env);
+            self.scroll_content_capture_depth = self
+                .scroll_content_capture_depth
+                .checked_sub(1)
+                .expect("hydrolysis reactive patch scroll capture depth underflow");
+            self.dynamic_morph_capture_depth = self
+                .dynamic_morph_capture_depth
+                .checked_sub(1)
+                .expect("hydrolysis reactive patch morph capture depth underflow");
+            self.dynamic_transform_capture_depth = self
+                .dynamic_transform_capture_depth
+                .checked_sub(1)
+                .expect("hydrolysis reactive patch transform capture depth underflow");
+            if self.rebuild_requested.get() {
+                return false;
+            }
+        }
+        true
+    }
+
     pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration) -> Duration {
         let key = AnimationKey::renderer_local_repeating(self.render_depth);
         self.animation_controller
@@ -2169,13 +2276,15 @@ impl HydrolysisRenderer {
                 Rc::clone(&node.pending_view)
             } else {
                 let pending_view = Rc::new(RefCell::new(None::<AnyView>));
-                let rebuild_requested = Rc::clone(&renderer.rebuild_requested);
+                let patch_requested = Rc::clone(&renderer.patch_requested);
+                let dirty_dynamic_nodes = Rc::clone(&renderer.dirty_dynamic_nodes);
                 let rebuild_generation = Rc::clone(&renderer.rebuild_generation);
                 let rebuild_in_progress = Rc::clone(&renderer.rebuild_in_progress);
                 let render_generation = Rc::new(Cell::new(0));
                 dynamic.connect_with_pending_view(Rc::clone(&pending_view), {
                     let pending_view = Rc::clone(&pending_view);
-                    let rebuild_requested = Rc::clone(&rebuild_requested);
+                    let patch_requested = Rc::clone(&patch_requested);
+                    let dirty_dynamic_nodes = Rc::clone(&dirty_dynamic_nodes);
                     let rebuild_generation = Rc::clone(&rebuild_generation);
                     let rebuild_in_progress = Rc::clone(&rebuild_in_progress);
                     let render_generation = Rc::clone(&render_generation);
@@ -2191,12 +2300,16 @@ impl HydrolysisRenderer {
                             return;
                         }
                         *pending_view.borrow_mut() = Some(update.into_value());
+                        // A real content change is a fine-grained reactive update: mark
+                        // this node dirty so it can be re-dispatched in isolation. If the
+                        // re-dispatch reflows layout, render_dynamic escalates to a full
+                        // rebuild itself.
                         if !is_initial_content
                             && (!rebuild_in_progress.get()
                                 || render_generation.get() == rebuild_generation.get())
-                            && !rebuild_requested.get()
                         {
-                            rebuild_requested.set(true);
+                            dirty_dynamic_nodes.borrow_mut().insert(identity);
+                            patch_requested.set(true);
                         }
                     }
                 });
@@ -2206,6 +2319,8 @@ impl HydrolysisRenderer {
                         pending_view: Rc::clone(&pending_view),
                         cached_subtree: None,
                         render_generation,
+                        dispatch_ctx: None,
+                        dispatch_env: None,
                     },
                 );
                 pending_view
@@ -2222,44 +2337,7 @@ impl HydrolysisRenderer {
 
         let update = pending_view.borrow_mut().take();
         if let Some(content) = update {
-            let content = normalize_layout_view(content, env);
-            let dimensions = measure_view_dimensions(&content, &mut renderer.state, env);
-            let proposal = ProposalSize::new(
-                Some(ctx.bounds.width() as f32),
-                Some(ctx.bounds.height() as f32),
-            );
-            let proposal_dimensions =
-                measure_view_dimensions_with_proposal(&content, proposal, &mut renderer.state, env);
-            let previous_dimensions = renderer
-                .state
-                .dynamic_intrinsic_cache
-                .get(&identity)
-                .cloned();
-            renderer
-                .state
-                .dynamic_intrinsic_cache
-                .insert(identity, dimensions.clone());
-            renderer.state.dynamic_dimensions_cache.insert(
-                (
-                    identity,
-                    proposal.width.map(f32::to_bits),
-                    proposal.height.map(f32::to_bits),
-                ),
-                proposal_dimensions,
-            );
-            let local_ctx = ctx.with_identity_transforms(ctx.bounds);
-            let subtree = Self::render_dynamic_subtree_with_local_interactions(
-                renderer, ctx, local_ctx, env, content,
-            );
-            renderer
-                .lifecycle
-                .dynamic_nodes
-                .get_mut(&identity)
-                .expect("hydrolysis dynamic node missing after connect")
-                .cached_subtree = Some(subtree);
-            if previous_dimensions.is_some() && previous_dimensions.as_ref() != Some(&dimensions) {
-                renderer.request_rebuild();
-            }
+            renderer.capture_dynamic_node_content(identity, content, ctx, env);
         }
         if renderer
             .lifecycle
@@ -2281,6 +2359,13 @@ impl HydrolysisRenderer {
                 .get_mut(&identity)
                 .expect("hydrolysis dynamic node missing after empty subtree initialization")
                 .cached_subtree = Some(subtree);
+        }
+
+        // Remember where and with what environment this node was dispatched, so a later
+        // content change can re-dispatch just this node in isolation (reactive patch).
+        if let Some(node) = renderer.lifecycle.dynamic_nodes.get_mut(&identity) {
+            node.dispatch_ctx = Some(ctx);
+            node.dispatch_env = Some(env.clone());
         }
 
         // Inside a retained capture, record a placement instead of baking the node's
@@ -3369,6 +3454,10 @@ impl HydrolysisRenderer {
         self.retained_scroll_frame = None;
         self.retained_scroll_frame_conflicted = false;
         self.retained_window_frame = None;
+        // A full rebuild re-dispatches every Dynamic node, so any pending isolated
+        // reactive patch is subsumed by it.
+        self.patch_requested.set(false);
+        self.dirty_dynamic_nodes.borrow_mut().clear();
         self.state.measurement_cache.clear();
         self.state.measurement_cache_hits = 0;
         self.state.measurement_cache_misses = 0;
@@ -3939,10 +4028,20 @@ impl HydrolysisRenderer {
     /// re-dispatching or re-measuring. Returns `false` when the frame cannot be driven
     /// by replay, in which case the caller must fall back to a structural rebuild.
     pub(crate) fn refresh_window_frame(&mut self, env: &Environment) -> bool {
+        if self.retained_window_frame.is_none() {
+            return false;
+        }
+        // Apply any pending fine-grained reactive patches before compositing. If a patch
+        // reflowed layout it escalates to a full rebuild, so bail to the rebuild path.
+        if !self.patch_dirty_dynamic_nodes() {
+            return false;
+        }
         let Some(frame) = self.retained_window_frame.take() else {
             return false;
         };
-        if !frame.drivable {
+        // A frame that baked an animated non-transform value can only be replayed safely
+        // while no animation is active; otherwise the baked value would be stale.
+        if !frame.drivable && self.animations_active() {
             self.retained_window_frame = Some(frame);
             return false;
         }
@@ -4223,6 +4322,20 @@ impl HydrolysisRenderer {
 
     pub fn take_rebuild_request(&self) -> bool {
         self.rebuild_requested.replace(false)
+    }
+
+    #[must_use]
+    pub fn has_patch_request(&self) -> bool {
+        self.patch_requested.get()
+    }
+
+    pub fn take_patch_request(&self) -> bool {
+        self.patch_requested.replace(false)
+    }
+
+    #[must_use]
+    pub fn has_retained_window_frame(&self) -> bool {
+        self.retained_window_frame.is_some()
     }
 
     pub fn take_next_frame_rebuild_request(&self) -> bool {
