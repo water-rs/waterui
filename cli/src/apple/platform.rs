@@ -234,6 +234,14 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
             continue;
         }
 
+        let output_path = crate_build_dir.join("output");
+        if output_path.exists() {
+            let output = std::fs::read_to_string(&output_path)?;
+            for flag in apple_linker_flags_from_build_output(&output) {
+                push_unique_flag(&mut linker_flags, flag);
+            }
+        }
+
         let out_dir = crate_build_dir.join("out");
         if !out_dir.is_dir() {
             continue;
@@ -264,14 +272,6 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
         for archive in &archives_in_dir {
             archive_paths.insert(archive.clone());
             if let Some(flag) = static_archive_link_flag(archive) {
-                push_unique_flag(&mut linker_flags, flag);
-            }
-        }
-
-        let output_path = crate_build_dir.join("output");
-        if output_path.exists() {
-            let output = std::fs::read_to_string(&output_path)?;
-            for flag in apple_linker_flags_from_build_output(&output) {
                 push_unique_flag(&mut linker_flags, flag);
             }
         }
@@ -659,11 +659,34 @@ mod tests {
         assert_eq!(
             link_inputs.linker_flags,
             vec![
-                "-lHelper".to_string(),
                 "-framework AppKit".to_string(),
                 "-rpath".to_string(),
-                "/usr/lib/swift".to_string()
+                "/usr/lib/swift".to_string(),
+                "-lHelper".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn collects_framework_flags_from_non_swift_build_outputs() {
+        let dir = tempdir().expect("tempdir");
+        let lib_dir = dir.path().join("aarch64-apple-darwin/debug");
+        let build_dir = lib_dir.join("build/system-configuration-1234");
+        std::fs::create_dir_all(&build_dir).expect("create build dir");
+        std::fs::write(
+            build_dir.join("output"),
+            "cargo:rustc-link-lib=framework=SystemConfiguration\n",
+        )
+        .expect("write build output");
+
+        let link_inputs =
+            collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
+
+        assert!(link_inputs.archives.is_empty());
+        assert!(
+            link_inputs
+                .linker_flags
+                .contains(&"-framework SystemConfiguration".to_string())
         );
     }
 }
