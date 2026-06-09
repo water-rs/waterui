@@ -307,7 +307,7 @@ pub trait ViewExt: View + Sized {
     /// use waterui::reactive::binding;
     ///
     /// let count:Binding<i32> = binding(0);
-    /// text("Hello").on_appear(|| println!("Hello, World!"));
+    /// text("Hello").on_appear(|| {});
     /// ```
     ///
     /// # Arguments
@@ -603,7 +603,7 @@ pub trait ViewExt: View + Sized {
     /// ```rust
     /// use waterui::prelude::*;
     ///
-    /// text!("Click me").on_tap(|| println!("Clicked!"));
+    /// text!("Click me").on_tap(|| {});
     /// ```
     fn on_tap<H, Args>(self, action: H) -> Metadata<GestureObserver>
     where
@@ -1012,7 +1012,9 @@ pub trait ViewExt: View + Sized {
     ///
     /// fn view() -> impl View{
     ///     let count:Binding<i32> = binding(0);
-    ///     let guard = count.clone().watch(|v| println!("Count: {}", v.into_value()));
+    ///     let guard = count.clone().watch(|v| {
+    ///         let _ = v.into_value();
+    ///     });
     ///     text("Hello").retain(guard)
     /// }
     /// ```
@@ -1055,7 +1057,7 @@ pub trait ViewExt: View + Sized {
     /// // Simple usage without state
     /// text!("Drop here")
     ///     .drop_destination(|data: DragData| {
-    ///         println!("Received: {:?}", data);
+    ///         let _ = data;
     ///     });
     ///
     /// // With injected state
@@ -1097,7 +1099,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// // Reactive hit testing control
     /// let can_interact = binding(true);
-    /// Button::new("Click me", || {})
+    /// button("Click me").action(|| {})
     ///     .hittable(can_interact);
     /// ```
     fn hittable(self, enabled: impl IntoComputed<bool>) -> Metadata<Hittable> {
@@ -1118,14 +1120,14 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     ///
     /// // Disable a button
-    /// Button::new("Submit", || {})
+    /// button("Submit").action(|| {})
     ///     .disabled(true);
     ///
     /// // Reactive disable based on form validity
     /// let is_submitting = binding(false);
     /// vstack((
     ///     TextField::new("Name", name),
-    ///     Button::new("Submit", || {}),
+    ///     button("Submit").action(|| {}),
     /// )).disabled(is_submitting);
     /// ```
     fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {

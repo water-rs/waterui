@@ -91,11 +91,11 @@ impl Stepper {
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(label: impl IntoLabel, value: &Binding<i32>) -> Self {
+    pub fn new(label: Label, value: &Binding<i32>) -> Self {
         Self(StepperConfig {
             value: value.clone(),
             step: 1i32.into_computed(),
-            label: label.into_label(),
+            label,
             value_formatter: None,
             range: i32::MIN..=i32::MAX,
         })
@@ -150,5 +150,5 @@ impl_label_style_methods!(Stepper);
 /// See [`Stepper`] for more details.
 #[must_use]
 pub fn stepper(label: impl IntoLabel, value: &Binding<i32>) -> Stepper {
-    Stepper::new(label, value)
+    Stepper::new(label.into_label(), value)
 }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::DrawContext;
+use waterui_controls::button::button;
 
 #[derive(Clone)]
 pub(crate) enum TextInputModel {
@@ -1357,7 +1358,7 @@ impl HydrolysisRenderer {
                 match entry {
                     TextContextMenuEntry::Command { label, action } => {
                         let button =
-                            Button::new(label)
+                            button(label)
                                 .style(ButtonStyle::Borderless)
                                 .action(move || {
                                     state_binding.set(WindowState::Closed);

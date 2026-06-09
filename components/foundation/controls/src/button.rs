@@ -21,9 +21,7 @@
 //! ```rust,ignore
 //! use waterui::prelude::*;
 //!
-//! button("Click me").action(|| {
-//!     println!("Button clicked!");
-//! });
+//! button("Click me").action(|| {});
 //! ```
 //!
 //! ## State Injection
@@ -380,7 +378,7 @@ impl<Action: Clone> Clone for Button<Action> {
 }
 
 impl Button<fn(&Environment)> {
-    /// Creates a new button with the specified label.
+    /// Creates a new button with the specified semantic label.
     ///
     /// The button has no action by default. Use [`action`](Self::action) or
     /// [`action_async`](Self::action_async) to configure what happens when the
@@ -393,11 +391,11 @@ impl Button<fn(&Environment)> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let btn = Button::new("Click me").action(|| println!("Clicked!"));
+    /// let btn = Button::new(label("Click me")).action(|| {});
     /// ```
-    pub fn new(label: impl IntoLabel) -> Self {
+    pub fn new(label: Label) -> Self {
         Self {
-            label: label.into_label(),
+            label,
             action: noop,
             style: ButtonStyle::Automatic,
         }
@@ -431,7 +429,7 @@ impl<Action> Button<Action> {
     /// screen is unaffected.
     #[must_use]
     pub fn accessibility_label(mut self, label: impl IntoText) -> Self {
-        self.label = self.label.text(label);
+        self.label = self.label.accessibility_text(label);
         self
     }
 
@@ -469,9 +467,7 @@ impl<Action> Button<Action> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// button("Click me").action(|| {
-    ///     println!("Button was clicked!");
-    /// });
+    /// button("Click me").action(|| {});
     /// ```
     #[must_use]
     pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
@@ -581,7 +577,7 @@ mod tests {
     #[test]
     fn accessibility_label_overrides_text_only() {
         // Calling .accessibility_label("X") must rewrite the spoken text
-        // while preserving the icon attached at construction time.
+        // while preserving the visible text and icon attached at construction time.
         let rendered = button(Label::new("Edit").icon(waterui_icon::system_icon::search()))
             .accessibility_label("Edit document")
             .action(|| {})
@@ -594,6 +590,17 @@ mod tests {
                 .semantic_text()
                 .resolve(&Environment::default())
                 .content
+                .get()
+                .to_plain()
+                .as_str(),
+            "Edit"
+        );
+        assert_eq!(
+            command
+                .label
+                .clone()
+                .resolve(&Environment::default())
+                .accessibility_label()
                 .get()
                 .to_plain()
                 .as_str(),
@@ -624,8 +631,8 @@ mod tests {
 /// ```rust,ignore
 /// use waterui::prelude::*;
 ///
-/// button("Click me").action(|| println!("Clicked!"));
+/// button("Click me").action(|| {});
 /// ```
 pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
-    Button::new(label)
+    Button::new(label.into_label())
 }

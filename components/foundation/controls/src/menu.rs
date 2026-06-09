@@ -136,9 +136,10 @@ impl Menu {
         let label = self.label;
         let resolved_label = label.semantic_text().resolve(env);
         let icon = label.semantic_icon();
+        let semantic_label = label.resolve(env);
         ResolvedNestedMenu {
             label: resolved_label,
-            semantic_label: label,
+            semantic_label,
             icon,
             items: resolve_menu_items(&self.items, env),
         }
@@ -147,8 +148,8 @@ impl Menu {
 
 impl View for Menu {
     fn body(self, env: &Environment) -> impl View {
-        let label = self.label;
-        let accessibility_label = label.semantic_text().resolve(env).content;
+        let label = self.label.resolve(env);
+        let accessibility_label = label.accessibility_label();
         AnyView::new(ResolvedMenu {
             label: AnyView::new(label),
             items: resolve_menu_items(&self.items, env),
@@ -195,11 +196,12 @@ impl Command {
         let label = self.label;
         let resolved_label = label.semantic_text().resolve(env);
         let icon = label.semantic_icon();
+        let semantic_label = label.resolve(env);
         let action = self.action;
         let captured_env = self.captured_env;
         ResolvedCommand {
             label: resolved_label,
-            semantic_label: label,
+            semantic_label,
             icon,
             action: shared_action(move |env: Environment| {
                 action.call(&captured_env.layered_on(&env));

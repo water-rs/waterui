@@ -20,7 +20,7 @@ pub use picker::{Picker, PickerItem, PickerStyle};
 /// Validation helpers for form fields.
 pub mod valid;
 
-use waterui_controls::IntoLabel;
+use waterui_controls::{IntoLabel, slider::slider, stepper::stepper};
 use waterui_core::{Binding, Str, View};
 
 /// Trait for types that can be automatically converted to form UI components.
@@ -162,7 +162,7 @@ impl FormBuilder for String {
 impl FormBuilder for i32 {
     type View = waterui_controls::Stepper;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
-        waterui_controls::Stepper::new(label, binding).range(Self::MIN..=Self::MAX)
+        stepper(label, binding).range(Self::MIN..=Self::MAX)
     }
 }
 
@@ -183,14 +183,14 @@ impl FormBuilder for Color {
 impl FormBuilder for f64 {
     type View = waterui_controls::Slider;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
-        waterui_controls::Slider::new(label, binding)
+        slider(label, binding)
     }
 }
 
 impl FormBuilder for f32 {
     type View = waterui_controls::Slider;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
-        waterui_controls::Slider::new(
+        slider(
             label,
             #[allow(clippy::cast_possible_truncation)]
             &Binding::mapping(binding, f64::from, |binding, val| binding.set(val as Self)),
@@ -239,8 +239,8 @@ pub use secure::{SecureField, secure};
 /// # struct ContactForm { name: String, email: String }
 /// fn pre_filled_form() -> impl View {
 ///     let initial_data = ContactForm {
-///         name: "John Doe".to_string(),
-///         email: "john@example.com".to_string(),
+///         name: "Lexo Liu".to_string(),
+///         email: "me@lexo.cool".to_string(),
 ///     };
 ///     let form_binding = Binding::new(initial_data);
 ///     form(&form_binding)

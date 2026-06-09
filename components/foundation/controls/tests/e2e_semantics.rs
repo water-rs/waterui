@@ -6,7 +6,9 @@ use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, Str};
-use waterui_controls::{Label, Menu, Slider, Stepper, TextField, Toggle, button, toggle};
+use waterui_controls::{
+    Label, Menu, TextField, Toggle, button, slider::slider, stepper::stepper, toggle,
+};
 use waterui_icon::system_icon;
 use waterui_testing::{Role, Selector};
 
@@ -122,7 +124,7 @@ fn slider_increment_decrement_updates_value() {
 
     let mut app = mount_view(move || {
         control_shell(vstack((
-            Slider::new("Volume", &value_for_view),
+            slider("Volume", &value_for_view),
             waterui::text!("value:{value_for_view:.2}").foreground(Srgb::WHITE),
         )))
     });
@@ -163,7 +165,7 @@ fn slider_accessibility_role_is_slider() {
     let value = Binding::f64(0.25);
     let value_for_view = value.clone();
 
-    let mut app = mount_view(move || control_shell(Slider::new("Exposure", &value_for_view)));
+    let mut app = mount_view(move || control_shell(slider("Exposure", &value_for_view)));
 
     let element = app.query().role(Role::SLIDER).label("Exposure").single();
     let numeric = element
@@ -187,7 +189,7 @@ fn stepper_increment_decrement_updates_binding() {
 
     let mut app = mount_view(move || {
         control_shell(vstack((
-            Stepper::new("Quantity", &value_for_view),
+            stepper("Quantity", &value_for_view),
             waterui::text!("count:{value_for_view}").foreground(Srgb::WHITE),
         )))
     });
@@ -219,7 +221,7 @@ fn stepper_respects_range_bounds() {
     let value_for_view = value.clone();
 
     let mut app =
-        mount_view(move || control_shell(Stepper::new("Limited", &value_for_view).range(0..=2)));
+        mount_view(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
 
     assert!(
         !app.query().label("Limited").value("2").increment(),

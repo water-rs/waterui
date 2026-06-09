@@ -183,15 +183,27 @@ impl LabelIcon {
     }
 }
 
+#[derive(Debug, Clone)]
+enum LabelContent {
+    Semantic {
+        text: Text,
+        icon: Option<LabelIcon>,
+        icon_position: IconPosition,
+        spacing: f32,
+    },
+    Custom {
+        semantic_text: Text,
+        view: AnyViewBuilder<AnyView>,
+    },
+}
+
 /// Semantic label for controls, commands, and chrome.
 #[derive(Debug, Clone)]
 pub struct Label {
-    text: Text,
-    icon: Option<LabelIcon>,
-    icon_position: IconPosition,
-    spacing: f32,
+    content: LabelContent,
     display_mode: LabelDisplayMode,
     font: Option<Font>,
+    accessibility_text: Option<Text>,
     accessibility_label: Option<Computed<StyledStr>>,
 }
 
@@ -260,12 +272,30 @@ impl Label {
     #[must_use]
     pub fn new(text: impl IntoText) -> Self {
         Self {
-            text: text.into_text(),
-            icon: None,
-            icon_position: IconPosition::Leading,
-            spacing: 6.0,
+            content: LabelContent::Semantic {
+                text: text.into_text(),
+                icon: None,
+                icon_position: IconPosition::Leading,
+                spacing: 6.0,
+            },
             display_mode: LabelDisplayMode::Automatic,
             font: None,
+            accessibility_text: None,
+            accessibility_label: None,
+        }
+    }
+
+    /// Creates a label with arbitrary visual content and separate semantic text.
+    #[must_use]
+    pub fn custom(semantic_text: impl IntoText, content: impl View + Clone) -> Self {
+        Self {
+            content: LabelContent::Custom {
+                semantic_text: semantic_text.into_text(),
+                view: AnyViewBuilder::new(move || AnyView::new(content.clone())),
+            },
+            display_mode: LabelDisplayMode::Automatic,
+            font: None,
+            accessibility_text: None,
             accessibility_label: None,
         }
     }
@@ -273,7 +303,21 @@ impl Label {
     /// Replaces the text payload.
     #[must_use]
     pub fn text(mut self, text: impl IntoText) -> Self {
-        self.text = text.into_text();
+        let text = text.into_text();
+        match &mut self.content {
+            LabelContent::Semantic {
+                text: semantic_text,
+                ..
+            }
+            | LabelContent::Custom { semantic_text, .. } => *semantic_text = text,
+        }
+        self.accessibility_label = None;
+        self
+    }
+
+    /// Overrides the spoken accessibility text without changing the visual text.
+    pub(crate) fn accessibility_text(mut self, text: impl IntoText) -> Self {
+        self.accessibility_text = Some(text.into_text());
         self.accessibility_label = None;
         self
     }
@@ -291,7 +335,17 @@ impl Label {
     pub fn icon(mut self, icon: impl View + Clone) -> Self {
         let system_icon = (&icon as &dyn Any).downcast_ref::<SystemIcon>().cloned();
         let icon = system_icon.map_or_else(|| LabelIcon::custom(icon), LabelIcon::system);
-        self.icon = Some(icon);
+        match &mut self.content {
+            LabelContent::Semantic {
+                icon: semantic_icon,
+                ..
+            } => *semantic_icon = Some(icon),
+            LabelContent::Custom { .. } => {
+                panic!(
+                    "Label::icon requires a semantic text label; attach icons inside Label::custom content"
+                )
+            }
+        }
         self
     }
 
@@ -306,28 +360,62 @@ impl Label {
     /// rationale.
     #[must_use]
     pub fn system_icon(mut self, icon: SystemIcon) -> Self {
-        self.icon = Some(LabelIcon::system(icon));
+        match &mut self.content {
+            LabelContent::Semantic {
+                icon: semantic_icon,
+                ..
+            } => *semantic_icon = Some(LabelIcon::system(icon)),
+            LabelContent::Custom { .. } => {
+                panic!(
+                    "Label::system_icon requires a semantic text label; attach icons inside Label::custom content"
+                )
+            }
+        }
         self
     }
 
     /// Places the icon on the trailing side.
     #[must_use]
-    pub const fn trailing(mut self) -> Self {
-        self.icon_position = IconPosition::Trailing;
+    pub fn trailing(mut self) -> Self {
+        match &mut self.content {
+            LabelContent::Semantic { icon_position, .. } => *icon_position = IconPosition::Trailing,
+            LabelContent::Custom { .. } => {
+                panic!(
+                    "Label::trailing requires a semantic text label; arrange custom label content directly"
+                )
+            }
+        }
         self
     }
 
     /// Places the icon on the leading side.
     #[must_use]
-    pub const fn leading(mut self) -> Self {
-        self.icon_position = IconPosition::Leading;
+    pub fn leading(mut self) -> Self {
+        match &mut self.content {
+            LabelContent::Semantic { icon_position, .. } => *icon_position = IconPosition::Leading,
+            LabelContent::Custom { .. } => {
+                panic!(
+                    "Label::leading requires a semantic text label; arrange custom label content directly"
+                )
+            }
+        }
         self
     }
 
     /// Sets the spacing between icon and text.
     #[must_use]
-    pub const fn spacing(mut self, spacing: f32) -> Self {
-        self.spacing = spacing;
+    pub fn spacing(mut self, spacing: f32) -> Self {
+        match &mut self.content {
+            LabelContent::Semantic {
+                spacing: label_spacing,
+                ..
+            } => *label_spacing = spacing,
+            LabelContent::Custom { .. } => {
+                panic!(
+                    "Label::spacing requires a semantic text label; space custom label content directly"
+                )
+            }
+        }
         self
     }
 
@@ -390,17 +478,20 @@ impl Label {
 
         match requested {
             LabelDisplayMode::Hidden => LabelDisplayMode::Hidden,
-            LabelDisplayMode::Automatic | LabelDisplayMode::TitleAndIcon if self.icon.is_some() => {
+            LabelDisplayMode::Automatic | LabelDisplayMode::TitleAndIcon if self.has_icon() => {
                 LabelDisplayMode::TitleAndIcon
             }
-            LabelDisplayMode::IconOnly if self.icon.is_some() => LabelDisplayMode::IconOnly,
+            LabelDisplayMode::IconOnly if self.has_icon() => LabelDisplayMode::IconOnly,
             _ => LabelDisplayMode::TitleOnly,
         }
     }
 
     /// Returns the semantic text carried by this label.
-    pub const fn semantic_text(&self) -> &Text {
-        &self.text
+    pub fn semantic_text(&self) -> &Text {
+        match &self.content {
+            LabelContent::Semantic { text, .. } => text,
+            LabelContent::Custom { semantic_text, .. } => semantic_text,
+        }
     }
 
     /// Returns the resolved accessibility label carried by this label.
@@ -413,7 +504,7 @@ impl Label {
     pub fn accessibility_label(&self) -> Computed<StyledStr> {
         self.accessibility_label
             .clone()
-            .unwrap_or_else(|| self.text.content())
+            .unwrap_or_else(|| self.semantic_text().content())
     }
 
     /// Returns the semantic system icon carried by this label.
@@ -421,7 +512,19 @@ impl Label {
     /// Custom icon views are visual-only and therefore return `None` here.
     #[must_use]
     pub fn semantic_icon(&self) -> Option<SystemIcon> {
-        self.icon.as_ref().and_then(|icon| icon.system_icon.clone())
+        match &self.content {
+            LabelContent::Semantic { icon, .. } => {
+                icon.as_ref().and_then(|icon| icon.system_icon.clone())
+            }
+            LabelContent::Custom { .. } => None,
+        }
+    }
+
+    fn has_icon(&self) -> bool {
+        match &self.content {
+            LabelContent::Semantic { icon, .. } => icon.is_some(),
+            LabelContent::Custom { .. } => false,
+        }
     }
 
     /// Resolves environment-dependent label presentation before crossing into
@@ -429,7 +532,11 @@ impl Label {
     #[must_use]
     pub fn resolve(mut self, env: &Environment) -> Self {
         self.display_mode = self.effective_display_mode(env);
-        self.accessibility_label = Some(self.text.resolve_reactive(env).content);
+        let accessibility_text = self
+            .accessibility_text
+            .as_ref()
+            .unwrap_or_else(|| self.semantic_text());
+        self.accessibility_label = Some(accessibility_text.resolve_reactive(env).content);
         self
     }
 }
@@ -442,41 +549,61 @@ impl View for Label {
         }
 
         let Self {
-            text,
-            icon,
-            icon_position,
-            spacing,
+            content,
             font,
+            accessibility_text: _,
             accessibility_label: _,
             ..
         } = self;
-        let text = if let Some(font) = font {
-            text.font(font)
-        } else {
-            text
-        };
+        match content {
+            LabelContent::Semantic {
+                text,
+                icon,
+                icon_position,
+                spacing,
+            } => {
+                let text = if let Some(font) = font {
+                    text.font(font)
+                } else {
+                    text
+                };
 
-        match mode {
-            LabelDisplayMode::TitleOnly => AnyView::new(text),
-            LabelDisplayMode::IconOnly => AnyView::new(
-                icon.expect("LabelDisplayMode::IconOnly requires an icon when rendered")
-                    .view
-                    .build(),
-            ),
-            LabelDisplayMode::TitleAndIcon => {
-                let icon = icon
-                    .expect("LabelDisplayMode::TitleAndIcon requires an icon when rendered")
-                    .view
-                    .build();
-                match icon_position {
-                    IconPosition::Leading => AnyView::new(hstack((icon, text)).spacing(spacing)),
-                    IconPosition::Trailing => AnyView::new(hstack((text, icon)).spacing(spacing)),
+                match mode {
+                    LabelDisplayMode::TitleOnly => AnyView::new(text),
+                    LabelDisplayMode::IconOnly => AnyView::new(
+                        icon.expect("LabelDisplayMode::IconOnly requires an icon when rendered")
+                            .view
+                            .build(),
+                    ),
+                    LabelDisplayMode::TitleAndIcon => {
+                        let icon = icon
+                            .expect("LabelDisplayMode::TitleAndIcon requires an icon when rendered")
+                            .view
+                            .build();
+                        match icon_position {
+                            IconPosition::Leading => {
+                                AnyView::new(hstack((icon, text)).spacing(spacing))
+                            }
+                            IconPosition::Trailing => {
+                                AnyView::new(hstack((text, icon)).spacing(spacing))
+                            }
+                        }
+                    }
+                    LabelDisplayMode::Hidden => AnyView::new(()),
+                    LabelDisplayMode::Automatic => {
+                        panic!(
+                            "Label::effective_display_mode must resolve Automatic before rendering"
+                        );
+                    }
                 }
             }
-            LabelDisplayMode::Hidden => AnyView::new(()),
-            LabelDisplayMode::Automatic => {
-                panic!("Label::effective_display_mode must resolve Automatic before rendering");
-            }
+            LabelContent::Custom { view, .. } => match mode {
+                LabelDisplayMode::TitleOnly | LabelDisplayMode::TitleAndIcon => view.build(),
+                LabelDisplayMode::Hidden | LabelDisplayMode::IconOnly => AnyView::new(()),
+                LabelDisplayMode::Automatic => {
+                    panic!("Label::effective_display_mode must resolve Automatic before rendering");
+                }
+            },
         }
     }
 }
@@ -518,6 +645,17 @@ mod tests {
 
         // The semantic text remains intact for assistive technology even when
         // the label is configured to render no visible chrome.
+        assert_eq!(
+            label.semantic_text().resolve(&env).content.get().to_plain(),
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn custom_label_keeps_separate_semantic_text() {
+        let env = test_env();
+        let label = super::Label::custom("greeting", waterui_text::text("Visual"));
+
         assert_eq!(
             label.semantic_text().resolve(&env).content.get().to_plain(),
             "Hello"

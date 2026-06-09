@@ -7,6 +7,7 @@
 //! - Manual form control composition
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::prelude::{slider::slider, stepper::stepper};
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::text::font::FontWeight;
@@ -110,11 +111,9 @@ fn main(
                 // Toggle with label
                 Toggle::new(&custom_enabled).label("Enable Feature"),
                 // Stepper with custom range
-                Stepper::new("Item Count", &custom_count)
-                    .range(0..=100)
-                    .step(5),
+                stepper("Item Count", &custom_count).range(0..=100).step(5),
                 // Slider with label
-                Slider::new("Progress", &custom_slider),
+                slider("Progress", &custom_slider),
                 // Progress bar showing slider value
                 progress(custom_slider.clone()),
                 Divider,

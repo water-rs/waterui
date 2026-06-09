@@ -11,6 +11,7 @@
 
 use waterui::app::App;
 use waterui::color::Srgb;
+use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -86,7 +87,7 @@ fn main() -> impl View {
             .spacing(12.0),
             spacer_min(16.0),
             text("Sensitivity").foreground(Srgb::WHITE),
-            Slider::new("Sensitivity", &sensitivity)
+            slider("Sensitivity", &sensitivity)
                 .range(0.5..=3.0)
                 .hide_label(),
             spacer_min(8.0),

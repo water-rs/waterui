@@ -84,9 +84,9 @@ impl Slider {
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(label: impl IntoLabel, value: &Binding<f64>) -> Self {
+    pub fn new(label: Label, value: &Binding<f64>) -> Self {
         Self(SliderConfig {
-            label: label.into_label(),
+            label,
             min_value_label: AnyView::default(),
             max_value_label: AnyView::default(),
             range: 0.0..=1.0,
@@ -122,5 +122,5 @@ impl_label_style_methods!(Slider);
 /// binding, defaulting to the normalized range `0.0..=1.0`.
 #[must_use]
 pub fn slider(label: impl IntoLabel, value: &Binding<f64>) -> Slider {
-    Slider::new(label, value)
+    Slider::new(label.into_label(), value)
 }
