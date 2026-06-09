@@ -558,13 +558,13 @@ pub(crate) fn render_navigation_stack(
     }
 
     let entries_for_pop = Rc::clone(&entries);
-    let rebuild_requested = Rc::clone(&ctx.renderer_mut().rebuild_requested);
+    let signals = ctx.renderer_mut().frame_signals();
     let hit_transform = ctx.hit_transform;
     ctx.renderer_mut().register_pointer_target(
         transformed_rect(hit_transform, back_button_rect),
         move |_renderer, _point, _env| {
             if entries_for_pop.borrow_mut().pop().is_some() {
-                rebuild_requested.set(true);
+                signals.request_rebuild();
                 return true;
             }
             false
