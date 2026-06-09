@@ -164,11 +164,10 @@ impl LifecycleState {
             self.dynamic_nodes
                 .retain(|identity, _| active_dynamic_identities.contains(identity));
             state
-                .dynamic_intrinsic_cache
-                .retain(|identity, _| active_dynamic_identities.contains(identity));
-            state
-                .dynamic_dimensions_cache
-                .retain(|(identity, _, _), _| active_dynamic_identities.contains(identity));
+                .measurement
+                .retain_dynamic_identities(|identity| {
+                    active_dynamic_identities.contains(&identity)
+                });
         }
     }
 
