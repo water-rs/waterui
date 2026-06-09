@@ -948,3 +948,58 @@ impl HydrolysisRenderer {
             .push(ScrollTarget { bounds, action });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::new(x0, y0, x1, y1)
+    }
+
+    #[test]
+    fn cursor_style_falls_back_to_arrow_outside_all_targets() {
+        let state = HitTestState::default();
+        assert_eq!(
+            state.cursor_style_at(vello::kurbo::Point::new(5.0, 5.0)),
+            CursorStyle::Arrow
+        );
+    }
+
+    #[test]
+    fn cursor_style_prefers_the_last_registered_target() {
+        let mut state = HitTestState::default();
+        state.cursor_targets.push(CursorTarget {
+            bounds: rect(0.0, 0.0, 100.0, 100.0),
+            style: CursorStyle::PointingHand,
+        });
+        state.cursor_targets.push(CursorTarget {
+            bounds: rect(25.0, 25.0, 75.0, 75.0),
+            style: CursorStyle::IBeam,
+        });
+
+        // Inside both: the later (topmost-drawn) target wins.
+        assert_eq!(
+            state.cursor_style_at(vello::kurbo::Point::new(50.0, 50.0)),
+            CursorStyle::IBeam
+        );
+        // Inside only the first.
+        assert_eq!(
+            state.cursor_style_at(vello::kurbo::Point::new(10.0, 10.0)),
+            CursorStyle::PointingHand
+        );
+    }
+
+    #[test]
+    fn hit_test_order_is_monotonic_and_resets_per_rebuild() {
+        let mut state = HitTestState::default();
+        assert_eq!(state.next_hit_test_order(), 0);
+        assert_eq!(state.next_hit_test_order(), 1);
+        // A scene reset keeps registration order monotonic (parametric
+        // refreshes append targets); only a structural rebuild restarts it.
+        state.reset_scene();
+        assert_eq!(state.next_hit_test_order(), 2);
+        state.begin_rebuild_frame();
+        assert_eq!(state.next_hit_test_order(), 0);
+    }
+}
