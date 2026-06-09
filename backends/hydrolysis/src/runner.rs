@@ -573,9 +573,8 @@ enum FrameMode {
         downgradable: bool,
         reuse_scroll: bool,
     },
-    /// Parametric refresh of the retained scroll scene at the new scroll offset.
-    ScrollRefresh,
-    /// Parametric refresh of the retained window frame (animation replay / reactive patch).
+    /// Parametric refresh of the retained window frame — animation replay, reactive patch,
+    /// and scroll-offset changes (scrolling is subsumed into the window frame).
     WindowRefresh,
 }
 
@@ -596,10 +595,6 @@ impl FrameMode {
                 ..
             }
         )
-    }
-
-    const fn is_scroll_refresh(self) -> bool {
-        matches!(self, FrameMode::ScrollRefresh)
     }
 
     const fn is_window_refresh(self) -> bool {
@@ -681,10 +676,6 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
         };
     }
 
-    fn request_scroll_refresh(&mut self) {
-        self.mode = FrameMode::ScrollRefresh;
-    }
-
     fn request_window_refresh(&mut self) {
         self.mode = FrameMode::WindowRefresh;
     }
@@ -703,14 +694,6 @@ fn schedule_animation_update<P: PlatformWindow>(
     }
     let explicit_rebuild_pending =
         runtime.mode.is_explicit_rebuild() || runtime.renderer.has_rebuild_request();
-    if !explicit_rebuild_pending
-        && runtime
-            .renderer
-            .retained_scroll_can_drive_active_animations()
-    {
-        runtime.request_scroll_refresh();
-        return;
-    }
     if !explicit_rebuild_pending
         && runtime
             .renderer
@@ -836,8 +819,12 @@ fn schedule_scroll_scene_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<
     }
     if runtime.renderer.take_rebuild_request() {
         runtime.request_invalidating_rebuild();
+    } else if runtime.renderer.has_retained_window_frame() && !runtime.mode.is_rebuild() {
+        // Scrolling re-composites the window frame at the new offset; a lazy list that
+        // scrolled past its captured window is escalated to a rebuild during the refresh.
+        runtime.request_window_refresh();
     } else {
-        runtime.request_scroll_refresh();
+        runtime.request_structural_rebuild();
     }
     runtime.platform.request_redraw();
 }
@@ -1040,29 +1027,7 @@ fn render_window_with_capture<P: PlatformWindow>(
             rebuild_window_scene(runtime, env, drain_local_tasks);
         rebuilt |= scene_rebuilt;
         let clear_color = window_clear_color(&runtime.window, env);
-        if runtime.mode.is_scroll_refresh() {
-            let refresh_started_at = Instant::now();
-            if runtime.renderer.refresh_retained_scroll_scene(env) {
-                let refresh_duration = refresh_started_at.elapsed();
-                rebuild_phases.rebuild += refresh_duration;
-                rebuild_phases.scene_dispatch += refresh_duration;
-                runtime.clear_frame_mode();
-            } else {
-                // The retained scroll scene could not refresh (e.g. lazy viewport
-                // changed); fall back to a rebuild that may still reuse scroll caches.
-                runtime.request_scroll_fallback_rebuild();
-                let (fallback_rebuilt, fallback_iterations, fallback_duration) =
-                    rebuild_window_scene(runtime, env, drain_local_tasks);
-                rebuilt |= fallback_rebuilt;
-                rebuild_iterations = rebuild_iterations
-                    .checked_add(fallback_iterations)
-                    .expect("hydrolysis runner: rebuild iteration counter overflow");
-                rebuild_phases.rebuild += fallback_duration.rebuild;
-                rebuild_phases.build_content += fallback_duration.build_content;
-                rebuild_phases.scene_dispatch += fallback_duration.scene_dispatch;
-                rebuild_phases.scene_finish += fallback_duration.scene_finish;
-            }
-        } else if runtime.mode.is_window_refresh() {
+        if runtime.mode.is_window_refresh() {
             let refresh_started_at = Instant::now();
             if runtime.renderer.refresh_window_frame(env) {
                 let refresh_duration = refresh_started_at.elapsed();
@@ -1070,9 +1035,10 @@ fn render_window_with_capture<P: PlatformWindow>(
                 rebuild_phases.scene_dispatch += refresh_duration;
                 runtime.clear_frame_mode();
             } else {
-                // The window frame could not be replayed (escalated patch or stale
-                // baked animation); fall back to a full structural rebuild.
-                runtime.request_structural_rebuild();
+                // The window frame could not be replayed (escalated patch, stale baked
+                // animation, or a lazy scroll past its captured window); fall back to a
+                // rebuild that still reuses retained scroll-content caches where valid.
+                runtime.request_scroll_fallback_rebuild();
                 let (fallback_rebuilt, fallback_iterations, fallback_duration) =
                     rebuild_window_scene(runtime, env, drain_local_tasks);
                 rebuilt |= fallback_rebuilt;
@@ -1515,10 +1481,7 @@ fn advance_runtime<P: PlatformWindow>(
     // A pending fine-grained reactive patch composites through the window-refresh path,
     // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
     // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
-    if runtime.renderer.take_patch_request()
-        && !runtime.mode.is_rebuild()
-        && !runtime.mode.is_scroll_refresh()
-    {
+    if runtime.renderer.take_patch_request() && !runtime.mode.is_rebuild() {
         if runtime.renderer.has_retained_window_frame() {
             runtime.request_window_refresh();
         } else {
@@ -1530,11 +1493,9 @@ fn advance_runtime<P: PlatformWindow>(
         runtime.renderer.request_redraw();
         runtime.platform.request_redraw();
     }
-    if runtime.renderer.retained_scroll_dynamic_morphs_active()
-        && !runtime.mode.is_rebuild()
-        && !runtime.mode.is_scroll_refresh()
-    {
-        runtime.request_scroll_refresh();
+    if runtime.renderer.window_dynamic_morphs_active() && !runtime.mode.is_rebuild() {
+        // Keep advancing active morph animations (root or scroll content) by replaying.
+        runtime.request_window_refresh();
         runtime.platform.request_redraw();
     }
     if runtime.renderer.take_rebuild_request() {
@@ -2084,17 +2045,18 @@ mod tests {
     }
 
     #[test]
-    fn changed_scroll_input_refreshes_retained_scene_and_wakes_platform_window() {
+    fn changed_scroll_input_schedules_frame_and_wakes_platform_window() {
         let mut runtime = test_runtime_window();
         runtime.clear_frame_mode();
 
+        // With no retained window frame yet, a scroll schedules a structural rebuild;
+        // once a frame is retained, scrolling re-composites it via a window refresh.
         schedule_scroll_scene_rebuild(&mut runtime, true);
 
-        assert!(!runtime.mode.is_rebuild());
-        assert!(runtime.mode.is_scroll_refresh());
+        assert!(runtime.mode.is_pending());
         assert!(
             runtime.platform.take_redraw_request(),
-            "scroll refreshes must wake the platform event loop for the next frame"
+            "scroll input must wake the platform event loop for the next frame"
         );
     }
 
