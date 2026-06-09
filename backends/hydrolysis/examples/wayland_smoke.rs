@@ -7,6 +7,7 @@ use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::shape::{RoundedRectangle, ShapeExt};
+use waterui_controls::{slider::slider, stepper::stepper};
 
 fn main_view() -> impl View {
     let toggle_value = binding(true);
@@ -22,8 +23,8 @@ fn main_view() -> impl View {
                 .size(560.0, 180.0),
             hstack((
                 Toggle::new(&toggle_value).label("Toggle"),
-                Slider::new("Slider", &slider_value),
-                Stepper::new("Stepper", &stepper_value).range(0..=10),
+                slider("Slider", &slider_value),
+                stepper("Stepper", &stepper_value).range(0..=10),
             ))
             .spacing(16.0),
             text("Scroll to verify wheel routing").size(14.0),

@@ -22,7 +22,7 @@ use waterui_core::metadata::MetadataKey;
 ///
 /// // Reactive hit testing control
 /// let can_interact = binding(true);
-/// Button::new("Click me", || {})
+/// button("Click me").action(|| {})
 ///     .hittable(can_interact);
 /// ```
 #[derive(Debug)]

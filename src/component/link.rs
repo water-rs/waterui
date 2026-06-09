@@ -8,7 +8,7 @@ use nami::Signal;
 use nami::signal::IntoComputed;
 use waterui_controls::{
     IntoLabel,
-    button::{Button, ButtonStyle},
+    button::{ButtonStyle, button},
 };
 use waterui_core::{Environment, Str, View};
 
@@ -35,7 +35,7 @@ fn open_url(url: &str) {
 /// use waterui::prelude::*;
 ///
 /// // Create a simple link
-/// let my_link = link("Visit website", "https://example.com");
+/// let my_link = link("Visit website", "https://waterui.dev");
 /// ```
 #[derive(Debug)]
 pub struct Link<Label> {
@@ -63,12 +63,10 @@ where
     fn body(self, _env: &Environment) -> impl View {
         let url = self.url;
 
-        Button::new(self.label)
-            .style(ButtonStyle::Link)
-            .action(move || {
-                let url_str = url.get();
-                open_url(&url_str);
-            })
+        button(self.label).style(ButtonStyle::Link).action(move || {
+            let url_str = url.get();
+            open_url(&url_str);
+        })
     }
 }
 

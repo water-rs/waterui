@@ -13,6 +13,7 @@ use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui::prelude::slider::slider;
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;
 use waterui::preview;
@@ -126,7 +127,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
             filter_button("Dream", 5, &state.active_filter),
         ))
         .spacing(8.0),
-        Slider::new("Filter strength", &state.filter_strength).hide_label(),
+        slider("Filter strength", &state.filter_strength).hide_label(),
     ))
     .spacing(8.0);
 

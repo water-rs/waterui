@@ -10,6 +10,7 @@
 use waterui::app::App;
 use waterui::media::photo::Event as PhotoEvent;
 use waterui::media::{Image, Photo};
+use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -71,7 +72,7 @@ fn photo_section() -> impl View {
         photo,
         hstack((
             text("Blur:"),
-            Slider::new("Blur radius", &blur_value)
+            slider("Blur radius", &blur_value)
                 .range(0.0..=10.0)
                 .hide_label(),
             text!("{blur_value:.1}"),
@@ -133,7 +134,7 @@ fn custom_url_section() -> impl View {
         photo_view,
         hstack((
             text("Blur:"),
-            Slider::new("Blur radius", &blur_value)
+            slider("Blur radius", &blur_value)
                 .range(0.0..=20.0)
                 .hide_label(),
             text!("{blur_value:.1}"),
@@ -160,7 +161,7 @@ fn image_preview() -> impl View {
                 Image::new(generate_test_pattern(200, 150), 200, 150),
                 hstack((
                     text("Blur:"),
-                    Slider::new("Blur radius", &blur_value)
+                    slider("Blur radius", &blur_value)
                         .range(0.0..=10.0)
                         .hide_label(),
                     text!("{blur_value:.1}"),
