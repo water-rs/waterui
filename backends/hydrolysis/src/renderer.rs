@@ -5,7 +5,8 @@
 //!
 //! - [`dispatch`]: type-erased view dispatch and `HydroNativeView` registration
 //! - [`frame`]: frame lifecycle, layer stack, frame triggers, statistics
-//! - [`frame_signals`]: the shared [`FrameSignals`] trigger handle
+//! - [`FrameSignals`]: the shared frame trigger handle (lives in
+//!   `waterui-backend-core`, shared with other self-drawn backends)
 //! - [`retained`]: retained scene — replayable draws, `Dynamic` placements,
 //!   reactive patching, scroll caches, window-frame capture/replay
 //! - [`signals`]: signal watching and animated-value sampling
@@ -21,7 +22,6 @@ mod bindings;
 mod dispatch;
 mod effects;
 mod frame;
-mod frame_signals;
 mod input;
 mod lifecycle;
 mod metadata;
@@ -36,9 +36,9 @@ mod views;
 pub(crate) use dispatch::*;
 pub(crate) use effects::*;
 pub(crate) use frame::*;
-pub(crate) use frame_signals::FrameSignals;
 pub(crate) use retained::*;
 pub(crate) use views::*;
+pub(crate) use waterui_backend_core::frame_signals::FrameSignals;
 
 use accessibility::*;
 use core::any::Any;

@@ -5,19 +5,18 @@
 //! `HydrolysisExt` provides `.hydrolysis()` to wrap any cloneable view into
 //! a `GpuSurface` rendered by hydrolysis.
 
-mod animation;
 mod engine;
 mod env;
-mod gesture;
 mod gpu_view;
 mod platform;
 mod readback;
 mod renderer;
 mod runner;
-mod scroll;
-mod time;
 mod view_renderer;
 mod widgets;
+
+// Interaction/runtime layer shared with other self-drawn backends.
+pub(crate) use waterui_backend_core::{animation, gesture, scroll, time};
 
 pub use engine::{Brush, DrawContext, WidgetTheme};
 pub use gpu_view::{HydrolysisExt, HydrolysisGpuView};

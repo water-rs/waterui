@@ -1,12 +1,25 @@
+//! Animated scalar sampling, animation key registry, and renderer-local
+//! motion state.
+//!
+//! [`AnimationController`] owns the per-frame registry of animation slots,
+//! keyed by [`AnimationKey`] (signal identity, optionally mixed with a
+//! per-instance discriminator, or a renderer-local identity). Slots are
+//! rebound on every structural rebuild and survive across frames so
+//! in-flight animations keep their progress; unbound slots are dropped when
+//! the rebuild finishes. The controller covers three slot kinds: animated
+//! scalars driven by `AnimationTrack<f32>`, the radio-indicator selection
+//! choreography (inner dot scale/opacity plus outer ring color), and
+//! free-running repeating/timeline phases for indeterminate indicators.
+
 use core::time::Duration;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crate::widget::{RadioIndicatorState, RadioSelectionMotion};
 use nami::SignalIdentity;
 use nami::watcher::Context;
 use waterui::animation::{Animation, AnimationTrack};
-use waterui_backend_core::widget::{RadioIndicatorState, RadioSelectionMotion};
 
 use crate::time::Instant;
 
@@ -20,6 +33,14 @@ const fn mix_identity(identity: usize, discriminator: usize) -> u64 {
         ^ (discriminator as u64).wrapping_add(0x517C_C1B7_2722_0A95)
 }
 
+/// Registry of animation slots keyed by [`AnimationKey`], rebound on every
+/// structural rebuild.
+///
+/// The renderer brackets each rebuild with
+/// [`begin_rebuild_frame`](Self::begin_rebuild_frame) and
+/// [`finish_rebuild_frame_with_inactive_slot_retention`](Self::finish_rebuild_frame_with_inactive_slot_retention),
+/// binds slots during dispatch, and drives all in-flight animations with
+/// [`tick`](Self::tick) once per frame.
 #[derive(Debug, Default)]
 pub struct AnimationController {
     slots: BTreeMap<AnimationKey, AnimatedScalarSlot>,
@@ -30,6 +51,13 @@ pub struct AnimationController {
     active_repeating_slots: BTreeSet<AnimationKey>,
 }
 
+/// Stable identity of one animation slot across structural rebuilds.
+///
+/// Built either from the [`SignalIdentity`] of the reactive value driving
+/// the animation (optionally mixed with a per-instance discriminator so
+/// several widgets sharing a signal get distinct slots) or from a
+/// renderer-local identity for animations the renderer owns itself. Keys of
+/// different scopes (scalar, radio indicator, repeating) never collide.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct AnimationKey {
     scope: AnimationKeyScope,
@@ -54,6 +82,13 @@ struct AnimatedRadioIndicatorSlot {
     state: Rc<RefCell<AnimatedRadioIndicatorState>>,
 }
 
+/// Cloneable reference to one animated scalar slot, valid for the bind
+/// generation it was created in.
+///
+/// Watcher closures capture a handle at dispatch time and push new targets
+/// through it; once the slot is rebound by a later rebuild, targets applied
+/// through stale handles are dropped so an outdated closure cannot fight the
+/// current frame's state.
 #[derive(Clone, Debug)]
 pub struct AnimatedScalarHandle {
     key: AnimationKey,
@@ -86,6 +121,8 @@ struct RepeatingPhaseSlot {
 }
 
 impl AnimationKey {
+    /// Returns the scalar-slot key for the signal whose value the animation
+    /// follows.
     #[must_use]
     pub const fn scalar(identity: SignalIdentity) -> Self {
         Self {
@@ -94,6 +131,9 @@ impl AnimationKey {
         }
     }
 
+    /// Returns a scalar-slot key mixing the signal identity with a
+    /// per-instance discriminator, so multiple widgets driven by the same
+    /// signal (e.g. each option of a picker) get distinct slots.
     #[must_use]
     pub const fn scalar_with_discriminator(identity: SignalIdentity, discriminator: usize) -> Self {
         Self {
@@ -102,6 +142,10 @@ impl AnimationKey {
         }
     }
 
+    /// Returns the radio-indicator-slot key for one selectable option,
+    /// mixing the selection signal's identity with the option's
+    /// discriminator. Only valid with
+    /// [`bind_radio_indicator`](AnimationController::bind_radio_indicator).
     #[must_use]
     pub const fn radio_indicator_with_discriminator(
         identity: SignalIdentity,
@@ -113,21 +157,31 @@ impl AnimationKey {
         }
     }
 
+    /// Returns a scalar-slot key for an animation the renderer owns itself
+    /// (no backing signal), identified by a renderer-chosen identity such as
+    /// a node placement.
     #[must_use]
-    pub(crate) const fn renderer_local_scalar(identity: usize) -> Self {
+    pub const fn renderer_local_scalar(identity: usize) -> Self {
         Self {
             scope: AnimationKeyScope::RendererLocalScalar,
             identity: identity as u64,
         }
     }
 
+    /// Returns whether this key was built with
+    /// [`renderer_local_scalar`](Self::renderer_local_scalar) rather than
+    /// from a signal identity.
     #[must_use]
-    pub(crate) const fn is_renderer_local_scalar(self) -> bool {
+    pub const fn is_renderer_local_scalar(self) -> bool {
         matches!(self.scope, AnimationKeyScope::RendererLocalScalar)
     }
 
+    /// Returns a repeating-phase-slot key for a renderer-owned free-running
+    /// timeline (e.g. an indeterminate progress indicator). Only valid with
+    /// [`bind_repeating_phase`](AnimationController::bind_repeating_phase) /
+    /// [`bind_timeline_phase`](AnimationController::bind_timeline_phase).
     #[must_use]
-    pub(crate) const fn renderer_local_repeating(identity: usize) -> Self {
+    pub const fn renderer_local_repeating(identity: usize) -> Self {
         Self {
             scope: AnimationKeyScope::Repeating,
             identity: RENDERER_LOCAL_KEY_MASK | identity as u64,
@@ -152,12 +206,21 @@ impl AnimationKey {
 }
 
 impl AnimationController {
+    /// Resets the bound-this-frame bookkeeping; called at the begin of a
+    /// structural rebuild before any slot is bound. Slot contents (in-flight
+    /// tracks and their progress) are untouched.
     pub fn begin_rebuild_frame(&mut self) {
         self.active_slots.clear();
         self.active_radio_indicator_slots.clear();
         self.active_repeating_slots.clear();
     }
 
+    /// Finishes a structural rebuild by dropping every slot that was not
+    /// rebound during it, unless `retain_inactive_slots` is set.
+    ///
+    /// Retention is used for partial dispatch passes (e.g. replaying a
+    /// retained subtree from cache) where unbound slots merely were not
+    /// visited and must keep their in-flight state.
     pub fn finish_rebuild_frame_with_inactive_slot_retention(
         &mut self,
         retain_inactive_slots: bool,
@@ -172,6 +235,14 @@ impl AnimationController {
             .retain(|key, _| self.active_repeating_slots.contains(key));
     }
 
+    /// Binds the scalar slot for `key` during dispatch, reconciling it with
+    /// the value observed from the view tree, and returns a fresh handle.
+    ///
+    /// If the observed value disagrees with the slot (and with any in-flight
+    /// target), the track snaps to it without animating — the watcher that
+    /// owns the handle is responsible for animated transitions. Each bind
+    /// advances the slot generation, so handles from earlier frames become
+    /// inert. Panics if `key` is not a scalar-scope key.
     pub fn bind_scalar(
         &mut self,
         key: AnimationKey,
@@ -199,6 +270,14 @@ impl AnimationController {
         }
     }
 
+    /// Binds the scalar slot for `key` and animates it toward `target` with
+    /// `animation`, returning a fresh handle.
+    ///
+    /// Unlike [`bind_scalar`](Self::bind_scalar), the target itself is the
+    /// per-frame input: re-binding with the same target does not restart the
+    /// in-flight animation, while a new target starts one from the current
+    /// sampled value (no snapping). A slot created on first bind starts at
+    /// `target` directly. Panics if `key` is not a scalar-scope key.
     pub fn bind_scalar_target(
         &mut self,
         key: AnimationKey,
@@ -229,6 +308,13 @@ impl AnimationController {
         handle
     }
 
+    /// Binds the radio-indicator slot for `key` and returns the sampled
+    /// indicator state for this frame.
+    ///
+    /// A selection change starts the choreography described by `motion`:
+    /// selecting grows the inner dot from zero while fading dot opacity and
+    /// outer ring color in; deselecting fades them out without shrinking the
+    /// dot. Panics if `key` is not a radio-indicator-scope key.
     pub fn bind_radio_indicator(
         &mut self,
         key: AnimationKey,
@@ -253,6 +339,9 @@ impl AnimationController {
         slot.state.borrow_mut().prepare(selected, motion, now)
     }
 
+    /// Advances every slot's track to `now` and returns whether any
+    /// animation is still running, in which case the renderer must schedule
+    /// another redraw frame. Called once per frame with the frame clock.
     pub fn tick(&mut self, now: Instant) -> bool {
         let mut has_active = false;
         for slot in self.slots.values() {
@@ -271,6 +360,9 @@ impl AnimationController {
             })
     }
 
+    /// Returns whether any slot is still animating at `now`, without
+    /// advancing any track (used to decide whether the next frame must be
+    /// scheduled).
     pub fn has_active(&self, now: Instant) -> bool {
         self.slots
             .values()
@@ -284,6 +376,9 @@ impl AnimationController {
             })
     }
 
+    /// Returns the keys of all scalar slots whose animation is still in
+    /// flight, letting the renderer patch exactly the nodes that depend on
+    /// them.
     pub fn active_scalar_keys(&self) -> BTreeSet<AnimationKey> {
         self.slots
             .iter()
@@ -291,18 +386,25 @@ impl AnimationController {
             .collect()
     }
 
+    /// Returns whether any radio-indicator choreography is still in flight.
     pub fn has_active_radio_indicator(&self) -> bool {
         self.radio_indicator_slots
             .values()
             .any(|slot| slot.state.borrow().is_active())
     }
 
+    /// Returns whether any repeating/timeline phase slot still requires
+    /// frames at `now`: repeating slots run forever, one-shot timeline slots
+    /// only until their cycle completes.
     pub fn has_active_repeating(&self, now: Instant) -> bool {
         self.repeating_slots
             .values()
             .any(|slot| slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle)
     }
 
+    /// Binds the repeating slot for `key` and returns the phase within the
+    /// current cycle (`elapsed % cycle`), for free-running looping motion
+    /// such as indeterminate progress indicators.
     pub fn bind_repeating_phase(
         &mut self,
         key: AnimationKey,
@@ -313,6 +415,12 @@ impl AnimationController {
         Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
     }
 
+    /// Binds the timeline slot for `key` and returns the elapsed time since
+    /// the slot's start, capped at `cycle` when `repeat` is false.
+    ///
+    /// The slot's start instant persists across rebuilds; changing `cycle` or
+    /// `repeat` restarts the timeline at `now`. Panics if `cycle` is zero or
+    /// `key` is not a repeating-scope key.
     pub fn bind_timeline_phase(
         &mut self,
         key: AnimationKey,
@@ -348,27 +456,41 @@ impl AnimationController {
 }
 
 impl AnimatedScalarHandle {
+    /// Returns the key of the slot this handle is bound to.
     #[must_use]
     pub const fn key(&self) -> AnimationKey {
         self.key
     }
 
+    /// Returns whether the slot's animation is still in flight.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state.borrow().is_active()
     }
 
+    /// Advances the slot's track to `now` and returns the current scalar
+    /// value; the renderer samples with the frame clock when drawing.
     pub fn sample(&self, now: Instant) -> f32 {
         let mut state = self.state.borrow_mut();
         state.advance(now);
         state.current()
     }
 
+    /// Applies a signal watcher update: the new value becomes the target and
+    /// the `Animation` carried in the update's metadata (if any) drives the
+    /// transition.
     pub fn apply_update_from_context(&self, update: Context<f32>, now: Instant) {
         let metadata = update.metadata().try_get::<Animation>();
         self.apply_target(update.into_value(), metadata, now);
     }
 
+    /// Steers the slot toward `target`, animating with `animation` or
+    /// snapping immediately when it is `None`.
+    ///
+    /// Dropped when the slot was rebound by a later rebuild (stale handle
+    /// generation), and ignored when the slot is already at — or already
+    /// animating toward — the same target, so repeated identical updates do
+    /// not restart the animation.
     pub fn apply_target(&self, target: f32, animation: Option<Animation>, now: Instant) {
         let mut state = self.state.borrow_mut();
         if state.generation != self.generation {
@@ -535,8 +657,8 @@ mod tests {
     use core::time::Duration;
     use std::time::Instant;
 
+    use crate::widget::RadioSelectionMotion;
     use waterui::animation::Animation;
-    use waterui_backend_core::widget::RadioSelectionMotion;
 
     use super::{AnimationController, AnimationKey};
 

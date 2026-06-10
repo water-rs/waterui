@@ -18,11 +18,12 @@ use crate::time::Instant;
 /// - *patch*: re-dispatch only the dirty `Dynamic` nodes and re-composite the
 ///   retained window frame (fine-grained reactive update).
 /// - *rebuild*: structural rebuild — re-dispatch the whole window view tree.
-#[derive(Clone)]
-pub(crate) struct FrameSignals {
+#[derive(Clone, Debug)]
+pub struct FrameSignals {
     inner: Rc<FrameSignalsInner>,
 }
 
+#[derive(Debug)]
 struct FrameSignalsInner {
     redraw_requested: Cell<bool>,
     rebuild_requested: Cell<bool>,
@@ -43,7 +44,9 @@ struct FrameSignalsInner {
 }
 
 impl FrameSignals {
-    pub(crate) fn new(now: Instant) -> Self {
+    /// Creates a fresh handle with no pending requests and `now` as the
+    /// initial frame clock.
+    pub fn new(now: Instant) -> Self {
         Self {
             inner: Rc::new(FrameSignalsInner {
                 redraw_requested: Cell::new(false),
@@ -58,55 +61,76 @@ impl FrameSignals {
         }
     }
 
-    pub(crate) fn request_redraw(&self) {
+    /// Requests a re-render of the existing scene on the next frame (the
+    /// cheapest request kind: animation tick, caret blink).
+    pub fn request_redraw(&self) {
         self.inner.redraw_requested.set(true);
     }
 
-    pub(crate) fn take_redraw_request(&self) -> bool {
+    /// Consumes the pending redraw request, returning whether one was set.
+    ///
+    /// The flag resets to `false`, so each request is observed exactly once
+    /// by the frame pump.
+    pub fn take_redraw_request(&self) -> bool {
         self.inner.redraw_requested.replace(false)
     }
 
-    pub(crate) fn request_rebuild(&self) {
+    /// Requests a structural rebuild — a re-dispatch of the whole window view
+    /// tree — on the next frame (the most expensive request kind).
+    pub fn request_rebuild(&self) {
         self.inner.rebuild_requested.set(true);
     }
 
-    pub(crate) fn has_rebuild_request(&self) -> bool {
+    /// Returns whether a structural rebuild is pending, without consuming the
+    /// request.
+    pub fn has_rebuild_request(&self) -> bool {
         self.inner.rebuild_requested.get()
     }
 
-    pub(crate) fn take_rebuild_request(&self) -> bool {
+    /// Consumes the pending structural rebuild request, returning whether one
+    /// was set.
+    pub fn take_rebuild_request(&self) -> bool {
         self.inner.rebuild_requested.replace(false)
     }
 
     /// Request a structural rebuild that must not collapse into the frame
     /// currently being built (used when content discovers mid-dispatch that
     /// the *next* frame needs different structure, e.g. async resource load).
-    pub(crate) fn request_next_frame_rebuild(&self) {
+    pub fn request_next_frame_rebuild(&self) {
         self.inner.next_frame_rebuild_requested.set(true);
         self.inner.redraw_requested.set(true);
     }
 
-    pub(crate) fn take_next_frame_rebuild_request(&self) -> bool {
+    /// Consumes the pending deferred-rebuild request recorded by
+    /// [`request_next_frame_rebuild`](Self::request_next_frame_rebuild),
+    /// returning whether one was set.
+    pub fn take_next_frame_rebuild_request(&self) -> bool {
         self.inner.next_frame_rebuild_requested.replace(false)
     }
 
-    pub(crate) fn has_patch_request(&self) -> bool {
+    /// Returns whether at least one dirty `Dynamic` node awaits an isolated
+    /// patch, without consuming the request.
+    pub fn has_patch_request(&self) -> bool {
         self.inner.patch_requested.get()
     }
 
-    pub(crate) fn take_patch_request(&self) -> bool {
+    /// Consumes the pending patch request, returning whether one was set.
+    ///
+    /// Only the flag is consumed; the dirty-node set is taken separately via
+    /// [`take_dirty_dynamic_nodes`](Self::take_dirty_dynamic_nodes).
+    pub fn take_patch_request(&self) -> bool {
         self.inner.patch_requested.replace(false)
     }
 
     /// Take the set of `Dynamic` nodes awaiting an isolated re-dispatch.
-    pub(crate) fn take_dirty_dynamic_nodes(&self) -> BTreeSet<usize> {
+    pub fn take_dirty_dynamic_nodes(&self) -> BTreeSet<usize> {
         core::mem::take(&mut *self.inner.dirty_dynamic_nodes.borrow_mut())
     }
 
     /// Whether an initial-content update for a `Dynamic` node dispatched at
     /// `render_generation` is already reflected by the rebuild in progress and
     /// must be ignored (the node was just dispatched with exactly this content).
-    pub(crate) fn initial_dynamic_content_already_rendered(&self, render_generation: u64) -> bool {
+    pub fn initial_dynamic_content_already_rendered(&self, render_generation: u64) -> bool {
         self.inner.rebuild_in_progress.get()
             && render_generation == self.inner.rebuild_generation.get()
     }
@@ -115,7 +139,7 @@ impl FrameSignals {
     /// `render_generation` as a fine-grained reactive patch, unless a rebuild
     /// of a newer generation is in progress that will pick the change up
     /// itself.
-    pub(crate) fn mark_dynamic_dirty(&self, identity: usize, render_generation: u64) {
+    pub fn mark_dynamic_dirty(&self, identity: usize, render_generation: u64) {
         if self.inner.rebuild_in_progress.get()
             && render_generation != self.inner.rebuild_generation.get()
         {
@@ -127,7 +151,7 @@ impl FrameSignals {
 
     /// Enter a structural rebuild: any pending isolated patch is subsumed by
     /// the rebuild, and the rebuild generation advances.
-    pub(crate) fn begin_rebuild(&self) {
+    pub fn begin_rebuild(&self) {
         self.inner.rebuild_in_progress.set(true);
         self.inner.patch_requested.set(false);
         self.inner.dirty_dynamic_nodes.borrow_mut().clear();
@@ -140,19 +164,30 @@ impl FrameSignals {
         );
     }
 
-    pub(crate) fn finish_rebuild(&self) {
+    /// Leaves the structural rebuild entered by
+    /// [`begin_rebuild`](Self::begin_rebuild); generation gating of
+    /// [`mark_dynamic_dirty`](Self::mark_dynamic_dirty) stops applying.
+    pub fn finish_rebuild(&self) {
         self.inner.rebuild_in_progress.set(false);
     }
 
-    pub(crate) fn rebuild_generation(&self) -> u64 {
+    /// Returns the current structural rebuild generation.
+    ///
+    /// `Dynamic` dispatch captures this value so later content updates can be
+    /// attributed to the rebuild that produced the node.
+    pub fn rebuild_generation(&self) -> u64 {
         self.inner.rebuild_generation.get()
     }
 
-    pub(crate) fn set_frame_clock(&self, at: Instant) {
+    /// Sets the frame clock; the frame pump calls this once at the start of
+    /// each frame so every closure in that frame observes the same instant.
+    pub fn set_frame_clock(&self, at: Instant) {
         self.inner.frame_clock.set(at);
     }
 
-    pub(crate) fn frame_clock(&self) -> Instant {
+    /// Returns the instant of the frame currently being produced, for watcher
+    /// closures that need a consistent animation clock.
+    pub fn frame_clock(&self) -> Instant {
         self.inner.frame_clock.get()
     }
 }

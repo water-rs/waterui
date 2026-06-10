@@ -1,7 +1,7 @@
 //! Widget chrome contracts shared by rendering backends and theme packages.
 
 use core::time::Duration;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::animation::Animation;
@@ -13,19 +13,19 @@ use waterui_text::font::Font;
 #[derive(Debug, Clone)]
 pub enum Brush {
     /// A solid peniko color.
-    Solid(vello::peniko::Color),
+    Solid(peniko::Color),
     /// A peniko gradient.
-    Gradient(vello::peniko::Gradient),
+    Gradient(peniko::Gradient),
 }
 
-impl From<vello::peniko::Color> for Brush {
-    fn from(value: vello::peniko::Color) -> Self {
+impl From<peniko::Color> for Brush {
+    fn from(value: peniko::Color) -> Self {
         Self::Solid(value)
     }
 }
 
-impl From<vello::peniko::Gradient> for Brush {
-    fn from(value: vello::peniko::Gradient) -> Self {
+impl From<peniko::Gradient> for Brush {
+    fn from(value: peniko::Gradient) -> Self {
         Self::Gradient(value)
     }
 }

@@ -1,3 +1,15 @@
+//! Platform-agnostic gesture recognition fed by pointer phases.
+//!
+//! [`GestureEngine`] holds the gesture targets registered during view
+//! dispatch (a hit-test rectangle plus a recognizer state machine per
+//! `Gesture` modifier) and routes raw pointer-down/move/up/cancel input,
+//! pinch/rotation phases, and frame ticks to the recognizers hit by the
+//! pointer. Recognized gestures invoke the bound action with the event
+//! (`TapEvent`, `LongPressEvent`, `DragEvent`, `MagnificationEvent`)
+//! inserted into the environment, with locations localized to the target's
+//! bounds. All coordinates are logical pixels; timestamps come from
+//! [`crate::time::Instant`].
+
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,7 +20,7 @@ use waterui::gesture::{
 use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
 
-use crate::platform::TouchPhase;
+use crate::input::TouchPhase;
 use crate::time::Instant;
 
 const TAP_REPEAT_WINDOW: Duration = Duration::from_millis(320);
@@ -18,19 +30,45 @@ const EXCLUSIVE_RECOGNITION_WINDOW: Duration = Duration::from_millis(50);
 
 type GestureRecognizerHandle = Rc<RefCell<GestureBinding>>;
 
+/// One registered gesture region: a hit-test rectangle bound to a recognizer
+/// state machine shared via `Rc`, so clones of a target feed the same
+/// recognizer.
 #[derive(Clone)]
-pub(crate) struct GestureTarget {
-    pub bounds: vello::kurbo::Rect,
+pub struct GestureTarget {
+    /// Hit-test rectangle in window coordinates (logical pixels); also the
+    /// origin against which recognized event locations are localized.
+    pub bounds: kurbo::Rect,
+    /// Nesting depth in the view tree; deeper targets win hit-test priority.
     pub depth: usize,
+    /// Z-order among siblings at the same depth; higher wins hit-test
+    /// priority.
     pub order: usize,
+    /// Identity of the hit-test group (e.g. one overlay layer); only targets
+    /// in the topmost group under the pointer receive input.
     pub group_id: usize,
     recognizer: GestureRecognizerHandle,
 }
 
+impl core::fmt::Debug for GestureTarget {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GestureTarget")
+            .field("bounds", &self.bounds)
+            .field("depth", &self.depth)
+            .field("order", &self.order)
+            .field("group_id", &self.group_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GestureTarget {
-    pub(crate) fn with_bounds_depth_and_group(
+    /// Returns a copy of this target re-registered at new bounds, depth, and
+    /// group while sharing the same recognizer state machine.
+    ///
+    /// Used when a retained subtree is replayed at a different placement, so
+    /// in-flight recognition (e.g. a pending long press) survives the move.
+    pub fn with_bounds_depth_and_group(
         &self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         depth: usize,
         group_id: usize,
     ) -> Self {
@@ -47,15 +85,15 @@ impl GestureTarget {
 #[derive(Clone, Copy)]
 enum GestureInput {
     PointerDown {
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         at: Instant,
     },
     PointerMove {
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         at: Instant,
     },
     PointerUp {
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         at: Instant,
     },
     PointerCancel {
@@ -65,13 +103,13 @@ enum GestureInput {
         at: Instant,
     },
     Magnification {
-        center: vello::kurbo::Point,
+        center: kurbo::Point,
         delta: f32,
         phase: TouchPhase,
         at: Instant,
     },
     Rotation {
-        center: vello::kurbo::Point,
+        center: kurbo::Point,
         delta: f32,
         phase: TouchPhase,
         at: Instant,
@@ -132,12 +170,7 @@ impl GestureBinding {
         }
     }
 
-    fn input(
-        &mut self,
-        input: GestureInput,
-        env: &Environment,
-        bounds: vello::kurbo::Rect,
-    ) -> bool {
+    fn input(&mut self, input: GestureInput, env: &Environment, bounds: kurbo::Rect) -> bool {
         let detection = self.detector.input(input);
         let Some(payload) = detection.recognized else {
             return false;
@@ -160,11 +193,11 @@ impl GestureBinding {
     }
 }
 
-fn local_gesture_point(point: GesturePoint, bounds: vello::kurbo::Rect) -> GesturePoint {
+fn local_gesture_point(point: GesturePoint, bounds: kurbo::Rect) -> GesturePoint {
     GesturePoint::new(point.x - bounds.x0 as f32, point.y - bounds.y0 as f32)
 }
 
-fn localize_gesture_payload(payload: GesturePayload, bounds: vello::kurbo::Rect) -> GesturePayload {
+fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> GesturePayload {
     match payload {
         GesturePayload::None => GesturePayload::None,
         GesturePayload::Tap(mut event) => {
@@ -186,37 +219,60 @@ fn localize_gesture_payload(payload: GesturePayload, bounds: vello::kurbo::Rect)
     }
 }
 
-#[derive(Default)]
-pub(crate) struct GestureEngine {
+/// Routes pointer input to the gesture targets registered during dispatch.
+///
+/// On pointer-down (or pinch/rotation start) the engine hit-tests the
+/// registered targets, picks the topmost group under the pointer, and
+/// activates its recognizers ordered by depth, then z-order, then
+/// registration index; subsequent moves, ticks, and the final up/cancel are
+/// dispatched to that active set. The target list is rebuilt or truncated
+/// around structural rebuilds while active recognizers persist across frames
+/// as long as their registrations stay live.
+#[derive(Debug, Default)]
+pub struct GestureEngine {
     targets: Vec<GestureTarget>,
     active_recognizers: Vec<GestureTarget>,
 }
 
 impl GestureEngine {
-    pub(crate) fn clear_targets(&mut self) {
+    /// Removes all registered targets; called at the begin of a structural
+    /// rebuild before targets are re-registered.
+    pub fn clear_targets(&mut self) {
         self.targets.clear();
     }
 
-    pub(crate) fn target_count(&self) -> usize {
+    /// Returns the number of currently registered targets; used as a
+    /// truncation watermark when patching a subtree in isolation.
+    pub fn target_count(&self) -> usize {
         self.targets.len()
     }
 
-    pub(crate) fn has_active_recognizer(&self) -> bool {
+    /// Returns whether a pointer sequence is currently driving at least one
+    /// recognizer (between pointer-down and the final up/cancel).
+    pub fn has_active_recognizer(&self) -> bool {
         !self.active_recognizers.is_empty()
     }
 
-    pub(crate) fn truncate_targets(&mut self, len: usize) {
+    /// Drops targets registered after the `len` watermark, then clears the
+    /// active set if any active recognizer lost its live registration.
+    pub fn truncate_targets(&mut self, len: usize) {
         self.targets.truncate(len);
         self.ensure_active_recognizers_are_live();
     }
 
-    pub(crate) fn swap_targets(&mut self, external: &mut Vec<GestureTarget>) {
+    /// Swaps the engine's target list with an externally captured one, used
+    /// to splice subtree-captured targets back into the engine when replaying
+    /// a retained subtree.
+    pub fn swap_targets(&mut self, external: &mut Vec<GestureTarget>) {
         core::mem::swap(&mut self.targets, external);
     }
 
-    pub(crate) fn register_target(
+    /// Registers a fresh gesture target: builds the recognizer state machine
+    /// for `gesture` and binds it to `action` at the given hit-test bounds
+    /// (window coordinates, logical pixels) and priority coordinates.
+    pub fn register_target(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         gesture: Gesture,
         action: BoxedAction<()>,
         depth: usize,
@@ -234,7 +290,7 @@ impl GestureEngine {
 
     fn register_target_recognizer(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         depth: usize,
         order: usize,
         group_id: usize,
@@ -249,13 +305,18 @@ impl GestureEngine {
         });
     }
 
-    pub(crate) fn register_existing_target(&mut self, target: GestureTarget) {
+    /// Re-registers a previously captured target, preserving its recognizer
+    /// state machine (used when replaying retained subtrees).
+    pub fn register_existing_target(&mut self, target: GestureTarget) {
         self.targets.push(target);
     }
 
-    pub(crate) fn handle_pointer_down(
+    /// Handles a pointer press: cancels any recognizers left active from a
+    /// previous sequence, activates the recognizers hit at `point`, and feeds
+    /// them the down event. Returns whether any action fired.
+    pub fn handle_pointer_down(
         &mut self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         at: Instant,
         env: &Environment,
     ) -> bool {
@@ -265,18 +326,22 @@ impl GestureEngine {
         changed
     }
 
-    pub(crate) fn handle_pointer_move(
+    /// Feeds a pointer move to the active recognizers (drag updates, tap and
+    /// long-press slop checks). Returns whether any action fired.
+    pub fn handle_pointer_move(
         &mut self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         at: Instant,
         env: &Environment,
     ) -> bool {
         self.dispatch_to_active_recognizers(GestureInput::PointerMove { point, at }, env)
     }
 
-    pub(crate) fn handle_pointer_up(
+    /// Feeds the pointer release to the active recognizers and ends the
+    /// sequence, deactivating them. Returns whether any action fired.
+    pub fn handle_pointer_up(
         &mut self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         at: Instant,
         env: &Environment,
     ) -> bool {
@@ -284,13 +349,22 @@ impl GestureEngine {
         Self::dispatch_to_recognizers(&active, GestureInput::PointerUp { point, at }, env)
     }
 
-    pub(crate) fn handle_pointer_cancel(&mut self, at: Instant, env: &Environment) -> bool {
+    /// Cancels the active pointer sequence (window defocus, system gesture
+    /// takeover): in-flight drags emit a `Cancelled` phase, pending taps and
+    /// long presses fail. Returns whether any action fired.
+    pub fn handle_pointer_cancel(&mut self, at: Instant, env: &Environment) -> bool {
         self.cancel_active_recognizers(at, env)
     }
 
-    pub(crate) fn handle_magnification(
+    /// Feeds one pinch/magnification phase to the recognizers under `center`.
+    ///
+    /// A `Started` phase activates the recognizers hit at `center` (cancelling
+    /// any previous active set); `Ended`/`Cancelled` deactivates them. `delta`
+    /// is the relative scale change for this update (`scale *= 1 + delta`).
+    /// Returns whether any action fired.
+    pub fn handle_magnification(
         &mut self,
-        center: vello::kurbo::Point,
+        center: kurbo::Point,
         delta: f32,
         phase: TouchPhase,
         at: Instant,
@@ -315,9 +389,13 @@ impl GestureEngine {
         changed
     }
 
-    pub(crate) fn handle_rotation(
+    /// Feeds one rotation phase to the recognizers under `center`, with the
+    /// same activation lifecycle as
+    /// [`handle_magnification`](Self::handle_magnification); `delta` is the
+    /// angle change for this update. Returns whether any action fired.
+    pub fn handle_rotation(
         &mut self,
-        center: vello::kurbo::Point,
+        center: kurbo::Point,
         delta: f32,
         phase: TouchPhase,
         at: Instant,
@@ -342,11 +420,20 @@ impl GestureEngine {
         changed
     }
 
-    pub(crate) fn handle_tick(&mut self, at: Instant, env: &Environment) -> bool {
+    /// Advances time-driven recognition on the active recognizers (a long
+    /// press fires once its hold deadline passes without movement); the frame
+    /// pump calls this when [`next_deadline`](Self::next_deadline) elapses.
+    /// Returns whether any action fired.
+    pub fn handle_tick(&mut self, at: Instant, env: &Environment) -> bool {
         self.dispatch_to_active_recognizers(GestureInput::Tick { at }, env)
     }
 
-    pub(crate) fn sync_after_layout(&mut self, pointer: Option<vello::kurbo::Point>) {
+    /// Reconciles the active set after targets were re-registered by a
+    /// rebuild: if any active recognizer is no longer live, re-hit-tests at
+    /// the current `pointer` position (clearing the set when the pointer left
+    /// the window). Called after layout completes, while a pointer sequence
+    /// may still be in flight.
+    pub fn sync_after_layout(&mut self, pointer: Option<kurbo::Point>) {
         if self.active_recognizers_are_live() {
             return;
         }
@@ -357,7 +444,10 @@ impl GestureEngine {
         self.active_recognizers = self.recognizers_at(pointer);
     }
 
-    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+    /// Returns the earliest instant at which an active recognizer needs a
+    /// [`handle_tick`](Self::handle_tick) to make progress (e.g. a pending
+    /// long-press hold deadline), or `None` when no timer is armed.
+    pub fn next_deadline(&self) -> Option<Instant> {
         self.active_recognizers
             .iter()
             .filter_map(|recognizer| recognizer.recognizer.borrow().next_deadline())
@@ -366,7 +456,7 @@ impl GestureEngine {
 
     fn replace_active_recognizers(
         &mut self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         at: Instant,
         env: &Environment,
     ) -> bool {
@@ -403,7 +493,7 @@ impl GestureEngine {
         (target.depth, target.order, index)
     }
 
-    fn recognizers_at(&self, point: vello::kurbo::Point) -> Vec<GestureTarget> {
+    fn recognizers_at(&self, point: kurbo::Point) -> Vec<GestureTarget> {
         let Some(group_id) = self.top_group_id_at(point) else {
             return Vec::new();
         };
@@ -424,7 +514,7 @@ impl GestureEngine {
         recognizers
     }
 
-    fn top_group_id_at(&self, point: vello::kurbo::Point) -> Option<usize> {
+    fn top_group_id_at(&self, point: kurbo::Point) -> Option<usize> {
         self.targets
             .iter()
             .enumerate()
@@ -464,11 +554,12 @@ impl GestureEngine {
         recognizers.push(candidate.clone());
     }
 
-    #[cfg(test)]
-    pub(crate) fn debug_targets_at(
-        &self,
-        point: vello::kurbo::Point,
-    ) -> Vec<(usize, usize, usize)> {
+    /// Returns `(depth, order, group_id)` for every registered target whose
+    /// bounds contain `point`, in registration order.
+    ///
+    /// Read-only diagnostics query for backend tests asserting hit-test
+    /// priority; not used in render paths.
+    pub fn debug_targets_at(&self, point: kurbo::Point) -> Vec<(usize, usize, usize)> {
         self.targets
             .iter()
             .filter(|target| target.bounds.contains(point))
@@ -479,10 +570,10 @@ impl GestureEngine {
 
 struct TapDetector {
     required_count: u32,
-    pressed_point: Option<vello::kurbo::Point>,
+    pressed_point: Option<kurbo::Point>,
     streak: u32,
     last_tap_at: Option<Instant>,
-    last_tap_point: Option<vello::kurbo::Point>,
+    last_tap_point: Option<kurbo::Point>,
 }
 
 impl TapDetector {
@@ -566,7 +657,7 @@ impl GestureDetector for TapDetector {
 struct LongPressDetector {
     duration: Duration,
     started_at: Option<Instant>,
-    started_point: Option<vello::kurbo::Point>,
+    started_point: Option<kurbo::Point>,
     fired: bool,
 }
 
@@ -667,8 +758,8 @@ impl GestureDetector for LongPressDetector {
 
 struct DragDetector {
     min_distance: f32,
-    start_point: Option<vello::kurbo::Point>,
-    last_point: Option<vello::kurbo::Point>,
+    start_point: Option<kurbo::Point>,
+    last_point: Option<kurbo::Point>,
     last_at: Option<Instant>,
     started: bool,
 }
@@ -1141,7 +1232,7 @@ mod tests {
     fn long_press_fires_after_tick_deadline() {
         let mut detector = LongPressDetector::new(Duration::from_millis(300));
         let start = Instant::now();
-        let point = vello::kurbo::Point::new(12.0, 24.0);
+        let point = kurbo::Point::new(12.0, 24.0);
 
         let down = detector.input(GestureInput::PointerDown { point, at: start });
         assert!(down.recognized.is_none());
@@ -1164,7 +1255,7 @@ mod tests {
     fn drag_waits_for_min_distance_then_emits_phases() {
         let mut detector = DragDetector::new(10.0);
         let start = Instant::now();
-        let origin = vello::kurbo::Point::new(0.0, 0.0);
+        let origin = kurbo::Point::new(0.0, 0.0);
 
         detector.input(GestureInput::PointerDown {
             point: origin,
@@ -1172,13 +1263,13 @@ mod tests {
         });
 
         let below_threshold = detector.input(GestureInput::PointerMove {
-            point: vello::kurbo::Point::new(6.0, 2.0),
+            point: kurbo::Point::new(6.0, 2.0),
             at: start + Duration::from_millis(16),
         });
         assert!(below_threshold.recognized.is_none());
 
         let started = detector.input(GestureInput::PointerMove {
-            point: vello::kurbo::Point::new(12.0, 0.0),
+            point: kurbo::Point::new(12.0, 0.0),
             at: start + Duration::from_millis(32),
         });
         assert!(matches!(
@@ -1190,7 +1281,7 @@ mod tests {
         ));
 
         let updated = detector.input(GestureInput::PointerMove {
-            point: vello::kurbo::Point::new(24.0, 6.0),
+            point: kurbo::Point::new(24.0, 6.0),
             at: start + Duration::from_millis(48),
         });
         assert!(matches!(
@@ -1202,7 +1293,7 @@ mod tests {
         ));
 
         let ended = detector.input(GestureInput::PointerUp {
-            point: vello::kurbo::Point::new(30.0, 8.0),
+            point: kurbo::Point::new(30.0, 8.0),
             at: start + Duration::from_millis(64),
         });
         assert!(matches!(
@@ -1218,7 +1309,7 @@ mod tests {
     fn magnification_accumulates_scale() {
         let mut detector = MagnificationDetector::new(1.0);
         let start = Instant::now();
-        let center = vello::kurbo::Point::new(10.0, 20.0);
+        let center = kurbo::Point::new(10.0, 20.0);
 
         let started = detector.input(GestureInput::Magnification {
             center,
@@ -1266,7 +1357,7 @@ mod tests {
             Box::new(LongPressDetector::new(Duration::from_millis(100))),
         );
         let start = Instant::now();
-        let point = vello::kurbo::Point::new(5.0, 7.0);
+        let point = kurbo::Point::new(5.0, 7.0);
 
         detector.input(GestureInput::PointerDown { point, at: start });
         let first = detector.input(GestureInput::PointerUp {
@@ -1292,7 +1383,7 @@ mod tests {
             Box::new(LongPressDetector::new(Duration::from_millis(100))),
         );
         let start = Instant::now();
-        let point = vello::kurbo::Point::new(2.0, 3.0);
+        let point = kurbo::Point::new(2.0, 3.0);
 
         detector.input(GestureInput::PointerDown { point, at: start });
         let recognized = detector.input(GestureInput::PointerUp {
@@ -1306,8 +1397,8 @@ mod tests {
     fn tap_fails_after_pointer_moves_beyond_spatial_tolerance() {
         let mut detector = TapDetector::new(1);
         let start = Instant::now();
-        let origin = vello::kurbo::Point::new(0.0, 0.0);
-        let moved_point = vello::kurbo::Point::new(TAP_SPATIAL_TOLERANCE + 1.0, 0.0);
+        let origin = kurbo::Point::new(0.0, 0.0);
+        let moved_point = kurbo::Point::new(TAP_SPATIAL_TOLERANCE + 1.0, 0.0);
 
         detector.input(GestureInput::PointerDown {
             point: origin,
@@ -1335,7 +1426,7 @@ mod tests {
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
-        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let bounds = kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
         let tap_hits = Rc::new(Cell::new(0u32));
         let drag_hits = Rc::new(Cell::new(0u32));
 
@@ -1371,8 +1462,8 @@ mod tests {
         }
 
         let start = Instant::now();
-        let origin = vello::kurbo::Point::new(16.0, 16.0);
-        let moved = vello::kurbo::Point::new(48.0, 16.0);
+        let origin = kurbo::Point::new(16.0, 16.0);
+        let moved = kurbo::Point::new(48.0, 16.0);
         assert!(!engine.handle_pointer_down(origin, start, &env));
         assert!(engine.handle_pointer_move(moved, start + Duration::from_millis(16), &env));
         assert!(engine.handle_pointer_up(moved, start + Duration::from_millis(32), &env));
@@ -1388,7 +1479,7 @@ mod tests {
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
-        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let bounds = kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
         let drag_hits = Rc::new(Cell::new(0u32));
         let magnify_hits = Rc::new(Cell::new(0u32));
 
@@ -1424,7 +1515,7 @@ mod tests {
         }
 
         let start = Instant::now();
-        let center = vello::kurbo::Point::new(32.0, 32.0);
+        let center = kurbo::Point::new(32.0, 32.0);
         assert!(engine.handle_magnification(center, 0.0, TouchPhase::Started, start, &env));
         assert!(engine.handle_magnification(
             center,
