@@ -343,7 +343,7 @@ fn apple_link_lib_flag(link_lib: &str) -> Option<String> {
 }
 
 fn is_apple_crate_local_library(library: &str) -> bool {
-    library == "wrapper" || library.starts_with("tree-sitter-")
+    library == "wrapper" || library == "tree-sitter" || library.starts_with("tree-sitter-")
 }
 
 fn linker_arg_requires_value(arg: &str) -> bool {
@@ -706,6 +706,7 @@ mod tests {
         let output = r#"cargo:rustc-link-lib=static=tree-sitter-python
 cargo:rustc-link-lib=dylib=wrapper
 cargo:rustc-link-lib=tree-sitter-json
+cargo:rustc-link-lib=tree-sitter
 cargo:rustc-link-lib=dylib=customsdk
 cargo:rustc-link-lib=framework=AppKit
 "#;
