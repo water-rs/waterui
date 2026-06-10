@@ -234,6 +234,14 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
             continue;
         }
 
+        let output_path = crate_build_dir.join("output");
+        if output_path.exists() {
+            let output = std::fs::read_to_string(&output_path)?;
+            for flag in apple_linker_flags_from_build_output(&output) {
+                push_unique_flag(&mut linker_flags, flag);
+            }
+        }
+
         let out_dir = crate_build_dir.join("out");
         if !out_dir.is_dir() {
             continue;
@@ -267,14 +275,6 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
                 push_unique_flag(&mut linker_flags, flag);
             }
         }
-
-        let output_path = crate_build_dir.join("output");
-        if output_path.exists() {
-            let output = std::fs::read_to_string(&output_path)?;
-            for flag in apple_linker_flags_from_build_output(&output) {
-                push_unique_flag(&mut linker_flags, flag);
-            }
-        }
     }
 
     Ok(AppleNativeLinkInputs {
@@ -294,14 +294,77 @@ fn static_archive_link_flag(archive_path: &Path) -> Option<String> {
 
 fn apple_linker_flags_from_build_output(output: &str) -> Vec<String> {
     let mut flags = Vec::new();
+    let mut pending_arg_flag = None;
     for line in output.lines() {
-        if let Some(framework) = line.strip_prefix("cargo:rustc-link-lib=framework=") {
-            push_unique_flag(&mut flags, format!("-framework {framework}"));
+        if let Some(link_lib) = line.strip_prefix("cargo:rustc-link-lib=") {
+            flush_pending_link_arg(&mut flags, &mut pending_arg_flag);
+            if let Some(flag) = apple_link_lib_flag(link_lib) {
+                push_unique_flag(&mut flags, flag);
+            }
         } else if let Some(arg) = line.strip_prefix("cargo:rustc-link-arg=") {
-            push_unique_flag(&mut flags, arg.to_string());
+            if let Some(flag) = pending_arg_flag.take() {
+                if arg.starts_with('-') {
+                    push_unique_flag(&mut flags, flag);
+                    push_link_arg(&mut flags, &mut pending_arg_flag, arg);
+                } else {
+                    push_unique_flag(&mut flags, format!("{flag} {arg}"));
+                }
+            } else {
+                push_link_arg(&mut flags, &mut pending_arg_flag, arg);
+            }
         }
     }
+    flush_pending_link_arg(&mut flags, &mut pending_arg_flag);
     flags
+}
+
+fn push_link_arg(flags: &mut Vec<String>, pending_arg_flag: &mut Option<String>, arg: &str) {
+    if linker_arg_requires_value(arg) {
+        *pending_arg_flag = Some(arg.to_string());
+    } else {
+        push_unique_flag(flags, arg.to_string());
+    }
+}
+
+fn apple_link_lib_flag(link_lib: &str) -> Option<String> {
+    if let Some(framework) = link_lib.strip_prefix("framework=") {
+        return Some(format!("-framework {framework}"));
+    }
+
+    let library = link_lib
+        .rsplit_once('=')
+        .map(|(_, name)| name)
+        .unwrap_or(link_lib);
+    if library.is_empty() || is_apple_crate_local_library(library) {
+        None
+    } else {
+        Some(format!("-l{library}"))
+    }
+}
+
+fn is_apple_crate_local_library(library: &str) -> bool {
+    library == "wrapper" || library == "tree-sitter" || library.starts_with("tree-sitter-")
+}
+
+fn linker_arg_requires_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-rpath"
+            | "-L"
+            | "-F"
+            | "-framework"
+            | "-weak_framework"
+            | "-force_load"
+            | "-install_name"
+            | "-compatibility_version"
+            | "-current_version"
+    )
+}
+
+fn flush_pending_link_arg(flags: &mut Vec<String>, pending_arg_flag: &mut Option<String>) {
+    if let Some(flag) = pending_arg_flag.take() {
+        push_unique_flag(flags, flag);
+    }
 }
 
 fn push_unique_flag(flags: &mut Vec<String>, flag: String) {
@@ -624,16 +687,44 @@ mod tests {
 
     #[test]
     fn parses_frameworks_and_link_args_from_build_output() {
-        let output = "cargo:rustc-link-lib=framework=AppKit\ncargo:rustc-link-arg=-rpath\ncargo:rustc-link-arg=/usr/lib/swift\ncargo:rustc-link-lib=framework=Foundation\n";
+        let output = "cargo:rustc-link-lib=framework=AppKit\ncargo:rustc-link-arg=-rpath\ncargo:rustc-link-arg=/usr/lib/swift\ncargo:rustc-link-lib=static=z\ncargo:rustc-link-lib=dylib=c++\ncargo:rustc-link-lib=framework=Foundation\n";
         let flags = apple_linker_flags_from_build_output(output);
         assert_eq!(
             flags,
             vec![
                 "-framework AppKit".to_string(),
-                "-rpath".to_string(),
-                "/usr/lib/swift".to_string(),
+                "-rpath /usr/lib/swift".to_string(),
+                "-lz".to_string(),
+                "-lc++".to_string(),
                 "-framework Foundation".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn ignores_known_crate_local_link_libs_from_build_output() {
+        let output = r#"cargo:rustc-link-lib=static=tree-sitter-python
+cargo:rustc-link-lib=dylib=wrapper
+cargo:rustc-link-lib=tree-sitter-json
+cargo:rustc-link-lib=tree-sitter
+cargo:rustc-link-lib=dylib=customsdk
+cargo:rustc-link-lib=framework=AppKit
+"#;
+        let flags = apple_linker_flags_from_build_output(output);
+
+        assert_eq!(
+            flags,
+            vec!["-lcustomsdk".to_string(), "-framework AppKit".to_string()]
+        );
+    }
+
+    #[test]
+    fn does_not_pair_pending_link_arg_with_another_flag() {
+        let output = "cargo:rustc-link-arg=-rpath\ncargo:rustc-link-arg=-framework\ncargo:rustc-link-arg=AppKit\n";
+        let flags = apple_linker_flags_from_build_output(output);
+        assert_eq!(
+            flags,
+            vec!["-rpath".to_string(), "-framework AppKit".to_string()]
         );
     }
 
@@ -659,11 +750,34 @@ mod tests {
         assert_eq!(
             link_inputs.linker_flags,
             vec![
-                "-lHelper".to_string(),
                 "-framework AppKit".to_string(),
-                "-rpath".to_string(),
-                "/usr/lib/swift".to_string()
+                "-rpath /usr/lib/swift".to_string(),
+                "-lHelper".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn collects_framework_flags_from_non_swift_build_outputs() {
+        let dir = tempdir().expect("tempdir");
+        let lib_dir = dir.path().join("aarch64-apple-darwin/debug");
+        let build_dir = lib_dir.join("build/system-configuration-1234");
+        std::fs::create_dir_all(&build_dir).expect("create build dir");
+        std::fs::write(
+            build_dir.join("output"),
+            "cargo:rustc-link-lib=framework=SystemConfiguration\ncargo:rustc-link-lib=dylib=resolv\n",
+        )
+        .expect("write build output");
+
+        let link_inputs =
+            collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
+
+        assert!(link_inputs.archives.is_empty());
+        assert!(
+            link_inputs
+                .linker_flags
+                .contains(&"-framework SystemConfiguration".to_string())
+        );
+        assert!(link_inputs.linker_flags.contains(&"-lresolv".to_string()));
     }
 }
