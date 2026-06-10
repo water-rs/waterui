@@ -18,9 +18,9 @@ hydrolysis-version = "0.1.0"
 waterui-gtk-version = "0.1.0"
 waterui-preview-version = "0.1.0"
 android-kotlin-version = "2.0.21"
-apple-backend-url = "https://github.com/water-rs/apple-backend.git"
+apple-backend-url = "https://github.com/maxi-tools/apple-backend.git"
 apple-backend-commit = "93774aa72d428ab799e4b4293377f7eea0dd5d79"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
+android-backend-url = "https://github.com/maxi-tools/android-backend.git"
 android-backend-commit = "523afe28f3632bb0ab886650e020f410d32db4bc"
 
 [[bin]]
