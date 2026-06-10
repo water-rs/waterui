@@ -46,14 +46,7 @@ pub enum TextInputPurpose {
     Password,
 }
 
-/// Gesture/touch lifecycle phase mapped from the platform event stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TouchPhase {
-    Started,
-    Moved,
-    Ended,
-    Cancelled,
-}
+pub use waterui_backend_core::input::TouchPhase;
 
 /// Focused text-input area used for IME activation and candidate-window placement.
 #[derive(Debug, Clone, Copy, PartialEq)]

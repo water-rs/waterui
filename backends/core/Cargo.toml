@@ -12,14 +12,20 @@ keywords = ["ui", "backend", "waterui", "gui", "framework"]
 categories = ["gui"]
 
 [dependencies]
+waterui = { version = "0.2.1", path = "../..", default-features = false }
 waterui-core.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-graphics.workspace = true
+waterui-layout.workspace = true
 waterui-text.workspace = true
 nami.workspace = true
 tracing.workspace = true
-vello.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"
 
 [lints]
 workspace = true
