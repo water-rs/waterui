@@ -67,6 +67,21 @@ impl Painter {
                     set_brush(&mut ctx, brush);
                     ctx.stroke_path(path);
                 }
+                DrawCommand::GlyphRun {
+                    font,
+                    font_size,
+                    glyphs,
+                    transform,
+                    brush,
+                    ..
+                } => {
+                    ctx.set_transform(shift * *transform);
+                    set_brush(&mut ctx, brush);
+                    ctx.glyph_run(&mut self.resources, font)
+                        .font_size(*font_size)
+                        .hint(true)
+                        .fill_glyphs(glyphs.iter().copied());
+                }
             }
         }
         ctx.flush();
