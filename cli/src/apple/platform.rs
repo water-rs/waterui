@@ -335,29 +335,15 @@ fn apple_link_lib_flag(link_lib: &str) -> Option<String> {
         .rsplit_once('=')
         .map(|(_, name)| name)
         .unwrap_or(link_lib);
-    if is_apple_system_library(library) {
-        Some(format!("-l{library}"))
-    } else {
+    if library.is_empty() || is_apple_crate_local_library(library) {
         None
+    } else {
+        Some(format!("-l{library}"))
     }
 }
 
-fn is_apple_system_library(library: &str) -> bool {
-    matches!(
-        library,
-        "System"
-            | "bz2"
-            | "c++"
-            | "c++abi"
-            | "compression"
-            | "iconv"
-            | "objc"
-            | "resolv"
-            | "sqlite3"
-            | "xml2"
-            | "z"
-            | "zstd"
-    )
+fn is_apple_crate_local_library(library: &str) -> bool {
+    library == "wrapper" || library.starts_with("tree-sitter-")
 }
 
 fn linker_arg_requires_value(arg: &str) -> bool {
@@ -716,15 +702,19 @@ mod tests {
     }
 
     #[test]
-    fn ignores_non_system_link_libs_from_build_output() {
+    fn ignores_known_crate_local_link_libs_from_build_output() {
         let output = r#"cargo:rustc-link-lib=static=tree-sitter-python
 cargo:rustc-link-lib=dylib=wrapper
 cargo:rustc-link-lib=tree-sitter-json
+cargo:rustc-link-lib=dylib=customsdk
 cargo:rustc-link-lib=framework=AppKit
 "#;
         let flags = apple_linker_flags_from_build_output(output);
 
-        assert_eq!(flags, vec!["-framework AppKit".to_string()]);
+        assert_eq!(
+            flags,
+            vec!["-lcustomsdk".to_string(), "-framework AppKit".to_string()]
+        );
     }
 
     #[test]
