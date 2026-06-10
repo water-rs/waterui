@@ -1,3 +1,14 @@
+//! Scroll offset/viewport math and per-identity scroll handle registry.
+//!
+//! [`ScrollController`] owns one slot per scroll view in body order, rebound
+//! on every structural rebuild via cursor reuse. Each [`bind`] hands out a
+//! [`ScrollHandle`] stamped with a generation; when a rebuild changes the
+//! scroll view's layout (axis, viewport, or content extent), the generation
+//! advances and input routed through stale handles from earlier frames is
+//! silently dropped. All lengths and offsets are f64 logical pixels.
+//!
+//! [`bind`]: ScrollController::bind
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -6,6 +17,14 @@ use waterui_layout::scroll::Axis;
 const SCROLL_EPSILON: f64 = 0.000_01;
 const SCROLL_LINE_STEP: f64 = 40.0;
 
+/// Registry of scroll-view state slots, keyed by body order across rebuilds.
+///
+/// The renderer brackets every structural rebuild with
+/// [`begin_rebuild_frame`](Self::begin_rebuild_frame) /
+/// [`finish_rebuild_frame`](Self::finish_rebuild_frame) and calls
+/// [`bind`](Self::bind) once per scroll view encountered during dispatch, so
+/// the n-th scroll view of consecutive frames shares the same persistent
+/// offset state.
 #[derive(Debug, Default)]
 pub struct ScrollController {
     slots: Vec<ScrollSlot>,
@@ -17,21 +36,36 @@ struct ScrollSlot {
     state: Rc<RefCell<ScrollState>>,
 }
 
+/// Cloneable reference to one scroll view's offset state, valid for the
+/// layout generation it was bound against.
+///
+/// Input closures (wheel/trackpad handlers) capture a handle at dispatch
+/// time; if the scroll view's layout changed in a later rebuild, the stale
+/// handle's generation no longer matches and its input is dropped.
 #[derive(Clone, Debug)]
 pub struct ScrollHandle {
     state: Rc<RefCell<ScrollState>>,
     generation: u64,
 }
 
+/// Snapshot of one scroll view's offsets and extents, in f64 logical pixels.
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollMetrics {
+    /// Current horizontal offset, clamped to `0.0..=max_x`.
     pub offset_x: f64,
+    /// Current vertical offset, clamped to `0.0..=max_y`.
     pub offset_y: f64,
+    /// Maximum horizontal offset: `(content_width - viewport_width).max(0.0)`.
     pub max_x: f64,
+    /// Maximum vertical offset: `(content_height - viewport_height).max(0.0)`.
     pub max_y: f64,
+    /// Width of the visible viewport.
     pub viewport_width: f64,
+    /// Height of the visible viewport.
     pub viewport_height: f64,
+    /// Total width of the scrollable content.
     pub content_width: f64,
+    /// Total height of the scrollable content.
     pub content_height: f64,
 }
 
@@ -48,14 +82,26 @@ struct ScrollState {
 }
 
 impl ScrollController {
+    /// Resets the slot cursor; called at the begin of a structural rebuild,
+    /// before any scroll view is dispatched.
     pub fn begin_rebuild_frame(&mut self) {
         self.cursor = 0;
     }
 
+    /// Drops slots not rebound during the rebuild that just finished, so
+    /// scroll views removed from the tree release their state.
     pub fn finish_rebuild_frame(&mut self) {
         self.slots.truncate(self.cursor);
     }
 
+    /// Binds the next scroll view in body order to its persistent slot and
+    /// returns a handle for routing input to it.
+    ///
+    /// Reuses the slot at the current cursor (creating it on first
+    /// encounter), updates it with the freshly measured layout in logical
+    /// pixels, and re-clamps the retained offsets. If axis, viewport, content
+    /// extent, or the clamped offsets changed, the slot's generation advances
+    /// and handles bound in earlier frames become inert.
     pub fn bind(
         &mut self,
         axis: Axis,
@@ -95,15 +141,26 @@ impl ScrollController {
 }
 
 impl ScrollHandle {
-    pub(crate) fn cache_key(&self) -> usize {
+    /// Returns a key identifying the underlying scroll slot, stable for the
+    /// slot's lifetime across rebuilds (the address of the shared state).
+    pub fn cache_key(&self) -> usize {
         Rc::as_ptr(&self.state) as usize
     }
 
+    /// Returns the current offsets and extents of the bound scroll view.
     pub fn metrics(&self) -> ScrollMetrics {
         let state = self.state.borrow();
         state.metrics()
     }
 
+    /// Applies a wheel/trackpad delta along the scroll view's axis and
+    /// returns whether the clamped offset actually moved.
+    ///
+    /// Positive deltas scroll content toward its start (offsets decrease, the
+    /// platform wheel convention). With `is_line_delta` the values are line
+    /// counts scaled by 40 logical pixels per line; otherwise they are
+    /// logical pixels. Input from a handle whose generation is stale is
+    /// dropped and returns `false`.
     pub fn apply_scroll_delta(&self, dx: f32, dy: f32, is_line_delta: bool) -> bool {
         let mut state = self.state.borrow_mut();
         if state.generation != self.generation {
