@@ -25,6 +25,7 @@ members = [
     "examples/media/*",
     "examples/showcase/*/*",
     "backends/core",
+    "backends/dew",
     "backends/gtk",
     "backends/hydrolysis",
     "backends/hydrolysis_m3",
@@ -162,6 +163,7 @@ parley = "0.7"
 vello_svg = "0.9.0"
 kurbo = "0.13"
 peniko = "0.6"
+vello_cpu = "0.0.9"
 lyon = "1.0"
 wgpu-hal = { version = "27", features = ["gles", "metal"] }
 glow = "0.16"
