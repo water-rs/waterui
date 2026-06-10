@@ -27,14 +27,19 @@
 //!   RGB565 LCD stream on embedded targets)
 
 pub mod compositor;
+pub mod dispatch;
 pub mod display;
 pub mod display_list;
 pub mod painter;
+pub mod runtime;
+pub mod text;
 
 pub use compositor::{BandScheduler, DeviceRegion};
+pub use dispatch::{DewRenderer, RenderContext};
 pub use display::{BufferDisplay, DisplayFlush};
 pub use display_list::{DisplayList, DrawCommand};
 pub use painter::Painter;
+pub use runtime::{DewRuntime, render_view_png};
 
 use kurbo::Rect;
 
