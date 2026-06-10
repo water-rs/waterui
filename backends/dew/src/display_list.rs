@@ -33,6 +33,21 @@ pub enum DrawCommand {
         /// Paint for the stroke.
         brush: Brush,
     },
+    /// Fills one shaped glyph run (after `transform`) with `brush`.
+    GlyphRun {
+        /// The font file backing the run.
+        font: peniko::FontData,
+        /// Font size in logical pixels.
+        font_size: f32,
+        /// Shaped glyphs positioned relative to `transform`.
+        glyphs: Vec<vello_cpu::Glyph>,
+        /// Local-to-window transform for the run.
+        transform: Affine,
+        /// Paint for the glyphs.
+        brush: Brush,
+        /// Pre-computed local bounds of the run (text layout box).
+        bounds: Rect,
+    },
 }
 
 impl DrawCommand {
@@ -51,8 +66,88 @@ impl DrawCommand {
             } => transform
                 .transform_rect_bbox(path.bounding_box())
                 .inflate(stroke.width / 2.0, stroke.width / 2.0),
+            Self::GlyphRun {
+                transform, bounds, ..
+            } => transform.transform_rect_bbox(*bounds),
         }
     }
+}
+
+impl PartialEq for DrawCommand {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::FillPath {
+                    path: p1,
+                    transform: t1,
+                    brush: b1,
+                },
+                Self::FillPath {
+                    path: p2,
+                    transform: t2,
+                    brush: b2,
+                },
+            ) => p1 == p2 && t1 == t2 && b1 == b2,
+            (
+                Self::StrokePath {
+                    path: p1,
+                    transform: t1,
+                    stroke: s1,
+                    brush: b1,
+                },
+                Self::StrokePath {
+                    path: p2,
+                    transform: t2,
+                    stroke: s2,
+                    brush: b2,
+                },
+            ) => p1 == p2 && t1 == t2 && b1 == b2 && stroke_eq(s1, s2),
+            (
+                Self::GlyphRun {
+                    font: f1,
+                    font_size: s1,
+                    glyphs: g1,
+                    transform: t1,
+                    brush: b1,
+                    bounds: r1,
+                },
+                Self::GlyphRun {
+                    font: f2,
+                    font_size: s2,
+                    glyphs: g2,
+                    transform: t2,
+                    brush: b2,
+                    bounds: r2,
+                },
+            ) => {
+                f1.data.id() == f2.data.id()
+                    && f1.index == f2.index
+                    && s1 == s2
+                    && t1 == t2
+                    && b1 == b2
+                    && r1 == r2
+                    && glyphs_eq(g1, g2)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn stroke_eq(a: &Stroke, b: &Stroke) -> bool {
+    a.width == b.width
+        && a.join == b.join
+        && a.miter_limit == b.miter_limit
+        && a.start_cap == b.start_cap
+        && a.end_cap == b.end_cap
+        && a.dash_pattern == b.dash_pattern
+        && a.dash_offset == b.dash_offset
+}
+
+fn glyphs_eq(a: &[vello_cpu::Glyph], b: &[vello_cpu::Glyph]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(g1, g2)| g1.id == g2.id && g1.x == g2.x && g1.y == g2.y)
 }
 
 /// An ordered list of [`DrawCommand`]s with a running bounds union.
