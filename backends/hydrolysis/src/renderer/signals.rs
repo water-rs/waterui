@@ -104,7 +104,9 @@ impl HydrolysisRenderer {
 
     pub fn advance_animations(&mut self) -> bool {
         let now = self.frame_instant;
+        let pending_releases = self.flush_interaction_releases(now);
         self.animation_controller.tick(now)
+            || pending_releases
             || self.navigation.slots.iter().any(|slot| {
                 slot.transition
                     .as_ref()
@@ -115,6 +117,7 @@ impl HydrolysisRenderer {
     pub fn animations_active(&self) -> bool {
         let now = self.frame_instant;
         self.animation_controller.has_active(now)
+            || self.has_pending_interaction_releases(now)
             || self.navigation.slots.iter().any(|slot| {
                 slot.transition
                     .as_ref()

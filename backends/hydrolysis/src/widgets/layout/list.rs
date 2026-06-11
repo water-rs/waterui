@@ -18,7 +18,6 @@ use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 use crate::renderer::lazy::{resolve_visible_index_window, sum_cached_or_estimated};
-use crate::renderer::local_interaction_state;
 use crate::widgets::{draw_scroll_indicators, widget_theme};
 
 impl HydroNativeView for Native<ListConfig> {
@@ -247,31 +246,46 @@ pub(crate) fn render_list(
             );
             let up_interaction = (index > 0).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, up_rect);
-                let (state, slot) = ctx
+                let (_, slot, handles) = ctx
                     .renderer_mut()
                     .bind_interaction_target(hit_bounds, &row_env);
-                (hit_bounds, state, slot)
+                (hit_bounds, handles, slot)
             });
             let down_interaction = (index + 1 < total_rows).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, down_rect);
-                let (state, slot) = ctx
+                let (_, slot, handles) = ctx
                     .renderer_mut()
                     .bind_interaction_target(hit_bounds, &row_env);
-                (hit_bounds, state, slot)
+                (hit_bounds, handles, slot)
             });
             {
-                let hit_transform = ctx.hit_transform;
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_move_control(&mut draw, control_rect);
-                if let Some((_, state, _)) = &up_interaction {
-                    let state = local_interaction_state(*state, hit_transform);
-                    theme.draw_list_move_control_state_layer(&mut draw, up_rect, state);
-                }
-                if let Some((_, state, _)) = &down_interaction {
-                    let state = local_interaction_state(*state, hit_transform);
-                    theme.draw_list_move_control_state_layer(&mut draw, down_rect, state);
-                }
+            }
+            let theme = widget_theme(env);
+            let render_ctx = ctx.render_context();
+            if let Some((_, handles, _)) = &up_interaction {
+                ctx.renderer_mut().capture_state_layers(
+                    render_ctx,
+                    handles,
+                    up_rect,
+                    false,
+                    &|draw, state| {
+                        theme.draw_list_move_control_state_layer(draw, up_rect, state);
+                    },
+                );
+            }
+            if let Some((_, handles, _)) = &down_interaction {
+                ctx.renderer_mut().capture_state_layers(
+                    render_ctx,
+                    handles,
+                    down_rect,
+                    false,
+                    &|draw, state| {
+                        theme.draw_list_move_control_state_layer(draw, down_rect, state);
+                    },
+                );
             }
 
             if let Some((hit_bounds, _, press_slot)) = up_interaction {
@@ -307,21 +321,25 @@ pub(crate) fn render_list(
             );
             trailing_x = delete_rect.x0 - list_metrics.trailing_control_spacing;
             let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
-            let (delete_interaction, delete_press_slot) = ctx
+            let (_, delete_press_slot, delete_handles) = ctx
                 .renderer_mut()
                 .bind_interaction_target(delete_hit_bounds, &row_env);
             {
-                let delete_interaction =
-                    local_interaction_state(delete_interaction, ctx.hit_transform);
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_delete_control(&mut draw, delete_rect);
-                theme.draw_list_delete_control_state_layer(
-                    &mut draw,
-                    delete_rect,
-                    delete_interaction,
-                );
             }
+            let theme = widget_theme(env);
+            let render_ctx = ctx.render_context();
+            ctx.renderer_mut().capture_state_layers(
+                render_ctx,
+                &delete_handles,
+                delete_rect,
+                false,
+                &|draw, state| {
+                    theme.draw_list_delete_control_state_layer(draw, delete_rect, state);
+                },
+            );
             let action = Rc::clone(delete_action);
             ctx.renderer_mut().register_interactive_pointer_target(
                 delete_hit_bounds,

@@ -275,7 +275,7 @@ pub(crate) fn local_shared<T: 'static>(
 
 impl DynamicSubtree {
     /// Fresh, empty per-subtree storage about to receive a capture.
-    fn for_capture(depth_base: usize) -> Self {
+    pub(crate) fn for_capture(depth_base: usize) -> Self {
         Self {
             scene: vello::Scene::new(),
             depth_base,
@@ -462,7 +462,18 @@ impl HydrolysisRenderer {
             let press_slot = if target.press_slot.is_some()
                 && self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD
             {
-                Some(self.hit_test.interaction.bind_press_slot())
+                let slot = self.hit_test.interaction.bind_press_slot();
+                if let Some(handles) = &target.interaction {
+                    // The handle bundle travels with the target across
+                    // replays; re-attach it to the freshly bound slot and
+                    // refresh the pointer-to-local mapping for this replay's
+                    // transform.
+                    handles.set_window_to_local(ctx.hit_transform.inverse());
+                    self.hit_test
+                        .interaction
+                        .attach_handles(slot, Rc::clone(handles));
+                }
+                Some(slot)
             } else {
                 None
             };
@@ -494,8 +505,9 @@ impl HydrolysisRenderer {
         }
         for target in &subtree.hover_targets {
             let bounds = transformed_rect(ctx.hit_transform, target.bounds);
-            self.register_hover_target(
+            self.register_hover_target_with_handles(
                 bounds,
+                target.handles.clone(),
                 target.on_enter.clone(),
                 target.on_move.clone(),
                 target.on_exit.clone(),

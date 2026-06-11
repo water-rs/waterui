@@ -13,7 +13,6 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::renderer::local_interaction_state;
 use crate::widgets::util::widget_theme;
 
 impl HydroNativeView for Native<StepperConfig> {
@@ -120,23 +119,28 @@ pub(crate) fn render_stepper(
     let hit_transform = ctx.hit_transform;
     let minus_hit_bounds = transformed_rect(hit_transform, minus_bounds);
     let plus_hit_bounds = transformed_rect(hit_transform, plus_bounds);
-    let (minus_interaction, minus_press_slot) = ctx
+    let (_, minus_press_slot, minus_handles) = ctx
         .renderer_mut()
         .bind_interaction_target(minus_hit_bounds, env);
-    let (plus_interaction, plus_press_slot) = ctx
+    let (_, plus_press_slot, plus_handles) = ctx
         .renderer_mut()
         .bind_interaction_target(plus_hit_bounds, env);
     {
-        let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
-        let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_stepper_button(&mut draw, minus_bounds);
-        theme.draw_stepper_button_state_layer(&mut draw, minus_bounds, minus_interaction);
         theme.draw_stepper_decrement_icon(&mut draw, minus_bounds);
         theme.draw_stepper_button(&mut draw, plus_bounds);
-        theme.draw_stepper_button_state_layer(&mut draw, plus_bounds, plus_interaction);
         theme.draw_stepper_increment_icon(&mut draw, plus_bounds);
     }
+    let render_ctx = ctx.render_context();
+    ctx.renderer_mut()
+        .capture_state_layers(render_ctx, &minus_handles, minus_bounds, false, &|draw, state| {
+            theme.draw_stepper_button_state_layer(draw, minus_bounds, state);
+        });
+    ctx.renderer_mut()
+        .capture_state_layers(render_ctx, &plus_handles, plus_bounds, false, &|draw, state| {
+            theme.draw_stepper_button_state_layer(draw, plus_bounds, state);
+        });
 
     let range_start = *stepper.range.start();
     let range_end = *stepper.range.end();

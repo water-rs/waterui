@@ -133,13 +133,25 @@ fn render_color_picker(
     }
 
     let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, handles) =
+        ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
+        // The field chrome samples interaction state (focus/hover tint).
+        handles.mark_chrome_state_dependent();
         theme.draw_input_field(&mut draw, field_bounds, interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_bounds, interaction);
     }
+    let render_ctx = ctx.render_context();
+    ctx.renderer_mut().capture_state_layers(
+        render_ctx,
+        &handles,
+        field_bounds,
+        false,
+        &|draw, state| {
+            theme.draw_input_field_state_layer(draw, field_bounds, state);
+        },
+    );
 
     let content_bounds = inset_rect(
         field_bounds,
