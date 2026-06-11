@@ -201,13 +201,15 @@ impl HeadlessRuntime {
             local_executor.clone(),
         ));
 
+        // The headless window uses the same default background as platform
+        // windows (the theme `Background` slot), so offscreen captures match
+        // what `water run` renders from the very first frame.
         let content_builder = content.clone();
         let window = Window::new(
             "",
             waterui_core::binding(waterui::window::WindowState::Normal),
             move || content_builder.build(),
-        )
-        .background(Color::transparent());
+        );
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
             waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),

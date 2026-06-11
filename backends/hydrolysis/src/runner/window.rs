@@ -483,7 +483,22 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
         runtime.request_invalidating_rebuild();
     }
     if !runtime.mode.is_rebuild() {
-        return false;
+        let replay_requested = runtime.mode.is_window_refresh()
+            || runtime.renderer.has_patch_request()
+            || runtime.renderer.take_redraw_request();
+        if !replay_requested {
+            return false;
+        }
+        // Semantic mode has no render pass, but replay-driven changes
+        // (re-sampled transforms, patched dynamic nodes, redraw-only scalar
+        // updates) still move the accessibility tree: replay the retained
+        // frame so semantics stay in sync, escalating to a rebuild when
+        // replay cannot drive the change.
+        if runtime.renderer.refresh_window_frame(env) {
+            runtime.clear_frame_mode();
+            return true;
+        }
+        runtime.request_scroll_fallback_rebuild();
     }
 
     let (rebuilt, _, _) = rebuild_window_scene(runtime, env, &mut || false);
