@@ -458,3 +458,24 @@ text!("{status}").sub_headline()
 text!("{value}").caption()
 text!("{note}").footnote()
 ```
+
+## Embedded (dew backend, experimental)
+
+WaterUI runs on microcontrollers through the `waterui-dew` backend
+(CPU rasterization, no GPU, dirty-region flushes sized for SPI panels).
+The same views, bindings, and `text!` reactivity work unchanged.
+
+Develop against the desktop panel simulator — the full embedded rendering
+flow in a native window, no cross-compilation:
+
+```bash
+cargo run -p waterui-dew --example watch_sim --features simulator
+```
+
+Headless snapshot: `waterui_dew::render_view_png(builder, env, w, h)`.
+
+Currently supported views: stacks/padding, colors, spacers, text.
+Unsupported views panic fast with a clear message instead of rendering
+wrong. ESP32-S3 firmware lives in `examples/embedded/dew-esp32s3/`
+(see its README for QEMU and real-hardware flows and the current Xtensa
+toolchain blocker).
