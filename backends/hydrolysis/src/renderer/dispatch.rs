@@ -399,6 +399,13 @@ impl HydrolysisRenderer {
             "hydrolysis render dispatch exceeded recursion budget for {}",
             view.name()
         );
+        tracing::trace!(
+            target: "waterui::hydrolysis::dispatch",
+            depth = self.render_depth,
+            view = view.name(),
+            bounds = ?ctx.bounds,
+            "dispatch"
+        );
         self.push_render_depth();
         let dispatcher = self.dispatcher.clone();
         dispatcher.dispatch_boxed(self, view, env, ctx);
