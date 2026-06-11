@@ -32,7 +32,7 @@ waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
 waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 vello.workspace = true
-parley.workspace = true
+parley = { workspace = true, features = ["system"] }
 wgpu.workspace = true
 pollster.workspace = true
 executor-core.workspace = true
