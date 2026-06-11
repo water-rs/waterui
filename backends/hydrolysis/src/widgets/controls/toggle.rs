@@ -88,30 +88,35 @@ pub(crate) fn render_toggle(
         .renderer_mut()
         .resolve_toggle_progress(&toggle.toggle, theme.toggle_value_animation());
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, handles) =
+        ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
-    let mut draw = ctx.draw_context();
-    match style {
-        ToggleStyle::Automatic | ToggleStyle::Switch => {
-            theme.draw_toggle_switch(&mut draw, control_bounds, thumb_progress, interaction);
-            theme.draw_toggle_switch_state_layer(
-                &mut draw,
-                control_bounds,
-                thumb_progress,
-                interaction,
-            );
+    {
+        let mut draw = ctx.draw_context();
+        match style {
+            ToggleStyle::Automatic | ToggleStyle::Switch => {
+                // The switch thumb itself reacts to presses, so its chrome must
+                // re-render on interaction changes.
+                handles.mark_chrome_state_dependent();
+                theme.draw_toggle_switch(&mut draw, control_bounds, thumb_progress, interaction);
+            }
+            ToggleStyle::Checkbox => {
+                theme.draw_toggle_checkbox(&mut draw, control_bounds, thumb_progress);
+            }
+            _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         }
-        ToggleStyle::Checkbox => {
-            theme.draw_toggle_checkbox(&mut draw, control_bounds, thumb_progress);
-            theme.draw_toggle_checkbox_state_layer(
-                &mut draw,
-                control_bounds,
-                thumb_progress,
-                interaction,
-            );
-        }
-        _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
     }
+    let render_ctx = ctx.render_context();
+    ctx.renderer_mut()
+        .capture_state_layers(render_ctx, &handles, control_bounds, false, &|draw, state| match style {
+            ToggleStyle::Automatic | ToggleStyle::Switch => {
+                theme.draw_toggle_switch_state_layer(draw, control_bounds, thumb_progress, state);
+            }
+            ToggleStyle::Checkbox => {
+                theme.draw_toggle_checkbox_state_layer(draw, control_bounds, thumb_progress, state);
+            }
+            _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+        });
 
     let toggle_binding = toggle.toggle;
     ctx.renderer_mut().register_interactive_pointer_target(

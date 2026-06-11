@@ -80,8 +80,16 @@ impl InteractionEngine {
         self.press_controller.begin_press(slot, origin, now);
     }
 
-    pub(crate) fn clear_all_presses(&mut self, now: Instant) -> bool {
+    pub(crate) fn clear_all_presses(&mut self, now: Instant) -> PressClear {
         self.press_controller.clear_all(now)
+    }
+
+    pub(crate) fn handles_for(&self, slot: PressSlot) -> Option<Rc<InteractionLayerHandles>> {
+        self.press_controller.slots[slot.index].handles.clone()
+    }
+
+    pub(crate) fn attach_handles(&mut self, slot: PressSlot, handles: Rc<InteractionLayerHandles>) {
+        self.press_controller.slots[slot.index].handles = Some(handles);
     }
 
     pub(crate) fn bind_widget_state(
@@ -90,62 +98,46 @@ impl InteractionEngine {
         motion: &InteractionMotion,
         animation_controller: &mut AnimationController,
         now: Instant,
-    ) -> (WidgetInteractionState, PressSlot) {
-        let (press_slot, slot_pressed) = self.press_controller.bind();
+    ) -> (WidgetInteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+        let (press_slot, _) = self.press_controller.bind();
         let animation_key_base = press_slot
             .index
             .checked_mul(4)
             .expect("interaction animation key overflow");
-        let focus_progress = input.focus.map_or(0.0, |focus| {
-            animation_controller
-                .bind_scalar_target(
-                    AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_FOCUS_KEY),
-                    if focus.visible { 1.0 } else { 0.0 },
-                    if focus.visible {
-                        motion.focus_enter.clone()
-                    } else {
-                        motion.focus_exit.clone()
-                    },
-                    now,
-                )
-                .sample(now)
-        });
-        let active_bounds_pressed = input
-            .active_press_origin
-            .is_some_and(|origin| input.bounds.contains(origin));
-        let slot = &mut self.press_controller.slots[press_slot.index];
-        let slot_origin_in_bounds = slot
-            .origin
-            .is_some_and(|origin| input.bounds.contains(origin));
-        let slot_pressed = slot_pressed && slot_origin_in_bounds;
-        let released_press_visible =
-            slot_origin_in_bounds && released_before_minimum_press_duration(slot, now, motion);
-        let visual_pressed = slot_pressed || active_bounds_pressed || released_press_visible;
-        if should_clear_released_press_origin(slot, now, motion) {
-            slot.origin = None;
-            slot.pressed_at = None;
-            slot.released_at = None;
+        let previous = self.press_controller.slots[press_slot.index].handles.take();
+
+        // A press only survives a rebuild if its origin still lands inside the
+        // widget's new bounds; otherwise the slot index was reused by an
+        // unrelated widget and the press state must not migrate.
+        if let Some(prev) = &previous
+            && prev
+                .origin_in_window()
+                .is_none_or(|origin| !input.bounds.contains(origin))
+        {
+            prev.clear_press_state();
         }
-        let press_origin = if active_bounds_pressed {
-            input.active_press_origin.or(slot.origin)
-        } else if slot_origin_in_bounds {
-            slot.origin
-        } else {
-            None
-        };
-        let target_opacity = if input.hovered {
-            motion.hover_opacity
-        } else {
-            0.0
-        };
-        let alpha_handle = animation_controller.bind_scalar_target(
-            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_STATE_LAYER_KEY),
-            target_opacity,
-            state_layer_animation(target_opacity, motion),
+        let hovered = previous.as_ref().map_or(input.hovered, |prev| prev.hovering());
+        let focus_visible = input.focus.is_some_and(|focus| focus.visible);
+
+        let focus_alpha = animation_controller.bind_scalar_target(
+            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_FOCUS_KEY),
+            if focus_visible { 1.0 } else { 0.0 },
+            if focus_visible {
+                motion.focus_enter.clone()
+            } else {
+                motion.focus_exit.clone()
+            },
             now,
         );
-        let state_layer_opacity = alpha_handle.sample(now);
-        let press_opacity_handle = animation_controller.bind_scalar_target(
+        let hover_target = if hovered { motion.hover_opacity } else { 0.0 };
+        let hover_alpha = animation_controller.bind_scalar_target(
+            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_STATE_LAYER_KEY),
+            hover_target,
+            state_layer_animation(hover_target, motion),
+            now,
+        );
+        let visual_pressed = previous.as_ref().is_some_and(|prev| prev.visually_pressed(now));
+        let press_alpha = animation_controller.bind_scalar_target(
             AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_PRESS_OPACITY_KEY),
             if visual_pressed {
                 motion.pressed_opacity
@@ -155,29 +147,40 @@ impl InteractionEngine {
             press_layer_opacity_animation(visual_pressed, motion),
             now,
         );
-        let press_layer_opacity = press_opacity_handle.sample(now);
         let press_progress_handle = animation_controller.bind_scalar_target(
             AnimationKey::renderer_local_scalar(
                 animation_key_base + INTERACTION_PRESS_PROGRESS_KEY,
             ),
-            if press_origin.is_some() { 1.0 } else { 0.0 },
+            if visual_pressed { 1.0 } else { 0.0 },
             motion.press_grow.clone(),
             now,
         );
-        let press_progress = press_progress_handle.sample(now);
-        (
-            WidgetInteractionState {
-                hovered: input.hovered,
-                pressed: visual_pressed,
-                focus_visible: input.focus.is_some_and(|focus| focus.visible),
-                focus_progress,
-                state_layer_opacity,
-                press_layer_opacity,
-                press_origin,
-                press_progress,
-            },
-            press_slot,
-        )
+
+        let handles = Rc::new(InteractionLayerHandles::new(
+            hover_alpha.clone(),
+            press_alpha.clone(),
+            press_progress_handle.clone(),
+            focus_alpha.clone(),
+            motion.clone(),
+        ));
+        if let Some(previous) = previous {
+            handles.copy_interaction_state_from(&previous);
+        } else {
+            handles.set_initial_hovering(input.hovered);
+        }
+        self.press_controller.slots[press_slot.index].handles = Some(Rc::clone(&handles));
+
+        let state = WidgetInteractionState {
+            hovered,
+            pressed: visual_pressed,
+            focus_visible,
+            focus_progress: focus_alpha.sample(now),
+            state_layer_opacity: hover_alpha.sample(now),
+            press_layer_opacity: press_alpha.sample(now),
+            press_origin: handles.origin_in_window(),
+            press_progress: press_progress_handle.sample(now),
+        };
+        (state, press_slot, handles)
     }
 }
 
@@ -192,12 +195,12 @@ pub(crate) struct PressSlot {
     pub(crate) index: usize,
 }
 
-#[derive(Debug)]
+/// Per-widget press slot: the cursor allocates stable renderer-local
+/// animation key indices, while the interaction state itself lives in the
+/// shared [`InteractionLayerHandles`].
+#[derive(Debug, Default)]
 pub(crate) struct PressStateSlot {
-    pub(crate) pressing: bool,
-    pub(crate) origin: Option<vello::kurbo::Point>,
-    pub(crate) pressed_at: Option<Instant>,
-    pub(crate) released_at: Option<Instant>,
+    pub(crate) handles: Option<Rc<InteractionLayerHandles>>,
 }
 
 impl PressController {
@@ -216,14 +219,13 @@ impl PressController {
             .checked_add(1)
             .expect("press controller cursor overflow");
         if index == self.slots.len() {
-            self.slots.push(PressStateSlot {
-                pressing: false,
-                origin: None,
-                pressed_at: None,
-                released_at: None,
-            });
+            self.slots.push(PressStateSlot::default());
         }
-        (PressSlot { index }, self.slots[index].pressing)
+        let pressing = self.slots[index]
+            .handles
+            .as_ref()
+            .is_some_and(|handles| handles.pressing());
+        (PressSlot { index }, pressing)
     }
 
     pub(crate) fn begin_press(
@@ -232,24 +234,32 @@ impl PressController {
         origin: vello::kurbo::Point,
         now: Instant,
     ) {
-        let state = &mut self.slots[slot.index];
-        state.pressing = true;
-        state.origin = Some(origin);
-        state.pressed_at = Some(now);
-        state.released_at = None;
+        if let Some(handles) = &self.slots[slot.index].handles {
+            handles.begin_press(origin, now);
+        }
     }
 
-    pub(crate) fn clear_all(&mut self, now: Instant) -> bool {
-        let mut changed = false;
-        for slot in &mut self.slots {
-            changed |= slot.pressing;
-            slot.pressing = false;
-            if slot.origin.is_some() && slot.released_at.is_none() {
-                slot.released_at = Some(now);
+    pub(crate) fn clear_all(&mut self, now: Instant) -> PressClear {
+        let mut clear = PressClear::default();
+        for slot in &self.slots {
+            if let Some(handles) = &slot.handles
+                && handles.release(now)
+            {
+                clear.visual_changed = true;
+                clear.chrome_changed |= handles.chrome_state_dependent();
             }
         }
-        changed
+        clear
     }
+}
+
+/// Outcome of releasing all active presses: `visual_changed` replays state
+/// layers, `chrome_changed` means a pressed widget's chrome samples
+/// interaction state and must re-render.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct PressClear {
+    pub(crate) visual_changed: bool,
+    pub(crate) chrome_changed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -337,45 +347,10 @@ fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> A
     }
 }
 
-pub(crate) fn released_before_minimum_press_duration(
-    slot: &PressStateSlot,
-    now: Instant,
-    motion: &InteractionMotion,
-) -> bool {
-    if slot.pressing || slot.released_at.is_none() {
-        return false;
-    }
-    let Some(pressed_at) = slot.pressed_at else {
-        return false;
-    };
-    now.duration_since(pressed_at) < motion.minimum_press_duration
-}
-
-pub(crate) fn should_clear_released_press_origin(
-    slot: &PressStateSlot,
-    now: Instant,
-    motion: &InteractionMotion,
-) -> bool {
-    if slot.pressing {
-        return false;
-    }
-    let Some(released_at) = slot.released_at else {
-        return false;
-    };
-    let minimum_remaining = slot.pressed_at.map_or(Duration::ZERO, |pressed_at| {
-        motion
-            .minimum_press_duration
-            .saturating_sub(now.duration_since(pressed_at))
-    });
-    let retention = motion.press_fade_out.duration().max(minimum_remaining);
-    now.duration_since(released_at) >= retention
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        PressStateSlot, released_before_minimum_press_duration, should_clear_released_press_origin,
-    };
+    use super::super::interaction_layers::InteractionLayerHandles;
+    use crate::animation::{AnimationController, AnimationKey};
     use crate::time::Instant;
     use core::time::Duration;
     use waterui::animation::Animation;
@@ -399,49 +374,35 @@ mod tests {
         }
     }
 
-    #[test]
-    fn released_press_stays_visually_pressed_until_minimum_duration() {
-        let started = Instant::now();
-        let released = started + Duration::from_millis(10);
-        let slot = PressStateSlot {
-            pressing: false,
-            origin: Some(vello::kurbo::Point::new(4.0, 5.0)),
-            pressed_at: Some(started),
-            released_at: Some(released),
+    fn handles(now: Instant) -> InteractionLayerHandles {
+        let mut controller = AnimationController::default();
+        let bind = |controller: &mut AnimationController, key: usize| {
+            controller.bind_scalar_target(
+                AnimationKey::renderer_local_scalar(key),
+                0.0,
+                Animation::linear(Duration::ZERO),
+                now,
+            )
         };
-
-        assert!(released_before_minimum_press_duration(
-            &slot,
-            started + Duration::from_millis(20),
-            &motion()
-        ));
-        assert!(!released_before_minimum_press_duration(
-            &slot,
-            started + Duration::from_millis(80),
-            &motion()
-        ));
+        InteractionLayerHandles::new(
+            bind(&mut controller, 0),
+            bind(&mut controller, 1),
+            bind(&mut controller, 2),
+            bind(&mut controller, 3),
+            motion(),
+        )
     }
 
     #[test]
-    fn released_press_origin_survives_fade_out_then_clears() {
+    fn released_press_stays_visually_pressed_until_minimum_duration() {
         let started = Instant::now();
-        let released = started + Duration::from_millis(10);
-        let slot = PressStateSlot {
-            pressing: false,
-            origin: Some(vello::kurbo::Point::new(4.0, 5.0)),
-            pressed_at: Some(started),
-            released_at: Some(released),
-        };
+        let handles = handles(started);
+        handles.begin_press(vello::kurbo::Point::new(4.0, 5.0), started);
+        assert!(handles.release(started + Duration::from_millis(10)));
 
-        assert!(!should_clear_released_press_origin(
-            &slot,
-            released + Duration::from_millis(70),
-            &motion()
-        ));
-        assert!(should_clear_released_press_origin(
-            &slot,
-            released + Duration::from_millis(130),
-            &motion()
-        ));
+        assert!(handles.visually_pressed(started + Duration::from_millis(20)));
+        assert!(handles.flush_release(started + Duration::from_millis(20)));
+        assert!(!handles.flush_release(started + Duration::from_millis(80)));
+        assert!(!handles.visually_pressed(started + Duration::from_millis(80)));
     }
 }

@@ -166,24 +166,32 @@ pub(crate) fn render_slider(
             control_bottom,
         ),
     );
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, handles) =
+        ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    // The slider thumb chrome reacts to presses, so it re-renders on
+    // interaction changes.
+    handles.mark_chrome_state_dependent();
+    let thumb_center = vello::kurbo::Point::new(fill_right, track_center_y);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_slider_track(&mut draw, track_rect, fill_rect);
-        theme.draw_slider_thumb_state_layer(
-            &mut draw,
-            vello::kurbo::Point::new(fill_right, track_center_y),
-            metrics.thumb_radius,
-            interaction,
-        );
-        theme.draw_slider_thumb(
-            &mut draw,
-            vello::kurbo::Point::new(fill_right, track_center_y),
-            metrics.thumb_radius,
-            interaction,
-        );
+        theme.draw_slider_thumb(&mut draw, thumb_center, metrics.thumb_radius, interaction);
     }
+    let thumb_layer_bounds = vello::kurbo::Rect::from_center_size(
+        thumb_center,
+        (metrics.thumb_radius * 4.0, metrics.thumb_radius * 4.0),
+    );
+    let render_ctx = ctx.render_context();
+    ctx.renderer_mut().capture_state_layers(
+        render_ctx,
+        &handles,
+        thumb_layer_bounds,
+        false,
+        &|draw, state| {
+            theme.draw_slider_thumb_state_layer(draw, thumb_center, metrics.thumb_radius, state);
+        },
+    );
 
     let value_binding = slider.value;
     let usable_track = track_right - track_left;

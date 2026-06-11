@@ -21,7 +21,6 @@ use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
-use crate::renderer::local_interaction_state;
 use crate::widgets::util::{inset_rect, widget_theme};
 
 impl HydroNativeView for Native<ButtonConfig> {
@@ -135,13 +134,16 @@ pub(crate) fn render_button(
     let style = button.style;
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (_, press_slot, handles) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
-        theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
     }
+    let render_ctx = ctx.render_context();
+    ctx.renderer_mut()
+        .capture_state_layers(render_ctx, &handles, bounds, false, &|draw, state| {
+            theme.draw_button_state_layer(draw, bounds, style, state);
+        });
 
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
@@ -194,13 +196,16 @@ pub(crate) fn render_menu(
     let style = ButtonStyle::Borderless;
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (_, press_slot, handles) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
-        theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
     }
+    let render_ctx = ctx.render_context();
+    ctx.renderer_mut()
+        .capture_state_layers(render_ctx, &handles, bounds, false, &|draw, state| {
+            theme.draw_button_state_layer(draw, bounds, style, state);
+        });
 
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);

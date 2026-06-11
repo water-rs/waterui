@@ -302,14 +302,21 @@ pub(crate) fn render_menu_picker(
     {
         let bounds = ctx.bounds;
         let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
-        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+        let (interaction, press_slot, handles) =
+            ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
         {
             let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
+            // The field chrome samples interaction state (focus/hover tint).
+            handles.mark_chrome_state_dependent();
             theme.draw_input_field(&mut draw, bounds, interaction);
-            theme.draw_picker_state_layer(&mut draw, bounds, interaction);
             theme.draw_picker_indicator(&mut draw, bounds);
         }
+        let render_ctx = ctx.render_context();
+        ctx.renderer_mut()
+            .capture_state_layers(render_ctx, &handles, bounds, false, &|draw, state| {
+                theme.draw_picker_state_layer(draw, bounds, state);
+            });
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection.clone();
         let menu_entries = entries.clone();
@@ -413,17 +420,9 @@ pub(crate) fn render_radio_picker(
             }
         };
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
-        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let (_, press_slot, handles) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
-            let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
-            theme.draw_radio_state_layer(
-                &mut draw,
-                indicator_center,
-                indicator_radius,
-                is_selected,
-                interaction,
-            );
             theme.draw_radio_indicator(
                 &mut draw,
                 indicator_center,
@@ -431,6 +430,26 @@ pub(crate) fn render_radio_picker(
                 radio_indicator_state,
             );
         }
+        let radio_layer_bounds = vello::kurbo::Rect::from_center_size(
+            indicator_center,
+            (indicator_radius * 4.0, indicator_radius * 4.0),
+        );
+        let render_ctx = ctx.render_context();
+        ctx.renderer_mut().capture_state_layers(
+            render_ctx,
+            &handles,
+            radio_layer_bounds,
+            false,
+            &|draw, state| {
+                theme.draw_radio_state_layer(
+                    draw,
+                    indicator_center,
+                    indicator_radius,
+                    is_selected,
+                    state,
+                );
+            },
+        );
 
         let label_rect = vello::kurbo::Rect::new(
             indicator_center.x + indicator_radius + metrics.radio_label_spacing,
@@ -473,9 +492,8 @@ pub(crate) fn render_segmented_picker(
         let segment_rect = vello::kurbo::Rect::new(x0, bounds.y0, x0 + segment_width, bounds.y1);
         let is_selected = item.tag == selected;
         let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
-        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let (_, press_slot, handles) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
-            let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
             theme.draw_segmented_picker_segment(
                 &mut draw,
@@ -484,13 +502,17 @@ pub(crate) fn render_segmented_picker(
                 index == 0,
                 index + 1 == item_count,
             );
-            theme.draw_segmented_picker_state_layer(
-                &mut draw,
-                segment_rect,
-                is_selected,
-                interaction,
-            );
         }
+        let render_ctx = ctx.render_context();
+        ctx.renderer_mut().capture_state_layers(
+            render_ctx,
+            &handles,
+            segment_rect,
+            false,
+            &|draw, state| {
+                theme.draw_segmented_picker_state_layer(draw, segment_rect, is_selected, state);
+            },
+        );
 
         let label = ctx
             .renderer_mut()
