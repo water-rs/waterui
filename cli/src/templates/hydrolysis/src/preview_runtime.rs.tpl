@@ -39,6 +39,14 @@ pub(crate) fn run() {
         .into_png()
         .unwrap_or_else(|error| panic!("hydrolysis preview: failed to encode PNG: {error}"));
 
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|error| {
+            panic!(
+                "hydrolysis preview: failed to create output directory `{}`: {error}",
+                parent.display()
+            )
+        });
+    }
     fs::write(&output_path, png_data).unwrap_or_else(|error| {
         panic!(
             "hydrolysis preview: failed to write `{}`: {error}",

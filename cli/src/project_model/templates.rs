@@ -1060,6 +1060,45 @@ async fn scaffold_dir(
     Ok(())
 }
 
+/// Render every file of an embedded scaffold directory to its destination
+/// path and content, without touching the filesystem.
+///
+/// This is the same rendering [`scaffold_dir`] performs, exposed so callers
+/// can compare a generated backend against what the current templates would
+/// produce (managed backends regenerate exactly when the rendering differs).
+fn render_dir_outputs(
+    namespace: TemplateNamespace,
+    embedded_dir: &Dir<'_>,
+    ctx: &TemplateContext,
+) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+    let mut outputs = Vec::new();
+    let mut dirs_to_process = vec![embedded_dir];
+    while let Some(current_dir) = dirs_to_process.pop() {
+        for file in current_dir.files() {
+            let relative_path = file.path();
+            let is_template = relative_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "tpl");
+            if is_template {
+                let dest_path = ctx.transform_path(&relative_path.with_extension(""));
+                let content = file
+                    .contents_utf8()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
+                let rendered = render_scaffold_template(namespace, relative_path, content, ctx)?;
+                outputs.push((dest_path, rendered.into_bytes()));
+            } else {
+                let dest_path = ctx.transform_path(relative_path);
+                outputs.push((dest_path, file.contents().to_vec()));
+            }
+        }
+        for subdir in current_dir.dirs() {
+            dirs_to_process.push(subdir);
+        }
+    }
+    Ok(outputs)
+}
+
 async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
     match fs::read(path).await {
         Ok(existing) if existing == contents => return Ok(()),
@@ -1579,12 +1618,34 @@ pub mod hydrolysis {
         .await
     }
 
-    async fn generate_cargo_toml(
-        base_dir: &Path,
+    /// Every file `scaffold` would write, as backend-relative path and
+    /// content, without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if template rendering fails.
+    pub fn rendered_outputs(
         ctx: &TemplateContext,
         package_name: &str,
-    ) -> io::Result<()> {
-        let manifest = GeneratedCargoManifest {
+    ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
+        let mut outputs = super::render_dir_outputs(
+            TemplateNamespace::Hydrolysis,
+            &embedded::HYDROLYSIS,
+            ctx,
+        )?;
+        outputs.push((
+            std::path::PathBuf::from("Cargo.toml"),
+            super::render_generated_cargo_toml(&generated_manifest(ctx, package_name))?
+                .into_bytes(),
+        ));
+        Ok(outputs)
+    }
+
+    fn generated_manifest(
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> GeneratedCargoManifest<GeneratedDependencyValue> {
+        GeneratedCargoManifest {
             package: super::generated_package(package_name, Vec::new()),
             lib: super::generated_lib(&["cdylib", "rlib"]),
             features: BTreeMap::from([
@@ -1594,8 +1655,15 @@ pub mod hydrolysis {
             dependencies: cargo_dependencies(ctx),
             target: cargo_target_dependencies(ctx),
             workspace: GeneratedWorkspaceSection {},
-        };
+        }
+    }
 
+    async fn generate_cargo_toml(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        let manifest = generated_manifest(ctx, package_name);
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
     }
 
