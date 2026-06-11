@@ -48,6 +48,17 @@ pub(crate) struct DynamicTransformScalar {
     handle: Option<AnimatedScalarHandle>,
 }
 
+impl DynamicTransformScalar {
+    /// A scalar that re-samples `handle` at replay time, starting from the
+    /// given current value.
+    pub(crate) fn with_handle(value: f32, handle: AnimatedScalarHandle) -> Self {
+        Self {
+            value,
+            handle: Some(handle),
+        }
+    }
+}
+
 pub(crate) struct DynamicScaleTransform {
     x: DynamicTransformScalar,
     y: DynamicTransformScalar,
@@ -68,6 +79,7 @@ pub(crate) struct DynamicTransformComponents {
     scale: Option<DynamicScaleTransform>,
     rotation: Option<DynamicRotationTransform>,
     offset: Option<DynamicOffsetTransform>,
+    ripple: Option<DynamicRippleTransform>,
 }
 
 pub(crate) struct DynamicTransformDraw {
@@ -76,6 +88,24 @@ pub(crate) struct DynamicTransformDraw {
     base_hit_transform: vello::kurbo::Affine,
     bounds: vello::kurbo::Rect,
     subtree: DynamicSubtree,
+}
+
+impl DynamicTransformDraw {
+    /// A transform draw over a pure-paint fragment captured in local
+    /// coordinates (no base transform, no registered targets).
+    pub(crate) fn paint_only(
+        transform: DynamicTransformComponents,
+        bounds: vello::kurbo::Rect,
+        subtree: DynamicSubtree,
+    ) -> Self {
+        Self {
+            transform,
+            base_transform: vello::kurbo::Affine::IDENTITY,
+            base_hit_transform: vello::kurbo::Affine::IDENTITY,
+            bounds,
+            subtree,
+        }
+    }
 }
 
 impl DynamicTransformScalar {
@@ -104,6 +134,7 @@ impl DynamicTransformComponents {
             scale: Some(DynamicScaleTransform { x, y, center }),
             rotation: None,
             offset: None,
+            ripple: None,
         }
     }
 
@@ -112,6 +143,7 @@ impl DynamicTransformComponents {
             scale: None,
             rotation: Some(DynamicRotationTransform { angle, center }),
             offset: None,
+            ripple: None,
         }
     }
 
@@ -120,17 +152,31 @@ impl DynamicTransformComponents {
             scale: None,
             rotation: None,
             offset: Some(DynamicOffsetTransform { x, y }),
+            ripple: None,
+        }
+    }
+
+    pub(crate) fn ripple(ripple: DynamicRippleTransform) -> Self {
+        Self {
+            scale: None,
+            rotation: None,
+            offset: None,
+            ripple: Some(ripple),
         }
     }
 
     pub(super) fn affine(&self, now: Instant) -> vello::kurbo::Affine {
         let active_components = usize::from(self.scale.is_some())
             + usize::from(self.rotation.is_some())
-            + usize::from(self.offset.is_some());
+            + usize::from(self.offset.is_some())
+            + usize::from(self.ripple.is_some());
         assert!(
             active_components == 1,
             "hydrolysis dynamic transform draw must contain exactly one transform component"
         );
+        if let Some(ripple) = &self.ripple {
+            return ripple.affine(now);
+        }
         if let Some(scale) = &self.scale {
             return vello::kurbo::Affine::translate((scale.center.x, scale.center.y))
                 * vello::kurbo::Affine::scale_non_uniform(
@@ -167,6 +213,9 @@ impl DynamicTransformComponents {
             offset.x.collect_active_key(keys);
             offset.y.collect_active_key(keys);
         }
+        if let Some(ripple) = &self.ripple {
+            ripple.progress.collect_active_key(keys);
+        }
     }
 }
 
@@ -179,6 +228,29 @@ pub(crate) struct DynamicOpacityDraw {
     base_hit_transform: vello::kurbo::Affine,
     bounds: vello::kurbo::Rect,
     subtree: DynamicSubtree,
+    /// Pure-paint fragment with no registered targets: replay may skip it
+    /// entirely while its alpha samples to zero.
+    paint_only: bool,
+}
+
+impl DynamicOpacityDraw {
+    /// An opacity draw over a pure-paint fragment captured in the local
+    /// coordinates of `ctx` (state layers and similar chrome overlays).
+    pub(crate) fn paint_only(
+        alpha: DynamicTransformScalar,
+        ctx: RenderContext,
+        bounds: vello::kurbo::Rect,
+        subtree: DynamicSubtree,
+    ) -> Self {
+        Self {
+            alpha,
+            base_transform: ctx.transform,
+            base_hit_transform: ctx.hit_transform,
+            bounds,
+            subtree,
+            paint_only: true,
+        }
+    }
 }
 
 /// A placement of a `Dynamic` node within a captured subtree. The node's content is
@@ -361,6 +433,7 @@ impl HydrolysisRenderer {
             base_hit_transform: ctx.hit_transform,
             bounds: ctx.bounds,
             subtree,
+            paint_only: false,
         });
     }
 
@@ -475,6 +548,9 @@ impl HydrolysisRenderer {
     ) {
         for draw in opacities {
             let alpha = draw.alpha.sample(self.frame_instant).clamp(0.0, 1.0);
+            if draw.paint_only && alpha <= f32::EPSILON {
+                continue;
+            }
             let transform = parent_ctx.transform * draw.base_transform;
             let hit_transform = parent_ctx.hit_transform * draw.base_hit_transform;
             self.push_layer_rect(alpha, transform, draw.bounds);

@@ -12,7 +12,6 @@ use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::renderer::local_interaction_state;
 use crate::widgets::widget_theme;
 
 impl HydroNativeView for Native<Tabs> {
@@ -133,7 +132,7 @@ pub(crate) fn render_tabs(
         let label_size = measure_view_intrinsic(&tab.label.content, ctx.state_mut(), env);
         {
             let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
-            let (interaction, press_slot) =
+            let (_, press_slot, handles) =
                 ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
             let is_selected = index == selected_index;
             if index == selected_index {
@@ -149,13 +148,15 @@ pub(crate) fn render_tabs(
             }
             {
                 let theme = widget_theme(env);
-                let interaction = local_interaction_state(interaction, ctx.hit_transform);
-                let mut draw = ctx.draw_context();
-                theme.draw_tabs_button_state_layer(
-                    &mut draw,
+                let render_ctx = ctx.render_context();
+                ctx.renderer_mut().capture_state_layers(
+                    render_ctx,
+                    &handles,
                     button_rect,
-                    is_selected,
-                    interaction,
+                    false,
+                    &|draw, state| {
+                        theme.draw_tabs_button_state_layer(draw, button_rect, is_selected, state);
+                    },
                 );
             }
             let selection_binding = selection.clone();

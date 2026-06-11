@@ -246,17 +246,29 @@ pub(crate) fn render_text_field(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _) = ctx.renderer_mut().bind_focused_interaction_target(
-        transformed_rect(hit_transform, field_rect),
-        env,
-        is_focused,
-    );
+    let (mut field_interaction, _, field_handles) =
+        ctx.renderer_mut().bind_focused_interaction_target(
+            transformed_rect(hit_transform, field_rect),
+            env,
+            is_focused,
+        );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
+    // The input field chrome samples interaction state (focus indicator).
+    field_handles.mark_chrome_state_dependent();
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
+    let field_render_ctx = ctx.render_context();
+    ctx.renderer_mut().capture_state_layers(
+        field_render_ctx,
+        &field_handles,
+        field_rect,
+        true,
+        &|draw, state| {
+            theme.draw_input_field_state_layer(draw, field_rect, state);
+        },
+    );
     let prompt_signal = text_field.prompt.content.clone();
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
     let value_binding = text_field.value;
@@ -482,17 +494,29 @@ pub(crate) fn render_secure_field(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _) = ctx.renderer_mut().bind_focused_interaction_target(
-        transformed_rect(hit_transform, field_rect),
-        env,
-        is_focused,
-    );
+    let (mut field_interaction, _, field_handles) =
+        ctx.renderer_mut().bind_focused_interaction_target(
+            transformed_rect(hit_transform, field_rect),
+            env,
+            is_focused,
+        );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
+    // The input field chrome samples interaction state (focus indicator).
+    field_handles.mark_chrome_state_dependent();
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
+    let field_render_ctx = ctx.render_context();
+    ctx.renderer_mut().capture_state_layers(
+        field_render_ctx,
+        &field_handles,
+        field_rect,
+        true,
+        &|draw, state| {
+            theme.draw_input_field_state_layer(draw, field_rect, state);
+        },
+    );
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
     let value_binding = secure_field.value;
     let value_identity = value_binding.identity();
