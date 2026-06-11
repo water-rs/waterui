@@ -102,6 +102,13 @@ impl<D: DisplayFlush> DewRuntime<D> {
     pub const fn display(&self) -> &D {
         &self.display
     }
+
+    /// The frame-trigger handle, for callers that need to request rebuilds
+    /// outside the watched-signal path (e.g. size changes, benchmarks).
+    #[must_use]
+    pub fn signals(&self) -> waterui_backend_core::frame_signals::FrameSignals {
+        self.renderer.signals()
+    }
 }
 
 /// Window-coordinate regions where `new` draws differently from `old`.

@@ -368,6 +368,10 @@ fn detect_system_context() -> RegionalContext {
     }
 
     let locale_tag = preferred_languages[0].clone();
+    // ESP-IDF has no OS timezone database; the asymmetry is explicit.
+    #[cfg(target_os = "espidf")]
+    let timezone = "UTC".to_string();
+    #[cfg(not(target_os = "espidf"))]
     let timezone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
 
     RegionalContext::new(locale_tag, preferred_languages, timezone)
