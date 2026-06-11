@@ -36,6 +36,8 @@ serde = { workspace = true, features = ["derive"] }
 toml = "0.8"
 tracing.workspace = true
 sys-locale.workspace = true
+
+[target.'cfg(not(target_os = "espidf"))'.dependencies]
 iana-time-zone.workspace = true
 
 [features]

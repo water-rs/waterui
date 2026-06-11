@@ -17,7 +17,7 @@ nami.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 tracing.workspace = true
-parley.workspace = true
+parley = { workspace = true, features = ["system"] }
 vello.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"] }
 

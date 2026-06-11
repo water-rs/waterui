@@ -9,7 +9,7 @@
 //! the full scene is replayed.
 
 use kurbo::Affine;
-use vello_cpu::{Pixmap, RenderContext, Resources};
+use vello_cpu::{Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
 
 use crate::compositor::DeviceRegion;
 use crate::display_list::{DisplayList, DrawCommand};
@@ -43,7 +43,7 @@ impl Painter {
     pub fn rasterize_region(&mut self, list: &DisplayList, region: DeviceRegion) -> Pixmap {
         let width = u16::try_from(region.width).expect("region width exceeds u16::MAX");
         let height = u16::try_from(region.height).expect("region height exceeds u16::MAX");
-        let mut ctx = RenderContext::new(width, height);
+        let mut ctx = RenderContext::new_with(width, height, render_settings());
         let shift = Affine::translate((-f64::from(region.x), -f64::from(region.y)));
         for command in list.commands() {
             match command {
@@ -88,6 +88,24 @@ impl Painter {
         let mut pixmap = Pixmap::new(width, height);
         ctx.render_to_pixmap(&mut self.resources, &mut pixmap);
         pixmap
+    }
+}
+
+/// Render settings for this target.
+///
+/// The Xtensa LLVM backend currently miscompiles `vello_cpu`'s u8/u16 fine
+/// kernels regardless of opt-level (corrupted strip indices surfacing as
+/// `bytemuck` cast panics or `LoadProhibited` faults), so ESP32-S3 builds use
+/// the f32 pipeline, which also maps onto the chip's hardware FPU. All
+/// other targets keep the faster u8 pipeline.
+fn render_settings() -> RenderSettings {
+    RenderSettings {
+        render_mode: if cfg!(target_arch = "xtensa") {
+            RenderMode::OptimizeQuality
+        } else {
+            RenderMode::OptimizeSpeed
+        },
+        ..Default::default()
     }
 }
 

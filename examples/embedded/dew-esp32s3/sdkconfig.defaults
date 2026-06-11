@@ -1,0 +1,20 @@
+# Rendering happens on the main task; give it room for vello_cpu's
+# rasterization stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=163840
+
+# Frames under QEMU can exceed the default 5 s task watchdog while logging;
+# this demo measures timings itself.
+CONFIG_ESP_TASK_WDT_INIT=n
+
+# 8 MB flash; the oversized app partition itself is supplied to espflash at
+# image-merge time (see qemu-run.sh), not to the ESP-IDF build.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# QEMU does not emulate the ESP32-S3 permission-control hardware; memory
+# protection must be off for emulated runs (per ESP-IDF QEMU docs).
+CONFIG_ESP_SYSTEM_MEMPROT_FEATURE=n
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+
+# Waveshare ESP32-S3-Touch-AMOLED-2.06 exposes the native USB-Serial-JTAG
+# port; route the console there so logs arrive over the USB-C cable.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
