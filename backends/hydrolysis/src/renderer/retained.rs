@@ -889,7 +889,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn scene_is_empty(&self) -> bool {
-        self.scene.encoding().is_empty()
+        !scene_has_content(&self.scene)
     }
 
     pub(crate) fn viewport_matches_window_bounds(&self, viewport: vello::kurbo::Rect) -> bool {

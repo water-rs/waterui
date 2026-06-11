@@ -77,6 +77,7 @@ fn main() -> impl View {
                 text(contact.name).sub_headline().foreground(Foreground),
                 text(contact.role).caption().foreground(MutedForeground),
             ))
+            .alignment(HorizontalAlignment::Leading)
             .padding_with(EdgeInsets::symmetric(12.0, 16.0)),
         )
     })
