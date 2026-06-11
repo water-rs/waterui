@@ -13,6 +13,9 @@ categories = ["gui", "embedded"]
 
 [features]
 default = ["system-fonts"]
+# Desktop window simulating an embedded panel: runs the full dew pipeline
+# natively and presents the framebuffer via winit + softbuffer.
+simulator = ["dep:winit", "dep:softbuffer", "dep:executor-core", "dep:native-executor"]
 # Desktop font enumeration; firmware targets disable this and register
 # bundled fonts into the parley FontContext instead.
 system-fonts = ["parley/system"]
@@ -29,10 +32,18 @@ tracing.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 vello_cpu = { workspace = true, features = ["f32_pipeline"] }
+winit = { version = "0.30", optional = true }
+softbuffer = { version = "0.4", optional = true }
+executor-core = { workspace = true, optional = true }
+native-executor = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui = { version = "0.2.1", path = "../..", default-features = false }
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
+
+[[example]]
+name = "watch_sim"
+required-features = ["simulator"]
 
 [lints]
 workspace = true
