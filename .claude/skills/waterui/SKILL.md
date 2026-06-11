@@ -469,7 +469,7 @@ Develop against the desktop panel simulator — the full embedded rendering
 flow in a native window, no cross-compilation:
 
 ```bash
-cargo run -p waterui-dew --example watch_sim --features simulator
+cargo run -p waterui-dew --example watch_sim --features embedded-simulator
 ```
 
 Headless snapshot: `waterui_dew::render_view_png(builder, env, w, h)`.

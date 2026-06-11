@@ -4,7 +4,7 @@
 //! cross-compilation — with a reactive per-second counter exercising the
 //! rebuild → diff → dirty-band flush economy.
 //!
-//! Run with: `cargo run -p waterui-dew --example watch_sim --features simulator`
+//! Run with: `cargo run -p waterui-dew --example watch_sim --features embedded-simulator`
 
 use std::time::Instant;
 
@@ -18,7 +18,7 @@ fn main() {
 
     let seconds_for_root = seconds.clone();
     let mut last = 0;
-    waterui_dew::simulator::run(
+    waterui_dew::embedded_simulator::run(
         410,
         502,
         "dew — ESP32-S3 watch panel simulator",

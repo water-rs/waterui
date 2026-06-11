@@ -35,16 +35,16 @@ DisplayFlush           the only platform-specific piece:
 The interaction runtime (gestures, scrolling, frame economy) is shared
 with other self-drawn backends through `waterui-backend-core`.
 
-## Desktop panel simulator
+## Embedded-device simulator
 
 The complete embedded rendering flow runs natively in a window — no
 cross-compilation, the LVGL-SDL / Slint-preview pattern:
 
 ```bash
-cargo run -p waterui-dew --example watch_sim --features simulator
+cargo run -p waterui-dew --example watch_sim --features embedded-simulator
 ```
 
-`simulator::run(width, height, title, env, build_root, on_tick)` opens a
+`embedded_simulator::run(width, height, title, env, build_root, on_tick)` opens a
 virtual panel of any size; `render_view_png` renders one frame headlessly
 for snapshot tests.
 

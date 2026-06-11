@@ -1,4 +1,4 @@
-//! Desktop panel simulator: the embedded rendering flow in a native window.
+//! Embedded-device simulator: the embedded rendering flow in a native window.
 //!
 //! Runs the complete dew pipeline — dispatch, layout, banded rasterization,
 //! dirty-region flush — on the host, presenting the simulated panel's
