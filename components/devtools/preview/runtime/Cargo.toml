@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-layout.workspace = true
 waterui-preview-protocol.workspace = true
 tracing.workspace = true

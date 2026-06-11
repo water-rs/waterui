@@ -15,12 +15,12 @@ categories.workspace = true
 material-color-utils = { version = "0.1.3", default-features = false }
 vello.workspace = true
 waterui = { version = "0.2.1", path = "../..", default-features = false }
-waterui-backend-core.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
 waterui-canvas.workspace = true
 waterui-core.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 
 [dev-dependencies]
 waterui-testing.workspace = true

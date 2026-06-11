@@ -19,7 +19,7 @@ use std::rc::Rc;
 use crate::widget::{RadioIndicatorState, RadioSelectionMotion};
 use nami::SignalIdentity;
 use nami::watcher::Context;
-use waterui::animation::{Animation, AnimationTrack};
+use waterui_core::animation::{Animation, AnimationTrack};
 
 use crate::time::Instant;
 

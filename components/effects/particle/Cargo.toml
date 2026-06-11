@@ -12,7 +12,7 @@ categories = ["gui", "graphics"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 wgpu.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 encase.workspace = true

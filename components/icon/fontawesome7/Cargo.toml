@@ -16,7 +16,7 @@ svg = []
 webfont = ["dep:waterui-icon"]
 
 [dependencies]
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-svg.workspace = true
 waterui-text = { workspace = true, optional = true }
 waterui-core.workspace = true

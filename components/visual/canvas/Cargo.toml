@@ -12,7 +12,7 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 nami.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
