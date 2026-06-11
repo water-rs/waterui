@@ -196,6 +196,12 @@ impl HeadlessRuntime {
             crate::view_renderer::HydrolysisViewRenderer::default(),
         ));
 
+        // Headless binaries (preview, tests) have no platform runner to install
+        // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
         let local_executor = HeadlessMainThreadExecutor::default();
         let _ = try_init_local_executor(waterui::task::monitored_local_executor(
             local_executor.clone(),

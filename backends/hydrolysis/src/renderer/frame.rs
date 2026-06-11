@@ -7,6 +7,16 @@ pub(crate) fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// Whether a scene encodes any visible content.
+///
+/// `Encoding::is_empty` only checks the path stream; glyph runs are deferred
+/// resources that resolve to paths at render time, so a scene containing only
+/// text would otherwise read as empty and be dropped by the compositor.
+pub(crate) fn scene_has_content(scene: &vello::Scene) -> bool {
+    let encoding = scene.encoding();
+    !encoding.is_empty() || !encoding.resources.glyph_runs.is_empty()
+}
+
 pub(crate) fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
     let linear = ResolvedColor::from_srgb(Srgb::new(
         color.components[0],
@@ -266,7 +276,7 @@ impl HydrolysisRenderer {
             self.scene.pop_layer();
         }
 
-        if self.scene.encoding().is_empty() {
+        if !scene_has_content(&self.scene) {
             for layer in &self.compositor.active_scene_layers {
                 layer.push_to_scene(&mut self.scene);
             }

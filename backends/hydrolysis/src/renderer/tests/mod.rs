@@ -1422,3 +1422,97 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 
     assert_eq!(labels, vec!["Paste", "Select All"]);
 }
+
+#[test]
+fn bare_text_at_window_root_renders_into_scene() {
+    let mut renderer = test_renderer();
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+
+    renderer.begin_rebuild_frame();
+    renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
+    renderer.capture_window_scene(
+        waterui_text::text("probe"),
+        &env,
+        Rect::new(0.0, 0.0, 160.0, 160.0),
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    assert!(
+        !renderer.scene_is_empty(),
+        "a bare text view at the window root must draw glyphs"
+    );
+    renderer.finish_rebuild_frame();
+}
+
+#[test]
+fn bare_str_at_window_root_renders_into_scene() {
+    let mut renderer = test_renderer();
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+
+    renderer.begin_rebuild_frame();
+    renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
+    renderer.capture_window_scene(
+        Str::from("probe"),
+        &env,
+        Rect::new(0.0, 0.0, 160.0, 160.0),
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    assert!(
+        !renderer.scene_is_empty(),
+        "a bare string view at the window root must draw glyphs"
+    );
+    renderer.finish_rebuild_frame();
+}
+
+#[test]
+fn text_shaping_produces_nonzero_intrinsic_in_tests() {
+    let env = Environment::default();
+    let mut state = HydroState::default();
+    let size = HydrolysisRenderer::measure_text_intrinsic_size(
+        &mut state,
+        waterui_text::styled::StyledStr::plain("probe"),
+        &env,
+    );
+    assert!(
+        size.width > 0.0 && size.height > 0.0,
+        "text shaping must produce a non-zero intrinsic size, got {size:?}"
+    );
+}
+
+#[test]
+fn bare_str_direct_dispatch_renders_into_scene() {
+    let mut renderer = test_renderer();
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+
+    renderer.begin_rebuild_frame();
+    renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
+    renderer.dispatch(
+        Str::from("probe"),
+        &env,
+        Rect::new(0.0, 0.0, 160.0, 160.0),
+    );
+    assert!(
+        !renderer.scene_is_empty(),
+        "directly dispatched string must draw glyphs"
+    );
+    renderer.finish_rebuild_frame();
+}
+
+#[test]
+fn render_path_text_layout_has_lines() {
+    let env = Environment::default();
+    let mut state = HydroState::default();
+    let layout = HydrolysisRenderer::build_text_layout(
+        &mut state,
+        waterui_text::styled::StyledStr::plain("probe"),
+        HorizontalAlignment::Leading,
+        &env,
+        Some(160.0),
+    );
+    assert!(!layout.is_empty(), "render-path text layout must not be empty");
+    assert!(layout.lines().next().is_some(), "layout must have lines");
+}
