@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
@@ -58,73 +57,40 @@ impl HydrolysisBackend {
     ///
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
     pub fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
-        let cargo_toml_path = project.backend_path::<Self>().join("Cargo.toml");
-        let lib_rs_path = project.backend_path::<Self>().join("src/lib.rs");
-        let main_rs_path = project.backend_path::<Self>().join("src/main.rs");
-        let preview_runtime_path = project
-            .backend_path::<Self>()
-            .join("src/preview_runtime.rs");
-        let preview_symbol_path = project.backend_path::<Self>().join("src/preview_symbol.rs");
-        let web_index_path = project.backend_path::<Self>().join("web/index.html");
-        if !cargo_toml_path.exists() {
-            return Ok(true);
+        let backend_dir = project.backend_path::<Self>();
+        let ctx = Self::template_context(project);
+        let outputs = templates::hydrolysis::rendered_outputs(
+            &ctx,
+            &project.hydrolysis_backend_crate_name(),
+        )?;
+        for (relative, expected) in outputs {
+            let path = backend_dir.join(&relative);
+            // Preview binding files are rewritten with target-specific
+            // content on every preview invocation; only their presence is
+            // managed here.
+            let per_run_binding = relative == Path::new("src/preview_symbol.rs")
+                || relative == Path::new("src/preview_test.rs");
+            match std::fs::read(&path) {
+                Ok(existing) if per_run_binding || existing == expected => {}
+                Ok(_) | Err(_) => return Ok(true),
+            }
         }
-
-        let manifest =
-            CargoManifest::<cargo_toml::Value>::from_path(&cargo_toml_path).map_err(|error| {
-                eyre::eyre!("failed to parse {}: {error}", cargo_toml_path.display())
-            })?;
-        let main_rs = std::fs::read_to_string(&main_rs_path).unwrap_or_default();
-        let lib_rs = std::fs::read_to_string(&lib_rs_path).unwrap_or_default();
-        let main_supports_preview = {
-            main_rs.contains("feature = \"waterui-preview-mode\"")
-                && main_rs.contains("mod preview_symbol;")
-        };
-        let main_installs_theme_after_app = runtime_installs_theme_after_app(&main_rs);
-        let lib_installs_theme_after_app = runtime_installs_theme_after_app(&lib_rs);
-        let preview_runtime_supports_symbol = std::fs::read_to_string(&preview_runtime_path)
-            .map(|content| {
-                content.contains("use crate::preview_symbol;")
-                    && content.contains("flatten_alpha_over_white")
-            })
-            .unwrap_or(false);
-
-        Ok(!manifest.dependencies.contains_key("waterui")
-            || manifest.lib.is_none()
-            || !lib_rs_path.exists()
-            || !main_rs_path.exists()
-            || !preview_runtime_path.exists()
-            || !preview_symbol_path.exists()
-            || !web_index_path.exists()
-            || !main_supports_preview
-            || !main_installs_theme_after_app
-            || !lib_installs_theme_after_app
-            || !preview_runtime_supports_symbol)
-    }
-}
-
-fn runtime_installs_theme_after_app(content: &str) -> bool {
-    content.contains("let mut app =")
-        && content.contains("hydrolysis_m3::install_defaults(&mut app.env);")
-        && content.contains("hydrolysis::run(app);")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::runtime_installs_theme_after_app;
-
-    #[test]
-    fn runtime_install_check_accepts_post_app_default_theme_install() {
-        let content = "let env = waterui::configure_environment!(waterui::env::Environment::new()); let mut app = form_example::app(env); hydrolysis_m3::install_defaults(&mut app.env); hydrolysis::run(app);";
-
-        assert!(runtime_installs_theme_after_app(content));
+        Ok(false)
     }
 
-    #[test]
-    fn runtime_install_check_rejects_pre_app_theme_install() {
-        let content = "let mut env = waterui::configure_environment!(waterui::env::Environment::new()); hydrolysis_m3::install(&mut env); let app = form_example::app(env); hydrolysis::run(app);";
-
-        assert!(!runtime_installs_theme_after_app(content));
+    /// The template context the CLI manages this backend with; regeneration
+    /// compares the backend on disk against exactly this rendering.
+    fn template_context(project: &Project) -> TemplateContext {
+        let manifest = project.manifest();
+        let app_name = manifest
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+        TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
+            .with_backend_project_path(project.backend_path::<Self>())
+            .with_project_root_path(project.root().to_path_buf())
     }
 }
 
@@ -145,19 +111,8 @@ impl Backend for HydrolysisBackend {
     }
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
-        let manifest = project.manifest();
         let project_path = default_hydrolysis_project_path();
-
-        let app_name = manifest
-            .package
-            .name
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect::<String>();
-        let ctx =
-            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
-                .with_backend_project_path(project.backend_path::<Self>())
-                .with_project_root_path(project.root().to_path_buf());
+        let ctx = Self::template_context(project);
 
         templates::hydrolysis::scaffold(
             &project.backend_path::<Self>(),
