@@ -1288,18 +1288,14 @@ impl HydrolysisRenderer {
             self.retained_window_frame = Some(frame);
             return false;
         }
+        // The window background comes from the surface clear color (the same
+        // path a structural rebuild uses), so replay must not paint its own
+        // background fill — that would diverge from the rebuild path and
+        // override custom window background colors.
+        let _ = env;
         self.reset_scene();
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
-        let background_color =
-            resolved_color_to_peniko(Color::new(theme::color::Background).resolve(env).get());
-        self.scene.fill(
-            vello::peniko::Fill::NonZero,
-            frame.transform,
-            background_color,
-            None,
-            &self.window_bounds,
-        );
         for layer in &frame.active_layers {
             layer.push_to_scene(&mut self.scene);
             self.compositor.active_scene_layers.push(layer.clone());

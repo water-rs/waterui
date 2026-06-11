@@ -770,9 +770,10 @@ fn handle_accessibility_pointer_action(
             changed |= renderer.handle_pointer_up(x, y, PointerButton::Primary, env);
             changed
         }
-        AccessibilityAction::Focus => {
-            renderer.handle_pointer_down(x, y, PointerButton::Primary, env)
-        }
+        // Accessibility focus moves only the accessibility focus ring; it must
+        // not synthesize a pointer press, which would steal the text-input UI
+        // focus (UI focus and accessibility focus are independent).
+        AccessibilityAction::Focus => true,
         _ => panic!(
             "hydrolysis accessibility pointer target does not support action {:?}",
             action
