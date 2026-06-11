@@ -16,13 +16,13 @@ categories = ["gui"]
 [target.'cfg(target_os = "linux")'.dependencies]
 waterui.workspace = true
 waterui-core.workspace = true
-waterui-backend-core.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
 waterui-layout.workspace = true
 waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-controls.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-shape.workspace = true
 waterui-form.workspace = true
 waterui-media.workspace = true

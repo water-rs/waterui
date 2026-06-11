@@ -10,5 +10,5 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-particle.workspace = true

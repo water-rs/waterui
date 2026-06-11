@@ -108,7 +108,7 @@ waterui-image = { version = "0.2.1", path = "components/visual/image" }
 waterui-video = { version = "0.2.1", path = "components/multimedia/video" }
 waterui-form = { version = "0.2.1", path = "components/foundation/form" }
 waterui-controls = { version = "0.2.1", path = "components/foundation/controls"}
-waterui-graphics = { version = "0.2.1", path = "components/visual/graphics" }
+waterui-graphics = { version = "0.2.1", path = "components/visual/graphics", default-features = false }
 waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
 waterui-shape = { version = "0.1.0", path = "components/foundation/shape" }
 waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
@@ -136,7 +136,7 @@ waterkit-camera = { version = "0.1.0", path = "kit/device/camera" }
 waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-features = false }
 waterkit-video = { version = "0.1.0", path = "kit/multimedia/video" }
 waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
-waterui-backend-core = { version = "0.1.0", path = "backends/core" }
+waterui-backend-core = { version = "0.1.0", path = "backends/core", default-features = false }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate/core" }
 filtrate-derive = { version = "0.1.0", path = "utils/filtrate/derive" }

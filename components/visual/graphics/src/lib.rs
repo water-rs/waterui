@@ -4,44 +4,62 @@ extern crate alloc;
 
 /// Color types and conversion utilities.
 pub mod color;
+#[cfg(feature = "gpu")]
 mod effects;
+#[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
 mod gradients;
+#[cfg(feature = "gpu")]
 mod image;
+#[cfg(feature = "gpu")]
 mod scene;
 
 pub use color::{Color, Colorspace, ResolvedColor};
+#[cfg(feature = "gpu")]
 pub use effects::{filter_parity, filter_registry, filter_view, view_effect};
+#[cfg(feature = "gpu")]
 pub use gpu::{gpu_surface, prewarm, shader_surface, shared_context};
+#[cfg(feature = "gpu")]
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
+#[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
+#[cfg(feature = "gpu")]
 pub use scene::{scene_view, scene2d, scene2d_vello};
 
 /// Shared shader sources.
+#[cfg(feature = "gpu")]
 pub mod shaders;
 /// Multi-input filters live in the `filtrate` crate; this alias keeps the
 /// historical `waterui_graphics::multi_input_filter::*` import path working.
+#[cfg(feature = "gpu")]
 pub use filtrate::multi_input as multi_input_filter;
 
 // Re-export key types for user convenience.
+#[cfg(feature = "gpu")]
 pub use gpu_surface::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
     OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState, RedrawHandle,
 };
 
+#[cfg(feature = "gpu")]
 pub use shader_surface::ShaderSurface;
 
+#[cfg(feature = "gpu")]
 pub use animated_mesh_gradient::{
     ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig,
 };
+#[cfg(feature = "gpu")]
 pub use gradient_renderer::{
     Gradient, GradientConfig, GradientType, MeshGradient, ResolvedGradient, ResolvedGradientStop,
 };
 
+#[cfg(feature = "gpu")]
 pub use view_effect::{
     EffectRenderer, OutputSize, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
 };
 
+#[cfg(feature = "gpu")]
 pub use filter_view::{
     AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
     DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterViewExt, Filtered, FilteredView, Gamma,
@@ -50,6 +68,7 @@ pub use filter_view::{
     PerspectiveTransform, PinchDistortion, Pixellate, Saturation, Sepia, Sharpen, TemperatureTint,
     TwirlDistortion, UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
 };
+#[cfg(feature = "gpu")]
 pub use multi_input_filter::{
     BackgroundReplace, BackgroundReplaceFilter, BlendMode, BlendWithImage, BlendWithImageFilter,
     DepthAwareBlur, DepthAwareBlurFilter, DisplacementTransitionToImage,
@@ -65,23 +84,32 @@ pub use multi_input_filter::{
     tone_curve_filter, transition_to_image_filter, zoom_transition_to_image_filter,
 };
 
+#[cfg(feature = "gpu")]
 pub use image_analysis::{DominantColor, Histogram, ImageAnalysis, MinMaxLuma};
+#[cfg(feature = "gpu")]
 pub use image_generator::{
     CheckerboardGenerator, DotGridGenerator, GeneratedImage, ImageGenerator,
     LinearGradientGenerator, NoiseGenerator, RadialGradientGenerator, StripeGenerator,
 };
 
+#[cfg(feature = "gpu")]
 pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
+#[cfg(feature = "gpu")]
 pub use scene2d::Scene2D;
+#[cfg(feature = "gpu")]
 pub use scene2d_vello::VelloScene2D;
 
 // Re-export dependencies used by macros
+#[cfg(feature = "gpu")]
 pub use inventory;
+#[cfg(feature = "gpu")]
 pub use rayon;
 
 /// Re-export bytemuck for safe byte conversions in GPU programming.
+#[cfg(feature = "gpu")]
 pub use bytemuck;
 
+#[cfg(feature = "gpu")]
 pub use pollster;
 
 /// Synchronously resolves the current top `wgpu` error scope by polling the device once.
@@ -92,6 +120,7 @@ pub use pollster;
 /// # Panics
 ///
 /// Panics if the error-scope future is still pending after `device.poll(Poll)`.
+#[cfg(feature = "gpu")]
 #[inline]
 #[must_use]
 pub fn pop_error_scope_now(device: &wgpu::Device, scope: &'static str) -> Option<wgpu::Error> {

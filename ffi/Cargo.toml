@@ -29,7 +29,7 @@ cbindgen = { version = "0.29.2", optional = true }
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.21.1", optional = true }
 bytemuck = { version = "1.25", optional = true }
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-svg.workspace = true
 waterui-icon.workspace = true
 waterui-webview.workspace = true

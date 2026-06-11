@@ -12,7 +12,7 @@ categories = ["gui", "multimedia"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-layout.workspace = true
 waterkit-codec = { workspace = true, features = ["software-fallback"] }
 tracing.workspace = true

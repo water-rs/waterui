@@ -38,7 +38,7 @@ cpu-time.workspace = true
 pulldown-cmark = "0.13"
 waterui-macros.workspace = true
 libloading = "0.9"
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-svg.workspace = true

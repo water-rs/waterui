@@ -17,6 +17,6 @@ dev = ["waterui/dynamic_linking"]
 [dependencies]
 waterui.workspace = true
 waterui-core.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 [package.metadata.cargo-machete]
 ignored = ["waterui-core"]

@@ -21,16 +21,20 @@
 //! - Layout traits: [`SubView`], [`StretchAxis`], [`Layout`]
 //! - View types: [`AnyView`], [`View`], [`Environment`]
 
+#[cfg(feature = "widgets")]
 pub mod animation;
 pub mod dispatcher;
 pub mod frame_signals;
+#[cfg(feature = "gestures")]
 pub mod gesture;
 pub mod input;
 pub mod scroll;
 pub mod time;
+#[cfg(feature = "widgets")]
 pub mod widget;
 
 pub use dispatcher::ViewDispatcher;
+#[cfg(feature = "widgets")]
 pub use widget::{Brush, DrawContext, WidgetTheme};
 
 // Re-export common types from waterui-core
