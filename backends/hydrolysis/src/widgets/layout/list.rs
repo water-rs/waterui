@@ -218,14 +218,7 @@ pub(crate) fn render_list(
 
         let deletable = ctx.renderer_mut().read_signal(&item.deletable);
         let content_size = measure_view_intrinsic(&item.content, ctx.state_mut(), &row_env);
-        let stretches_horizontally = matches!(
-            crate::renderer::effective_stretch_axis(&item.content),
-            waterui_core::layout::StretchAxis::Horizontal
-                | waterui_core::layout::StretchAxis::Both
-                | waterui_core::layout::StretchAxis::MainAxis
-        );
-        let mut content_rect =
-            list_content_rect(row_rect, list_metrics, content_size, stretches_horizontally);
+        let mut content_rect = list_content_rect(row_rect, list_metrics, content_size);
         let mut trailing_x = row_rect.x1 - 8.0;
 
         if let (true, Some(move_action)) = (editing, move_action.as_ref()) {
@@ -393,18 +386,13 @@ fn list_content_rect(
     row_rect: vello::kurbo::Rect,
     metrics: waterui_backend_core::widget::ListMetrics,
     content_size: waterui_core::layout::Size,
-    stretches_horizontally: bool,
 ) -> vello::kurbo::Rect {
+    // Rows propose their full inset width to the content; horizontal
+    // alignment belongs to the content itself (composite items cannot be
+    // statically classified as stretching, and interactive rows must keep a
+    // full-width hit target).
     let x0 = row_rect.x0 + metrics.horizontal_inset;
-    let max_x1 = row_rect.x1 - metrics.horizontal_inset;
-    // List rows are leading-aligned: non-stretching content is placed at its
-    // intrinsic width from the leading inset (Material list item layout),
-    // while stretching content fills the available row width.
-    let x1 = if stretches_horizontally {
-        max_x1
-    } else {
-        (x0 + f64::from(content_size.width)).min(max_x1)
-    };
+    let x1 = row_rect.x1 - metrics.horizontal_inset;
     let available_height = (row_rect.height() - metrics.vertical_inset * 2.0).max(0.0);
     let height = f64::from(content_size.height).min(available_height);
     let y0 = row_rect.y0 + (row_rect.height() - height) * 0.5;
