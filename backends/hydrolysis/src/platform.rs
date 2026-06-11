@@ -1012,7 +1012,7 @@ mod winit_impl {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
                         delta: *delta as f32,
-                        phase: (*phase).into(),
+                        phase: map_touch_phase(*phase),
                     });
                 }
                 WindowEvent::RotationGesture { delta, phase, .. } => {
@@ -1020,7 +1020,7 @@ mod winit_impl {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
                         delta: *delta,
-                        phase: (*phase).into(),
+                        phase: map_touch_phase(*phase),
                     });
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
@@ -1252,14 +1252,12 @@ mod winit_impl {
         }
     }
 
-    impl From<WinitTouchPhase> for TouchPhase {
-        fn from(value: WinitTouchPhase) -> Self {
-            match value {
-                WinitTouchPhase::Started => Self::Started,
-                WinitTouchPhase::Moved => Self::Moved,
-                WinitTouchPhase::Ended => Self::Ended,
-                WinitTouchPhase::Cancelled => Self::Cancelled,
-            }
+    fn map_touch_phase(phase: WinitTouchPhase) -> TouchPhase {
+        match phase {
+            WinitTouchPhase::Started => TouchPhase::Started,
+            WinitTouchPhase::Moved => TouchPhase::Moved,
+            WinitTouchPhase::Ended => TouchPhase::Ended,
+            WinitTouchPhase::Cancelled => TouchPhase::Cancelled,
         }
     }
 
