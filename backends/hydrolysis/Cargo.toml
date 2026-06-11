@@ -17,7 +17,7 @@ waterui = { version = "0.2.1", path = "../..", default-features = false }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nami.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-canvas.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
@@ -28,7 +28,7 @@ waterui-webview.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-backend-core.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
 waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 vello.workspace = true
