@@ -32,6 +32,8 @@ pub mod display;
 pub mod display_list;
 pub mod painter;
 pub mod runtime;
+#[cfg(feature = "simulator")]
+pub mod simulator;
 pub mod text;
 
 pub use compositor::{BandScheduler, DeviceRegion};
