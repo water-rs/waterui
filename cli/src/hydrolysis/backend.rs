@@ -103,8 +103,10 @@ impl Default for HydrolysisBackend {
 impl Backend for HydrolysisBackend {
     const DEFAULT_PATH: &'static str = "hydrolysis";
 
-    // Hydrolysis uses Cargo build cache in `target/`.
-    const CACHE_PATHS: &'static [&'static str] = &[];
+    // The build cache lives in the repository `target/`; the lockfile is
+    // dependency state, not generated content, and survives regeneration so
+    // resolved versions stay stable across template updates.
+    const CACHE_PATHS: &'static [&'static str] = &["Cargo.lock"];
 
     fn path(&self) -> &Path {
         &self.project_path
