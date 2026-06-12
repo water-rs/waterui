@@ -14,20 +14,17 @@ use crate::project::Project;
 use crate::project_model::assets;
 use crate::utils::command;
 
-const HYDROLYSIS_PREVIEW_OUTPUT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_OUTPUT";
-const HYDROLYSIS_PREVIEW_OUTPUT_DIR_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_OUTPUT_DIR";
-const HYDROLYSIS_PREVIEW_WIDTH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_WIDTH";
-const HYDROLYSIS_PREVIEW_HEIGHT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_HEIGHT";
-const HYDROLYSIS_PREVIEW_CAPTURE_MS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_CAPTURE_MS";
-const HYDROLYSIS_PREVIEW_EVENTS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_EVENTS";
-const HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_WARMUPS";
-const HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_SAMPLES";
-const HYDROLYSIS_PREVIEW_PERF_REPETITIONS_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_PERF_REPETITIONS";
-const HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_FLAMEGRAPH";
-const HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV: &str =
-    "WATERUI_HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY";
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
+
+pub use waterui_preview_protocol::hydrolysis::{
+    PerfRunConfig as HydrolysisPreviewPerfRun, ScenarioEvent as HydrolysisPreviewScenarioEvent,
+    ScenarioEventKind as HydrolysisPreviewEventKind,
+    ScenarioPointerButton as HydrolysisPreviewPointerButton,
+};
+use waterui_preview_protocol::hydrolysis::{
+    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
+};
 
 /// Theme package selected for Hydrolysis preview rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,12 +34,6 @@ pub enum HydrolysisPreviewTheme {
 }
 
 impl HydrolysisPreviewTheme {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Material3 => "material3",
-        }
-    }
-
     const fn installer(self) -> &'static str {
         match self {
             Self::Material3 => "hydrolysis_m3::install",
@@ -70,110 +61,12 @@ pub enum HydrolysisPreviewSource<'a> {
 }
 
 /// Hydrolysis preview test mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HydrolysisPreviewTestMode {
     /// Semantic accessibility-tree test without a render target.
     Semantic,
     /// Full offscreen GPU performance test.
-    Perf,
-}
-
-impl HydrolysisPreviewTestMode {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Semantic => "semantic",
-            Self::Perf => "perf",
-        }
-    }
-}
-
-/// Repeated frame sampling configuration for Hydrolysis preview perf.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HydrolysisPreviewPerfConfig {
-    /// Warmup frame count before recording samples.
-    pub warmups: u32,
-    /// Recorded frame count.
-    pub samples: u32,
-    /// Independent repetitions.
-    pub repetitions: u32,
-}
-
-/// Optional CPU call-stack flamegraph configuration for preview perf.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HydrolysisPreviewFlamegraph {
-    /// Output SVG path.
-    pub output_path: PathBuf,
-    /// Sampling frequency in Hertz.
-    pub frequency: i32,
-}
-
-/// Pointer button used by a Hydrolysis preview scenario event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HydrolysisPreviewPointerButton {
-    /// Primary pointer button.
-    Primary,
-    /// Secondary pointer button.
-    Secondary,
-    /// Middle pointer button.
-    Middle,
-}
-
-impl HydrolysisPreviewPointerButton {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Primary => "primary",
-            Self::Secondary => "secondary",
-            Self::Middle => "middle",
-        }
-    }
-}
-
-/// Event kind in a Hydrolysis preview scenario.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HydrolysisPreviewEventKind {
-    /// Move the pointer without pressing.
-    PointerMove,
-    /// Press a pointer button.
-    PointerDown,
-    /// Release a pointer button.
-    PointerUp,
-    /// Cancel the active pointer.
-    PointerCancel,
-    /// Dispatch a wheel or trackpad scroll event.
-    Scroll,
-}
-
-impl HydrolysisPreviewEventKind {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::PointerMove => "pointer_move",
-            Self::PointerDown => "pointer_down",
-            Self::PointerUp => "pointer_up",
-            Self::PointerCancel => "pointer_cancel",
-            Self::Scroll => "scroll",
-        }
-    }
-}
-
-/// One input event in a Hydrolysis preview scenario.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HydrolysisPreviewScenarioEvent {
-    /// Event timestamp in milliseconds from scenario start.
-    pub at_ms: u64,
-    /// Event kind.
-    pub kind: HydrolysisPreviewEventKind,
-    /// Pointer x coordinate in WaterUI logical units.
-    pub x: f32,
-    /// Pointer y coordinate in WaterUI logical units.
-    pub y: f32,
-    /// Pointer button for down/up events.
-    pub button: Option<HydrolysisPreviewPointerButton>,
-    /// Scroll delta along the x axis for scroll events.
-    pub dx: f32,
-    /// Scroll delta along the y axis for scroll events.
-    pub dy: f32,
-    /// Whether scroll delta values are line units instead of logical units.
-    pub is_line_delta: bool,
+    Perf(HydrolysisPreviewPerfRun),
 }
 
 /// Interactive capture scenario for Hydrolysis preview.
@@ -188,41 +81,16 @@ pub struct HydrolysisPreviewScenario {
 }
 
 #[derive(Template)]
-#[template(path = "src/preview/hydrolysis_preview_symbol.rs.tpl", escape = "none")]
-struct HydrolysisPreviewSymbolTemplate<'a> {
+#[template(path = "src/preview/hydrolysis_preview_bindings.rs.tpl", escape = "none")]
+struct HydrolysisPreviewBindingsTemplate<'a> {
     expression_mode: bool,
     preview_symbol: &'a str,
     preview_expression: &'a str,
     crate_name_ident: &'a str,
-    preview_theme: &'a str,
     preview_theme_installer: &'a str,
-    preview_output_env: &'a str,
-    preview_output_dir_env: &'a str,
-    preview_width_env: &'a str,
-    preview_height_env: &'a str,
-    preview_capture_ms_env: &'a str,
-    preview_events_env: &'a str,
-}
-
-#[derive(Template)]
-#[template(path = "src/preview/hydrolysis_preview_test.rs.tpl", escape = "none")]
-struct HydrolysisPreviewTestTemplate<'a> {
-    expression_mode: bool,
-    preview_symbol: &'a str,
-    preview_expression: &'a str,
-    crate_name_ident: &'a str,
-    preview_theme: &'a str,
-    preview_theme_installer: &'a str,
-    test_mode: &'a str,
+    include_automation: bool,
     semantic_automation_body: &'a str,
     perf_automation_body: &'a str,
-    preview_width_env: &'a str,
-    preview_height_env: &'a str,
-    perf_warmups_env: &'a str,
-    perf_samples_env: &'a str,
-    perf_repetitions_env: &'a str,
-    flamegraph_env: &'a str,
-    flamegraph_frequency_env: &'a str,
 }
 
 /// Render a preview via the managed Hydrolysis backend binary.
@@ -240,7 +108,7 @@ pub async fn render_preview_with_hydrolysis(
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
-    write_preview_symbol_bindings(&project, source, theme).await?;
+    write_preview_bindings(&project, source, theme, None).await?;
     stage_preview_resources(&project, theme).await?;
 
     let mut build_options = BuildOptions::new(false);
@@ -264,7 +132,6 @@ pub async fn render_preview_with_hydrolysis(
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
-#[allow(clippy::too_many_arguments)]
 pub async fn test_preview_with_hydrolysis(
     project_path: &Path,
     source: HydrolysisPreviewSource<'_>,
@@ -274,11 +141,18 @@ pub async fn test_preview_with_hydrolysis(
     height: f32,
     sccache_path: Option<PathBuf>,
     automation_body: &str,
-    perf_config: Option<HydrolysisPreviewPerfConfig>,
-    flamegraph: Option<&HydrolysisPreviewFlamegraph>,
 ) -> Result<String> {
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
-    write_preview_test_bindings(&project, source, theme, mode, automation_body).await?;
+    write_preview_bindings(
+        &project,
+        source,
+        theme,
+        Some(PreviewAutomation {
+            mode: &mode,
+            body: automation_body,
+        }),
+    )
+    .await?;
     stage_preview_resources(&project, theme).await?;
 
     let mut build_options = BuildOptions::new(false);
@@ -295,15 +169,7 @@ pub async fn test_preview_with_hydrolysis(
     .await?;
 
     let binary_path = built_hydrolysis_binary_path(&project, "debug").await?;
-    run_preview_test_binary(
-        &project,
-        &binary_path,
-        width,
-        height,
-        perf_config,
-        flamegraph,
-    )
-    .await
+    run_preview_test_binary(&project, &binary_path, width, height, &mode).await
 }
 
 async fn stage_preview_resources(project: &Project, theme: HydrolysisPreviewTheme) -> Result<()> {
@@ -345,90 +211,69 @@ async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project>
     Ok(project)
 }
 
-async fn write_preview_symbol_bindings(
+/// Automation bound into the preview test binding.
+struct PreviewAutomation<'a> {
+    mode: &'a HydrolysisPreviewTestMode,
+    body: &'a str,
+}
+
+async fn write_preview_bindings(
     project: &Project,
     source: HydrolysisPreviewSource<'_>,
     theme: HydrolysisPreviewTheme,
+    automation: Option<PreviewAutomation<'_>>,
 ) -> Result<()> {
+    let file_name = if automation.is_some() {
+        "preview_test.rs"
+    } else {
+        "preview_symbol.rs"
+    };
     let module_path = project
         .backend_path::<HydrolysisBackend>()
         .join("src")
-        .join("preview_symbol.rs");
+        .join(file_name);
     let crate_name_ident = project.crate_name().rust_ident();
     let (expression_mode, preview_symbol, preview_expression) = match source {
         HydrolysisPreviewSource::Symbol(symbol) => (false, symbol, ""),
         HydrolysisPreviewSource::Expression(expression) => (true, "", expression),
     };
-    let rendered = HydrolysisPreviewSymbolTemplate {
+    let (semantic_automation_body, perf_automation_body) =
+        automation.as_ref().map_or(("", ""), |automation| {
+            match automation.mode {
+                HydrolysisPreviewTestMode::Semantic => (automation.body, ""),
+                HydrolysisPreviewTestMode::Perf(_) => ("", automation.body),
+            }
+        });
+    let rendered = HydrolysisPreviewBindingsTemplate {
         expression_mode,
         preview_symbol,
         preview_expression,
         crate_name_ident: crate_name_ident.as_str(),
-        preview_theme: theme.name(),
         preview_theme_installer: theme.installer(),
-        preview_output_env: HYDROLYSIS_PREVIEW_OUTPUT_ENV,
-        preview_output_dir_env: HYDROLYSIS_PREVIEW_OUTPUT_DIR_ENV,
-        preview_width_env: HYDROLYSIS_PREVIEW_WIDTH_ENV,
-        preview_height_env: HYDROLYSIS_PREVIEW_HEIGHT_ENV,
-        preview_capture_ms_env: HYDROLYSIS_PREVIEW_CAPTURE_MS_ENV,
-        preview_events_env: HYDROLYSIS_PREVIEW_EVENTS_ENV,
+        include_automation: automation.is_some(),
+        semantic_automation_body,
+        perf_automation_body,
     }
     .render()
-    .wrap_err("Failed to render hydrolysis preview symbol template")?;
+    .wrap_err("Failed to render hydrolysis preview bindings template")?;
     smol::fs::write(&module_path, rendered)
         .await
         .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;
     Ok(())
 }
 
-async fn write_preview_test_bindings(
-    project: &Project,
-    source: HydrolysisPreviewSource<'_>,
-    theme: HydrolysisPreviewTheme,
-    mode: HydrolysisPreviewTestMode,
-    automation_body: &str,
-) -> Result<()> {
-    let module_path = project
+/// Writes the run config JSON next to the backend sources and returns its
+/// path; the file is overwritten per invocation.
+async fn write_run_config(project: &Project, config: &PreviewRunConfig) -> Result<PathBuf> {
+    let path = project
         .backend_path::<HydrolysisBackend>()
-        .join("src")
-        .join("preview_test.rs");
-    let crate_name_ident = project.crate_name().rust_ident();
-    let (expression_mode, preview_symbol, preview_expression) = match source {
-        HydrolysisPreviewSource::Symbol(symbol) => (false, symbol, ""),
-        HydrolysisPreviewSource::Expression(expression) => (true, "", expression),
-    };
-    let rendered = HydrolysisPreviewTestTemplate {
-        expression_mode,
-        preview_symbol,
-        preview_expression,
-        crate_name_ident: crate_name_ident.as_str(),
-        preview_theme: theme.name(),
-        preview_theme_installer: theme.installer(),
-        test_mode: mode.as_str(),
-        semantic_automation_body: if mode == HydrolysisPreviewTestMode::Semantic {
-            automation_body
-        } else {
-            ""
-        },
-        perf_automation_body: if mode == HydrolysisPreviewTestMode::Perf {
-            automation_body
-        } else {
-            ""
-        },
-        preview_width_env: HYDROLYSIS_PREVIEW_WIDTH_ENV,
-        preview_height_env: HYDROLYSIS_PREVIEW_HEIGHT_ENV,
-        perf_warmups_env: HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV,
-        perf_samples_env: HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV,
-        perf_repetitions_env: HYDROLYSIS_PREVIEW_PERF_REPETITIONS_ENV,
-        flamegraph_env: HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV,
-        flamegraph_frequency_env: HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV,
-    }
-    .render()
-    .wrap_err("Failed to render hydrolysis preview test template")?;
-    smol::fs::write(&module_path, rendered)
+        .join("preview-run.json");
+    let json = serde_json::to_vec_pretty(config)
+        .wrap_err("Failed to serialize hydrolysis preview run config")?;
+    smol::fs::write(&path, json)
         .await
-        .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;
-    Ok(())
+        .wrap_err_with(|| format!("Failed to write {}", path.display()))?;
+    Ok(path)
 }
 
 async fn run_preview_binary(
@@ -439,27 +284,28 @@ async fn run_preview_binary(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
-    let absolute_preview_output_path = absolute_output_path(output_path)?;
+    let mode = match scenario {
+        Some(scenario) => PreviewRunMode::Scenario {
+            output_dir: absolute_output_path(&scenario.output_dir)?,
+            captures_ms: scenario.captures_ms.clone(),
+            events: scenario.events.clone(),
+        },
+        None => PreviewRunMode::Image {
+            output: absolute_output_path(output_path)?,
+        },
+    };
+    let config = PreviewRunConfig {
+        width,
+        height,
+        mode,
+    };
+    let config_path = write_run_config(project, &config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
 
     let mut child = smol::process::Command::new(binary_path);
     let child = command(&mut child);
     child.current_dir(&backend_path);
-    child.env(HYDROLYSIS_PREVIEW_OUTPUT_ENV, &absolute_preview_output_path);
-    child.env(HYDROLYSIS_PREVIEW_WIDTH_ENV, width.to_string());
-    child.env(HYDROLYSIS_PREVIEW_HEIGHT_ENV, height.to_string());
-    if let Some(scenario) = scenario {
-        let output_dir = absolute_output_path(&scenario.output_dir)?;
-        child.env(HYDROLYSIS_PREVIEW_OUTPUT_DIR_ENV, output_dir);
-        child.env(
-            HYDROLYSIS_PREVIEW_CAPTURE_MS_ENV,
-            encode_captures(&scenario.captures_ms),
-        );
-        child.env(
-            HYDROLYSIS_PREVIEW_EVENTS_ENV,
-            encode_events(&scenario.events),
-        );
-    }
+    child.env(PREVIEW_RUN_CONFIG_ENV, &config_path);
 
     let output = child.output().await.wrap_err_with(|| {
         format!(
@@ -481,37 +327,22 @@ async fn run_preview_binary(
         bail!("Hydrolysis preview binary failed: {details}");
     }
 
-    if let Some(scenario) = scenario {
-        let output_dir = absolute_output_path(&scenario.output_dir)?;
-        for capture_ms in &scenario.captures_ms {
-            let frame_path = scenario_frame_path(&output_dir, *capture_ms);
-            let metadata = smol::fs::metadata(&frame_path).await.wrap_err_with(|| {
-                format!(
-                    "Hydrolysis preview did not produce scenario frame {}",
-                    frame_path.display()
-                )
-            })?;
-            if metadata.len() == 0 {
-                bail!(
-                    "Hydrolysis preview wrote empty scenario frame to {}",
-                    frame_path.display()
-                );
+    match config.mode {
+        PreviewRunMode::Scenario {
+            ref output_dir,
+            ref captures_ms,
+            ..
+        } => {
+            for capture_ms in captures_ms {
+                let frame_path = scenario_frame_path(output_dir, *capture_ms);
+                expect_nonempty_output(&frame_path, "scenario frame").await?;
             }
         }
-    } else {
-        let metadata = smol::fs::metadata(&absolute_preview_output_path)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "Hydrolysis preview did not produce {}",
-                    absolute_preview_output_path.display()
-                )
-            })?;
-        if metadata.len() == 0 {
-            bail!(
-                "Hydrolysis preview wrote empty output to {}",
-                absolute_preview_output_path.display()
-            );
+        PreviewRunMode::Image { ref output } => {
+            expect_nonempty_output(output, "output").await?;
+        }
+        PreviewRunMode::Semantic | PreviewRunMode::Perf(_) => {
+            unreachable!("render runs only produce images or scenarios")
         }
     }
 
@@ -523,40 +354,32 @@ async fn run_preview_test_binary(
     binary_path: &Path,
     width: f32,
     height: f32,
-    perf_config: Option<HydrolysisPreviewPerfConfig>,
-    flamegraph: Option<&HydrolysisPreviewFlamegraph>,
+    mode: &HydrolysisPreviewTestMode,
 ) -> Result<String> {
+    let run_mode = match mode {
+        HydrolysisPreviewTestMode::Semantic => PreviewRunMode::Semantic,
+        HydrolysisPreviewTestMode::Perf(perf) => {
+            let mut perf = perf.clone();
+            perf.flamegraph = perf
+                .flamegraph
+                .as_deref()
+                .map(absolute_output_path)
+                .transpose()?;
+            PreviewRunMode::Perf(perf)
+        }
+    };
+    let config = PreviewRunConfig {
+        width,
+        height,
+        mode: run_mode,
+    };
+    let config_path = write_run_config(project, &config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
 
     let mut child = smol::process::Command::new(binary_path);
     let child = command(&mut child);
     child.current_dir(&backend_path);
-    child.env(HYDROLYSIS_PREVIEW_WIDTH_ENV, width.to_string());
-    child.env(HYDROLYSIS_PREVIEW_HEIGHT_ENV, height.to_string());
-    if let Some(config) = perf_config {
-        child.env(
-            HYDROLYSIS_PREVIEW_PERF_WARMUPS_ENV,
-            config.warmups.to_string(),
-        );
-        child.env(
-            HYDROLYSIS_PREVIEW_PERF_SAMPLES_ENV,
-            config.samples.to_string(),
-        );
-        child.env(
-            HYDROLYSIS_PREVIEW_PERF_REPETITIONS_ENV,
-            config.repetitions.to_string(),
-        );
-    }
-    if let Some(flamegraph) = flamegraph {
-        child.env(
-            HYDROLYSIS_PREVIEW_FLAMEGRAPH_ENV,
-            absolute_output_path(&flamegraph.output_path)?,
-        );
-        child.env(
-            HYDROLYSIS_PREVIEW_FLAMEGRAPH_FREQUENCY_ENV,
-            flamegraph.frequency.to_string(),
-        );
-    }
+    child.env(PREVIEW_RUN_CONFIG_ENV, &config_path);
 
     let output = child.output().await.wrap_err_with(|| {
         format!(
@@ -578,59 +401,33 @@ async fn run_preview_test_binary(
         bail!("Hydrolysis preview test binary failed: {details}");
     }
 
-    if let Some(flamegraph) = flamegraph {
-        let flamegraph_path = absolute_output_path(&flamegraph.output_path)?;
-        let metadata = smol::fs::metadata(&flamegraph_path)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "Hydrolysis preview perf did not produce flamegraph {}",
-                    flamegraph_path.display()
-                )
-            })?;
-        if metadata.len() == 0 {
-            bail!(
-                "Hydrolysis preview perf wrote empty flamegraph to {}",
-                flamegraph_path.display()
-            );
-        }
+    if let PreviewRunMode::Perf(perf) = &config.mode
+        && let Some(flamegraph) = &perf.flamegraph
+    {
+        expect_nonempty_output(flamegraph, "flamegraph").await?;
     }
 
     Ok(stdout)
 }
 
+async fn expect_nonempty_output(path: &Path, what: &str) -> Result<()> {
+    let metadata = smol::fs::metadata(path).await.wrap_err_with(|| {
+        format!(
+            "Hydrolysis preview did not produce {what} {}",
+            path.display()
+        )
+    })?;
+    if metadata.len() == 0 {
+        bail!(
+            "Hydrolysis preview wrote empty {what} to {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
     output_dir.join(format!("frame-{capture_ms:04}ms.png"))
-}
-
-fn encode_captures(captures_ms: &[u64]) -> String {
-    captures_ms
-        .iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn encode_events(events: &[HydrolysisPreviewScenarioEvent]) -> String {
-    events
-        .iter()
-        .map(|event| {
-            format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}",
-                event.at_ms,
-                event.kind.as_str(),
-                event.x,
-                event.y,
-                event
-                    .button
-                    .map_or("", HydrolysisPreviewPointerButton::as_str),
-                event.dx,
-                event.dy,
-                u8::from(event.is_line_delta)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(";")
 }
 
 fn absolute_output_path(path: &Path) -> Result<PathBuf> {

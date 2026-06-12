@@ -17,12 +17,11 @@ use crate::toolchain_checks;
 use crate::{error, header, note, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
 use waterui_cli::preview::{
-    HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewScenario,
-    HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource, HydrolysisPreviewTestMode,
-    HydrolysisPreviewTheme, PreviewPlatform, PreviewSession, launch_preview_session,
-    render_preview_with_hydrolysis, test_preview_with_hydrolysis,
+    HydrolysisPreviewEventKind, HydrolysisPreviewPerfRun, HydrolysisPreviewPointerButton,
+    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,
+    HydrolysisPreviewTestMode, HydrolysisPreviewTheme, PreviewPlatform, PreviewSession,
+    launch_preview_session, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
-use waterui_cli::preview::{HydrolysisPreviewFlamegraph, HydrolysisPreviewPerfConfig};
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
 
@@ -84,8 +83,6 @@ async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
             height,
             sccache_path.clone(),
             &automation_body,
-            None,
-            None,
         )
         .await?;
         if let Some(s) = spinner {
@@ -129,12 +126,8 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
     let format_output = args.output.clone();
     let flamegraph_path =
         resolve_preview_perf_flamegraph_path(args.all, format_output.as_deref(), args.flamegraph);
-    let flamegraphs = resolve_flamegraphs(
-        Some(flamegraph_path.as_path()),
-        args.all,
-        &targets,
-        args.flamegraph_frequency,
-    )?;
+    let flamegraphs =
+        resolve_flamegraphs(Some(flamegraph_path.as_path()), args.all, &targets)?;
     let json_reports =
         resolve_perf_artifacts(args.report_json.as_deref(), args.all, &targets, "json")?;
     let traces = resolve_perf_artifacts(args.trace.as_deref(), args.all, &targets, "json")?;
@@ -159,17 +152,17 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
             &project_path,
             target.hydrolysis_source(),
             args.theme.into(),
-            HydrolysisPreviewTestMode::Perf,
+            HydrolysisPreviewTestMode::Perf(HydrolysisPreviewPerfRun {
+                warmups: args.warmups,
+                samples: args.samples,
+                repetitions: args.repetitions,
+                flamegraph: flamegraph.clone(),
+                flamegraph_frequency: args.flamegraph_frequency,
+            }),
             width,
             height,
             sccache_path.clone(),
             &automation_body,
-            Some(HydrolysisPreviewPerfConfig {
-                warmups: args.warmups,
-                samples: args.samples,
-                repetitions: args.repetitions,
-            }),
-            flamegraph.as_ref(),
         )
         .await?;
         if let Some(s) = spinner {
@@ -178,7 +171,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         let mut perf_report =
             parse_preview_perf_output(target.display_name().to_string(), &output)?;
         if let Some(flamegraph) = flamegraph.as_ref() {
-            perf_report.flamegraph = Some(flamegraph.output_path.clone());
+            perf_report.flamegraph = Some(flamegraph.clone());
         }
         enforce_perf_budget(
             &perf_report,
@@ -209,7 +202,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
                 success!(
                     "Preview perf passed: {} (flamegraph: {})",
                     target.display_name(),
-                    flamegraph.output_path.display()
+                    flamegraph.display()
                 );
             } else {
                 success!("Preview perf passed: {}", target.display_name());
@@ -488,85 +481,9 @@ struct PreviewPerfReport {
     flamegraph: Option<PathBuf>,
 }
 
-#[derive(Debug, Serialize)]
-struct PreviewPerfMeasurement {
-    name: String,
-    samples: u64,
-    mean_us: u64,
-    median_us: u64,
-    p95_us: u64,
-    min_us: u64,
-    max_us: u64,
-    rebuilt_frames: u64,
-    rendered_frames: u64,
-    idle_frames: u64,
-    rendered_mean_us: u64,
-    rendered_p95_us: u64,
-    rendered_max_us: u64,
-    missed_120fps_frames: u64,
-    missed_60fps_frames: u64,
-    measurement_cache_hits: u64,
-    measurement_cache_misses: u64,
-    scene_layers: u64,
-    vello_scene_layers: u64,
-    gpu_surface_layers: u64,
-    clip_layers: u64,
-    max_clip_depth: u64,
-    applied_filter_count: u64,
-    applied_filter_capture_us: u64,
-    applied_filter_effect_us: u64,
-    phases: PreviewPerfPhases,
-    frames: Vec<PreviewPerfFrame>,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct PreviewPerfPhases {
-    rebuild_mean_us: u64,
-    rebuild_p95_us: u64,
-    build_content_mean_us: u64,
-    build_content_p95_us: u64,
-    scene_dispatch_mean_us: u64,
-    scene_dispatch_p95_us: u64,
-    scene_finish_mean_us: u64,
-    scene_finish_p95_us: u64,
-    render_mean_us: u64,
-    render_p95_us: u64,
-    animation_mean_us: u64,
-    input_mean_us: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct PreviewPerfFrame {
-    index: u64,
-    total_us: u64,
-    rebuild_us: u64,
-    build_content_us: u64,
-    scene_dispatch_us: u64,
-    scene_finish_us: u64,
-    render_us: u64,
-    acquire_us: u64,
-    present_us: u64,
-    animation_us: u64,
-    input_us: u64,
-    executor_before_us: u64,
-    executor_after_us: u64,
-    rebuilt: bool,
-    rendered: bool,
-    captured_snapshot: bool,
-    cpu_percent: f64,
-    memory_bytes: u64,
-    gpu_frame_us: u64,
-    measurement_cache_hits: u64,
-    measurement_cache_misses: u64,
-    scene_layers: u64,
-    vello_scene_layers: u64,
-    gpu_surface_layers: u64,
-    clip_layers: u64,
-    max_clip_depth: u64,
-    applied_filter_count: u64,
-    applied_filter_capture_us: u64,
-    applied_filter_effect_us: u64,
-}
+use waterui_preview_protocol::hydrolysis::{
+    PerfFrame as PreviewPerfFrame, PerfMeasurement as PreviewPerfMeasurement,
+};
 
 /// Run the preview command.
 ///
@@ -783,7 +700,8 @@ fn parse_scenario_event(event: ScenarioEventFile) -> Result<HydrolysisPreviewSce
             "middle" => Ok(HydrolysisPreviewPointerButton::Middle),
             other => bail!("unsupported Hydrolysis preview pointer button `{other}`"),
         })
-        .transpose()?;
+        .transpose()?
+        .unwrap_or_default();
     let needs_point = !matches!(kind, HydrolysisPreviewEventKind::PointerCancel);
     let x = match event.x {
         Some(x) => x,
@@ -963,8 +881,7 @@ fn resolve_flamegraphs(
     flamegraph: Option<&Path>,
     all: bool,
     targets: &[PreviewTarget],
-    frequency: i32,
-) -> Result<Vec<Option<HydrolysisPreviewFlamegraph>>> {
+) -> Result<Vec<Option<PathBuf>>> {
     let Some(path) = flamegraph else {
         return Ok(std::iter::repeat_with(|| None)
             .take(targets.len())
@@ -986,12 +903,7 @@ fn resolve_flamegraphs(
         std::fs::create_dir_all(&dir)?;
         return Ok(targets
             .iter()
-            .map(|target| {
-                Some(HydrolysisPreviewFlamegraph {
-                    output_path: dir.join(format!("{}.svg", target.file_stem())),
-                    frequency,
-                })
-            })
+            .map(|target| Some(dir.join(format!("{}.svg", target.file_stem()))))
             .collect());
     }
     if targets.len() != 1 {
@@ -1008,10 +920,7 @@ fn resolve_flamegraphs(
     {
         std::fs::create_dir_all(parent)?;
     }
-    Ok(vec![Some(HydrolysisPreviewFlamegraph {
-        output_path,
-        frequency,
-    })])
+    Ok(vec![Some(output_path)])
 }
 
 fn resolve_preview_perf_flamegraph_path(
@@ -1102,129 +1011,22 @@ fn resolve_perf_mode_artifacts(
 }
 
 fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerfReport> {
-    let mut measurements = BTreeMap::<String, PreviewPerfMeasurement>::new();
-    for line in output.lines().map(str::trim) {
-        if let Some(rest) = line.strip_prefix("perf ") {
-            let (name, fields) = parse_named_perf_fields(rest)?;
-            measurements.insert(
-                name.clone(),
-                PreviewPerfMeasurement {
-                    name,
-                    samples: parse_required_field(&fields, "samples")?,
-                    mean_us: parse_required_field(&fields, "mean")?,
-                    median_us: parse_required_field(&fields, "median")?,
-                    p95_us: parse_required_field(&fields, "p95")?,
-                    min_us: parse_required_field(&fields, "min")?,
-                    max_us: parse_required_field(&fields, "max")?,
-                    rebuilt_frames: parse_required_field(&fields, "rebuilt")?,
-                    rendered_frames: parse_required_field(&fields, "rendered")?,
-                    idle_frames: parse_required_field(&fields, "idle")?,
-                    rendered_mean_us: parse_required_field(&fields, "rendered_mean")?,
-                    rendered_p95_us: parse_required_field(&fields, "rendered_p95")?,
-                    rendered_max_us: parse_required_field(&fields, "rendered_max")?,
-                    missed_120fps_frames: 0,
-                    missed_60fps_frames: 0,
-                    measurement_cache_hits: 0,
-                    measurement_cache_misses: 0,
-                    scene_layers: 0,
-                    vello_scene_layers: 0,
-                    gpu_surface_layers: 0,
-                    clip_layers: 0,
-                    max_clip_depth: 0,
-                    applied_filter_count: 0,
-                    applied_filter_capture_us: 0,
-                    applied_filter_effect_us: 0,
-                    phases: PreviewPerfPhases::default(),
-                    frames: Vec::new(),
-                },
-            );
-        } else if let Some(rest) = line.strip_prefix("perf-phases ") {
-            let (name, fields) = parse_named_perf_fields(rest)?;
-            let measurement = measurements.get_mut(&name).ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "Hydrolysis preview perf emitted phases before measurement `{name}`"
-                )
-            })?;
-            measurement.phases = PreviewPerfPhases {
-                rebuild_mean_us: parse_required_field(&fields, "rebuild_mean")?,
-                rebuild_p95_us: parse_required_field(&fields, "rebuild_p95")?,
-                build_content_mean_us: parse_required_field(&fields, "build_content_mean")?,
-                build_content_p95_us: parse_required_field(&fields, "build_content_p95")?,
-                scene_dispatch_mean_us: parse_required_field(&fields, "scene_dispatch_mean")?,
-                scene_dispatch_p95_us: parse_required_field(&fields, "scene_dispatch_p95")?,
-                scene_finish_mean_us: parse_required_field(&fields, "scene_finish_mean")?,
-                scene_finish_p95_us: parse_required_field(&fields, "scene_finish_p95")?,
-                render_mean_us: parse_required_field(&fields, "render_mean")?,
-                render_p95_us: parse_required_field(&fields, "render_p95")?,
-                animation_mean_us: parse_required_field(&fields, "animation_mean")?,
-                input_mean_us: parse_required_field(&fields, "input_mean")?,
-            };
-            measurement.missed_120fps_frames = parse_required_field(&fields, "missed_120fps")?;
-            measurement.missed_60fps_frames = parse_required_field(&fields, "missed_60fps")?;
-            measurement.measurement_cache_hits =
-                parse_required_field(&fields, "measurement_cache_hits")?;
-            measurement.measurement_cache_misses =
-                parse_required_field(&fields, "measurement_cache_misses")?;
-            measurement.scene_layers = parse_required_field(&fields, "scene_layers")?;
-            measurement.vello_scene_layers = parse_required_field(&fields, "vello_scene_layers")?;
-            measurement.gpu_surface_layers = parse_required_field(&fields, "gpu_surface_layers")?;
-            measurement.clip_layers = parse_required_field(&fields, "clip_layers")?;
-            measurement.max_clip_depth = parse_required_field(&fields, "max_clip_depth")?;
-            measurement.applied_filter_count =
-                parse_required_field(&fields, "applied_filter_count")?;
-            measurement.applied_filter_capture_us =
-                parse_required_field(&fields, "applied_filter_capture")?;
-            measurement.applied_filter_effect_us =
-                parse_required_field(&fields, "applied_filter_effect")?;
-        } else if let Some(rest) = line.strip_prefix("perf-sample ") {
-            let (name, fields) = parse_named_perf_fields(rest)?;
-            let measurement = measurements.get_mut(&name).ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "Hydrolysis preview perf emitted sample before measurement `{name}`"
-                )
-            })?;
-            measurement.frames.push(PreviewPerfFrame {
-                index: parse_required_field(&fields, "index")?,
-                total_us: parse_required_field(&fields, "total")?,
-                rebuild_us: parse_required_field(&fields, "rebuild")?,
-                build_content_us: parse_required_field(&fields, "build_content")?,
-                scene_dispatch_us: parse_required_field(&fields, "scene_dispatch")?,
-                scene_finish_us: parse_required_field(&fields, "scene_finish")?,
-                render_us: parse_required_field(&fields, "render")?,
-                acquire_us: parse_required_field(&fields, "acquire")?,
-                present_us: parse_required_field(&fields, "present")?,
-                animation_us: parse_required_field(&fields, "animation")?,
-                input_us: parse_required_field(&fields, "input")?,
-                executor_before_us: parse_required_field(&fields, "executor_before")?,
-                executor_after_us: parse_required_field(&fields, "executor_after")?,
-                rebuilt: parse_required_field(&fields, "rebuilt")? != 0,
-                rendered: parse_required_field(&fields, "rendered")? != 0,
-                captured_snapshot: parse_required_field(&fields, "captured_snapshot")? != 0,
-                cpu_percent: parse_required_field(&fields, "cpu_percent_milli")? as f64 / 1000.0,
-                memory_bytes: parse_required_field(&fields, "memory_bytes")?,
-                gpu_frame_us: parse_required_field(&fields, "gpu_frame")?,
-                measurement_cache_hits: parse_required_field(&fields, "measurement_cache_hits")?,
-                measurement_cache_misses: parse_required_field(
-                    &fields,
-                    "measurement_cache_misses",
-                )?,
-                scene_layers: parse_required_field(&fields, "scene_layers")?,
-                vello_scene_layers: parse_required_field(&fields, "vello_scene_layers")?,
-                gpu_surface_layers: parse_required_field(&fields, "gpu_surface_layers")?,
-                clip_layers: parse_required_field(&fields, "clip_layers")?,
-                max_clip_depth: parse_required_field(&fields, "max_clip_depth")?,
-                applied_filter_count: parse_required_field(&fields, "applied_filter_count")?,
-                applied_filter_capture_us: parse_required_field(&fields, "applied_filter_capture")?,
-                applied_filter_effect_us: parse_required_field(&fields, "applied_filter_effect")?,
-            });
-        }
-    }
+    use waterui_preview_protocol::hydrolysis::PERF_REPORT_LINE_PREFIX;
+    let json = output
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix(PERF_REPORT_LINE_PREFIX))
+        .ok_or_else(|| color_eyre::eyre::eyre!("Hydrolysis preview perf emitted no perf report"))?;
+    let measurements: Vec<PreviewPerfMeasurement> = serde_json::from_str(json)
+        .map_err(|error| {
+            color_eyre::eyre::eyre!("Failed to parse hydrolysis preview perf report: {error}")
+        })?;
     if measurements.is_empty() {
         bail!("Hydrolysis preview perf emitted no perf measurements");
     }
     Ok(PreviewPerfReport {
         target,
-        measurements: measurements.into_values().collect(),
+        measurements,
         flamegraph: None,
     })
 }
@@ -1393,34 +1195,6 @@ fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfR
             .max()
             .unwrap_or_default(),
     })
-}
-
-fn parse_named_perf_fields(rest: &str) -> Result<(String, BTreeMap<String, u64>)> {
-    let mut parts = rest.split_whitespace();
-    let name = parts
-        .next()
-        .ok_or_else(|| color_eyre::eyre::eyre!("missing perf measurement name"))?
-        .to_string();
-    let mut fields = BTreeMap::new();
-    for part in parts {
-        let Some((key, value)) = part.split_once('=') else {
-            bail!("invalid perf field `{part}`");
-        };
-        let value = value
-            .strip_suffix("us")
-            .unwrap_or(value)
-            .parse::<u64>()
-            .map_err(|error| color_eyre::eyre::eyre!("invalid perf field `{part}`: {error}"))?;
-        fields.insert(key.to_string(), value);
-    }
-    Ok((name, fields))
-}
-
-fn parse_required_field(fields: &BTreeMap<String, u64>, name: &str) -> Result<u64> {
-    fields
-        .get(name)
-        .copied()
-        .ok_or_else(|| color_eyre::eyre::eyre!("missing perf field `{name}`"))
 }
 
 #[derive(Clone, Copy, Debug)]

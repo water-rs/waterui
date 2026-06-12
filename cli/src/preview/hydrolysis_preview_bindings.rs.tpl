@@ -1,14 +1,4 @@
-//! Generated Hydrolysis preview test binding for `{{ crate_name_ident }}`.
-
-pub(crate) const PREVIEW_THEME: &str = "{{ preview_theme }}";
-pub(crate) const PREVIEW_TEST_MODE: &str = "{{ test_mode }}";
-pub(crate) const PREVIEW_WIDTH_ENV: &str = "{{ preview_width_env }}";
-pub(crate) const PREVIEW_HEIGHT_ENV: &str = "{{ preview_height_env }}";
-pub(crate) const PERF_WARMUPS_ENV: &str = "{{ perf_warmups_env }}";
-pub(crate) const PERF_SAMPLES_ENV: &str = "{{ perf_samples_env }}";
-pub(crate) const PERF_REPETITIONS_ENV: &str = "{{ perf_repetitions_env }}";
-pub(crate) const FLAMEGRAPH_ENV: &str = "{{ flamegraph_env }}";
-pub(crate) const FLAMEGRAPH_FREQUENCY_ENV: &str = "{{ flamegraph_frequency_env }}";
+//! Generated Hydrolysis preview binding for `{{ crate_name_ident }}`.
 
 {% if expression_mode %}
 pub(crate) fn load_preview_view() -> waterui::AnyView {
@@ -42,6 +32,7 @@ pub(crate) fn load_preview_view() -> waterui::AnyView {
 pub(crate) fn install_preview_theme(env: &mut waterui::env::Environment) {
     {{ preview_theme_installer }}(env);
 }
+{% if include_automation %}
 
 pub(crate) fn run_semantic_automation(app: &mut waterui_testing::SemanticApp) {
     use waterui::prelude::*;
@@ -61,3 +52,4 @@ where
 
     {{ perf_automation_body }}
 }
+{% endif %}

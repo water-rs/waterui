@@ -1782,6 +1782,27 @@ pub mod hydrolysis {
                 ),
             ),
             (
+                "waterui-preview-protocol".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-preview-protocol",
+                            WATERUI_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                                "components/devtools/preview/protocol",
+                            )),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
+            (
+                "serde_json".to_string(),
+                GeneratedDependencyValue::simple("1"),
+            ),
+            (
                 "waterui-testing".to_string(),
                 GeneratedDependencyValue::detailed(
                     super::generated_dependency_from_spec(
