@@ -150,14 +150,6 @@ impl InteractionLayerHandles {
         true
     }
 
-    pub(crate) fn set_focus_visible(&self, visible: bool, now: Instant) {
-        let (target, animation) = if visible {
-            (1.0, self.motion.focus_enter.clone())
-        } else {
-            (0.0, self.motion.focus_exit.clone())
-        };
-        self.focus_alpha.apply_target(target, Some(animation), now);
-    }
 
     /// Records where window-space pointer coordinates land in the captured
     /// fragment's local frame; called at every target (re)registration.
@@ -239,18 +231,6 @@ impl InteractionLayerHandles {
         })
     }
 
-    /// Cancels a press without the minimum-duration retention (pointer
-    /// cancel / drag-away).
-    pub(crate) fn cancel_press(&self, now: Instant) -> bool {
-        if !self.pressing.replace(false) && self.released_at.get().is_none() {
-            return false;
-        }
-        self.released_at.set(None);
-        self.pressed_at.set(None);
-        self.press_alpha
-            .apply_target(0.0, Some(self.motion.press_fade_out.clone()), now);
-        true
-    }
 }
 
 /// The press ripple's replayable kinematics: the fragment is painted at full

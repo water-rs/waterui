@@ -61,7 +61,7 @@ pub enum HydrolysisPreviewSource<'a> {
 }
 
 /// Hydrolysis preview test mode.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HydrolysisPreviewTestMode {
     /// Semantic accessibility-tree test without a render target.
     Semantic,
@@ -93,20 +93,40 @@ struct HydrolysisPreviewBindingsTemplate<'a> {
     perf_automation_body: &'a str,
 }
 
+/// Common inputs for driving the managed Hydrolysis preview backend.
+#[derive(Debug, Clone)]
+pub struct HydrolysisPreviewRequest<'a> {
+    /// `WaterUI` project directory.
+    pub project_path: &'a Path,
+    /// Preview view source.
+    pub source: HydrolysisPreviewSource<'a>,
+    /// Theme package installed into the preview environment.
+    pub theme: HydrolysisPreviewTheme,
+    /// Viewport width in logical units.
+    pub width: f32,
+    /// Viewport height in logical units.
+    pub height: f32,
+    /// `sccache` binary used for compilation caching, when available.
+    pub sccache_path: Option<PathBuf>,
+}
+
 /// Render a preview via the managed Hydrolysis backend binary.
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
 pub async fn render_preview_with_hydrolysis(
-    project_path: &Path,
-    source: HydrolysisPreviewSource<'_>,
-    theme: HydrolysisPreviewTheme,
-    width: f32,
-    height: f32,
-    sccache_path: Option<PathBuf>,
+    request: HydrolysisPreviewRequest<'_>,
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
+    let HydrolysisPreviewRequest {
+        project_path,
+        source,
+        theme,
+        width,
+        height,
+        sccache_path,
+    } = request;
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
     write_preview_bindings(&project, source, theme, None).await?;
     stage_preview_resources(&project, theme).await?;
@@ -133,15 +153,18 @@ pub async fn render_preview_with_hydrolysis(
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
 pub async fn test_preview_with_hydrolysis(
-    project_path: &Path,
-    source: HydrolysisPreviewSource<'_>,
-    theme: HydrolysisPreviewTheme,
+    request: HydrolysisPreviewRequest<'_>,
     mode: HydrolysisPreviewTestMode,
-    width: f32,
-    height: f32,
-    sccache_path: Option<PathBuf>,
     automation_body: &str,
 ) -> Result<String> {
+    let HydrolysisPreviewRequest {
+        project_path,
+        source,
+        theme,
+        width,
+        height,
+        sccache_path,
+    } = request;
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
     write_preview_bindings(
         &project,

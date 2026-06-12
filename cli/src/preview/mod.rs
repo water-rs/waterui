@@ -16,8 +16,8 @@ pub mod watcher;
 pub use app_client::PreviewAppClient;
 pub use hydrolysis::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPerfRun, HydrolysisPreviewPointerButton,
-    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,
-    HydrolysisPreviewTestMode, HydrolysisPreviewTheme,
+    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
+    HydrolysisPreviewSource, HydrolysisPreviewTestMode, HydrolysisPreviewTheme,
     render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 pub use launcher::{PreviewSession, launch_preview_session};
