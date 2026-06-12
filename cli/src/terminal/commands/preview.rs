@@ -19,7 +19,8 @@ use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol}
 use waterui_cli::preview::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPerfRun, HydrolysisPreviewPointerButton,
     HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,
-    HydrolysisPreviewTestMode, HydrolysisPreviewTheme, PreviewPlatform, PreviewSession,
+    HydrolysisPreviewRequest, HydrolysisPreviewTestMode, HydrolysisPreviewTheme, PreviewPlatform,
+    PreviewSession,
     launch_preview_session, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 use waterui_cli::toolchain::sccache::Sccache;
@@ -75,13 +76,15 @@ async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
         header!("Preview test: {}", target.display_name());
         let spinner = shell::spinner("Building and testing with hydrolysis...");
         let output = test_preview_with_hydrolysis(
-            &project_path,
-            target.hydrolysis_source(),
-            args.theme.into(),
+            HydrolysisPreviewRequest {
+                project_path: &project_path,
+                source: target.hydrolysis_source(),
+                theme: args.theme.into(),
+                width,
+                height,
+                sccache_path: sccache_path.clone(),
+            },
             HydrolysisPreviewTestMode::Semantic,
-            width,
-            height,
-            sccache_path.clone(),
             &automation_body,
         )
         .await?;
@@ -149,9 +152,14 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
             .then(|| shell::spinner("Building and profiling with hydrolysis..."))
             .flatten();
         let output = test_preview_with_hydrolysis(
-            &project_path,
-            target.hydrolysis_source(),
-            args.theme.into(),
+            HydrolysisPreviewRequest {
+                project_path: &project_path,
+                source: target.hydrolysis_source(),
+                theme: args.theme.into(),
+                width,
+                height,
+                sccache_path: sccache_path.clone(),
+            },
             HydrolysisPreviewTestMode::Perf(HydrolysisPreviewPerfRun {
                 warmups: args.warmups,
                 samples: args.samples,
@@ -159,9 +167,6 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
                 flamegraph: flamegraph.clone(),
                 flamegraph_frequency: args.flamegraph_frequency,
             }),
-            width,
-            height,
-            sccache_path.clone(),
             &automation_body,
         )
         .await?;
@@ -535,12 +540,14 @@ pub async fn run(args: Args) -> Result<()> {
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
         let spinner = shell::spinner("Building and rendering with hydrolysis...");
         render_preview_with_hydrolysis(
-            &project_path,
-            preview_target.hydrolysis_source(),
-            hydrolysis_theme.expect("hydrolysis preview theme must be resolved"),
-            width,
-            height,
-            sccache_path,
+            HydrolysisPreviewRequest {
+                project_path: &project_path,
+                source: preview_target.hydrolysis_source(),
+                theme: hydrolysis_theme.expect("hydrolysis preview theme must be resolved"),
+                width,
+                height,
+                sccache_path,
+            },
             &args.output,
             scenario.as_ref(),
         )
