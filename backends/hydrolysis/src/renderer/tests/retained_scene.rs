@@ -21,7 +21,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_core::{AnyView, Environment};
 use waterui_layout::scroll;
-use waterui_layout::stack::{VStack, vstack};
+use waterui_layout::stack::{VStack, vstack, zstack};
 
 use waterui::graphics::Color;
 use waterui_core::dynamic::watch;
@@ -309,5 +309,63 @@ fn transform_in_scroll_never_rebuilds() {
     assert_eq!(
         metrics.measurement_misses, 0,
         "animated transform inside scroll must not re-measure: {metrics:?}"
+    );
+}
+
+/// A size-changing `Dynamic` patch escalates to a rebuild that must re-dispatch the new
+/// content at its reflowed bounds — not replay a capture made under the stale placement.
+/// An overlay-style `Dynamic` that grows from empty (zero-size) to visible content is the
+/// canonical case (snackbar presentation): the grown frame must render pixel-identical to
+/// composing the same content statically.
+#[test]
+fn dynamic_growth_from_empty_renders_content_after_escalation() {
+    use waterui::component::text;
+    use waterui_core::Dynamic;
+
+    fn overlay_content() -> AnyView {
+        AnyView::new(text("presented overlay"))
+    }
+
+    // Ground truth: the same composition built statically.
+    let static_builder = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(zstack((().size(360.0, 600.0), overlay_content())))
+    });
+    let mut static_env = Environment::new();
+    static_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut static_runtime = HeadlessRuntime::new_for_tests(static_env, static_builder, 400, 640);
+    let expected = static_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("static overlay frame must produce a snapshot");
+
+    // Mirror the runtime window composition: overlay Dynamic layered in a ZStack
+    // above the main content, sized by its own (initially zero) measurement.
+    let (handler, dynamic) = Dynamic::new();
+    handler.set(());
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(zstack((().size(360.0, 600.0), dynamic.clone())))
+    });
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
+
+    let start = Instant::now();
+    let _ = runtime.pump_at(true, start);
+
+    handler.set(overlay_content());
+    let result = runtime.pump_at(true, start + Duration::from_millis(16));
+    assert!(
+        result.profile.counters.rebuild_iterations > 0,
+        "growing a Dynamic from empty must escalate to a structural rebuild: {:?}",
+        result.profile.counters
+    );
+    let snapshot = result
+        .snapshot
+        .expect("escalated overlay frame must produce a snapshot");
+    assert!(
+        snapshot.rgba8 == expected.rgba8,
+        "the escalated rebuild must dispatch the overlay content at its reflowed bounds; \
+         a mismatch with the statically composed frame means a stale zero-size capture \
+         was replayed"
     );
 }

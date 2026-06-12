@@ -629,8 +629,14 @@ impl HydrolysisRenderer {
     }
 
     /// Re-dispatches a `Dynamic` node's content into its `cached_subtree`, refreshing the
-    /// intrinsic/proposal dimension caches. If the content's intrinsic size changed, the
-    /// surrounding layout must reflow, so this escalates to a full structural rebuild.
+    /// intrinsic/proposal dimension caches.
+    ///
+    /// If the content's intrinsic size changed, the surrounding layout must reflow:
+    /// this escalates to a full structural rebuild and the content goes back into
+    /// `pending_view` *without* being captured — a capture under `ctx` would bake the
+    /// content laid out for the node's stale bounds, and the escalated rebuild would
+    /// replay that stale capture at the reflowed placement. The rebuild dispatches the
+    /// pending content at its fresh layout context instead.
     pub(super) fn capture_dynamic_node_content(
         &mut self,
         identity: usize,
@@ -655,6 +661,17 @@ impl HydrolysisRenderer {
         self.state
             .measurement
             .store_dynamic_dimensions(identity, proposal, proposal_dimensions);
+        if previous_dimensions.is_some() && previous_dimensions.as_ref() != Some(&dimensions) {
+            let node = self
+                .lifecycle
+                .dynamic_nodes
+                .get_mut(&identity)
+                .expect("hydrolysis dynamic node missing during size-change escalation");
+            *node.pending_view.borrow_mut() = Some(content);
+            node.cached_subtree = None;
+            self.request_rebuild();
+            return;
+        }
         let local_ctx = ctx.with_identity_transforms(ctx.bounds);
         let subtree = Self::render_dynamic_subtree_with_local_interactions(
             self, ctx, local_ctx, env, content,
@@ -664,9 +681,6 @@ impl HydrolysisRenderer {
             .get_mut(&identity)
             .expect("hydrolysis dynamic node missing after connect")
             .cached_subtree = Some(subtree);
-        if previous_dimensions.is_some() && previous_dimensions.as_ref() != Some(&dimensions) {
-            self.request_rebuild();
-        }
     }
 
     /// Re-dispatches every dirty `Dynamic` node in isolation, refreshing only those
