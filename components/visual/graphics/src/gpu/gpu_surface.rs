@@ -256,10 +256,14 @@ impl GestureState {
 }
 
 /// A keyboard modifier set delivered with a [`KeyEvent`].
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyModifiers {
+    /// Shift held.
     pub shift: bool,
+    /// Control held.
     pub ctrl: bool,
+    /// Alt/Option held.
     pub alt: bool,
     /// Command on macOS, Super/Windows elsewhere.
     pub meta: bool,
@@ -268,19 +272,33 @@ pub struct KeyModifiers {
 /// A non-text key with a semantic meaning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NamedKey {
+    /// Return/Enter.
     Enter,
+    /// Tab.
     Tab,
+    /// Backspace.
     Backspace,
+    /// Forward delete.
     Delete,
+    /// Escape.
     Escape,
+    /// Up arrow.
     ArrowUp,
+    /// Down arrow.
     ArrowDown,
+    /// Left arrow.
     ArrowLeft,
+    /// Right arrow.
     ArrowRight,
+    /// Home.
     Home,
+    /// End.
     End,
+    /// Page up.
     PageUp,
+    /// Page down.
     PageDown,
+    /// Insert.
     Insert,
     /// A function key (`Function(1)` is F1).
     Function(u8),
@@ -302,7 +320,9 @@ pub enum KeyCode {
 /// surface is focused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyEvent {
+    /// The key pressed or released.
     pub key: KeyCode,
+    /// Active modifier keys.
     pub modifiers: KeyModifiers,
     /// `true` for key-down, `false` for key-up.
     pub pressed: bool,

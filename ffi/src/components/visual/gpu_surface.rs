@@ -1329,12 +1329,17 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_input(
 }
 
 /// FFI keyboard modifier flags.
+#[allow(clippy::struct_excessive_bools)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WuiKeyModifiers {
+    /// Shift held.
     pub shift: bool,
+    /// Control held.
     pub ctrl: bool,
+    /// Alt/Option held.
     pub alt: bool,
+    /// Command/Super held.
     pub meta: bool,
 }
 
@@ -1346,9 +1351,13 @@ pub struct WuiKeyModifiers {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WuiKeyEvent {
+    /// Unicode scalar value of the typed character, or 0 for a named key.
     pub codepoint: u32,
+    /// Named-key selector when `codepoint == 0` (see `named_key_from_ffi`).
     pub named: u32,
+    /// Active modifier keys.
     pub modifiers: WuiKeyModifiers,
+    /// `true` for key-down.
     pub pressed: bool,
 }
 
