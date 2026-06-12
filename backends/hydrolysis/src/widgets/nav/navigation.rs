@@ -6,7 +6,7 @@ use crate::renderer::accessibility_activation_point;
 use crate::renderer::navigation_state::NavigationTransitionDirection;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    local_state_child_env, local_state_overlay_env, measure_navigation_view_intrinsic,
+    measure_navigation_view_intrinsic,
     measure_owned_navigation_view_intrinsic, measure_view_intrinsic, navigation_back_button_rect,
     navigation_base_bar_height_for_display_mode, normalize_layout_view, resolved_color_to_peniko,
     split_compact_threshold, transformed_rect,
@@ -151,21 +151,19 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let split = view.as_inner();
-        let sidebar_env = local_state_child_env(env, 0);
-        let detail_env = local_state_child_env(env, 1);
         let sidebar = {
-            let sidebar_view = normalize_layout_view(split.sidebar().build(), &sidebar_env);
-            measure_view_intrinsic(&sidebar_view, state, &sidebar_env)
+            let sidebar_view = normalize_layout_view(split.sidebar().build(), env);
+            measure_view_intrinsic(&sidebar_view, state, env)
         };
         let detail = if let Some(selected) = split.selection().get() {
             measure_owned_navigation_view_intrinsic(
                 split.detail_builder().build(selected),
                 state,
-                &detail_env,
+                env,
             )
         } else {
-            let placeholder_view = normalize_layout_view(split.placeholder().build(), &detail_env);
-            measure_view_intrinsic(&placeholder_view, state, &detail_env)
+            let placeholder_view = normalize_layout_view(split.placeholder().build(), env);
+            measure_view_intrinsic(&placeholder_view, state, env)
         };
         LayoutSize::new(
             (f64::from(split.sidebar_width()) + f64::from(detail.width)) as f32,
@@ -396,7 +394,7 @@ pub(crate) fn render_navigation_split_layout(
 
     if compact && let Some(selected) = selected {
         let detail = split.detail_builder().build(selected);
-        let mut detail_env = local_state_child_env(env, 1);
+        let mut detail_env = env.clone();
         detail_env.insert(NavigationLeadingReserve(back_button_title_reserve(env)));
         ctx.dispatch_in_rect(&detail_env, AnyView::new(detail), ctx.bounds);
         let back_button_rect =
@@ -427,8 +425,8 @@ pub(crate) fn render_navigation_split_layout(
     );
     let detail_rect =
         vello::kurbo::Rect::new(sidebar_rect.x1, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
-    let sidebar_env = local_state_child_env(env, 0);
-    let detail_env = local_state_child_env(env, 1);
+    let sidebar_env = env.clone();
+    let detail_env = env.clone();
     ctx.dispatch_in_rect(&sidebar_env, split.sidebar().build(), sidebar_rect);
     if let Some(selected) = selected {
         let detail = split.detail_builder().build(selected);
@@ -461,7 +459,7 @@ pub(crate) fn render_navigation_stack(
         .controller
         .clone();
     if let Some(retained_env) = controller.retained_environment() {
-        local_env = local_state_overlay_env(&retained_env, &local_env);
+        local_env = retained_env;
     }
     local_env.insert(controller);
 

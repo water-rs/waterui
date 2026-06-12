@@ -106,6 +106,7 @@ impl HydrolysisRenderer {
         self.frame_applied_filter_capture = Duration::ZERO;
         self.frame_applied_filter_effect = Duration::ZERO;
         self.active_applied_filter_cursor = 0;
+        self.effect_runtime_slots.begin_rebuild_frame();
         self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
@@ -174,6 +175,7 @@ impl HydrolysisRenderer {
             .truncate(self.compositor.gpu_surface_cursor);
         self.active_applied_filters
             .truncate(self.active_applied_filter_cursor);
+        self.effect_runtime_slots.finish_rebuild_frame();
         self.popup_menu.finish_rebuild_frame();
         self.text_editing
             .text_selection_slots

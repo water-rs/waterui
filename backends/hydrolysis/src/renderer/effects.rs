@@ -3,6 +3,71 @@
 
 use super::*;
 
+/// Renderer-owned slots for effect runtimes that hold persistent GPU
+/// resources (textures, prepared pipelines) across structural rebuilds.
+///
+/// Slots are bound in dispatch order: the cursor resets at the start of every
+/// rebuild and unbound slots are dropped when the rebuild finishes — the same
+/// retention contract as `gpu_surface_slots` and the press controller. A
+/// content/type change at a reused slot is handled by the caller via
+/// `replace_*`, so a slot never serves a stale runtime kind.
+#[derive(Default)]
+pub(crate) struct EffectRuntimeSlots {
+    scene_views: RuntimeSlots<RefCell<SceneViewRuntime>>,
+    view_effects: RuntimeSlots<RefCell<ViewEffectRuntime>>,
+    applied_filters: RuntimeSlots<RefCell<AppliedFilterRuntime>>,
+}
+
+impl EffectRuntimeSlots {
+    pub(crate) fn begin_rebuild_frame(&mut self) {
+        self.scene_views.begin_rebuild_frame();
+        self.view_effects.begin_rebuild_frame();
+        self.applied_filters.begin_rebuild_frame();
+    }
+
+    pub(crate) fn finish_rebuild_frame(&mut self) {
+        self.scene_views.finish_rebuild_frame();
+        self.view_effects.finish_rebuild_frame();
+        self.applied_filters.finish_rebuild_frame();
+    }
+}
+
+pub(crate) struct RuntimeSlots<T> {
+    slots: Vec<Rc<T>>,
+    cursor: usize,
+}
+
+impl<T> Default for RuntimeSlots<T> {
+    fn default() -> Self {
+        Self {
+            slots: Vec::new(),
+            cursor: 0,
+        }
+    }
+}
+
+impl<T> RuntimeSlots<T> {
+    fn begin_rebuild_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn finish_rebuild_frame(&mut self) {
+        self.slots.truncate(self.cursor);
+    }
+
+    fn bind(&mut self, init: impl FnOnce() -> T) -> Rc<T> {
+        let index = self.cursor;
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .expect("hydrolysis effect runtime slot cursor overflow");
+        if index == self.slots.len() {
+            self.slots.push(Rc::new(init()));
+        }
+        Rc::clone(&self.slots[index])
+    }
+}
+
 pub(crate) struct AppliedFilterRuntime {
     filter: AppliedFilter,
     setup_complete: bool,
@@ -297,15 +362,16 @@ impl HydrolysisRenderer {
         scene_view: Native<SceneView>,
         env: &Environment,
     ) {
+        let _ = env;
         let scene_view = scene_view.into_inner();
         let incoming_content = Rc::new(RefCell::new(Some(scene_view.into_content())));
         let init_content = Rc::clone(&incoming_content);
-        let runtime = local_shared(env, move || {
+        let runtime = renderer.effect_runtime_slots.scene_views.bind(move || {
             RefCell::new(SceneViewRuntime::new(
                 init_content
                     .borrow_mut()
                     .take()
-                    .expect("hydrolysis SceneView local state initializer must run exactly once"),
+                    .expect("hydrolysis SceneView slot initializer must run exactly once"),
             ))
         });
         if let Some(content) = incoming_content.borrow_mut().take() {
@@ -344,14 +410,15 @@ impl HydrolysisRenderer {
         effect: Native<ViewEffectErased>,
         env: &Environment,
     ) {
+        let _ = env;
         let incoming_effect = Rc::new(RefCell::new(Some(effect.into_inner())));
         let init_effect = Rc::clone(&incoming_effect);
-        let runtime = local_shared(env, move || {
+        let runtime = renderer.effect_runtime_slots.view_effects.bind(move || {
             RefCell::new(ViewEffectRuntime::new(
                 init_effect
                     .borrow_mut()
                     .take()
-                    .expect("hydrolysis ViewEffect local state initializer must run exactly once"),
+                    .expect("hydrolysis ViewEffect slot initializer must run exactly once"),
             ))
         });
         let mut runtime = runtime.borrow_mut();
@@ -489,11 +556,12 @@ impl HydrolysisRenderer {
         let Metadata { content, value } = metadata;
         let incoming_filter = Rc::new(RefCell::new(Some(value)));
         let init_filter = Rc::clone(&incoming_filter);
-        let runtime = local_shared(env, move || {
+        let runtime = renderer.effect_runtime_slots.applied_filters.bind(move || {
             RefCell::new(AppliedFilterRuntime::new(
-                init_filter.borrow_mut().take().expect(
-                    "hydrolysis AppliedFilter local state initializer must run exactly once",
-                ),
+                init_filter
+                    .borrow_mut()
+                    .take()
+                    .expect("hydrolysis AppliedFilter slot initializer must run exactly once"),
             ))
         });
         if let Some(filter) = incoming_filter.borrow_mut().take() {
