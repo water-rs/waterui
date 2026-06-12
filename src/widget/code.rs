@@ -1,9 +1,5 @@
 use core::error::Error;
-use executor_core::spawn_local;
-use nami::Binding;
-use native_executor::sleep;
-use std::time::Duration;
-use waterui_core::View;
+use waterui_core::{State, View};
 use waterui_graphics::color::Color;
 use waterui_layout::{
     spacer,
@@ -11,14 +7,14 @@ use waterui_layout::{
 };
 use waterui_str::Str;
 use waterui_text::{
-    Text,
     font::{Body, Font},
     highlight::{DefaultHighlighter, Highlighter, Language},
     styled::{Style, StyledStr},
     text,
 };
 
-use crate::{AnimationExt, SignalExt, ViewExt};
+use crate::ViewExt;
+use crate::snackbar::{Snackbar, SnackbarManager};
 
 /// Copies text to the system clipboard.
 #[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
@@ -100,9 +96,9 @@ impl View for Code {
             s
         });
 
-        let copied = Binding::container(false);
-
-        // Code block with dark background, left-aligned content
+        // Code block with dark background, left-aligned content. Copy
+        // feedback is presented through the window's SnackbarManager (a
+        // semantic object owned by the runtime) instead of view-local state.
         VStack::new(
             HorizontalAlignment::Leading,
             8.0,
@@ -112,23 +108,12 @@ impl View for Code {
                         .bold()
                         .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
                     spacer(),
-                    Text::computed(
-                        copied
-                            .select("Copied", "Copy")
-                            .animated()
-                            .map(StyledStr::plain),
-                    )
-                    .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
-                    .on_tap(move || {
-                        copy_to_clipboard(&content_for_copy);
-                        let copied = copied.clone();
-                        spawn_local(async move {
-                            copied.set(true);
-                            sleep(Duration::from_secs(1)).await;
-                            copied.set(false);
-                        })
-                        .detach();
-                    }),
+                    text("Copy")
+                        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
+                        .on_tap(move |State(snackbar): State<SnackbarManager>| {
+                            copy_to_clipboard(&content_for_copy);
+                            snackbar.show(Snackbar::new("Copied to clipboard"));
+                        }),
                 )),
                 text(styled),
             ),
