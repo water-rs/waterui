@@ -1,5 +1,7 @@
 //! Shared TCP protocol between `water` CLI and the preview support app.
 
+pub mod hydrolysis;
+
 use serde::de::{Error as DeError, Visitor as DeVisitor};
 use serde::{Deserialize, Serialize};
 use std::fmt;

@@ -23,6 +23,7 @@ pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 executor-core.workspace = true
 sysinfo.workspace = true
+waterui-preview-protocol.workspace = true
 
 [dev-dependencies]
 bitflags.workspace = true
