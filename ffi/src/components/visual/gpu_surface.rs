@@ -28,7 +28,8 @@ use {
 };
 
 use waterui_graphics::gpu_surface::{
-    GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
+    GestureState, GpuContext, GpuFrame, GpuSurface, KeyCode, KeyEvent, KeyModifiers, NamedKey,
+    PointerState, RedrawHandle,
 };
 use waterui_graphics::shared_context::shared_context;
 
@@ -340,6 +341,8 @@ pub struct WuiGpuSurfaceState {
     pointer_state: PointerState,
     /// Current gesture state (pinch, pan, double-tap)
     gesture_state: GestureState,
+    /// Keyboard events for the current frame (replaced each `set_keys` call).
+    keyboard_events: Vec<KeyEvent>,
     /// Animation clock start for frame timing.
     start_time: Instant,
     /// Timestamp of the previous render.
@@ -574,6 +577,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             current_height: height,
             pointer_state: PointerState::default(),
             gesture_state: GestureState::default(),
+            keyboard_events: Vec::new(),
             start_time: now,
             last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
             render_invocations: 0,
@@ -745,6 +749,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         );
 
         // Call user's render callback
+        frame.keyboard = &state.keyboard_events;
         state.gpu_surface.render(&mut frame);
         let needs_redraw = frame.was_redraw_requested() || state.redraw_handle.take_dirty();
         if trace_frame {
@@ -888,6 +893,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
             delta,
         );
 
+        frame.keyboard = &state.keyboard_events;
         state.gpu_surface.render(&mut frame);
         // Ensure external renderers see completed writes before returning.
         poll_capture_completion(&state.device)
@@ -1065,6 +1071,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         );
 
         trace_metal_capture_step("render_to_metal_texture: render");
+        frame.keyboard = &state.keyboard_events;
         state.gpu_surface.render(&mut frame);
         trace_metal_capture_step("render_to_metal_texture: poll");
         poll_capture_completion(&state.device)
@@ -1171,6 +1178,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
             delta,
         );
 
+        frame.keyboard = &state.keyboard_events;
         state.gpu_surface.render(&mut frame);
         output.present();
 
@@ -1318,6 +1326,94 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_input(
         unsafe { crate::expect_non_null_mut(state, "waterui_gpu_surface_set_input", "state") };
     state.pointer_state = pointer_state_from_ffi(input.pointer);
     state.gesture_state = gesture_state_from_ffi(input.gesture);
+}
+
+/// FFI keyboard modifier flags.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WuiKeyModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+/// FFI keyboard event.
+///
+/// `codepoint != 0` denotes a typed character (`KeyCode::Char`); otherwise
+/// `named` selects a [`NamedKey`] via `named_key_from_ffi`. `pressed` is `true`
+/// for key-down.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WuiKeyEvent {
+    pub codepoint: u32,
+    pub named: u32,
+    pub modifiers: WuiKeyModifiers,
+    pub pressed: bool,
+}
+
+fn named_key_from_ffi(named: u32) -> NamedKey {
+    match named {
+        0 => NamedKey::Enter,
+        1 => NamedKey::Tab,
+        2 => NamedKey::Backspace,
+        3 => NamedKey::Delete,
+        4 => NamedKey::Escape,
+        5 => NamedKey::ArrowUp,
+        6 => NamedKey::ArrowDown,
+        7 => NamedKey::ArrowLeft,
+        8 => NamedKey::ArrowRight,
+        9 => NamedKey::Home,
+        10 => NamedKey::End,
+        11 => NamedKey::PageUp,
+        12 => NamedKey::PageDown,
+        13 => NamedKey::Insert,
+        f if f >= 100 => NamedKey::Function((f - 100) as u8),
+        _ => NamedKey::Escape,
+    }
+}
+
+fn key_event_from_ffi(event: WuiKeyEvent) -> KeyEvent {
+    let key = if event.codepoint != 0 {
+        KeyCode::Char(char::from_u32(event.codepoint).unwrap_or(char::REPLACEMENT_CHARACTER))
+    } else {
+        KeyCode::Named(named_key_from_ffi(event.named))
+    };
+    KeyEvent {
+        key,
+        modifiers: KeyModifiers {
+            shift: event.modifiers.shift,
+            ctrl: event.modifiers.ctrl,
+            alt: event.modifiers.alt,
+            meta: event.modifiers.meta,
+        },
+        pressed: event.pressed,
+    }
+}
+
+/// Replace the keyboard-event snapshot for a GpuSurface.
+///
+/// Native backends call this once per frame while the surface is the keyboard
+/// responder, passing the key events to deliver. `len == 0` clears the snapshot.
+///
+/// # Safety
+///
+/// `state` must be valid; `events` must point to `len` `WuiKeyEvent`s (or be
+/// null when `len == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_set_keys(
+    state: *mut WuiGpuSurfaceState,
+    events: *const WuiKeyEvent,
+    len: usize,
+) {
+    let state =
+        unsafe { crate::expect_non_null_mut(state, "waterui_gpu_surface_set_keys", "state") };
+    let slice = if events.is_null() || len == 0 {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(events, len) }
+    };
+    state.keyboard_events = slice.iter().copied().map(key_event_from_ffi).collect();
 }
 
 /// Create a wgpu Surface from a platform-specific layer pointer.
