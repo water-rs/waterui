@@ -10,7 +10,7 @@ pub(crate) fn flatten_environment_metadata_ref<'a>(
 ) -> (&'a AnyView, Environment) {
     let mut scoped_env = env.clone();
     while let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        scoped_env = local_state_overlay_env(&metadata.value, &scoped_env);
+        scoped_env = metadata.value.clone();
         view = &metadata.content;
     }
     (view, scoped_env)
@@ -25,7 +25,7 @@ pub(crate) fn flatten_environment_metadata_owned(
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
             .expect("environment metadata flattening downcast must succeed");
-        scoped_env = local_state_overlay_env(&value, &scoped_env);
+        scoped_env = value.clone();
         view = content;
     }
     (view, scoped_env)
@@ -149,9 +149,8 @@ fn normalize_layout_view_with_budget(
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
             .expect("layout normalization failed to downcast Metadata<Environment>");
-        let scoped_env = local_state_overlay_env(&value, env);
         let normalized_content =
-            normalize_layout_view_with_budget(content, &scoped_env, next_remaining);
+            normalize_layout_view_with_budget(content, &value, next_remaining);
         return AnyView::new(Metadata {
             content: normalized_content,
             value,
@@ -234,11 +233,10 @@ fn normalize_layout_view_with_budget(
             .expect("layout normalization failed to downcast Native<FixedContainer>");
         let (layout, children) = native.into_inner().into_inner();
         let mut normalized_children = Vec::with_capacity(children.len());
-        for (index, child) in children.into_iter().enumerate() {
-            let child_env = local_state_child_env(env, index);
+        for child in children {
             normalized_children.push(normalize_layout_view_with_budget(
                 child,
-                &child_env,
+                env,
                 next_remaining,
             ));
         }
@@ -257,9 +255,8 @@ fn normalize_layout_view_with_budget(
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
         let (axis, content) = native.into_inner().into_inner();
-        let child_env = local_state_child_env(env, 0);
         let normalized_content =
-            normalize_layout_view_with_budget(content, &child_env, next_remaining);
+            normalize_layout_view_with_budget(content, env, next_remaining);
         return AnyView::new(Native::new(ScrollView::new(axis, normalized_content)));
     }
 
@@ -283,10 +280,8 @@ fn normalize_layout_view_with_budget(
         return view;
     }
 
-    let body_env = local_state_body_env(env);
-    let body_content_env = local_state_body_content_env(env);
-    view = AnyView::new(view.body(&body_env));
-    normalize_layout_view_with_budget(view, &body_content_env, next_remaining)
+    view = AnyView::new(view.body(env));
+    normalize_layout_view_with_budget(view, env, next_remaining)
 }
 
 pub(crate) fn estimate_layout_intrinsic<'a>(
@@ -297,14 +292,9 @@ pub(crate) fn estimate_layout_intrinsic<'a>(
 ) -> LayoutSize {
     let state = RefCell::new(state);
     let children: Vec<&AnyView> = children.into_iter().collect();
-    let child_envs: Vec<Environment> = children
-        .iter()
-        .enumerate()
-        .map(|(index, _)| local_state_child_env(env, index))
-        .collect();
     let mut subviews = Vec::new();
-    for (child, child_env) in children.into_iter().zip(&child_envs) {
-        subviews.push(HydroSubview::from_view(child, &state, child_env));
+    for child in children {
+        subviews.push(HydroSubview::from_view(child, &state, env));
     }
     let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)

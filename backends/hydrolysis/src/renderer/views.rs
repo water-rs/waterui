@@ -87,17 +87,14 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let mut resolved_children = Vec::with_capacity(children.len());
-        let mut child_envs = Vec::with_capacity(children.len());
-        for (index, child) in children.into_iter().enumerate() {
-            let child_env = local_state_child_env(env, index);
-            resolved_children.push(normalize_layout_view(child, &child_env));
-            child_envs.push(child_env);
+        for child in children {
+            resolved_children.push(normalize_layout_view(child, env));
         }
 
         let state = RefCell::new(&mut renderer.state);
         let mut subviews = Vec::with_capacity(resolved_children.len());
-        for (child, child_env) in resolved_children.iter().zip(&child_envs) {
-            subviews.push(HydroSubview::from_view(child, &state, child_env));
+        for child in &resolved_children {
+            subviews.push(HydroSubview::from_view(child, &state, env));
         }
         let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
 
@@ -132,7 +129,7 @@ impl HydrolysisRenderer {
             Self::dispatch_any(
                 renderer,
                 ctx.child(child_transform, child_bounds),
-                &child_envs[index],
+                env,
                 child,
             );
         }
@@ -197,10 +194,9 @@ impl HydrolysisRenderer {
                 let child = children.get_view(index).unwrap_or_else(|| {
                     panic!("LazyContainer failed to materialize child at index {index}")
                 });
-                let child_env = local_state_child_env(env, index);
-                let child = normalize_layout_view(child, &child_env);
+                let child = normalize_layout_view(child, env);
                 let state = RefCell::new(&mut renderer.state);
-                let subview = HydroSubview::from_view(&child, &state, &child_env);
+                let subview = HydroSubview::from_view(&child, &state, env);
                 let proposal = match axis_config {
                     LazyStackAxisConfig::Vertical { .. } => {
                         ProposalSize::new(Some(ctx.bounds.width() as f32), None)
@@ -233,10 +229,9 @@ impl HydrolysisRenderer {
             let child = children.get_view(index).unwrap_or_else(|| {
                 panic!("LazyContainer failed to materialize child at index {index}")
             });
-            let child_env = local_state_child_env(env, index);
-            let child = normalize_layout_view(child, &child_env);
+            let child = normalize_layout_view(child, env);
             let state = RefCell::new(&mut renderer.state);
-            let subview = HydroSubview::from_view(&child, &state, &child_env);
+            let subview = HydroSubview::from_view(&child, &state, env);
             let proposal = match axis_config {
                 LazyStackAxisConfig::Vertical { .. } => {
                     ProposalSize::new(Some(ctx.bounds.width() as f32), None)
@@ -319,7 +314,7 @@ impl HydrolysisRenderer {
                     vello::kurbo::Affine::translate((child_rect.x0, child_rect.y0)),
                     vello::kurbo::Rect::new(0.0, 0.0, child_rect.width(), child_rect.height()),
                 ),
-                &child_env,
+                env,
                 child,
             );
             cursor += extent;

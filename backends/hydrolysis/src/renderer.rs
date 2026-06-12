@@ -49,7 +49,6 @@ use core::time::Duration;
 pub(crate) use input::*;
 pub(crate) use interaction_layers::*;
 pub(crate) use lifecycle::lazy;
-pub(crate) use lifecycle::local_shared;
 pub(crate) use lifecycle::*;
 pub(crate) use navigation::*;
 pub use render::HydrolysisRenderTarget;
@@ -76,7 +75,7 @@ use accesskit::{
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use executor_core::spawn_local;
-use nami::{Binding, Signal, with_local_binding_factory};
+use nami::{Binding, Signal};
 use rustc_hash::FxHashMap;
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
@@ -127,7 +126,7 @@ use waterui_core::layout::{
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, LocalStateScope, LocalStateStore, Metadata, Native,
+    AnyView, Environment, IgnorableMetadata, Metadata, Native,
     Retain, Str, View, impl_extractor,
 };
 use waterui_form::picker::PickerConfig;
@@ -232,6 +231,8 @@ pub struct HydrolysisRenderer {
     reuse_applied_filter_inputs: bool,
     active_applied_filters: Vec<ActiveAppliedFilter>,
     active_applied_filter_cursor: usize,
+    /// Effect runtimes holding persistent GPU resources; see [`EffectRuntimeSlots`].
+    effect_runtime_slots: EffectRuntimeSlots,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     accessibility: AccessibilityBuilder,
@@ -306,6 +307,7 @@ impl HydrolysisRenderer {
             reuse_applied_filter_inputs: false,
             active_applied_filters: Vec::new(),
             active_applied_filter_cursor: 0,
+            effect_runtime_slots: EffectRuntimeSlots::default(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             accessibility: AccessibilityBuilder::default(),

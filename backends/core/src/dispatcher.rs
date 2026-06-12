@@ -13,11 +13,8 @@ use core::{
 };
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
-use nami::with_local_binding_factory;
-use waterui_core::LocalStateStore;
-use waterui_core::{AnyView, Environment, LocalStateScope, View};
+use waterui_core::{AnyView, Environment, View};
 
 /// Handler that accepts a stack-allocated view via `&mut dyn Any` (`Option<V>` slot).
 type RawHandlerFn<T, C, R> = Box<dyn Fn(&mut T, C, &mut dyn Any, &Environment) -> R>;
@@ -102,27 +99,6 @@ impl Drop for DispatchTraceGuard {
             });
         }
     }
-}
-
-fn with_local_bindings<R>(env: &Environment, f: impl FnOnce() -> R) -> R {
-    let scope = env
-        .get::<LocalStateScope>()
-        .unwrap_or_else(|| {
-            panic!("waterui-backend-core dispatch requires LocalStateScope for local bindings")
-        })
-        .clone();
-    let store = env
-        .get::<LocalStateStore>()
-        .unwrap_or_else(|| {
-            panic!("waterui-backend-core dispatch requires LocalStateStore for local bindings")
-        })
-        .clone();
-    with_local_binding_factory(
-        Rc::new(move |type_id, type_name, init| {
-            store.get_or_init_dynamic(&scope, type_id, type_name, init)
-        }),
-        f,
-    )
 }
 
 impl<T: Default, C, R> ViewDispatcher<T, C, R> {
@@ -238,18 +214,7 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
         }
 
         // No handler found: expand body() and recurse — monomorphized, zero allocation
-        let body_env = env
-            .get::<LocalStateScope>()
-            .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
-        let body_content_env = env
-            .get::<LocalStateScope>()
-            .map_or_else(|| env.clone(), |scope| env.extending(scope.child(0)));
-        let body_eval_env = body_env.clone();
-        self.dispatch_boxed(
-            with_local_bindings(&body_env, move || AnyView::new(view.body(&body_eval_env))),
-            &body_content_env,
-            context,
-        )
+        self.dispatch_boxed(AnyView::new(view.body(env)), env, context)
     }
 
     /// Internal: dispatches an already-boxed `AnyView` by its inner `TypeId`.
@@ -264,18 +229,7 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
             (entry.boxed)(&mut self.state, context, view, env)
         } else {
             // body() returns impl View which AnyView::new wraps back into AnyView
-            let body_env = env
-                .get::<LocalStateScope>()
-                .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
-            let body_content_env = env
-                .get::<LocalStateScope>()
-                .map_or_else(|| env.clone(), |scope| env.extending(scope.child(0)));
-            let body_eval_env = body_env.clone();
-            self.dispatch_boxed(
-                with_local_bindings(&body_env, move || AnyView::new(view.body(&body_eval_env))),
-                &body_content_env,
-                context,
-            )
+            self.dispatch_boxed(AnyView::new(view.body(env)), env, context)
         }
     }
 

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    local_state_child_env, materialize_list_item, materialize_list_row, measure_list_intrinsic,
+    materialize_list_item, materialize_list_row, measure_list_intrinsic,
     measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
@@ -91,7 +91,7 @@ impl HydroNativeView for Native<ListConfig> {
             list_node.add_action(AccessibilityAction::ScrollDown);
             let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
             for index in window.start..window.end {
-                let row_env = local_state_child_env(env, index);
+                let row_env = env.clone();
                 let item = materialize_list_item(&list.contents, index, &row_env);
                 let row_height = {
                     let cached_extent =
@@ -190,7 +190,7 @@ pub(crate) fn render_list(
     let total_rows = row_count;
     let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
     for index in window.start..window.end {
-        let row_env = local_state_child_env(env, index);
+        let row_env = env.clone();
         let item = materialize_list_item(&contents, index, &row_env);
         let row_height = {
             let cached_extent = {
