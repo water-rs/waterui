@@ -255,6 +255,79 @@ impl GestureState {
     }
 }
 
+/// A keyboard modifier set delivered with a [`KeyEvent`].
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyModifiers {
+    /// Shift held.
+    pub shift: bool,
+    /// Control held.
+    pub ctrl: bool,
+    /// Alt/Option held.
+    pub alt: bool,
+    /// Command on macOS, Super/Windows elsewhere.
+    pub meta: bool,
+}
+
+/// A non-text key with a semantic meaning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamedKey {
+    /// Return/Enter.
+    Enter,
+    /// Tab.
+    Tab,
+    /// Backspace.
+    Backspace,
+    /// Forward delete.
+    Delete,
+    /// Escape.
+    Escape,
+    /// Up arrow.
+    ArrowUp,
+    /// Down arrow.
+    ArrowDown,
+    /// Left arrow.
+    ArrowLeft,
+    /// Right arrow.
+    ArrowRight,
+    /// Home.
+    Home,
+    /// End.
+    End,
+    /// Page up.
+    PageUp,
+    /// Page down.
+    PageDown,
+    /// Insert.
+    Insert,
+    /// A function key (`Function(1)` is F1).
+    Function(u8),
+}
+
+/// The key of a [`KeyEvent`]: either a typed character or a named key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyCode {
+    /// A character produced by the key (already mapped through the layout).
+    Char(char),
+    /// A named, non-text key.
+    Named(NamedKey),
+}
+
+/// A single keyboard event delivered to a [`GpuSurface`] renderer for a frame.
+///
+/// Renderers that act as the keyboard responder (e.g. a terminal) receive these
+/// via [`GpuFrame::keyboard`]; the backend forwards native key events while the
+/// surface is focused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyEvent {
+    /// The key pressed or released.
+    pub key: KeyCode,
+    /// Active modifier keys.
+    pub modifiers: KeyModifiers,
+    /// `true` for key-down, `false` for key-up.
+    pub pressed: bool,
+}
+
 /// A handle that can trigger a redraw of the associated `GpuSurface`.
 ///
 /// Cheap to clone. Thread-safe (`Send + Sync`).
@@ -321,6 +394,11 @@ pub struct GpuFrame<'a> {
     /// Use this to implement zoom/pan interactions. `GpuSurface` automatically
     /// forwards gestures routed through it as a per-frame snapshot.
     pub gesture: GestureState,
+    /// Keyboard events delivered to this surface for this frame.
+    ///
+    /// Empty unless the surface is the keyboard responder and the backend
+    /// forwarded key events; renderers drain these to drive text input.
+    pub keyboard: &'a [KeyEvent],
     /// Elapsed animation time since the surface started rendering.
     elapsed: Duration,
     /// Time advanced since the previous frame.
@@ -368,10 +446,24 @@ impl<'a> GpuFrame<'a> {
             height,
             pointer,
             gesture,
+            keyboard: &[],
             elapsed,
             delta,
             redraw_requested: false,
         }
+    }
+
+    /// Sets the keyboard events delivered to this frame (builder style).
+    #[must_use]
+    pub const fn with_keyboard(mut self, keyboard: &'a [KeyEvent]) -> Self {
+        self.keyboard = keyboard;
+        self
+    }
+
+    /// The keyboard events delivered to this surface this frame.
+    #[must_use]
+    pub const fn keyboard(&self) -> &'a [KeyEvent] {
+        self.keyboard
     }
 
     /// Returns `true` if the frame format is HDR-capable (floating-point).
@@ -1164,6 +1256,7 @@ impl GpuSurface {
             height,
             pointer: config.pointer,
             gesture: config.gesture,
+            keyboard: &[],
             elapsed: frame_delta,
             delta: frame_delta,
             redraw_requested: false,
@@ -1290,6 +1383,7 @@ impl GpuSurface {
             height,
             pointer: config.pointer,
             gesture: config.gesture,
+            keyboard: &[],
             elapsed: frame_delta,
             delta: frame_delta,
             redraw_requested: false,
