@@ -57,6 +57,7 @@ mod app;
 mod artifacts;
 pub(crate) mod driver;
 mod perf;
+pub mod protocol;
 mod query;
 mod selector;
 mod semantics;
