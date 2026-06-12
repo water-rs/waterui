@@ -17,12 +17,9 @@ svg = ["dep:waterui-svg"]
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
-waterui-url.workspace = true
 waterui-str.workspace = true
 waterui-text.workspace = true
 waterui-svg = { workspace = true, optional = true }
-thiserror.workspace = true
-cookie = "0.18.1"
 
 [dev-dependencies]
 waterui.workspace = true
@@ -30,5 +27,3 @@ waterui-testing.workspace = true
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["cookie", "thiserror", "waterui-url"]

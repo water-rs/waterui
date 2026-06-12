@@ -28,7 +28,6 @@ waterui-layout.workspace = true
 waterui-text.workspace = true
 nami.workspace = true
 parley = { workspace = true, features = ["libm"] }
-tracing.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 vello_cpu = { workspace = true, features = ["f32_pipeline"] }
