@@ -252,14 +252,9 @@ pub(crate) fn measure_layout_dimensions<'a>(
 ) -> ViewDimensions {
     let state = RefCell::new(state);
     let children: Vec<&AnyView> = children.into_iter().collect();
-    let child_envs: Vec<Environment> = children
-        .iter()
-        .enumerate()
-        .map(|(index, _)| local_state_child_env(env, index))
-        .collect();
     let mut subviews = Vec::new();
-    for (child, child_env) in children.into_iter().zip(&child_envs) {
-        subviews.push(HydroSubview::from_view(child, &state, child_env));
+    for child in children {
+        subviews.push(HydroSubview::from_view(child, &state, env));
     }
     let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
     let size = layout.size_that_fits(proposal, &refs);
@@ -936,13 +931,12 @@ pub(crate) fn measure_list_intrinsic(
         return LayoutSize::zero();
     }
     let editing = list.editing.get();
-    let first_item_env = local_state_child_env(env, 0);
     let mut first_item = list
         .contents
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
-    first_item.content = normalize_layout_view(first_item.content, &first_item_env);
-    let content_size = measure_view_intrinsic(&first_item.content, state, &first_item_env);
+    first_item.content = normalize_layout_view(first_item.content, env);
+    let content_size = measure_view_intrinsic(&first_item.content, state, env);
     let metrics = widget_theme(env).list_metrics();
     let row_height = (f64::from(content_size.height) + metrics.vertical_inset * 2.0)
         .max(metrics.one_line_row_height);
@@ -988,9 +982,8 @@ pub(crate) fn materialize_list_row(
     state: &mut HydroState,
     env: &Environment,
 ) -> (ListItem, f64) {
-    let row_env = local_state_child_env(env, index);
-    let item = materialize_list_item(contents, index, &row_env);
-    let row_height = measure_list_item_row_height(&item, state, &row_env);
+    let item = materialize_list_item(contents, index, env);
+    let row_height = measure_list_item_row_height(&item, state, env);
     (item, row_height)
 }
 

@@ -1159,7 +1159,6 @@ impl HydrolysisRenderer {
         {
             self.accessibility.root_bounds = transformed_rect(hit_transform, bounds);
         }
-        let local_env = self.lifecycle.install_local_state_env(env);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         self.render_depth = 0;
 
@@ -1182,7 +1181,7 @@ impl HydrolysisRenderer {
             .dynamic_transform_capture_depth
             .checked_add(1)
             .expect("hydrolysis window transform capture depth overflow");
-        let subtree = Self::render_dynamic_subtree(self, ctx, &local_env, AnyView::new(view));
+        let subtree = Self::render_dynamic_subtree(self, ctx, env, AnyView::new(view));
         self.dynamic_transform_capture_depth = self
             .dynamic_transform_capture_depth
             .checked_sub(1)

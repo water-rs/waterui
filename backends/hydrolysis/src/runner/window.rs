@@ -417,9 +417,7 @@ pub(super) fn rebuild_window_scene<P: PlatformWindow>(
         runtime.renderer.begin_rebuild_frame();
         runtime.renderer.set_window_bounds(bounds);
         let build_content_started_at = Instant::now();
-        let content = runtime
-            .renderer
-            .with_local_state_env(env, |_local_env| runtime.window.build_content());
+        let content = runtime.window.build_content();
         phases.build_content += build_content_started_at.elapsed();
         let _ = drain_local_tasks();
         let scene_dispatch_started_at = Instant::now();

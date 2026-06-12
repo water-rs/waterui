@@ -96,14 +96,8 @@ impl HydroDispatcher {
             return;
         }
 
-        let body_env = local_state_body_env(env);
-        let body_content_env = local_state_body_content_env(env);
-        let body = renderer
-            .lifecycle
-            .with_local_state_env(&body_env, move |render_env| {
-                AnyView::new(view.body(render_env))
-            });
-        self.dispatch_boxed(renderer, body, &body_content_env, ctx);
+        let body = AnyView::new(view.body(env));
+        self.dispatch_boxed(renderer, body, env, ctx);
     }
 
     pub(super) fn dispatch_boxed(
@@ -119,14 +113,8 @@ impl HydroDispatcher {
             return;
         }
 
-        let body_env = local_state_body_env(env);
-        let body_content_env = local_state_body_content_env(env);
-        let body = renderer
-            .lifecycle
-            .with_local_state_env(&body_env, move |render_env| {
-                AnyView::new(view.body(render_env))
-            });
-        self.dispatch_boxed(renderer, body, &body_content_env, ctx);
+        let body = AnyView::new(view.body(env));
+        self.dispatch_boxed(renderer, body, env, ctx);
     }
 }
 
@@ -531,9 +519,8 @@ impl HydrolysisRenderer {
         {
             self.accessibility.root_bounds = transformed_rect(hit_transform, bounds);
         }
-        let local_env = self.lifecycle.install_local_state_env(env);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         self.render_depth = 0;
-        self.dispatch_with_render_depth(view, &local_env, ctx);
+        self.dispatch_with_render_depth(view, env, ctx);
     }
 }

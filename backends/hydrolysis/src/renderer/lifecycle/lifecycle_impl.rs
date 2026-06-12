@@ -1,23 +1,5 @@
 use super::*;
 
-use core::any::TypeId;
-use std::collections::BTreeSet;
-use std::rc::Weak;
-
-type LocalStateKey = (u64, usize);
-
-#[derive(Clone)]
-pub(crate) struct LocalStateSlot {
-    pub(crate) type_id: TypeId,
-    pub(crate) type_name: &'static str,
-    pub(crate) value: Rc<dyn Any>,
-}
-
-#[derive(Default)]
-pub(crate) struct LocalStateRegistry {
-    pub(crate) slots: BTreeMap<LocalStateKey, LocalStateSlot>,
-    pub(crate) active_keys: BTreeSet<LocalStateKey>,
-}
 
 pub(crate) struct LifecycleState {
     pub(crate) disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
@@ -25,7 +7,6 @@ pub(crate) struct LifecycleState {
     pub(crate) disappear_slot: usize,
     pub(crate) dynamic_nodes: BTreeMap<usize, DynamicNode>,
     pub(crate) dynamic_identities_current_frame: Vec<usize>,
-    pub(crate) local_state_registry: Rc<RefCell<LocalStateRegistry>>,
     pub(crate) current_frame_retain: Vec<Retain>,
     pub(crate) previous_frame_retain: Vec<Retain>,
 }
@@ -79,53 +60,9 @@ impl Default for LifecycleState {
             disappear_slot: 0,
             dynamic_nodes: BTreeMap::new(),
             dynamic_identities_current_frame: Vec::new(),
-            local_state_registry: Rc::new(RefCell::new(LocalStateRegistry::default())),
             current_frame_retain: Vec::new(),
             previous_frame_retain: Vec::new(),
         }
-    }
-}
-
-impl LocalStateRegistry {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.active_keys.clear();
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.retain(|key, _| self.active_keys.contains(key));
-    }
-
-    pub(crate) fn bind_slot(
-        &mut self,
-        path: u64,
-        index: usize,
-        type_id: TypeId,
-        current_type_name: &'static str,
-        init: &dyn Fn() -> Rc<dyn Any>,
-    ) -> Rc<dyn Any> {
-        let key = (path, index);
-        self.active_keys.insert(key);
-        if let Some(slot) = self.slots.get(&key) {
-            assert!(
-                slot.type_id == type_id,
-                "hydrolysis local state slot type mismatch at path {} slot {}: existing={}, requested={}",
-                path,
-                index,
-                slot.type_name,
-                current_type_name
-            );
-            return Rc::clone(&slot.value);
-        }
-        let value = init();
-        self.slots.insert(
-            key,
-            LocalStateSlot {
-                type_id,
-                type_name: current_type_name,
-                value: Rc::clone(&value),
-            },
-        );
-        value
     }
 }
 
@@ -136,7 +73,6 @@ impl LifecycleState {
         self.disappear_current.clear();
         self.disappear_slot = 0;
         self.dynamic_identities_current_frame.clear();
-        self.local_state_registry.borrow_mut().begin_rebuild_frame();
     }
 
     pub(crate) fn finish_rebuild_frame(
@@ -154,11 +90,6 @@ impl LifecycleState {
         }
         self.disappear_previous = core::mem::take(&mut self.disappear_current);
 
-        if !preserve_inactive_state {
-            self.local_state_registry
-                .borrow_mut()
-                .finish_rebuild_frame();
-        }
         let active_dynamic_identities = self.dynamic_identities_current_frame.clone();
         if !preserve_inactive_state {
             self.dynamic_nodes
@@ -167,52 +98,6 @@ impl LifecycleState {
                 active_dynamic_identities.contains(&identity)
             });
         }
-    }
-
-    pub(crate) fn install_local_state_env(&self, env: &Environment) -> Environment {
-        let mut local_env = env.clone();
-        let local_state_registry = Rc::downgrade(&self.local_state_registry);
-        local_env.insert(
-            env.get::<LocalStateScope>()
-                .cloned()
-                .unwrap_or_else(LocalStateScope::root),
-        );
-        local_env.insert(LocalStateStore::new(
-            move |path, index, type_id, type_name, init| {
-                let local_state_registry =
-                    Weak::upgrade(&local_state_registry).unwrap_or_else(|| {
-                        panic!(
-                            "hydrolysis local state registry was accessed after renderer shutdown"
-                        )
-                    });
-                local_state_registry
-                    .borrow_mut()
-                    .bind_slot(path, index, type_id, type_name, &*init)
-            },
-        ));
-        local_env
-    }
-
-    pub(crate) fn with_local_state_env<R>(
-        &self,
-        env: &Environment,
-        f: impl FnOnce(&Environment) -> R,
-    ) -> R {
-        let local_env = self.install_local_state_env(env);
-        let scope = local_env
-            .get::<LocalStateScope>()
-            .unwrap_or_else(|| panic!("hydrolysis local state environment missing LocalStateScope"))
-            .clone();
-        let store = local_env
-            .get::<LocalStateStore>()
-            .unwrap_or_else(|| panic!("hydrolysis local state environment missing LocalStateStore"))
-            .clone();
-        with_local_binding_factory(
-            Rc::new(move |type_id, type_name, init| {
-                store.get_or_init_dynamic(&scope, type_id, type_name, init)
-            }),
-            || f(&local_env),
-        )
     }
 
     pub(crate) fn drop_all_hooks(&mut self) {
@@ -233,44 +118,6 @@ impl DeferredLifeCycleHook {
     pub(crate) fn call(self) {
         self.hook.handle(&self.env);
     }
-}
-
-pub(crate) fn local_state_body_env(env: &Environment) -> Environment {
-    env.get::<LocalStateScope>()
-        .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()))
-}
-
-pub(crate) fn local_state_body_content_env(env: &Environment) -> Environment {
-    env.get::<LocalStateScope>()
-        .map_or_else(|| env.clone(), |scope| env.extending(scope.child(0)))
-}
-
-pub(crate) fn local_state_child_env(env: &Environment, index: usize) -> Environment {
-    env.get::<LocalStateScope>()
-        .map_or_else(|| env.clone(), |scope| env.extending(scope.child(index)))
-}
-
-pub(crate) fn local_state_overlay_env(base: &Environment, current: &Environment) -> Environment {
-    current
-        .get::<LocalStateScope>()
-        .map_or_else(|| base.clone(), |scope| base.extending(scope.clone()))
-}
-
-pub(crate) fn local_shared<T: 'static>(
-    env: &Environment,
-    init: impl FnOnce() -> T + 'static,
-) -> Rc<T> {
-    let scope = env
-        .get::<LocalStateScope>()
-        .unwrap_or_else(|| {
-            panic!("hydrolysis requires renderer LocalStateScope support for internal state")
-        })
-        .clone();
-    env.get::<LocalStateStore>()
-        .unwrap_or_else(|| {
-            panic!("hydrolysis requires renderer LocalStateStore support for internal state")
-        })
-        .get_or_init(&scope, init)
 }
 
 impl DynamicSubtree {
@@ -578,70 +425,4 @@ impl HydrolysisRenderer {
         Self::dispatch_any(renderer, ctx, env, content);
     }
 
-    pub fn with_local_state_env<R>(
-        &self,
-        env: &Environment,
-        f: impl FnOnce(&Environment) -> R,
-    ) -> R {
-        self.lifecycle.with_local_state_env(env, f)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn install_local_state_env_preserves_existing_scope() {
-        let lifecycle = LifecycleState::default();
-        let root_env = lifecycle.install_local_state_env(&Environment::new());
-        let root_scope = root_env
-            .get::<LocalStateScope>()
-            .expect("root local state scope should exist")
-            .clone();
-        let root_store = root_env
-            .get::<LocalStateStore>()
-            .expect("root local state store should exist")
-            .clone();
-        let root_binding = root_store.binding(&root_scope, || 1_i32);
-        assert_eq!(root_binding.get(), 1);
-
-        let child_input_env = local_state_child_env(&root_env, 7);
-        let child_env = lifecycle.install_local_state_env(&child_input_env);
-        let child_scope = child_env
-            .get::<LocalStateScope>()
-            .expect("child local state scope should exist")
-            .clone();
-        let child_store = child_env
-            .get::<LocalStateStore>()
-            .expect("child local state store should exist")
-            .clone();
-        let child_binding = child_store.binding(&child_scope, || 2_i32);
-
-        assert_eq!(
-            child_binding.get(),
-            2,
-            "install_local_state_env must preserve child scopes instead of rebasing them to root"
-        );
-    }
-
-    #[test]
-    fn installed_local_state_env_does_not_keep_registry_alive() {
-        let lifecycle = LifecycleState::default();
-        let registry = Rc::downgrade(&lifecycle.local_state_registry);
-        let env = lifecycle.install_local_state_env(&Environment::new());
-
-        assert_eq!(
-            Rc::strong_count(&lifecycle.local_state_registry),
-            1,
-            "environment clones must not retain renderer-owned local state slots"
-        );
-
-        drop(lifecycle);
-        assert!(
-            registry.upgrade().is_none(),
-            "renderer-owned local state registry should drop before captured environments"
-        );
-        drop(env);
-    }
 }
