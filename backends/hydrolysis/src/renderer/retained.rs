@@ -634,6 +634,7 @@ impl HydrolysisRenderer {
                 self.collect_subtree_active_scalar_keys(&cache.subtree, keys);
             }
         }
+        self.collect_collection_active_scalar_keys(subtree, keys);
     }
 
     /// Re-dispatches a `Dynamic` node's content into its `cached_subtree`, refreshing the
@@ -1060,6 +1061,9 @@ impl HydrolysisRenderer {
                 return false;
             }
         }
+        if !self.collection_scroll_draws_reusable(subtree) {
+            return false;
+        }
         true
     }
 
@@ -1302,6 +1306,11 @@ impl HydrolysisRenderer {
         // Apply any pending fine-grained reactive patches before compositing. If a patch
         // reflowed layout it escalates to a full rebuild, so bail to the rebuild path.
         if !self.patch_dirty_dynamic_nodes() {
+            return false;
+        }
+        // Reconcile any reactive collection whose membership changed; a reconcile
+        // that resized the container escalates to a rebuild (parent reflow).
+        if !self.patch_dirty_collections() {
             return false;
         }
         // A scroll that moved a lazy (viewport-dependent) list beyond its captured window

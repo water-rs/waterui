@@ -7,6 +7,7 @@ pub(crate) struct LazyState {
     pub(crate) lazy_stack_controller: LazyStackController,
     pub(crate) lazy_list_controller: LazyListController,
     pub(crate) lazy_table_controller: LazyTableController,
+    pub(crate) collection_controller: CollectionController,
     pub(crate) lazy_viewport_stack: Vec<vello::kurbo::Rect>,
     pub(crate) pending_scroll_handles: Vec<ScrollHandle>,
 }
@@ -16,6 +17,7 @@ impl LazyState {
         self.lazy_stack_controller.begin_rebuild_frame();
         self.lazy_list_controller.begin_rebuild_frame();
         self.lazy_table_controller.begin_rebuild_frame();
+        self.collection_controller.begin_rebuild_frame();
         self.lazy_viewport_stack.clear();
         self.pending_scroll_handles.clear();
     }
@@ -24,6 +26,14 @@ impl LazyState {
         self.lazy_stack_controller.finish_rebuild_frame();
         self.lazy_list_controller.finish_rebuild_frame();
         self.lazy_table_controller.finish_rebuild_frame();
+        self.collection_controller.finish_rebuild_frame();
+    }
+
+    /// Cache keys of every collection slot still bound after the rebuild that
+    /// just finished. The renderer GCs `collection_caches` to this set so a
+    /// collection removed from the tree releases its retained item subtrees.
+    pub(crate) fn live_collection_keys(&self) -> BTreeSet<usize> {
+        self.collection_controller.live_keys()
     }
 
     pub(crate) fn push_pending_scroll_handle(&mut self, handle: ScrollHandle) {
@@ -54,6 +64,26 @@ pub(crate) struct LazyTableController {
     pub(crate) slots: Vec<LazyTableSlot>,
     pub(crate) cursor: usize,
 }
+
+/// Registry of retained collection slots, keyed by body order across rebuilds.
+///
+/// One slot per non-virtualized `LazyContainer` (`AbsoluteLayout`/`ZStackLayout`
+/// overlay collection) encountered during dispatch. The slot is a stable heap
+/// allocation reused via cursor reuse, so its address is a `cache_key` that
+/// stays constant across structural rebuilds — letting the renderer keep one
+/// `CollectionCache` (per-item retained subtrees) alive for the collection's
+/// lifetime and reconcile membership changes incrementally instead of
+/// re-dispatching every item on each rebuild. Mirrors [`ScrollController`].
+#[derive(Debug, Default)]
+pub(crate) struct CollectionController {
+    slots: Vec<Rc<CollectionSlot>>,
+    cursor: usize,
+}
+
+/// Marker allocation whose address identifies a collection slot. Reused across
+/// rebuilds so the address (the `cache_key`) is stable for the slot's lifetime.
+#[derive(Debug)]
+pub(crate) struct CollectionSlot;
 
 #[derive(Debug, Default)]
 pub(crate) struct LazyStackSlot {
@@ -175,6 +205,39 @@ impl LazyTableController {
     }
 }
 
+impl CollectionController {
+    pub(crate) fn begin_rebuild_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub(crate) fn finish_rebuild_frame(&mut self) {
+        self.slots.truncate(self.cursor);
+    }
+
+    /// Binds the next collection in body order to its persistent slot and
+    /// returns the slot's `cache_key` (the slot allocation's stable address).
+    /// Reuses the slot at the current cursor, creating it on first encounter.
+    pub(crate) fn bind(&mut self) -> usize {
+        let index = self.cursor;
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .expect("collection controller cursor overflow");
+        if index == self.slots.len() {
+            self.slots.push(Rc::new(CollectionSlot));
+        }
+        Rc::as_ptr(&self.slots[index]) as usize
+    }
+
+    /// The `cache_key` of every slot still bound after a rebuild.
+    pub(crate) fn live_keys(&self) -> BTreeSet<usize> {
+        self.slots
+            .iter()
+            .map(|slot| Rc::as_ptr(slot) as usize)
+            .collect()
+    }
+}
+
 impl LazyStackSlot {
     pub(crate) fn prepare_len(&mut self, len: usize) {
         self.item_extents.resize(len, None);
@@ -197,21 +260,27 @@ impl LazyTableSlot {
     }
 }
 
-pub(crate) fn lazy_stack_axis_config(layout: &dyn Layout) -> LazyStackAxisConfig {
+/// Resolves a [`LazyContainer`]'s layout to the viewport-virtualized stack axis,
+/// or `None` for any other layout. A `Some` container is rendered by the lazy
+/// scroll-virtualization path (recycles rows by visible window); a `None`
+/// container (e.g. `AbsoluteLayout`/`ZStackLayout` overlay) is rendered by the
+/// retained per-id collection path, which keeps one cached subtree per item id
+/// and reconciles membership changes incrementally.
+pub(crate) fn lazy_stack_axis_config(layout: &dyn Layout) -> Option<LazyStackAxisConfig> {
     let layout_any = layout as &dyn core::any::Any;
     if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>() {
-        return LazyStackAxisConfig::Vertical {
+        return Some(LazyStackAxisConfig::Vertical {
             spacing: f64::from(vstack.spacing),
             alignment: vstack.alignment,
-        };
+        });
     }
     if let Some(hstack) = layout_any.downcast_ref::<HStackLayout>() {
-        return LazyStackAxisConfig::Horizontal {
+        return Some(LazyStackAxisConfig::Horizontal {
             spacing: f64::from(hstack.spacing),
             alignment: hstack.alignment,
-        };
+        });
     }
-    panic!("hydrolysis LazyContainer supports VStackLayout and HStackLayout only");
+    None
 }
 
 pub(crate) fn sum_cached_or_estimated(extents: &[Option<f64>], estimate: f64) -> f64 {

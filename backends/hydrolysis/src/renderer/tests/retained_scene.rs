@@ -25,6 +25,10 @@ use waterui_layout::stack::{VStack, vstack, zstack};
 
 use waterui::graphics::Color;
 use waterui_core::dynamic::watch;
+use waterui_core::views::ForEach;
+use waterui_layout::AbsoluteLayout;
+use waterui_layout::container::LazyContainer;
+use nami::collection::List;
 
 use super::MinimalTestTheme;
 use crate::HeadlessRuntime;
@@ -202,6 +206,80 @@ fn dynamic_size_change_escalates_to_rebuild() {
         result.profile.counters.rebuild_iterations > 0,
         "a size-changing Dynamic content change must escalate to a structural rebuild: {:?}",
         result.profile.counters
+    );
+}
+
+/// A reactive collection (`ForEach`/`List`) in a full-window `AbsoluteLayout`
+/// overlay, mirroring the snackbar overlay: each item is a fixed-size box keyed
+/// by id. Membership changes must reconcile in isolation (the collection's size
+/// is constant — `AbsoluteLayout` fills the window regardless of item count — so
+/// no surrounding reflow is needed).
+fn collection_overlay(list: &List<SelfId<u64>>) -> AnyView {
+    let list = list.clone();
+    AnyView::new(zstack((
+        ().size(360.0, 600.0),
+        LazyContainer::new(
+            AbsoluteLayout,
+            ForEach::new(list, |_item: SelfId<u64>| {
+                Color::srgb(40, 90, 160).size(80.0, 40.0)
+            }),
+        ),
+    )))
+}
+
+fn collection_runtime(list: &List<SelfId<u64>>) -> HeadlessRuntime {
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || collection_overlay(&list))
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    HeadlessRuntime::new_for_tests(env, builder, 400, 640)
+}
+
+/// Adding an item to a reactive collection in a constant-size overlay reconciles
+/// as an isolated patch — only the new item is dispatched, and the window is
+/// re-composited without any structural rebuild of the rest of the tree.
+#[test]
+fn collection_add_patches_without_rebuild() {
+    let list: List<SelfId<u64>> = List::new();
+    let mut runtime = collection_runtime(&list);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    list.push(SelfId::new(1));
+    let result = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert_eq!(
+        result.profile.counters.rebuild_iterations, 0,
+        "adding a collection item must patch in isolation, not rebuild: {:?}",
+        result.profile.counters
+    );
+    assert!(
+        !result.rebuilt,
+        "a collection add patch frame must not perform a structural rebuild"
+    );
+}
+
+/// Removing an item from a reactive collection in a constant-size overlay also
+/// reconciles as an isolated patch (the removed item's retained subtree is
+/// evicted; survivors keep theirs).
+#[test]
+fn collection_remove_patches_without_rebuild() {
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
+    let mut runtime = collection_runtime(&list);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    let _removed = list.remove(1);
+    let result = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert_eq!(
+        result.profile.counters.rebuild_iterations, 0,
+        "removing a collection item must patch in isolation, not rebuild: {:?}",
+        result.profile.counters
+    );
+    assert!(
+        !result.rebuilt,
+        "a collection remove patch frame must not perform a structural rebuild"
     );
 }
 

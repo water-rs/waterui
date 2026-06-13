@@ -19,6 +19,7 @@
 
 mod accessibility;
 mod bindings;
+mod collection;
 mod dispatch;
 mod effects;
 mod frame;
@@ -34,6 +35,7 @@ mod signals;
 mod tests;
 mod views;
 
+pub(crate) use collection::*;
 pub(crate) use dispatch::*;
 pub(crate) use effects::*;
 pub(crate) use frame::*;
@@ -211,6 +213,11 @@ pub struct HydrolysisRenderer {
     frame_instant: Instant,
     scroll_controller: ScrollController,
     scroll_content_caches: BTreeMap<usize, ScrollContentCache>,
+    /// Retained per-item caches for non-virtualized reactive collections
+    /// (`ForEach`/`List` in `AbsoluteLayout`/`ZStackLayout` overlays). Keyed by
+    /// a stable [`CollectionController`] slot address; persists across rebuilds
+    /// so item identities survive a resize. See [`collection`].
+    collection_caches: BTreeMap<usize, CollectionCache>,
     reuse_scroll_content_caches: bool,
     scroll_content_capture_depth: usize,
     scroll_content_viewport_dependent: bool,
@@ -287,6 +294,7 @@ impl HydrolysisRenderer {
             frame_instant,
             scroll_controller: ScrollController::default(),
             scroll_content_caches: BTreeMap::new(),
+            collection_caches: BTreeMap::new(),
             reuse_scroll_content_caches: false,
             scroll_content_capture_depth: 0,
             scroll_content_viewport_dependent: false,

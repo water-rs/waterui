@@ -31,21 +31,22 @@
 //! ```
 
 use alloc::rc::Rc;
-use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use core::time::Duration;
 
 use executor_core::spawn_local;
 use nami::Binding;
+use nami::collection::List;
 use waterui_controls::{ButtonStyle, button};
 use waterui_core::animation::Animation;
-use waterui_core::dynamic::watch;
 use waterui_core::extract::State;
 use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
+use waterui_core::id::Identifiable;
 use waterui_core::plugin::Plugin;
+use waterui_core::views::ForEach;
 use waterui_core::{AnimationExt, View};
 use waterui_layout::AbsoluteLayout;
-use waterui_layout::container::FixedContainer;
+use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
@@ -365,15 +366,16 @@ impl Snackbar {
 /// One on-screen snackbar in the reactive stack.
 ///
 /// Every presentation owns its own animation bindings ([`Self::opacity`],
-/// [`Self::entrance_offset`], [`Self::stack_offset`]). Those bindings live in
-/// the manager, not inside the overlay subtree, so when the overlay's `watch`
-/// rebuilds the stack on a membership change every presentation re-binds to the
-/// same handles and its in-flight animation continues uninterrupted (animation
-/// state is keyed by signal identity, not view-tree position).
+/// [`Self::entrance_offset`], [`Self::stack_offset`]). The overlay renders the
+/// stack as a [`ForEach`] over the manager's [`List`], so the hydrolysis
+/// collection engine dispatches each presentation's subtree exactly once (keyed
+/// by [`Self::id`]) and reconciles only the items that join or leave. A
+/// presentation that stays on screen is never re-dispatched, so its `on_appear`
+/// entrance fires once and its in-flight animations continue uninterrupted —
+/// without any one-shot latch.
 ///
 /// Cloning an `ActiveSnackbar` shares those bindings by reference count, so the
-/// `Vec` snapshots the overlay rebuilds from all refer to the same animated
-/// state.
+/// snapshots the manager reflows from all refer to the same animated state.
 #[derive(Clone)]
 struct ActiveSnackbar {
     id: u64,
@@ -387,22 +389,25 @@ struct ActiveSnackbar {
     /// snackbar up, positive pushes a top snackbar down), animated when the
     /// stack reorders.
     stack_offset: Binding<f32>,
-    /// Latches once the entrance animation has run. The overlay rebuilds the
-    /// whole stack whenever membership changes, which re-fires every row's
-    /// `on_appear`; this flag keeps the entrance a one-shot so a rebuild cannot
-    /// restart a settled row's fade-in or reverse a row that is dismissing.
-    has_entered: Rc<Cell<bool>>,
     /// Whether this presentation is running its dismissal fade.
     dismissing: Rc<Cell<bool>>,
 }
 
+impl Identifiable for ActiveSnackbar {
+    type Id = u64;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
 /// Internal state for the snackbar manager.
 struct SnackbarManagerState {
-    /// The active on-screen snackbars, oldest first. A single reactive binding
-    /// so the overlay's `watch` rebuilds the stack as snackbars are added and
-    /// removed; per-row animation bindings live on each [`ActiveSnackbar`] and
-    /// survive those rebuilds.
-    active: Binding<Vec<ActiveSnackbar>>,
+    /// The active on-screen snackbars, oldest first. A reactive [`List`] so the
+    /// overlay's [`ForEach`] reconciles the stack item-by-item as snackbars are
+    /// added and removed; per-row animation bindings live on each
+    /// [`ActiveSnackbar`] and are untouched by membership changes.
+    active: List<ActiveSnackbar>,
     /// Monotonic presentation identifier used to ignore stale timers.
     next_id: u64,
 }
@@ -449,17 +454,17 @@ impl SnackbarManager {
     ///
     /// A tuple containing the manager and the overlay view.
     pub fn new() -> (Self, impl View + Clone) {
-        let active = Binding::container(Vec::new());
+        let active = List::new();
         let state = Rc::new(RefCell::new(SnackbarManagerState {
             active: active.clone(),
             next_id: 0,
         }));
         let manager = Self { state };
 
-        // The overlay watches the active stack and rebuilds it on every
-        // membership change. Each snackbar is a full-bleed Frame self-anchored
-        // to its own placement, so mixed placements coexist; per-row animation
-        // bindings persist across rebuilds (see [`ActiveSnackbar`]).
+        // The overlay renders the active stack as a ForEach collection; the
+        // engine dispatches each snackbar once and reconciles membership
+        // incrementally. Each snackbar is a full-bleed Frame self-anchored to
+        // its own placement, so mixed placements coexist (see [`ActiveSnackbar`]).
         let overlay = SnackbarOverlay {
             active,
             manager: manager.clone(),
@@ -489,7 +494,6 @@ impl SnackbarManager {
             opacity: Binding::f32(0.0),
             entrance_offset: Binding::f32(snackbar.position.initial_offset_y()),
             stack_offset: Binding::f32(0.0),
-            has_entered: Rc::new(Cell::new(false)),
             dismissing: Rc::new(Cell::new(false)),
             snackbar,
         };
@@ -499,7 +503,7 @@ impl SnackbarManager {
         // Evict the oldest live snackbar AT THIS PLACEMENT if its stack is
         // already full, so the new one slides in as the oldest fades out.
         // Snackbars at other placements are untouched.
-        let snapshot = active.get();
+        let snapshot = active.snapshot();
         let live_here = snapshot
             .iter()
             .filter(|item| !item.dismissing.get() && item.snackbar.position == position)
@@ -515,7 +519,7 @@ impl SnackbarManager {
         }
         drop(snapshot);
 
-        active.with_mut(|stack| stack.push(item));
+        active.push(item);
         self.reflow();
 
         // A zero duration disables auto-dismiss (M3 `auto-close-delay = 0`): the
@@ -537,7 +541,7 @@ impl SnackbarManager {
             .state
             .borrow()
             .active
-            .get()
+            .snapshot()
             .into_iter()
             .rev()
             .find(|item| !item.dismissing.get())
@@ -554,7 +558,7 @@ impl SnackbarManager {
             .state
             .borrow()
             .active
-            .get()
+            .snapshot()
             .into_iter()
             .find(|item| item.id == id);
         let Some(item) = item else {
@@ -581,11 +585,9 @@ impl SnackbarManager {
 
     fn finish_dismissal(&self, id: u64) {
         let active = self.state.borrow().active.clone();
-        let index = active.get().iter().position(|item| item.id == id);
+        let index = active.snapshot().iter().position(|item| item.id == id);
         if let Some(index) = index {
-            active.with_mut(|stack| {
-                stack.remove(index);
-            });
+            let _removed = active.remove(index);
             self.reflow();
         }
     }
@@ -605,7 +607,7 @@ impl SnackbarManager {
         // matches the active (M3) theme, so it is a stable stacking increment
         // without resolving the environment theme here.
         let row = SnackbarTheme::default().single_line_min_height + SNACKBAR_STACK_GAP;
-        let items = self.state.borrow().active.get();
+        let items = self.state.borrow().active.snapshot();
         for (index, item) in items.iter().enumerate() {
             if item.dismissing.get() {
                 continue;
@@ -624,19 +626,20 @@ impl SnackbarManager {
 
 /// Window-level overlay that renders the manager's active snackbar stack.
 ///
-/// This is a **full-window layer**, not a content-sized stack: it wraps the
-/// reactive snackbar set in an [`AbsoluteLayout`], which fills the window
-/// ([`StretchAxis::Both`]) and hands every child the full window bounds. That
-/// gives each snackbar a stable, window-sized frame to anchor in, so bottom/top
-/// placement and `max_width` centering stay correct at any window size — a plain
-/// `ZStack` is content-sized and only anchored correctly by accident in a small
-/// window.
+/// This is a **full-window layer**, not a content-sized stack: it renders the
+/// reactive snackbar set as a [`ForEach`] in an [`AbsoluteLayout`], which fills
+/// the window ([`StretchAxis::Both`]) and hands every child the full window
+/// bounds. That gives each snackbar a stable, window-sized frame to anchor in,
+/// so bottom/top placement and `max_width` centering stay correct at any window
+/// size — a plain `ZStack` is content-sized and only anchored correctly by
+/// accident in a small window.
 ///
-/// Because the layer's size is constant (full window) regardless of how many
-/// snackbars it holds, the `watch` membership update never changes the node's
-/// intrinsic size, so it patches in isolation instead of escalating to a
-/// full-window structural rebuild — which is what made rapid show/dismiss and
-/// window resize flicker.
+/// The collection engine renders the `ForEach` incrementally: each snackbar is
+/// dispatched once (keyed by id) and a membership change reconciles only the
+/// items that joined or left, re-compositing the window frame in isolation. The
+/// layer's size is constant (full window) regardless of item count, so a change
+/// never reflows the surrounding layout — which is what made rapid show/dismiss
+/// and window resize flicker.
 ///
 /// Cloneable so [`Window`] can place one instance per window above the main
 /// content.
@@ -645,43 +648,23 @@ impl SnackbarManager {
 /// [`Window`]: crate::runtime::window::Window
 #[derive(Clone)]
 struct SnackbarOverlay {
-    active: Binding<Vec<ActiveSnackbar>>,
+    active: List<ActiveSnackbar>,
     manager: SnackbarManager,
-}
-
-impl SnackbarOverlay {
-    /// Wraps `contents` in a full-window absolute layer (fills the window, gives
-    /// each child the full window bounds to anchor in).
-    fn absolute_layer(contents: Vec<AnyView>) -> FixedContainer {
-        FixedContainer::from_parts(alloc::boxed::Box::new(AbsoluteLayout), contents)
-    }
 }
 
 impl View for SnackbarOverlay {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self { active, manager } = self;
-        // Outer full-window layer: guarantees the window's root stack always
-        // gives this overlay the whole window, independent of the watch node's
-        // intrinsic sizing.
-        Self::absolute_layer(alloc::vec![AnyView::new(watch(
-            active,
-            move |items: Vec<ActiveSnackbar>| {
-                let manager = manager.clone();
-                // Inner full-window layer: every snackbar gets the full window
-                // bounds and anchors itself within them.
-                Self::absolute_layer(
-                    items
-                        .into_iter()
-                        .map(|item| {
-                            AnyView::new(StackedSnackbarView {
-                                item,
-                                manager: manager.clone(),
-                            })
-                        })
-                        .collect(),
-                )
-            },
-        ))])
+        // Full-window absolute layer; the engine reconciles the ForEach
+        // membership item-by-item. Every snackbar gets the full window bounds
+        // and self-anchors to its own placement within them.
+        LazyContainer::new(
+            AbsoluteLayout,
+            ForEach::new(active, move |item: ActiveSnackbar| StackedSnackbarView {
+                item,
+                manager: manager.clone(),
+            }),
+        )
     }
 }
 
@@ -783,20 +766,16 @@ impl View for StackedSnackbarView {
 
         // The appear hook runs while this subtree is dispatched — after the
         // animated opacity/offset handles bind at their hidden initial values —
-        // so the entrance transitions from hidden to shown. The overlay rebuilds
-        // the whole stack on membership changes, which re-fires this hook for
-        // every row; `has_entered` latches it to a one-shot so a rebuild cannot
-        // restart a settled row's fade-in or reverse a row mid-dismissal.
+        // so the entrance transitions from hidden to shown. The collection
+        // engine dispatches each snackbar exactly once (keyed by id) and never
+        // re-dispatches a surviving one, so this hook fires once naturally: no
+        // one-shot latch is needed.
         let entrance_opacity = item.opacity.clone();
         let entrance_offset = item.entrance_offset.clone();
-        let has_entered = item.has_entered.clone();
 
         Frame::new(
             content
                 .on_appear(move || {
-                    if has_entered.replace(true) {
-                        return;
-                    }
                     entrance_opacity.set(1.0);
                     entrance_offset.set(0.0);
                 })

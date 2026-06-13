@@ -151,9 +151,16 @@ impl HydrolysisRenderer {
         container: Native<LazyContainer>,
         env: &Environment,
     ) {
-        renderer.mark_scroll_content_viewport_dependent();
         let (layout, children) = container.into_inner().into_inner();
-        let axis_config = lazy_stack_axis_config(layout.as_ref());
+        let Some(axis_config) = lazy_stack_axis_config(layout.as_ref()) else {
+            // A non-virtualized layout (AbsoluteLayout/ZStackLayout overlay):
+            // render as a retained per-id collection so membership changes patch
+            // incrementally instead of re-dispatching the whole set.
+            Self::capture_collection(renderer, ctx, layout, children, env);
+            return;
+        };
+        // Only the viewport-virtualized stack path depends on the scroll viewport.
+        renderer.mark_scroll_content_viewport_dependent();
         let count = children.len().get();
         if count == 0 {
             return;
