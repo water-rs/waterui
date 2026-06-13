@@ -27,6 +27,7 @@ use crate::text::DewState;
 use crate::theme;
 
 pub mod divider;
+#[cfg(feature = "progress")]
 pub mod progress;
 pub mod scroll;
 pub mod slider;
@@ -44,6 +45,7 @@ pub fn register(dispatcher: &mut DewDispatcher) {
     dispatcher.register::<Native<waterui_controls::text_field::ResolvedTextFieldConfig>>(
         text_field::render,
     );
+    #[cfg(feature = "progress")]
     dispatcher.register::<Native<waterui::component::progress::ProgressConfig>>(progress::render);
 }
 

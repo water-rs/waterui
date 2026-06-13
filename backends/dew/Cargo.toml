@@ -12,7 +12,7 @@ keywords = ["ui", "backend", "waterui", "embedded", "gui"]
 categories = ["gui", "embedded"]
 
 [features]
-default = ["system-fonts"]
+default = ["system-fonts", "progress"]
 # Embedded-device simulator: a desktop window standing in for the panel of
 # an embedded device, running the full dew pipeline natively (winit + softbuffer).
 embedded-simulator = ["dep:winit", "dep:softbuffer", "dep:executor-core", "dep:native-executor"]
@@ -21,6 +21,7 @@ embedded-simulator = ["dep:winit", "dep:softbuffer", "dep:executor-core", "dep:n
 espidf = [
     "dep:esp-idf-svc",
     "dep:log",
+    "dep:waterui",
     "dep:executor-core",
     "dep:native-executor",
     "native-executor/polyfill",
@@ -28,6 +29,11 @@ espidf = [
 # Desktop font enumeration; firmware targets disable this and register
 # bundled fonts into the parley FontContext instead.
 system-fonts = ["parley/system"]
+# The Progress widget's config type lives in the `waterui` facade crate,
+# which pulls the visual component stack (and thus a GPU graphics build).
+# Gating it keeps the lean firmware graph (default-features = false) free of
+# the facade; desktop and simulator builds enable it by default.
+progress = ["dep:waterui"]
 
 [dependencies]
 waterui-core.workspace = true
@@ -46,7 +52,7 @@ softbuffer = { version = "0.4", optional = true }
 executor-core = { workspace = true, optional = true }
 native-executor = { workspace = true, optional = true }
 log = { version = "0.4", optional = true }
-waterui = { version = "0.2.1", path = "../..", default-features = false }
+waterui = { version = "0.2.1", path = "../..", default-features = false, optional = true }
 
 [target.'cfg(target_os = "espidf")'.dependencies]
 esp-idf-svc = { version = "0.52", optional = true }

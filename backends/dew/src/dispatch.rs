@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use kurbo::{Affine, Rect};
 use nami::Signal;
+#[cfg(feature = "progress")]
 use waterui::component::progress::ProgressConfig;
 use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_backend_core::time::Instant;
@@ -276,6 +277,7 @@ impl DewRenderer {
                 config.max_value_label = self.normalize(config.max_value_label, env);
                 return AnyView::new(Native::new(config));
             }
+            #[cfg(feature = "progress")]
             if type_id == TypeId::of::<Native<ProgressConfig>>() {
                 let mut config = view
                     .downcast::<Native<ProgressConfig>>()
@@ -359,6 +361,7 @@ pub(crate) fn measure_view(
     if let Some(field) = view.downcast_ref::<Native<ResolvedTextFieldConfig>>() {
         return ViewDimensions::new(views::text_field::measure(state, field.as_inner(), env));
     }
+    #[cfg(feature = "progress")]
     if let Some(progress) = view.downcast_ref::<Native<ProgressConfig>>() {
         return ViewDimensions::new(views::progress::measure(state, progress.as_inner(), env));
     }
