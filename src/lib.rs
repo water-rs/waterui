@@ -36,6 +36,8 @@ pub mod prelude {
     //! }
     //! ```
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
+    #[cfg(feature = "gpu")]
+    pub use super::FilterViewExt;
     #[cfg(feature = "barcode")]
     pub use super::barcode;
     #[cfg(feature = "chart")]
@@ -52,10 +54,10 @@ pub mod prelude {
     #[cfg(feature = "webview")]
     pub use super::webview;
     pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, FilterViewExt, Signal, SignalExt, State,
-        Str, View, ViewExt, accessibility, animation, app, color, component, cursor, drag_drop,
-        entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
-        metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
+        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, View,
+        ViewExt, accessibility, animation, app, color, component, cursor, drag_drop, entry, env,
+        error, filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata,
+        navigation, reactive, regional, shape, signal, style, task, text, widget, window,
     };
 
     pub use crate::include_markdown;
@@ -120,16 +122,22 @@ pub mod prelude {
 }
 pub use color::Color;
 pub use form::FormBuilder;
+#[cfg(feature = "gpu")]
 #[doc(inline)]
-pub use view::{FilterViewExt, ViewExt};
+pub use view::FilterViewExt;
+#[doc(inline)]
+pub use view::ViewExt;
 #[cfg(feature = "barcode")]
 pub use waterui_barcode as barcode;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
+#[cfg(feature = "gpu")]
 pub use waterui_graphics::image_analysis;
+#[cfg(feature = "gpu")]
 pub use waterui_graphics::image_generator;
+#[cfg(feature = "gpu")]
 pub use waterui_graphics::{
     CheckerboardGenerator, DominantColor, DotGridGenerator, GeneratedImage, Histogram,
     ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
@@ -151,6 +159,7 @@ pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;
+#[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
 #[cfg(feature = "video")]

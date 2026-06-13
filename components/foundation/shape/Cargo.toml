@@ -10,14 +10,21 @@ description = "Shape primitives and filled shapes for WaterUI using Lyon tessell
 keywords = ["shape", "graphics", "waterui", "lyon", "hdr"]
 categories = ["gui"]
 
+[features]
+default = ["gpu"]
+# GPU-backed morphing-shape renderer (wgpu). When disabled, morph shapes still
+# emit their `ResolvedMorphShape` native semantic object for backends to render,
+# but no in-crate GPU fallback is compiled, so wgpu/vello are not pulled in.
+gpu = ["waterui-graphics/gpu", "dep:wgpu", "dep:bytemuck", "dep:num-traits"]
+
 [dependencies]
 waterui-core.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu"] }
-wgpu.workspace = true
+waterui-graphics = { workspace = true, default-features = false }
+wgpu = { workspace = true, optional = true }
 tracing.workspace = true
 nami.workspace = true
-bytemuck = { version = "1.25", features = ["derive"] }
-num-traits = { version = "0.2", default-features = false }
+bytemuck = { version = "1.25", features = ["derive"], optional = true }
+num-traits = { version = "0.2", default-features = false, optional = true }
 
 [dev-dependencies]
 waterui.workspace = true
