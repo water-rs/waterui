@@ -49,6 +49,7 @@ enum BackendName {
     Android,
     Gtk4,
     Hydrolysis,
+    Esp32,
 }
 
 /// Run the backend command.
@@ -128,6 +129,18 @@ async fn add_backend(project: &mut Project, backend: BackendName) -> Result<()> 
             }
             success!("Added hydrolysis backend");
         }
+        BackendName::Esp32 => {
+            if project.esp32_backend().is_some() {
+                note!("ESP32 backend already configured");
+                return Ok(());
+            }
+            let spinner = shell::spinner("Scaffolding ESP32 backend...");
+            project.init_esp32_backend().await?;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            success!("Added ESP32 backend");
+        }
     }
 
     Ok(())
@@ -149,7 +162,8 @@ fn validate_backend_add_on_host(backend: BackendName) -> Result<()> {
                 bail!("Hydrolysis backend is only supported on macOS, Linux, or Windows hosts");
             }
         }
-        BackendName::Apple | BackendName::Android => {}
+        // The ESP32 firmware cross-compiles from any host with espup installed.
+        BackendName::Apple | BackendName::Android | BackendName::Esp32 => {}
     }
 
     Ok(())
@@ -185,6 +199,7 @@ async fn remove_backend(project: &mut Project, backend: BackendName, yes: bool) 
         BackendName::Android => project.remove_android_backend().await?,
         BackendName::Gtk4 => project.remove_gtk4_backend().await?,
         BackendName::Hydrolysis => project.remove_hydrolysis_backend().await?,
+        BackendName::Esp32 => project.remove_esp32_backend().await?,
     }
 
     success!("Removed backend {}", backend_name(backend));
@@ -211,6 +226,10 @@ fn list_backends(project: &Project) {
         line!("  - hydrolysis");
         configured += 1;
     }
+    if project.esp32_backend().is_some() {
+        line!("  - esp32");
+        configured += 1;
+    }
 
     if configured == 0 {
         line!("  (none)");
@@ -223,6 +242,7 @@ const fn is_backend_configured(project: &Project, backend: BackendName) -> bool 
         BackendName::Android => project.android_backend().is_some(),
         BackendName::Gtk4 => project.gtk4_backend().is_some(),
         BackendName::Hydrolysis => project.hydrolysis_backend().is_some(),
+        BackendName::Esp32 => project.esp32_backend().is_some(),
     }
 }
 
@@ -232,5 +252,6 @@ const fn backend_name(backend: BackendName) -> &'static str {
         BackendName::Android => "android",
         BackendName::Gtk4 => "gtk4",
         BackendName::Hydrolysis => "hydrolysis",
+        BackendName::Esp32 => "esp32",
     }
 }

@@ -2,6 +2,7 @@
 pub mod android;
 pub mod apple;
 mod dependencies;
+pub mod esp32;
 pub mod gtk4;
 pub mod hydrolysis;
 mod platforming;

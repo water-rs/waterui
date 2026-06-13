@@ -233,6 +233,12 @@ impl Project {
             .unwrap_or_else(|| self.crate_name.with_suffix("hydrolysis"))
     }
 
+    /// Get the generated ESP32 firmware harness crate name.
+    #[must_use]
+    pub fn esp32_backend_crate_name(&self) -> CrateName {
+        self.crate_name.with_suffix("esp32")
+    }
+
     /// Get package type declared in `Water.toml`.
     #[must_use]
     pub const fn package_type(&self) -> PackageType {
@@ -305,6 +311,12 @@ impl Project {
         self.manifest.backends.hydrolysis()
     }
 
+    /// Get the ESP32 backend configuration if available.
+    #[must_use]
+    pub const fn esp32_backend(&self) -> Option<&crate::esp32::backend::Esp32Backend> {
+        self.manifest.backends.esp32()
+    }
+
     /// Get the manifest of the project.
     #[must_use]
     pub const fn manifest(&self) -> &Manifest {
@@ -356,7 +368,8 @@ impl Project {
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         use crate::{
             android::platform::clean_android, apple::platform::clean_apple,
-            gtk4::platform::clean_gtk4, hydrolysis::platform::clean_hydrolysis,
+            esp32::platform::clean_esp32, gtk4::platform::clean_gtk4,
+            hydrolysis::platform::clean_hydrolysis,
         };
 
         if self.is_playground() {
@@ -388,6 +401,11 @@ impl Project {
         // Clean hydrolysis backend if configured
         if self.hydrolysis_backend().is_some() || self.is_playground() {
             clean_hydrolysis(self).await?;
+        }
+
+        // Clean ESP32 backend if configured
+        if self.esp32_backend().is_some() {
+            clean_esp32(self).await?;
         }
 
         let ffi_target_dir = self.ffi_crate_path().join("target");
@@ -779,6 +797,25 @@ impl Project {
         Ok(())
     }
 
+    /// Initialize the ESP32 backend for an existing project.
+    ///
+    /// Creates necessary files/folders for the ESP32 firmware harness under
+    /// `backend_path::<Esp32Backend>()`.
+    ///
+    /// # Errors
+    /// Returns an error if scaffolding fails.
+    pub async fn init_esp32_backend(&mut self) -> Result<(), crate::backend::FailToInitBackend> {
+        use crate::{backend::Backend, esp32::backend::Esp32Backend};
+
+        let backend = Esp32Backend::init(self).await?;
+        self.manifest.backends.set_esp32(backend);
+        self.manifest
+            .save(&self.root)
+            .await
+            .map_err(|e| crate::backend::FailToInitBackend::Io(std::io::Error::other(e)))?;
+        Ok(())
+    }
+
     /// Remove Apple backend configuration and generated files.
     ///
     /// # Errors
@@ -830,6 +867,19 @@ impl Project {
             self.remove_backend_relative_dir(&path).await?;
         }
         self.manifest.backends.clear_hydrolysis();
+        self.save_manifest().await
+    }
+
+    /// Remove ESP32 backend configuration and generated files.
+    ///
+    /// # Errors
+    /// Returns an error if deleting files or saving manifest fails.
+    pub async fn remove_esp32_backend(&mut self) -> eyre::Result<()> {
+        if let Some(backend) = self.esp32_backend() {
+            let path = backend.project_path().clone();
+            self.remove_backend_relative_dir(&path).await?;
+        }
+        self.manifest.backends.clear_esp32();
         self.save_manifest().await
     }
 

@@ -10,6 +10,7 @@ use crate::{
     apple::backend::AppleBackend,
     build::BuildOptions,
     device::Artifact,
+    esp32::backend::Esp32Backend,
     gtk4::backend::Gtk4Backend,
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
@@ -30,6 +31,7 @@ pub struct Backends {
     apple: Option<AppleBackend>,
     gtk4: Option<Gtk4Backend>,
     hydrolysis: Option<HydrolysisBackend>,
+    esp32: Option<Esp32Backend>,
 }
 
 impl Backends {
@@ -40,6 +42,7 @@ impl Backends {
             && self.apple.is_none()
             && self.gtk4.is_none()
             && self.hydrolysis.is_none()
+            && self.esp32.is_none()
     }
 
     /// Get the base path for backends, relative to project root.
@@ -115,6 +118,22 @@ impl Backends {
     /// Remove hydrolysis backend configuration.
     pub fn clear_hydrolysis(&mut self) {
         self.hydrolysis = None;
+    }
+
+    /// Get the ESP32 backend configuration, if any.
+    #[must_use]
+    pub const fn esp32(&self) -> Option<&Esp32Backend> {
+        self.esp32.as_ref()
+    }
+
+    /// Set the ESP32 backend configuration.
+    pub fn set_esp32(&mut self, backend: Esp32Backend) {
+        self.esp32 = Some(backend);
+    }
+
+    /// Remove ESP32 backend configuration.
+    pub fn clear_esp32(&mut self) {
+        self.esp32 = None;
     }
 }
 
