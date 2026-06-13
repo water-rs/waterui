@@ -15,10 +15,10 @@
 //! // Show a simple message
 //! manager.show(Snackbar::new("File saved"));
 //!
-//! // With icon and action
+//! // With icon and action (use a packaged icon crate for portable apps)
 //! manager.show(
 //!     Snackbar::new("Item deleted")
-//!         .icon(SystemIcon::TRASH)
+//!         .icon(mdi::delete())
 //!         .action("Undo", || println!("Undo clicked"))
 //!         .duration(Duration::from_secs(5))
 //! );
@@ -41,10 +41,9 @@ use waterui_controls::{ButtonStyle, button};
 use waterui_core::animation::Animation;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::extract::State;
-use waterui_core::handler::{Handler, SharedAction, shared_action};
+use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
 use waterui_core::plugin::Plugin;
 use waterui_core::{AnimationExt, View};
-use waterui_icon::SystemIcon;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
@@ -81,6 +80,12 @@ pub struct SnackbarTheme {
     pub viewport_padding: EdgeInsets,
     /// Gap between message and action.
     pub content_spacing: f32,
+    /// Minimum container width.
+    pub min_width: f32,
+    /// Maximum container width.
+    pub max_width: f32,
+    /// Trailing padding when an action button is present.
+    pub action_trailing_padding: f32,
     /// Minimum height for single-line snackbars.
     pub single_line_min_height: f32,
     /// Container corner radius in logical units for shadows.
@@ -112,6 +117,9 @@ impl Default for SnackbarTheme {
             content_padding: EdgeInsets::symmetric(12.0, 16.0),
             viewport_padding: EdgeInsets::all(16.0),
             content_spacing: 12.0,
+            min_width: 288.0,
+            max_width: 568.0,
+            action_trailing_padding: 8.0,
             single_line_min_height: 48.0,
             corner_radius: 4.0,
             clip_radius: 0.08,
@@ -190,7 +198,7 @@ pub struct Snackbar {
     /// The message to display.
     message: Str,
     /// Optional icon to display before the message.
-    icon: Option<SystemIcon>,
+    icon: Option<SnackbarIcon>,
     /// Optional action button.
     action: Option<SnackbarAction>,
     /// Display duration before auto-dismiss.
@@ -214,6 +222,22 @@ impl core::fmt::Debug for Snackbar {
     }
 }
 
+/// Cloneable leading-icon slot built lazily per presentation.
+#[derive(Clone)]
+struct SnackbarIcon(AnyViewBuilder<AnyView>);
+
+impl core::fmt::Debug for SnackbarIcon {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SnackbarIcon").finish_non_exhaustive()
+    }
+}
+
+impl View for SnackbarIcon {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        self.0.build()
+    }
+}
+
 impl Snackbar {
     /// Creates a new snackbar with the specified message.
     #[must_use]
@@ -228,10 +252,16 @@ impl Snackbar {
         }
     }
 
-    /// Adds an icon to the snackbar.
+    /// Adds a leading icon to the snackbar.
+    ///
+    /// Any view works; for portable apps prefer a packaged icon crate such as
+    /// `waterui-icons-material-icon` (`SystemIcon` is only available on Apple
+    /// backends).
     #[must_use]
-    pub fn icon(mut self, icon: SystemIcon) -> Self {
-        self.icon = Some(icon);
+    pub fn icon(mut self, icon: impl View + Clone + 'static) -> Self {
+        self.icon = Some(SnackbarIcon(AnyViewBuilder::new(move || {
+            AnyView::new(icon.clone())
+        })));
         self
     }
 
@@ -431,17 +461,13 @@ impl SnackbarManager {
             presentation
         };
 
-        // Build and display the snackbar view
+        // Build and display the snackbar view. The entrance transition is
+        // driven by the view's appear hook (see `SnackbarView::body`), which
+        // fires only after the renderer bound the animated opacity/offset
+        // signals — setting them from a free-floating task raced the first
+        // dispatch and skipped the animation when the set landed first.
         let view = self.build_snackbar_view(snackbar, position, presentation.clone());
         self.state.borrow().handler.set(view);
-
-        let opacity = presentation.opacity.clone();
-        let offset_y = presentation.offset_y.clone();
-        spawn_local(async move {
-            opacity.set(1.0);
-            offset_y.set(0.0);
-        })
-        .detach();
 
         // Schedule auto-dismiss
         let manager = self.clone();
@@ -560,7 +586,8 @@ impl SnackbarView {
                 .spacing(theme.content_spacing),
             )
         } else {
-            AnyView::new(label_view)
+            // Supporting text is leading-aligned within the container.
+            AnyView::new(hstack((label_view, spacer())))
         }
     }
 }
@@ -575,6 +602,18 @@ impl View for SnackbarView {
             presentation,
         } = self;
 
+        // M3 trailing inset shrinks to clear the action button's own padding.
+        let content_padding = if snackbar.action.is_some() {
+            EdgeInsets::new(
+                theme.content_padding.top(),
+                theme.content_padding.bottom(),
+                theme.content_padding.leading(),
+                theme.action_trailing_padding,
+            )
+        } else {
+            theme.content_padding.clone()
+        };
+
         // Build content: Label (icon + message) + optional action button
         let content = Self::build_content(snackbar, manager, &theme);
 
@@ -585,11 +624,23 @@ impl View for SnackbarView {
             theme.shadow_radius,
         );
 
+        // The appear hook runs while this subtree is dispatched — after the
+        // opacity/offset handles above it in the tree have bound at their
+        // hidden initial values — so the entrance targets always transition.
+        let entrance_opacity = presentation.opacity.clone();
+        let entrance_offset_y = presentation.offset_y.clone();
+
         // Styled container with blur background and rounded corners
         Frame::new(
             content
-                .padding_with(theme.content_padding)
+                .on_appear(move || {
+                    entrance_opacity.set(1.0);
+                    entrance_offset_y.set(0.0);
+                })
+                .padding_with(content_padding)
                 .height(theme.single_line_min_height)
+                .min_width(theme.min_width)
+                .max_width(theme.max_width)
                 .background(
                     RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
                 )
