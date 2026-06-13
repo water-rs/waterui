@@ -48,7 +48,10 @@ impl PanelConfig {
 /// to dump the framebuffer) must call it once before the first render.
 pub fn init_executors() {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+    // The reactive runtime spawns local watcher tasks from the render thread;
+    // install the cooperative executor (driven by [`crate::embedded_executor::tick`])
+    // rather than the polyfill's dedicated-thread backend.
+    crate::embedded_executor::install();
 }
 
 /// # Panics
@@ -83,6 +86,8 @@ pub fn run(app: App, panel: PanelConfig) -> ! {
         if let Some(dirty) = runtime.pump() {
             log::info!("dew[espidf]: frame with {} dirty regions", dirty.len());
         }
+        // Drive reactive watcher tasks so signal changes propagate.
+        crate::embedded_executor::tick();
         std::thread::sleep(Duration::from_millis(16));
     }
 }

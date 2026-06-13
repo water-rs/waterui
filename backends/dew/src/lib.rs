@@ -36,6 +36,8 @@ pub mod display_list;
 #[cfg(feature = "embedded-simulator")]
 pub mod embedded_simulator;
 #[cfg(all(feature = "espidf", target_os = "espidf"))]
+pub mod embedded_executor;
+#[cfg(all(feature = "espidf", target_os = "espidf"))]
 pub mod espidf;
 pub mod painter;
 pub mod runtime;
