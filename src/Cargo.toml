@@ -34,7 +34,6 @@ futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 minstant.workspace = true
-cpu-time.workspace = true
 pulldown-cmark = "0.13"
 waterui-macros.workspace = true
 libloading = "0.9"
@@ -52,7 +51,6 @@ waterui-map = { workspace = true, optional = true }
 waterui-particle = { workspace = true, optional = true }
 
 async-fs = "2.2.0"
-robius-open.workspace = true
 pastey.workspace = true
 tree-sitter = { version = "0.25", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
@@ -74,11 +72,26 @@ zenwave = { workspace = true, features = ["native-tls"] }
 zenwave = { workspace = true, features = ["rustls"] }
 android_clipboard = "0.1.0"
 
-[target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dependencies]
+# ESP-IDF firmware does no remote image/media fetching, so the zenwave
+# networking stack (rustls -> aws-lc-sys BoringSSL, which does not
+# cross-compile under ESP-IDF newlib) is excluded on espidf targets.
+[target.'cfg(not(any(target_vendor = "apple", target_os = "android", target_os = "espidf")))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
 
-[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
+# The system clipboard (arboard, via X11 on Linux) does not exist on bare
+# embedded; espidf uses a no-op clipboard in widget/code.rs.
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32"), not(target_os = "espidf")))'.dependencies]
 arboard = "3.6.1"
+
+# Opening a URL in a system handler (robius-open) has no meaning on bare
+# embedded; espidf uses a no-op in component/link.rs.
+[target.'cfg(not(target_os = "espidf"))'.dependencies]
+robius-open.workspace = true
+
+# CPU-time profiling (cpu-time) needs CLOCK_*_CPUTIME_ID, absent in ESP-IDF
+# newlib; the runtime guard uses a zero-cost fallback there.
+[target.'cfg(all(any(unix, windows), not(target_os = "espidf")))'.dependencies]
+cpu-time.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"

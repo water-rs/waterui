@@ -23,7 +23,6 @@ waterui-url.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-shape.workspace = true
 waterui-macros.workspace = true
-waterkit-dialog = { workspace = true, optional = true }
 tracing.workspace = true
 zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
@@ -32,9 +31,14 @@ regex = "1.12.3"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
 
+# The native file dialog exists on desktop/mobile but not on bare embedded
+# (espidf) or wasm; the file-picker form field is target-gated accordingly.
+[target.'cfg(not(any(target_os = "espidf", target_arch = "wasm32")))'.dependencies]
+waterkit-dialog.workspace = true
+
 [features]
 default = ["std"]
-std = ["dep:waterkit-dialog"]
+std = []
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true

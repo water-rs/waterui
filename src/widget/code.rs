@@ -17,7 +17,11 @@ use crate::ViewExt;
 use crate::snackbar::{Snackbar, SnackbarManager};
 
 /// Copies text to the system clipboard.
-#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
+#[cfg(all(
+    not(target_os = "android"),
+    not(target_arch = "wasm32"),
+    not(target_os = "espidf")
+))]
 fn copy_to_clipboard(text: &str) {
     match arboard::Clipboard::new() {
         Ok(mut clipboard) => {
@@ -30,6 +34,10 @@ fn copy_to_clipboard(text: &str) {
         }
     }
 }
+
+/// Embedded targets have no system clipboard; copy is a no-op.
+#[cfg(target_os = "espidf")]
+fn copy_to_clipboard(_text: &str) {}
 
 /// Copies text to the Android clipboard.
 #[cfg(target_os = "android")]
