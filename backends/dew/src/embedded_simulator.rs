@@ -18,7 +18,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::display::BufferDisplay;
+use crate::board::HostBoard;
 use crate::runtime::DewRuntime;
 
 /// Frame-pump cadence while the window is idle.
@@ -47,7 +47,7 @@ pub fn run(
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
 
-    let runtime = DewRuntime::new(BufferDisplay::new(width, height), env, 16, build_root);
+    let runtime = DewRuntime::new(HostBoard::new(width, height), env, 16, build_root);
     let event_loop = EventLoop::new().expect("simulator event loop");
     let mut app = SimulatorApp {
         runtime,
@@ -63,7 +63,7 @@ pub fn run(
 }
 
 struct SimulatorApp {
-    runtime: DewRuntime<BufferDisplay>,
+    runtime: DewRuntime<HostBoard>,
     width: u32,
     height: u32,
     title: String,
@@ -92,7 +92,7 @@ impl SimulatorApp {
             .resize(surface_width, surface_height)
             .expect("simulator surface resize");
         let mut frame = panel.surface.buffer_mut().expect("simulator frame buffer");
-        let pixels = self.runtime.display().pixels();
+        let pixels = self.runtime.board().framebuffer().pixels();
         for py in 0..size.height {
             let src_y = (py * self.height / size.height).min(self.height - 1) as usize;
             for px in 0..size.width {
