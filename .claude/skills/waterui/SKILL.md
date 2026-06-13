@@ -220,6 +220,25 @@ BRAND.with_opacity(0.5)
 
 Theme colors: `Foreground`, `MutedForeground`, `Accent`, `Background`, `Surface`, `Border`
 
+## Icons
+
+Icons come from packaged icon-set crates — pick **one set per app** and depend on it:
+`waterui-icons-material-icon` (Material Symbols), `waterui-icons-lucide`,
+`waterui-icons-fontawesome7`, `waterui-icons-sf-symbol` (Apple only).
+
+```rust
+use waterui_icons_material_icon as mdi;
+
+mdi::check_circle()                   // an icon view
+mdi::delete().size(20.0, 20.0)        // size it
+mdi::flag().foreground(Accent)        // theme color
+mdi::calendar_today().tint(Srgb::from_hex("#4A84F6"))  // explicit tint
+```
+
+Match the icon set to the design language: a Material 3 (`hydrolysis_m3`) app uses
+**Material** icons, not Lucide. `SystemIcon`/SF Symbols are Apple-only — for
+portable code depend on a cross-platform set instead.
+
 ## Modifiers
 
 ```rust
@@ -237,12 +256,60 @@ Theme colors: `Foreground`, `MutedForeground`, `Accent`, `Background`, `Surface`
 | Category | Components |
 |----------|------------|
 | Layout | `hstack`, `vstack`, `zstack`, `scroll`, `spacer`, `grid` |
-| Controls | `button`, `toggle`, `Slider`, `Stepper`, `TextField`, `Menu` |
-| Navigation | `NavigationStack`, `NavigationLink`, `TabView` |
+| Controls | `button`, `toggle`, `Slider`, `Stepper`, `TextField`, `Menu`, `Picker` |
+| Navigation | `NavigationStack`, `NavigationLink`, `NavigationSplitView`, `TabView` |
+| Collections | `List`, `ForEach` (see below) |
+| Overlays | `Snackbar` / `SnackbarManager`, `FullScreenOverlayManager` |
 | Media | `Photo`, `VideoPlayer`, `MediaPicker` |
-| Data | `Chart`, `Map` |
+| Data | `Chart`, `Map`, `form` (`#[derive(FormBuilder)]`) |
 | Platform | `WebView` |
-| Graphics | `Canvas`, `Barcode::qr()` |
+| Graphics | `Canvas`, `Barcode::qr()`, `Icon` sets (see Icons) |
+
+## Collections (dynamic lists)
+
+For a **changing set** of views, use `ForEach`/`List` — NOT `watch`. The collection
+diffs by `Identifiable` id, so adding/removing one item updates precisely instead of
+rebuilding the whole subtree.
+
+```rust
+#[derive(Clone)]
+struct Row { id: u64, title: Str }
+impl Identifiable for Row { type Id = u64; fn id(&self) -> u64 { self.id } }
+
+// Scrolling list
+List::for_each(&rows, |row| ListItem::new(text(row.title)))
+
+// Reactive collection backed by nami's List<T> (push/remove updates the UI)
+let rows = nami::collection::List::<Row>::new();
+rows.push(Row { id: 1, title: "Hello".into() });
+ForEach::new(rows.clone(), |row| text(row.title))
+```
+
+A fixed, known set is just a tuple stack (`vstack((a, b, c))`) or `.collect()` from a
+slice — no collection type needed.
+
+## Snackbars (transient bottom/top messages)
+
+Every `Window` auto-installs a `SnackbarManager`; reach it from a handler via
+`State<SnackbarManager>` and call `.show(...)`:
+
+```rust
+button("Save").action(|State(m): State<SnackbarManager>| {
+    m.show(Snackbar::new("File saved"));
+});
+
+m.show(
+    Snackbar::new("Item moved to trash")
+        .icon(mdi::delete())                       // optional leading icon
+        .action("Undo", || { /* runs, then dismisses */ })
+        .position(SnackbarPosition::TopCenter)     // BottomCenter (default)/TopCenter/BottomLeading/BottomTrailing
+        .closeable()                               // trailing ✕ close button
+        .duration(Duration::from_secs(5)),         // Duration::ZERO = stay until dismissed
+);
+```
+
+Different placements are independent stacks (a top snackbar never evicts a bottom
+one). Multiple at the same placement stack and reflow automatically.
 
 ## CLI Commands
 
@@ -411,27 +478,19 @@ Photo::new(url).blur(blur.clone())
 view.opacity(opacity.clone())
 ```
 
-**No `watch()` for text**:
+**Don't reach for `watch()`** — it rebuilds and replaces the whole subtree on every
+change (losing that subtree's internal state), so it's almost never what you want.
+Three things replace nearly every use:
 ```rust
-// WRONG
-watch(status.clone(), |msg| text(msg))
-
-// CORRECT: reactive
+// Reactive text → text!        (not watch(status, |m| text(m)))
 text!("{status}")
-
-// CORRECT: static
-text("Ready")
-```
-
-**No `watch()` when reactive API exists** - pass binding directly:
-IMPORTANT: `watch` would rebuild the entire subtree on every change and lost internal state, only a few scenarios require `watch`, always check if the API accepts `impl Signal` first
-```rust
-// WRONG - unnecessary watch
-watch(blur.clone(), |b| Photo::new(url).blur(b))
-
-// CORRECT - pass binding directly
+// Reactive value → pass the binding to the API    (not watch(blur, |b| ...blur(b)))
 Photo::new(url).blur(blur.clone())
+// Dynamic set of views → ForEach/List             (not watch over a Vec)
+ForEach::new(rows.clone(), |row| row_view(row))
 ```
+Only reach for `watch` for a genuinely one-off structural swap with no signal-aware
+API and no collection — check those three first.
 
 **No manual `.clone()` for button states** - use `.with_state()`:
 ```rust
