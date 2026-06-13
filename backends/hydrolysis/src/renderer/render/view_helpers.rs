@@ -372,11 +372,41 @@ fn to_peniko_stop(stop: &ResolvedGradientStop) -> vello::peniko::ColorStop {
     }
 }
 
+/// Resolves a shape into a concrete path for `bounds`.
+///
+/// Structured shape kinds resolve their normalized corner radii against the
+/// shorter side, producing circular corners — the same interpretation the
+/// morph path and the Apple backend use. Scaling the unit-space path
+/// non-uniformly instead (the `CustomPath` fallback) stretches corner arcs
+/// into ellipse segments on wide containers, which violates the Material
+/// corner shape (e.g. a 4dp snackbar radius smeared across a 1500px bar).
 pub(crate) fn resolved_shape_to_path(
     shape: &ResolvedShape,
     bounds: vello::kurbo::Rect,
 ) -> vello::kurbo::BezPath {
-    path_commands_to_path(&shape.commands, bounds)
+    shape_kind_path(shape.kind, bounds)
+        .unwrap_or_else(|| path_commands_to_path(&shape.commands, bounds))
+}
+
+/// Bounds-aware path for the structured shape kinds; `None` for custom paths,
+/// which only exist as unit-space commands.
+fn shape_kind_path(kind: ShapeKind, bounds: vello::kurbo::Rect) -> Option<vello::kurbo::BezPath> {
+    use vello::kurbo::Shape as _;
+    const PATH_TOLERANCE: f64 = 0.05;
+    match kind {
+        ShapeKind::Rect
+        | ShapeKind::RoundedRect { .. }
+        | ShapeKind::UnevenRoundedRect { .. }
+        | ShapeKind::Capsule => Some(rounded_rect_path(bounds, shape_kind_radii(kind))),
+        ShapeKind::Circle => {
+            let radius = bounds.width().min(bounds.height()).max(0.0) / 2.0;
+            Some(vello::kurbo::Circle::new(bounds.center(), radius).into_path(PATH_TOLERANCE))
+        }
+        ShapeKind::Ellipse => {
+            Some(vello::kurbo::Ellipse::from_rect(bounds).into_path(PATH_TOLERANCE))
+        }
+        ShapeKind::CustomPath => None,
+    }
 }
 
 pub(crate) fn resolved_morph_shape_to_path(

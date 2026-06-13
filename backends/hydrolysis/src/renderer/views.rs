@@ -362,23 +362,6 @@ impl HydrolysisRenderer {
         );
     }
 
-    pub(crate) fn render_system_icon(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        icon: Native<SystemIcon>,
-        env: &Environment,
-    ) {
-        let styled = StyledStr::plain(icon.into_inner().name);
-        Self::render_styled_text(
-            &mut renderer.state,
-            &mut renderer.scene,
-            ctx,
-            styled,
-            HorizontalAlignment::Leading,
-            env,
-        );
-    }
-
     pub(crate) fn render_resolved_color(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,

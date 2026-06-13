@@ -154,7 +154,7 @@ pub(crate) fn render_button(
     {
         let mut styled = styled_button_title(theme, style, &label, env);
         if let Some(color) = theme.button_label_color(style) {
-            styled = styled.foreground(color);
+            styled = styled_with_default_foreground(styled, color);
         }
         ctx.render_styled_text_single_line_centered(styled, env, label_bounds);
     } else if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
@@ -216,7 +216,7 @@ pub(crate) fn render_menu(
     {
         let mut styled = styled_button_title(theme, style, label, env);
         if let Some(color) = theme.button_label_color(style) {
-            styled = styled.foreground(color);
+            styled = styled_with_default_foreground(styled, color);
         }
         ctx.render_styled_text_single_line_centered(styled, env, label_bounds);
     } else if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
@@ -314,6 +314,20 @@ fn styled_button_title(
         title
     };
     title.resolve_reactive(env).content.get()
+}
+
+/// Fills `color` into chunks that have no explicit foreground: the theme's
+/// button label color is a default, never an override of caller styling.
+fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr {
+    let mut out = StyledStr::empty();
+    for (chunk, style) in styled.chunks() {
+        let mut style = style.clone();
+        if style.foreground.is_none() {
+            style.foreground = Some(color.clone());
+        }
+        out.push(chunk.clone(), style);
+    }
+    out
 }
 
 fn styled_button_label(

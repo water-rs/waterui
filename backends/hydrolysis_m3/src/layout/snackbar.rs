@@ -10,6 +10,9 @@ const SNACKBAR_HORIZONTAL_PADDING: f32 = 16.0;
 const SNACKBAR_VERTICAL_PADDING: f32 = 12.0;
 const SNACKBAR_VIEWPORT_PADDING: f32 = 16.0;
 const SNACKBAR_CONTENT_SPACING: f32 = 12.0;
+const SNACKBAR_MIN_WIDTH: f32 = 288.0;
+const SNACKBAR_MAX_WIDTH: f32 = 568.0;
+const SNACKBAR_ACTION_TRAILING_PADDING: f32 = 8.0;
 const SNACKBAR_SINGLE_LINE_HEIGHT: f32 = 48.0;
 const SNACKBAR_CORNER_RADIUS: f32 = 4.0;
 const SNACKBAR_CLIP_RADIUS: f32 = 0.08;
@@ -28,6 +31,9 @@ pub(crate) fn theme(colors: &MaterialColorScheme) -> SnackbarTheme {
         ),
         viewport_padding: EdgeInsets::all(SNACKBAR_VIEWPORT_PADDING),
         content_spacing: SNACKBAR_CONTENT_SPACING,
+        min_width: SNACKBAR_MIN_WIDTH,
+        max_width: SNACKBAR_MAX_WIDTH,
+        action_trailing_padding: SNACKBAR_ACTION_TRAILING_PADDING,
         single_line_min_height: SNACKBAR_SINGLE_LINE_HEIGHT,
         corner_radius: SNACKBAR_CORNER_RADIUS,
         clip_radius: SNACKBAR_CLIP_RADIUS,

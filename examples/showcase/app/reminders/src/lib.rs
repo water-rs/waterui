@@ -6,7 +6,7 @@ use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::RoundedRectangle;
 use waterui::view;
-use waterui_icon::{SystemIcon, system_icon};
+use waterui_icons_material_icon as mdi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SidebarDestination {
@@ -28,13 +28,13 @@ impl SidebarDestination {
         }
     }
 
-    const fn icon_name(self) -> &'static str {
+    fn icon(self) -> waterui_icons_material_icon::Svg {
         match self {
-            Self::Today => "calendar.circle.fill",
-            Self::Scheduled => "calendar.badge.clock",
-            Self::All => "tray.fill",
-            Self::Flagged => "flag.fill",
-            Self::Completed => "checkmark.circle.fill",
+            Self::Today => mdi::calendar_today(),
+            Self::Scheduled => mdi::calendar_clock(),
+            Self::All => mdi::inbox(),
+            Self::Flagged => mdi::flag(),
+            Self::Completed => mdi::check_circle(),
         }
     }
 
@@ -287,9 +287,7 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
 
             ListItem::new(
                 hstack((
-                    SystemIcon::from_static(dest.icon_name())
-                        .size(18.0, 18.0)
-                        .foreground(dest.icon_color()),
+                    dest.icon().size(18.0, 18.0).tint(dest.icon_color()),
                     text(dest.title()).body().foreground(Foreground),
                     spacer(),
                     text!("{count}").caption().foreground(MutedForeground),
@@ -321,7 +319,7 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .title(dest.title())
     .searchable(&search, "Search reminders")
     .navigation_bar_trailing(
-        button(Label::new("").icon(system_icon::plus()))
+        button(Label::new("").icon(mdi::plus()))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
     )
@@ -389,7 +387,7 @@ fn reminder_section(
             let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(
                 hstack((
-                    SystemIcon::from_static("circle")
+                    mdi::circle_outline()
                         .size(16.0, 16.0)
                         .foreground(MutedForeground),
                     vstack((
@@ -401,9 +399,9 @@ fn reminder_section(
                     spacer(),
                     view! {
                         if row.flagged {
-                            SystemIcon::from_static("flag.fill")
+                            mdi::flag()
                                 .size(12.0, 12.0)
-                                .foreground(Srgb::from_hex("#F28A34"))
+                                .tint(Srgb::from_hex("#F28A34"))
                         } else {
                             spacer().width(12.0)
                         }
