@@ -1,55 +1,33 @@
 use crate::{Brush, DrawContext, WidgetInteractionState};
 use vello::kurbo::{Point, Rect, RoundedRectRadii};
-use vello::peniko::{Color, Gradient};
+use vello::peniko::Color;
 
-const RIPPLE_INITIAL_ORIGIN_SCALE: f64 = 0.2;
-const RIPPLE_PADDING: f64 = 10.0;
-const RIPPLE_SOFT_EDGE_MINIMUM_SIZE: f64 = 75.0;
-const RIPPLE_SOFT_EDGE_CONTAINER_RATIO: f64 = 0.35;
-const RIPPLE_SOFT_EDGE_WIDTH: f64 = 70.0;
-const RIPPLE_SOFT_EDGE_MINIMUM_SOLID_STOP: f32 = 0.65;
+/// Minimum ripple diameter (Material Web `MINIMUM_PRESS_DIAMETER`): small
+/// targets still produce a ripple at least this wide.
+const RIPPLE_MINIMUM_DIAMETER: f64 = 48.0;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct RippleGeometry {
-    center: Point,
-    radius: f64,
-    solid_stop: f32,
+/// The full Material ripple diameter for a target: the surface diagonal,
+/// floored at [`RIPPLE_MINIMUM_DIAMETER`]. The ripple is a solid circle of
+/// this size; the press-grow animation scales it from the initial fraction up
+/// to 1 while its center drifts from the press point to the surface center
+/// (see `DynamicRippleTransform` in the renderer).
+pub(crate) fn ripple_diameter(bounds: Rect) -> f64 {
+    bounds.width().hypot(bounds.height()).max(RIPPLE_MINIMUM_DIAMETER)
 }
 
-fn ripple_geometry(bounds: Rect, origin: Point, progress: f64) -> RippleGeometry {
-    let progress = progress.clamp(0.0, 1.0);
-    let center = Point::new(
-        bounds.x0 + bounds.width() * 0.5,
-        bounds.y0 + bounds.height() * 0.5,
-    );
-    let max_dimension = bounds.width().max(bounds.height());
-    let initial_size = max_dimension * RIPPLE_INITIAL_ORIGIN_SCALE;
-    let soft_edge_size =
-        (RIPPLE_SOFT_EDGE_CONTAINER_RATIO * max_dimension).max(RIPPLE_SOFT_EDGE_MINIMUM_SIZE);
-    let final_size = bounds.width().hypot(bounds.height()) + RIPPLE_PADDING + soft_edge_size;
-    let size = initial_size + (final_size - initial_size) * progress;
-    let radius = (size * 0.5).max(1.0);
-    let ripple_center = Point::new(
-        origin.x + (center.x - origin.x) * progress,
-        origin.y + (center.y - origin.y) * progress,
-    );
-    let solid_stop = ((radius - RIPPLE_SOFT_EDGE_WIDTH) / radius)
-        .max(f64::from(RIPPLE_SOFT_EDGE_MINIMUM_SOLID_STOP))
-        .clamp(0.0, 1.0) as f32;
-
-    RippleGeometry {
-        center: ripple_center,
-        radius,
-        solid_stop,
+/// Draws the resting state layer (hover/focus tint) into `bounds`.
+fn draw_state_tint_rounded(
+    draw: &mut dyn DrawContext,
+    bounds: Rect,
+    radii: RoundedRectRadii,
+    color: Color,
+    state_opacity: f32,
+) {
+    if state_opacity > 0.0 {
+        draw.push_rounded_layer(state_opacity, bounds, radii);
+        draw.fill_rounded_rect(bounds, radii, &Brush::from(color));
+        draw.pop_layer();
     }
-}
-
-fn ripple_brush(color: Color, opacity: f32, geometry: RippleGeometry) -> Brush {
-    let color = color.with_alpha(opacity.clamp(0.0, 1.0));
-    Brush::from(
-        Gradient::new_radial(geometry.center, geometry.radius as f32)
-            .with_stops([(geometry.solid_stop, color), (1.0, color.with_alpha(0.0))]),
-    )
 }
 
 pub(crate) fn draw_bounded(
@@ -59,27 +37,25 @@ pub(crate) fn draw_bounded(
     color: Color,
     state: WidgetInteractionState,
 ) {
-    let state_opacity = state.state_layer_opacity();
-    if state_opacity > 0.0 {
-        draw.push_rounded_layer(state_opacity, bounds, radii);
-        draw.fill_rounded_rect(bounds, radii, &Brush::from(color));
-        draw.pop_layer();
-    }
+    draw_state_tint_rounded(draw, bounds, radii, color, state.state_layer_opacity());
 
     let press_opacity = state.press_layer_opacity();
-    let Some(origin) = state.press_origin else {
-        return;
-    };
-    if press_opacity == 0.0 {
+    if state.press_origin.is_none() || press_opacity == 0.0 {
         return;
     }
 
-    let progress = f64::from(state.press_progress.clamp(0.0, 1.0));
-    let ripple = ripple_geometry(bounds, origin, progress);
-    let brush = ripple_brush(color, press_opacity, ripple);
+    // Solid Material ripple. The captured fragment is painted at full size,
+    // centered; `DynamicRippleTransform` re-samples press_progress to scale and
+    // drift it, so this draws the final-state circle regardless of progress.
+    let center = Point::new(
+        bounds.x0 + bounds.width() * 0.5,
+        bounds.y0 + bounds.height() * 0.5,
+    );
+    let radius = ripple_diameter(bounds) * 0.5;
+    let brush = Brush::from(color.with_alpha(press_opacity.clamp(0.0, 1.0)));
 
     draw.push_rounded_layer(1.0, bounds, radii);
-    draw.fill_circle(ripple.center, ripple.radius, &brush);
+    draw.fill_circle(center, radius, &brush);
     draw.pop_layer();
 }
 
@@ -101,65 +77,126 @@ pub(crate) fn draw_unbounded_circle(
     if press_opacity == 0.0 {
         return;
     }
-    let progress = f64::from(state.press_progress.clamp(0.0, 1.0));
     let bounds = Rect::from_center_size(center, (radius * 2.0, radius * 2.0));
-    let origin = state.press_origin.unwrap_or(center);
-    let ripple = ripple_geometry(bounds, origin, progress);
-    let brush = ripple_brush(color, press_opacity, ripple);
+    let ripple_radius = ripple_diameter(bounds) * 0.5;
+    let brush = Brush::from(color.with_alpha(press_opacity.clamp(0.0, 1.0)));
     draw.push_layer(1.0, None);
-    draw.fill_circle(ripple.center, ripple.radius, &brush);
+    draw.fill_circle(center, ripple_radius, &brush);
     draw.pop_layer();
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RIPPLE_SOFT_EDGE_MINIMUM_SOLID_STOP, RippleGeometry, ripple_brush, ripple_geometry,
-    };
+    use super::{RIPPLE_MINIMUM_DIAMETER, ripple_diameter};
     use crate::{Brush, DrawContext, WidgetInteractionState, theme::state_layer};
     use std::path::Path;
     use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, RoundedRectRadii};
-    use vello::peniko::{Color, GradientKind};
+    use vello::peniko::Color;
     use waterui_graphics::{
         GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
         OffscreenRenderOutput, OffscreenSize,
     };
 
     #[test]
-    fn material_ripple_geometry_moves_from_origin_to_center() {
-        let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
-        let origin = Point::new(10.0, 12.0);
+    fn material_ripple_diameter_spans_diagonal_with_minimum() {
+        // Large surface: ripple diameter is the diagonal so the solid circle
+        // covers the whole target at full scale.
+        let wide = Rect::new(0.0, 0.0, 100.0, 40.0);
+        assert!((ripple_diameter(wide) - 100.0_f64.hypot(40.0)).abs() < 1e-6);
 
-        let start = ripple_geometry(bounds, origin, 0.0);
-        let end = ripple_geometry(bounds, origin, 1.0);
-
-        assert_eq!(start.center, origin);
-        assert_eq!(end.center, Point::new(50.0, 20.0));
-        assert!(end.radius > start.radius);
+        // Tiny surface: floored at the Material minimum press diameter.
+        let tiny = Rect::new(0.0, 0.0, 20.0, 20.0);
+        assert_eq!(ripple_diameter(tiny), RIPPLE_MINIMUM_DIAMETER);
     }
 
     #[test]
-    fn material_ripple_brush_uses_soft_edge_radial_gradient() {
-        let geometry = RippleGeometry {
-            center: Point::new(12.0, 16.0),
-            radius: 120.0,
-            solid_stop: RIPPLE_SOFT_EDGE_MINIMUM_SOLID_STOP,
-        };
-        let brush = ripple_brush(Color::new([1.0, 0.0, 0.0, 1.0]), 0.12, geometry);
+    fn material_ripple_press_layer_is_a_solid_circle() {
+        // The captured fragment is drawn at full size and solid (no soft-edge
+        // gradient); the renderer scales/drifts it via DynamicRippleTransform.
+        let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let mut recorder = RecordingDrawContext::default();
+        state_layer::draw_bounded(
+            &mut recorder,
+            bounds,
+            8.0.into(),
+            Color::new([1.0, 1.0, 1.0, 1.0]),
+            WidgetInteractionState {
+                pressed: true,
+                press_layer_opacity: 0.12,
+                press_origin: Some(Point::new(10.0, 12.0)),
+                press_progress: 1.0,
+                ..WidgetInteractionState::NONE
+            },
+        );
+        let circle = recorder
+            .filled_circle
+            .expect("press ripple must fill a solid circle");
+        assert_eq!(circle.center, Point::new(50.0, 20.0), "circle is centered");
+        assert!(
+            (circle.radius - ripple_diameter(bounds) * 0.5).abs() < 1e-6,
+            "circle radius is half the ripple diameter"
+        );
+        assert!(
+            matches!(circle.brush, RecordedBrush::Solid(alpha) if (alpha - 0.12).abs() < 1e-6),
+            "ripple is a solid color at the press opacity, not a gradient"
+        );
+    }
 
-        let Brush::Gradient(gradient) = brush else {
-            panic!("Material ripple press layer must use a radial gradient brush");
-        };
-        let GradientKind::Radial(position) = gradient.kind else {
-            panic!("Material ripple press layer must use a radial gradient");
-        };
+    #[derive(Debug, Clone, Copy)]
+    enum RecordedBrush {
+        Solid(f32),
+        Gradient,
+    }
 
-        assert_eq!(position.end_center, geometry.center);
-        assert_eq!(position.end_radius, geometry.radius as f32);
-        assert_eq!(gradient.stops[0].offset, geometry.solid_stop);
-        assert_eq!(gradient.stops[0].color.components[3], 0.12);
-        assert_eq!(gradient.stops[1].offset, 1.0);
-        assert_eq!(gradient.stops[1].color.components[3], 0.0);
+    #[derive(Debug, Clone, Copy)]
+    struct RecordedCircle {
+        center: Point,
+        radius: f64,
+        brush: RecordedBrush,
+    }
+
+    #[derive(Default)]
+    struct RecordingDrawContext {
+        filled_circle: Option<RecordedCircle>,
+    }
+
+    impl RecordingDrawContext {
+        fn record_brush(brush: &Brush) -> RecordedBrush {
+            match brush {
+                Brush::Solid(color) => RecordedBrush::Solid(color.components[3]),
+                Brush::Gradient(_) => RecordedBrush::Gradient,
+            }
+        }
+    }
+
+    impl DrawContext for RecordingDrawContext {
+        fn fill_rect(&mut self, _rect: Rect, _brush: &Brush) {}
+        fn fill_rounded_rect(&mut self, _rect: Rect, _radii: RoundedRectRadii, _brush: &Brush) {}
+        fn stroke_rect(&mut self, _rect: Rect, _brush: &Brush, _width: f64) {}
+        fn stroke_rounded_rect(
+            &mut self,
+            _rect: Rect,
+            _radii: RoundedRectRadii,
+            _brush: &Brush,
+            _width: f64,
+        ) {
+        }
+        fn stroke_line(&mut self, _from: Point, _to: Point, _brush: &Brush, _width: f64) {}
+        fn stroke_circle(&mut self, _center: Point, _radius: f64, _brush: &Brush, _width: f64) {}
+        fn fill_circle(&mut self, center: Point, radius: f64, brush: &Brush) {
+            self.filled_circle = Some(RecordedCircle {
+                center,
+                radius,
+                brush: Self::record_brush(brush),
+            });
+        }
+        fn fill_path(&mut self, _path: &BezPath, _brush: &Brush) {}
+        fn stroke_path(&mut self, _path: &BezPath, _brush: &Brush, _width: f64) {}
+        fn push_layer(&mut self, _alpha: f32, _clip: Option<&Rect>) {}
+        fn push_rounded_layer(&mut self, _alpha: f32, _clip: Rect, _radii: RoundedRectRadii) {}
+        fn pop_layer(&mut self) {}
+        fn push_transform(&mut self, _affine: Affine) {}
+        fn pop_transform(&mut self) {}
     }
 
     struct VelloTestDrawContext<'a> {
@@ -382,7 +419,7 @@ mod tests {
         ) else {
             return;
         };
-        let output_path = Path::new("target/hydrolysis-m3-visual/material-ripple-soft-edge.png");
+        let output_path = Path::new("target/hydrolysis-m3-visual/material-ripple-solid.png");
         std::fs::create_dir_all(
             output_path
                 .parent()

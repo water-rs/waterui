@@ -30,16 +30,16 @@
 //! );
 //! ```
 
-use alloc::collections::VecDeque;
 use alloc::rc::Rc;
-use core::cell::RefCell;
+use alloc::vec::Vec;
+use core::cell::{Cell, RefCell};
 use core::time::Duration;
 
 use executor_core::spawn_local;
 use nami::Binding;
 use waterui_controls::{ButtonStyle, button};
 use waterui_core::animation::Animation;
-use waterui_core::dynamic::{Dynamic, DynamicHandler};
+use waterui_core::dynamic::watch;
 use waterui_core::extract::State;
 use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
 use waterui_core::plugin::Plugin;
@@ -47,7 +47,7 @@ use waterui_core::{AnimationExt, View};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
-use waterui_layout::stack::{Alignment, hstack};
+use waterui_layout::stack::{Alignment, ZStack, hstack};
 use waterui_str::Str;
 use waterui_text::{font::Font, text::text};
 
@@ -58,8 +58,12 @@ use crate::shape::{RoundedRectangle, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 
-/// Maximum number of snackbars that can be queued.
-const MAX_QUEUE_SIZE: usize = 10;
+/// Maximum number of snackbars visible at once. M3 keeps the on-screen stack
+/// small; when a new one arrives over this limit, the oldest is dismissed.
+const MAX_VISIBLE_SNACKBARS: usize = 3;
+
+/// Vertical gap between stacked snackbars, in logical units.
+const SNACKBAR_STACK_GAP: f32 = 8.0;
 
 /// Theme tokens used by the snackbar overlay.
 #[derive(Debug, Clone)]
@@ -158,16 +162,26 @@ impl SnackbarPosition {
         }
     }
 
-    /// Returns the initial Y offset for entrance animation.
+    /// Returns the initial Y offset for the entrance slide (hidden position):
+    /// below the edge for bottom placements, above it for top placements.
     const fn initial_offset_y(self) -> f32 {
-        match self {
-            Self::BottomCenter | Self::BottomLeading | Self::BottomTrailing => 20.0,
-            Self::TopCenter => -20.0,
-        }
+        if self.is_top() { -20.0 } else { 20.0 }
+    }
+
+    /// Whether this placement anchors to the top edge.
+    const fn is_top(self) -> bool {
+        matches!(self, Self::TopCenter)
+    }
+
+    /// The sign of the reflow stack offset: a bottom stack grows upward
+    /// (negative y), a top stack grows downward (positive y).
+    const fn stack_direction(self) -> f32 {
+        if self.is_top() { 1.0 } else { -1.0 }
     }
 }
 
 /// An action button for the snackbar.
+#[derive(Clone)]
 pub struct SnackbarAction {
     /// The action button label.
     pub label: Str,
@@ -194,6 +208,7 @@ impl core::fmt::Debug for SnackbarAction {
 ///     .icon(SystemIcon::CHECKMARK)
 ///     .duration(Duration::from_secs(3))
 /// ```
+#[derive(Clone)]
 pub struct Snackbar {
     /// The message to display.
     message: Str,
@@ -320,29 +335,49 @@ impl Snackbar {
     }
 }
 
-/// Internal state for the snackbar manager.
-struct SnackbarManagerState {
-    /// Queue of pending snackbars.
-    queue: VecDeque<Snackbar>,
-    /// Handler to update the view.
-    handler: DynamicHandler,
-    /// Whether a snackbar is currently displayed.
-    is_showing: bool,
-    /// Whether the current snackbar is running its dismissal animation.
-    is_dismissing: bool,
-    /// Current presentation animation handles.
-    current: Option<SnackbarPresentation>,
-    /// Monotonic presentation identifier used to ignore stale timers.
-    next_presentation_id: u64,
+/// One on-screen snackbar in the reactive stack.
+///
+/// Every presentation owns its own animation bindings ([`Self::opacity`],
+/// [`Self::entrance_offset`], [`Self::stack_offset`]). Those bindings live in
+/// the manager, not inside the overlay subtree, so when the overlay's `watch`
+/// rebuilds the stack on a membership change every presentation re-binds to the
+/// same handles and its in-flight animation continues uninterrupted (animation
+/// state is keyed by signal identity, not view-tree position).
+///
+/// Cloning an `ActiveSnackbar` shares those bindings by reference count, so the
+/// `Vec` snapshots the overlay rebuilds from all refer to the same animated
+/// state.
+#[derive(Clone)]
+struct ActiveSnackbar {
+    id: u64,
+    snackbar: Snackbar,
+    /// 0 hidden → 1 shown; drives the fade.
+    opacity: Binding<f32>,
+    /// Entrance slide offset: starts at the position's hidden offset, animates
+    /// to 0 on appear.
+    entrance_offset: Binding<f32>,
+    /// Reflow offset from the anchor edge (signed: negative pushes a bottom
+    /// snackbar up, positive pushes a top snackbar down), animated when the
+    /// stack reorders.
+    stack_offset: Binding<f32>,
+    /// Latches once the entrance animation has run. The overlay rebuilds the
+    /// whole stack whenever membership changes, which re-fires every row's
+    /// `on_appear`; this flag keeps the entrance a one-shot so a rebuild cannot
+    /// restart a settled row's fade-in or reverse a row that is dismissing.
+    has_entered: Rc<Cell<bool>>,
+    /// Whether this presentation is running its dismissal fade.
+    dismissing: Rc<Cell<bool>>,
 }
 
-#[derive(Debug, Clone)]
-struct SnackbarPresentation {
-    id: u64,
-    opacity: Binding<f32>,
-    offset_y: Binding<f32>,
-    hidden_offset_y: f32,
-    exit_animation: Animation,
+/// Internal state for the snackbar manager.
+struct SnackbarManagerState {
+    /// The active on-screen snackbars, oldest first. A single reactive binding
+    /// so the overlay's `watch` rebuilds the stack as snackbars are added and
+    /// removed; per-row animation bindings live on each [`ActiveSnackbar`] and
+    /// survive those rebuilds.
+    active: Binding<Vec<ActiveSnackbar>>,
+    /// Monotonic presentation identifier used to ignore stale timers.
+    next_id: u64,
 }
 
 /// Manages snackbar notifications in a FIFO queue.
@@ -387,169 +422,192 @@ impl SnackbarManager {
     ///
     /// A tuple containing the manager and the overlay view.
     pub fn new() -> (Self, impl View + Clone) {
-        let (handler, dynamic) = Dynamic::new();
-        handler.set(()); // Initially empty
-
+        let active = Binding::container(Vec::new());
         let state = Rc::new(RefCell::new(SnackbarManagerState {
-            queue: VecDeque::new(),
-            handler,
-            is_showing: false,
-            is_dismissing: false,
-            current: None,
-            next_presentation_id: 0,
+            active: active.clone(),
+            next_id: 0,
         }));
-
         let manager = Self { state };
-        (manager, dynamic)
+
+        // The overlay watches the active stack and rebuilds it on every
+        // membership change. Each snackbar is a full-bleed Frame self-anchored
+        // to its own placement, so mixed placements coexist; per-row animation
+        // bindings persist across rebuilds (see [`ActiveSnackbar`]).
+        let overlay = SnackbarOverlay {
+            active,
+            manager: manager.clone(),
+        };
+        (manager, overlay)
     }
 
-    /// Shows a snackbar. If one is already showing, queues this one.
-    ///
-    /// Snackbars are displayed in FIFO order. If the queue is full (10 items),
-    /// the oldest pending snackbar is dropped.
+    /// Shows a snackbar. Multiple snackbars stack on screen simultaneously,
+    /// oldest nearest the anchor edge. When more than [`MAX_VISIBLE_SNACKBARS`]
+    /// would be shown, the oldest is dismissed to make room.
     pub fn show(&self, snackbar: Snackbar) {
-        let mut state = self.state.borrow_mut();
-
-        if state.is_showing {
-            // Queue for later, dropping oldest if full
-            if state.queue.len() >= MAX_QUEUE_SIZE {
-                state.queue.pop_front();
-            }
-            state.queue.push_back(snackbar);
-        } else {
-            // Show immediately
-            drop(state);
-            self.begin_show(snackbar);
-        }
-    }
-
-    /// Dismisses the current snackbar immediately.
-    pub fn dismiss(&self) {
-        let id = self
-            .state
-            .borrow()
-            .current
-            .as_ref()
-            .map(|presentation| presentation.id);
-        if let Some(id) = id {
-            self.dismiss_presentation(id);
-        }
-    }
-
-    fn begin_show(&self, snackbar: Snackbar) {
         let duration = snackbar.duration;
-        let position = snackbar.position;
-        let hidden_offset_y = position.initial_offset_y();
-        let opacity = Binding::f32(0.0);
-        let offset_y = Binding::container(hidden_offset_y);
-        let presentation = {
+        let id = {
             let mut state = self.state.borrow_mut();
-            state.next_presentation_id = state
-                .next_presentation_id
+            state.next_id = state
+                .next_id
                 .checked_add(1)
                 .expect("Snackbar presentation id overflow");
-            let presentation = SnackbarPresentation {
-                id: state.next_presentation_id,
-                opacity,
-                offset_y,
-                hidden_offset_y,
-                exit_animation: SnackbarTheme::default().exit_animation,
-            };
-            state.is_showing = true;
-            state.is_dismissing = false;
-            state.current = Some(presentation.clone());
-            presentation
+            state.next_id
+        };
+        let item = ActiveSnackbar {
+            id,
+            opacity: Binding::f32(0.0),
+            entrance_offset: Binding::f32(snackbar.position.initial_offset_y()),
+            stack_offset: Binding::f32(0.0),
+            has_entered: Rc::new(Cell::new(false)),
+            dismissing: Rc::new(Cell::new(false)),
+            snackbar,
         };
 
-        // Build and display the snackbar view. The entrance transition is
-        // driven by the view's appear hook (see `SnackbarView::body`), which
-        // fires only after the renderer bound the animated opacity/offset
-        // signals — setting them from a free-floating task raced the first
-        // dispatch and skipped the animation when the set landed first.
-        let view = self.build_snackbar_view(snackbar, position, presentation.clone());
-        self.state.borrow().handler.set(view);
+        let active = self.state.borrow().active.clone();
 
-        // Schedule auto-dismiss
+        // Evict the oldest live snackbar if the stack is already full, so the
+        // new one slides in as the oldest fades out.
+        let snapshot = active.get();
+        let live = snapshot.iter().filter(|item| !item.dismissing.get()).count();
+        if live >= MAX_VISIBLE_SNACKBARS {
+            let oldest = snapshot
+                .iter()
+                .find(|item| !item.dismissing.get())
+                .map(|item| item.id);
+            if let Some(oldest) = oldest {
+                self.dismiss_presentation(oldest);
+            }
+        }
+        drop(snapshot);
+
+        active.with_mut(|stack| stack.push(item));
+        self.reflow();
+
         let manager = self.clone();
         spawn_local(async move {
             native_executor::sleep(duration).await;
-            manager.dismiss_presentation(presentation.id);
+            manager.dismiss_presentation(id);
         })
         .detach();
     }
 
-    fn dismiss_presentation(&self, id: u64) {
-        let presentation = {
-            let mut state = self.state.borrow_mut();
-            let Some(presentation) = state.current.clone() else {
-                return;
-            };
-            if !state.is_showing || state.is_dismissing || presentation.id != id {
-                return;
-            }
-            state.is_dismissing = true;
-            presentation
-        };
+    /// Dismisses the most recently shown snackbar.
+    pub fn dismiss(&self) {
+        let newest = self
+            .state
+            .borrow()
+            .active
+            .get()
+            .into_iter()
+            .rev()
+            .find(|item| !item.dismissing.get())
+            .map(|item| item.id);
+        if let Some(id) = newest {
+            self.dismiss_presentation(id);
+        }
+    }
 
-        presentation.opacity.set(0.0);
-        presentation.offset_y.set(presentation.hidden_offset_y);
+    /// Begins the dismissal fade for one snackbar, then removes it from the
+    /// stack and reflows the remainder once the fade completes.
+    fn dismiss_presentation(&self, id: u64) {
+        let item = self
+            .state
+            .borrow()
+            .active
+            .get()
+            .into_iter()
+            .find(|item| item.id == id);
+        let Some(item) = item else {
+            return;
+        };
+        if item.dismissing.replace(true) {
+            return;
+        }
+
+        item.opacity.set(0.0);
+        item.entrance_offset.set(item.snackbar.position.initial_offset_y());
 
         let manager = self.clone();
+        let exit = SnackbarTheme::default().exit_animation.duration();
         spawn_local(async move {
-            native_executor::sleep(presentation.exit_animation.duration()).await;
+            native_executor::sleep(exit).await;
             manager.finish_dismissal(id);
         })
         .detach();
     }
 
     fn finish_dismissal(&self, id: u64) {
-        let next = {
-            let mut state = self.state.borrow_mut();
-            let Some(current) = state.current.as_ref() else {
-                return;
-            };
-            if current.id != id {
-                return;
-            }
-            state.is_showing = false;
-            state.is_dismissing = false;
-            state.current = None;
-            state.queue.pop_front()
-        };
-
-        self.state.borrow().handler.set(());
-
-        if let Some(next_snackbar) = next {
-            self.begin_show(next_snackbar);
+        let active = self.state.borrow().active.clone();
+        let index = active.get().iter().position(|item| item.id == id);
+        if let Some(index) = index {
+            active.with_mut(|stack| {
+                stack.remove(index);
+            });
+            self.reflow();
         }
     }
 
-    fn build_snackbar_view(
-        &self,
-        snackbar: Snackbar,
-        position: SnackbarPosition,
-        presentation: SnackbarPresentation,
-    ) -> impl View {
-        SnackbarView {
-            snackbar,
-            manager: self.clone(),
-            position,
-            presentation,
+    /// Repositions the stack: within each placement, snackbars are offset from
+    /// the anchor edge by the cumulative height of the earlier snackbars at
+    /// that placement (oldest nearest the edge). Mirrors mdui's `reorderStack`.
+    fn reflow(&self) {
+        // The container is a fixed single-line height; the default theme value
+        // matches the active (M3) theme, so it is a stable stacking increment
+        // without resolving the environment theme here.
+        let row = SnackbarTheme::default().single_line_min_height + SNACKBAR_STACK_GAP;
+        let items = self.state.borrow().active.get();
+        for (index, item) in items.iter().enumerate() {
+            let earlier = items[..index]
+                .iter()
+                .filter(|other| other.snackbar.position == item.snackbar.position)
+                .count();
+            let offset = item.snackbar.position.stack_direction() * (earlier as f32) * row;
+            item.stack_offset.set(offset);
         }
     }
 }
 
-struct SnackbarView {
-    snackbar: Snackbar,
+/// Window-level overlay that renders the manager's active snackbar stack.
+///
+/// `watch`es the active binding and rebuilds a [`ZStack`] of full-bleed,
+/// self-anchored rows whenever membership changes. Cloneable so [`Window`] can
+/// place one instance per window above the main content.
+///
+/// [`Window`]: crate::runtime::window::Window
+#[derive(Clone)]
+struct SnackbarOverlay {
+    active: Binding<Vec<ActiveSnackbar>>,
     manager: SnackbarManager,
-    position: SnackbarPosition,
-    presentation: SnackbarPresentation,
 }
 
-impl SnackbarView {
+impl View for SnackbarOverlay {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        let Self { active, manager } = self;
+        watch(active, move |items: Vec<ActiveSnackbar>| {
+            let manager = manager.clone();
+            items
+                .into_iter()
+                .map(|item| StackedSnackbarView {
+                    item,
+                    manager: manager.clone(),
+                })
+                .collect::<ZStack<(Vec<AnyView>,)>>()
+        })
+    }
+}
+
+/// One snackbar in the reactive stack overlay.
+#[derive(Clone)]
+struct StackedSnackbarView {
+    item: ActiveSnackbar,
+    manager: SnackbarManager,
+}
+
+impl StackedSnackbarView {
     fn build_content(
         snackbar: Snackbar,
         manager: SnackbarManager,
+        id: u64,
         theme: &SnackbarTheme,
     ) -> AnyView {
         // Message with optional icon using Label component
@@ -578,9 +636,10 @@ impl SnackbarView {
                     )
                     .style(ButtonStyle::Borderless)
                     .action(move |env: waterui_core::Environment| {
-                        // Execute action handler with the live view environment.
+                        // Execute action handler with the live view environment,
+                        // then dismiss this specific snackbar.
                         let () = action.handler.call(&captured_env.layered_on(&env));
-                        manager.dismiss();
+                        manager.dismiss_presentation(id);
                     }),
                 ))
                 .spacing(theme.content_spacing),
@@ -592,18 +651,14 @@ impl SnackbarView {
     }
 }
 
-impl View for SnackbarView {
+impl View for StackedSnackbarView {
     fn body(self, env: &waterui_core::Environment) -> impl View {
         let theme = env.get::<SnackbarTheme>().cloned().unwrap_or_default();
-        let Self {
-            snackbar,
-            manager,
-            position,
-            presentation,
-        } = self;
+        let Self { item, manager } = self;
+        let position = item.snackbar.position;
 
         // M3 trailing inset shrinks to clear the action button's own padding.
-        let content_padding = if snackbar.action.is_some() {
+        let content_padding = if item.snackbar.action.is_some() {
             EdgeInsets::new(
                 theme.content_padding.top(),
                 theme.content_padding.bottom(),
@@ -614,8 +669,7 @@ impl View for SnackbarView {
             theme.content_padding.clone()
         };
 
-        // Build content: Label (icon + message) + optional action button
-        let content = Self::build_content(snackbar, manager, &theme);
+        let content = Self::build_content(item.snackbar.clone(), manager, item.id, &theme);
 
         let enter_animation = theme.enter_animation.clone();
         let shadow = Shadow::new(
@@ -625,17 +679,23 @@ impl View for SnackbarView {
         );
 
         // The appear hook runs while this subtree is dispatched — after the
-        // opacity/offset handles above it in the tree have bound at their
-        // hidden initial values — so the entrance targets always transition.
-        let entrance_opacity = presentation.opacity.clone();
-        let entrance_offset_y = presentation.offset_y.clone();
+        // animated opacity/offset handles bind at their hidden initial values —
+        // so the entrance transitions from hidden to shown. The overlay rebuilds
+        // the whole stack on membership changes, which re-fires this hook for
+        // every row; `has_entered` latches it to a one-shot so a rebuild cannot
+        // restart a settled row's fade-in or reverse a row mid-dismissal.
+        let entrance_opacity = item.opacity.clone();
+        let entrance_offset = item.entrance_offset.clone();
+        let has_entered = item.has_entered.clone();
 
-        // Styled container with blur background and rounded corners
         Frame::new(
             content
                 .on_appear(move || {
+                    if has_entered.replace(true) {
+                        return;
+                    }
                     entrance_opacity.set(1.0);
-                    entrance_offset_y.set(0.0);
+                    entrance_offset.set(0.0);
                 })
                 .padding_with(content_padding)
                 .height(theme.single_line_min_height)
@@ -644,21 +704,12 @@ impl View for SnackbarView {
                 .background(
                     RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
                 )
-                .border_with(
-                    crate::border::Border::new(
-                        theme.container_color.clone().with_opacity(0.0),
-                        0.0,
-                    )
-                    .corner_radius(theme.corner_radius),
-                )
                 .shadow(shadow)
-                .opacity(
-                    presentation
-                        .opacity
-                        .clone()
-                        .with_animation(enter_animation.clone()),
-                )
-                .offset(0.0, presentation.offset_y.with_animation(enter_animation)),
+                .opacity(item.opacity.with_animation(enter_animation.clone()))
+                // Entrance slide and reflow shift are independent animated
+                // bindings (each has a stable identity, so each animates).
+                .offset(0.0, item.entrance_offset.with_animation(enter_animation.clone()))
+                .offset(0.0, item.stack_offset.with_animation(enter_animation)),
         )
         .alignment(position.to_alignment())
         .padding_with(theme.viewport_padding) // Safe area inset
