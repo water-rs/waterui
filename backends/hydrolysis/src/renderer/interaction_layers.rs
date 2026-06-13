@@ -277,13 +277,19 @@ impl HydrolysisRenderer {
         paint: &dyn Fn(&mut VelloDrawContext<'_>),
     ) -> DynamicSubtree {
         let mut subtree = DynamicSubtree::for_capture(self.render_depth);
-        core::mem::swap(&mut self.scene, &mut subtree.scene);
+        let mut fragment_scene = vello::Scene::new();
+        core::mem::swap(&mut self.scene, &mut fragment_scene);
         {
             let local = ctx.with_identity_transforms(ctx.bounds);
             let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, local.transform);
             paint(&mut draw);
         }
-        core::mem::swap(&mut self.scene, &mut subtree.scene);
+        core::mem::swap(&mut self.scene, &mut fragment_scene);
+        // A state-layer fragment is pure paint: its whole content is one static
+        // segment, which the wrapping opacity/transform draw modulates at replay.
+        subtree
+            .draw_ops
+            .push(DynamicDrawOp::Static(fragment_scene));
         subtree
     }
 
@@ -313,15 +319,19 @@ impl HydrolysisRenderer {
             ..WidgetInteractionState::NONE
         };
         let hover_subtree = self.paint_fragment(ctx, &|draw| paint(draw, hover_state));
-        self.dynamic_opacity_draws.push(DynamicOpacityDraw::paint_only(
-            DynamicTransformScalar::with_handle(
-                handles.hover_alpha().sample(now),
-                handles.hover_alpha().clone(),
-            ),
-            ctx,
-            local_bounds,
-            hover_subtree,
-        ));
+        // The widget's own painted content (drawn before this call) becomes a
+        // static segment; the state layers stack above it in draw order.
+        self.flush_static_segment();
+        self.draw_ops
+            .push(DynamicDrawOp::Opacity(DynamicOpacityDraw::paint_only(
+                DynamicTransformScalar::with_handle(
+                    handles.hover_alpha().sample(now),
+                    handles.hover_alpha().clone(),
+                ),
+                ctx,
+                local_bounds,
+                hover_subtree,
+            )));
 
         // Press ripple: painted at full progress and unit opacity, replayed
         // through the Material ripple kinematics and the press alpha.
@@ -337,7 +347,6 @@ impl HydrolysisRenderer {
             ..WidgetInteractionState::NONE
         };
         let press_subtree = self.paint_fragment(ctx, &|draw| paint(draw, press_state));
-        let theme_initial_scale = press_ripple_initial_scale(local_bounds);
         let ripple = DynamicRippleTransform {
             progress: DynamicTransformScalar::with_handle(
                 handles.press_progress().sample(now),
@@ -345,23 +354,27 @@ impl HydrolysisRenderer {
             ),
             handles: Rc::clone(handles),
             bounds: local_bounds,
-            initial_scale: theme_initial_scale,
+            initial_scale: RIPPLE_INITIAL_SCALE,
         };
         let mut press_wrapper = DynamicSubtree::for_capture(self.render_depth);
-        press_wrapper.dynamic_transforms.push(DynamicTransformDraw::paint_only(
-            DynamicTransformComponents::ripple(ripple),
-            local_bounds,
-            press_subtree,
-        ));
-        self.dynamic_opacity_draws.push(DynamicOpacityDraw::paint_only(
-            DynamicTransformScalar::with_handle(
-                handles.press_alpha().sample(now),
-                handles.press_alpha().clone(),
-            ),
-            ctx,
-            local_bounds,
-            press_wrapper,
-        ));
+        press_wrapper
+            .draw_ops
+            .push(DynamicDrawOp::Transform(DynamicTransformDraw::paint_only(
+                DynamicTransformComponents::ripple(ripple),
+                local_bounds,
+                press_subtree,
+            )));
+        self.flush_static_segment();
+        self.draw_ops
+            .push(DynamicDrawOp::Opacity(DynamicOpacityDraw::paint_only(
+                DynamicTransformScalar::with_handle(
+                    handles.press_alpha().sample(now),
+                    handles.press_alpha().clone(),
+                ),
+                ctx,
+                local_bounds,
+                press_wrapper,
+            )));
 
         // Focus affordance: painted at full progress, replayed with focus alpha.
         if with_focus {
@@ -371,15 +384,17 @@ impl HydrolysisRenderer {
                 ..WidgetInteractionState::NONE
             };
             let focus_subtree = self.paint_fragment(ctx, &|draw| paint(draw, focus_state));
-            self.dynamic_opacity_draws.push(DynamicOpacityDraw::paint_only(
-                DynamicTransformScalar::with_handle(
-                    handles.focus_alpha().sample(now),
-                    handles.focus_alpha().clone(),
-                ),
-                ctx,
-                local_bounds,
-                focus_subtree,
-            ));
+            self.flush_static_segment();
+            self.draw_ops
+                .push(DynamicDrawOp::Opacity(DynamicOpacityDraw::paint_only(
+                    DynamicTransformScalar::with_handle(
+                        handles.focus_alpha().sample(now),
+                        handles.focus_alpha().clone(),
+                    ),
+                    ctx,
+                    local_bounds,
+                    focus_subtree,
+                )));
         }
     }
 
@@ -406,20 +421,7 @@ impl HydrolysisRenderer {
     }
 }
 
-/// Scale of the Material press ripple at progress 0 relative to its final
-/// painted size, mirroring the Material Web ripple growth animation.
-fn press_ripple_initial_scale(bounds: vello::kurbo::Rect) -> f64 {
-    const RIPPLE_INITIAL_ORIGIN_SCALE: f64 = 0.2;
-    const RIPPLE_PADDING: f64 = 10.0;
-    const RIPPLE_SOFT_EDGE_MINIMUM_SIZE: f64 = 75.0;
-    const RIPPLE_SOFT_EDGE_CONTAINER_RATIO: f64 = 0.35;
-    let max_dimension = bounds.width().max(bounds.height());
-    let initial_size = max_dimension * RIPPLE_INITIAL_ORIGIN_SCALE;
-    let soft_edge_size =
-        (RIPPLE_SOFT_EDGE_CONTAINER_RATIO * max_dimension).max(RIPPLE_SOFT_EDGE_MINIMUM_SIZE);
-    let final_size = bounds.width().hypot(bounds.height()) + RIPPLE_PADDING + soft_edge_size;
-    if final_size <= 0.0 {
-        return 1.0;
-    }
-    (initial_size / final_size).clamp(0.0, 1.0)
-}
+/// Scale of the Material press ripple at progress 0, relative to its final
+/// solid-circle size. Material Web's ripple wave starts at `scale(0.4)` and
+/// grows to `scale(1)` while its center drifts to the surface center.
+const RIPPLE_INITIAL_SCALE: f64 = 0.4;
