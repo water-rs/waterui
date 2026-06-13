@@ -13,7 +13,7 @@ use core::time::Duration;
 
 use waterui::App;
 
-use crate::display::BufferDisplay;
+use crate::board::HostBoard;
 use crate::runtime::DewRuntime;
 
 /// Geometry of the target panel.
@@ -64,8 +64,11 @@ pub fn run(app: App, panel: PanelConfig) -> ! {
         panel.height,
         panel.band_height
     );
-    let display = BufferDisplay::new(panel.width, panel.height);
-    let mut runtime = DewRuntime::new(display, env, panel.band_height, move || content.build());
+    // TODO(panel-driver): swap HostBoard for an Esp32Board streaming RGB565
+    // over the display bus once the panel driver lands; the engine and app
+    // are unchanged across that swap (that is the point of the Board trait).
+    let board = HostBoard::new(panel.width, panel.height);
+    let mut runtime = DewRuntime::new(board, env, panel.band_height, move || content.build());
 
     loop {
         if let Some(dirty) = runtime.pump() {

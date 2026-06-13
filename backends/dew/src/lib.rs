@@ -28,6 +28,7 @@
 //! - [`theme`]: the built-in widget palette — named colors every handler
 //!   draws with until environment-driven theming lands
 
+pub mod board;
 pub mod compositor;
 pub mod dispatch;
 pub mod display;
@@ -42,6 +43,7 @@ pub mod text;
 pub mod theme;
 mod views;
 
+pub use board::{Board, HostBoard, PointerSample};
 pub use compositor::{BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};
 pub use display::{BufferDisplay, DisplayFlush};
