@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::build_info::{
-    ANDROID_BACKEND, APPLE_BACKEND, GTK_BACKEND_VERSION, HYDROLYSIS_VERSION, PREVIEW_VERSION,
-    WATERUI_FFI_VERSION, WATERUI_VERSION,
+    ANDROID_BACKEND, APPLE_BACKEND, DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_VERSION,
+    PREVIEW_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION,
 };
 use askama::Template;
 
@@ -34,6 +34,7 @@ mod embedded {
     pub static FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/ffi");
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
     pub static HYDROLYSIS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis");
+    pub static ESP32: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/esp32");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static PREVIEW_FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview_ffi");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
@@ -62,6 +63,30 @@ impl IosPermissionTemplateEntry {
 pub struct FontRegistrationTemplateEntry {
     pub family_name: String,
     pub file_name: String,
+}
+
+/// ESP32 harness parameters substituted into the generated firmware crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Esp32TemplateEntry {
+    /// Target chip (e.g. "esp32s3"); selects the `xtensa-<chip>-espidf` triple.
+    pub chip: String,
+    /// Panel width in pixels.
+    pub panel_width: u32,
+    /// Panel height in pixels.
+    pub panel_height: u32,
+    /// Maximum rows per rasterization band (bounds scratch memory).
+    pub band_height: u32,
+}
+
+impl Default for Esp32TemplateEntry {
+    fn default() -> Self {
+        Self {
+            chip: "esp32s3".to_string(),
+            panel_width: 410,
+            panel_height: 502,
+            band_height: 16,
+        }
+    }
 }
 
 /// Context for rendering templates with type-safe substitutions.
@@ -99,6 +124,8 @@ pub struct TemplateContext {
     pub preview_runtime_fingerprint: Option<String>,
     /// Package type of the project being scaffolded.
     pub package_type: crate::project::PackageType,
+    /// ESP32 harness parameters used by the esp32 templates.
+    pub esp32: Esp32TemplateEntry,
 }
 
 impl TemplateContext {
@@ -127,6 +154,7 @@ impl TemplateContext {
             accessory: false,
             preview_runtime_fingerprint: None,
             package_type: options.package_type,
+            esp32: Esp32TemplateEntry::default(),
         }
     }
 
@@ -153,6 +181,7 @@ impl TemplateContext {
             accessory: manifest.package.accessory,
             preview_runtime_fingerprint: None,
             package_type: manifest.package.package_type,
+            esp32: Esp32TemplateEntry::default(),
         }
     }
 
@@ -186,6 +215,7 @@ impl TemplateContext {
             accessory,
             preview_runtime_fingerprint,
             package_type: crate::project::PackageType::Playground,
+            esp32: Esp32TemplateEntry::default(),
         }
     }
 
@@ -217,6 +247,13 @@ impl TemplateContext {
     #[must_use]
     pub fn with_ios_permissions(mut self, permissions: Vec<IosPermissionTemplateEntry>) -> Self {
         self.ios_permissions = permissions;
+        self
+    }
+
+    /// Set ESP32 harness parameters for template rendering.
+    #[must_use]
+    pub fn with_esp32(mut self, esp32: Esp32TemplateEntry) -> Self {
+        self.esp32 = esp32;
         self
     }
 
@@ -448,6 +485,7 @@ enum TemplateNamespace {
     Ffi,
     Gtk4,
     Hydrolysis,
+    Esp32,
     Inspector,
     Preview,
     PreviewFfi,
@@ -462,6 +500,7 @@ impl TemplateNamespace {
             Self::Ffi => "src/templates/ffi",
             Self::Gtk4 => "src/templates/gtk4",
             Self::Hydrolysis => "src/templates/hydrolysis",
+            Self::Esp32 => "src/templates/esp32",
             Self::Inspector => "src/templates/inspector",
             Self::Preview => "src/templates/preview",
             Self::PreviewFfi => "src/templates/preview_ffi",
@@ -544,6 +583,14 @@ macro_rules! define_scaffold_templates {
                         )
                     })
                 }
+                "src/templates/esp32/Cargo.toml.tpl" => Esp32CargoTomlTemplate::from_ctx(ctx)
+                    .render()
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Failed to render template {display_path}: {error}"),
+                        )
+                    }),
                 $(
                     $path => $name { ctx }
                         .render()
@@ -569,6 +616,51 @@ struct ScaffoldAppleFontTemplate<'a> {
     font_entries: &'a [FontRegistrationTemplateEntry],
 }
 
+/// Generated `Cargo.toml` for the ESP32 firmware harness crate.
+///
+/// Rendered through an askama template (instead of a serialized manifest)
+/// so the generated file can carry the Xtensa miscompilation profile note.
+#[derive(Template)]
+#[template(path = "src/templates/esp32/Cargo.toml.tpl", escape = "none")]
+struct Esp32CargoTomlTemplate {
+    package_name: String,
+    app_crate_name: String,
+    app_crate_path: String,
+    dew_path: Option<String>,
+    core_path: Option<String>,
+    dew_version: &'static str,
+    waterui_version: &'static str,
+}
+
+impl Esp32CargoTomlTemplate {
+    fn from_ctx(ctx: &TemplateContext) -> Self {
+        let dew_path = ctx.waterui_path.as_ref().map(|waterui_path| {
+            compute_native_backend_dependency_path(
+                ctx,
+                waterui_path,
+                NativeBackendDependencyPathKind::BackendsSubdir("dew"),
+            )
+        });
+        let core_path = ctx.waterui_path.as_ref().map(|waterui_path| {
+            compute_native_backend_dependency_path(
+                ctx,
+                waterui_path,
+                NativeBackendDependencyPathKind::WorkspaceSubdir("core"),
+            )
+        });
+
+        Self {
+            package_name: ctx.crate_name.with_suffix("esp32").to_string(),
+            app_crate_name: ctx.crate_name.to_string(),
+            app_crate_path: ctx.project_root_relative_path(),
+            dew_path,
+            core_path,
+            dew_version: DEW_VERSION,
+            waterui_version: WATERUI_VERSION,
+        }
+    }
+}
+
 define_scaffold_templates! {
     AppleProjectTemplate => (Apple, "src/templates/apple/AppName.xcodeproj/project.pbxproj.tpl"),
     AppleAppTemplate => (Apple, "src/templates/apple/AppName/AppNameApp.swift.tpl"),
@@ -585,6 +677,8 @@ define_scaffold_templates! {
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
     HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
+    Esp32MainTemplate => (Esp32, "src/templates/esp32/src/main.rs.tpl"),
+    Esp32CargoConfigTemplate => (Esp32, "src/templates/esp32/.cargo/config.toml.tpl"),
     PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
     PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
 }
@@ -592,9 +686,9 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANDROID_BACKEND, APPLE_BACKEND, GTK_BACKEND_VERSION, PREVIEW_VERSION, TemplateContext,
-        TemplateNamespace, embedded, jitpack_dependency_coordinate, normalize_path_for_config,
-        render_scaffold_template,
+        ANDROID_BACKEND, APPLE_BACKEND, Esp32TemplateEntry, GTK_BACKEND_VERSION, PREVIEW_VERSION,
+        TemplateContext, TemplateNamespace, embedded, jitpack_dependency_coordinate,
+        normalize_path_for_config, render_scaffold_template,
     };
     use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
@@ -623,6 +717,7 @@ mod tests {
             accessory: false,
             preview_runtime_fingerprint: None,
             package_type,
+            esp32: Esp32TemplateEntry::default(),
         }
     }
 
@@ -1880,6 +1975,25 @@ pub mod hydrolysis {
                 ),
             ),
         ])
+    }
+}
+
+/// ESP32 firmware harness templates.
+pub mod esp32 {
+    use super::{Path, TemplateContext, TemplateNamespace, embedded, io, scaffold_dir};
+
+    /// Write all ESP32 harness templates to the given directory.
+    ///
+    /// The generated `Cargo.toml` and `src/main.rs` are rendered from the
+    /// template context (including `ctx.esp32` harness parameters); the
+    /// remaining files (toolchain pin, cargo config, sdkconfig, partition
+    /// table, build script) are static.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        scaffold_dir(TemplateNamespace::Esp32, &embedded::ESP32, base_dir, ctx).await
     }
 }
 

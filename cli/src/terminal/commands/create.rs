@@ -23,7 +23,7 @@ pub struct Args {
     #[arg(long)]
     bundle_id: Option<String>,
 
-    /// Backends to scaffold (apple, android, gtk4, hydrolysis).
+    /// Backends to scaffold (apple, android, gtk4, hydrolysis, esp32).
     #[arg(long, value_delimiter = ',')]
     backends: Option<Vec<String>>,
 
@@ -53,6 +53,7 @@ enum Backend {
     Android,
     Gtk4,
     Hydrolysis,
+    Esp32,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -72,7 +73,13 @@ impl ProjectMode {
 }
 
 impl Backend {
-    const ALL: [Self; 4] = [Self::Apple, Self::Android, Self::Gtk4, Self::Hydrolysis];
+    const ALL: [Self; 5] = [
+        Self::Apple,
+        Self::Android,
+        Self::Gtk4,
+        Self::Hydrolysis,
+        Self::Esp32,
+    ];
 
     const fn label(self) -> &'static str {
         match self {
@@ -80,6 +87,7 @@ impl Backend {
             Self::Android => "Android",
             Self::Gtk4 => "GTK4 (Linux)",
             Self::Hydrolysis => "Hydrolysis (Linux/macOS/Windows)",
+            Self::Esp32 => "ESP32 (Dew firmware)",
         }
     }
 
@@ -89,6 +97,7 @@ impl Backend {
             "android" => Some(Self::Android),
             "gtk" | "gtk4" | "linux" => Some(Self::Gtk4),
             "hydrolysis" => Some(Self::Hydrolysis),
+            "esp32" | "esp32s3" | "dew" => Some(Self::Esp32),
             _ => None,
         }
     }
@@ -218,7 +227,9 @@ fn resolve_backends(
     };
 
     if backends.is_empty() {
-        bail!("At least one backend is required. Choose from: apple, android, gtk4, hydrolysis.");
+        bail!(
+            "At least one backend is required. Choose from: apple, android, gtk4, hydrolysis, esp32."
+        );
     }
 
     Ok(backends)
@@ -253,7 +264,8 @@ async fn initialize_requested_backends(project: &mut Project, plan: &CreatePlan)
     initialize_backend_if_requested(project, &plan.backends, Backend::Apple).await?;
     initialize_backend_if_requested(project, &plan.backends, Backend::Android).await?;
     initialize_backend_if_requested(project, &plan.backends, Backend::Gtk4).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Hydrolysis).await
+    initialize_backend_if_requested(project, &plan.backends, Backend::Hydrolysis).await?;
+    initialize_backend_if_requested(project, &plan.backends, Backend::Esp32).await
 }
 
 async fn initialize_backend_if_requested(
@@ -273,6 +285,7 @@ async fn initialize_backend_if_requested(
             "Scaffolding hydrolysis backend...",
             "Created hydrolysis backend",
         ),
+        Backend::Esp32 => ("Scaffolding ESP32 backend...", "Created ESP32 backend"),
     };
 
     let spinner = shell::spinner(spinner_message);
@@ -281,6 +294,7 @@ async fn initialize_backend_if_requested(
         Backend::Android => project.init_android_backend().await?,
         Backend::Gtk4 => project.init_gtk4_backend().await?,
         Backend::Hydrolysis => project.init_hydrolysis_backend().await?,
+        Backend::Esp32 => project.init_esp32_backend().await?,
     }
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -334,7 +348,7 @@ fn parse_backends(backends: &[String]) -> Result<Vec<Backend>> {
         Ok(parsed)
     } else {
         bail!(
-            "Unknown backend(s): {}. Valid values: apple, android, gtk4, hydrolysis",
+            "Unknown backend(s): {}. Valid values: apple, android, gtk4, hydrolysis, esp32",
             invalid.join(", ")
         )
     }
@@ -385,12 +399,16 @@ fn next_run_command(package_type: PackageType, backends: &[Backend]) -> Option<&
         return None;
     }
 
+    if backends.iter().any(|b| matches!(b, Backend::Esp32)) {
+        return Some("water run --platform esp32s3");
+    }
+
     None
 }
 
 fn prompt_backends() -> Result<Vec<Backend>> {
     let items: Vec<&str> = Backend::ALL.iter().map(|b| b.label()).collect();
-    let defaults = vec![true, true, false, false]; // Apple and Android selected by default
+    let defaults = vec![true, true, false, false, false]; // Apple and Android selected by default
 
     let selections = MultiSelect::with_theme(&ColorfulTheme::default())
         .with_prompt("Select backends")

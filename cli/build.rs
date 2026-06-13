@@ -18,6 +18,7 @@ struct ScaffoldVersions {
     waterui: String,
     waterui_ffi: String,
     hydrolysis: String,
+    waterui_dew: String,
     waterui_gtk: String,
     waterui_preview: String,
     android_kotlin: String,
@@ -72,6 +73,10 @@ fn emit_scaffold_metadata(
     println!(
         "cargo:rustc-env=WATERUI_CLI_HYDROLYSIS_VERSION={}",
         scaffold_metadata.versions.hydrolysis
+    );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_DEW_VERSION={}",
+        scaffold_metadata.versions.waterui_dew
     );
     println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_GTK_VERSION={}",
@@ -137,6 +142,14 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             workspace_root
                 .join("backends")
                 .join("hydrolysis")
+                .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("backends")
+                .join("dew")
                 .join("Cargo.toml")
                 .display()
         );
@@ -218,6 +231,12 @@ fn resolve_scaffold_metadata(
                         .join("hydrolysis")
                         .join("Cargo.toml"),
                 ),
+                waterui_dew: manifest_package_version(
+                    &workspace_root
+                        .join("backends")
+                        .join("dew")
+                        .join("Cargo.toml"),
+                ),
             },
             apple_backend: workspace_backend_reference(workspace_root, "backends/apple"),
             android_backend: workspace_backend_reference(workspace_root, "backends/android"),
@@ -234,6 +253,7 @@ fn resolve_scaffold_metadata(
             waterui_preview: manifest_scaffold_string(scaffold_metadata, "waterui-preview-version"),
             android_kotlin: manifest_scaffold_string(scaffold_metadata, "android-kotlin-version"),
             hydrolysis: manifest_scaffold_string(scaffold_metadata, "hydrolysis-version"),
+            waterui_dew: manifest_scaffold_string(scaffold_metadata, "waterui-dew-version"),
         },
         apple_backend: manifest_backend_reference(scaffold_metadata, "apple-backend"),
         android_backend: manifest_backend_reference(scaffold_metadata, "android-backend"),

@@ -45,6 +45,8 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU)
     Web,
+    /// ESP32-S3 (Xtensa, ESP-IDF firmware via the Dew backend)
+    Esp32S3,
 }
 
 /// Backend types available for building.
@@ -58,6 +60,8 @@ pub enum TargetBackend {
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer)
     Hydrolysis,
+    /// Dew backend (embedded-first CPU renderer for ESP32-class chips)
+    Dew,
 }
 
 impl TargetPlatform {
@@ -148,6 +152,8 @@ impl TargetPlatform {
             Self::Linux | Self::Windows => Triple::host(),
             Self::Web => Triple::from_str("wasm32-unknown-unknown")
                 .expect("web target triple must remain valid"),
+            Self::Esp32S3 => Triple::from_str("xtensa-esp32s3-espidf")
+                .expect("esp32s3 target triple must remain valid"),
         }
     }
 
@@ -167,6 +173,7 @@ impl TargetPlatform {
             Self::Android => &[TargetBackend::Android],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows | Self::Web => &[TargetBackend::Hydrolysis],
+            Self::Esp32S3 => &[TargetBackend::Dew],
         }
     }
 
@@ -186,6 +193,7 @@ impl TargetPlatform {
             Self::Android => TargetBackend::Android,
             Self::Linux => TargetBackend::Gtk4,
             Self::Windows | Self::Web => TargetBackend::Hydrolysis,
+            Self::Esp32S3 => TargetBackend::Dew,
         }
     }
 
@@ -214,7 +222,7 @@ impl TargetPlatform {
             Self::WatchOSSimulator => Some("watchsimulator"),
             Self::VisionOS => Some("xros"),
             Self::VisionOSSimulator => Some("xrsimulator"),
-            Self::Android | Self::Linux | Self::Windows | Self::Web => None,
+            Self::Android | Self::Linux | Self::Windows | Self::Web | Self::Esp32S3 => None,
         }
     }
 
@@ -233,6 +241,7 @@ impl TargetPlatform {
                 Architecture::Aarch64(Aarch64Architecture::Aarch64)
             }
             Self::Web => Architecture::Wasm32,
+            Self::Esp32S3 => Architecture::XTensa,
         }
     }
 }

@@ -25,6 +25,7 @@ use waterui_cli::{
     backend::reinit_backend,
     build::BuildOptions,
     device::{Artifact, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
+    esp32::{backend::Esp32Backend, platform::run_esp32},
     gtk4::{
         backend::Gtk4Backend,
         platform::{build_gtk4, package_gtk4},
@@ -114,7 +115,7 @@ async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::Crash
 
 #[derive(Debug, Clone, Copy)]
 struct BackendAvailability {
-    available: [bool; 4],
+    available: [bool; 5],
 }
 
 impl BackendAvailability {
@@ -124,6 +125,7 @@ impl BackendAvailability {
             TargetBackend::Android => 1,
             TargetBackend::Gtk4 => 2,
             TargetBackend::Hydrolysis => 3,
+            TargetBackend::Dew => 4,
         }]
     }
 }
@@ -159,6 +161,8 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU in browser).
     Web,
+    /// ESP32-S3 board or QEMU (Dew firmware).
+    Esp32s3,
 }
 
 /// Target backend for running (how the app is built and rendered).
@@ -172,6 +176,8 @@ pub enum TargetBackend {
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
     Hydrolysis,
+    /// Dew backend (ESP32 firmware).
+    Dew,
 }
 
 /// Arguments for the run command.
@@ -246,6 +252,7 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows | TargetPlatform::Web => TargetBackend::Hydrolysis,
+        TargetPlatform::Esp32s3 => TargetBackend::Dew,
     };
 
     let backend = backend_override.unwrap_or(default_backend);
@@ -267,6 +274,7 @@ fn resolve_backend(
                 TargetPlatform::Windows | TargetPlatform::Web,
                 TargetBackend::Hydrolysis
             )
+            | (TargetPlatform::Esp32s3, TargetBackend::Dew)
     );
 
     if !supported {
@@ -278,7 +286,8 @@ fn resolve_backend(
              - Android: android\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis\n  \
-             - Web: hydrolysis",
+             - Web: hydrolysis\n  \
+             - ESP32-S3: dew",
             backend,
             platform
         );
@@ -294,6 +303,7 @@ const fn default_backend_priority(platform: TargetPlatform) -> &'static [TargetB
         TargetPlatform::Macos => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
         TargetPlatform::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
         TargetPlatform::Windows | TargetPlatform::Web => &[TargetBackend::Hydrolysis],
+        TargetPlatform::Esp32s3 => &[TargetBackend::Dew],
     }
 }
 
@@ -366,6 +376,10 @@ pub async fn run(args: Args) -> Result<()> {
         return run_web_app(&context.project).await;
     }
 
+    if context.platform == TargetPlatform::Esp32s3 {
+        return run_esp32_app(&context.project, args.device.as_deref()).await;
+    }
+
     let selection =
         select_run_device(context.platform, context.backend, args.device.as_deref()).await?;
     let config = build_run_config(&args).await;
@@ -411,7 +425,7 @@ async fn prepare_run_context(args: &Args) -> Result<RunContext> {
 
     validate_desktop_backend_platform_on_host(platform, backend)?;
     validate_device_arg(platform, backend, args.device.as_deref())?;
-    validate_web_log_args(platform, args.logs, args.native_logs)?;
+    validate_log_pipeline_args(platform, args.logs, args.native_logs)?;
     ensure_run_backend_ready(&project, backend)?;
     let project = ensure_generated_run_backend(&project_path, project, backend).await?;
 
@@ -446,6 +460,7 @@ const fn backend_availability(project: &Project) -> BackendAvailability {
             project.android_backend().is_some(),
             project.gtk4_backend().is_some(),
             project.hydrolysis_backend().is_some(),
+            project.esp32_backend().is_some(),
         ],
     }
 }
@@ -467,6 +482,9 @@ fn ensure_run_backend_ready(project: &Project, backend: TargetBackend) -> Result
         }
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
             bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+        }
+        TargetBackend::Dew if project.esp32_backend().is_none() => {
+            bail!("ESP32 backend is not configured. Run `water backend add esp32`.")
         }
         _ => Ok(()),
     }
@@ -502,6 +520,18 @@ async fn ensure_generated_run_backend(
                 needs_reinit,
                 "Initializing hydrolysis backend...",
                 "Hydrolysis backend initialized",
+            )
+            .await
+        }
+        TargetBackend::Dew if project.is_playground() => {
+            let needs_reinit =
+                project.esp32_backend().is_none() || Esp32Backend::requires_regeneration(&project)?;
+            ensure_generated_run_backend_impl::<Esp32Backend>(
+                project_path,
+                project,
+                needs_reinit,
+                "Initializing ESP32 backend...",
+                "ESP32 backend initialized",
             )
             .await
         }
@@ -567,6 +597,17 @@ async fn run_web_app(project: &Project) -> Result<()> {
     let _server = server;
     futures::future::pending::<()>().await;
     unreachable!("web dev server future should be cancelled by Ctrl+C")
+}
+
+async fn run_esp32_app(project: &Project, device: Option<&str>) -> Result<()> {
+    let sccache_path = detect_sccache_path().await;
+    let build_options = sccache_path.map_or_else(
+        || BuildOptions::new(false),
+        |sccache| BuildOptions::new(false).with_sccache(sccache),
+    );
+
+    shell::status(">", "Building ESP32 firmware...");
+    display_output(run_esp32(project, build_options, device)).await
 }
 
 async fn select_run_device(
@@ -741,6 +782,7 @@ fn resolve_build_plan(
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Web => panic!("web run should not enter build_and_run"),
+        TargetPlatform::Esp32s3 => panic!("esp32 run should not enter build_and_run"),
     };
     let android_abi = resolve_android_abi(backend, device)?;
 
@@ -815,6 +857,9 @@ async fn build_for_backend(
         TargetBackend::Hydrolysis => {
             build_hydrolysis(project, plan.lib_platform, build_options).await?;
         }
+        TargetBackend::Dew => {
+            panic!("esp32 run should not enter build_and_run")
+        }
     }
     Ok(())
 }
@@ -837,6 +882,7 @@ async fn package_for_backend(
         TargetBackend::Hydrolysis => {
             package_hydrolysis(project, plan.lib_platform, package_options).await
         }
+        TargetBackend::Dew => panic!("esp32 run should not enter build_and_run"),
     }
 }
 
@@ -893,7 +939,8 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Android
                 | TargetPlatform::Linux
                 | TargetPlatform::Windows
-                | TargetPlatform::Web => {
+                | TargetPlatform::Web
+                | TargetPlatform::Esp32s3 => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}")
                 }
             };
@@ -923,6 +970,11 @@ async fn check_toolchain_for_backend(
                 toolchain_checks::check_web().await?;
             } else {
                 toolchain_checks::check_hydrolysis().await?;
+            }
+        }
+        TargetBackend::Dew => {
+            if platform != TargetPlatform::Esp32s3 {
+                bail!("Internal error: dew backend is not supported on {platform:?}");
             }
         }
     }
@@ -1013,6 +1065,9 @@ async fn find_device(
         TargetPlatform::Web => {
             bail!("web platform does not use the device pipeline")
         }
+        TargetPlatform::Esp32s3 => {
+            bail!("esp32s3 platform does not use the device pipeline")
+        }
     }
 }
 
@@ -1033,6 +1088,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
         TargetPlatform::Web => "Web",
+        TargetPlatform::Esp32s3 => "ESP32-S3",
     }
 }
 
@@ -1042,6 +1098,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
+        TargetBackend::Dew => "Dew",
     }
 }
 
@@ -1065,19 +1122,25 @@ fn validate_device_arg(
     Ok(())
 }
 
-fn validate_web_log_args(
+fn validate_log_pipeline_args(
     platform: TargetPlatform,
     logs: Option<CliLogLevel>,
     native_logs: bool,
 ) -> Result<()> {
-    if platform != TargetPlatform::Web {
+    let log_pipeline_unsupported = match platform {
+        TargetPlatform::Web => Some("web"),
+        // The serial monitor streams firmware logs directly.
+        TargetPlatform::Esp32s3 => Some("esp32s3"),
+        _ => None,
+    };
+    let Some(platform_label) = log_pipeline_unsupported else {
         return Ok(());
-    }
+    };
     if logs.is_some() {
-        bail!("--logs is not supported with the web platform");
+        bail!("--logs is not supported with the {platform_label} platform");
     }
     if native_logs {
-        bail!("--native-logs is not supported with the web platform");
+        bail!("--native-logs is not supported with the {platform_label} platform");
     }
     Ok(())
 }
@@ -1127,7 +1190,8 @@ fn validate_desktop_backend_platform_on_host(
             #[cfg(not(target_os = "macos"))]
             bail!("Apple backend requires a macOS host");
         }
-        TargetBackend::Android => {}
+        // The Dew/ESP32 firmware cross-compiles from any host with espup installed.
+        TargetBackend::Android | TargetBackend::Dew => {}
     }
 
     Ok(())
@@ -1251,7 +1315,7 @@ mod tests {
                 TargetPlatform::Linux,
                 false,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Hydrolysis
@@ -1261,7 +1325,7 @@ mod tests {
                 TargetPlatform::Macos,
                 false,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Hydrolysis
@@ -1271,7 +1335,7 @@ mod tests {
                 TargetPlatform::Linux,
                 false,
                 BackendAvailability {
-                    available: [false, false, false, false],
+                    available: [false, false, false, false, false],
                 }
             ),
             TargetBackend::Gtk4
@@ -1285,7 +1349,7 @@ mod tests {
                 TargetPlatform::Macos,
                 true,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Apple
@@ -1295,7 +1359,7 @@ mod tests {
                 TargetPlatform::Linux,
                 true,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Gtk4
