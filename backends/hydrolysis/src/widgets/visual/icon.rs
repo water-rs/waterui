@@ -7,20 +7,29 @@ use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{Environment, Native};
 use waterui_icon::SystemIcon;
-use waterui_text::styled::StyledStr;
+
+/// `SystemIcon` resolves names against an OS-provided icon catalog (SF
+/// Symbols). Hydrolysis draws its own pixels and has no such catalog, so the
+/// primitive is explicitly unsupported here: portable code should use a
+/// packaged icon crate (`waterui-icons-material-icon`,
+/// `waterui-icons-lucide`, `waterui-icons-fontawesome7`).
+fn unsupported_system_icon(icon: &SystemIcon) -> ! {
+    panic!(
+        "SystemIcon(\"{}\") requires an OS icon catalog and is not supported by Hydrolysis; \
+         use a packaged icon crate such as waterui-icons-material-icon for portable code",
+        icon.name
+    )
+}
 
 impl HydroNativeView for Native<SystemIcon> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        let render_ctx = ctx.render_context();
-        HydrolysisRenderer::render_system_icon(ctx.renderer_mut(), render_ctx, view, env);
+        let _ = (ctx, env);
+        unsupported_system_icon(view.as_inner());
     }
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
-        HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(view.as_inner().name.clone()),
-            env,
-        )
+        let _ = (state, env);
+        unsupported_system_icon(view.as_inner());
     }
 
     fn accessibility(

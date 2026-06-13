@@ -16,4 +16,4 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui = { version = "0.2.1", path = "../../../..", default-features = false }
-waterui-icon.workspace = true
+waterui-icons-material-icon.workspace = true
