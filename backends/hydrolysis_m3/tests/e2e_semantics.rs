@@ -745,3 +745,64 @@ fn material_focused_text_field_snapshot() {
 
     assert!(captured.path().is_file());
 }
+
+#[test]
+fn material_collection_items_expose_accessibility_and_survive_membership_change() {
+    use waterui::Identifiable;
+    use waterui::component::ZStack;
+    use waterui::reactive::collection::List;
+
+    #[derive(Clone)]
+    struct Row {
+        id: u64,
+        label: Str,
+    }
+
+    impl Identifiable for Row {
+        type Id = u64;
+
+        fn id(&self) -> u64 {
+            self.id
+        }
+    }
+
+    let list = List::from(vec![
+        Row { id: 1, label: Str::from("Alpha") },
+        Row { id: 2, label: Str::from("Bravo") },
+        Row { id: 3, label: Str::from("Charlie") },
+    ]);
+    let list_for_action = list.clone();
+
+    // `ZStack::for_each` lowers to a non-virtualized `LazyContainer`, i.e. the
+    // retained per-id collection path. Each row is a `text` label, so every item
+    // must surface a LABEL node in the Hydrolysis accessibility tree.
+    let mut app = mount_m3(move || {
+        let list_for_action = list_for_action.clone();
+        vstack((
+            button("Remove Bravo").action(move || {
+                if let Some(index) = list_for_action.snapshot().iter().position(|row| row.id == 2) {
+                    let _ = list_for_action.remove(index);
+                }
+            }),
+            ZStack::for_each(list.clone(), |row: Row| text(row.label)),
+        ))
+    });
+
+    for label in ["Alpha", "Bravo", "Charlie"] {
+        app.query().role(Role::LABEL).label(label).assert_exists();
+    }
+
+    // Removing one item reconciles the collection by id: only that row's
+    // accessibility node leaves the tree; the survivors keep theirs.
+    assert!(
+        app.query().role(Role::BUTTON).label("Remove Bravo").tap(),
+        "remove button should route its tap through Hydrolysis gestures"
+    );
+    let bravo = Selector::default().role(Role::LABEL).label("Bravo".to_owned());
+    assert!(
+        app.wait_for_nonexistence(&bravo, Duration::from_secs(1)),
+        "the removed collection item must leave the accessibility tree"
+    );
+    app.query().role(Role::LABEL).label("Alpha").assert_exists();
+    app.query().role(Role::LABEL).label("Charlie").assert_exists();
+}
