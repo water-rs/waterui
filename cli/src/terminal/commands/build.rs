@@ -17,6 +17,7 @@ use waterui_cli::{
     apple::toolchain::AppleSdk,
     backend::reinit_backend,
     build::BuildOptions,
+    esp32::{backend::Esp32Backend, platform::build_esp32},
     gtk4::{backend::Gtk4Backend, platform::build_gtk4},
     hydrolysis::{backend::HydrolysisBackend, platform::build_hydrolysis},
     platform::TargetPlatform as LibTargetPlatform,
@@ -38,6 +39,8 @@ pub enum TargetPlatform {
     Linux,
     /// Windows.
     Windows,
+    /// ESP32-S3 (Xtensa firmware).
+    Esp32s3,
 }
 
 /// Target backend for building.
@@ -51,6 +54,8 @@ pub enum TargetBackend {
     Gtk4,
     /// Hydrolysis backend.
     Hydrolysis,
+    /// Dew backend (ESP32 firmware).
+    Dew,
 }
 
 /// Target architecture for building.
@@ -165,6 +170,9 @@ fn ensure_backend_configured(project: &Project, backend: TargetBackend) -> Resul
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
             bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
         }
+        TargetBackend::Dew if project.esp32_backend().is_none() => {
+            bail!("ESP32 backend is not configured. Run `water backend add esp32`.")
+        }
         _ => Ok(()),
     }
 }
@@ -200,6 +208,15 @@ async fn ensure_generated_backend_ready(
                 &project,
                 "Re-initializing hydrolysis backend...",
                 "Hydrolysis backend re-initialized",
+            )
+            .await
+        }
+        TargetBackend::Dew if Esp32Backend::requires_regeneration(&project)? => {
+            reinitialize_generated_backend::<Esp32Backend>(
+                project_path,
+                &project,
+                "Re-initializing ESP32 backend...",
+                "ESP32 backend re-initialized",
             )
             .await
         }
@@ -298,6 +315,9 @@ async fn execute_build(args: &Args, context: &BuildContext) -> Result<PathBuf> {
                 )
                 .await
             }
+            TargetBackend::Dew => {
+                build_esp32(&context.project, context.build_options.clone()).await
+            }
         }
     })
     .await;
@@ -336,6 +356,7 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows => TargetBackend::Hydrolysis,
+        TargetPlatform::Esp32s3 => TargetBackend::Dew,
     };
     let backend = backend_override.unwrap_or(default_backend);
 
@@ -353,6 +374,7 @@ fn resolve_backend(
                 TargetBackend::Gtk4 | TargetBackend::Hydrolysis
             )
             | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
+            | (TargetPlatform::Esp32s3, TargetBackend::Dew)
     );
     if !supported {
         bail!(
@@ -362,7 +384,8 @@ fn resolve_backend(
              - Android: android\n  \
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis",
+             - Windows: hydrolysis\n  \
+             - ESP32-S3: dew",
             backend,
             platform
         );
@@ -371,14 +394,23 @@ fn resolve_backend(
 }
 
 fn validate_arch_args(backend: TargetBackend, arch: Option<TargetArch>) -> Result<()> {
-    if matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) && arch.is_some() {
-        bail!("--arch is not supported for gtk4/hydrolysis backends");
+    if matches!(
+        backend,
+        TargetBackend::Gtk4 | TargetBackend::Hydrolysis | TargetBackend::Dew
+    ) && arch.is_some()
+    {
+        bail!("--arch is not supported for gtk4/hydrolysis/dew backends");
     }
     Ok(())
 }
 
 fn validate_output_dir_args(backend: TargetBackend, output_dir: Option<&PathBuf>) -> Result<()> {
-    if output_dir.is_some() && matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) {
+    if output_dir.is_some()
+        && matches!(
+            backend,
+            TargetBackend::Gtk4 | TargetBackend::Hydrolysis | TargetBackend::Dew
+        )
+    {
         bail!("--output-dir is only supported for Apple/Android backends");
     }
     Ok(())
@@ -395,7 +427,10 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Ios => AppleSdk::Ios,
                 TargetPlatform::IosSimulator => AppleSdk::IosSimulator,
                 TargetPlatform::Macos => AppleSdk::Macos,
-                TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
+                TargetPlatform::Android
+                | TargetPlatform::Linux
+                | TargetPlatform::Windows
+                | TargetPlatform::Esp32s3 => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}")
                 }
             };
@@ -420,6 +455,11 @@ async fn check_toolchain_for_backend(
                 && platform != TargetPlatform::Windows
             {
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
+            }
+        }
+        TargetBackend::Dew => {
+            if platform != TargetPlatform::Esp32s3 {
+                bail!("Internal error: dew backend is not supported on {platform:?}");
             }
         }
     }
@@ -457,7 +497,13 @@ async fn build_for_apple(
         (TargetPlatform::Macos, Some(target_arch)) => {
             bail!("macOS only supports arm64 or x86_64, not {:?}", target_arch)
         }
-        (TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows, _) => {
+        (
+            TargetPlatform::Android
+            | TargetPlatform::Linux
+            | TargetPlatform::Windows
+            | TargetPlatform::Esp32s3,
+            _,
+        ) => {
             bail!(
                 "Internal error: invalid Apple backend platform {:?}",
                 platform
@@ -516,7 +562,8 @@ fn validate_desktop_backend_platform_on_host(
             #[cfg(not(target_os = "macos"))]
             bail!("Apple backend requires a macOS host");
         }
-        TargetBackend::Android => {}
+        // The Dew/ESP32 firmware cross-compiles from any host with espup installed.
+        TargetBackend::Android | TargetBackend::Dew => {}
     }
 
     Ok(())
@@ -530,6 +577,7 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
+        TargetPlatform::Esp32s3 => LibTargetPlatform::Esp32S3,
     }
 }
 
@@ -550,6 +598,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Macos => "macOS",
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
+        TargetPlatform::Esp32s3 => "ESP32-S3",
     }
 }
 
@@ -559,6 +608,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
+        TargetBackend::Dew => "Dew",
     }
 }
 

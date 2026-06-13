@@ -17,6 +17,7 @@ use waterui_cli::{
     },
     apple::device::AppleSimulator,
     device::Device,
+    esp32::platform::{SerialPortSummary, scan_serial_ports},
 };
 
 /// Target platform for device listing.
@@ -28,6 +29,8 @@ pub enum TargetPlatform {
     Android,
     /// macOS (current machine).
     Macos,
+    /// ESP32 boards on serial ports.
+    Esp32,
     /// All platforms.
     All,
 }
@@ -60,15 +63,22 @@ pub async fn run(args: Args) -> Result<()> {
         TargetPlatform::Macos => {
             display_macos_devices();
         }
+        TargetPlatform::Esp32 => {
+            let ports = scan_serial_ports().await?;
+            display_esp32_devices(&ports);
+        }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
             let adb_path = resolve_android_adb()?;
             let spinner = shell::spinner("Scanning devices...");
 
-            // Scan iOS and Android in parallel
-            let (ios_devices, android_result) = zip(
-                scan_ios_devices(),
-                scan_android_devices(AndroidSdk::emulator_path(), adb_path),
+            // Scan iOS, Android, and serial ports in parallel
+            let ((ios_devices, android_result), serial_ports) = zip(
+                zip(
+                    scan_ios_devices(),
+                    scan_android_devices(AndroidSdk::emulator_path(), adb_path),
+                ),
+                scan_serial_ports(),
             )
             .await;
 
@@ -83,6 +93,7 @@ pub async fn run(args: Args) -> Result<()> {
                 display_android_devices(&avds, &devices, &running_avds);
             }
             display_macos_devices();
+            display_esp32_devices(&serial_ports?);
         }
     }
 
@@ -99,6 +110,7 @@ async fn run_json(args: Args) -> Result<()> {
                 ios: Some(json_ios_devices(&ios_devices)),
                 android: None,
                 macos: None,
+                esp32: None,
             }
         }
         TargetPlatform::Android => {
@@ -111,6 +123,7 @@ async fn run_json(args: Args) -> Result<()> {
                 ios: None,
                 android: Some(json_android_section(&avds, &devices, &running_avds)),
                 macos: None,
+                esp32: None,
             }
         }
         TargetPlatform::Macos => DevicesJsonOutput {
@@ -122,13 +135,28 @@ async fn run_json(args: Args) -> Result<()> {
                 id: "local".to_string(),
                 name: "Current Machine".to_string(),
             }]),
+            esp32: None,
         },
+        TargetPlatform::Esp32 => {
+            let ports = scan_serial_ports().await?;
+            DevicesJsonOutput {
+                ty: "devices",
+                platform: "esp32",
+                ios: None,
+                android: None,
+                macos: None,
+                esp32: Some(json_esp32_devices(&ports)),
+            }
+        }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
             let adb_path = resolve_android_adb()?;
-            let (ios_devices, android_result) = zip(
-                scan_ios_devices(),
-                scan_android_devices(AndroidSdk::emulator_path(), adb_path),
+            let ((ios_devices, android_result), serial_ports) = zip(
+                zip(
+                    scan_ios_devices(),
+                    scan_android_devices(AndroidSdk::emulator_path(), adb_path),
+                ),
+                scan_serial_ports(),
             )
             .await;
             let ios_devices = ios_devices?;
@@ -143,6 +171,7 @@ async fn run_json(args: Args) -> Result<()> {
                     id: "local".to_string(),
                     name: "Current Machine".to_string(),
                 }]),
+                esp32: Some(json_esp32_devices(&serial_ports?)),
             }
         }
     };
@@ -259,6 +288,30 @@ fn display_macos_devices() {
     line!("  ● Current Machine");
 }
 
+/// Display ESP32 serial ports.
+fn display_esp32_devices(ports: &[SerialPortSummary]) {
+    header!("ESP32 (serial)");
+
+    for port in ports {
+        let marker = if port.likely_esp { "●" } else { "○" };
+        let usb = port
+            .usb_vid_pid
+            .map(|(vid, pid)| format!(" [USB {vid:04x}:{pid:04x}]"))
+            .unwrap_or_default();
+        let product = port
+            .product
+            .as_deref()
+            .map(|product| format!(" {product}"))
+            .unwrap_or_default();
+        let hint = if port.likely_esp { " (likely ESP)" } else { "" };
+        line!("  {} {}{}{}{}", marker, port.port_name, usb, product, hint);
+    }
+
+    if ports.is_empty() {
+        line!("  No serial ports available");
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct DevicesJsonOutput {
     #[serde(rename = "type")]
@@ -270,6 +323,8 @@ struct DevicesJsonOutput {
     android: Option<JsonAndroidSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     macos: Option<Vec<JsonMacosDevice>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    esp32: Option<Vec<JsonEsp32Device>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -302,6 +357,18 @@ struct JsonAndroidDevice {
 struct JsonMacosDevice {
     id: String,
     name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonEsp32Device {
+    port: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usb_vid: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usb_pid: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    product: Option<String>,
+    likely_esp: bool,
 }
 
 fn json_ios_devices(devices: &[AppleSimulator]) -> Vec<JsonIosDevice> {
@@ -339,6 +406,19 @@ fn json_android_section(
         .collect();
 
     JsonAndroidSection { emulators, devices }
+}
+
+fn json_esp32_devices(ports: &[SerialPortSummary]) -> Vec<JsonEsp32Device> {
+    ports
+        .iter()
+        .map(|port| JsonEsp32Device {
+            port: port.port_name.clone(),
+            usb_vid: port.usb_vid_pid.map(|(vid, _)| vid),
+            usb_pid: port.usb_vid_pid.map(|(_, pid)| pid),
+            product: port.product.clone(),
+            likely_esp: port.likely_esp,
+        })
+        .collect()
 }
 
 #[cfg(test)]
