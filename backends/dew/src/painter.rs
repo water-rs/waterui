@@ -8,11 +8,11 @@
 //! rasterization only pays for covered pixels, so this is cheap even though
 //! the full scene is replayed.
 
-use kurbo::Affine;
+use kurbo::{Affine, Shape};
 use vello_cpu::{Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
 
 use crate::compositor::DeviceRegion;
-use crate::display_list::{DisplayList, DrawCommand};
+use crate::display_list::{BEZIER_TOLERANCE, DisplayList, DrawCommand};
 
 /// The rasterizer: owns the persistent `vello_cpu` resources (glyph atlas,
 /// image registry) that must survive across bands and frames.
@@ -46,11 +46,22 @@ impl Painter {
         let mut ctx = RenderContext::new_with(width, height, render_settings());
         let shift = Affine::translate((-f64::from(region.x), -f64::from(region.y)));
         for command in list.commands() {
+            let clip = command.clip();
+            if let Some(clip) = clip {
+                if clip.width() <= 0.0 || clip.height() <= 0.0 {
+                    continue;
+                }
+                // The clip rectangle is in window coordinates, so it only
+                // needs the region shift, not the command transform.
+                ctx.set_transform(shift);
+                ctx.push_clip_path(&clip.to_path(BEZIER_TOLERANCE));
+            }
             match command {
                 DrawCommand::FillPath {
                     path,
                     transform,
                     brush,
+                    ..
                 } => {
                     ctx.set_transform(shift * *transform);
                     set_brush(&mut ctx, brush);
@@ -61,6 +72,7 @@ impl Painter {
                     transform,
                     stroke,
                     brush,
+                    ..
                 } => {
                     ctx.set_transform(shift * *transform);
                     ctx.set_stroke(stroke.clone());
@@ -82,6 +94,9 @@ impl Painter {
                         .hint(true)
                         .fill_glyphs(glyphs.iter().copied());
                 }
+            }
+            if clip.is_some() {
+                ctx.pop_clip_path();
             }
         }
         ctx.flush();
@@ -169,6 +184,37 @@ mod tests {
         assert_eq!(pixel(2, 2), [20, 40, 80, 255]);
         assert_eq!(pixel(16, 16), [220, 60, 40, 255]);
         assert_eq!(pixel(44, 44), [60, 200, 120, 255]);
+    }
+
+    /// A retained clip must mask fills during rasterization: pixels inside
+    /// the clip render, pixels outside stay untouched.
+    #[test]
+    fn clipped_command_renders_only_inside_the_clip() {
+        let mut list = DisplayList::new();
+        list.push_clip(Rect::new(0.0, 0.0, 32.0, 32.0));
+        list.fill(
+            &Rect::new(0.0, 0.0, 64.0, 64.0),
+            Affine::IDENTITY,
+            Color::from_rgb8(220, 60, 40),
+        );
+        list.pop_clip();
+        let pixmap = rasterize(
+            &list,
+            DeviceRegion {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+        );
+        let pixel = |x: usize, y: usize| {
+            let i = (y * 64 + x) * 4;
+            let data = pixmap.data_as_u8_slice();
+            [data[i], data[i + 1], data[i + 2], data[i + 3]]
+        };
+        assert_eq!(pixel(16, 16), [220, 60, 40, 255]);
+        assert_eq!(pixel(48, 16), [0, 0, 0, 0]);
+        assert_eq!(pixel(16, 48), [0, 0, 0, 0]);
     }
 
     /// Band-by-band rendering must be byte-identical to rendering the same
