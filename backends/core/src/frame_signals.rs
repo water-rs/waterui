@@ -34,6 +34,10 @@ struct FrameSignalsInner {
     /// Identities of `Dynamic` nodes whose content changed since the last
     /// frame and must be re-dispatched in isolation on the next patch frame.
     dirty_dynamic_nodes: RefCell<BTreeSet<usize>>,
+    /// Cache keys of reactive collections whose membership changed since the
+    /// last frame and must be reconciled (new items dispatched, removed items
+    /// evicted) in isolation on the next patch frame.
+    dirty_collections: RefCell<BTreeSet<usize>>,
     /// Monotonic counter of structural rebuilds, used to decide whether a
     /// `Dynamic` content update raced with the rebuild that produced it.
     rebuild_generation: Cell<u64>,
@@ -54,6 +58,7 @@ impl FrameSignals {
                 next_frame_rebuild_requested: Cell::new(false),
                 patch_requested: Cell::new(false),
                 dirty_dynamic_nodes: RefCell::new(BTreeSet::new()),
+                dirty_collections: RefCell::new(BTreeSet::new()),
                 rebuild_generation: Cell::new(0),
                 rebuild_in_progress: Cell::new(false),
                 frame_clock: Cell::new(now),
@@ -127,6 +132,11 @@ impl FrameSignals {
         core::mem::take(&mut *self.inner.dirty_dynamic_nodes.borrow_mut())
     }
 
+    /// Take the set of reactive collections awaiting an isolated reconcile.
+    pub fn take_dirty_collections(&self) -> BTreeSet<usize> {
+        core::mem::take(&mut *self.inner.dirty_collections.borrow_mut())
+    }
+
     /// Whether an initial-content update for a `Dynamic` node dispatched at
     /// `render_generation` is already reflected by the rebuild in progress and
     /// must be ignored (the node was just dispatched with exactly this content).
@@ -149,12 +159,31 @@ impl FrameSignals {
         self.inner.patch_requested.set(true);
     }
 
+    /// Record a membership change for a reactive collection captured at
+    /// `render_generation` as a fine-grained reactive patch, unless a rebuild
+    /// of a newer generation is in progress that will recapture it itself.
+    ///
+    /// Mirrors [`mark_dynamic_dirty`](Self::mark_dynamic_dirty): a collection's
+    /// `Views::watch` fires once immediately on registration (the initial
+    /// snapshot during the capturing rebuild); that fire is ignored by the
+    /// caller, and only later real changes reach this method.
+    pub fn mark_collection_dirty(&self, cache_key: usize, render_generation: u64) {
+        if self.inner.rebuild_in_progress.get()
+            && render_generation != self.inner.rebuild_generation.get()
+        {
+            return;
+        }
+        self.inner.dirty_collections.borrow_mut().insert(cache_key);
+        self.inner.patch_requested.set(true);
+    }
+
     /// Enter a structural rebuild: any pending isolated patch is subsumed by
     /// the rebuild, and the rebuild generation advances.
     pub fn begin_rebuild(&self) {
         self.inner.rebuild_in_progress.set(true);
         self.inner.patch_requested.set(false);
         self.inner.dirty_dynamic_nodes.borrow_mut().clear();
+        self.inner.dirty_collections.borrow_mut().clear();
         self.inner.rebuild_generation.set(
             self.inner
                 .rebuild_generation
@@ -237,6 +266,31 @@ mod tests {
         );
         assert!(signals.take_patch_request());
         assert!(signals.take_dirty_dynamic_nodes().is_empty());
+    }
+
+    #[test]
+    fn collection_dirty_marking_requests_patch() {
+        let signals = signals();
+        signals.mark_collection_dirty(42, signals.rebuild_generation());
+        assert!(signals.has_patch_request());
+        assert_eq!(
+            signals
+                .take_dirty_collections()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![42]
+        );
+        assert!(signals.take_patch_request());
+        assert!(signals.take_dirty_collections().is_empty());
+    }
+
+    #[test]
+    fn begin_rebuild_subsumes_pending_collection_patch() {
+        let signals = signals();
+        signals.mark_collection_dirty(7, signals.rebuild_generation());
+        signals.begin_rebuild();
+        assert!(!signals.has_patch_request());
+        assert!(signals.take_dirty_collections().is_empty());
     }
 
     #[test]

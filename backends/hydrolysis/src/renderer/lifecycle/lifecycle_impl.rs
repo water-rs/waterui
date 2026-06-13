@@ -62,6 +62,10 @@ pub(crate) enum DynamicDrawOp {
     Node(DynamicNodeDraw),
     /// A scroll view, composited from its offset-independent content cache.
     Scroll(DynamicScrollDraw),
+    /// A reactive collection (`ForEach`/`List` in a non-virtualized layout),
+    /// composited from its per-item retained subtree cache. A membership change
+    /// reconciles only the changed items, mirroring the `Dynamic`-node patch.
+    Collection(DynamicCollectionDraw),
 }
 
 #[cfg(feature = "accessibility")]
@@ -190,6 +194,14 @@ impl DynamicSubtree {
     pub(crate) fn scroll_draws(&self) -> impl Iterator<Item = &DynamicScrollDraw> {
         self.draw_ops.iter().filter_map(|op| match op {
             DynamicDrawOp::Scroll(draw) => Some(draw),
+            _ => None,
+        })
+    }
+
+    /// The reactive collections in this subtree, in draw order.
+    pub(crate) fn collection_draws(&self) -> impl Iterator<Item = &DynamicCollectionDraw> {
+        self.draw_ops.iter().filter_map(|op| match op {
+            DynamicDrawOp::Collection(draw) => Some(draw),
             _ => None,
         })
     }
@@ -348,6 +360,7 @@ impl HydrolysisRenderer {
                     self.replay_dynamic_node_placement(ctx, placement);
                 }
                 DynamicDrawOp::Scroll(draw) => self.replay_dynamic_scroll_draw(ctx, draw),
+                DynamicDrawOp::Collection(draw) => self.replay_dynamic_collection(ctx, draw),
             }
         }
         let mut gesture_group_remap = BTreeMap::new();
