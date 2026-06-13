@@ -28,7 +28,7 @@ waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
 waterui-locale.workspace = true
-waterkit-screen.workspace = true
+waterkit-screen = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -38,10 +38,10 @@ cpu-time.workspace = true
 pulldown-cmark = "0.13"
 waterui-macros.workspace = true
 libloading = "0.9"
-waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
-waterui-shape.workspace = true
-waterui-svg.workspace = true
+waterui-shape = { workspace = true, default-features = false }
+waterui-svg = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol.workspace = true
@@ -85,7 +85,16 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
-default = ["assets", "media", "webview", "flow-markdown"]
+default = ["gpu", "assets", "media", "webview", "flow-markdown"]
+# GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
+# so every existing consumer is unaffected. Disabling it lets a WaterUI app
+# cross-compile lean for embedded targets without the GPU stack.
+gpu = [
+    "waterui-graphics/gpu",
+    "waterui-shape/gpu",
+    "dep:waterui-svg",
+    "dep:waterkit-screen",
+]
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
 media = ["dep:waterui-media", "video"]
 video = ["dep:waterui-video"]
@@ -111,6 +120,7 @@ flow-markdown = [
 std = ["dep:waterkit-haptic"]
 all = [
     "std",
+    "gpu",
     "assets",
     "media",
     "webview",
