@@ -25,6 +25,7 @@ espidf = [
     "dep:executor-core",
     "dep:native-executor",
     "native-executor/polyfill",
+    "dep:async-executor",
 ]
 # Desktop font enumeration; firmware targets disable this and register
 # bundled fonts into the parley FontContext instead.
@@ -51,6 +52,7 @@ winit = { version = "0.30", optional = true }
 softbuffer = { version = "0.4", optional = true }
 executor-core = { workspace = true, optional = true }
 native-executor = { workspace = true, optional = true }
+async-executor = { version = "1", optional = true }
 log = { version = "0.4", optional = true }
 waterui = { version = "0.2.1", path = "../..", default-features = false, optional = true }
 
