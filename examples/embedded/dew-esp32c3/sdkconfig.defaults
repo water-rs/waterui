@@ -1,0 +1,21 @@
+# Rendering happens on the main task; give it room for vello_cpu's
+# rasterization stack (the ESP32-C3 has ~400 KB SRAM, so this is sized
+# conservatively against a small panel).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=49152
+
+# Frames under QEMU can exceed the default 5 s task watchdog while logging;
+# this demo measures timings itself.
+CONFIG_ESP_TASK_WDT_INIT=n
+
+# 4 MB flash; the oversized app partition is supplied to espflash at
+# image-merge time (see qemu-run.sh), not to the ESP-IDF build.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# QEMU does not emulate the permission-control hardware; memory protection
+# must be off for emulated runs (per ESP-IDF QEMU docs).
+CONFIG_ESP_SYSTEM_MEMPROT_FEATURE=n
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+
+# QEMU surfaces UART0; use it for the console so emulated logs reach stdout.
+# (Real C3 boards use USB-Serial-JTAG; that is a board-config concern.)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
