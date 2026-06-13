@@ -1,64 +1,69 @@
 //! The frame pump: connects reactive rebuild requests to banded flushes.
 //!
-//! One [`DewRuntime`] owns the renderer, painter, scheduler, and a concrete
-//! display. Each [`DewRuntime::pump`] call performs at most one frame:
-//! when the tree's watched signals requested a rebuild (or nothing was
-//! rendered yet), the view tree is re-dispatched, the new display list is
-//! diffed against the previous one, and only the changed regions are
-//! re-rasterized and flushed. On an SPI-bound panel the diff is what makes
+//! One [`DewRuntime`] owns the renderer, painter, scheduler, and a [`Board`]
+//! (the platform substrate — display, clock, input). Each
+//! [`DewRuntime::pump`] call performs at most one frame: when the tree's
+//! watched signals requested a rebuild (or nothing was rendered yet), the
+//! view tree is re-dispatched, the new display list is diffed against the
+//! previous one, and only the changed regions are re-rasterized and flushed
+//! to the board's display. On an SPI-bound panel the diff is what makes
 //! reactivity affordable: a text change re-sends a few bands, not a frame.
+//!
+//! The runtime is generic over the board, so the engine is identical on the
+//! host ([`HostBoard`]) and on-chip.
 
 use kurbo::Rect;
 use waterui_core::{AnyView, Environment, View};
 
+use crate::board::{Board, HostBoard};
 use crate::compositor::BandScheduler;
 use crate::dispatch::DewRenderer;
-use crate::display::{BufferDisplay, DisplayFlush};
+use crate::display::DisplayFlush;
 use crate::display_list::DisplayList;
 use crate::painter::Painter;
 use crate::render_frame;
 
-/// Drives a view tree onto a [`DisplayFlush`] target.
-pub struct DewRuntime<D: DisplayFlush> {
+/// Drives a view tree onto a [`Board`].
+pub struct DewRuntime<B: Board> {
     renderer: DewRenderer,
     painter: Painter,
     scheduler: BandScheduler,
-    display: D,
+    board: B,
     env: Environment,
     build_root: Box<dyn Fn() -> AnyView>,
     current: DisplayList,
     rendered_once: bool,
 }
 
-impl<D: DisplayFlush + core::fmt::Debug> core::fmt::Debug for DewRuntime<D> {
+impl<B: Board + core::fmt::Debug> core::fmt::Debug for DewRuntime<B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DewRuntime")
             .field("renderer", &self.renderer)
-            .field("display", &self.display)
+            .field("board", &self.board)
             .field("rendered_once", &self.rendered_once)
             .finish_non_exhaustive()
     }
 }
 
-impl<D: DisplayFlush> DewRuntime<D> {
-    /// Creates a runtime rendering `build_root()` onto `display`, slicing
-    /// work into bands at most `band_height` rows tall.
+impl<B: Board> DewRuntime<B> {
+    /// Creates a runtime rendering `build_root()` onto `board`, slicing work
+    /// into bands at most `band_height` rows tall.
     ///
     /// `build_root` is invoked once per structural rebuild; it must return
     /// an equivalent fresh view tree each time (the standard `WaterUI`
     /// root-builder pattern).
     pub fn new(
-        display: D,
+        mut board: B,
         env: Environment,
         band_height: u32,
         build_root: impl Fn() -> AnyView + 'static,
     ) -> Self {
-        let (width, height) = display.size();
+        let (width, height) = board.display().size();
         Self {
             renderer: DewRenderer::default(),
             painter: Painter::new(),
             scheduler: BandScheduler::new(width, height, band_height),
-            display,
+            board,
             env,
             build_root: Box::new(build_root),
             current: DisplayList::new(),
@@ -74,7 +79,7 @@ impl<D: DisplayFlush> DewRuntime<D> {
         if !(first || self.renderer.signals().take_rebuild_request()) {
             return None;
         }
-        let (width, height) = self.display.size();
+        let (width, height) = self.board.display().size();
         let root = (self.build_root)();
         let list = self
             .renderer
@@ -90,7 +95,7 @@ impl<D: DisplayFlush> DewRuntime<D> {
                 &list,
                 &self.scheduler,
                 &dirty,
-                &mut self.display,
+                self.board.display(),
             );
         }
         self.current = list;
@@ -98,9 +103,9 @@ impl<D: DisplayFlush> DewRuntime<D> {
         Some(dirty)
     }
 
-    /// The display being rendered to.
-    pub const fn display(&self) -> &D {
-        &self.display
+    /// The board being rendered to.
+    pub const fn board(&self) -> &B {
+        &self.board
     }
 
     /// The frame-trigger handle, for callers that need to request rebuilds
@@ -149,10 +154,11 @@ pub fn render_view_png<V: View>(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    let display = BufferDisplay::new(width, height);
-    let mut runtime = DewRuntime::new(display, env, 16, move || AnyView::new(build_root()));
+    let mut runtime = DewRuntime::new(HostBoard::new(width, height), env, 16, move || {
+        AnyView::new(build_root())
+    });
     assert!(runtime.pump().is_some(), "initial pump must render a frame");
-    runtime.display().to_png()
+    runtime.board().framebuffer().to_png()
 }
 
 #[cfg(test)]

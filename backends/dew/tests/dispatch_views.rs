@@ -7,7 +7,7 @@
 use nami::binding;
 use waterui::prelude::{Color, text, vstack};
 use waterui_core::{AnyView, Environment};
-use waterui_dew::{BufferDisplay, DewRuntime, render_view_png};
+use waterui_dew::{DewRuntime, HostBoard, render_view_png};
 
 /// Two stacked colors must split the screen, proving measure → place →
 /// render flows through a real `VStack` layout.
@@ -41,11 +41,13 @@ fn vstack_of_colors_splits_the_screen() {
 #[test]
 fn text_renders_visible_glyphs() {
     let env = Environment::new();
-    let display = BufferDisplay::new(240, 80);
-    let mut runtime = DewRuntime::new(display, env, 16, || AnyView::new(text("Hello, dew!")));
+    let mut runtime = DewRuntime::new(HostBoard::new(240, 80), env, 16, || {
+        AnyView::new(text("Hello, dew!"))
+    });
     runtime.pump().expect("first frame renders");
     let dark_pixels = runtime
-        .display()
+        .board()
+        .framebuffer()
         .pixels()
         .chunks_exact(4)
         .filter(|px| px[3] == 255 && px[0] < 128)
@@ -63,8 +65,7 @@ fn binding_change_dirties_only_the_text_region() {
     let count = binding(1);
     let count_for_root = count.clone();
     let env = Environment::new();
-    let display = BufferDisplay::new(240, 240);
-    let mut runtime = DewRuntime::new(display, env, 16, move || {
+    let mut runtime = DewRuntime::new(HostBoard::new(240, 240), env, 16, move || {
         let count = count_for_root.clone();
         AnyView::new(text!("Count: {count}"))
     });
