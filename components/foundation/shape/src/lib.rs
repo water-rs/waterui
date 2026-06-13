@@ -22,17 +22,23 @@
 extern crate alloc;
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
+#[cfg(feature = "gpu")]
 use core::fmt;
 use core::time::Duration;
+#[cfg(feature = "gpu")]
 use num_traits::ToPrimitive;
+#[cfg(feature = "gpu")]
 use std::time::Instant;
 
 use nami::{Computed, Signal, signal::IntoComputed};
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
+#[cfg(feature = "gpu")]
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, impl_gpu_subview};
 
+#[cfg(feature = "gpu")]
 const MORPH_SHADER_LABEL: &str = "shaders/morph.wgsl";
+#[cfg(feature = "gpu")]
 const MORPH_SHADER_SOURCE: &str = include_str!("shaders/morph.wgsl");
 
 // ============================================================================
@@ -706,6 +712,7 @@ impl MorphAnimation {
         }
     }
 
+    #[cfg(feature = "gpu")]
     #[must_use]
     fn sample(self, elapsed: Duration) -> f32 {
         if self.duration.is_zero() {
@@ -809,22 +816,28 @@ impl View for FilledShape {
 impl View for MorphShape {
     fn body(self, env: &Environment) -> impl View {
         let resolved = self.fill.resolve(env).get();
-        waterui_core::Native::new(ResolvedMorphShape {
+        // The GPU fallback renderer also consumes `progress`, so clone it
+        // only on that path; the lean path moves it into the native node.
+        #[cfg(feature = "gpu")]
+        let progress_for_gpu = self.progress.clone();
+        let native = waterui_core::Native::new(ResolvedMorphShape {
             from: self.from,
             to: self.to,
             fill: resolved,
             animation: self.animation,
-            progress: self.progress.clone(),
-        })
-        .with_fallback(GpuSurface::new(MorphShapeRenderer::new(
+            progress: self.progress,
+        });
+        #[cfg(feature = "gpu")]
+        let native = native.with_fallback(GpuSurface::new(MorphShapeRenderer::new(
             kind_to_morph_shape(self.from)
                 .expect("morph source shape must be a built-in morphable shape"),
             kind_to_morph_shape(self.to)
                 .expect("morph target shape must be a built-in morphable shape"),
             resolved,
             self.animation,
-            self.progress,
-        )))
+            progress_for_gpu,
+        )));
+        native
     }
 }
 
@@ -832,12 +845,14 @@ impl View for MorphShape {
 // MorphShapeRenderer - SDF morphing for built-in shapes
 // ============================================================================
 
+#[cfg(feature = "gpu")]
 #[derive(Debug, Clone, Copy)]
 struct MorphSdfShape {
     shape_type: u32,
     radii: [f32; 4],
 }
 
+#[cfg(feature = "gpu")]
 fn kind_to_morph_shape(kind: ShapeKind) -> Option<MorphSdfShape> {
     match kind {
         ShapeKind::Rect => Some(MorphSdfShape {
@@ -887,6 +902,7 @@ fn kind_to_morph_shape(kind: ShapeKind) -> Option<MorphSdfShape> {
     }
 }
 
+#[cfg(feature = "gpu")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct MorphUniforms {
@@ -897,6 +913,7 @@ struct MorphUniforms {
     to_radii: [f32; 4],                // tl, tr, br, bl
 }
 
+#[cfg(feature = "gpu")]
 struct MorphShapeRenderer {
     from: MorphSdfShape,
     to: MorphSdfShape,
@@ -910,6 +927,7 @@ struct MorphShapeRenderer {
     pipeline_format: Option<wgpu::TextureFormat>,
 }
 
+#[cfg(feature = "gpu")]
 impl fmt::Debug for MorphShapeRenderer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MorphShapeRenderer")
@@ -919,6 +937,7 @@ impl fmt::Debug for MorphShapeRenderer {
     }
 }
 
+#[cfg(feature = "gpu")]
 impl MorphShapeRenderer {
     fn new(
         from: MorphSdfShape,
@@ -942,6 +961,7 @@ impl MorphShapeRenderer {
     }
 }
 
+#[cfg(feature = "gpu")]
 impl GpuView for MorphShapeRenderer {
     fn setup(
         &mut self,
@@ -1129,8 +1149,10 @@ impl GpuView for MorphShapeRenderer {
     }
 }
 
+#[cfg(feature = "gpu")]
 impl_gpu_subview!(MorphShapeRenderer);
 
+#[cfg(feature = "gpu")]
 fn u32_to_f32(value: u32) -> f32 {
     value
         .to_f32()
@@ -1258,6 +1280,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn one_shot_animation_reaches_end() {
         let animation = MorphAnimation::once(Duration::from_millis(200), EasingCurve::LINEAR);

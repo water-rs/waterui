@@ -110,7 +110,7 @@ waterui-form = { version = "0.2.1", path = "components/foundation/form" }
 waterui-controls = { version = "0.2.1", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.2.1", path = "components/visual/graphics", default-features = false }
 waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
-waterui-shape = { version = "0.1.0", path = "components/foundation/shape" }
+waterui-shape = { version = "0.1.0", path = "components/foundation/shape", default-features = false }
 waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
 waterui-ffi = { version = "0.2.1", path = "ffi" }
 waterui-layout = { version = "0.2.2", path = "components/foundation/layout" }
@@ -203,7 +203,11 @@ waterui-internal = { path = "src", default-features = false }
 waterui-dylib = { path = "utils/dylib", optional = true, default-features = false }
 
 [features]
-default = ["assets", "media", "webview", "flow-markdown"]
+default = ["gpu", "assets", "media", "webview", "flow-markdown"]
+# GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
+# so every existing consumer is unaffected. Disable it to cross-compile a lean
+# WaterUI app for embedded targets without the GPU stack.
+gpu = ["waterui-internal/gpu", "waterui-dylib?/gpu"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
 media = ["waterui-internal/media", "waterui-dylib?/media", "video"]
 video = ["waterui-internal/video", "waterui-dylib?/video"]
@@ -217,6 +221,7 @@ std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
 all = [
     "std",
+    "gpu",
     "assets",
     "media",
     "webview",

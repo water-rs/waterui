@@ -385,6 +385,7 @@ fn classify_level(usage_ratio: f64, config: &MainThreadStallProbeConfig) -> Opti
     }
 }
 
+#[cfg(feature = "gpu")]
 fn detect_max_refresh_rate_hz() -> f64 {
     match waterkit_screen::max_refresh_rate() {
         Ok(refresh_rate) => f64::from(refresh_rate.get()),
@@ -406,6 +407,13 @@ fn detect_max_refresh_rate_hz() -> f64 {
             FALLBACK_REFRESH_RATE_HZ
         }
     }
+}
+
+// Without the GPU feature (embedded targets) there is no `waterkit-screen`
+// wgpu display query, so frame pacing uses the fallback refresh rate.
+#[cfg(not(feature = "gpu"))]
+const fn detect_max_refresh_rate_hz() -> f64 {
+    FALLBACK_REFRESH_RATE_HZ
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ use waterui_graphics::color::Color;
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
 /// makes them part of the `WaterUI` prelude alongside [`ViewExt`], so a single
 /// `use waterui::prelude::*;` is enough.
+#[cfg(feature = "gpu")]
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use waterui_layout::{
