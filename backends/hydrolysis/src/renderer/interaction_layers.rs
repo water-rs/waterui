@@ -21,12 +21,12 @@ pub(crate) struct InteractionLayerHandles {
     press_alpha: AnimatedScalarHandle,
     press_progress: AnimatedScalarHandle,
     focus_alpha: AnimatedScalarHandle,
-    /// Origin of the active press in the widget's local coordinates, shared
-    /// with the retained ripple transform so replay tracks the live press.
+    /// Origin of the active press in WINDOW coordinates (the raw pointer-down
+    /// point), shared with the retained ripple transform. The ripple maps it
+    /// into its own local frame at replay using the live transform chain, so it
+    /// stays correct under arbitrary nesting and scroll offsets — see
+    /// [`DynamicRippleTransform::affine`].
     origin: Cell<Option<vello::kurbo::Point>>,
-    /// Maps window-space pointer coordinates into the captured fragment's
-    /// local frame; refreshed whenever the widget's targets are (re)registered.
-    window_to_local: Cell<vello::kurbo::Affine>,
     hovering: Cell<bool>,
     pressing: Cell<bool>,
     pressed_at: Cell<Option<Instant>>,
@@ -51,7 +51,6 @@ impl InteractionLayerHandles {
             press_progress,
             focus_alpha,
             origin: Cell::new(None),
-            window_to_local: Cell::new(vello::kurbo::Affine::IDENTITY),
             hovering: Cell::new(false),
             pressing: Cell::new(false),
             pressed_at: Cell::new(None),
@@ -103,20 +102,19 @@ impl InteractionLayerHandles {
     /// bundle the previous capture used for the same widget slot.
     pub(crate) fn copy_interaction_state_from(&self, previous: &Self) {
         self.origin.set(previous.origin.get());
-        self.window_to_local.set(previous.window_to_local.get());
         self.hovering.set(previous.hovering.get());
         self.pressing.set(previous.pressing.get());
         self.pressed_at.set(previous.pressed_at.get());
         self.released_at.set(previous.released_at.get());
     }
 
-    /// The active press origin mapped back into window coordinates.
+    /// The active press origin in window coordinates (the raw pointer-down point).
     pub(crate) fn origin_in_window(&self) -> Option<vello::kurbo::Point> {
-        self.origin
-            .get()
-            .map(|origin| self.window_to_local.get().inverse() * origin)
+        self.origin.get()
     }
 
+    /// The active press origin in window coordinates. The ripple maps it into
+    /// its local frame at replay; see [`DynamicRippleTransform::affine`].
     pub(crate) fn origin(&self) -> Option<vello::kurbo::Point> {
         self.origin.get()
     }
@@ -151,16 +149,11 @@ impl InteractionLayerHandles {
     }
 
 
-    /// Records where window-space pointer coordinates land in the captured
-    /// fragment's local frame; called at every target (re)registration.
-    pub(crate) fn set_window_to_local(&self, window_to_local: vello::kurbo::Affine) {
-        self.window_to_local.set(window_to_local);
-    }
-
     /// Starts a press at a window-space origin: the ripple snaps back to its
-    /// origin scale and grows, while the press layer fades in.
+    /// origin scale and grows, while the press layer fades in. The origin is
+    /// stored in window space and mapped to the ripple's local frame at replay.
     pub(crate) fn begin_press(&self, origin: vello::kurbo::Point, now: Instant) {
-        self.origin.set(Some(self.window_to_local.get() * origin));
+        self.origin.set(Some(origin));
         self.pressing.set(true);
         self.pressed_at.set(Some(now));
         self.released_at.set(None);
@@ -247,13 +240,25 @@ pub(crate) struct DynamicRippleTransform {
 }
 
 impl DynamicRippleTransform {
-    pub(super) fn affine(&self, now: Instant) -> vello::kurbo::Affine {
+    /// `window_to_local` maps the window-space press origin into this fragment's
+    /// local frame. It is the inverse of the replay transform chain that places
+    /// the fragment, so the ripple starts at the real click point regardless of
+    /// how deeply the widget is nested or how far its scroll has moved.
+    pub(super) fn affine(
+        &self,
+        now: Instant,
+        window_to_local: vello::kurbo::Affine,
+    ) -> vello::kurbo::Affine {
         let progress = f64::from(self.progress.sample(now)).clamp(0.0, 1.0);
         let center = vello::kurbo::Point::new(
             self.bounds.x0 + self.bounds.width() * 0.5,
             self.bounds.y0 + self.bounds.height() * 0.5,
         );
-        let origin = self.handles.origin().unwrap_or(center);
+        let origin = self
+            .handles
+            .origin()
+            .map(|window_origin| window_to_local * window_origin)
+            .unwrap_or(center);
         let scale = self.initial_scale + (1.0 - self.initial_scale) * progress;
         // The fragment is painted centered at `center`; at progress `p` the
         // ripple center sits at origin.lerp(center, p) with scale `scale`.
@@ -309,7 +314,6 @@ impl HydrolysisRenderer {
         paint: &dyn Fn(&mut VelloDrawContext<'_>, WidgetInteractionState),
     ) {
         let now = self.frame_instant;
-        handles.set_window_to_local(ctx.hit_transform.inverse());
         let local_bounds = layer_bounds;
 
         // Hover layer: painted at unit opacity, replayed with the hover alpha.

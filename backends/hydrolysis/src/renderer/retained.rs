@@ -165,7 +165,14 @@ impl DynamicTransformComponents {
         }
     }
 
-    pub(super) fn affine(&self, now: Instant) -> vello::kurbo::Affine {
+    /// `window_to_local` maps window-space coordinates into this fragment's local
+    /// frame; only the ripple component uses it (to place the press origin at the
+    /// real click point). The other components are pure local-space transforms.
+    pub(super) fn affine(
+        &self,
+        now: Instant,
+        window_to_local: vello::kurbo::Affine,
+    ) -> vello::kurbo::Affine {
         let active_components = usize::from(self.scale.is_some())
             + usize::from(self.rotation.is_some())
             + usize::from(self.offset.is_some())
@@ -175,7 +182,7 @@ impl DynamicTransformComponents {
             "hydrolysis dynamic transform draw must contain exactly one transform component"
         );
         if let Some(ripple) = &self.ripple {
-            return ripple.affine(now);
+            return ripple.affine(now, window_to_local);
         }
         if let Some(scale) = &self.scale {
             return vello::kurbo::Affine::translate((scale.center.x, scale.center.y))
@@ -532,7 +539,12 @@ impl HydrolysisRenderer {
         parent_ctx: RenderContext,
         draw: &DynamicTransformDraw,
     ) {
-        let dynamic_transform = draw.transform.affine(self.frame_instant);
+        // Everything before the dynamic transform maps the fragment's local frame
+        // to the replay's coordinate space (window space for the window frame), so
+        // its inverse maps window-space input (the press origin) back to local.
+        let local_to_window = parent_ctx.hit_transform * draw.base_hit_transform;
+        let window_to_local = local_to_window.inverse();
+        let dynamic_transform = draw.transform.affine(self.frame_instant, window_to_local);
         let ctx = RenderContext::with_transforms(
             draw.bounds,
             parent_ctx.transform * draw.base_transform * dynamic_transform,
