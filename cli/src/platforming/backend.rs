@@ -143,6 +143,10 @@ pub enum FailToInitBackend {
     /// I/O error while scaffolding templates.
     #[error("Failed to write template files: {0}")]
     Io(#[from] std::io::Error),
+    /// Invalid backend configuration prevented scaffolding (e.g. an
+    /// unsupported chip in `[backends.esp32]`).
+    #[error("Invalid backend configuration: {0}")]
+    Config(#[source] color_eyre::eyre::Error),
 }
 
 /// Trait for backends in a `WaterUI` project.

@@ -41,6 +41,20 @@ pub enum TargetPlatform {
     Windows,
     /// ESP32-S3 (Xtensa firmware).
     Esp32s3,
+    /// ESP32-C3 (RISC-V firmware).
+    Esp32c3,
+}
+
+impl TargetPlatform {
+    /// The ESP32 chip a platform selects, if it is an ESP32 platform.
+    const fn esp32_chip(self) -> Option<waterui_cli::esp32::chip::Esp32Chip> {
+        use waterui_cli::esp32::chip::Esp32Chip;
+        match self {
+            Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
+            Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
+            _ => None,
+        }
+    }
 }
 
 /// Target backend for building.
@@ -123,11 +137,18 @@ pub async fn run(args: Args) -> Result<()> {
 
 async fn prepare_build_context(args: &Args) -> Result<BuildContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path).await?;
+    let mut project = Project::open(&project_path).await?;
     ensure_app_project(&project)?;
 
     let backend = resolve_and_validate_backend(args)?;
     ensure_backend_configured(&project, backend)?;
+
+    // Selecting an ESP32 platform pins the chip so the generated harness and
+    // build target follow the platform.
+    if let Some(chip) = args.platform.esp32_chip() {
+        project.set_esp32_chip(chip).await?;
+    }
+
     let project = ensure_generated_backend_ready(&project_path, project, backend).await?;
     let build_options = build_options(args, backend);
 
@@ -356,7 +377,7 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows => TargetBackend::Hydrolysis,
-        TargetPlatform::Esp32s3 => TargetBackend::Dew,
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 => TargetBackend::Dew,
     };
     let backend = backend_override.unwrap_or(default_backend);
 
@@ -374,7 +395,10 @@ fn resolve_backend(
                 TargetBackend::Gtk4 | TargetBackend::Hydrolysis
             )
             | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
-            | (TargetPlatform::Esp32s3, TargetBackend::Dew)
+            | (
+                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3,
+                TargetBackend::Dew
+            )
     );
     if !supported {
         bail!(
@@ -385,7 +409,8 @@ fn resolve_backend(
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis\n  \
-             - ESP32-S3: dew",
+             - ESP32-S3: dew\n  \
+             - ESP32-C3: dew",
             backend,
             platform
         );
@@ -430,7 +455,8 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Android
                 | TargetPlatform::Linux
                 | TargetPlatform::Windows
-                | TargetPlatform::Esp32s3 => {
+                | TargetPlatform::Esp32s3
+                | TargetPlatform::Esp32c3 => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}")
                 }
             };
@@ -458,7 +484,7 @@ async fn check_toolchain_for_backend(
             }
         }
         TargetBackend::Dew => {
-            if platform != TargetPlatform::Esp32s3 {
+            if platform.esp32_chip().is_none() {
                 bail!("Internal error: dew backend is not supported on {platform:?}");
             }
         }
@@ -501,7 +527,8 @@ async fn build_for_apple(
             TargetPlatform::Android
             | TargetPlatform::Linux
             | TargetPlatform::Windows
-            | TargetPlatform::Esp32s3,
+            | TargetPlatform::Esp32s3
+            | TargetPlatform::Esp32c3,
             _,
         ) => {
             bail!(
@@ -578,6 +605,7 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Esp32s3 => LibTargetPlatform::Esp32S3,
+        TargetPlatform::Esp32c3 => LibTargetPlatform::Esp32C3,
     }
 }
 
@@ -599,6 +627,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
         TargetPlatform::Esp32s3 => "ESP32-S3",
+        TargetPlatform::Esp32c3 => "ESP32-C3",
     }
 }
 

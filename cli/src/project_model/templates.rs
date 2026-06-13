@@ -66,9 +66,14 @@ pub struct FontRegistrationTemplateEntry {
 }
 
 /// ESP32 harness parameters substituted into the generated firmware crate.
+///
+/// `chip` is the single source of truth; the firmware fields are derived from
+/// it via [`crate::esp32::chip::Esp32Chip::firmware_params`] when the entry is
+/// constructed, so the harness templates never special-case a chip by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Esp32TemplateEntry {
-    /// Target chip (e.g. "esp32s3"); selects the `xtensa-<chip>-espidf` triple.
+    /// Target chip (e.g. "esp32s3"); selects the target triple and every
+    /// chip-specific firmware parameter below.
     pub chip: String,
     /// Panel width in pixels.
     pub panel_width: u32,
@@ -76,16 +81,66 @@ pub struct Esp32TemplateEntry {
     pub panel_height: u32,
     /// Maximum rows per rasterization band (bounds scratch memory).
     pub band_height: u32,
+    /// Route the firmware console to UART0 (`true`) or USB-Serial-JTAG.
+    pub console_uart_default: bool,
+    /// Flash size in megabytes (`CONFIG_ESPTOOLPY_FLASHSIZE_*MB`).
+    pub flash_size_mb: u32,
+    /// Main-task stack size in bytes (`CONFIG_ESP_MAIN_TASK_STACK_SIZE`).
+    pub main_task_stack_bytes: u32,
+    /// Offset of the app (`factory`) partition.
+    pub app_partition_offset: String,
+    /// Size of the app (`factory`) partition.
+    pub app_partition_size: String,
+    /// Cargo codegen `opt-level` for the firmware profiles.
+    pub opt_level: String,
+}
+
+impl Esp32TemplateEntry {
+    /// Builds a harness entry for `chip` with the given panel geometry,
+    /// deriving every chip-specific firmware parameter from the chip's
+    /// architecture.
+    #[must_use]
+    pub fn new(
+        chip: crate::esp32::chip::Esp32Chip,
+        panel_width: u32,
+        panel_height: u32,
+        band_height: u32,
+    ) -> Self {
+        let params = chip.firmware_params();
+        Self {
+            chip: chip.id().to_string(),
+            panel_width,
+            panel_height,
+            band_height,
+            console_uart_default: params.console_uart_default,
+            flash_size_mb: params.flash_size_mb,
+            main_task_stack_bytes: params.main_task_stack_bytes,
+            app_partition_offset: params.app_partition_offset.to_string(),
+            app_partition_size: params.app_partition_size.to_string(),
+            opt_level: params.opt_level.to_string(),
+        }
+    }
+
+    /// The Rust target triple for the configured chip (e.g.
+    /// `riscv32imc-esp-espidf`), used by the `.cargo/config.toml` template and
+    /// by regeneration checks.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `chip` is not a supported ESP32 chip; the entry is only ever
+    /// constructed from an already-validated [`crate::esp32::chip::Esp32Chip`].
+    #[must_use]
+    pub fn resolved_target_triple(&self) -> &'static str {
+        self.chip
+            .parse::<crate::esp32::chip::Esp32Chip>()
+            .unwrap_or_else(|error| panic!("Esp32TemplateEntry holds an invalid chip: {error}"))
+            .target_triple()
+    }
 }
 
 impl Default for Esp32TemplateEntry {
     fn default() -> Self {
-        Self {
-            chip: "esp32s3".to_string(),
-            panel_width: 410,
-            panel_height: 502,
-            band_height: 16,
-        }
+        Self::new(crate::esp32::chip::Esp32Chip::Esp32S3, 410, 502, 16)
     }
 }
 
@@ -630,6 +685,7 @@ struct Esp32CargoTomlTemplate {
     core_path: Option<String>,
     dew_version: &'static str,
     waterui_version: &'static str,
+    opt_level: String,
 }
 
 impl Esp32CargoTomlTemplate {
@@ -657,6 +713,7 @@ impl Esp32CargoTomlTemplate {
             core_path,
             dew_version: DEW_VERSION,
             waterui_version: WATERUI_VERSION,
+            opt_level: ctx.esp32.opt_level.clone(),
         }
     }
 }
@@ -679,6 +736,8 @@ define_scaffold_templates! {
     HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
     Esp32MainTemplate => (Esp32, "src/templates/esp32/src/main.rs.tpl"),
     Esp32CargoConfigTemplate => (Esp32, "src/templates/esp32/.cargo/config.toml.tpl"),
+    Esp32SdkconfigTemplate => (Esp32, "src/templates/esp32/sdkconfig.defaults.tpl"),
+    Esp32PartitionsTemplate => (Esp32, "src/templates/esp32/partitions.csv.tpl"),
     PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
     PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
 }
@@ -737,6 +796,65 @@ mod tests {
             None,
         )
         .with_backend_project_path(PathBuf::from("managed_backends/apple"))
+    }
+
+    fn render_esp32(relative: &str, ctx: &TemplateContext) -> String {
+        let template = embedded::ESP32
+            .get_file(relative)
+            .unwrap_or_else(|| panic!("esp32 template {relative} must exist"))
+            .contents_utf8()
+            .expect("esp32 template must be utf-8");
+        render_scaffold_template(
+            TemplateNamespace::Esp32,
+            std::path::Path::new(relative),
+            template,
+            ctx,
+        )
+        .unwrap_or_else(|error| panic!("esp32 template {relative} render: {error}"))
+    }
+
+    #[test]
+    fn esp32_templates_are_chip_architecture_aware() {
+        use crate::esp32::chip::Esp32Chip;
+
+        let mut s3 = app_ctx();
+        s3.esp32 = Esp32TemplateEntry::new(Esp32Chip::Esp32S3, 410, 502, 16);
+        let mut c3 = app_ctx();
+        c3.esp32 = Esp32TemplateEntry::new(Esp32Chip::Esp32C3, 200, 240, 16);
+
+        // .cargo/config.toml: Xtensa per-chip triple vs RISC-V architecture triple.
+        let s3_cargo = render_esp32(".cargo/config.toml.tpl", &s3);
+        assert!(s3_cargo.contains("target = \"xtensa-esp32s3-espidf\""));
+        assert!(s3_cargo.contains("MCU = \"esp32s3\""));
+        let c3_cargo = render_esp32(".cargo/config.toml.tpl", &c3);
+        assert!(c3_cargo.contains("target = \"riscv32imc-esp-espidf\""));
+        assert!(c3_cargo.contains("MCU = \"esp32c3\""));
+
+        // sdkconfig: USB-Serial-JTAG + 8 MB + bigger stack on S3; UART0 + 4 MB on C3.
+        let s3_sdk = render_esp32("sdkconfig.defaults.tpl", &s3);
+        assert!(s3_sdk.contains("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y"));
+        assert!(s3_sdk.contains("CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y"));
+        assert!(s3_sdk.contains("CONFIG_ESP_MAIN_TASK_STACK_SIZE=163840"));
+        let c3_sdk = render_esp32("sdkconfig.defaults.tpl", &c3);
+        assert!(c3_sdk.contains("CONFIG_ESP_CONSOLE_UART_DEFAULT=y"));
+        assert!(c3_sdk.contains("CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y"));
+        assert!(c3_sdk.contains("CONFIG_ESP_MAIN_TASK_STACK_SIZE=49152"));
+
+        // partitions: 6 MB app on S3, 3 MB on C3.
+        assert!(render_esp32("partitions.csv.tpl", &s3).contains("0x10000, 0x600000,"));
+        assert!(render_esp32("partitions.csv.tpl", &c3).contains("0x10000, 0x300000,"));
+
+        // Cargo.toml profile: size-opt on Xtensa, full-opt on RISC-V; both enable
+        // the dew progress widget.
+        let s3_manifest = render_esp32("Cargo.toml.tpl", &s3);
+        assert!(s3_manifest.contains("opt-level = \"s\""));
+        assert!(s3_manifest.contains("features = [\"espidf\", \"progress\"]"));
+        let c3_manifest = render_esp32("Cargo.toml.tpl", &c3);
+        assert!(c3_manifest.contains("opt-level = \"2\""));
+        assert!(c3_manifest.contains("features = [\"espidf\", \"progress\"]"));
+
+        // main.rs panel geometry follows the entry.
+        assert!(render_esp32("src/main.rs.tpl", &c3).contains("PanelConfig::new(200, 240, 16)"));
     }
 
     #[test]
@@ -1723,11 +1841,8 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
-        let mut outputs = super::render_dir_outputs(
-            TemplateNamespace::Hydrolysis,
-            &embedded::HYDROLYSIS,
-            ctx,
-        )?;
+        let mut outputs =
+            super::render_dir_outputs(TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS, ctx)?;
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
             super::render_generated_cargo_toml(&generated_manifest(ctx, package_name))?

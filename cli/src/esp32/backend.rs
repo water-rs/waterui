@@ -10,7 +10,10 @@ use crate::{
     backend::Backend,
     build::BuildOptions,
     device::Artifact,
-    esp32::platform::{build_esp32, clean_esp32, is_esp32_platform, package_esp32},
+    esp32::{
+        chip::Esp32Chip,
+        platform::{build_esp32, clean_esp32, is_esp32_platform, package_esp32},
+    },
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::{self, Esp32TemplateEntry, TemplateContext},
@@ -68,27 +71,48 @@ impl Esp32Backend {
         self
     }
 
+    /// Set the target chip, returning the updated configuration.
+    #[must_use]
+    pub fn with_chip(mut self, chip: Esp32Chip) -> Self {
+        self.chip = chip.id().to_string();
+        self
+    }
+
     /// Get the path to the ESP32 harness project within the `WaterUI` project.
     #[must_use]
     pub const fn project_path(&self) -> &PathBuf {
         &self.project_path
     }
 
-    /// Get the target chip (e.g. "esp32s3").
+    /// Get the configured target chip identifier (e.g. "esp32s3").
     #[must_use]
     pub fn chip(&self) -> &str {
         &self.chip
     }
 
+    /// Parse the configured chip into an [`Esp32Chip`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured chip string is not a supported
+    /// ESP32 chip.
+    pub fn resolved_chip(&self) -> eyre::Result<Esp32Chip> {
+        self.chip.parse()
+    }
+
     /// Get the harness parameters substituted into generated templates.
-    #[must_use]
-    pub fn template_entry(&self) -> Esp32TemplateEntry {
-        Esp32TemplateEntry {
-            chip: self.chip.clone(),
-            panel_width: self.panel_width,
-            panel_height: self.panel_height,
-            band_height: self.band_height,
-        }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured chip string is not a supported
+    /// ESP32 chip.
+    pub fn template_entry(&self) -> eyre::Result<Esp32TemplateEntry> {
+        Ok(Esp32TemplateEntry::new(
+            self.resolved_chip()?,
+            self.panel_width,
+            self.panel_height,
+            self.band_height,
+        ))
     }
 
     /// Check whether generated ESP32 harness files should be regenerated.
@@ -114,14 +138,23 @@ impl Esp32Backend {
             .esp32_backend()
             .cloned()
             .unwrap_or_default()
-            .template_entry();
+            .template_entry()?;
         let main_matches_panel = main_rs.contains(&format!(
             "PanelConfig::new({}, {}, {})",
             config.panel_width, config.panel_height, config.band_height
         ));
+        let cargo_target_matches = backend_path
+            .join(".cargo/config.toml")
+            .exists()
+            .then(|| std::fs::read_to_string(backend_path.join(".cargo/config.toml")).ok())
+            .flatten()
+            .is_some_and(|cargo_config| {
+                cargo_config.contains(&format!("target = \"{}\"", config.resolved_target_triple()))
+            });
 
         Ok(!manifest.dependencies.contains_key("waterui-dew")
             || !main_matches_panel
+            || !cargo_target_matches
             || !backend_path.join("rust-toolchain.toml").exists()
             || !backend_path.join(".cargo/config.toml").exists()
             || !backend_path.join("sdkconfig.defaults").exists()
@@ -156,11 +189,14 @@ impl Backend for Esp32Backend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
+        let template_entry = backend
+            .template_entry()
+            .map_err(crate::backend::FailToInitBackend::Config)?;
         let ctx =
             TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
                 .with_backend_project_path(project.backend_path::<Self>())
                 .with_project_root_path(project.root().to_path_buf())
-                .with_esp32(backend.template_entry());
+                .with_esp32(template_entry);
 
         templates::esp32::scaffold(&project.backend_path::<Self>(), &ctx)
             .await
@@ -180,7 +216,9 @@ impl Backend for Esp32Backend {
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
         if !is_esp32_platform(platform) {
-            color_eyre::eyre::bail!("ESP32 backend only supports the esp32s3 platform");
+            color_eyre::eyre::bail!(
+                "ESP32 backend only supports the esp32s3 and esp32c3 platforms"
+            );
         }
         build_esp32(project, options).await
     }
@@ -192,7 +230,9 @@ impl Backend for Esp32Backend {
         options: PackageOptions,
     ) -> eyre::Result<Artifact> {
         if !is_esp32_platform(platform) {
-            color_eyre::eyre::bail!("ESP32 backend only supports the esp32s3 platform");
+            color_eyre::eyre::bail!(
+                "ESP32 backend only supports the esp32s3 and esp32c3 platforms"
+            );
         }
         package_esp32(project, options).await
     }
