@@ -41,6 +41,22 @@ fn main() -> impl View {
                 m.show(Snackbar::new("Second message"));
                 m.show(Snackbar::new("Third message"));
             }),
+            button("Top + Bottom").action(|State(m): State<SnackbarManager>| {
+                // Different placements are independent — these coexist.
+                m.show(
+                    Snackbar::new("Top banner")
+                        .icon(mdi::check_circle())
+                        .position(SnackbarPosition::TopCenter),
+                );
+                m.show(Snackbar::new("Bottom banner"));
+            }),
+            button("Closeable").action(|State(m): State<SnackbarManager>| {
+                m.show(
+                    Snackbar::new("Stays until you close it")
+                        .duration(Duration::ZERO)
+                        .closeable(),
+                );
+            }),
             spacer(),
         ))
         .padding(),

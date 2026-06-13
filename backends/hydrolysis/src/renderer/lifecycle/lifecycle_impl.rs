@@ -359,11 +359,10 @@ impl HydrolysisRenderer {
             {
                 let slot = self.hit_test.interaction.bind_press_slot();
                 if let Some(handles) = &target.interaction {
-                    // The handle bundle travels with the target across
-                    // replays; re-attach it to the freshly bound slot and
-                    // refresh the pointer-to-local mapping for this replay's
-                    // transform.
-                    handles.set_window_to_local(ctx.hit_transform.inverse());
+                    // The handle bundle travels with the target across replays;
+                    // re-attach it to the freshly bound slot. The press origin is
+                    // kept in window space, so no per-replay transform refresh is
+                    // needed — the ripple maps it to local at draw time.
                     self.hit_test
                         .interaction
                         .attach_handles(slot, Rc::clone(handles));
