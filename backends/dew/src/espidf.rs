@@ -11,7 +11,7 @@
 
 use core::time::Duration;
 
-use waterui::App;
+use waterui::app::App;
 
 use crate::board::HostBoard;
 use crate::runtime::DewRuntime;
@@ -41,6 +41,16 @@ impl PanelConfig {
 
 /// Boots `app` and drives its main window on this chip forever.
 ///
+/// Installs the main-thread executors that reactive `WaterUI` tasks
+/// (`text!`, `Binding`/`Computed` watchers) require.
+///
+/// [`run`] calls this; firmware that drives a [`DewRuntime`] directly (e.g.
+/// to dump the framebuffer) must call it once before the first render.
+pub fn init_executors() {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+    let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+}
+
 /// # Panics
 ///
 /// Panics when the app defines no main window — embedded targets render
@@ -48,8 +58,7 @@ impl PanelConfig {
 pub fn run(app: App, panel: PanelConfig) -> ! {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+    init_executors();
 
     let (mut windows, _menu_bar, env) = app.into_parts();
     assert!(

@@ -12,35 +12,35 @@ use std::{
     time::Duration,
 };
 
-#[cfg(any(unix, windows))]
+#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 use cpu_time::ThreadTime;
 use executor_core::LocalExecutor;
 use minstant::Instant;
 
 const FALLBACK_REFRESH_RATE_HZ: f64 = 60.0;
 
-#[cfg(any(unix, windows))]
+#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 type CpuClockSample = ThreadTime;
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
 type CpuClockSample = ();
 
-#[cfg(any(unix, windows))]
+#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 fn cpu_clock_now() -> CpuClockSample {
     ThreadTime::now()
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
 fn cpu_clock_now() -> CpuClockSample {
     ()
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 fn cpu_clock_elapsed(start: CpuClockSample) -> Duration {
     start.elapsed()
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
 fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
     Duration::ZERO
 }
