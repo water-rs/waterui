@@ -169,6 +169,11 @@ impl HydrolysisRenderer {
         self.scroll_controller.finish_rebuild_frame();
         self.hit_test.finish_rebuild_frame();
         self.lazy.finish_rebuild_frame();
+        // Drop retained collection caches whose slot was not rebound this frame
+        // (the collection left the tree); reused slots keep their per-item caches.
+        let live_collections = self.lazy.live_collection_keys();
+        self.collection_caches
+            .retain(|key, _| live_collections.contains(key));
         self.navigation.finish_rebuild_frame();
         self.compositor
             .gpu_surface_slots
