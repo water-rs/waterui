@@ -44,10 +44,12 @@ use waterui_core::extract::State;
 use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
 use waterui_core::plugin::Plugin;
 use waterui_core::{AnimationExt, View};
+use waterui_layout::AbsoluteLayout;
+use waterui_layout::container::FixedContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
-use waterui_layout::stack::{Alignment, ZStack, hstack};
+use waterui_layout::stack::{Alignment, hstack};
 use waterui_str::Str;
 use waterui_text::{font::Font, text::text};
 
@@ -71,6 +73,11 @@ const SNACKBAR_STACK_GAP: f32 = 8.0;
 /// (U+2715), is present in essentially every system font, so it never renders as
 /// a missing-glyph box.
 const SNACKBAR_CLOSE_GLYPH: &str = "\u{00d7}";
+
+/// Point size for the close glyph. Larger than the supporting text so the "×"
+/// reads as a real M3 close-icon affordance (its ~24dp icon) rather than tiny
+/// punctuation.
+const SNACKBAR_CLOSE_GLYPH_SIZE: f32 = 22.0;
 
 /// Theme tokens used by the snackbar overlay.
 #[derive(Debug, Clone)]
@@ -559,6 +566,9 @@ impl SnackbarManager {
 
         item.opacity.set(0.0);
         item.entrance_offset.set(item.snackbar.position.initial_offset_y());
+        // The dismissing row no longer occupies a slot: reflow now so the
+        // survivors animate down to close the gap while it fades out.
+        self.reflow();
 
         let manager = self.clone();
         let exit = SnackbarTheme::default().exit_animation.duration();
@@ -580,9 +590,16 @@ impl SnackbarManager {
         }
     }
 
-    /// Repositions the stack: within each placement, snackbars are offset from
-    /// the anchor edge by the cumulative height of the earlier snackbars at
-    /// that placement (oldest nearest the edge). Mirrors mdui's `reorderStack`.
+    /// Repositions the stack: within each placement, each live snackbar is offset
+    /// from the anchor edge by the cumulative height of the earlier *live*
+    /// snackbars at that placement (oldest nearest the edge). Mirrors mdui's
+    /// `reorderStack`.
+    ///
+    /// Dismissing snackbars are excluded from the count and keep their current
+    /// offset (they fade out in place). Counting them would leave their slot
+    /// occupied for the exit duration, so under rapid show/dismiss new snackbars
+    /// would pile up onto ever-higher offsets instead of the survivors closing
+    /// the gap.
     fn reflow(&self) {
         // The container is a fixed single-line height; the default theme value
         // matches the active (M3) theme, so it is a stable stacking increment
@@ -590,9 +607,14 @@ impl SnackbarManager {
         let row = SnackbarTheme::default().single_line_min_height + SNACKBAR_STACK_GAP;
         let items = self.state.borrow().active.get();
         for (index, item) in items.iter().enumerate() {
+            if item.dismissing.get() {
+                continue;
+            }
             let earlier = items[..index]
                 .iter()
-                .filter(|other| other.snackbar.position == item.snackbar.position)
+                .filter(|other| {
+                    !other.dismissing.get() && other.snackbar.position == item.snackbar.position
+                })
                 .count();
             let offset = item.snackbar.position.stack_direction() * (earlier as f32) * row;
             item.stack_offset.set(offset);
@@ -602,10 +624,24 @@ impl SnackbarManager {
 
 /// Window-level overlay that renders the manager's active snackbar stack.
 ///
-/// `watch`es the active binding and rebuilds a [`ZStack`] of full-bleed,
-/// self-anchored rows whenever membership changes. Cloneable so [`Window`] can
-/// place one instance per window above the main content.
+/// This is a **full-window layer**, not a content-sized stack: it wraps the
+/// reactive snackbar set in an [`AbsoluteLayout`], which fills the window
+/// ([`StretchAxis::Both`]) and hands every child the full window bounds. That
+/// gives each snackbar a stable, window-sized frame to anchor in, so bottom/top
+/// placement and `max_width` centering stay correct at any window size — a plain
+/// `ZStack` is content-sized and only anchored correctly by accident in a small
+/// window.
 ///
+/// Because the layer's size is constant (full window) regardless of how many
+/// snackbars it holds, the `watch` membership update never changes the node's
+/// intrinsic size, so it patches in isolation instead of escalating to a
+/// full-window structural rebuild — which is what made rapid show/dismiss and
+/// window resize flicker.
+///
+/// Cloneable so [`Window`] can place one instance per window above the main
+/// content.
+///
+/// [`StretchAxis::Both`]: waterui_layout::StretchAxis
 /// [`Window`]: crate::runtime::window::Window
 #[derive(Clone)]
 struct SnackbarOverlay {
@@ -613,19 +649,39 @@ struct SnackbarOverlay {
     manager: SnackbarManager,
 }
 
+impl SnackbarOverlay {
+    /// Wraps `contents` in a full-window absolute layer (fills the window, gives
+    /// each child the full window bounds to anchor in).
+    fn absolute_layer(contents: Vec<AnyView>) -> FixedContainer {
+        FixedContainer::from_parts(alloc::boxed::Box::new(AbsoluteLayout), contents)
+    }
+}
+
 impl View for SnackbarOverlay {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self { active, manager } = self;
-        watch(active, move |items: Vec<ActiveSnackbar>| {
-            let manager = manager.clone();
-            items
-                .into_iter()
-                .map(|item| StackedSnackbarView {
-                    item,
-                    manager: manager.clone(),
-                })
-                .collect::<ZStack<(Vec<AnyView>,)>>()
-        })
+        // Outer full-window layer: guarantees the window's root stack always
+        // gives this overlay the whole window, independent of the watch node's
+        // intrinsic sizing.
+        Self::absolute_layer(alloc::vec![AnyView::new(watch(
+            active,
+            move |items: Vec<ActiveSnackbar>| {
+                let manager = manager.clone();
+                // Inner full-window layer: every snackbar gets the full window
+                // bounds and anchors itself within them.
+                Self::absolute_layer(
+                    items
+                        .into_iter()
+                        .map(|item| {
+                            AnyView::new(StackedSnackbarView {
+                                item,
+                                manager: manager.clone(),
+                            })
+                        })
+                        .collect(),
+                )
+            },
+        ))])
     }
 }
 
@@ -675,7 +731,12 @@ impl StackedSnackbarView {
             let manager = manager.clone();
             button(
                 text(SNACKBAR_CLOSE_GLYPH)
-                    .font(theme.supporting_text_font.clone())
+                    .font(
+                        theme
+                            .supporting_text_font
+                            .clone()
+                            .size(SNACKBAR_CLOSE_GLYPH_SIZE),
+                    )
                     .color(theme.supporting_text_color.clone()),
             )
             .style(ButtonStyle::Borderless)
