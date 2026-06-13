@@ -6,11 +6,22 @@
 //! `vello_cpu`'s glyph pipeline. Fonts come from the system collection on
 //! desktop; embedded targets register bundled fonts into the same
 //! [`parley::FontContext`].
+//!
+//! Styled text is shaped per span: every [`StyledStr`] chunk pushes its
+//! resolved font size, weight, family, slant, decorations, and foreground
+//! color as parley range styles, so `.title()`, `.bold()`, or a per-span
+//! color produce visibly distinct glyph runs. Measurement reuses the same
+//! styled layout, keeping layout and rasterization byte-identical.
 
 use kurbo::{Affine, Rect};
-use waterui_text::styled::StyledStr;
+use nami::Signal;
+use waterui_core::Environment;
+use waterui_graphics::color::ResolvedColor;
+use waterui_text::font::{Font, FontWeight, ResolvedFont};
+use waterui_text::styled::{Style, StyledStr};
 
 use crate::display_list::{DisplayList, DrawCommand};
+use crate::theme;
 
 /// Shared text-shaping state: the font collection and parley's scratch
 /// layout context.
@@ -36,15 +47,14 @@ impl Default for DewState {
     }
 }
 
-/// Default text color until themed text styles land (opaque black).
-const DEFAULT_TEXT_RGBA: [u8; 4] = [0, 0, 0, 255];
-/// Default font size in logical pixels until themed fonts land.
-const DEFAULT_FONT_SIZE: f32 = 16.0;
+/// Font size for plain [`waterui_core::Str`] leaves in logical pixels,
+/// matching the [`waterui_text::font::Body`] preset default.
+const PLAIN_FONT_SIZE: f32 = 16.0;
 
 impl DewState {
-    /// Shapes `text` into a line-broken, aligned parley layout constrained
-    /// to `max_width` logical pixels.
-    pub(crate) fn build_text_layout(
+    /// Shapes a plain string with the default body style — the fast path
+    /// for bare [`waterui_core::Str`] leaves that carry no span styling.
+    pub(crate) fn build_plain_layout(
         &mut self,
         text: &str,
         max_width: Option<f32>,
@@ -52,8 +62,10 @@ impl DewState {
         let mut builder = self
             .layout_cx
             .ranged_builder(&mut self.font_cx, text, 1.0, true);
-        builder.push_default(parley::StyleProperty::Brush(DEFAULT_TEXT_RGBA));
-        builder.push_default(parley::StyleProperty::FontSize(DEFAULT_FONT_SIZE));
+        builder.push_default(parley::StyleProperty::Brush(peniko_to_rgba8(
+            theme::FOREGROUND,
+        )));
+        builder.push_default(parley::StyleProperty::FontSize(PLAIN_FONT_SIZE));
         let mut layout = builder.build(text);
         layout.break_all_lines(max_width);
         layout.align(
@@ -64,24 +76,172 @@ impl DewState {
         layout
     }
 
-    /// Measures `text` at the given width constraint, returning the laid-out
-    /// size in logical pixels.
-    pub(crate) fn measure_text(&mut self, text: &str, max_width: Option<f32>) -> (f32, f32) {
-        let layout = self.build_text_layout(text, max_width);
+    /// Shapes styled text, pushing one parley range style per chunk.
+    ///
+    /// `default_brush` paints spans without an explicit foreground (theme
+    /// foreground for content text, muted for placeholders); span fonts and
+    /// colors resolve through `env` so installed theme fonts apply.
+    pub(crate) fn build_styled_layout(
+        &mut self,
+        styled: &StyledStr,
+        env: &Environment,
+        max_width: Option<f32>,
+        default_brush: peniko::Color,
+    ) -> parley::Layout<[u8; 4]> {
+        let mut plain = String::new();
+        let mut spans = Vec::with_capacity(styled.chunks().len());
+        for (chunk, style) in styled.chunks() {
+            let start = plain.len();
+            plain.push_str(chunk.as_str());
+            spans.push((start..plain.len(), style));
+        }
+        if plain.is_empty() {
+            return parley::Layout::new();
+        }
+
+        let default_font = Font::default().resolve(env).get();
+        let mut family_storage = Vec::new();
+        let mut builder = self
+            .layout_cx
+            .ranged_builder(&mut self.font_cx, &plain, 1.0, true);
+        builder.push_default(parley::StyleProperty::Brush(peniko_to_rgba8(default_brush)));
+        builder.push_default(parley::StyleProperty::FontSize(default_font.size));
+        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
+            default_font.weight,
+        )));
+        builder.push_default(parley::StyleProperty::FontStack(font_stack(
+            default_font.family.as_deref(),
+            &mut family_storage,
+        )));
+
+        for (range, style) in spans {
+            push_span_style(&mut builder, &mut family_storage, style, env, range);
+        }
+
+        let mut layout = builder.build(&plain);
+        layout.break_all_lines(max_width);
+        layout.align(
+            max_width,
+            parley::Alignment::Start,
+            parley::AlignmentOptions::default(),
+        );
+        layout
+    }
+
+    /// Measures plain text at the given width constraint, returning the
+    /// laid-out size in logical pixels.
+    pub(crate) fn measure_plain(&mut self, text: &str, max_width: Option<f32>) -> (f32, f32) {
+        let layout = self.build_plain_layout(text, max_width);
+        (layout.width(), layout.height())
+    }
+
+    /// Measures styled text through the same span-styled layout used for
+    /// rendering, returning the laid-out size in logical pixels.
+    pub(crate) fn measure_styled(
+        &mut self,
+        styled: &StyledStr,
+        env: &Environment,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
+        let layout = self.build_styled_layout(styled, env, max_width, theme::FOREGROUND);
         (layout.width(), layout.height())
     }
 }
 
-/// Flattens a styled string to plain text.
-///
-/// Span styling (per-chunk fonts/colors) is not supported by dew yet; the
-/// chunks render with the default style.
-pub(crate) fn styled_to_plain(styled: &StyledStr) -> String {
-    styled
-        .chunks()
-        .iter()
-        .map(|(chunk, _)| chunk.as_str())
-        .collect()
+/// Pushes one [`StyledStr`] chunk's resolved style as parley range styles.
+fn push_span_style(
+    builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
+    family_storage: &mut Vec<String>,
+    style: &Style,
+    env: &Environment,
+    range: core::ops::Range<usize>,
+) {
+    let font: ResolvedFont = style.font.resolve(env).get();
+    builder.push(parley::StyleProperty::FontSize(font.size), range.clone());
+    builder.push(
+        parley::StyleProperty::FontWeight(parley_font_weight(font.weight)),
+        range.clone(),
+    );
+    if let Some(family) = &font.family {
+        builder.push(
+            parley::StyleProperty::FontStack(font_stack(Some(family.as_str()), family_storage)),
+            range.clone(),
+        );
+    }
+    builder.push(
+        parley::StyleProperty::FontStyle(if style.italic {
+            parley::FontStyle::Italic
+        } else {
+            parley::FontStyle::Normal
+        }),
+        range.clone(),
+    );
+    builder.push(
+        parley::StyleProperty::Underline(style.underline),
+        range.clone(),
+    );
+    builder.push(
+        parley::StyleProperty::Strikethrough(style.strikethrough),
+        range.clone(),
+    );
+    if let Some(color) = &style.foreground {
+        let resolved: ResolvedColor = color.resolve(env).get();
+        builder.push(
+            parley::StyleProperty::Brush(resolved_color_to_rgba8(&resolved)),
+            range,
+        );
+    }
+}
+
+fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
+    parley::FontWeight::new(match weight {
+        FontWeight::Thin => 100.0,
+        FontWeight::UltraLight => 200.0,
+        FontWeight::Light => 300.0,
+        FontWeight::Normal => 400.0,
+        FontWeight::Medium => 500.0,
+        FontWeight::SemiBold => 600.0,
+        FontWeight::Bold => 700.0,
+        FontWeight::UltraBold => 800.0,
+        FontWeight::Black => 900.0,
+    })
+}
+
+fn font_stack<'a>(
+    family: Option<&str>,
+    family_storage: &'a mut Vec<String>,
+) -> parley::FontStack<'a> {
+    let Some(family) = family else {
+        return parley::FontStack::Single(parley::FontFamily::Generic(
+            parley::style::GenericFamily::SansSerif,
+        ));
+    };
+    family_storage.push(family.to_string());
+    let family_name = family_storage
+        .last()
+        .expect("font family storage must contain the pushed value");
+    parley::FontStack::Source(std::borrow::Cow::Borrowed(family_name.as_str()))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "color channels are clamped to [0, 1] before scaling to u8"
+)]
+fn resolved_color_to_rgba8(color: &ResolvedColor) -> [u8; 4] {
+    let srgb = color.to_srgb_with_headroom();
+    [
+        (srgb.red.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb.green.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb.blue.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+    ]
+}
+
+/// Converts a theme constant into parley's brush representation.
+pub(crate) fn peniko_to_rgba8(color: peniko::Color) -> [u8; 4] {
+    let rgba = color.to_rgba8();
+    [rgba.r, rgba.g, rgba.b, rgba.a]
 }
 
 /// Appends one [`DrawCommand::GlyphRun`] per positioned glyph run in
@@ -128,7 +288,102 @@ pub(crate) fn emit_text_commands(
                 transform,
                 brush: peniko::Color::from_rgba8(red, green, blue, alpha).into(),
                 bounds: layout_bounds,
+                clip: None,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui_text::font::{Subheadline, Title};
+
+    fn run_font_sizes(layout: &parley::Layout<[u8; 4]>) -> Vec<f32> {
+        let mut sizes = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    sizes.push(glyph_run.run().font_size());
+                }
+            }
+        }
+        sizes
+    }
+
+    /// `.title()` / `.sub_headline()` spans must shape at their preset font
+    /// sizes, visibly distinct from body text.
+    #[test]
+    fn styled_spans_produce_distinct_font_sizes() {
+        let env = Environment::new();
+        let mut state = DewState::default();
+        let mut styled = StyledStr::empty();
+        styled.push("Heading", Style::new().font(Title));
+        styled.push(" subhead", Style::new().font(Subheadline));
+        styled.push(" body", Style::new());
+
+        let layout = state.build_styled_layout(&styled, &env, None, theme::FOREGROUND);
+        let sizes = run_font_sizes(&layout);
+        assert!(
+            sizes.contains(&24.0) && sizes.contains(&20.0) && sizes.contains(&16.0),
+            "expected title (24), subheadline (20), and body (16) runs, got {sizes:?}"
+        );
+
+        let (_, title_height) = state.measure_styled(&StyledStr::plain("Heading"), &env, None);
+        let mut titled = StyledStr::empty();
+        titled.push("Heading", Style::new().font(Title));
+        let (_, styled_height) = state.measure_styled(&titled, &env, None);
+        assert!(
+            styled_height > title_height,
+            "title-styled text must measure taller than body text \
+             ({styled_height} vs {title_height})"
+        );
+    }
+
+    /// A bold span must shape with a heavier synthesized or real weight than
+    /// the surrounding body text, producing a separate glyph run.
+    #[test]
+    fn bold_span_splits_into_its_own_run() {
+        let env = Environment::new();
+        let mut state = DewState::default();
+        let mut styled = StyledStr::empty();
+        styled.push("normal ", Style::new());
+        styled.push("bold", Style::new().bold());
+
+        let layout = state.build_styled_layout(&styled, &env, None, theme::FOREGROUND);
+        let mut runs = 0;
+        for line in layout.lines() {
+            for item in line.items() {
+                if matches!(item, parley::PositionedLayoutItem::GlyphRun(_)) {
+                    runs += 1;
+                }
+            }
+        }
+        assert!(
+            runs >= 2,
+            "bold span must not collapse into the normal-weight run"
+        );
+    }
+
+    /// A per-span foreground color must reach the glyph-run brush.
+    #[test]
+    fn span_color_reaches_the_brush() {
+        use waterui_graphics::color::Color;
+
+        let env = Environment::new();
+        let mut state = DewState::default();
+        let mut styled = StyledStr::empty();
+        styled.push("red", Style::new().foreground(Color::srgb(255, 0, 0)));
+
+        let layout = state.build_styled_layout(&styled, &env, None, theme::FOREGROUND);
+        let mut brushes = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    brushes.push(glyph_run.style().brush);
+                }
+            }
+        }
+        assert_eq!(brushes, vec![[255, 0, 0, 255]]);
     }
 }

@@ -6,6 +6,12 @@
 //! shared with hydrolysis — [`kurbo`] geometry and [`peniko`] brushes — so
 //! widget code translating `WaterUI` semantics into draws is portable
 //! between the two engines.
+//!
+//! Clipping is retained per command: while a clip is active (see
+//! [`DisplayList::push_clip`]), every pushed command records the effective
+//! window-coordinate clip rectangle. Keeping the clip on the command rather
+//! than as a structural layer preserves the flat, pairwise-diffable shape
+//! of the list, so scroll viewports do not degrade dirty-region tracking.
 
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use peniko::Brush;
@@ -21,6 +27,8 @@ pub enum DrawCommand {
         transform: Affine,
         /// Paint for the fill.
         brush: Brush,
+        /// Window-coordinate clip rectangle, when one was active.
+        clip: Option<Rect>,
     },
     /// Strokes `path` (after `transform`) with `brush`.
     StrokePath {
@@ -32,6 +40,8 @@ pub enum DrawCommand {
         stroke: Stroke,
         /// Paint for the stroke.
         brush: Brush,
+        /// Window-coordinate clip rectangle, when one was active.
+        clip: Option<Rect>,
     },
     /// Fills one shaped glyph run (after `transform`) with `brush`.
     GlyphRun {
@@ -47,14 +57,19 @@ pub enum DrawCommand {
         brush: Brush,
         /// Pre-computed local bounds of the run (text layout box).
         bounds: Rect,
+        /// Window-coordinate clip rectangle, when one was active.
+        clip: Option<Rect>,
     },
 }
 
 impl DrawCommand {
     /// Window-coordinate bounding box of the pixels this command may touch.
+    ///
+    /// The box is intersected with the command's clip, so fully clipped
+    /// commands report an empty (zero or negative area) rectangle.
     #[must_use]
     pub fn bounds(&self) -> Rect {
-        match self {
+        let raw = match self {
             Self::FillPath {
                 path, transform, ..
             } => transform.transform_rect_bbox(path.bounding_box()),
@@ -69,6 +84,25 @@ impl DrawCommand {
             Self::GlyphRun {
                 transform, bounds, ..
             } => transform.transform_rect_bbox(*bounds),
+        };
+        self.clip().map_or(raw, |clip| raw.intersect(clip))
+    }
+
+    /// The window-coordinate clip rectangle recorded for this command.
+    #[must_use]
+    pub const fn clip(&self) -> Option<Rect> {
+        match self {
+            Self::FillPath { clip, .. }
+            | Self::StrokePath { clip, .. }
+            | Self::GlyphRun { clip, .. } => *clip,
+        }
+    }
+
+    const fn clip_mut(&mut self) -> &mut Option<Rect> {
+        match self {
+            Self::FillPath { clip, .. }
+            | Self::StrokePath { clip, .. }
+            | Self::GlyphRun { clip, .. } => clip,
         }
     }
 }
@@ -81,27 +115,31 @@ impl PartialEq for DrawCommand {
                     path: p1,
                     transform: t1,
                     brush: b1,
+                    clip: c1,
                 },
                 Self::FillPath {
                     path: p2,
                     transform: t2,
                     brush: b2,
+                    clip: c2,
                 },
-            ) => p1 == p2 && t1 == t2 && b1 == b2,
+            ) => p1 == p2 && t1 == t2 && b1 == b2 && c1 == c2,
             (
                 Self::StrokePath {
                     path: p1,
                     transform: t1,
                     stroke: s1,
                     brush: b1,
+                    clip: c1,
                 },
                 Self::StrokePath {
                     path: p2,
                     transform: t2,
                     stroke: s2,
                     brush: b2,
+                    clip: c2,
                 },
-            ) => p1 == p2 && t1 == t2 && b1 == b2 && stroke_eq(s1, s2),
+            ) => p1 == p2 && t1 == t2 && b1 == b2 && c1 == c2 && stroke_eq(s1, s2),
             (
                 Self::GlyphRun {
                     font: f1,
@@ -110,6 +148,7 @@ impl PartialEq for DrawCommand {
                     transform: t1,
                     brush: b1,
                     bounds: r1,
+                    clip: c1,
                 },
                 Self::GlyphRun {
                     font: f2,
@@ -118,6 +157,7 @@ impl PartialEq for DrawCommand {
                     transform: t2,
                     brush: b2,
                     bounds: r2,
+                    clip: c2,
                 },
             ) => {
                 f1.data.id() == f2.data.id()
@@ -126,6 +166,7 @@ impl PartialEq for DrawCommand {
                     && t1 == t2
                     && b1 == b2
                     && r1 == r2
+                    && c1 == c2
                     && glyphs_eq(g1, g2)
             }
             _ => false,
@@ -157,6 +198,7 @@ fn glyphs_eq(a: &[vello_cpu::Glyph], b: &[vello_cpu::Glyph]) -> bool {
 pub struct DisplayList {
     commands: Vec<DrawCommand>,
     bounds: Option<Rect>,
+    clip_stack: Vec<Rect>,
 }
 
 impl DisplayList {
@@ -172,6 +214,7 @@ impl DisplayList {
             path: shape.to_path(BEZIER_TOLERANCE),
             transform,
             brush: brush.into(),
+            clip: None,
         });
     }
 
@@ -188,14 +231,47 @@ impl DisplayList {
             transform,
             stroke,
             brush: brush.into(),
+            clip: None,
         });
     }
 
-    /// Appends a raw command.
-    pub fn push(&mut self, command: DrawCommand) {
+    /// Appends a raw command, recording the active clip.
+    ///
+    /// When a clip is active, it is intersected with any clip the command
+    /// already carries.
+    pub fn push(&mut self, mut command: DrawCommand) {
+        if let Some(active) = self.clip_stack.last().copied() {
+            let clip = command.clip_mut();
+            *clip = Some(clip.map_or(active, |own| own.intersect(active)));
+        }
         let bounds = command.bounds();
-        self.bounds = Some(self.bounds.map_or(bounds, |current| current.union(bounds)));
+        if bounds.width() > 0.0 && bounds.height() > 0.0 {
+            self.bounds = Some(self.bounds.map_or(bounds, |current| current.union(bounds)));
+        }
         self.commands.push(command);
+    }
+
+    /// Pushes a window-coordinate clip rectangle.
+    ///
+    /// Nested clips intersect; every command pushed until the matching
+    /// [`DisplayList::pop_clip`] records the effective rectangle.
+    pub fn push_clip(&mut self, clip: Rect) {
+        let effective = self
+            .clip_stack
+            .last()
+            .map_or(clip, |current| current.intersect(clip));
+        self.clip_stack.push(effective);
+    }
+
+    /// Pops the innermost clip pushed by [`DisplayList::push_clip`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when no clip is active — an unbalanced pop is a widget bug.
+    pub fn pop_clip(&mut self) {
+        self.clip_stack
+            .pop()
+            .expect("DisplayList::pop_clip without a matching push_clip");
     }
 
     /// The retained commands in draw order.
@@ -217,16 +293,17 @@ impl DisplayList {
         self.commands.is_empty()
     }
 
-    /// Removes all commands and resets the bounds.
+    /// Removes all commands and resets the bounds and clip stack.
     pub fn clear(&mut self) {
         self.commands.clear();
         self.bounds = None;
+        self.clip_stack.clear();
     }
 }
 
 /// Tolerance for flattening curves when converting shapes to Bézier paths;
 /// well below one device pixel so the approximation is invisible.
-const BEZIER_TOLERANCE: f64 = 0.05;
+pub(crate) const BEZIER_TOLERANCE: f64 = 0.05;
 
 #[cfg(test)]
 mod tests {
@@ -271,5 +348,58 @@ mod tests {
             Color::WHITE,
         );
         assert_eq!(list.bounds(), Some(Rect::new(100.0, 200.0, 110.0, 210.0)));
+    }
+
+    #[test]
+    fn active_clip_is_recorded_and_bounds_are_clipped() {
+        let mut list = DisplayList::new();
+        list.push_clip(Rect::new(0.0, 0.0, 50.0, 50.0));
+        list.fill(
+            &Rect::new(40.0, 40.0, 80.0, 80.0),
+            Affine::IDENTITY,
+            Color::WHITE,
+        );
+        list.pop_clip();
+        let command = &list.commands()[0];
+        assert_eq!(command.clip(), Some(Rect::new(0.0, 0.0, 50.0, 50.0)));
+        assert_eq!(command.bounds(), Rect::new(40.0, 40.0, 50.0, 50.0));
+        assert_eq!(list.bounds(), Some(Rect::new(40.0, 40.0, 50.0, 50.0)));
+    }
+
+    #[test]
+    fn nested_clips_intersect() {
+        let mut list = DisplayList::new();
+        list.push_clip(Rect::new(0.0, 0.0, 50.0, 50.0));
+        list.push_clip(Rect::new(25.0, 25.0, 100.0, 100.0));
+        list.fill(
+            &Rect::new(0.0, 0.0, 200.0, 200.0),
+            Affine::IDENTITY,
+            Color::WHITE,
+        );
+        list.pop_clip();
+        list.pop_clip();
+        assert_eq!(
+            list.commands()[0].clip(),
+            Some(Rect::new(25.0, 25.0, 50.0, 50.0))
+        );
+    }
+
+    #[test]
+    fn clip_participates_in_command_equality() {
+        let mut clipped = DisplayList::new();
+        clipped.push_clip(Rect::new(0.0, 0.0, 50.0, 50.0));
+        clipped.fill(
+            &Rect::new(0.0, 0.0, 10.0, 10.0),
+            Affine::IDENTITY,
+            Color::WHITE,
+        );
+        clipped.pop_clip();
+        let mut unclipped = DisplayList::new();
+        unclipped.fill(
+            &Rect::new(0.0, 0.0, 10.0, 10.0),
+            Affine::IDENTITY,
+            Color::WHITE,
+        );
+        assert_ne!(clipped.commands()[0], unclipped.commands()[0]);
     }
 }
