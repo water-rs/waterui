@@ -58,12 +58,19 @@ use crate::shape::{RoundedRectangle, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 
-/// Maximum number of snackbars visible at once. M3 keeps the on-screen stack
-/// small; when a new one arrives over this limit, the oldest is dismissed.
+/// Maximum number of snackbars visible at once *per placement*. M3 keeps each
+/// on-screen stack small; when a new one arrives over this limit at the same
+/// placement, the oldest at that placement is dismissed.
 const MAX_VISIBLE_SNACKBARS: usize = 3;
 
 /// Vertical gap between stacked snackbars, in logical units.
 const SNACKBAR_STACK_GAP: f32 = 8.0;
+
+/// Glyph for the optional close button (Material `closeable`). The multiplication
+/// sign (U+00D7) reads as a close "×" and, unlike the Dingbats heavy cross
+/// (U+2715), is present in essentially every system font, so it never renders as
+/// a missing-glyph box.
+const SNACKBAR_CLOSE_GLYPH: &str = "\u{00d7}";
 
 /// Theme tokens used by the snackbar overlay.
 #[derive(Debug, Clone)]
@@ -220,6 +227,8 @@ pub struct Snackbar {
     duration: Duration,
     /// Position on screen.
     position: SnackbarPosition,
+    /// Whether to show a trailing close button (M3 `closeable`).
+    closeable: bool,
     /// State injected into the action button environment.
     captured_env: waterui_core::Environment,
 }
@@ -232,6 +241,7 @@ impl core::fmt::Debug for Snackbar {
             .field("action", &self.action)
             .field("duration", &self.duration)
             .field("position", &self.position)
+            .field("closeable", &self.closeable)
             .field("captured_env", &self.captured_env)
             .finish()
     }
@@ -263,6 +273,7 @@ impl Snackbar {
             action: None,
             duration: Duration::from_secs(3),
             position: SnackbarPosition::default(),
+            closeable: false,
             captured_env: waterui_core::Environment::new(),
         }
     }
@@ -324,6 +335,15 @@ impl Snackbar {
     #[must_use]
     pub const fn position(mut self, position: SnackbarPosition) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Shows a trailing close button that dismisses this snackbar (Material 3
+    /// `closeable`). Pair it with `.duration(Duration::ZERO)` for a snackbar that
+    /// stays until the user closes it.
+    #[must_use]
+    pub const fn closeable(mut self) -> Self {
+        self.closeable = true;
         self
     }
 
@@ -440,11 +460,15 @@ impl SnackbarManager {
         (manager, overlay)
     }
 
-    /// Shows a snackbar. Multiple snackbars stack on screen simultaneously,
-    /// oldest nearest the anchor edge. When more than [`MAX_VISIBLE_SNACKBARS`]
-    /// would be shown, the oldest is dismissed to make room.
+    /// Shows a snackbar. Snackbars stack on screen simultaneously, oldest nearest
+    /// the anchor edge. Each placement is an independent stack: a snackbar only
+    /// interacts with others sharing its [`SnackbarPosition`], and when a
+    /// placement already holds [`MAX_VISIBLE_SNACKBARS`] the oldest *at that
+    /// placement* is dismissed to make room — different placements never evict
+    /// each other.
     pub fn show(&self, snackbar: Snackbar) {
         let duration = snackbar.duration;
+        let position = snackbar.position;
         let id = {
             let mut state = self.state.borrow_mut();
             state.next_id = state
@@ -465,14 +489,18 @@ impl SnackbarManager {
 
         let active = self.state.borrow().active.clone();
 
-        // Evict the oldest live snackbar if the stack is already full, so the
-        // new one slides in as the oldest fades out.
+        // Evict the oldest live snackbar AT THIS PLACEMENT if its stack is
+        // already full, so the new one slides in as the oldest fades out.
+        // Snackbars at other placements are untouched.
         let snapshot = active.get();
-        let live = snapshot.iter().filter(|item| !item.dismissing.get()).count();
-        if live >= MAX_VISIBLE_SNACKBARS {
+        let live_here = snapshot
+            .iter()
+            .filter(|item| !item.dismissing.get() && item.snackbar.position == position)
+            .count();
+        if live_here >= MAX_VISIBLE_SNACKBARS {
             let oldest = snapshot
                 .iter()
-                .find(|item| !item.dismissing.get())
+                .find(|item| !item.dismissing.get() && item.snackbar.position == position)
                 .map(|item| item.id);
             if let Some(oldest) = oldest {
                 self.dismiss_presentation(oldest);
@@ -483,6 +511,11 @@ impl SnackbarManager {
         active.with_mut(|stack| stack.push(item));
         self.reflow();
 
+        // A zero duration disables auto-dismiss (M3 `auto-close-delay = 0`): the
+        // snackbar stays until dismissed by its action or close button.
+        if duration.is_zero() {
+            return;
+        }
         let manager = self.clone();
         spawn_local(async move {
             native_executor::sleep(duration).await;
@@ -620,34 +653,43 @@ impl StackedSnackbarView {
         }
         .foreground(theme.supporting_text_color.clone());
 
-        // Add action button if present
-        if let Some(action) = snackbar.action {
-            let action_label = action.label.clone();
+        // Optional trailing action: runs the handler with the live environment,
+        // then dismisses this specific snackbar.
+        let action_button = snackbar.action.map(|action| {
             let captured_env = snackbar.captured_env.clone();
-
-            AnyView::new(
-                hstack((
-                    label_view,
-                    spacer(),
-                    button(
-                        text(action_label)
-                            .font(theme.action_label_font.clone())
-                            .color(theme.action_label_color.clone()),
-                    )
-                    .style(ButtonStyle::Borderless)
-                    .action(move |env: waterui_core::Environment| {
-                        // Execute action handler with the live view environment,
-                        // then dismiss this specific snackbar.
-                        let () = action.handler.call(&captured_env.layered_on(&env));
-                        manager.dismiss_presentation(id);
-                    }),
-                ))
-                .spacing(theme.content_spacing),
+            let manager = manager.clone();
+            button(
+                text(action.label.clone())
+                    .font(theme.action_label_font.clone())
+                    .color(theme.action_label_color.clone()),
             )
-        } else {
-            // Supporting text is leading-aligned within the container.
-            AnyView::new(hstack((label_view, spacer())))
-        }
+            .style(ButtonStyle::Borderless)
+            .action(move |env: waterui_core::Environment| {
+                let () = action.handler.call(&captured_env.layered_on(&env));
+                manager.dismiss_presentation(id);
+            })
+        });
+
+        // Optional trailing close button (M3 `closeable`): dismisses on tap.
+        let close_button = snackbar.closeable.then(|| {
+            let manager = manager.clone();
+            button(
+                text(SNACKBAR_CLOSE_GLYPH)
+                    .font(theme.supporting_text_font.clone())
+                    .color(theme.supporting_text_color.clone()),
+            )
+            .style(ButtonStyle::Borderless)
+            .action(move |_env: waterui_core::Environment| {
+                manager.dismiss_presentation(id);
+            })
+        });
+
+        // Supporting text is leading-aligned; trailing controls (if any) follow
+        // the spacer. `Option<View>` renders nothing when absent.
+        AnyView::new(
+            hstack((label_view, spacer(), action_button, close_button))
+                .spacing(theme.content_spacing),
+        )
     }
 }
 
@@ -657,8 +699,8 @@ impl View for StackedSnackbarView {
         let Self { item, manager } = self;
         let position = item.snackbar.position;
 
-        // M3 trailing inset shrinks to clear the action button's own padding.
-        let content_padding = if item.snackbar.action.is_some() {
+        // M3 trailing inset shrinks to clear a trailing button's own padding.
+        let content_padding = if item.snackbar.action.is_some() || item.snackbar.closeable {
             EdgeInsets::new(
                 theme.content_padding.top(),
                 theme.content_padding.bottom(),
