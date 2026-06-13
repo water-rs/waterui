@@ -1,7 +1,7 @@
 [build]
-target = "xtensa-{{ ctx.esp32.chip }}-espidf"
+target = "{{ ctx.esp32.resolved_target_triple() }}"
 
-[target.xtensa-{{ ctx.esp32.chip }}-espidf]
+[target.{{ ctx.esp32.resolved_target_triple() }}]
 linker = "ldproxy"
 rustflags = ["--cfg", "espidf_time64"]
 

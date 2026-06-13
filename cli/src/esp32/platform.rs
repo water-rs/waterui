@@ -16,19 +16,13 @@ use tracing::info;
 use crate::{
     build::BuildOptions,
     device::Artifact,
-    esp32::backend::Esp32Backend,
+    esp32::{backend::Esp32Backend, chip::Esp32Chip},
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     utils::{command, run_command_os, which},
 };
 
 const ESP32_INIT_HINT: &str = "water run --platform esp32s3";
-
-/// Flash size passed to `espflash` when merging firmware images.
-///
-/// This matches the generated `sdkconfig.defaults` (`CONFIG_ESPTOOLPY_FLASHSIZE_8MB`)
-/// and the generated `partitions.csv` app partition.
-const ESP32_FLASH_SIZE: &str = "8mb";
 
 /// USB vendor IDs commonly found on ESP32 development boards.
 ///
@@ -39,7 +33,7 @@ const ESP_USB_VENDOR_IDS: [u16; 4] = [0x303a, 0x10c4, 0x1a86, 0x0403];
 /// Check if a platform is supported by the ESP32 backend.
 #[must_use]
 pub const fn is_esp32_platform(platform: TargetPlatform) -> bool {
-    matches!(platform, TargetPlatform::Esp32S3)
+    matches!(platform, TargetPlatform::Esp32S3 | TargetPlatform::Esp32C3)
 }
 
 /// Summary of a host serial port for device listing and board auto-detection.
@@ -129,20 +123,48 @@ fn espup_component_dir(component: &str, relative: &Path, what: &str) -> eyre::Re
     })
 }
 
-/// Environment variables required to drive the Espressif Rust toolchain.
+/// Locate the GCC `bin` directory for `chip`'s architecture.
 ///
-/// Prepends the Xtensa GCC `bin` directory to `PATH` and points
-/// `LIBCLANG_PATH` at the Espressif clang libraries, both discovered under
-/// `~/.rustup/toolchains/esp` without assuming a toolchain version.
+/// Xtensa GCC ships inside the espup `esp` toolchain
+/// (`~/.rustup/toolchains/esp/xtensa-esp-elf/...`); the RISC-V GCC is installed
+/// by ESP-IDF under `~/.espressif/tools/riscv32-esp-elf/...`. Both are
+/// version-discovered rather than pinned.
+fn gcc_bin_dir(chip: Esp32Chip) -> eyre::Result<PathBuf> {
+    let component = chip.gcc_component();
+    match chip.arch() {
+        crate::esp32::chip::Esp32Arch::Xtensa => espup_component_dir(
+            component.component,
+            Path::new(component.bin_subpath),
+            component.what,
+        ),
+        crate::esp32::chip::Esp32Arch::RiscV => {
+            let base = home_dir()?
+                .join(".espressif/tools")
+                .join(component.component);
+            newest_toolchain_subpath(&base, Path::new(component.bin_subpath)).ok_or_else(|| {
+                eyre!(
+                    "{} not found under {}. Install it with ESP-IDF tools (`idf_tools.py install`) \
+                     or by building an esp-idf-svc project once.",
+                    component.what,
+                    base.display()
+                )
+            })
+        }
+    }
+}
+
+/// Environment variables required to drive the Espressif Rust toolchain for
+/// `chip`.
+///
+/// Prepends the chip architecture's GCC `bin` directory to `PATH` and points
+/// `LIBCLANG_PATH` at the Espressif clang libraries (shared across
+/// architectures), discovered under the espup `esp` toolchain without assuming
+/// a toolchain version.
 ///
 /// # Errors
 /// Returns an error when the Espressif toolchain components are not installed.
-pub fn esp_toolchain_envs() -> eyre::Result<Vec<(String, OsString)>> {
-    let gcc_bin = espup_component_dir(
-        "xtensa-esp-elf",
-        Path::new("xtensa-esp-elf/bin"),
-        "Xtensa GCC toolchain",
-    )?;
+pub fn esp_toolchain_envs(chip: Esp32Chip) -> eyre::Result<Vec<(String, OsString)>> {
+    let gcc_bin = gcc_bin_dir(chip)?;
     let libclang = espup_component_dir(
         "xtensa-esp32-elf-clang",
         Path::new("esp-clang/lib"),
@@ -162,17 +184,17 @@ pub fn esp_toolchain_envs() -> eyre::Result<Vec<(String, OsString)>> {
     ])
 }
 
-fn esp32_chip(project: &Project) -> String {
+/// Resolve the configured chip for `project`'s ESP32 backend.
+fn esp32_chip(project: &Project) -> eyre::Result<Esp32Chip> {
     project
         .esp32_backend()
         .cloned()
         .unwrap_or_default()
-        .chip()
-        .to_string()
+        .resolved_chip()
 }
 
-fn esp32_target_triple(project: &Project) -> String {
-    format!("xtensa-{}-espidf", esp32_chip(project))
+fn esp32_target_triple(project: &Project) -> eyre::Result<&'static str> {
+    Ok(esp32_chip(project)?.target_triple())
 }
 
 async fn espflash_path() -> eyre::Result<PathBuf> {
@@ -218,6 +240,8 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
         "debug"
     };
 
+    let chip = esp32_chip(project)?;
+
     let mut cargo = smol::process::Command::new("cargo");
     let cargo = command(&mut cargo);
     cargo.current_dir(&backend_path);
@@ -226,7 +250,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     if let Some(sccache_path) = options.sccache_path() {
         cargo.env("RUSTC_WRAPPER", sccache_path);
     }
-    for (key, value) in esp_toolchain_envs()? {
+    for (key, value) in esp_toolchain_envs(chip)? {
         cargo.env(key, value);
     }
     if options.is_release() {
@@ -242,9 +266,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
         );
     }
 
-    Ok(backend_target_dir
-        .join(esp32_target_triple(project))
-        .join(profile))
+    Ok(backend_target_dir.join(chip.target_triple()).join(profile))
 }
 
 /// Resolve the built ESP32 firmware ELF path for the given profile.
@@ -255,7 +277,7 @@ pub async fn built_esp32_binary_path(project: &Project, profile: &str) -> eyre::
     let target_dir = project
         .backend_target_dir("esp32")
         .await?
-        .join(esp32_target_triple(project))
+        .join(esp32_target_triple(project)?)
         .join(profile);
     let binary_name = project.esp32_backend_crate_name();
     let binary_path = target_dir.join(binary_name.as_str());
@@ -280,7 +302,7 @@ pub async fn built_esp32_binary_path(project: &Project, profile: &str) -> eyre::
 /// `device` selects the run target: `Some("qemu")` forces the QEMU emulator,
 /// `Some(port)` flashes the given serial port, and `None` flashes the first
 /// connected ESP32 board, falling back to QEMU when no board is connected but
-/// an ESP32-capable `qemu-system-xtensa` is installed.
+/// the chip's QEMU emulator is installed.
 ///
 /// # Errors
 /// Returns an error when building, flashing, or emulation fails, or when
@@ -295,25 +317,29 @@ pub async fn run_esp32(
     } else {
         "debug"
     };
+    let chip = esp32_chip(project)?;
     build_esp32(project, options).await?;
     let elf = built_esp32_binary_path(project, profile).await?;
 
     match device {
-        Some("qemu") => qemu_esp32(project, &elf).await,
+        Some("qemu") => qemu_esp32(project, chip, &elf).await,
         Some(port) => flash_and_monitor(project, &elf, Some(port)).await,
         None => {
             if let Some(port) = detect_esp_serial_port().await? {
                 info!("Flashing ESP32 board on {port}");
                 return flash_and_monitor(project, &elf, Some(&port)).await;
             }
-            if locate_qemu().await.is_some() {
+            if locate_qemu(chip).await.is_some() {
                 info!("No ESP32 board connected; running under QEMU");
-                return qemu_esp32(project, &elf).await;
+                return qemu_esp32(project, chip, &elf).await;
             }
             bail!(
-                "No ESP32 board connected and no ESP32-capable QEMU installed.\n\
+                "No ESP32 board connected and no QEMU for {chip_id} installed.\n\
                  Connect a board (see `water devices --platform esp32`), pass --device <port>,\n\
-                 or install Espressif's QEMU fork (qemu-system-xtensa with the esp32s3 machine)."
+                 or install Espressif's QEMU fork ({qemu} with the {machine} machine).",
+                chip_id = chip.id(),
+                qemu = chip.qemu_binary(),
+                machine = chip.qemu_machine(),
             )
         }
     }
@@ -347,76 +373,86 @@ async fn flash_and_monitor(project: &Project, elf: &Path, port: Option<&str>) ->
     Ok(())
 }
 
-/// Locate an ESP32-capable QEMU binary.
+/// Locate the QEMU binary that emulates `chip`'s architecture.
 ///
-/// Prefers the Espressif QEMU fork at `~/.local/esp-qemu/qemu/bin/qemu-system-xtensa`,
-/// falling back to `qemu-system-xtensa` on `PATH`.
-async fn locate_qemu() -> Option<PathBuf> {
+/// Prefers the Espressif QEMU fork bundled under `~/.local/esp-qemu/qemu/bin`,
+/// falling back to the binary on `PATH`.
+async fn locate_qemu(chip: Esp32Chip) -> Option<PathBuf> {
+    let binary = chip.qemu_binary();
     if let Ok(home) = home_dir() {
-        let bundled = home.join(".local/esp-qemu/qemu/bin/qemu-system-xtensa");
+        let bundled = home.join(".local/esp-qemu/qemu/bin").join(binary);
         if bundled.exists() {
             return Some(bundled);
         }
     }
-    which("qemu-system-xtensa").await.ok()
+    which(binary).await.ok()
 }
 
 /// eFuse image for QEMU: ADC calibration version 1 (BLK2 word 4 bits 0..3).
 ///
-/// Without it the firmware hangs at startup in hardware ADC self-calibration,
-/// which QEMU does not emulate; version 1 makes startup read the (zeroed)
-/// calibration codes from eFuse instead.
+/// Without it Xtensa firmware hangs at startup in hardware ADC
+/// self-calibration, which QEMU does not emulate; version 1 makes startup read
+/// the (zeroed) calibration codes from eFuse instead.
 fn qemu_efuse_image() -> Vec<u8> {
     let mut data = vec![0u8; 1024];
     data[64] = 0x01;
     data
 }
 
-/// Run the built firmware ELF under Espressif's QEMU, streaming serial output.
+/// Run the built firmware ELF under the chip's QEMU, streaming serial output.
 ///
-/// Builds a merged flash image with `espflash save-image`, generates the
-/// eFuse image QEMU needs to skip unemulated ADC self-calibration, and runs
-/// `qemu-system-xtensa` with the chip's machine model.
+/// Builds a merged flash image with `espflash save-image` and runs the chip's
+/// QEMU with its machine model. Xtensa chips additionally need an eFuse image
+/// to skip unemulated ADC self-calibration; RISC-V chips boot without it.
 ///
 /// # Errors
 /// Returns an error when QEMU or espflash is missing, image generation fails,
 /// or the emulator exits with a failure status.
-pub async fn qemu_esp32(project: &Project, elf: &Path) -> eyre::Result<()> {
-    let qemu = locate_qemu().await.ok_or_else(|| {
+pub async fn qemu_esp32(project: &Project, chip: Esp32Chip, elf: &Path) -> eyre::Result<()> {
+    let qemu = locate_qemu(chip).await.ok_or_else(|| {
         eyre!(
-            "ESP32-capable QEMU not found. Expected ~/.local/esp-qemu/qemu/bin/qemu-system-xtensa \
-             or qemu-system-xtensa on PATH (Espressif fork with the esp32s3 machine)."
+            "QEMU for {} not found. Expected ~/.local/esp-qemu/qemu/bin/{binary} \
+             or {binary} on PATH (Espressif fork with the {machine} machine).",
+            chip.id(),
+            binary = chip.qemu_binary(),
+            machine = chip.qemu_machine(),
         )
     })?;
     let backend_path = project.backend_path::<Esp32Backend>();
-    let chip = esp32_chip(project);
 
     let staging = tempfile::Builder::new()
         .prefix("waterui-esp32-qemu")
         .tempdir()
         .wrap_err("Failed to create QEMU staging directory")?;
     let flash_image = staging.path().join("flash.bin");
-    let efuse_image = staging.path().join("efuse.bin");
 
-    save_flash_image(&backend_path, &chip, elf, &flash_image).await?;
-    fs::write(&efuse_image, qemu_efuse_image()).await?;
+    save_flash_image(&backend_path, chip, elf, &flash_image).await?;
 
     let mut qemu_cmd = smol::process::Command::new(qemu);
     qemu_cmd
         .arg("-nographic")
         .arg("-machine")
-        .arg(&chip)
+        .arg(chip.qemu_machine())
         .arg("-drive")
-        .arg(format!("file={},if=mtd,format=raw", flash_image.display()))
-        .arg("-drive")
-        .arg(format!(
-            "file={},if=none,format=raw,id=efuse",
-            efuse_image.display()
-        ))
-        .arg("-global")
-        .arg(format!(
-            "driver=nvram.{chip}.efuse,property=drive,value=efuse"
-        ))
+        .arg(format!("file={},if=mtd,format=raw", flash_image.display()));
+
+    let efuse_image = staging.path().join("efuse.bin");
+    if chip.needs_qemu_efuse_workaround() {
+        fs::write(&efuse_image, qemu_efuse_image()).await?;
+        qemu_cmd
+            .arg("-drive")
+            .arg(format!(
+                "file={},if=none,format=raw,id=efuse",
+                efuse_image.display()
+            ))
+            .arg("-global")
+            .arg(format!(
+                "driver=nvram.{}.efuse,property=drive,value=efuse",
+                chip.id()
+            ));
+    }
+
+    qemu_cmd
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -424,14 +460,14 @@ pub async fn qemu_esp32(project: &Project, elf: &Path) -> eyre::Result<()> {
 
     let status = qemu_cmd.status().await?;
     if !status.success() {
-        bail!("qemu-system-xtensa exited with status {status}");
+        bail!("{} exited with status {status}", chip.qemu_binary());
     }
     Ok(())
 }
 
 async fn save_flash_image(
     backend_path: &Path,
-    chip: &str,
+    chip: Esp32Chip,
     elf: &Path,
     image_path: &Path,
 ) -> eyre::Result<()> {
@@ -441,10 +477,10 @@ async fn save_flash_image(
     save.current_dir(backend_path)
         .arg("save-image")
         .arg("--chip")
-        .arg(chip)
+        .arg(chip.id())
         .arg("--merge")
         .arg("--flash-size")
-        .arg(ESP32_FLASH_SIZE)
+        .arg(chip.firmware_params().flash_size_arg())
         .arg("--partition-table")
         .arg(backend_path.join("partitions.csv"))
         .arg(elf)
@@ -473,12 +509,12 @@ pub async fn package_esp32(project: &Project, options: PackageOptions) -> eyre::
     };
     let elf = built_esp32_binary_path(project, profile).await?;
     let backend_path = project.backend_path::<Esp32Backend>();
-    let chip = esp32_chip(project);
+    let chip = esp32_chip(project)?;
 
     let dist_dir = backend_path.join("dist");
     fs::create_dir_all(&dist_dir).await?;
     let image_path = dist_dir.join(format!("{}.bin", project.esp32_backend_crate_name()));
-    save_flash_image(&backend_path, &chip, &elf, &image_path).await?;
+    save_flash_image(&backend_path, chip, &elf, &image_path).await?;
 
     Ok(Artifact::new(project.bundle_identifier(), image_path))
 }

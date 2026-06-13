@@ -816,6 +816,28 @@ impl Project {
         Ok(())
     }
 
+    /// Select the ESP32 target chip, persisting it to `Water.toml`.
+    ///
+    /// The chip is the single source of truth for the ESP32 backend's target
+    /// triple, QEMU model, and firmware parameters. Selecting a platform such
+    /// as `esp32c3` calls this so the generated harness and build target follow
+    /// the platform. No-ops (and skips the manifest write) when the configured
+    /// chip already matches.
+    ///
+    /// # Errors
+    /// Returns an error if saving the manifest fails.
+    pub async fn set_esp32_chip(
+        &mut self,
+        chip: crate::esp32::chip::Esp32Chip,
+    ) -> eyre::Result<()> {
+        let current = self.esp32_backend().cloned().unwrap_or_default();
+        if current.chip() == chip.id() {
+            return Ok(());
+        }
+        self.manifest.backends.set_esp32(current.with_chip(chip));
+        self.save_manifest().await
+    }
+
     /// Remove Apple backend configuration and generated files.
     ///
     /// # Errors
