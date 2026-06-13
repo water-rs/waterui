@@ -407,13 +407,14 @@ impl HydrolysisRenderer {
         let subtree = Self::render_dynamic_subtree_with_local_interactions(
             self, ctx, local_ctx, env, content,
         );
-        self.dynamic_transform_draws.push(DynamicTransformDraw {
+        self.flush_static_segment();
+        self.draw_ops.push(DynamicDrawOp::Transform(DynamicTransformDraw {
             transform,
             base_transform: ctx.transform,
             base_hit_transform: ctx.hit_transform,
             bounds: ctx.bounds,
             subtree,
-        });
+        }));
     }
 
     pub(super) fn capture_dynamic_opacity(
@@ -427,14 +428,15 @@ impl HydrolysisRenderer {
         let subtree = Self::render_dynamic_subtree_with_local_interactions(
             self, ctx, local_ctx, env, content,
         );
-        self.dynamic_opacity_draws.push(DynamicOpacityDraw {
+        self.flush_static_segment();
+        self.draw_ops.push(DynamicDrawOp::Opacity(DynamicOpacityDraw {
             alpha,
             base_transform: ctx.transform,
             base_hit_transform: ctx.hit_transform,
             bounds: ctx.bounds,
             subtree,
             paint_only: false,
-        });
+        }));
     }
 
     pub(crate) fn sample_morph_progress(
@@ -525,74 +527,68 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(super) fn draw_dynamic_transforms(
+    pub(super) fn draw_dynamic_transform(
         &mut self,
         parent_ctx: RenderContext,
-        transforms: &[DynamicTransformDraw],
+        draw: &DynamicTransformDraw,
     ) {
-        for draw in transforms {
-            let dynamic_transform = draw.transform.affine(self.frame_instant);
-            let ctx = RenderContext::with_transforms(
-                draw.bounds,
-                parent_ctx.transform * draw.base_transform * dynamic_transform,
-                parent_ctx.hit_transform * draw.base_hit_transform * dynamic_transform,
-            );
-            self.replay_dynamic_subtree(ctx, &draw.subtree);
-        }
+        let dynamic_transform = draw.transform.affine(self.frame_instant);
+        let ctx = RenderContext::with_transforms(
+            draw.bounds,
+            parent_ctx.transform * draw.base_transform * dynamic_transform,
+            parent_ctx.hit_transform * draw.base_hit_transform * dynamic_transform,
+        );
+        self.replay_dynamic_subtree(ctx, &draw.subtree);
     }
 
-    pub(super) fn draw_dynamic_opacities(
+    pub(super) fn draw_dynamic_opacity(
         &mut self,
         parent_ctx: RenderContext,
-        opacities: &[DynamicOpacityDraw],
+        draw: &DynamicOpacityDraw,
     ) {
-        for draw in opacities {
-            let alpha = draw.alpha.sample(self.frame_instant).clamp(0.0, 1.0);
-            if draw.paint_only && alpha <= f32::EPSILON {
-                continue;
-            }
-            let transform = parent_ctx.transform * draw.base_transform;
-            let hit_transform = parent_ctx.hit_transform * draw.base_hit_transform;
-            self.push_layer_rect(alpha, transform, draw.bounds);
-            let previous_opacity = self.hit_test.hit_test_opacity;
-            self.hit_test.hit_test_opacity = previous_opacity * alpha;
-            let ctx = RenderContext::with_transforms(draw.bounds, transform, hit_transform);
-            self.replay_dynamic_subtree(ctx, &draw.subtree);
-            self.hit_test.hit_test_opacity = previous_opacity;
-            self.pop_layer();
+        let alpha = draw.alpha.sample(self.frame_instant).clamp(0.0, 1.0);
+        if draw.paint_only && alpha <= f32::EPSILON {
+            return;
         }
+        let transform = parent_ctx.transform * draw.base_transform;
+        let hit_transform = parent_ctx.hit_transform * draw.base_hit_transform;
+        self.push_layer_rect(alpha, transform, draw.bounds);
+        let previous_opacity = self.hit_test.hit_test_opacity;
+        self.hit_test.hit_test_opacity = previous_opacity * alpha;
+        let ctx = RenderContext::with_transforms(draw.bounds, transform, hit_transform);
+        self.replay_dynamic_subtree(ctx, &draw.subtree);
+        self.hit_test.hit_test_opacity = previous_opacity;
+        self.pop_layer();
     }
 
     /// Composites each placed `Dynamic` node from its retained `cached_subtree`. The
     /// subtree is taken out, replayed, and returned, so a content change to one node
     /// (which only refreshes that node's `cached_subtree`) is picked up here without
     /// touching any other node's placement.
-    pub(super) fn replay_dynamic_node_placements(
+    pub(super) fn replay_dynamic_node_placement(
         &mut self,
         parent_ctx: RenderContext,
-        placements: &[DynamicNodeDraw],
+        placement: &DynamicNodeDraw,
     ) {
-        for placement in placements {
-            let Some(subtree) = self
-                .lifecycle
-                .dynamic_nodes
-                .get_mut(&placement.identity)
-                .and_then(|node| node.cached_subtree.take())
-            else {
-                continue;
-            };
-            let ctx = RenderContext::with_transforms(
-                placement.bounds,
-                parent_ctx.transform * placement.base_transform,
-                parent_ctx.hit_transform * placement.base_hit_transform,
-            );
-            self.replay_dynamic_subtree(ctx, &subtree);
-            self.lifecycle
-                .dynamic_nodes
-                .get_mut(&placement.identity)
-                .expect("hydrolysis dynamic node missing after placement replay")
-                .cached_subtree = Some(subtree);
-        }
+        let Some(subtree) = self
+            .lifecycle
+            .dynamic_nodes
+            .get_mut(&placement.identity)
+            .and_then(|node| node.cached_subtree.take())
+        else {
+            return;
+        };
+        let ctx = RenderContext::with_transforms(
+            placement.bounds,
+            parent_ctx.transform * placement.base_transform,
+            parent_ctx.hit_transform * placement.base_hit_transform,
+        );
+        self.replay_dynamic_subtree(ctx, &subtree);
+        self.lifecycle
+            .dynamic_nodes
+            .get_mut(&placement.identity)
+            .expect("hydrolysis dynamic node missing after placement replay")
+            .cached_subtree = Some(subtree);
     }
 
     /// Collects the animation keys of every active replayable scalar (transform and
@@ -603,15 +599,15 @@ impl HydrolysisRenderer {
         subtree: &DynamicSubtree,
         keys: &mut BTreeSet<AnimationKey>,
     ) {
-        for transform in &subtree.dynamic_transforms {
+        for transform in subtree.transform_draws() {
             transform.transform.collect_active_scalar_keys(keys);
             self.collect_subtree_active_scalar_keys(&transform.subtree, keys);
         }
-        for opacity in &subtree.dynamic_opacities {
+        for opacity in subtree.opacity_draws() {
             opacity.alpha.collect_active_key(keys);
             self.collect_subtree_active_scalar_keys(&opacity.subtree, keys);
         }
-        for placement in &subtree.dynamic_node_draws {
+        for placement in subtree.node_draws() {
             if let Some(cached) = self
                 .lifecycle
                 .dynamic_nodes
@@ -621,7 +617,7 @@ impl HydrolysisRenderer {
                 self.collect_subtree_active_scalar_keys(cached, keys);
             }
         }
-        for scroll in &subtree.dynamic_scroll_draws {
+        for scroll in subtree.scroll_draws() {
             if let Some(cache) = self.scroll_content_caches.get(&scroll.cache_key) {
                 self.collect_subtree_active_scalar_keys(&cache.subtree, keys);
             }
@@ -844,12 +840,13 @@ impl HydrolysisRenderer {
         // composited at replay, so a later content change to this node can be patched
         // in isolation without re-walking the rest of the window.
         if renderer.dynamic_transform_capture_depth > 0 {
-            renderer.dynamic_node_draws.push(DynamicNodeDraw {
+            renderer.flush_static_segment();
+            renderer.draw_ops.push(DynamicDrawOp::Node(DynamicNodeDraw {
                 identity,
                 base_transform: ctx.transform,
                 base_hit_transform: ctx.hit_transform,
                 bounds: ctx.bounds,
-            });
+            }));
             return;
         }
 
@@ -891,7 +888,7 @@ impl HydrolysisRenderer {
     }
 
     pub(super) fn subtree_scroll_morphs_active(&self, subtree: &DynamicSubtree) -> bool {
-        subtree.dynamic_scroll_draws.iter().any(|draw| {
+        subtree.scroll_draws().any(|draw| {
             draw.content_morphs
                 .iter()
                 .any(|morph| self.dynamic_morph_is_active(morph))
@@ -903,7 +900,11 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn scene_is_empty(&self) -> bool {
-        !scene_has_content(&self.scene)
+        // Nothing has been drawn in the current capture when neither the live
+        // static segment nor any sealed draw op carries content. (A dynamic draw
+        // flushes the live scene into `draw_ops`, so checking only `self.scene`
+        // would falsely report "empty" right after one.)
+        !scene_has_content(&self.scene) && self.draw_ops.is_empty()
     }
 
     pub(crate) fn viewport_matches_window_bounds(&self, viewport: vello::kurbo::Rect) -> bool {
@@ -914,7 +915,19 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn push_dynamic_scroll_draw(&mut self, draw: DynamicScrollDraw) {
-        self.dynamic_scroll_draws.push(draw);
+        self.flush_static_segment();
+        self.draw_ops.push(DynamicDrawOp::Scroll(draw));
+    }
+
+    /// Seals the static scene content accumulated since the last draw op into a
+    /// [`DynamicDrawOp::Static`] segment, so a following dynamic draw composites
+    /// strictly above it (and a later static segment strictly above the dynamic
+    /// draw). Skips empty segments to keep the op list tight.
+    pub(super) fn flush_static_segment(&mut self) {
+        if scene_has_content(&self.scene) {
+            let segment = core::mem::replace(&mut self.scene, vello::Scene::new());
+            self.draw_ops.push(DynamicDrawOp::Static(segment));
+        }
     }
 
     /// Composites each scroll view from its retained offset-independent content cache,
@@ -922,75 +935,67 @@ impl HydrolysisRenderer {
     /// accessibility node, and indicators. This is the per-frame body of the former
     /// `refresh_retained_scroll_scene`, generalized to run inside the window-frame replay
     /// for any number of (possibly nested) scroll views.
-    pub(super) fn replay_dynamic_scroll_draws(
+    pub(super) fn replay_dynamic_scroll_draw(
         &mut self,
         parent_ctx: RenderContext,
-        draws: &[DynamicScrollDraw],
+        draw: &DynamicScrollDraw,
     ) {
-        for draw in draws {
-            let transform = parent_ctx.transform * draw.base_transform;
-            let hit_transform = parent_ctx.hit_transform * draw.base_hit_transform;
-            if draw.needs_viewport_clip {
-                self.record_clip_layer_push();
-                self.scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &draw.viewport,
-                );
-                self.compositor.active_scene_layers.push(ActiveSceneLayer {
-                    alpha: 1.0,
-                    transform,
-                    shape: LayerShape::Rect(draw.viewport),
-                });
-            }
-            let metrics = draw.handle.metrics();
-            let scroll_content_transform =
-                vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
-            let content_transform = transform * scroll_content_transform;
-            let content_hit_transform = hit_transform * scroll_content_transform;
-            let content_bounds =
-                vello::kurbo::Rect::new(0.0, 0.0, draw.content_width, draw.content_height);
-            let content_ctx = RenderContext::with_transforms(
-                content_bounds,
-                content_transform,
-                content_hit_transform,
+        let transform = parent_ctx.transform * draw.base_transform;
+        let hit_transform = parent_ctx.hit_transform * draw.base_hit_transform;
+        if draw.needs_viewport_clip {
+            self.record_clip_layer_push();
+            self.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &draw.viewport,
             );
-            if let Some(cache) = self.scroll_content_caches.remove(&draw.cache_key) {
-                self.replay_dynamic_subtree(content_ctx, &cache.subtree);
-                self.scroll_content_caches.insert(draw.cache_key, cache);
-            }
-            self.draw_dynamic_morphs(&draw.content_morphs, content_transform);
-            if draw.needs_viewport_clip {
-                self.pop_layer();
-            }
-            let target_handle = draw.handle.clone();
-            self.register_scroll_target(
-                transformed_rect(hit_transform, draw.viewport),
-                move |dx, dy, is_line_delta| {
-                    target_handle.apply_scroll_delta(dx, dy, is_line_delta)
-                },
-            );
-            crate::widgets::scroll::register_scroll_accessibility_node(
-                self,
-                &draw.env,
-                transformed_rect(hit_transform, draw.viewport),
-                &draw.handle,
-                metrics,
-                draw.axis,
-            );
-            let scroll_ctx =
-                RenderContext::with_transforms(draw.viewport, transform, hit_transform);
-            let mut widget_ctx = WidgetRenderContext::new(self, scroll_ctx);
-            crate::widgets::draw_scroll_indicators(
-                &mut widget_ctx,
-                &draw.env,
-                draw.viewport,
-                metrics,
-                draw.axis,
-            );
+            self.compositor.active_scene_layers.push(ActiveSceneLayer {
+                alpha: 1.0,
+                transform,
+                shape: LayerShape::Rect(draw.viewport),
+            });
         }
+        let metrics = draw.handle.metrics();
+        let scroll_content_transform =
+            vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+        let content_transform = transform * scroll_content_transform;
+        let content_hit_transform = hit_transform * scroll_content_transform;
+        let content_bounds =
+            vello::kurbo::Rect::new(0.0, 0.0, draw.content_width, draw.content_height);
+        let content_ctx =
+            RenderContext::with_transforms(content_bounds, content_transform, content_hit_transform);
+        if let Some(cache) = self.scroll_content_caches.remove(&draw.cache_key) {
+            self.replay_dynamic_subtree(content_ctx, &cache.subtree);
+            self.scroll_content_caches.insert(draw.cache_key, cache);
+        }
+        self.draw_dynamic_morphs(&draw.content_morphs, content_transform);
+        if draw.needs_viewport_clip {
+            self.pop_layer();
+        }
+        let target_handle = draw.handle.clone();
+        self.register_scroll_target(
+            transformed_rect(hit_transform, draw.viewport),
+            move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
+        );
+        crate::widgets::scroll::register_scroll_accessibility_node(
+            self,
+            &draw.env,
+            transformed_rect(hit_transform, draw.viewport),
+            &draw.handle,
+            metrics,
+            draw.axis,
+        );
+        let scroll_ctx = RenderContext::with_transforms(draw.viewport, transform, hit_transform);
+        let mut widget_ctx = WidgetRenderContext::new(self, scroll_ctx);
+        crate::widgets::draw_scroll_indicators(
+            &mut widget_ctx,
+            &draw.env,
+            draw.viewport,
+            metrics,
+            draw.axis,
+        );
     }
 
     /// Whether every scroll view reachable from the retained window frame can be
@@ -1005,7 +1010,7 @@ impl HydrolysisRenderer {
     }
 
     pub(super) fn subtree_scroll_draws_reusable(&self, subtree: &DynamicSubtree) -> bool {
-        for draw in &subtree.dynamic_scroll_draws {
+        for draw in subtree.scroll_draws() {
             let metrics = draw.handle.metrics();
             let lazy_viewport = vello::kurbo::Rect::new(
                 metrics.offset_x,
@@ -1022,7 +1027,7 @@ impl HydrolysisRenderer {
                 return false;
             }
         }
-        for placement in &subtree.dynamic_node_draws {
+        for placement in subtree.node_draws() {
             if let Some(cached) = self
                 .lifecycle
                 .dynamic_nodes
@@ -1033,12 +1038,12 @@ impl HydrolysisRenderer {
                 return false;
             }
         }
-        for transform in &subtree.dynamic_transforms {
+        for transform in subtree.transform_draws() {
             if !self.subtree_scroll_draws_reusable(&transform.subtree) {
                 return false;
             }
         }
-        for opacity in &subtree.dynamic_opacities {
+        for opacity in subtree.opacity_draws() {
             if !self.subtree_scroll_draws_reusable(&opacity.subtree) {
                 return false;
             }

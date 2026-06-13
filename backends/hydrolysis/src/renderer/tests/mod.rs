@@ -584,8 +584,8 @@ fn root_scroll_cache_key(renderer: &HydrolysisRenderer) -> usize {
         .as_ref()
         .expect("root scroll must retain a window frame")
         .subtree
-        .dynamic_scroll_draws
-        .first()
+        .scroll_draws()
+        .next()
         .expect("root scroll must record a scroll draw")
         .cache_key
 }
@@ -596,8 +596,8 @@ fn root_scroll_handle(renderer: &HydrolysisRenderer) -> crate::scroll::ScrollHan
         .as_ref()
         .expect("root scroll must retain a window frame")
         .subtree
-        .dynamic_scroll_draws
-        .first()
+        .scroll_draws()
+        .next()
         .expect("root scroll must record a scroll draw")
         .handle
         .clone()
@@ -668,8 +668,8 @@ fn scroll_content_cache_replay_preserves_dynamic_morphs() {
             .as_ref()
             .expect("cache replay must retain a window frame")
             .subtree
-            .dynamic_scroll_draws
-            .first()
+            .scroll_draws()
+            .next()
             .expect("cache replay must record a scroll draw")
             .content_morphs
             .is_empty(),
@@ -709,7 +709,7 @@ fn animated_transform_scroll_content_cache_replays_while_animation_is_active() {
             "captured dynamic transform metadata must not poison scroll content cache reuse"
         );
         assert!(
-            !cache.subtree.dynamic_transforms.is_empty(),
+            cache.subtree.transform_draws().next().is_some(),
             "animated transform metadata must be captured as replayable dynamic transform draw"
         );
         cache.lazy_viewport
@@ -775,7 +775,7 @@ fn animated_opacity_scroll_content_cache_replays_while_animation_is_active() {
             "animated opacity is captured as a replayable dynamic opacity layer and must not poison cache reuse"
         );
         assert!(
-            !cache.subtree.dynamic_opacities.is_empty(),
+            cache.subtree.opacity_draws().next().is_some(),
             "animated opacity must be captured as a replayable dynamic opacity draw"
         );
         cache.lazy_viewport

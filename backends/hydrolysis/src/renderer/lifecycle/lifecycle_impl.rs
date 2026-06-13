@@ -27,12 +27,12 @@ pub(crate) struct DynamicNode {
 }
 
 pub(crate) struct DynamicSubtree {
-    pub(crate) scene: vello::Scene,
     pub(crate) depth_base: usize,
-    pub(crate) dynamic_transforms: Vec<DynamicTransformDraw>,
-    pub(crate) dynamic_opacities: Vec<DynamicOpacityDraw>,
-    pub(crate) dynamic_node_draws: Vec<DynamicNodeDraw>,
-    pub(crate) dynamic_scroll_draws: Vec<DynamicScrollDraw>,
+    /// Draw operations in dispatch (painter's) order. Static scene segments are
+    /// interleaved with the deferred dynamic draws so replay reproduces the exact
+    /// z-order of the original dispatch: a `Dynamic`-node overlay dispatched after
+    /// a sibling scroll composites *above* the scroll's content, not behind it.
+    pub(crate) draw_ops: Vec<DynamicDrawOp>,
     pub(crate) retains: Vec<Retain>,
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) gesture_targets: Vec<GestureTarget>,
@@ -43,6 +43,25 @@ pub(crate) struct DynamicSubtree {
     pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
     #[cfg(feature = "accessibility")]
     pub(crate) accessibility: DynamicAccessibilitySubtree,
+}
+
+/// One ordered draw step in a [`DynamicSubtree`]. Replayed in slice order, so the
+/// relative z-order of static content and every kind of deferred dynamic draw is
+/// preserved across capture and replay. This is the single source of painter's
+/// order for a captured subtree — there is no separate per-type batching that
+/// could reorder a dynamic draw relative to its static siblings.
+pub(crate) enum DynamicDrawOp {
+    /// A baked static scene segment: everything drawn between the previous and the
+    /// next dynamic draw at this subtree level.
+    Static(vello::Scene),
+    /// An animated-transform fragment, re-sampled and composited at replay.
+    Transform(DynamicTransformDraw),
+    /// An animated-opacity layer, re-sampled and composited at replay.
+    Opacity(DynamicOpacityDraw),
+    /// A placed `Dynamic` node, composited from its retained cached subtree.
+    Node(DynamicNodeDraw),
+    /// A scroll view, composited from its offset-independent content cache.
+    Scroll(DynamicScrollDraw),
 }
 
 #[cfg(feature = "accessibility")]
@@ -124,12 +143,8 @@ impl DynamicSubtree {
     /// Fresh, empty per-subtree storage about to receive a capture.
     pub(crate) fn for_capture(depth_base: usize) -> Self {
         Self {
-            scene: vello::Scene::new(),
             depth_base,
-            dynamic_transforms: Vec::new(),
-            dynamic_opacities: Vec::new(),
-            dynamic_node_draws: Vec::new(),
-            dynamic_scroll_draws: Vec::new(),
+            draw_ops: Vec::new(),
             retains: Vec::new(),
             pointer_targets: Vec::new(),
             gesture_targets: Vec::new(),
@@ -146,6 +161,38 @@ impl DynamicSubtree {
             },
         }
     }
+
+    /// The animated-transform fragments in this subtree, in draw order.
+    pub(crate) fn transform_draws(&self) -> impl Iterator<Item = &DynamicTransformDraw> {
+        self.draw_ops.iter().filter_map(|op| match op {
+            DynamicDrawOp::Transform(draw) => Some(draw),
+            _ => None,
+        })
+    }
+
+    /// The animated-opacity layers in this subtree, in draw order.
+    pub(crate) fn opacity_draws(&self) -> impl Iterator<Item = &DynamicOpacityDraw> {
+        self.draw_ops.iter().filter_map(|op| match op {
+            DynamicDrawOp::Opacity(draw) => Some(draw),
+            _ => None,
+        })
+    }
+
+    /// The placed `Dynamic` nodes in this subtree, in draw order.
+    pub(crate) fn node_draws(&self) -> impl Iterator<Item = &DynamicNodeDraw> {
+        self.draw_ops.iter().filter_map(|op| match op {
+            DynamicDrawOp::Node(draw) => Some(draw),
+            _ => None,
+        })
+    }
+
+    /// The scroll views in this subtree, in draw order.
+    pub(crate) fn scroll_draws(&self) -> impl Iterator<Item = &DynamicScrollDraw> {
+        self.draw_ops.iter().filter_map(|op| match op {
+            DynamicDrawOp::Scroll(draw) => Some(draw),
+            _ => None,
+        })
+    }
 }
 
 /// Parks the surrounding frame's capture state while a dynamic subtree is
@@ -159,6 +206,10 @@ impl DynamicSubtree {
 /// guard): a panic mid-dispatch is fatal to the renderer by design.
 struct SubtreeCaptureScope {
     parked: DynamicSubtree,
+    /// The parent capture's current static scene segment, parked while the child
+    /// subtree accumulates into a fresh scene. The child's draw ops own their own
+    /// static segments, so the subtree itself carries no standalone scene.
+    parked_scene: vello::Scene,
     hover_controller: HoverController,
     #[cfg(feature = "accessibility")]
     saved_next_node_id: u64,
@@ -170,6 +221,7 @@ impl SubtreeCaptureScope {
     fn begin(renderer: &mut HydrolysisRenderer) -> Self {
         let mut scope = Self {
             parked: DynamicSubtree::for_capture(renderer.render_depth),
+            parked_scene: vello::Scene::new(),
             hover_controller: HoverController::default(),
             #[cfg(feature = "accessibility")]
             saved_next_node_id: 0,
@@ -193,6 +245,9 @@ impl SubtreeCaptureScope {
             renderer.accessibility.suppression_depth = self.saved_suppression_depth;
             renderer.accessibility.next_node_id = self.saved_next_node_id;
         }
+        // Seal the trailing static segment (everything drawn after the last
+        // dynamic draw) before handing the renderer's live state back.
+        renderer.flush_static_segment();
         self.exchange_with(renderer);
         self.parked
     }
@@ -202,23 +257,8 @@ impl SubtreeCaptureScope {
     /// guaranteed to be restored.
     fn exchange_with(&mut self, renderer: &mut HydrolysisRenderer) {
         let parked = &mut self.parked;
-        core::mem::swap(&mut renderer.scene, &mut parked.scene);
-        core::mem::swap(
-            &mut renderer.dynamic_transform_draws,
-            &mut parked.dynamic_transforms,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_opacity_draws,
-            &mut parked.dynamic_opacities,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_node_draws,
-            &mut parked.dynamic_node_draws,
-        );
-        core::mem::swap(
-            &mut renderer.dynamic_scroll_draws,
-            &mut parked.dynamic_scroll_draws,
-        );
+        core::mem::swap(&mut renderer.scene, &mut self.parked_scene);
+        core::mem::swap(&mut renderer.draw_ops, &mut parked.draw_ops);
         core::mem::swap(
             &mut renderer.lifecycle.current_frame_retain,
             &mut parked.retains,
@@ -297,11 +337,19 @@ impl HydrolysisRenderer {
 
     pub(crate) fn replay_dynamic_subtree(&mut self, ctx: RenderContext, subtree: &DynamicSubtree) {
         let _retained_watcher_count = subtree.retains.len();
-        self.scene.append(&subtree.scene, Some(ctx.transform));
-        self.draw_dynamic_transforms(ctx, &subtree.dynamic_transforms);
-        self.draw_dynamic_opacities(ctx, &subtree.dynamic_opacities);
-        self.replay_dynamic_node_placements(ctx, &subtree.dynamic_node_draws);
-        self.replay_dynamic_scroll_draws(ctx, &subtree.dynamic_scroll_draws);
+        // Replay every draw op in dispatch order, so static content and each kind
+        // of deferred dynamic draw composite in their original painter's order.
+        for op in &subtree.draw_ops {
+            match op {
+                DynamicDrawOp::Static(scene) => self.scene.append(scene, Some(ctx.transform)),
+                DynamicDrawOp::Transform(draw) => self.draw_dynamic_transform(ctx, draw),
+                DynamicDrawOp::Opacity(draw) => self.draw_dynamic_opacity(ctx, draw),
+                DynamicDrawOp::Node(placement) => {
+                    self.replay_dynamic_node_placement(ctx, placement);
+                }
+                DynamicDrawOp::Scroll(draw) => self.replay_dynamic_scroll_draw(ctx, draw),
+            }
+        }
         let mut gesture_group_remap = BTreeMap::new();
 
         for target in &subtree.pointer_targets {

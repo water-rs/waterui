@@ -219,10 +219,10 @@ pub struct HydrolysisRenderer {
     dynamic_morph_capture_depth: u32,
     dynamic_morph_draws: Vec<DynamicMorphDraw>,
     dynamic_transform_capture_depth: u32,
-    dynamic_transform_draws: Vec<DynamicTransformDraw>,
-    dynamic_opacity_draws: Vec<DynamicOpacityDraw>,
-    dynamic_node_draws: Vec<DynamicNodeDraw>,
-    dynamic_scroll_draws: Vec<DynamicScrollDraw>,
+    /// The current subtree's draw ops in dispatch (painter's) order: static scene
+    /// segments interleaved with deferred dynamic draws. Swapped out per subtree
+    /// capture by `SubtreeCaptureScope`; see [`DynamicDrawOp`].
+    draw_ops: Vec<DynamicDrawOp>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     frame_applied_filter_count: u32,
@@ -295,10 +295,7 @@ impl HydrolysisRenderer {
             dynamic_morph_capture_depth: 0,
             dynamic_morph_draws: Vec::new(),
             dynamic_transform_capture_depth: 0,
-            dynamic_transform_draws: Vec::new(),
-            dynamic_opacity_draws: Vec::new(),
-            dynamic_node_draws: Vec::new(),
-            dynamic_scroll_draws: Vec::new(),
+            draw_ops: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_applied_filter_count: 0,
