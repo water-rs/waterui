@@ -7,7 +7,7 @@ use waterui_controls::{Button, IntoLabel};
 use waterui_core::View;
 use waterui_url::Url;
 
-#[cfg(feature = "std")]
+#[cfg(not(any(target_os = "espidf", target_arch = "wasm32")))]
 use waterkit_dialog::FileDialog;
 
 /// Configuration for a file picker component.
@@ -80,7 +80,7 @@ impl View for FilePicker {
         Button::new(self.label).action_async(move || {
             let value = self.value.clone();
             async move {
-                #[cfg(feature = "std")]
+                #[cfg(not(any(target_os = "espidf", target_arch = "wasm32")))]
                 {
                     let dialog = if self.import {
                         FileDialog::new().with_import_to_cache("waterui/file-picker-imports")
@@ -117,9 +117,9 @@ impl View for FilePicker {
                     value.set(urls);
                 }
 
-                #[cfg(not(feature = "std"))]
+                #[cfg(any(target_os = "espidf", target_arch = "wasm32"))]
                 {
-                    panic!("FilePicker requires the `std` feature to open native file dialogs");
+                    panic!("FilePicker native file dialog is unavailable on this target");
                 }
             }
         })
