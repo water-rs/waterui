@@ -16,6 +16,15 @@ default = ["system-fonts"]
 # Embedded-device simulator: a desktop window standing in for the panel of
 # an embedded device, running the full dew pipeline natively (winit + softbuffer).
 embedded-simulator = ["dep:winit", "dep:softbuffer", "dep:executor-core", "dep:native-executor"]
+# ESP-IDF runtime entry: a complete firmware main-loop for ESP32-class
+# chips; generated harnesses call `espidf::run` and nothing else.
+espidf = [
+    "dep:esp-idf-svc",
+    "dep:log",
+    "dep:executor-core",
+    "dep:native-executor",
+    "native-executor/polyfill",
+]
 # Desktop font enumeration; firmware targets disable this and register
 # bundled fonts into the parley FontContext instead.
 system-fonts = ["parley/system"]
@@ -23,6 +32,7 @@ system-fonts = ["parley/system"]
 [dependencies]
 waterui-core.workspace = true
 waterui-backend-core.workspace = true
+waterui-controls.workspace = true
 waterui-graphics.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true
@@ -35,9 +45,13 @@ winit = { version = "0.30", optional = true }
 softbuffer = { version = "0.4", optional = true }
 executor-core = { workspace = true, optional = true }
 native-executor = { workspace = true, optional = true }
+log = { version = "0.4", optional = true }
+waterui = { version = "0.2.1", path = "../..", default-features = false }
+
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-svc = { version = "0.52", optional = true }
 
 [dev-dependencies]
-waterui = { version = "0.2.1", path = "../..", default-features = false }
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 
 [[example]]

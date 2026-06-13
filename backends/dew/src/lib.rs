@@ -25,16 +25,22 @@
 //! - [`display`]: the flush boundary — where rasterized regions leave the
 //!   renderer toward a concrete screen (in-memory buffer on desktop,
 //!   RGB565 LCD stream on embedded targets)
+//! - [`theme`]: the built-in widget palette — named colors every handler
+//!   draws with until environment-driven theming lands
 
 pub mod compositor;
 pub mod dispatch;
 pub mod display;
 pub mod display_list;
-pub mod painter;
-pub mod runtime;
 #[cfg(feature = "embedded-simulator")]
 pub mod embedded_simulator;
+#[cfg(all(feature = "espidf", target_os = "espidf"))]
+pub mod espidf;
+pub mod painter;
+pub mod runtime;
 pub mod text;
+pub mod theme;
+mod views;
 
 pub use compositor::{BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};

@@ -22,19 +22,28 @@ use std::rc::Rc;
 
 use kurbo::{Affine, Rect};
 use nami::Signal;
+use waterui::component::progress::ProgressConfig;
 use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_backend_core::time::Instant;
+use waterui_controls::slider::SliderConfig;
+use waterui_controls::stepper::StepperConfig;
+use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_controls::toggle::ToggleConfig;
 use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
 use waterui_core::{AnyView, Environment, Metadata, Native, Str, View};
 use waterui_graphics::color::ResolvedColor;
+use waterui_layout::Divider;
 use waterui_layout::container::FixedContainer;
+use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_text::TextConfig;
 
 use crate::display_list::DisplayList;
-use crate::text::{DewState, emit_text_commands, styled_to_plain};
+use crate::text::{DewState, emit_text_commands};
+use crate::theme;
+use crate::views;
 
 /// Maximum `body()` expansions before normalization gives up — a guard
 /// against views whose body never reaches a native type.
@@ -80,12 +89,12 @@ type DewHandlerFn = Box<dyn Fn(&mut DewRenderer, RenderContext, AnyView, &Enviro
 /// Type-id keyed handler table, cheaply cloneable so handlers can re-enter
 /// dispatch while the renderer is mutably borrowed.
 #[derive(Clone, Default)]
-struct DewDispatcher {
+pub(crate) struct DewDispatcher {
     handlers: Rc<HashMap<TypeId, DewHandlerFn>>,
 }
 
 impl DewDispatcher {
-    fn register<V: View>(
+    pub(crate) fn register<V: View>(
         &mut self,
         handler: impl 'static + Fn(&mut DewRenderer, RenderContext, V, &Environment),
     ) {
@@ -204,6 +213,23 @@ impl DewRenderer {
         signal.get()
     }
 
+    /// The retained scene being built for the current tree.
+    pub(crate) const fn list_mut(&mut self) -> &mut DisplayList {
+        &mut self.list
+    }
+
+    /// The shared text-shaping state, for measurement inside handlers.
+    pub(crate) const fn state_cell(&self) -> &RefCell<DewState> {
+        &self.state
+    }
+
+    /// Re-enters dispatch for a child view (a control label, scroll content,
+    /// or any other nested subtree) at `ctx`.
+    pub(crate) fn dispatch_child(&mut self, view: AnyView, env: &Environment, ctx: RenderContext) {
+        let dispatcher = self.dispatcher.clone();
+        dispatcher.dispatch_boxed(self, view, env, ctx);
+    }
+
     /// Body-expands `view` until it is a renderable native type, recursing
     /// into container children so the whole tree becomes measurable.
     ///
@@ -232,6 +258,32 @@ impl DewRenderer {
                     .map(|child| self.normalize(child, env))
                     .collect();
                 return AnyView::new(Native::new(FixedContainer::from_parts(layout, contents)));
+            }
+            if type_id == TypeId::of::<Native<ScrollView>>() {
+                let native = *view
+                    .downcast::<Native<ScrollView>>()
+                    .expect("dew normalize scroll downcast");
+                let (axis, content) = native.into_inner().into_inner();
+                let content = self.normalize(content, env);
+                return AnyView::new(Native::new(ScrollView::new(axis, content)));
+            }
+            if type_id == TypeId::of::<Native<SliderConfig>>() {
+                let mut config = view
+                    .downcast::<Native<SliderConfig>>()
+                    .expect("dew normalize slider downcast")
+                    .into_inner();
+                config.min_value_label = self.normalize(config.min_value_label, env);
+                config.max_value_label = self.normalize(config.max_value_label, env);
+                return AnyView::new(Native::new(config));
+            }
+            if type_id == TypeId::of::<Native<ProgressConfig>>() {
+                let mut config = view
+                    .downcast::<Native<ProgressConfig>>()
+                    .expect("dew normalize progress downcast")
+                    .into_inner();
+                config.label = self.normalize(config.label, env);
+                config.value_label = self.normalize(config.value_label, env);
+                return AnyView::new(Native::new(config));
             }
             if self.dispatcher.supports(type_id) {
                 return view;
@@ -269,12 +321,13 @@ pub(crate) fn measure_view(
     }
     if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
         let styled = text.as_inner().content.get();
-        let plain = styled_to_plain(&styled);
-        let (width, height) = state.borrow_mut().measure_text(&plain, proposal.width);
+        let (width, height) = state
+            .borrow_mut()
+            .measure_styled(&styled, env, proposal.width);
         return ViewDimensions::new(Size::new(width, height));
     }
     if let Some(text) = view.downcast_ref::<Str>() {
-        let (width, height) = state.borrow_mut().measure_text(text, proposal.width);
+        let (width, height) = state.borrow_mut().measure_plain(text, proposal.width);
         return ViewDimensions::new(Size::new(width, height));
     }
     if view.downcast_ref::<Native<ResolvedColor>>().is_some() {
@@ -283,8 +336,31 @@ pub(crate) fn measure_view(
             proposal.height.unwrap_or(0.0),
         ));
     }
-    if view.downcast_ref::<Native<Spacer>>().is_some() {
+    if view.downcast_ref::<Native<Spacer>>().is_some()
+        || view.downcast_ref::<Native<()>>().is_some()
+    {
         return ViewDimensions::new(Size::new(0.0, 0.0));
+    }
+    if let Some(scroll) = view.downcast_ref::<Native<ScrollView>>() {
+        return views::scroll::measure(state, scroll.as_inner(), env, proposal);
+    }
+    if view.downcast_ref::<Divider>().is_some() {
+        return ViewDimensions::new(views::divider::measure());
+    }
+    if let Some(toggle) = view.downcast_ref::<Native<ToggleConfig>>() {
+        return ViewDimensions::new(views::toggle::measure(state, toggle.as_inner(), env));
+    }
+    if let Some(slider) = view.downcast_ref::<Native<SliderConfig>>() {
+        return ViewDimensions::new(views::slider::measure(state, slider.as_inner(), env));
+    }
+    if let Some(stepper) = view.downcast_ref::<Native<StepperConfig>>() {
+        return ViewDimensions::new(views::stepper::measure(state, stepper.as_inner(), env));
+    }
+    if let Some(field) = view.downcast_ref::<Native<ResolvedTextFieldConfig>>() {
+        return ViewDimensions::new(views::text_field::measure(state, field.as_inner(), env));
+    }
+    if let Some(progress) = view.downcast_ref::<Native<ProgressConfig>>() {
+        return ViewDimensions::new(views::progress::measure(state, progress.as_inner(), env));
     }
     panic!("dew cannot measure un-normalized view; normalize the tree before measuring");
 }
@@ -325,7 +401,14 @@ impl SubView for DewSubview<'_> {
 
 /// The stretch axis of a view, looking through environment-metadata
 /// wrappers (which would otherwise report no stretch).
+///
+/// [`Divider`] is special-cased to stretch along its parent stack's cross
+/// axis, mirroring hydrolysis: its `View` impl reports no stretch because
+/// the axis is only known from the surrounding container.
 fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
+    if view.downcast_ref::<Divider>().is_some() {
+        return StretchAxis::CrossAxis;
+    }
     view.downcast_ref::<Metadata<Environment>>().map_or_else(
         || view.stretch_axis(),
         |metadata| effective_stretch_axis(&metadata.content),
@@ -336,9 +419,11 @@ fn register_core_handlers(dispatcher: &mut DewDispatcher) {
     dispatcher.register::<Native<FixedContainer>>(render_container);
     dispatcher.register::<Native<ResolvedColor>>(render_resolved_color);
     dispatcher.register::<Native<Spacer>>(render_spacer);
+    dispatcher.register::<Native<()>>(render_unit);
     dispatcher.register::<Native<TextConfig>>(render_text_config);
     dispatcher.register::<Str>(render_str);
     dispatcher.register::<Metadata<Environment>>(render_environment_metadata);
+    views::register(dispatcher);
 }
 
 fn render_environment_metadata(
@@ -347,8 +432,7 @@ fn render_environment_metadata(
     metadata: Metadata<Environment>,
     _env: &Environment,
 ) {
-    let dispatcher = renderer.dispatcher.clone();
-    dispatcher.dispatch_boxed(renderer, metadata.content, &metadata.value, ctx);
+    renderer.dispatch_child(metadata.content, &metadata.value, ctx);
 }
 
 fn render_container(
@@ -368,9 +452,8 @@ fn render_container(
         let size = layout.size_that_fits(proposal, &refs);
         layout.place(LayoutRect::from_size(size), &refs)
     };
-    let dispatcher = renderer.dispatcher.clone();
     for (child, frame) in contents.into_iter().zip(frames) {
-        dispatcher.dispatch_boxed(renderer, child, env, ctx.child(frame));
+        renderer.dispatch_child(child, env, ctx.child(frame));
     }
 }
 
@@ -394,15 +477,30 @@ fn render_spacer(
 ) {
 }
 
+fn render_unit(
+    _renderer: &mut DewRenderer,
+    _ctx: RenderContext,
+    _view: Native<()>,
+    _env: &Environment,
+) {
+}
+
 fn render_text_config(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
     view: Native<TextConfig>,
-    _env: &Environment,
+    env: &Environment,
 ) {
     let config = view.into_inner();
     let styled = renderer.read_signal(&config.content);
-    render_plain_text(renderer, ctx, &styled_to_plain(&styled));
+    let layout = renderer.state.borrow_mut().build_styled_layout(
+        &styled,
+        env,
+        max_width_from_bounds(ctx.bounds),
+        theme::FOREGROUND,
+    );
+    let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
+    emit_text_commands(&mut renderer.list, &layout, transform);
 }
 
 #[expect(
@@ -410,14 +508,10 @@ fn render_text_config(
     reason = "dispatcher handlers receive views by value per the handler contract"
 )]
 fn render_str(renderer: &mut DewRenderer, ctx: RenderContext, text: Str, _env: &Environment) {
-    render_plain_text(renderer, ctx, text.as_str());
-}
-
-fn render_plain_text(renderer: &mut DewRenderer, ctx: RenderContext, text: &str) {
     let layout = renderer
         .state
         .borrow_mut()
-        .build_text_layout(text, max_width_from_bounds(ctx.bounds));
+        .build_plain_layout(&text, max_width_from_bounds(ctx.bounds));
     let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
     emit_text_commands(&mut renderer.list, &layout, transform);
 }

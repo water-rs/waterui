@@ -20,7 +20,7 @@ nami.workspace = true
 waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-url.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-graphics = { workspace = true, default-features = false }
 waterui-shape.workspace = true
 waterui-macros.workspace = true
 waterkit-dialog = { workspace = true, optional = true }

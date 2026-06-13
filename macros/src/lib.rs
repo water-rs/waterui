@@ -353,7 +353,14 @@ fn derive_project_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> Toke
     let projected_fields = fields.named.iter().map(|field| {
         let field_name = &field.ident;
         let field_type = &field.ty;
+        let doc = format!(
+            "Projected binding for the `{}` field.",
+            field_name
+                .as_ref()
+                .map_or_else(String::new, ToString::to_string)
+        );
         quote! {
+            #[doc = #doc]
             pub #field_name: ::waterui::reactive::Binding<#field_type>
         }
     });
