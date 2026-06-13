@@ -1,6 +1,7 @@
 use super::*;
 use std::borrow::Cow;
 
+mod perf_scroll;
 mod retained_scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
