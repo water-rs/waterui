@@ -145,9 +145,9 @@ fn chart_layers(mode: &Binding<ChartMode>) -> impl View {
     ))
 }
 
-/// Main View - demonstrates different chart types
+/// Demo view - demonstrates different chart types
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let mode = binding(ChartMode::default());
 
     zstack((
@@ -490,5 +490,5 @@ fn gauge_chart_preview() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

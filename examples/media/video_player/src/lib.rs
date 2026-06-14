@@ -1,10 +1,20 @@
-//! Video Player Example - Immersive video playback demo
+//! Video Player Example - Video playback with selectable sources.
 //!
 //! This example showcases:
-//! - VideoPlayer with native controls
-//! - Overlay for buffering indicator
-//! - Immersive full-screen layout
-//! - Reactive state management
+//! - `VideoPlayer` driven by a reactive `Url` source
+//! - Buffering / playback status surfaced from `video::Event`
+//! - Source switching via selector pills
+//!
+//! ## Native vs self-rendered (Rust fallback) playback
+//!
+//! By default the example uses the platform's native video player. Enable the
+//! `rust-fallback` feature to route playback through WaterUI's self-rendered
+//! pipeline (`GpuSurface` + `waterkit-codec`) and exercise the real HDR10 test
+//! sources:
+//!
+//! ```bash
+//! water run -p video-player-example --features rust-fallback
+//! ```
 
 use waterui::app::App;
 use waterui::color::Srgb;
@@ -12,121 +22,171 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 
-const SAMPLE_VIDEOS: [(&str, &str); 3] = [
-    (
-        "Big Buck Bunny 1MB",
-        "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4",
-    ),
-    (
-        "Big Buck Bunny 5MB",
-        "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_5MB.mp4",
-    ),
-    (
-        "Sintel",
-        "https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4",
-    ),
+/// A selectable video source.
+#[derive(Clone, Copy)]
+struct Sample {
+    /// Human-readable title shown in the selector and status bar.
+    title: &'static str,
+    /// Color/dynamic-range profile, surfaced so the fallback HDR path is observable.
+    profile: &'static str,
+    /// Direct media URL.
+    url: &'static str,
+}
+
+#[cfg(not(feature = "rust-fallback"))]
+const SAMPLES: &[Sample] = &[
+    Sample {
+        title: "Big Buck Bunny 1MB",
+        profile: "SDR / BT.709",
+        url: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4",
+    },
+    Sample {
+        title: "Big Buck Bunny 5MB",
+        profile: "SDR / BT.709",
+        url: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_5MB.mp4",
+    },
+    Sample {
+        title: "Sintel",
+        profile: "SDR / BT.709",
+        url: "https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4",
+    },
 ];
 
-fn main() -> impl View {
-    // Track which video is selected
-    let selected_index = Binding::usize(0);
+#[cfg(feature = "rust-fallback")]
+const SAMPLES: &[Sample] = &[
+    Sample {
+        title: "Big Buck Bunny (SDR)",
+        profile: "SDR / BT.709",
+        url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+    },
+    Sample {
+        title: "Sintel (SDR)",
+        profile: "SDR / BT.709",
+        url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
+    },
+    Sample {
+        title: "Jellyfin HDR10 1080p 3M",
+        profile: "HDR10 / BT.2020 + PQ",
+        url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%203M.mp4",
+    },
+    Sample {
+        title: "Jellyfin HDR10 1080p 10M",
+        profile: "HDR10 / BT.2020 + PQ",
+        url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%2010M.mp4",
+    },
+];
 
-    // Track buffering state
+/// Self-contained entry: builds the player, status, and source selector.
+pub fn demo() -> impl View {
+    let selected = Binding::usize(0);
+    let status: Binding<Str> = binding("Idle");
     let is_buffering = binding(false);
 
-    // Create reactive video URL
-    let video_url = selected_index.clone().map(move |idx| {
-        let (_, url_str) = SAMPLE_VIDEOS[idx];
-        Url::parse(url_str).expect("Invalid video URL")
-    });
+    let source = selected
+        .clone()
+        .map(|index| Url::parse(SAMPLES[index].url).expect("sample URL should be valid"));
 
-    // Buffering overlay
-    let buffering_overlay = vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
-        .spacing(12.0)
-        .background(Srgb::BLACK.with_opacity(0.8))
-        .visible(is_buffering.clone());
-
-    // Video player - immersive full screen with Fill aspect ratio
-    // VideoPlayer now takes a Url directly (not a Video data source)
-    let player = VideoPlayer::new(video_url)
+    let player = VideoPlayer::new(source)
         .show_controls(true)
-        .aspect_ratio(AspectRatio::Fill)
+        .aspect_ratio(AspectRatio::Fit)
         .on_event({
-            let selected_index = selected_index.clone();
+            let status = status.clone();
+            let is_buffering = is_buffering.clone();
+            let selected = selected.clone();
             move |event| match event {
-                video::Event::Buffering => is_buffering.set(true),
-                video::Event::BufferingEnded | video::Event::ReadyToPlay => is_buffering.set(false),
-                video::Event::PictureInPictureChanged { .. }
-                | video::Event::BufferLevel { .. }
-                | video::Event::PlaybackMetrics { .. } => {}
+                video::Event::ReadyToPlay => {
+                    is_buffering.set(false);
+                    status.set(Str::from_static("Ready"));
+                }
+                video::Event::Buffering => {
+                    is_buffering.set(true);
+                    status.set(Str::from_static("Buffering..."));
+                }
+                video::Event::BufferingEnded => {
+                    is_buffering.set(false);
+                    status.set(Str::from_static("Playing"));
+                }
+                video::Event::PictureInPictureChanged { active } => {
+                    status.set(if active {
+                        Str::from_static("Picture in Picture")
+                    } else {
+                        Str::from_static("Inline Playback")
+                    });
+                }
+                video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
                 video::Event::NextRequested => {
-                    selected_index.set((selected_index.get() + 1) % SAMPLE_VIDEOS.len());
+                    selected.set((selected.get() + 1) % SAMPLES.len());
                 }
                 video::Event::PreviousRequested => {
-                    selected_index.set(
-                        (selected_index.get() + SAMPLE_VIDEOS.len() - 1) % SAMPLE_VIDEOS.len(),
-                    );
+                    selected.set((selected.get() + SAMPLES.len() - 1) % SAMPLES.len());
                 }
-                video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
+                video::Event::Ended => {
+                    is_buffering.set(false);
+                    status.set(Str::from_static("Ended"));
+                }
+                video::Event::Error { message } => {
+                    is_buffering.set(false);
+                    status.set(format!("Error: {message}").into());
+                }
             }
         });
 
-    // Video with buffering overlay
-    let video_layer = overlay(player, buffering_overlay);
-    video_player_shell(video_layer, selected_index)
+    player_shell(player, selected, status, is_buffering)
 }
 
+/// Static preview frame — keeps `water preview` and Hydrolysis perf tests off the network.
 #[preview]
 fn video_player_preview() -> impl View {
-    let selected_index = Binding::usize(0);
-    let video_layer = zstack((
+    let selected = Binding::usize(0);
+    let status: Binding<Str> = binding("Preview ready");
+    let is_buffering = binding(false);
+    let frame = zstack((
         Srgb::BLACK,
         vstack((
             text("Video Preview").title().foreground(Srgb::WHITE),
-            text("Static preview frame for Hydrolysis perf")
+            text("Static preview frame")
                 .caption()
                 .foreground(Srgb::WHITE.with_opacity(0.8)),
         ))
         .spacing(12.0),
     ));
-    video_player_shell(video_layer, selected_index)
+    player_shell(frame, selected, status, is_buffering)
 }
 
-fn video_player_shell(video_layer: impl View, selected_index: Binding<usize>) -> impl View {
-    let title_signal = selected_index.clone().map(move |idx| SAMPLE_VIDEOS[idx].0);
+/// Shared layout: title, player with a buffering overlay, status line, and source pills.
+fn player_shell(
+    player: impl View,
+    selected: Binding<usize>,
+    status: Binding<Str>,
+    is_buffering: Binding<bool>,
+) -> impl View {
+    let title = selected.clone().map(|index| SAMPLES[index].title);
+    let profile = selected.clone().map(|index| SAMPLES[index].profile);
 
-    // Bottom controls overlay
-    let controls_overlay = vstack((
-        spacer(),
-        // Bottom panel
-        vstack((
-            // Current video title
-            text!("{title_signal}")
-                .title()
-                .bold()
-                .foreground(Srgb::WHITE),
-            spacer_min(20.0),
-            // Video selector pills
-            hstack((
-                pill_button("BBB 1MB", 0, &selected_index),
-                pill_button("BBB 5MB", 1, &selected_index),
-                pill_button("Sintel", 2, &selected_index),
-            ))
-            .spacing(12.0),
-        ))
-        .padding_with(EdgeInsets::new(60.0, 32.0, 32.0, 32.0))
-        .background(Srgb::BLACK.with_opacity(0.6)),
-    ));
+    let buffering_overlay = vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
+        .spacing(12.0)
+        .background(Srgb::BLACK.with_opacity(0.8))
+        .visible(is_buffering.clone());
 
-    // Stack everything
-    zstack((video_layer, controls_overlay)).ignore_safe_area(EdgeSet::ALL)
+    let pills = SAMPLES
+        .iter()
+        .enumerate()
+        .map(|(index, sample)| pill_button(sample.title, index, &selected))
+        .collect::<Vec<_>>();
+
+    vstack((
+        text("WaterUI Video Player").headline(),
+        text!("Now Playing: {title}").body(),
+        text!("Source Profile: {profile}").footnote(),
+        overlay(player, buffering_overlay).height(360.0),
+        text!("Status: {status}").footnote(),
+        hstack(pills).spacing(12.0),
+    ))
+    .spacing(12.0)
+    .padding()
 }
 
-pub fn app(env: Environment) -> App {
-    App::new(main, env)
-}
-
-/// Pill-style selection button
+/// Pill-style selection button reflecting the active source.
 fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> impl View {
     let is_selected = selected.clone().map(move |s| s == index);
     let selected_for_action = selected.clone();
@@ -138,7 +198,14 @@ fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> 
         Srgb::WHITE.with_opacity(0.35).opacity(selected_bg_opacity),
         button(label)
             .action(move |State(s): State<Binding<usize>>| s.set(index))
-            .state(&selected_for_action)
-            .foreground(Srgb::WHITE),
+            .state(&selected_for_action),
     ))
+}
+
+pub fn app(env: Environment) -> App {
+    #[cfg_attr(not(feature = "rust-fallback"), expect(unused_mut))]
+    let mut env = env;
+    #[cfg(feature = "rust-fallback")]
+    video::install_rust_player_hooks(&mut env);
+    App::new(demo, env)
 }

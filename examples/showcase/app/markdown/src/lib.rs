@@ -4,10 +4,10 @@ use waterui::prelude::*;
 use waterui::preview;
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     scroll(include_markdown!("example.md").padding())
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

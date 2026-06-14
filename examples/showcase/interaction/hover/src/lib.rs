@@ -186,7 +186,7 @@ fn interactive_buttons_section() -> impl View {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let hover_count = binding(0);
     let is_hovered = binding(false);
     let is_dragging = binding(false);
@@ -213,5 +213,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

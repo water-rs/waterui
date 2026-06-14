@@ -44,7 +44,7 @@ struct AppSettings {
     notifications_enabled: bool,
 }
 
-fn main(
+fn scene(
     settings: Binding<AppSettings>,
     registration: Binding<RegistrationForm>,
     custom_name: Binding<Str>,
@@ -158,7 +158,7 @@ pub fn app(mut env: Environment) -> App {
 
     App::new(
         move || {
-            main(
+            scene(
                 settings.clone(),
                 registration.clone(),
                 custom_name.clone(),
@@ -183,9 +183,11 @@ fn sample_card() -> impl View {
     .padding_with(EdgeInsets::all(16.0))
 }
 
+/// Self-contained entry: owns its own form bindings so it embeds anywhere
+/// (gallery) and previews without app-level theme installation.
 #[preview]
-fn form_preview() -> impl View {
-    main(
+pub fn demo() -> impl View {
+    scene(
         AppSettings::binding(),
         RegistrationForm::binding(),
         binding(""),

@@ -27,7 +27,7 @@ impl Identifiable for Contact {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let contacts = vec![
         Contact {
             id: 1,
@@ -84,5 +84,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

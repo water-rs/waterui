@@ -133,7 +133,7 @@ fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let tap_count = Binding::i32(0);
     let double_tap_count = Binding::i32(0);
     let long_press_count = Binding::i32(0);
@@ -165,5 +165,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

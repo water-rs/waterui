@@ -258,7 +258,7 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn main(toolbar_status: Binding<String>) -> impl View {
+fn scene(toolbar_status: Binding<String>) -> impl View {
     let menu_selected = Binding::container(String::from("None"));
     let styled_action = Binding::container(String::from("No action yet"));
     let context_action = Binding::container(String::from("No action yet"));
@@ -287,9 +287,11 @@ fn main(toolbar_status: Binding<String>) -> impl View {
     )
 }
 
+/// Self-contained entry: owns its own toolbar-status binding so it embeds
+/// anywhere (gallery) and previews without an App-level window toolbar.
 #[preview]
-fn menu_preview() -> impl View {
-    main(Binding::container(String::from("No toolbar action yet")))
+pub fn demo() -> impl View {
+    scene(Binding::container(String::from("No toolbar action yet")))
 }
 
 pub fn app(env: Environment) -> App {
@@ -300,7 +302,7 @@ pub fn app(env: Environment) -> App {
         [Window::new(
             "WaterUI Menu Examples",
             binding(waterui::window::WindowState::Normal),
-            move || main(content_toolbar_status.clone()),
+            move || scene(content_toolbar_status.clone()),
         )
         .toolbar(window_toolbar(&toolbar_status))],
         env,

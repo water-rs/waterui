@@ -152,6 +152,6 @@ if let Some(h) = handle.get() {
 
 ## Related Examples
 
-- `examples/navigation` - Navigation patterns
-- `examples/form` - Form components
-- `examples/background` - Background effects
+- `examples/showcase/components/navigation` - Navigation patterns
+- `examples/showcase/components/form` - Form components
+- `examples/showcase/interaction/hover` - Hover, cursor styles, and reactive backgrounds

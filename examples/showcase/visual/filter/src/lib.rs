@@ -291,7 +291,8 @@ fn combined_section(
     .padding()
 }
 
-fn main() -> impl View {
+/// Root view: interactive showcase of every filter section.
+pub fn demo() -> impl View {
     // State for individual filter sections (using f64 for Slider compatibility)
     let blur_radius = Binding::f64(0.0);
     let brightness = Binding::f64(0.0);
@@ -353,5 +354,5 @@ fn filter_preview() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

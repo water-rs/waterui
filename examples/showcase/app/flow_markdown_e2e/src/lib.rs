@@ -208,7 +208,7 @@ struct StreamControl {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let markdown: Binding<Str> = Binding::container(Str::from_static(""));
     let document_index = Binding::i32(0);
     let char_progress = Binding::i32(0);
@@ -411,5 +411,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

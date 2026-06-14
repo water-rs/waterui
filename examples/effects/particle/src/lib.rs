@@ -323,9 +323,9 @@ fn particle_button(mode: &Binding<i32>, label: &'static str, target: i32, width:
         .width(width)
 }
 
-/// Main View
+/// Demo View
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let mode = binding(0);
     let is_confetti = mode.clone().map(|m| m == 5);
 
@@ -364,5 +364,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

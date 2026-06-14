@@ -213,8 +213,10 @@ fn filter_pressure_preview() -> impl View {
     ))
 }
 
+/// High-pressure profiling workload. Counts are tunable via the
+/// `WATERUI_STRESS_*` environment variables.
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let system_count = env_usize("WATERUI_STRESS_SYSTEM_COUNT", 120).clamp(18, 1_440);
     let custom_count = env_usize("WATERUI_STRESS_CUSTOM_COUNT", 96).clamp(14, 1_120);
     let filter_count = env_usize("WATERUI_STRESS_FILTER_COUNT", 144).clamp(12, 1_200);
@@ -281,6 +283,7 @@ fn main() -> impl View {
     )
 }
 
+/// Standalone entry point for the stress example.
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

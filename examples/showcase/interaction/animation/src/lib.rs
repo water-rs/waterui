@@ -448,7 +448,7 @@ fn custom_gpu_animation_section() -> impl View {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     // State for transform sections
     let scale = Binding::f32(1.0);
     let rotation = Binding::f32(0.0);
@@ -507,7 +507,7 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }
 
 

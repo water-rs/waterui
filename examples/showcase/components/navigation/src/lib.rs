@@ -6,6 +6,7 @@ use waterui::navigation::{
 };
 use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -41,7 +42,8 @@ fn sample_topics() -> Vec<Topic> {
     ]
 }
 
-fn main_view() -> impl View {
+#[preview]
+pub fn demo() -> impl View {
     let counter = binding(0);
     let notifications = binding(true);
     let dark_mode = binding(false);
@@ -293,10 +295,5 @@ fn privacy_view() -> NavigationView {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main_view, env)
-}
-
-#[preview]
-fn navigation_preview() -> impl View {
-    main_view()
+    App::new(demo, env)
 }

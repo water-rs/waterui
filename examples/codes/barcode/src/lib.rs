@@ -2,7 +2,7 @@ use waterui::{Environment, app::App, prelude::*, preview};
 use waterui_barcode::Barcode;
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     vstack((
         text("Scan me!")
             .title()
@@ -15,5 +15,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

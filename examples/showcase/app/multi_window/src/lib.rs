@@ -15,7 +15,7 @@ use waterui::reactive::binding;
 use waterui::window::{Window, WindowState, WindowStyle, conditional_window};
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     // Reactive state to track window states. `WindowState::default()` is
     // `Closed`, so a fresh binding represents a window that has not yet been
     // shown.
@@ -244,5 +244,5 @@ fn material_item(name: &'static str, description: &'static str) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

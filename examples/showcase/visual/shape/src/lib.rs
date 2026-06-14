@@ -385,10 +385,9 @@ fn morph_demo() -> impl View {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let show_hdr = binding(true);
 
-    //panic!("Shape example app requires WaterUI runtime.");
     scroll(
         vstack((
             // Header
@@ -432,5 +431,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }
