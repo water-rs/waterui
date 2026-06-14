@@ -1,22 +1,23 @@
 //! WaterUI Gallery - a browsable catalog of every example in this repository.
 //!
-//! The gallery is a single navigable app. Its home screen groups examples by
-//! category; tapping a row pushes a detail screen. Examples that render fine in
-//! a shared window (static layouts and GPU-drawn effects) are embedded live via
-//! each crate's `demo()` entry. Examples that need dedicated hardware or
-//! window-level capabilities (camera, microphone, native WebView, additional OS
-//! windows, network video, native map, heavy profiling) are listed with a card
-//! explaining how to run them standalone.
+//! The gallery is a sidebar + detail split view ([`NavigationSplitView`]). The
+//! sidebar groups examples by category; selecting a row shows that example in
+//! the main detail area. The layout adapts to screen size automatically: on wide
+//! windows the sidebar and detail sit side by side, and on narrow windows it
+//! collapses to a single column with a back button (handled by the backend).
+//!
+//! Examples that render fine in a shared window (static layouts and GPU-drawn
+//! effects) are embedded live via each crate's `demo()` entry. Examples that need
+//! dedicated hardware or window-level capabilities (camera, microphone, native
+//! WebView, additional OS windows, network video, native map, heavy profiling)
+//! are shown with a card explaining how to run them standalone.
 
 use waterui::app::App;
-use waterui::navigation::{NavigationLink, NavigationPath, NavigationStack, NavigationView};
-use waterui::prelude::theme_color::{Accent, MutedForeground};
+use waterui::color::Srgb;
+use waterui::navigation::{NavigationSplitView, NavigationView};
+use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
-
-/// The route value pushed onto the navigation path: an index into [`examples`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Route(usize);
 
 /// Top-level grouping, mirroring the `examples/` directory taxonomy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,60 +324,85 @@ fn examples() -> Vec<Example> {
     ]
 }
 
-/// Home screen: a header followed by one section per category.
-fn home_content() -> impl View {
+/// Sidebar: a header followed by one selectable section per category.
+fn sidebar(selection: Binding<Option<usize>>) -> impl View {
     let all = examples();
     let sections = Category::ALL
         .iter()
-        .map(|&category| AnyView::new(category_section(&all, category)))
+        .map(|&category| AnyView::new(sidebar_section(&all, category, &selection)))
         .collect::<Vec<_>>();
 
     scroll(
         vstack((
             vstack((
-                text("WaterUI Gallery").title(),
-                text("Browse every example. Tap a row to open it.")
-                    .body()
+                text("WaterUI Gallery").headline().foreground(Foreground),
+                text("Pick an example to preview")
+                    .caption()
                     .foreground(MutedForeground),
-            )),
+            ))
+            .spacing(4.0)
+            .padding_with(EdgeInsets::all(12.0)),
             vstack(sections),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(EdgeInsets::symmetric(8.0, 8.0)),
     )
+    .width(300.0)
 }
 
-/// One category section: heading, divider, and its rows.
-fn category_section(all: &[Example], category: Category) -> impl View {
+/// One category section in the sidebar: heading plus its selectable rows.
+fn sidebar_section(
+    all: &[Example],
+    category: Category,
+    selection: &Binding<Option<usize>>,
+) -> impl View {
     let rows = all
         .iter()
         .enumerate()
         .filter(|(_, example)| example.category == category)
-        .map(|(index, example)| AnyView::new(example_row(index, example)))
+        .map(|(index, example)| AnyView::new(sidebar_row(index, example, selection)))
         .collect::<Vec<_>>();
 
     vstack((
-        spacer_min(20.0),
-        text(category.title()).sub_headline().foreground(Accent),
-        Divider,
+        text(category.title())
+            .caption()
+            .bold()
+            .foreground(Accent)
+            .padding_with(EdgeInsets::new(14.0, 8.0, 4.0, 8.0)),
         vstack(rows),
     ))
 }
 
-/// A single tappable row: title link plus a one-line summary.
-fn example_row(index: usize, example: &Example) -> impl View {
+/// A selectable sidebar row that drives the detail area and highlights when active.
+///
+/// Each row is a semantic [`Button`] so it exposes a proper accessibility role
+/// and click action; the active selection is shown as the button background.
+fn sidebar_row(index: usize, example: &Example, selection: &Binding<Option<usize>>) -> impl View {
     let icon = match example.demo {
         Demo::Embed(_) => ">",
         Demo::Standalone { .. } => "↗",
     };
+    let is_selected = selection.clone().map(move |current| current == Some(index));
+    let selected_bg: Color = SurfaceVariant.into();
+    let clear_bg: Color = Srgb::WHITE.with_opacity(0.0).into();
+    let background = is_selected.select(selected_bg, clear_bg).computed();
 
+    button(label(example.title).icon(text(icon)).trailing())
+        .action(move |State(sel): State<Binding<Option<usize>>>| sel.set(Some(index)))
+        .state(selection)
+        .background(background)
+        .padding_with(EdgeInsets::symmetric(2.0, 0.0))
+}
+
+/// Detail placeholder shown on wide layouts before anything is selected.
+fn placeholder() -> impl View {
     vstack((
-        NavigationLink::value(
-            label(example.title).icon(text(icon)).trailing(),
-            Route(index),
-        ),
-        text(example.summary).caption().foreground(MutedForeground),
+        text("WaterUI Gallery").title().foreground(Foreground),
+        text("Select an example from the sidebar to preview it here.")
+            .body()
+            .foreground(MutedForeground),
     ))
-    .padding_with(EdgeInsets::symmetric(8.0, 0.0))
+    .spacing(10.0)
+    .padding()
 }
 
 /// Builds the detail screen for the example at `index`.
@@ -411,39 +437,78 @@ fn standalone_card(summary: &'static str, package: &'static str, reason: &'stati
     )
 }
 
-/// Self-contained entry: the whole gallery as a navigation stack.
+/// Builds the responsive sidebar + detail split around a caller-owned selection.
+///
+/// The selection is passed in (not created here) so its owner controls its
+/// lifetime: the app owns it at the window scope so it survives content
+/// rebuilds and reliably drives the detail area.
+fn gallery(selection: Binding<Option<usize>>) -> impl View {
+    NavigationSplitView::new(
+        &selection,
+        {
+            let selection = selection.clone();
+            move || sidebar(selection.clone())
+        },
+        build_detail,
+    )
+    .sidebar_width(300.0)
+    .placeholder(placeholder)
+}
+
+/// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    NavigationStack::with(
-        NavigationPath::new(),
-        NavigationView::new("WaterUI Gallery", home_content()),
-    )
-    .destination(|Route(index)| build_detail(index))
+    gallery(Binding::container(None::<usize>))
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(demo, env)
+    // Own the selection at the window scope so it persists across rebuilds.
+    let selection = Binding::container(None::<usize>);
+    App::new(move || gallery(selection.clone()), env)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::demo;
+    use super::{build_detail, demo, placeholder, sidebar};
     use core::time::Duration;
+    use waterui::Binding;
     use waterui::env::Environment;
+    use waterui::navigation::NavigationSplitView;
     use waterui_testing::{SemanticApp, ui};
 
-    /// Mounts the gallery into the semantic test host with the Material 3 theme
-    /// installed (Hydrolysis widgets require a theme in the environment).
-    fn mount() -> SemanticApp {
+    /// Mounts the shipping [`demo`] entry at the given viewport.
+    fn mount_demo(width: u32, height: u32) -> SemanticApp {
         let mut env = Environment::new();
         hydrolysis_m3::install(&mut env);
-        ui().environment(env).viewport(390, 900).mount(demo)
+        ui().environment(env).viewport(width, height).mount(demo)
     }
 
-    /// The home screen lists the title, category headings, and example titles.
+    /// Mounts the split view with the selection owned at the window scope, as a
+    /// real app window owns its root state. Interaction tests use this so they
+    /// exercise the real `sidebar` / `build_detail` wiring without the test
+    /// driver's full-tree rebuild discarding builder-local state.
+    fn mount_split(selection: Binding<Option<usize>>, width: u32, height: u32) -> SemanticApp {
+        let mut env = Environment::new();
+        hydrolysis_m3::install(&mut env);
+        ui().environment(env).viewport(width, height).mount(move || {
+            let selection = selection.clone();
+            NavigationSplitView::new(
+                &selection,
+                {
+                    let selection = selection.clone();
+                    move || sidebar(selection.clone())
+                },
+                build_detail,
+            )
+            .sidebar_width(300.0)
+            .placeholder(placeholder)
+        })
+    }
+
+    /// The sidebar lists the title, every category heading, and example titles.
     #[test]
-    fn home_lists_catalog() {
-        let mut app = mount();
+    fn sidebar_lists_catalog() {
+        let mut app = mount_demo(390, 900);
         app.query().label("WaterUI Gallery").assert_exists();
         for category in ["Codes", "Components", "Interaction", "Visual", "Media"] {
             app.query().label(category).assert_exists();
@@ -453,36 +518,50 @@ mod tests {
         }
     }
 
-    /// Tapping an embeddable example opens its live demo in place.
+    /// On a wide viewport the sidebar and the detail area render together: the
+    /// responsive two-column layout with the placeholder before any selection.
+    #[test]
+    fn wide_layout_shows_sidebar_and_detail_area() {
+        let mut app = mount_demo(1000, 700);
+        app.query().label("Components").assert_exists();
+        app.query().label_contains("Select an example").assert_exists();
+    }
+
+    /// Selecting an embeddable example renders its live demo in the detail area
+    /// and replaces the placeholder, while the sidebar stays put.
     #[test]
     fn embedded_example_opens_live() {
-        let mut app = mount();
+        let mut app = mount_split(Binding::container(None), 1000, 700);
         assert!(
             app.query().label_contains("Hover & Cursor").tap(),
-            "row should be tappable"
+            "sidebar row should be tappable"
         );
         // "Cursor Styles" is a heading inside the embedded hover demo.
         assert!(
             app.query()
                 .label_contains("Cursor Styles")
                 .wait_for_existence(Duration::from_secs(3)),
-            "embedded hover demo should appear after navigation"
+            "embedded hover demo should render in the detail area"
         );
+        app.query()
+            .label_contains("Select an example")
+            .assert_not_exists();
+        app.query().label("Components").assert_exists();
     }
 
-    /// Tapping a standalone example shows the `water run` command instead.
+    /// Selecting a standalone example shows the `water run` instructions card.
     #[test]
     fn standalone_example_shows_run_command() {
-        let mut app = mount();
+        let mut app = mount_split(Binding::container(None), 1000, 700);
         assert!(
             app.query().label_contains("Video Player").tap(),
-            "row should be tappable"
+            "sidebar row should be tappable"
         );
         assert!(
             app.query()
                 .label_contains("water run -p video-player-example")
                 .wait_for_existence(Duration::from_secs(3)),
-            "standalone card should show the run command after navigation"
+            "standalone card should show the run command"
         );
     }
 }
