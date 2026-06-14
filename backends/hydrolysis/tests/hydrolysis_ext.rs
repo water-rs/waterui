@@ -56,8 +56,6 @@ impl GpuView for SolidClearRenderer {
     }
 }
 
-waterui_graphics::impl_gpu_subview!(SolidClearRenderer);
-
 #[derive(Debug)]
 struct CountingClearRenderer {
     color: wgpu::Color,
@@ -99,8 +97,6 @@ impl GpuView for CountingClearRenderer {
         frame.queue.submit([encoder.finish()]);
     }
 }
-
-waterui_graphics::impl_gpu_subview!(CountingClearRenderer);
 
 #[derive(Clone)]
 struct GpuSurfaceOpacityView;

@@ -25,7 +25,7 @@ waterui-shape.workspace = true
 waterui-video.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
-waterui-layout.workspace = true
+waterui-layout = { workspace = true, features = ["parallel"] }
 waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
