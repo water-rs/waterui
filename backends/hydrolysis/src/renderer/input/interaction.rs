@@ -98,7 +98,11 @@ impl InteractionEngine {
         motion: &InteractionMotion,
         animation_controller: &mut AnimationController,
         now: Instant,
-    ) -> (WidgetInteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
         let (press_slot, _) = self.press_controller.bind();
         let animation_key_base = press_slot
             .index
@@ -116,7 +120,9 @@ impl InteractionEngine {
         {
             prev.clear_press_state();
         }
-        let hovered = previous.as_ref().map_or(input.hovered, |prev| prev.hovering());
+        let hovered = previous
+            .as_ref()
+            .map_or(input.hovered, |prev| prev.hovering());
         let focus_visible = input.focus.is_some_and(|focus| focus.visible);
 
         let focus_alpha = animation_controller.bind_scalar_target(
@@ -136,7 +142,9 @@ impl InteractionEngine {
             state_layer_animation(hover_target, motion),
             now,
         );
-        let visual_pressed = previous.as_ref().is_some_and(|prev| prev.visually_pressed(now));
+        let visual_pressed = previous
+            .as_ref()
+            .is_some_and(|prev| prev.visually_pressed(now));
         let press_alpha = animation_controller.bind_scalar_target(
             AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_PRESS_OPACITY_KEY),
             if visual_pressed {

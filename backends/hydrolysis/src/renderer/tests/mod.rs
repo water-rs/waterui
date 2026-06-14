@@ -1491,11 +1491,7 @@ fn bare_str_direct_dispatch_renders_into_scene() {
 
     renderer.begin_rebuild_frame();
     renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
-    renderer.dispatch(
-        Str::from("probe"),
-        &env,
-        Rect::new(0.0, 0.0, 160.0, 160.0),
-    );
+    renderer.dispatch(Str::from("probe"), &env, Rect::new(0.0, 0.0, 160.0, 160.0));
     assert!(
         !renderer.scene_is_empty(),
         "directly dispatched string must draw glyphs"
@@ -1514,6 +1510,9 @@ fn render_path_text_layout_has_lines() {
         &env,
         Some(160.0),
     );
-    assert!(!layout.is_empty(), "render-path text layout must not be empty");
+    assert!(
+        !layout.is_empty(),
+        "render-path text layout must not be empty"
+    );
     assert!(layout.lines().next().is_some(), "layout must have lines");
 }

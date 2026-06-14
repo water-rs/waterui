@@ -415,13 +415,14 @@ impl HydrolysisRenderer {
             self, ctx, local_ctx, env, content,
         );
         self.flush_static_segment();
-        self.draw_ops.push(DynamicDrawOp::Transform(DynamicTransformDraw {
-            transform,
-            base_transform: ctx.transform,
-            base_hit_transform: ctx.hit_transform,
-            bounds: ctx.bounds,
-            subtree,
-        }));
+        self.draw_ops
+            .push(DynamicDrawOp::Transform(DynamicTransformDraw {
+                transform,
+                base_transform: ctx.transform,
+                base_hit_transform: ctx.hit_transform,
+                bounds: ctx.bounds,
+                subtree,
+            }));
     }
 
     pub(super) fn capture_dynamic_opacity(
@@ -436,14 +437,15 @@ impl HydrolysisRenderer {
             self, ctx, local_ctx, env, content,
         );
         self.flush_static_segment();
-        self.draw_ops.push(DynamicDrawOp::Opacity(DynamicOpacityDraw {
-            alpha,
-            base_transform: ctx.transform,
-            base_hit_transform: ctx.hit_transform,
-            bounds: ctx.bounds,
-            subtree,
-            paint_only: false,
-        }));
+        self.draw_ops
+            .push(DynamicDrawOp::Opacity(DynamicOpacityDraw {
+                alpha,
+                base_transform: ctx.transform,
+                base_hit_transform: ctx.hit_transform,
+                bounds: ctx.bounds,
+                subtree,
+                paint_only: false,
+            }));
     }
 
     pub(crate) fn sample_morph_progress(
@@ -977,8 +979,11 @@ impl HydrolysisRenderer {
         let content_hit_transform = hit_transform * scroll_content_transform;
         let content_bounds =
             vello::kurbo::Rect::new(0.0, 0.0, draw.content_width, draw.content_height);
-        let content_ctx =
-            RenderContext::with_transforms(content_bounds, content_transform, content_hit_transform);
+        let content_ctx = RenderContext::with_transforms(
+            content_bounds,
+            content_transform,
+            content_hit_transform,
+        );
         if let Some(cache) = self.scroll_content_caches.remove(&draw.cache_key) {
             self.replay_dynamic_subtree(content_ctx, &cache.subtree);
             self.scroll_content_caches.insert(draw.cache_key, cache);
