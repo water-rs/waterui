@@ -149,8 +149,7 @@ fn normalize_layout_view_with_budget(
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
             .expect("layout normalization failed to downcast Metadata<Environment>");
-        let normalized_content =
-            normalize_layout_view_with_budget(content, &value, next_remaining);
+        let normalized_content = normalize_layout_view_with_budget(content, &value, next_remaining);
         return AnyView::new(Metadata {
             content: normalized_content,
             value,
@@ -255,8 +254,7 @@ fn normalize_layout_view_with_budget(
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
         let (axis, content) = native.into_inner().into_inner();
-        let normalized_content =
-            normalize_layout_view_with_budget(content, env, next_remaining);
+        let normalized_content = normalize_layout_view_with_budget(content, env, next_remaining);
         return AnyView::new(Native::new(ScrollView::new(axis, normalized_content)));
     }
 

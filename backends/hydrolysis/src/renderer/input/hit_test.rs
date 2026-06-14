@@ -819,7 +819,11 @@ impl HydrolysisRenderer {
         &mut self,
         bounds: vello::kurbo::Rect,
         env: &Environment,
-    ) -> (WidgetInteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
         self.bind_interaction_target_with_focus(bounds, env, None)
     }
 
@@ -828,7 +832,11 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         env: &Environment,
         focused: bool,
-    ) -> (WidgetInteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
         self.bind_interaction_target_with_focus(
             bounds,
             env,
@@ -841,7 +849,11 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         env: &Environment,
         focus: Option<InteractionFocus>,
-    ) -> (WidgetInteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
         let (hover_slot, hovered) = self.hit_test.interaction.bind_hover();
         let motion = widget_theme(env).interaction_motion();
         let now = self.frame_instant();
