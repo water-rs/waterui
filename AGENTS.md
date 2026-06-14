@@ -196,8 +196,25 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 
 - **`apple/`** - Git submodule, Apple backend (Swift Package)
 - **`android/`** - Git submodule, Android Views + JNI (Gradle project)
-- **`hydrolysis/`** - Self-drawn renderer (Vello/tiny-skia) - experimental
+- **`hydrolysis/`** - Self-drawn GPU renderer (Vello on `wgpu`) - experimental. The high-end / game-engine renderer (see "Rendering backend philosophy" below)
+- **`dew/`** - Self-drawn CPU renderer (`vello_cpu` sparse-strip) - experimental. The embedded / constrained-device renderer (see "Rendering backend philosophy" below)
 - **`tui/`** - Terminal UI backend - WIP
+
+#### Rendering backend philosophy: Hydrolysis vs Dew (self-drawn renderers)
+
+WaterUI ships two self-drawn (non-native) renderers at deliberately opposite design points. They share `waterui-core`, reactivity, layout, and text, and diverge **only** in their render/flush strategy. Do not converge them, and do not port one's strategy onto the other — the divergence is the point. When touching either renderer, keep the change consistent with its half of this contract; a change that makes Hydrolysis frugal or Dew heavyweight is wrong by design.
+
+**Hydrolysis — the game-engine renderer (high-end, future-facing).**
+- GPU-first and GPU-required: rendering goes through Vello on `wgpu` with compute-shader support mandatory; there is no CPU rasterization path (`use_cpu: false`). Never add a CPU fallback, and never read GPU targets back to CPU.
+- Full-scene redraw every frame, like a game engine. There is intentionally **no** dirty-rectangle / partial-region / damage tracking, and there must not be. Do not add "redraw only on change", region invalidation, or frame-skipping throttles — they contradict the design.
+- Targets high-end modern devices and high frame rates (120fps and above). High-refresh must be requested **explicitly** per platform (opt into ProMotion / high-refresh display links), not left to incidental vsync. Do not introduce a hard frame cap.
+- Designed to exploit modern hardware fully: modern GPU compute **and** multi-core CPU. Parallel scene building / rasterization across cores is part of the intended design; single-threaded execution is a gap to close, not the target. Do not assume or hard-wire single-threaded rendering.
+
+**Dew — the embedded renderer (constrained, resource-frugal).**
+- CPU-first; GPU is optional. The default and common path is pure-CPU rasterization (`vello_cpu` sparse-strip). It must run on MCU-class microcontrollers with no GPU and no full-resolution framebuffer.
+- Dirty-area rendering is the core architecture, not an optional optimization: only changed regions are re-rasterized, sliced into horizontal bands, so peak pixel memory is one band — never a full frame. Do not introduce full-frame redraw into Dew.
+- Modest, power-frugal frame rates: 30/60fps (the runtime ticks at ~16ms). Do not target 120fps here.
+- Lean, feature-gated dependency graph: firmware builds strip `gpu`/`widgets`/`gestures` and other heavy deps (`default-features = false`). Dew is `std`-based via its embedded RTOS, not bare-metal `no_std`. Do not pull GPU / `wgpu` / heavyweight crates into Dew's firmware graph.
 
 ### CLI (`cli/`)
 
