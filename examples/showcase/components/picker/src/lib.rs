@@ -78,7 +78,7 @@ fn decorated_dates() -> BTreeSet<Date> {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let automatic_selection = binding(Fruit::Apple);
     let menu_selection = binding(Fruit::Banana);
     let radio_selection = binding(Fruit::Cherry);
@@ -277,5 +277,5 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

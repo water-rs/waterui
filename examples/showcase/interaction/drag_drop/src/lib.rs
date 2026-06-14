@@ -111,7 +111,7 @@ fn fruit_basket(
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     let is_hovering = Binding::bool(false);
     let collected: Binding<Vec<String>> = Binding::container(Vec::new());
     let bounce = Binding::f32(1.0);
@@ -157,5 +157,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

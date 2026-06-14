@@ -107,7 +107,7 @@ fn all_demos() -> impl View {
 }
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     scroll(
         vstack((
             text("WaterUI Icon Packs").size(28.0),
@@ -120,5 +120,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

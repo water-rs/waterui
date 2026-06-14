@@ -11,7 +11,7 @@ use waterui::prelude::*;
 use waterui::preview;
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     vstack((
         text("Starfield Animation")
             .size(24)
@@ -29,5 +29,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }
