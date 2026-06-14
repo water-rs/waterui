@@ -239,6 +239,14 @@ impl Drop for WuiSubView {
     }
 }
 
+// SAFETY: `WuiSubView` is a C-ABI handle whose `context` pointer and vtable function
+// pointers are only ever invoked by the platform backend on its main/UI thread. The
+// `SubView` impl reports `require_main_thread() == true`, so the layout executor never
+// measures it on a worker. It must remain `#[repr(C)]`, so it cannot embed a
+// `MainThreadBound` runtime guard; the native main-thread contract is the invariant.
+unsafe impl Send for WuiSubView {}
+unsafe impl Sync for WuiSubView {}
+
 impl SubView for WuiSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let result = unsafe { (self.vtable.measure)(self.context, proposal.into_ffi()) };
@@ -251,6 +259,10 @@ impl SubView for WuiSubView {
 
     fn priority(&self) -> i32 {
         self.priority
+    }
+
+    fn require_main_thread(&self) -> bool {
+        true
     }
 }
 

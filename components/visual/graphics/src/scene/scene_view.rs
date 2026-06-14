@@ -4,7 +4,7 @@ use core::any::TypeId;
 use core::fmt;
 
 use waterui_core::layout::StretchAxis;
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, MainThreadBound, Native, NativeView, View};
 
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::scene2d::Scene2D;
@@ -94,9 +94,14 @@ impl View for SceneView {
 }
 
 struct SceneSurfaceRenderer {
-    content: Box<dyn SceneContent>,
+    // `SceneContent` is `!Send` (it carries an `Rc` invalidator). `measure` never
+    // touches it (it returns a fixed size), so confining it keeps the renderer
+    // `Send + Sync` for the `SubView` bound while setup/render stay on the main thread.
+    content: MainThreadBound<Box<dyn SceneContent>>,
     scene: vello::Scene,
-    renderer: Option<vello::Renderer>,
+    // `vello::Renderer` holds a `RefCell` (it is `!Sync`); it is created in setup and
+    // only used in render (both on the main render thread), never in `measure`.
+    renderer: Option<MainThreadBound<vello::Renderer>>,
     intermediate_texture: Option<wgpu::Texture>,
     intermediate_view: Option<wgpu::TextureView>,
     blit_pipeline: Option<wgpu::RenderPipeline>,
@@ -108,7 +113,7 @@ struct SceneSurfaceRenderer {
 impl SceneSurfaceRenderer {
     fn new(content: Box<dyn SceneContent>) -> Self {
         Self {
-            content,
+            content: MainThreadBound::new(content),
             scene: vello::Scene::new(),
             renderer: None,
             intermediate_texture: None,
@@ -131,7 +136,7 @@ impl GpuView for SceneSurfaceRenderer {
         self.content
             .set_invalidator(Some(Rc::new(move || redraw_handle.request_redraw())));
 
-        self.renderer = Some(
+        self.renderer = Some(MainThreadBound::new(
             vello::Renderer::new(
                 ctx.device,
                 vello::RendererOptions {
@@ -142,7 +147,7 @@ impl GpuView for SceneSurfaceRenderer {
                 },
             )
             .expect("failed to create SceneView vello renderer"),
-        );
+        ));
 
         let shader = ctx
             .device
@@ -344,5 +349,3 @@ impl GpuView for SceneSurfaceRenderer {
         }
     }
 }
-
-crate::impl_gpu_subview!(SceneSurfaceRenderer);

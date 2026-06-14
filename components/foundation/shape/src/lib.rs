@@ -31,10 +31,10 @@ use num_traits::ToPrimitive;
 use std::time::Instant;
 
 use nami::{Computed, Signal, signal::IntoComputed};
-use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
+use waterui_core::{Environment, MainThreadBound, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, impl_gpu_subview};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};
 
 #[cfg(feature = "gpu")]
 const MORPH_SHADER_LABEL: &str = "shaders/morph.wgsl";
@@ -919,7 +919,9 @@ struct MorphShapeRenderer {
     to: MorphSdfShape,
     fill_color: waterui_graphics::ResolvedColor,
     animation: MorphAnimation,
-    progress: Option<Computed<f32>>,
+    // `Computed` is `!Send`; only the render path reads it (on the main thread),
+    // never `measure`, so confine it to keep the renderer `Send + Sync`.
+    progress: Option<MainThreadBound<Computed<f32>>>,
     start_time: Instant,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
@@ -951,7 +953,7 @@ impl MorphShapeRenderer {
             to,
             fill_color,
             animation,
-            progress,
+            progress: progress.map(MainThreadBound::new),
             start_time: Instant::now(),
             pipeline: None,
             uniform_buffer: None,
@@ -1150,8 +1152,6 @@ impl GpuView for MorphShapeRenderer {
 }
 
 #[cfg(feature = "gpu")]
-impl_gpu_subview!(MorphShapeRenderer);
-
 #[cfg(feature = "gpu")]
 fn u32_to_f32(value: u32) -> f32 {
     value

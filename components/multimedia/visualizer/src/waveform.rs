@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use waterui_core::{
     Binding, IntoSignal, IntoSignalF32, Signal, binding, env::Environment, view::View,
 };
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, impl_gpu_subview};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, color::Color};
 
 /// Resolved configuration for GPU rendering.
 #[derive(Debug, Clone, Copy)]
@@ -404,8 +404,6 @@ impl GpuView for WaveformRenderer {
         frame.request_redraw();
     }
 }
-
-impl_gpu_subview!(WaveformRenderer);
 
 /// Convenience constructor for [`Waveform`] from an [`AudioCapture`].
 #[must_use]

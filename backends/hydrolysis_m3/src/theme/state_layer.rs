@@ -392,7 +392,6 @@ mod tests {
         }
     }
 
-    waterui_graphics::impl_gpu_subview!(RippleVisualRenderer);
 
     fn skip_without_gpu(
         result: Result<OffscreenRenderOutput, OffscreenRenderError>,

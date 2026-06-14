@@ -6,6 +6,7 @@
 extern crate alloc;
 
 use core::fmt;
+use waterui_core::MainThreadBound;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_graphics::{GpuContext, GpuFrame, GpuView};
 
@@ -68,7 +69,9 @@ impl SvgSceneData {
 /// A GPU renderer for SVG content using Vello.
 pub struct VelloSvgRenderer {
     scene_data: SvgSceneData,
-    renderer: Option<vello::Renderer>,
+    // `vello::Renderer` is `!Sync` (holds a `RefCell`); created in setup and used in
+    // render (main render thread), never in `measure`, so confine it.
+    renderer: Option<MainThreadBound<vello::Renderer>>,
     texture: Option<wgpu::Texture>,
     bind_group: Option<wgpu::BindGroup>,
     blit_pipeline: Option<wgpu::RenderPipeline>,
@@ -204,7 +207,7 @@ impl GpuView for VelloSvgRenderer {
         ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        self.renderer = Some(
+        self.renderer = Some(MainThreadBound::new(
             vello::Renderer::new(
                 ctx.device,
                 vello::RendererOptions {
@@ -215,7 +218,7 @@ impl GpuView for VelloSvgRenderer {
                 },
             )
             .expect("failed to create Vello renderer"),
-        );
+        ));
 
         self.sampler = Some(ctx.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("vello_svg_sampler"),

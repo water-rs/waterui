@@ -408,9 +408,6 @@ impl GpuView for AnimatedMeshRenderer {
         }
     }
 }
-
-crate::impl_gpu_subview!(AnimatedMeshRenderer);
-
 /// GPU-animated mesh gradient view.
 pub struct AnimatedMeshGradient {
     inner: GpuSurface,

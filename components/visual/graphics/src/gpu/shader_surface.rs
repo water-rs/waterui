@@ -481,5 +481,3 @@ impl GpuView for ShaderRenderer {
         frame.request_redraw();
     }
 }
-
-crate::impl_gpu_subview!(ShaderRenderer);

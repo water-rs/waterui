@@ -20,15 +20,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
-use waterui_core::{Environment, Native, NativeView, View};
+use waterui_core::{Environment, MainThreadBound, Native, NativeView, View};
 
 use crate::shared_context::SharedContextError;
-
-#[doc(hidden)]
-pub use waterui_core::layout::{
-    ProposalSize as __GpuProposalSize, Size as __GpuSize, StretchAxis as __GpuStretchAxis,
-    SubView as __GpuSubView, ViewDimensions as __GpuViewDimensions,
-};
 
 /// Internal boxed future for object-safe GPU setup dispatch.
 #[doc(hidden)]
@@ -456,7 +450,7 @@ impl<'a> GpuFrame<'a> {
 ///     }
 /// }
 /// ```
-pub trait GpuView: SubView + 'static {
+pub trait GpuView: 'static {
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, buffers, bind groups, and other
@@ -487,34 +481,29 @@ pub trait GpuView: SubView + 'static {
     fn preferred_surface_hdr(&self) -> Option<bool> {
         None
     }
-}
 
-/// Implements `SubView` for a `GpuView` type using its layout defaults/overrides.
-///
-/// Use this macro at each concrete `impl GpuView for ...` site.
-#[macro_export]
-macro_rules! impl_gpu_subview {
-    ($ty:ty) => {
-        impl $crate::gpu_surface::__GpuSubView for $ty {
-            fn measure(
-                &self,
-                proposal: $crate::gpu_surface::__GpuProposalSize,
-            ) -> $crate::gpu_surface::__GpuViewDimensions {
-                $crate::gpu_surface::__GpuViewDimensions::new($crate::gpu_surface::__GpuSize::new(
-                    proposal.width.unwrap_or(0.0),
-                    proposal.height.unwrap_or(0.0),
-                ))
-            }
+    /// Measure the view for a layout proposal.
+    ///
+    /// GPU views default to filling the proposed size (stretch). Override for
+    /// content-sized rendering (e.g. images respecting an aspect ratio).
+    /// This is layout-only and must not touch GPU/render state, so it runs as a
+    /// pure measurement; `GpuSurface` confines the view to the main thread anyway.
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        ))
+    }
 
-            fn stretch_axis(&self) -> $crate::gpu_surface::__GpuStretchAxis {
-                $crate::gpu_surface::__GpuStretchAxis::Both
-            }
+    /// Which axis (or axes) this view stretches to fill. Defaults to both.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
 
-            fn priority(&self) -> i32 {
-                0
-            }
-        }
-    };
+    /// Layout priority for space distribution. Defaults to `0`.
+    fn priority(&self) -> i32 {
+        0
+    }
 }
 
 /// Strongly-typed non-zero dimensions for offscreen rendering.
@@ -875,7 +864,6 @@ trait GpuViewImpl: 'static {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
     fn stretch_axis(&self) -> StretchAxis;
     fn priority(&self) -> i32;
-    fn require_main_thread(&self) -> bool;
     fn preferred_surface_hdr(&self) -> Option<bool>;
 }
 
@@ -893,19 +881,15 @@ impl<T: GpuView> GpuViewImpl for T {
     }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        SubView::measure(self, proposal)
+        GpuView::measure(self, proposal)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        SubView::stretch_axis(self)
+        GpuView::stretch_axis(self)
     }
 
     fn priority(&self) -> i32 {
-        SubView::priority(self)
-    }
-
-    fn require_main_thread(&self) -> bool {
-        SubView::require_main_thread(self)
+        GpuView::priority(self)
     }
 
     fn preferred_surface_hdr(&self) -> Option<bool> {
@@ -942,7 +926,10 @@ impl<T: GpuView> GpuViewImpl for T {
 /// ```
 pub struct GpuSurface {
     /// The GPU view that handles rendering (type-erased).
-    renderer: Box<dyn GpuViewImpl>,
+    // The GPU view is `!Send` (it owns wgpu/render state and may capture reactive
+    // signals). `measure` is the only `SubView` method touched during layout, so the
+    // surface confines the view to the main thread and reports `require_main_thread`.
+    renderer: MainThreadBound<Box<dyn GpuViewImpl>>,
     /// Preferred maximum MSAA sample count for this surface.
     ///
     /// Backends use this as the cap when selecting a supported sample count.
@@ -993,7 +980,7 @@ impl GpuSurface {
     #[must_use]
     pub fn new<R: GpuView>(view: R) -> Self {
         Self {
-            renderer: Box::new(view),
+            renderer: MainThreadBound::new(Box::new(view)),
             msaa_max_samples: Self::default_msaa_max_samples(),
             surface_prefers_hdr: None,
             picture_in_picture_host_id: None,
@@ -1345,9 +1332,12 @@ impl GpuSurface {
     }
 
     /// Returns whether layout measurement requires the main thread.
+    ///
+    /// Always `true`: measuring the surface dereferences the main-thread-confined
+    /// GPU view, so the layout executor must keep it on the main thread.
     #[must_use]
-    pub fn require_main_thread(&self) -> bool {
-        self.renderer.require_main_thread()
+    pub const fn require_main_thread(&self) -> bool {
+        true
     }
 }
 
@@ -1947,8 +1937,6 @@ mod tests {
                     .push((frame.elapsed(), frame.delta()));
             }
         }
-
-        crate::impl_gpu_subview!(FrameProbe);
 
         let records = Rc::new(RefCell::new(Vec::new()));
         let size = OffscreenSize::try_from_pixels(4, 4).expect("probe size must be valid");

@@ -82,44 +82,41 @@ impl<T> MainThreadBound<T> {
         );
     }
 
-    /// Access the inner value, asserting the caller is on the owning thread.
+    /// Consume the wrapper and return the inner value, asserting the caller is on
+    /// the owning thread.
     ///
     /// # Panics
     ///
     /// Panics if called from a thread other than the one that constructed the value.
     #[inline]
     #[must_use]
-    pub fn get(&self) -> &T {
+    pub fn into_inner(self) -> T {
         self.assert_owner();
-        &self.value
-    }
-
-    /// Mutably access the inner value, asserting the caller is on the owning thread.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called from a thread other than the one that constructed the value.
-    #[inline]
-    #[must_use]
-    pub fn get_mut(&mut self) -> &mut T {
-        self.assert_owner();
-        &mut self.value
+        let mut me = ManuallyDrop::new(self);
+        // SAFETY: `me`'s Drop is suppressed by ManuallyDrop and `me` is never used
+        // again, so taking the inner value exactly once is sound.
+        unsafe { ManuallyDrop::take(&mut me.value) }
     }
 }
 
+// Access is exposed only through `Deref`/`DerefMut` (not inherent `get`/`get_mut`)
+// so the wrapped type's own methods — `Signal::get`, `RefCell::get`, etc. — remain
+// reachable transparently via auto-deref. Both directions assert main-thread access.
 impl<T> Deref for MainThreadBound<T> {
     type Target = T;
 
     #[inline]
     fn deref(&self) -> &T {
-        self.get()
+        self.assert_owner();
+        &self.value
     }
 }
 
 impl<T> core::ops::DerefMut for MainThreadBound<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut T {
-        self.get_mut()
+        self.assert_owner();
+        &mut self.value
     }
 }
 
@@ -142,9 +139,10 @@ impl<T> Drop for MainThreadBound<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for MainThreadBound<T> {
+impl<T> fmt::Debug for MainThreadBound<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Do not assert here: keep `Debug` usable from any thread for diagnostics.
+        // Do not access the value here: keep `Debug` usable from any thread for
+        // diagnostics, and avoid requiring `T: Debug` on wrapping structs.
         f.debug_struct("MainThreadBound").finish_non_exhaustive()
     }
 }
@@ -157,7 +155,8 @@ mod tests {
     #[test]
     fn access_on_owner_thread_succeeds() {
         let bound = MainThreadBound::new(Rc::new(7u32));
-        assert_eq!(**bound.get(), 7);
+        assert_eq!(**bound, 7);
+        assert_eq!(*bound.into_inner(), 7);
     }
 
     #[test]
@@ -174,7 +173,7 @@ mod tests {
         let bound = MainThreadBound::new(Rc::new(1u32));
         let handle = std::thread::spawn(move || {
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = bound.get();
+                let _ = &*bound;
             }));
             // Leak the wrapper on this non-owning thread so its `Rc` is not dropped
             // here; `MainThreadBound`'s Drop would leak it anyway, but be explicit.

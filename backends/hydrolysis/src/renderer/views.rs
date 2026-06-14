@@ -117,6 +117,13 @@ impl HydrolysisRenderer {
         let bounds = LayoutRect::from_size(LayoutSize::new(width, height));
         let child_rects = layout.place(bounds, &refs);
 
+        // Release the measurement borrows (subviews hold the renderer state via
+        // `MainThreadBound`, which carries drop glue) before re-borrowing `renderer`
+        // mutably to dispatch children. Dropping `subviews` lets NLL end the
+        // `state -> renderer` borrow; `refs` is already dead after `place`.
+        drop(refs);
+        drop(subviews);
+
         for ((index, child), rect) in resolved_children.into_iter().enumerate().zip(child_rects) {
             let child_transform =
                 vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
@@ -304,6 +311,10 @@ impl HydrolysisRenderer {
                     vello::kurbo::Rect::new(cursor, y, cursor + child_width, y + child_height)
                 }
             };
+            // Release the measurement borrow (the subview holds renderer state via
+            // `MainThreadBound` drop glue) before re-borrowing `renderer` and moving
+            // `child`. Dropping `subview` lets NLL end the `state -> renderer` borrow.
+            drop(subview);
             let extent = match axis_config {
                 LazyStackAxisConfig::Vertical { .. } => child_rect.height(),
                 LazyStackAxisConfig::Horizontal { .. } => child_rect.width(),

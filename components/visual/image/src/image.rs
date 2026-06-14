@@ -19,7 +19,7 @@ use core::fmt;
 use num_traits::ToPrimitive;
 
 use crate::codec::{self, DecodedRgba};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, View};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
@@ -501,6 +501,18 @@ impl ImageRenderer {
 }
 
 impl GpuView for ImageRenderer {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let intrinsic = Size::new(u32_to_f32(self.width), u32_to_f32(self.height));
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(intrinsic.width),
+            proposal.height.unwrap_or(intrinsic.height),
+        ))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
     fn setup(
         &mut self,
         ctx: &GpuContext<'_>,
@@ -667,24 +679,6 @@ impl GpuView for ImageRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
-    }
-}
-
-impl SubView for ImageRenderer {
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let intrinsic = Size::new(u32_to_f32(self.width), u32_to_f32(self.height));
-        ViewDimensions::new(Size::new(
-            proposal.width.unwrap_or(intrinsic.width),
-            proposal.height.unwrap_or(intrinsic.height),
-        ))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::None
-    }
-
-    fn priority(&self) -> i32 {
-        0
     }
 }
 
