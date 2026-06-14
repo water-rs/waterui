@@ -9,7 +9,10 @@ pub(super) const DEFAULT_RENDER_DIAG_SLOW_FRAME_MS: u64 = 16;
 pub(super) struct RenderDiagnosticsConfig {
     pub(super) enabled: bool,
     pub(super) interval: Duration,
-    pub(super) slow_frame_threshold: Duration,
+    /// Explicit slow-frame threshold from the env var, when the operator sets one.
+    /// `None` means "derive from the display refresh rate" (one frame budget), with the
+    /// 16ms constant used only as the no-monitor fallback.
+    pub(super) slow_frame_threshold_override: Option<Duration>,
 }
 
 impl RenderDiagnosticsConfig {
@@ -20,16 +23,19 @@ impl RenderDiagnosticsConfig {
             "WATERUI_HYDROLYSIS_RENDER_DIAG_INTERVAL_MS",
             DEFAULT_RENDER_DIAG_INTERVAL_MS,
         );
-        let slow_frame_ms = parse_positive_u64_env(
-            "hydrolysis runner",
-            "WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS",
-            DEFAULT_RENDER_DIAG_SLOW_FRAME_MS,
-        );
+        let slow_frame_threshold_override =
+            std::env::var_os("WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS").map(|_| {
+                Duration::from_millis(parse_positive_u64_env(
+                    "hydrolysis runner",
+                    "WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS",
+                    DEFAULT_RENDER_DIAG_SLOW_FRAME_MS,
+                ))
+            });
 
         Self {
             enabled,
             interval: Duration::from_millis(interval_ms),
-            slow_frame_threshold: Duration::from_millis(slow_frame_ms),
+            slow_frame_threshold_override,
         }
     }
 }
@@ -71,6 +77,9 @@ pub(super) struct RenderPhaseTotals {
 
 pub(super) struct RenderDiagnostics {
     pub(super) config: RenderDiagnosticsConfig,
+    /// Effective slow-frame threshold: the env override if set, otherwise derived from
+    /// the display refresh rate via [`Self::set_refresh_rate`] (16ms until known).
+    slow_frame_threshold: Duration,
     pub(super) report_started_at: Instant,
     pub(super) totals: RenderPhaseTotals,
 }
@@ -78,6 +87,9 @@ pub(super) struct RenderDiagnostics {
 impl RenderDiagnostics {
     pub(super) fn new(config: RenderDiagnosticsConfig) -> Self {
         Self {
+            slow_frame_threshold: config
+                .slow_frame_threshold_override
+                .unwrap_or_else(|| Duration::from_millis(DEFAULT_RENDER_DIAG_SLOW_FRAME_MS)),
             config,
             report_started_at: Instant::now(),
             totals: RenderPhaseTotals::default(),
@@ -86,6 +98,17 @@ impl RenderDiagnostics {
 
     pub(super) fn enabled(&self) -> bool {
         self.config.enabled
+    }
+
+    /// Derive the slow-frame threshold from the display refresh rate (one frame budget),
+    /// unless the operator pinned an explicit threshold via the env var.
+    pub(super) fn set_refresh_rate(&mut self, refresh_hz: f64) {
+        if self.config.slow_frame_threshold_override.is_some() {
+            return;
+        }
+        if refresh_hz > 0.0 {
+            self.slow_frame_threshold = Duration::from_secs_f64(1.0 / refresh_hz);
+        }
     }
 
     pub(super) fn record_frame(&mut self, window_title: &str, sample: RenderPhaseSample) {
@@ -127,7 +150,7 @@ impl RenderDiagnostics {
             Duration::from_micros(sample.applied_filter_capture_us);
         self.totals.applied_filter_effect += Duration::from_micros(sample.applied_filter_effect_us);
 
-        if sample.total >= self.config.slow_frame_threshold {
+        if sample.total >= self.slow_frame_threshold {
             self.totals.slow_frames = self
                 .totals
                 .slow_frames
@@ -207,7 +230,7 @@ impl RenderDiagnostics {
             avg_applied_filter_capture_ms,
             avg_applied_filter_effect_ms,
             slow_frames = self.totals.slow_frames,
-            slow_frame_threshold_ms = duration_ms(self.config.slow_frame_threshold),
+            slow_frame_threshold_ms = duration_ms(self.slow_frame_threshold),
             "Hydrolysis render diagnostics"
         );
 
