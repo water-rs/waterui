@@ -116,6 +116,13 @@ impl<T> Deref for MainThreadBound<T> {
     }
 }
 
+impl<T> core::ops::DerefMut for MainThreadBound<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
 impl<T> Drop for MainThreadBound<T> {
     fn drop(&mut self) {
         if self.is_owner_thread() {
