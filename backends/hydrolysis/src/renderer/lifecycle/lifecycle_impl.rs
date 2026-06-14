@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(crate) struct LifecycleState {
     pub(crate) disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     pub(crate) disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
@@ -484,5 +483,4 @@ impl HydrolysisRenderer {
         }
         Self::dispatch_any(renderer, ctx, env, content);
     }
-
 }

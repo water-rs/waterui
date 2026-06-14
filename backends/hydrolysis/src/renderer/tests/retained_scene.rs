@@ -23,12 +23,12 @@ use waterui_core::{AnyView, Environment};
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, vstack, zstack};
 
+use nami::collection::List;
 use waterui::graphics::Color;
 use waterui_core::dynamic::watch;
 use waterui_core::views::ForEach;
 use waterui_layout::AbsoluteLayout;
 use waterui_layout::container::LazyContainer;
-use nami::collection::List;
 
 use super::MinimalTestTheme;
 use crate::HeadlessRuntime;

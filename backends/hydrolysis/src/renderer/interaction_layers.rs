@@ -148,7 +148,6 @@ impl InteractionLayerHandles {
         true
     }
 
-
     /// Starts a press at a window-space origin: the ripple snaps back to its
     /// origin scale and grows, while the press layer fades in. The origin is
     /// stored in window space and mapped to the ripple's local frame at replay.
@@ -223,7 +222,6 @@ impl InteractionLayerHandles {
             now.duration_since(pressed_at) < self.motion.minimum_press_duration
         })
     }
-
 }
 
 /// The press ripple's replayable kinematics: the fragment is painted at full
@@ -292,9 +290,7 @@ impl HydrolysisRenderer {
         core::mem::swap(&mut self.scene, &mut fragment_scene);
         // A state-layer fragment is pure paint: its whole content is one static
         // segment, which the wrapping opacity/transform draw modulates at replay.
-        subtree
-            .draw_ops
-            .push(DynamicDrawOp::Static(fragment_scene));
+        subtree.draw_ops.push(DynamicDrawOp::Static(fragment_scene));
         subtree
     }
 
