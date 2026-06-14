@@ -230,7 +230,8 @@ fn filter_reminders(rows: Vec<ReminderRow>, normalized_query: Option<&str>) -> V
     }
 }
 
-fn main_view() -> impl View {
+#[preview]
+pub fn demo() -> impl View {
     let selection = Binding::container(Some(SidebarDestination::Today));
     let search = Binding::container(Str::default());
 
@@ -416,10 +417,5 @@ fn reminder_section(
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main_view, env)
-}
-
-#[preview]
-fn reminders_preview() -> impl View {
-    main_view()
+    App::new(demo, env)
 }

@@ -126,7 +126,7 @@ fn handle_webview_event(
     }
 }
 
-fn main(webview: WebView) -> impl View {
+fn scene(webview: WebView) -> impl View {
     let address: Binding<Str> = binding("https://waterui.dev");
     let status: Binding<Str> = binding("Idle");
     let progress_value = Binding::f64(0.0);
@@ -302,16 +302,28 @@ fn missing_controller_view() -> impl View {
     .padding()
 }
 
+/// Self-contained, environment-aware entry. Resolves the [`WebViewController`]
+/// from the environment at body time: opens a live WebView when a native
+/// controller is installed, otherwise renders the unavailable placeholder. This
+/// lets the example embed anywhere (gallery, `water preview`) without an
+/// app-level controller hand-off.
+#[derive(Debug)]
+struct WebViewDemo;
+
+impl View for WebViewDemo {
+    fn body(self, env: &Environment) -> impl View {
+        match env.get::<WebViewController>().cloned() {
+            Some(controller) => AnyView::new(scene(controller.open())),
+            None => AnyView::new(missing_controller_view()),
+        }
+    }
+}
+
 #[preview]
-fn webview_unavailable_preview() -> impl View {
-    missing_controller_view()
+pub fn demo() -> impl View {
+    WebViewDemo
 }
 
 pub fn app(env: Environment) -> App {
-    let Some(controller) = env.get::<WebViewController>().cloned() else {
-        return App::new(missing_controller_view, env);
-    };
-    let webview = controller.open();
-
-    App::new(move || main(webview.clone()), env)
+    App::new(demo, env)
 }

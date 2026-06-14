@@ -181,7 +181,7 @@ fn formatted_content(locale: Locale) -> impl View {
     vstack((date_section(locale), Divider, unit_section(locale_for_unit)))
 }
 
-fn main(system_locale: Locale) -> impl View {
+fn scene(system_locale: Locale) -> impl View {
     // Determine initial locale code from system locale
     let initial_code: &'static str = match system_locale.language.as_str() {
         "en" => match system_locale.region.as_ref().map(|r| r.as_str()) {
@@ -234,9 +234,11 @@ fn main(system_locale: Locale) -> impl View {
     })
 }
 
+/// Self-contained entry: starts from US English and lets the picker drive the
+/// runtime locale. Used for embedding (gallery) and `water preview`.
 #[preview]
-fn locale_preview() -> impl View {
-    main(locales::EN_US.clone())
+pub fn demo() -> impl View {
+    scene(locales::EN_US.clone())
 }
 
 pub fn app(env: Environment) -> App {
@@ -245,5 +247,5 @@ pub fn app(env: Environment) -> App {
         .cloned()
         .unwrap_or_else(|| locales::EN.clone());
 
-    App::new(move || main(system_locale.clone()), env)
+    App::new(move || scene(system_locale.clone()), env)
 }

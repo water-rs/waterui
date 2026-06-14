@@ -1,0 +1,48 @@
+[package]
+name = "gallery-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Browsable catalog of every WaterUI example"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "gallery"]
+categories = ["gui"]
+publish = false
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui.workspace = true
+
+# Embeddable examples — the gallery renders each one's `demo()` live.
+barcode-example = { path = "../../../codes/barcode" }
+chart-example = { path = "../../../data/chart" }
+particle-example = { path = "../../../effects/particle" }
+star-field-example = { path = "../../../effects/starfield" }
+markdown-example = { path = "../markdown" }
+locale-example = { path = "../locale" }
+reminders-example = { path = "../reminders" }
+flow-markdown-e2e-example = { path = "../flow_markdown_e2e" }
+list-example = { path = "../../components/list" }
+menu-example = { path = "../../components/menu" }
+navigation-example = { path = "../../components/navigation" }
+picker-example = { path = "../../components/picker" }
+snackbar-example = { path = "../../components/snackbar" }
+form-example = { path = "../../components/form" }
+animation-example = { path = "../../interaction/animation" }
+drag-drop-example = { path = "../../interaction/drag_drop" }
+gesture-example = { path = "../../interaction/gesture" }
+hover-example = { path = "../../interaction/hover" }
+filter-example = { path = "../../visual/filter" }
+flame-example = { path = "../../visual/flame" }
+gradient-example = { path = "../../visual/gradient" }
+icons-example = { path = "../../visual/icons" }
+image-example = { path = "../../visual/image" }
+shape-example = { path = "../../visual/shape" }
+
+[dev-dependencies]
+waterui-testing.workspace = true
+hydrolysis-m3.workspace = true

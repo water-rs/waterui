@@ -30,7 +30,7 @@ enum DisplayState {
 impl_constant!(DisplayState);
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     // Single state binding for cleaner reactivity
     let display_state: Binding<DisplayState> = binding(DisplayState::Empty);
     let image_selection: Binding<Option<Selected>> = Binding::default();
@@ -73,7 +73,7 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }
 
 /// Creates a picker button that opens the media picker with the given filter

@@ -8,7 +8,7 @@ use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 use waterui_icons_material_icon as mdi;
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     scroll(
         vstack((
             text("Snackbar Demo").title().bold(),
@@ -64,5 +64,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

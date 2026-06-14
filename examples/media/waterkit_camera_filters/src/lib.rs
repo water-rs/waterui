@@ -60,7 +60,8 @@ impl CameraLabState {
     }
 }
 
-fn main() -> impl View {
+/// Root view: live camera filter lab.
+pub fn demo() -> impl View {
     let state = CameraLabState::live();
     let preview = camera_surface(
         state.active_filter.clone(),
@@ -730,5 +731,5 @@ fn filter_name(index: usize) -> &'static str {
 const CAMERA_FILTER_SHADER: &str = include_str!("camera_filter.wgsl");
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

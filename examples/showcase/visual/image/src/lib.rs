@@ -173,7 +173,8 @@ fn image_preview() -> impl View {
     )
 }
 
-fn main() -> impl View {
+/// Root view: GPU image-processing showcase.
+pub fn demo() -> impl View {
     scroll(
         vstack((
             // Header
@@ -196,5 +197,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

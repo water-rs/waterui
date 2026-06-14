@@ -6,7 +6,7 @@ use waterui::prelude::*;
 use waterui::preview;
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     vstack((
         text("Cinematic HDR Flame (GpuSurface)")
             .size(24)
@@ -24,7 +24,7 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }
 
 const FILM_WGSL: &str = include_str!("shaders/film.wgsl");

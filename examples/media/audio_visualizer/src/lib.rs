@@ -18,7 +18,7 @@ use waterui::reactive::binding;
 use waterui_visualizer::{AudioCapture, Waveform, WaveformTheme};
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     // State for theme (directly as Binding<WaveformTheme>)
     let theme = binding(WaveformTheme::cyber());
 
@@ -102,5 +102,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }
