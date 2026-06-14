@@ -2367,6 +2367,53 @@ pub mod preview {
         .await
     }
 
+    /// Resolves the on-disk directory of a `waterui` workspace member crate from
+    /// the workspace's own cargo metadata.
+    ///
+    /// The preview-support scaffold depends on internal `waterui` crates by path.
+    /// Those paths must track the real crate location inside the workspace rather
+    /// than a hardcoded relative path, which silently breaks when a crate moves
+    /// (e.g. `waterui-preview` relocating from `components/preview` to
+    /// `components/devtools/preview/runtime`): a stale path makes the scaffold's
+    /// `cargo metadata` fail and aborts the whole preview build.
+    async fn resolve_workspace_member_dir(
+        workspace_root: &Path,
+        package_name: &str,
+    ) -> io::Result<std::path::PathBuf> {
+        let manifest = workspace_root.join("Cargo.toml");
+        let metadata = smol::unblock(move || {
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(&manifest)
+                .no_deps()
+                .exec()
+        })
+        .await
+        .map_err(io::Error::other)?;
+        let member = metadata
+            .packages
+            .iter()
+            .find(|package| package.name == package_name)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "`{package_name}` is not a member of the waterui workspace at {}",
+                        workspace_root.display()
+                    ),
+                )
+            })?;
+        member
+            .manifest_path
+            .as_std_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "failed to derive crate directory for `{package_name}`"
+                ))
+            })
+    }
+
     /// Generate preview app Cargo.toml programmatically.
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         use std::collections::BTreeMap;
@@ -2388,7 +2435,10 @@ pub mod preview {
             let ffi_path = waterui_path.join("ffi");
             dependencies.insert("waterui-ffi".to_string(), dependency_path(&ffi_path));
 
-            let preview_path = waterui_path.join("components").join("preview");
+            // Resolve `waterui-preview` from the workspace metadata so the path
+            // tracks the crate if it is moved within the workspace.
+            let preview_path =
+                resolve_workspace_member_dir(waterui_path, "waterui-preview").await?;
             dependencies.insert(
                 "waterui-preview".to_string(),
                 dependency_path(&preview_path),
