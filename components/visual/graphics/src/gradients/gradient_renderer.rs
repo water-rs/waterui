@@ -20,7 +20,7 @@ use crate::color::ResolvedColor;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::include_shader;
 use encase::{ShaderSize, StorageBuffer, UniformBuffer};
-use waterui_core::{AnyView, Signal, View};
+use waterui_core::{AnyView, MainThreadBound, Signal, View};
 
 static MESH_GRADIENT_SHADER: crate::prewarm::PrewarmedShader =
     include_shader!("shaders/mesh_gradient.wgsl");
@@ -844,9 +844,6 @@ impl GpuView for StaticMeshRenderer {
         draw_mesh(frame, resources, "Static Mesh Gradient");
     }
 }
-
-crate::impl_gpu_subview!(StaticMeshRenderer);
-
 /// A mesh gradient that accepts reactive Signal parameters for animation.
 pub struct MeshGradient<C> {
     width: u32,
@@ -888,10 +885,13 @@ impl<C> MeshGradient<C> {
 struct ReactiveMeshRenderer<C> {
     width: u32,
     height: u32,
-    colors: C,
+    // `colors` (a nami signal) and the watcher guard are `!Send`. `measure` never
+    // touches them (it returns a fixed size), so confining them keeps the renderer
+    // `Send + Sync` for the `SubView` bound while setup/render stay on the main thread.
+    colors: MainThreadBound<C>,
     smooths_colors: bool,
     pending_update: Arc<AtomicBool>,
-    watcher_guard: Option<Box<dyn Any>>,
+    watcher_guard: Option<MainThreadBound<Box<dyn Any>>>,
     resources: Option<MeshGpuResources>,
     last_colors: Option<Vec<ResolvedColor>>,
 }
@@ -901,7 +901,7 @@ impl<C> ReactiveMeshRenderer<C> {
         Self {
             width,
             height,
-            colors,
+            colors: MainThreadBound::new(colors),
             smooths_colors,
             pending_update: Arc::new(AtomicBool::new(false)),
             watcher_guard: None,
@@ -928,7 +928,7 @@ where
                 pending_update.store(true, Ordering::Release);
                 redraw_handle.request_redraw();
             });
-            self.watcher_guard = Some(Box::new(guard));
+            self.watcher_guard = Some(MainThreadBound::new(Box::new(guard)));
         }
 
         self.resources = Some(create_mesh_resources(ctx, "Reactive Mesh Gradient"));

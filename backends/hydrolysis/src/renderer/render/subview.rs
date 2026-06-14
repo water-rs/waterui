@@ -1,13 +1,21 @@
 use super::*;
 use std::cell::RefCell;
+use waterui_core::MainThreadBound;
 
-#[derive(Debug, Clone)]
+/// Layout proxy that measures a child view through the hydrolysis renderer.
+///
+/// Measurement borrows the renderer's `HydroState` and a `!Send` `Environment` and
+/// recurses into arbitrary (possibly reactive) child bodies, so the subview is
+/// confined to the main thread — it reports `require_main_thread() == true`, and the
+/// `MainThreadBound` assertions are the fail-fast safety net if the layout executor
+/// ever schedules it on a worker.
+#[derive(Debug)]
 pub(crate) struct HydroSubview<'a> {
-    view: &'a AnyView,
-    state: &'a RefCell<&'a mut HydroState>,
-    env: Environment,
+    view: MainThreadBound<&'a AnyView>,
+    state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
+    env: MainThreadBound<Environment>,
     stretch_axis: StretchAxis,
-    measure_cache: RefCell<Vec<(ProposalSize, ViewDimensions)>>,
+    measure_cache: MainThreadBound<RefCell<Vec<(ProposalSize, ViewDimensions)>>>,
 }
 
 impl<'a> HydroSubview<'a> {
@@ -17,16 +25,16 @@ impl<'a> HydroSubview<'a> {
         env: &'a Environment,
     ) -> Self {
         Self {
-            view,
-            state,
-            env: env.clone(),
+            view: MainThreadBound::new(view),
+            state: MainThreadBound::new(state),
+            env: MainThreadBound::new(env.clone()),
             stretch_axis: effective_stretch_axis(view),
-            measure_cache: RefCell::new(Vec::new()),
+            measure_cache: MainThreadBound::new(RefCell::new(Vec::new())),
         }
     }
 
-    pub(crate) const fn view(&self) -> &'a AnyView {
-        self.view
+    pub(crate) fn view(&self) -> &'a AnyView {
+        *self.view
     }
 }
 
@@ -43,7 +51,7 @@ impl SubView for HydroSubview<'_> {
 
         let mut state = self.state.borrow_mut();
         let mut dimensions =
-            measure_view_dimensions_with_proposal(self.view, proposal, &mut state, &self.env);
+            measure_view_dimensions_with_proposal(*self.view, proposal, &mut state, &self.env);
 
         if self.stretch_axis.stretches_horizontal()
             && let Some(width) = proposal.width
@@ -71,6 +79,10 @@ impl SubView for HydroSubview<'_> {
 
     fn priority(&self) -> i32 {
         0
+    }
+
+    fn require_main_thread(&self) -> bool {
+        true
     }
 }
 

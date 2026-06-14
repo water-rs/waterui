@@ -9,7 +9,6 @@ use crate::{BarcodeSource, view::BarcodeFill};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuView,
     color::{Color, ResolvedColor, Srgb},
-    impl_gpu_subview,
 };
 
 /// Uniforms consumed by `qr_render.wgsl`.
@@ -379,5 +378,3 @@ impl GpuView for BarcodeRenderer {
         frame.queue.submit([encoder.finish()]);
     }
 }
-
-impl_gpu_subview!(BarcodeRenderer);
