@@ -13,7 +13,6 @@ use std::mem::offset_of;
 use waterui_graphics::{
     color::ResolvedColor,
     gpu_surface::{GpuContext, GpuFrame, GpuView},
-    impl_gpu_subview,
 };
 
 /// Resolved particle configuration ready for GPU.
@@ -720,7 +719,6 @@ impl GpuView for ParticleRenderer {
     }
 }
 
-impl_gpu_subview!(ParticleRenderer);
 
 fn f32_to_u32_ceil(value: f32) -> u32 {
     value
@@ -921,7 +919,6 @@ mod tests {
             }
         }
 
-        waterui_graphics::impl_gpu_subview!(PrefilledParticleRenderer);
 
         let renderer = PrefilledParticleRenderer {
             inner: ParticleRenderer::new(ResolvedParticleConfig {

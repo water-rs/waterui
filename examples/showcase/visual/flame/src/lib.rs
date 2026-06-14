@@ -2,7 +2,6 @@ use std::time::Instant;
 
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
-use waterui::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -821,22 +820,5 @@ impl GpuView for FlameRenderer {
 
         frame.queue.submit(std::iter::once(encoder.finish()));
         frame.request_redraw();
-    }
-}
-
-impl SubView for FlameRenderer {
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(Size::new(
-            proposal.width.unwrap_or(0.0),
-            proposal.height.unwrap_or(0.0),
-        ))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-
-    fn priority(&self) -> i32 {
-        0
     }
 }

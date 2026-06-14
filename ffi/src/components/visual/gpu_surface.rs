@@ -1419,11 +1419,9 @@ mod tests {
     use super::*;
     use crate::IntoFFI;
     use waterui_core::Environment;
-    use waterui_graphics::{GpuView, impl_gpu_subview};
+    use waterui_graphics::GpuView;
 
     struct DummyGpuRenderer;
-
-    impl_gpu_subview!(DummyGpuRenderer);
 
     impl GpuView for DummyGpuRenderer {
         async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}

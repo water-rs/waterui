@@ -33,7 +33,7 @@ use waterui_controls::toggle::ToggleConfig;
 use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
-use waterui_core::{AnyView, Environment, Metadata, Native, Str, View};
+use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Str, View};
 use waterui_graphics::color::ResolvedColor;
 use waterui_layout::Divider;
 use waterui_layout::container::FixedContainer;
@@ -371,18 +371,22 @@ pub(crate) fn measure_view(
 /// A measurable child handed to a [`waterui_core::layout::Layout`]
 /// implementation.
 struct DewSubview<'a> {
-    view: &'a AnyView,
-    state: &'a RefCell<DewState>,
-    env: Environment,
+    // Measurement borrows the `!Send` dew render state and `Environment` and recurses
+    // into child bodies, so the subview is confined to the main thread
+    // (`require_main_thread() == true`); the `MainThreadBound` assertions catch a
+    // worker-thread misschedule.
+    view: MainThreadBound<&'a AnyView>,
+    state: MainThreadBound<&'a RefCell<DewState>>,
+    env: MainThreadBound<Environment>,
     stretch: StretchAxis,
 }
 
 impl<'a> DewSubview<'a> {
     fn new(view: &'a AnyView, state: &'a RefCell<DewState>, env: &Environment) -> Self {
         Self {
-            view,
-            state,
-            env: env.clone(),
+            view: MainThreadBound::new(view),
+            state: MainThreadBound::new(state),
+            env: MainThreadBound::new(env.clone()),
             stretch: effective_stretch_axis(view),
         }
     }
@@ -390,7 +394,7 @@ impl<'a> DewSubview<'a> {
 
 impl SubView for DewSubview<'_> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure_view(self.state, self.view, &self.env, proposal)
+        measure_view(*self.state, *self.view, &self.env, proposal)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -399,6 +403,10 @@ impl SubView for DewSubview<'_> {
 
     fn priority(&self) -> i32 {
         0
+    }
+
+    fn require_main_thread(&self) -> bool {
+        true
     }
 }
 

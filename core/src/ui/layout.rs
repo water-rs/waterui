@@ -562,17 +562,16 @@ const fn last_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
 /// [`require_main_thread`](Self::require_main_thread)), a `SubView`'s cache must be
 /// **thread-safe** (a lock or lock-free structure), not a `RefCell`.
 ///
-/// # Thread-safety
+/// # Thread-safety: `Send + Sync`
 ///
-/// Layout measurement is designed to run in parallel across worker threads, so a
-/// `SubView` should be `Send + Sync`. Most measures (text, media, shapes, fixed
-/// sizes) are pure over thread-safe inputs and parallelize directly. An
-/// implementation whose measurement genuinely must touch main-thread-only state
-/// should confine that state in [`MainThreadBound`](crate::MainThreadBound) (to
-/// satisfy `Send + Sync`) and return `true` from
-/// [`require_main_thread`](Self::require_main_thread) so the executor keeps it on
-/// the main thread.
-pub trait SubView {
+/// `SubView` requires `Send + Sync` so layout containers can measure independent
+/// children in parallel. Most measures (text, media, shapes, fixed sizes) are pure
+/// over thread-safe inputs and parallelize directly. An implementation whose
+/// measurement genuinely must touch main-thread-only state should confine that
+/// state in [`MainThreadBound`](crate::MainThreadBound) (to satisfy `Send + Sync`)
+/// and return `true` from [`require_main_thread`](Self::require_main_thread) so the
+/// executor keeps it on the main thread.
+pub trait SubView: Send + Sync {
     /// Measure the child for a given proposal.
     ///
     /// This method may be called multiple times with different proposals

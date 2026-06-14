@@ -33,7 +33,7 @@ use waterui_controls::{button, slider::slider};
 use waterui_core::{
     AnyView, Binding, Environment, SignalExt as _, State, View, binding,
     env::With,
-    layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
+    layout::{ProposalSize, Size, StretchAxis, ViewDimensions},
 };
 use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, RedrawHandle};
 use waterui_layout::{
@@ -3658,9 +3658,7 @@ impl GpuView for VideoRenderer {
             frame.request_redraw();
         }
     }
-}
 
-impl SubView for VideoRenderer {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         if self.aspect_ratio != AspectRatio::Fit {
             return ViewDimensions::new(Size::new(
@@ -3699,10 +3697,6 @@ impl SubView for VideoRenderer {
             AspectRatio::Fit => StretchAxis::Horizontal,
             AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
         }
-    }
-
-    fn priority(&self) -> i32 {
-        0
     }
 }
 

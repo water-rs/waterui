@@ -12,7 +12,6 @@ use waterkit_camera::Camera;
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
-use waterui::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui::prelude::slider::slider;
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;
@@ -253,23 +252,6 @@ impl GpuView for SyntheticCameraPreviewRenderer {
             });
         }
         frame.queue.submit([encoder.finish()]);
-    }
-}
-
-impl SubView for SyntheticCameraPreviewRenderer {
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(Size::new(
-            proposal.width.unwrap_or(0.0),
-            proposal.height.unwrap_or(0.0),
-        ))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-
-    fn priority(&self) -> i32 {
-        0
     }
 }
 
@@ -587,23 +569,6 @@ impl GpuView for CameraFilterRenderer {
 
         frame.queue.submit([encoder.finish()]);
         frame.request_redraw();
-    }
-}
-
-impl SubView for CameraFilterRenderer {
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(Size::new(
-            proposal.width.unwrap_or(0.0),
-            proposal.height.unwrap_or(0.0),
-        ))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-
-    fn priority(&self) -> i32 {
-        0
     }
 }
 
