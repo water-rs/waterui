@@ -72,6 +72,14 @@ pub struct Window {
     /// Use this to create transparent or frosted glass windows.
     /// Notice that it may not be supported on all platforms.
     pub background: WindowBackground,
+    /// Whether the window continuously re-renders every display refresh while
+    /// visible (game-engine mode) instead of rendering only when state changes.
+    ///
+    /// Enables sustained high-refresh output (e.g. 120fps) for animation-heavy or
+    /// game-like content, paced to the monitor's refresh rate. Costs power, so it
+    /// defaults to `false`. Honored by self-drawn renderers (hydrolysis); native
+    /// backends drive their own display link.
+    pub continuous_render: bool,
 }
 
 /// The state of a window.
@@ -217,6 +225,7 @@ impl Window {
             toolbar: None,
             style: WindowStyle::default(),
             background: WindowBackground::default(),
+            continuous_render: false,
         }
     }
 
@@ -243,6 +252,19 @@ impl Window {
     #[must_use]
     pub const fn style(mut self, style: WindowStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Enable continuous (game-engine) rendering.
+    ///
+    /// When enabled, a self-drawn renderer re-renders the window every display
+    /// refresh while it is visible, paced to the monitor's refresh rate, instead of
+    /// rendering only when reactive state changes. Use for animation-heavy or
+    /// game-like content that wants sustained high-refresh output (e.g. 120fps).
+    /// Costs power, so it defaults to `false`.
+    #[must_use]
+    pub const fn continuous_render(mut self, continuous: bool) -> Self {
+        self.continuous_render = continuous;
         self
     }
 

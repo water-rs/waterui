@@ -111,6 +111,9 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
     pub(super) mode: FrameMode,
     pub(super) pointer_position: Option<(f32, f32)>,
     pub(super) render_diagnostics: RenderDiagnostics,
+    /// Last display refresh rate (Hz) observed from the platform, used to detect changes
+    /// and re-derive the diagnostics frame budget. `None` until first observed.
+    pub(super) refresh_rate_hz: Option<f64>,
 }
 
 impl<P: PlatformWindow> RuntimeWindow<P> {
@@ -130,6 +133,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             },
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
+            refresh_rate_hz: None,
         }
     }
 
@@ -972,12 +976,32 @@ where
     should_close
 }
 
+/// Whether the window opted into game-engine continuous rendering and is currently
+/// visible. Minimized/closed windows are excluded so a backgrounded continuous window
+/// does not keep driving the GPU.
+fn window_wants_continuous_render(window: &Window) -> bool {
+    window.continuous_render
+        && !matches!(
+            window.state.get(),
+            waterui::window::WindowState::Minimized | waterui::window::WindowState::Closed
+        )
+}
+
 pub(super) fn advance_runtime<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
     now: Instant,
 ) -> Option<Instant> {
     runtime.renderer.set_frame_instant(now);
+    // Track the display refresh rate so the diagnostics slow-frame threshold reflects the
+    // real frame budget (e.g. 8.33ms on a 120Hz panel) instead of a hardcoded 60fps.
+    let refresh_rate = runtime.platform.refresh_rate_hz();
+    if refresh_rate != runtime.refresh_rate_hz {
+        runtime.refresh_rate_hz = refresh_rate;
+        if let Some(hz) = refresh_rate {
+            runtime.render_diagnostics.set_refresh_rate(hz);
+        }
+    }
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
@@ -1006,6 +1030,13 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     }
     if runtime.renderer.window_dynamic_morphs_active() && !runtime.mode.is_rebuild() {
         // Keep advancing active morph animations (root or scroll content) by replaying.
+        runtime.request_window_refresh();
+        runtime.platform.request_redraw();
+    }
+    if window_wants_continuous_render(&runtime.window) && !runtime.mode.is_rebuild() {
+        // Game-engine mode: keep presenting every display refresh while the window is
+        // visible. The redraw is delivered through the AutoVsync-gated present, so this
+        // paces to the monitor refresh rather than spinning the CPU.
         runtime.request_window_refresh();
         runtime.platform.request_redraw();
     }
