@@ -5,9 +5,92 @@ const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!(concat!(
     "/src/shaders/gpu_surface_compositor.wgsl"
 ));
 
+/// Builds a fresh `vello::Renderer` for the parallel-encode pool, matching the main
+/// renderer's options (GPU-only, area AA, multi-core init).
+fn build_pooled_vello_renderer(device: &wgpu::Device) -> vello::Renderer {
+    vello::Renderer::new(
+        device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: std::thread::available_parallelism().ok(),
+            pipeline_cache: None,
+        },
+    )
+    .expect("hydrolysis renderer: failed to create pooled vello renderer")
+}
+
+/// C2: encode independent Vello layers to per-layer textures across CPU cores.
+///
+/// Each worker checks a `vello::Renderer` out of `pool` (creating one on first use),
+/// renders its scene to its own texture, and returns the texture + view tagged with the
+/// originating `render_layers` index so the caller can composite in painter's order.
+/// `vello::Renderer` is `!Sync`, so per-worker ownership (not sharing) is what makes this
+/// sound; the GPU `Queue` is `Send + Sync` and each layer targets an independent texture,
+/// so submission order is irrelevant.
+fn encode_vello_layers_parallel(
+    pool: &std::sync::Mutex<Vec<vello::Renderer>>,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scenes: &[(usize, &vello::Scene)],
+    width: u32,
+    height: u32,
+) -> Vec<(usize, wgpu::Texture, wgpu::TextureView)> {
+    use rayon::prelude::*;
+
+    scenes
+        .par_iter()
+        .map(|&(index, scene)| {
+            let mut renderer = pool
+                .lock()
+                .expect("hydrolysis renderer: vello renderer pool poisoned")
+                .pop()
+                .unwrap_or_else(|| build_pooled_vello_renderer(device));
+
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("hydrolysis_vello_layer_parallel"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let params = vello::RenderParams {
+                base_color: vello::peniko::Color::TRANSPARENT,
+                width,
+                height,
+                antialiasing_method: vello::AaConfig::Area,
+            };
+            renderer
+                .render_to_texture(device, queue, scene, &view, &params)
+                .expect("hydrolysis renderer: failed to render vello layer scene");
+
+            pool.lock()
+                .expect("hydrolysis renderer: vello renderer pool poisoned")
+                .push(renderer);
+
+            (index, texture, view)
+        })
+        .collect()
+}
+
 #[derive(Default)]
 pub(crate) struct Compositor {
     pub(crate) vello_layer_surface: Option<VelloLayerSurfaceState>,
+    /// Pool of `vello::Renderer` instances reused across frames for C2's parallel
+    /// per-layer encoding. `vello::Renderer` is `!Sync` (it holds a `RefCell`), so each
+    /// worker checks out its own instance; the `Mutex` only guards the free-list, not the
+    /// (parallel) encode itself.
+    pub(crate) vello_renderer_pool: std::sync::Mutex<Vec<vello::Renderer>>,
     pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
     pub(crate) gpu_surface_slots: Vec<EmbeddedGpuSurfaceRuntime>,
     pub(crate) gpu_surface_cursor: usize,
@@ -840,7 +923,39 @@ impl HydrolysisRenderer {
         let mut needs_redraw = false;
         let mut is_first_layer = true;
 
-        for layer in &render_layers {
+        // C2: when there are 2+ independent Vello layers, encode them to per-layer
+        // textures across CPU cores up front; the composite loop below consumes the
+        // results in painter's order. A single Vello layer keeps the sequential
+        // shared-surface path (nothing to parallelize), and GpuSurface layers are
+        // unaffected.
+        let mut encoded_vello: Vec<Option<wgpu::TextureView>> =
+            (0..render_layers.len()).map(|_| None).collect();
+        let mut _encoded_layer_textures: Vec<wgpu::Texture> = Vec::new();
+        {
+            let vello_scenes: Vec<(usize, &vello::Scene)> = render_layers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, layer)| match layer {
+                    RenderLayer::Vello(scene) => Some((index, scene)),
+                    RenderLayer::GpuSurface(_) => None,
+                })
+                .collect();
+            if vello_scenes.len() > 1 {
+                for (index, texture, view) in encode_vello_layers_parallel(
+                    &self.compositor.vello_renderer_pool,
+                    target.device,
+                    target.queue,
+                    &vello_scenes,
+                    target.width,
+                    target.height,
+                ) {
+                    encoded_vello[index] = Some(view);
+                    _encoded_layer_textures.push(texture);
+                }
+            }
+        }
+
+        for (layer_index, layer) in render_layers.iter().enumerate() {
             let load_op = if is_first_layer {
                 wgpu::LoadOp::Clear(color_to_wgpu(target.base_color))
             } else {
@@ -849,13 +964,16 @@ impl HydrolysisRenderer {
             is_first_layer = false;
             match layer {
                 RenderLayer::Vello(scene) => {
-                    let view = self.render_vello_layer_to_texture(
-                        target.device,
-                        target.queue,
-                        scene,
-                        target.width,
-                        target.height,
-                    );
+                    let view = match encoded_vello[layer_index].take() {
+                        Some(view) => view,
+                        None => self.render_vello_layer_to_texture(
+                            target.device,
+                            target.queue,
+                            scene,
+                            target.width,
+                            target.height,
+                        ),
+                    };
                     let mask_view = self.default_compositor_mask_view(
                         target.device,
                         target.queue,

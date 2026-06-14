@@ -34,6 +34,7 @@ waterui-locale.workspace = true
 vello.workspace = true
 parley = { workspace = true, features = ["system"] }
 wgpu.workspace = true
+rayon = "1.11"
 pollster.workspace = true
 executor-core.workspace = true
 rustc-hash.workspace = true
