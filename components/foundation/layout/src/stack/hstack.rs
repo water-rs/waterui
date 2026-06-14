@@ -10,6 +10,7 @@ use crate::{
     Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     ViewDimensions,
     container::FixedContainer,
+    measure_children,
     stack::{Axis, VerticalAlignment},
 };
 
@@ -174,13 +175,11 @@ impl Layout for HStackLayout {
         } else {
             ProposalSize::new(None, proposal.height)
         };
-        let mut measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
+        let mut measurements: Vec<ChildMeasurement> =
+            measure_children(children, |child| ChildMeasurement {
                 dimensions: child.measure(intrinsic_proposal),
                 stretch_axis: child.stretch_axis(),
-            })
-            .collect();
+            });
 
         // HStack checks for main-axis (horizontal) stretching
         let has_main_axis_stretch = measurements
@@ -325,13 +324,11 @@ impl Layout for HStackLayout {
 
         // First pass: measure all children with None to get intrinsic sizes
         let intrinsic_proposal = ProposalSize::new(None, Some(bounds.height()));
-        let mut measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
+        let mut measurements: Vec<ChildMeasurement> =
+            measure_children(children, |child| ChildMeasurement {
                 dimensions: child.measure(intrinsic_proposal),
                 stretch_axis: child.stretch_axis(),
-            })
-            .collect();
+            });
 
         // Calculate totals - HStack cares about main-axis (horizontal) stretching
         let main_axis_stretch_indices: Vec<usize> = measurements
