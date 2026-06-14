@@ -550,9 +550,28 @@ const fn last_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
 ///
 /// # Pure Functions
 ///
-/// All methods are pure (take `&self`) with no side effects. Any measurement
-/// caching should be owned by leaf implementations, while containers can
-/// re-query freely.
+/// All methods are pure (take `&self`) with no side effects.
+///
+/// # Caching is the `SubView`'s responsibility, never the [`Layout`]'s
+///
+/// The [`Layout`] trait deliberately has **no** caching: containers probe their
+/// children freely with many proposals. Any measurement caching must therefore be
+/// owned by the `SubView` implementation itself (the leaf), not the container.
+/// Expensive measures — text shaping above all — **must** cache. Because layout
+/// runs measurement in parallel across worker threads (see
+/// [`require_main_thread`](Self::require_main_thread)), a `SubView`'s cache must be
+/// **thread-safe** (a lock or lock-free structure), not a `RefCell`.
+///
+/// # Thread-safety
+///
+/// Layout measurement is designed to run in parallel across worker threads, so a
+/// `SubView` should be `Send + Sync`. Most measures (text, media, shapes, fixed
+/// sizes) are pure over thread-safe inputs and parallelize directly. An
+/// implementation whose measurement genuinely must touch main-thread-only state
+/// should confine that state in [`MainThreadBound`](crate::MainThreadBound) (to
+/// satisfy `Send + Sync`) and return `true` from
+/// [`require_main_thread`](Self::require_main_thread) so the executor keeps it on
+/// the main thread.
 pub trait SubView {
     /// Measure the child for a given proposal.
     ///
@@ -585,8 +604,13 @@ pub trait SubView {
 
     /// Whether size measurement for this view must run on the main thread.
     ///
-    /// Views that bridge into UI frameworks with main-thread-only measurement APIs
-    /// should override this to return `true`.
+    /// Defaults to `false`: measurement (including text shaping and media sizing)
+    /// is parallelizable and the layout executor may run it on a worker thread.
+    /// Override to return `true` only for views whose measurement bridges into
+    /// main-thread-only APIs or touches [`MainThreadBound`](crate::MainThreadBound)
+    /// state; the executor then keeps those measures on the main thread. Returning
+    /// `false` while accessing main-thread-only state is a bug — the
+    /// `MainThreadBound` assertion will catch it at runtime.
     fn require_main_thread(&self) -> bool {
         false
     }
