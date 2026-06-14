@@ -8,7 +8,7 @@ use waterui_core::{
 
 use crate::{
     HorizontalAlignment, Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size,
-    StretchAxis, SubView, ViewDimensions, container::FixedContainer, stack::Axis,
+    StretchAxis, SubView, ViewDimensions, container::FixedContainer, measure_children, stack::Axis,
 };
 
 /// Layout engine shared by the public [`VStack`] view.
@@ -90,13 +90,11 @@ impl Layout for VStackLayout {
         // Measure each child with parent's width (for text wrapping) and unspecified height
         let child_proposal = ProposalSize::new(proposal.width, None);
 
-        let measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
+        let measurements: Vec<ChildMeasurement> =
+            measure_children(children, |child| ChildMeasurement {
                 dimensions: child.measure(child_proposal),
                 stretch_axis: child.stretch_axis(),
-            })
-            .collect();
+            });
 
         // VStack checks for main-axis (vertical) stretching
         let has_main_axis_stretch = measurements
@@ -151,13 +149,11 @@ impl Layout for VStackLayout {
         // Measure children again (will be cached by SubView implementation)
         let child_proposal = ProposalSize::new(Some(bounds.width()), None);
 
-        let measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
+        let measurements: Vec<ChildMeasurement> =
+            measure_children(children, |child| ChildMeasurement {
                 dimensions: child.measure(child_proposal),
                 stretch_axis: child.stretch_axis(),
-            })
-            .collect();
+            });
 
         // Calculate stretch child height - only for main-axis (vertically) stretching children
         let main_axis_stretch_count = measurements

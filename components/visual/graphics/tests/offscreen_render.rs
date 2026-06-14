@@ -46,8 +46,6 @@ impl GpuView for SolidClearRenderer {
     }
 }
 
-waterui_graphics::impl_gpu_subview!(SolidClearRenderer);
-
 #[test]
 fn render_offscreen_returns_expected_rgba_and_png() {
     let size = OffscreenSize::try_from_pixels(16, 12).expect("test size must be valid");

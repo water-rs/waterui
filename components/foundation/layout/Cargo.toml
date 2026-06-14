@@ -11,11 +11,17 @@ keywords = ["layout", "ui", "components", "flexbox"]
 categories = ["gui"]
 
 
+[features]
+# Parallelize child measurement across CPU cores (honoring SubView::require_main_thread).
+# Pulls in std via rayon; leave disabled for no_std/embedded (dew) which measures serially.
+parallel = ["dep:rayon"]
+
 [dependencies]
 waterui-core.workspace = true
 nami.workspace = true
 waterui-graphics.workspace = true
 num-traits = { version = "0.2", default-features = false }
+rayon = { version = "1.11", optional = true }
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true
