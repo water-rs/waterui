@@ -239,7 +239,7 @@ impl HeadlessRuntime {
                 RenderDiagnosticsConfig {
                     enabled: false,
                     interval: Duration::from_secs(1),
-                    slow_frame_threshold: Duration::from_millis(16),
+                    slow_frame_threshold_override: None,
                 },
             ),
             pending_window_queue,
@@ -267,7 +267,7 @@ impl HeadlessRuntime {
             RenderDiagnosticsConfig {
                 enabled: false,
                 interval: Duration::from_secs(1),
-                slow_frame_threshold: Duration::from_millis(16),
+                slow_frame_threshold_override: None,
             },
         )
     }

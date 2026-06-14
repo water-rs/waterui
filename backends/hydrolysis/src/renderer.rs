@@ -128,8 +128,7 @@ use waterui_core::layout::{
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, Metadata, Native,
-    Retain, Str, View, impl_extractor,
+    AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View, impl_extractor,
 };
 use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
@@ -259,7 +258,10 @@ impl HydrolysisRenderer {
             vello::RendererOptions {
                 use_cpu: false,
                 antialiasing_support: vello::AaSupport::area_only(),
-                num_init_threads: std::num::NonZeroUsize::new(1),
+                // Hydrolysis is the high-end, multi-core renderer: let vello parallelize
+                // pipeline initialization across all available cores instead of pinning
+                // it to a single thread.
+                num_init_threads: std::thread::available_parallelism().ok(),
                 pipeline_cache: None,
             },
         )

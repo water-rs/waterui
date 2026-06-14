@@ -250,6 +250,14 @@ pub trait PlatformWindow {
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
     fn scale_factor(&self) -> f64;
+    /// The refresh rate (Hz) of the display this window is on, if known.
+    ///
+    /// Drives the game-engine continuous-render frame budget and the diagnostics
+    /// slow-frame threshold. Returns `None` on headless/offscreen/web paths with no
+    /// monitor information, where the renderer falls back to its default pacing.
+    fn refresh_rate_hz(&self) -> Option<f64> {
+        None
+    }
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     fn set_cursor_style(&mut self, style: CursorStyle);
 }
@@ -1192,6 +1200,13 @@ mod winit_impl {
 
         fn scale_factor(&self) -> f64 {
             self.window.scale_factor()
+        }
+
+        fn refresh_rate_hz(&self) -> Option<f64> {
+            self.window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz())
+                .map(|millihertz| f64::from(millihertz) / 1000.0)
         }
 
         fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
