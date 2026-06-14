@@ -608,6 +608,7 @@ mod tests {
     use crate::ViewDimensions;
     use alloc::vec;
     use core::cell::Cell;
+    use waterui_core::MainThreadBound;
 
     struct MockSubView {
         size: Size,
@@ -629,8 +630,8 @@ mod tests {
     struct ProposalAwareView {
         intrinsic: Size,
         constrained: Size,
-        last_width: Cell<Option<f32>>,
-        last_height: Cell<Option<f32>>,
+        last_width: MainThreadBound<Cell<Option<f32>>>,
+        last_height: MainThreadBound<Cell<Option<f32>>>,
     }
 
     impl ProposalAwareView {
@@ -638,8 +639,8 @@ mod tests {
             Self {
                 intrinsic,
                 constrained,
-                last_width: Cell::new(None),
-                last_height: Cell::new(None),
+                last_width: MainThreadBound::new(Cell::new(None)),
+                last_height: MainThreadBound::new(Cell::new(None)),
             }
         }
     }
@@ -659,6 +660,9 @@ mod tests {
         }
         fn priority(&self) -> i32 {
             0
+        }
+        fn require_main_thread(&self) -> bool {
+            true
         }
     }
 
