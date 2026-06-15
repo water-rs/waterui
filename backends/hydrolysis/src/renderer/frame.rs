@@ -99,7 +99,7 @@ impl HydrolysisRenderer {
             self.scroll_content_caches.clear();
         }
         self.retained_window_frame = None;
-        self.state.measurement.begin_rebuild_frame();
+        self.state.measurement.begin_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
         self.frame_applied_filter_count = 0;

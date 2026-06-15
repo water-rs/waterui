@@ -150,10 +150,18 @@ impl MeasurementCaches {
         );
     }
 
-    /// Invalidate the per-rebuild view-dimension entries; `Dynamic` node
-    /// entries survive (their content is owned by the renderer and may not be
+    /// Invalidate the per-frame view-dimension entries; `Dynamic` node entries
+    /// survive (their content is owned by the renderer and may not be
     /// re-measurable until the node is re-dispatched).
-    pub(crate) fn begin_rebuild_frame(&mut self) {
+    ///
+    /// Must run at the start of every frame that measures — structural rebuilds
+    /// **and** reactive patch frames alike. The view-dimension cache is keyed by
+    /// each view's `stable_ptr` (its heap address), which is unique only while
+    /// that view is alive: across frames a freed view's address is reused by a
+    /// new, different view, so a stale entry under the reused address would
+    /// otherwise be returned as that new view's measurement. Clearing per frame
+    /// keeps the cache sound while preserving within-frame memoization.
+    pub(crate) fn begin_frame(&mut self) {
         self.view_dimensions.clear();
         self.reset_counters();
     }
@@ -209,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_clears_view_dimensions_but_keeps_dynamic_entries() {
+    fn begin_frame_clears_view_dimensions_but_keeps_dynamic_entries() {
         let mut caches = MeasurementCaches::default();
         caches.store_view_dimensions(1, 2, ProposalSize::UNSPECIFIED, dimensions(1.0, 1.0));
         caches.store_dynamic_dimensions(7, ProposalSize::UNSPECIFIED, dimensions(2.0, 2.0));
@@ -219,7 +227,7 @@ mod tests {
             dimensions(3.0, 3.0),
         );
 
-        caches.begin_rebuild_frame();
+        caches.begin_frame();
 
         assert!(
             caches
