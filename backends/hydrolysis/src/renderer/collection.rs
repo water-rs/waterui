@@ -233,17 +233,27 @@ impl HydrolysisRenderer {
                 .remove(&id)
                 .filter(|item| size_near(item.bounds, local_bounds))
                 .map(|item| item.subtree);
-            let subtree = reused.unwrap_or_else(|| {
-                let item_ctx = ctx.child(base, local_bounds);
-                let item_local_ctx = item_ctx.with_identity_transforms(local_bounds);
-                Self::render_dynamic_subtree_with_local_interactions(
-                    self,
-                    item_ctx,
-                    item_local_ctx,
-                    env,
-                    view,
-                )
-            });
+            let subtree = match reused {
+                Some(subtree) => {
+                    // The reused subtree is not re-dispatched, so re-register the
+                    // `Dynamic` node identities it references as active this frame;
+                    // otherwise `finish_rebuild_frame` prunes them and the reused
+                    // placements composite stale content.
+                    self.mark_subtree_dynamic_identities_active(&subtree);
+                    subtree
+                }
+                None => {
+                    let item_ctx = ctx.child(base, local_bounds);
+                    let item_local_ctx = item_ctx.with_identity_transforms(local_bounds);
+                    Self::render_dynamic_subtree_with_local_interactions(
+                        self,
+                        item_ctx,
+                        item_local_ctx,
+                        env,
+                        view,
+                    )
+                }
+            };
 
             items.push(CollectionItem {
                 id,
@@ -359,6 +369,24 @@ impl HydrolysisRenderer {
             .dynamic_transform_capture_depth
             .checked_sub(1)
             .expect("hydrolysis collection patch transform capture depth underflow");
+    }
+
+    /// Collects every `Dynamic` node identity reachable through the items of the
+    /// collections in `subtree` (recursing into each item's subtree). The
+    /// collection counterpart of [`Self::collect_subtree_dynamic_identities`],
+    /// kept here because [`CollectionCache`]'s items are private to this module.
+    pub(super) fn collect_collection_dynamic_identities(
+        &self,
+        subtree: &DynamicSubtree,
+        out: &mut Vec<usize>,
+    ) {
+        for draw in subtree.collection_draws() {
+            if let Some(cache) = self.collection_caches.get(&draw.cache_key) {
+                for item in &cache.items {
+                    self.collect_subtree_dynamic_identities(&item.subtree, out);
+                }
+            }
+        }
     }
 
     /// Collects the active animation scalar keys reachable through every item of

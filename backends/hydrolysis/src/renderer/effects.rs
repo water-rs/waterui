@@ -374,12 +374,16 @@ impl HydrolysisRenderer {
                     .expect("hydrolysis SceneView slot initializer must run exactly once"),
             ))
         });
+        // Always adopt the incoming content. Slots are bound by dispatch-order
+        // cursor, so a reused slot can correspond to a *different* logical
+        // `SceneView` after the view tree reorders (a reactive collection whose
+        // membership changed): keying the refresh on the concrete type would keep
+        // the previous occupant's content whenever the two share a type (every SVG
+        // icon is `SvgSceneContent`), rendering a stale icon. `build_scene` runs
+        // each dispatch and `SceneViewRuntime` holds no GPU state to preserve, so
+        // refreshing the content unconditionally is correct and cheap.
         if let Some(content) = incoming_content.borrow_mut().take() {
-            let incoming_type = content.concrete_type_id();
-            let mut runtime = runtime.borrow_mut();
-            if runtime.content.concrete_type_id() != incoming_type {
-                runtime.replace_content(content);
-            }
+            runtime.borrow_mut().replace_content(content);
         }
         let rebuild_signals = renderer.signals.clone();
         let mut runtime = runtime.borrow_mut();
