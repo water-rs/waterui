@@ -1,9 +1,9 @@
 //! WaterUI Control Catalog — a Material Design 3 component gallery.
 //!
-//! The layout is a top app bar plus a collapsible navigation drawer and a detail
-//! area. The drawer lists the framework's controls grouped by category; the menu
-//! button in the app bar collapses the drawer to an icon-only rail and expands it
-//! again. Selecting a control shows it live and interactive in the detail area —
+//! The layout is a navigation drawer beside a detail pane (a [`NavigationSplitView`],
+//! which collapses the drawer to a rail on narrow windows). The drawer lists the
+//! framework's controls grouped by category; each group header expands or collapses
+//! its items. Selecting a control shows it live and interactive in the detail area —
 //! including its style/variant options — so the catalog demonstrates each control's
 //! behavior directly instead of pointing elsewhere.
 
@@ -39,6 +39,15 @@ impl Section {
             Self::Inputs => "Inputs",
             Self::Selection => "Selection",
             Self::Display => "Display",
+        }
+    }
+
+    const fn icon(self) -> fn() -> mdi::Svg {
+        match self {
+            Self::Actions => mdi::cursor_default_click,
+            Self::Inputs => mdi::keyboard,
+            Self::Selection => mdi::checkbox_marked,
+            Self::Display => mdi::view_dashboard,
         }
     }
 }
@@ -106,113 +115,89 @@ fn controls() -> Vec<Control> {
 }
 
 // ---------------------------------------------------------------------------
-// Layout: top app bar + collapsible drawer/rail + detail
+// Layout: collapsible grouped navigation drawer + detail
 // ---------------------------------------------------------------------------
 
-/// The whole catalog. The split view is the root so the window gives it full
-/// bounds (it places the sidebar + detail panes itself). Toggling `expanded`
-/// rebuilds it so the sidebar can switch between a labelled drawer (wide) and an
-/// icon-only rail (narrow).
-fn catalog(expanded: Binding<bool>, selected: Binding<Option<usize>>) -> impl View {
-    let watched = expanded.clone();
-    watch(watched, move |open| {
-        let selected = selected.clone();
-        let sidebar_selected = selected.clone();
-        let sidebar_toggle = expanded.clone();
-        NavigationSplitView::new(
-            &selected,
-            move || drawer(open, sidebar_toggle.clone(), sidebar_selected.clone()),
-            control_detail,
-        )
-        .sidebar_width(if open { 256.0 } else { 88.0 })
-        .placeholder(placeholder)
-    })
+/// The whole catalog: a single, stable [`NavigationSplitView`]. It is never
+/// rebuilt (no `watch` at the root), so selecting a control or collapsing a
+/// group never triggers a full-window rebuild. The split places the sidebar and
+/// detail panes and collapses the sidebar to a rail on narrow windows.
+fn catalog(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) -> impl View {
+    let sidebar_selected = selected.clone();
+    NavigationSplitView::new(
+        &selected,
+        move || sidebar(sidebar_selected.clone(), groups_open.clone()),
+        control_detail,
+    )
+    .sidebar_width(280.0)
+    .placeholder(placeholder)
 }
 
-/// The drawer header: a menu button that toggles the drawer, plus the title
-/// (shown only when expanded).
-fn drawer_header(expanded: bool, toggle: &Binding<bool>) -> impl View {
-    let menu = button(label("Toggle navigation").icon(mdi::menu()).icon_only())
-        .borderless()
-        .action(|State(open): State<Binding<bool>>| open.set(!open.get()))
-        .state(toggle);
-    let title = text("WaterUI Controls")
-        .sub_headline()
-        .bold()
-        .foreground(Foreground)
-        .visible(expanded);
-    hstack((menu, title))
-        .spacing(10.0)
-        .padding_with(EdgeInsets::new(8.0, 8.0, 6.0, 8.0))
-}
-
-/// Sidebar contents: a header, then section headers + labelled rows (drawer), or
-/// icon-only rows (rail) when collapsed.
-fn drawer(expanded: bool, toggle: Binding<bool>, selected: Binding<Option<usize>>) -> impl View {
+/// Sidebar: a title header followed by one collapsible group per category.
+fn sidebar(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) -> impl View {
     let all = controls();
-    let mut rows: Vec<AnyView> = vec![AnyView::new(drawer_header(expanded, &toggle))];
+    let mut rows: Vec<AnyView> = vec![AnyView::new(
+        text("WaterUI Controls")
+            .sub_headline()
+            .bold()
+            .foreground(Foreground)
+            .padding_with(EdgeInsets::new(12.0, 12.0, 14.0, 12.0)),
+    )];
 
-    for section in Section::ALL {
-        if expanded {
-            rows.push(AnyView::new(
-                text(section.title())
-                    .caption()
-                    .bold()
-                    .foreground(MutedForeground)
-                    .padding_with(EdgeInsets::new(14.0, 6.0, 12.0, 8.0)),
-            ));
-        } else {
-            rows.push(AnyView::new(Divider));
-        }
+    for (group_index, &section) in Section::ALL.iter().enumerate() {
+        let open = groups_open[group_index].clone();
+        rows.push(AnyView::new(group_header(section, &open)));
         for (index, control) in all
             .iter()
             .enumerate()
             .filter(|(_, control)| control.section == section)
         {
-            rows.push(AnyView::new(drawer_item(
-                index, control, expanded, &selected,
-            )));
+            rows.push(AnyView::new(item_row(index, control, &selected, &open)));
         }
     }
 
     scroll(
         vstack(rows)
-            .spacing(4.0)
+            .spacing(2.0)
             .alignment(HorizontalAlignment::Leading)
-            .padding_with(EdgeInsets::symmetric(8.0, 8.0)),
+            .padding_with(EdgeInsets::symmetric(6.0, 6.0)),
     )
 }
 
-/// A selectable sidebar row. Uses a [`Label`] so the M3 backend renders an
-/// icon + title (or icon-only when collapsed) with proper accessibility.
-fn drawer_item(
+/// A collapsible group header: an accessible button (group icon + title) that
+/// toggles the group, plus a chevron that reflects the open state.
+fn group_header(section: Section, open: &Binding<bool>) -> impl View {
+    let header = button(label(section.title()).icon((section.icon())()).leading())
+        .borderless()
+        .action(|State(open): State<Binding<bool>>| open.set(!open.get()))
+        .state(open);
+    let chevron = zstack((
+        mdi::chevron_right().visible(open.clone().map(|o| !o)),
+        mdi::chevron_down().visible(open.clone()),
+    ));
+    hstack((header, spacer(), chevron)).padding_with(EdgeInsets::symmetric(2.0, 10.0))
+}
+
+/// A selectable control row, indented under its group and hidden when the group
+/// is collapsed. A [`button`] keeps it a proper accessible, focusable target.
+fn item_row(
     index: usize,
     control: &Control,
-    expanded: bool,
     selected: &Binding<Option<usize>>,
+    open: &Binding<bool>,
 ) -> impl View {
     let is_selected = selected.clone().map(move |current| current == Some(index));
     let selected_bg: Color = SurfaceVariant.into();
     let clear_bg: Color = Srgb::WHITE.with_opacity(0.0).into();
     let background = is_selected.select(selected_bg, clear_bg).computed();
 
-    let mode = if expanded {
-        LabelDisplayMode::TitleAndIcon
-    } else {
-        LabelDisplayMode::IconOnly
-    };
-
-    button(
-        label(control.title)
-            .icon((control.icon)())
-            .leading()
-            .display_mode(mode),
-    )
-    .borderless()
-    .action(move |State(sel): State<Binding<Option<usize>>>| sel.set(Some(index)))
-    .state(selected)
-    .background(background)
-    .padding_with(EdgeInsets::symmetric(2.0, 4.0))
+    button(label(control.title).icon((control.icon)()).leading())
+        .borderless()
+        .action(move |State(sel): State<Binding<Option<usize>>>| sel.set(Some(index)))
+        .state(selected)
+        .background(background)
+        .padding_with(EdgeInsets::new(3.0, 3.0, 30.0, 8.0))
+        .visible(open.clone())
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
@@ -382,39 +367,40 @@ fn progress_demo() -> impl View {
 // Entry points
 // ---------------------------------------------------------------------------
 
+/// Builds fresh catalog state: the selected control plus one open-flag per group.
+fn new_state() -> (Binding<Option<usize>>, Vec<Binding<bool>>) {
+    let selected = Binding::container(Some(0));
+    let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
+    (selected, groups_open)
+}
+
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    catalog(binding(true), Binding::container(Some(0)))
-}
-
-#[preview]
-fn rail() -> impl View {
-    catalog(binding(false), Binding::container(Some(4)))
+    let (selected, groups_open) = new_state();
+    catalog(selected, groups_open)
 }
 
 pub fn app(env: Environment) -> App {
-    // Own the drawer + selection state at the window scope so they persist
-    // across content rebuilds.
-    let expanded = binding(true);
-    let selected = Binding::container(Some(0));
-    App::new(move || catalog(expanded.clone(), selected.clone()), env)
+    // Own the selection + group-open state at the window scope so it persists
+    // across rebuilds.
+    let (selected, groups_open) = new_state();
+    App::new(move || catalog(selected.clone(), groups_open.clone()), env)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::catalog;
+    use super::{catalog, new_state};
     use core::time::Duration;
     use waterui::Binding;
     use waterui::env::Environment;
-    use waterui::reactive::binding;
     use waterui_testing::{SemanticApp, ui};
 
     /// Mounts the catalog with caller-owned state (as a real app window owns its
     /// root state) so interaction survives the test driver's full-tree rebuilds.
     fn mount(
-        expanded: Binding<bool>,
         selected: Binding<Option<usize>>,
+        groups_open: Vec<Binding<bool>>,
         width: u32,
         height: u32,
     ) -> SemanticApp {
@@ -422,30 +408,31 @@ mod tests {
         hydrolysis_m3::install(&mut env);
         ui().environment(env)
             .viewport(width, height)
-            .mount(move || catalog(expanded.clone(), selected.clone()))
+            .mount(move || catalog(selected.clone(), groups_open.clone()))
     }
 
-    /// The expanded drawer lists section headers and every control, and the
-    /// detail pane shows the selected control's live demo.
+    /// The drawer lists every group header and control, and the detail pane shows
+    /// the selected control's live demo.
     #[test]
     fn catalog_lists_controls() {
-        let mut app = mount(binding(true), Binding::container(Some(0)), 1100, 760);
+        let (selected, groups_open) = new_state();
+        let mut app = mount(selected, groups_open, 1100, 760);
         for section in ["Actions", "Inputs", "Selection", "Display"] {
             app.query().label(section).assert_exists();
         }
         for control in ["Buttons", "Toggle", "Slider", "Picker", "Label"] {
             app.query().label(control).assert_exists();
         }
-        // Buttons is selected, so the detail shows a button-style variant.
         app.query()
             .label_contains("Bordered Prominent")
             .assert_exists();
     }
 
-    /// Selecting a control in the drawer shows its live demo in the detail pane.
+    /// Selecting a control shows its live demo in the detail pane.
     #[test]
     fn selecting_control_shows_demo() {
-        let mut app = mount(binding(true), Binding::container(Some(0)), 1100, 760);
+        let (selected, groups_open) = new_state();
+        let mut app = mount(selected, groups_open, 1100, 760);
         assert!(
             app.query().label("Toggle").tap(),
             "drawer item should be tappable"
@@ -458,21 +445,43 @@ mod tests {
         );
     }
 
-    /// The menu button collapses the drawer to an icon-only rail, hiding the
-    /// section headers.
+    /// Collapsing a group hides its items while the rest of the catalog stays
+    /// intact (the regression that previously blanked the window).
     #[test]
-    fn menu_button_collapses_to_rail() {
-        let mut app = mount(binding(true), Binding::container(Some(0)), 1100, 760);
-        app.query().label("Actions").assert_exists();
+    fn collapsing_group_hides_items_and_keeps_layout() {
+        let (selected, groups_open) = new_state();
+        let inputs_open = groups_open[1].clone(); // Section::ALL[1] == Inputs
+        let mut app = mount(selected, groups_open, 1100, 760);
+        app.query().label("Slider").assert_exists();
+        inputs_open.set(false);
         assert!(
-            app.query().label("Toggle navigation").tap(),
-            "menu button should be tappable"
+            app.query()
+                .label("Slider")
+                .wait_for_nonexistence(Duration::from_secs(3)),
+            "collapsing a group should hide its items"
+        );
+        app.query().label("Buttons").assert_exists();
+        app.query()
+            .label_contains("Bordered Prominent")
+            .assert_exists();
+    }
+
+    /// The group-header button toggles its group accessibly (Click action), and
+    /// selecting an item updates the detail — both without blanking.
+    #[test]
+    fn group_header_button_collapses_group() {
+        let (selected, groups_open) = new_state();
+        let mut app = mount(selected, groups_open, 1100, 760);
+        assert!(app.query().label("Slider").tap(), "item should be tappable");
+        assert!(
+            app.query().label("Inputs").tap(),
+            "group header should be tappable"
         );
         assert!(
             app.query()
-                .label("Actions")
+                .label("Slider")
                 .wait_for_nonexistence(Duration::from_secs(3)),
-            "section headers should disappear in the collapsed rail"
+            "tapping the group header should collapse its items"
         );
     }
 }
