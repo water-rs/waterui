@@ -1484,6 +1484,56 @@ fn text_shaping_produces_nonzero_intrinsic_in_tests() {
 }
 
 #[test]
+fn text_leaf_subview_measures_on_a_worker_thread() {
+    use core::cell::RefCell;
+
+    let env = Environment::default();
+    let mut state = HydroState::default();
+    let state_cell = RefCell::new(&mut state);
+
+    // Declared up front so they outlive the borrowing subviews (whose
+    // `MainThreadBound` drop-glue extends the borrow to end of scope).
+    let text_view = AnyView::new(Str::from("probe"));
+    let other_view = AnyView::new(());
+
+    // A text leaf resolves to a `Send` layout input on the main thread and is
+    // therefore worker-safe.
+    let text_subview = HydroSubview::from_view(&text_view, &state_cell, &env);
+    assert!(
+        !text_subview.require_main_thread(),
+        "a resolved text leaf must be measurable off the main thread"
+    );
+
+    let proposal = ProposalSize::UNSPECIFIED;
+    let main_dimensions = text_subview.measure(proposal);
+    assert!(
+        main_dimensions.size.width > 0.0 && main_dimensions.size.height > 0.0,
+        "text measurement must produce a non-zero size, got {:?}",
+        main_dimensions.size
+    );
+
+    // Measuring on a worker thread must touch no `MainThreadBound` state (which
+    // would panic) and must reproduce the main-thread dimensions exactly.
+    let worker_dimensions = std::thread::scope(|scope| {
+        scope
+            .spawn(|| text_subview.measure(proposal))
+            .join()
+            .expect("worker measurement thread panicked")
+    });
+    assert_eq!(
+        worker_dimensions.size, main_dimensions.size,
+        "worker-thread shaping must match main-thread shaping"
+    );
+
+    // A non-text view recurses through `HydroState` and stays main-thread-bound.
+    let other_subview = HydroSubview::from_view(&other_view, &state_cell, &env);
+    assert!(
+        other_subview.require_main_thread(),
+        "a non-text view must measure on the main thread"
+    );
+}
+
+#[test]
 fn bare_str_direct_dispatch_renders_into_scene() {
     let mut renderer = test_renderer();
     let mut env = Environment::new();

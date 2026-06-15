@@ -88,11 +88,11 @@ async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
 
     let mut default_family_ids = Vec::new();
     let mut resource_fonts = ResourceFontFamilies::default();
-    let state = renderer.state_mut();
+    let font_cx = renderer.state_mut().text_fonts_mut();
     for font in manifest.fonts {
         let font_path = format!("fonts/{}", font.file_name);
         let font_data = fetch_bytes(&font_path).await;
-        let families = state.font_cx.collection.register_fonts(
+        let families = font_cx.collection.register_fonts(
             Blob::new(Arc::new(font_data)),
             Some(FontInfoOverride {
                 family_name: Some(font.name.as_str()),
@@ -110,7 +110,7 @@ async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
         "hydrolysis web font manifest default family `{}` did not register any fonts",
         manifest.default_family
     );
-    resource_fonts.install(&mut state.font_cx.collection);
+    resource_fonts.install(&mut font_cx.collection);
 }
 
 #[derive(Clone)]

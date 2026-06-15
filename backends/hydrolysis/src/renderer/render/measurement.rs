@@ -1,4 +1,3 @@
-use super::state::{TextLayoutCacheKey, TextLayoutFontCacheKey, TextLayoutSpanCacheKey};
 use super::*;
 use waterui_core::handler::BoxedAction;
 use waterui_form::picker::PickerStyle;
@@ -468,14 +467,6 @@ impl HydrolysisRenderer {
         }
     }
 
-    fn default_text_brush(env: &Environment) -> [u8; 4] {
-        let color = theme::installed_color_signal::<theme::color::Foreground>(env).map_or_else(
-            || Color::srgb(0, 0, 0).resolve(env).get(),
-            |signal| signal.get(),
-        );
-        resolved_color_to_rgba8(color)
-    }
-
     pub(crate) fn build_text_layout(
         state: &mut HydroState,
         styled: StyledStr,
@@ -483,80 +474,8 @@ impl HydrolysisRenderer {
         env: &Environment,
         max_width: Option<f32>,
     ) -> parley::Layout<[u8; 4]> {
-        let mut plain = String::new();
-        let mut spans = Vec::with_capacity(styled.chunks().len());
-        for (chunk, style) in styled.chunks() {
-            let start = plain.len();
-            plain.push_str(chunk.as_str());
-            let end = plain.len();
-            spans.push((start..end, style.clone()));
-        }
-
-        if plain.is_empty() {
-            return parley::Layout::new();
-        }
-
-        let default_font = waterui_text::font::Font::default().resolve(env).get();
-        let default_brush = Self::default_text_brush(env);
-        let locale = text_layout_locale(env);
-        let resolved_spans = spans
-            .into_iter()
-            .map(|(range, style)| (range, resolve_text_style(&style, env)))
-            .collect::<Vec<_>>();
-        let alignment_id = alignment.stable_id();
-        let cache_key = TextLayoutCacheKey {
-            text: plain.clone(),
-            spans: resolved_spans
-                .iter()
-                .map(|(range, style)| TextLayoutSpanCacheKey {
-                    start: range.start,
-                    end: range.end,
-                    font: text_layout_font_cache_key(&style.font),
-                    foreground: style.foreground,
-                    italic: style.italic,
-                    underline: style.underline,
-                    strikethrough: style.strikethrough,
-                })
-                .collect(),
-            default_font: text_layout_font_cache_key(&default_font),
-            default_brush,
-            locale: locale.clone(),
-            alignment_low: alignment_id.low(),
-            alignment_high: alignment_id.high(),
-            max_width: max_width.map(f32::to_bits),
-        };
-        if let Some(layout) = state.text_layout_cache.get(&cache_key) {
-            return layout.clone();
-        }
-
-        let mut family_storage = Vec::new();
-        let mut builder = state
-            .layout_cx
-            .ranged_builder(&mut state.font_cx, &plain, 1.0, true);
-        builder.push_default(parley::StyleProperty::Brush(default_brush));
-        builder.push_default(parley::StyleProperty::FontSize(default_font.size));
-        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
-            default_font.weight,
-        )));
-        builder.push_default(parley::StyleProperty::Locale(Some(locale.as_str())));
-        builder.push_default(parley::StyleProperty::FontStack(font_stack(
-            default_font.family.as_deref(),
-            &mut family_storage,
-        )));
-
-        for (range, style) in &resolved_spans {
-            Self::push_text_style(&mut builder, &mut family_storage, style, range.clone());
-        }
-
-        let mut layout = builder.build(&plain);
-        layout.break_all_lines(max_width);
-        layout.align(
-            max_width,
-            parley_alignment(alignment),
-            parley::AlignmentOptions::default(),
-        );
-        state.text_layout_cache.insert(cache_key, layout.clone());
-        layout
+        let input = resolve_text_layout_input(&styled, alignment, env);
+        state.text.shape(&input, max_width)
     }
 
     pub(crate) fn measure_text_dimensions(
@@ -568,36 +487,7 @@ impl HydrolysisRenderer {
         max_lines: Option<usize>,
     ) -> ViewDimensions {
         let layout = Self::build_text_layout(state, styled, alignment, env, max_width);
-        if layout.is_empty() {
-            return ViewDimensions::new(LayoutSize::zero());
-        }
-
-        let mut width = 0.0_f32;
-        let mut height = 0.0_f32;
-        let mut first_baseline = None;
-        let mut last_baseline = None;
-
-        for (index, line) in layout.lines().enumerate() {
-            if max_lines.is_some_and(|limit| index >= limit) {
-                break;
-            }
-            let metrics = line.metrics();
-            width = width.max(metrics.advance);
-            height += metrics.line_height;
-            if first_baseline.is_none() {
-                first_baseline = Some(metrics.baseline);
-            }
-            last_baseline = Some(metrics.baseline);
-        }
-
-        let mut dimensions = ViewDimensions::new(LayoutSize::new(width, height));
-        if let Some(first_baseline) = first_baseline {
-            dimensions.set_vertical(VerticalAlignment::FirstBaseline, first_baseline);
-        }
-        if let Some(last_baseline) = last_baseline {
-            dimensions.set_vertical(VerticalAlignment::LastBaseline, last_baseline);
-        }
-        dimensions
+        text_dimensions_from_layout(&layout, max_lines)
     }
 
     pub(crate) fn measure_text_intrinsic_size(
@@ -624,152 +514,6 @@ impl HydrolysisRenderer {
             max_lines,
         )
         .size
-    }
-
-    fn push_text_style(
-        builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
-        family_storage: &mut Vec<String>,
-        style: &ResolvedTextStyle,
-        range: std::ops::Range<usize>,
-    ) {
-        builder.push(
-            parley::StyleProperty::FontSize(style.font.size),
-            range.clone(),
-        );
-        builder.push(
-            parley::StyleProperty::FontWeight(parley_font_weight(style.font.weight)),
-            range.clone(),
-        );
-        if let Some(family) = &style.font.family {
-            builder.push(
-                parley::StyleProperty::FontStack(font_stack(Some(family.as_str()), family_storage)),
-                range.clone(),
-            );
-        }
-        builder.push(
-            parley::StyleProperty::FontStyle(if style.italic {
-                parley::FontStyle::Italic
-            } else {
-                parley::FontStyle::Normal
-            }),
-            range.clone(),
-        );
-        builder.push(
-            parley::StyleProperty::Underline(style.underline),
-            range.clone(),
-        );
-        builder.push(
-            parley::StyleProperty::Strikethrough(style.strikethrough),
-            range.clone(),
-        );
-        if let Some(color) = style.foreground {
-            builder.push(parley::StyleProperty::Brush(color), range);
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ResolvedTextStyle {
-    font: waterui_text::font::ResolvedFont,
-    foreground: Option<[u8; 4]>,
-    italic: bool,
-    underline: bool,
-    strikethrough: bool,
-}
-
-fn resolve_text_style(style: &TextStyle, env: &Environment) -> ResolvedTextStyle {
-    ResolvedTextStyle {
-        font: style.font.resolve(env).get(),
-        foreground: style
-            .foreground
-            .clone()
-            .map(|color| resolved_color_to_rgba8(color.resolve(env).get())),
-        italic: style.italic,
-        underline: style.underline,
-        strikethrough: style.strikethrough,
-    }
-}
-
-fn font_stack<'a>(
-    family: Option<&str>,
-    family_storage: &'a mut Vec<String>,
-) -> parley::FontStack<'a> {
-    let Some(family) = family else {
-        return parley::FontStack::Single(parley::FontFamily::Generic(
-            parley::style::GenericFamily::SansSerif,
-        ));
-    };
-    family_storage.push(family.to_string());
-    let family_name = family_storage
-        .last()
-        .expect("font family storage must contain the pushed value");
-    parley::FontStack::Source(Cow::Borrowed(family_name.as_str()))
-}
-
-fn text_layout_locale(env: &Environment) -> String {
-    waterui_locale::locale_binding(env).get().canonical_tag()
-}
-
-#[cfg(test)]
-mod font_stack_tests {
-    use super::{font_stack, text_layout_locale};
-    use parley::style::{FontFamily, GenericFamily};
-    use waterui_core::Environment;
-    use waterui_locale::locales;
-
-    #[test]
-    fn explicit_family_list_is_preserved_for_parley_css_parsing() {
-        let mut family_storage = Vec::new();
-        let stack = font_stack(
-            Some("Roboto, Noto Sans CJK SC, sans-serif"),
-            &mut family_storage,
-        );
-
-        assert_eq!(
-            stack,
-            parley::FontStack::Source("Roboto, Noto Sans CJK SC, sans-serif".into())
-        );
-    }
-
-    #[test]
-    fn missing_family_uses_sans_serif_generic() {
-        let mut family_storage = Vec::new();
-
-        assert_eq!(
-            font_stack(None, &mut family_storage),
-            parley::FontStack::Single(FontFamily::Generic(GenericFamily::SansSerif))
-        );
-        assert!(family_storage.is_empty());
-    }
-
-    #[test]
-    fn text_layout_locale_uses_environment_locale() {
-        let mut env = Environment::new();
-        env.insert(locales::ZH_TW);
-
-        assert_eq!(text_layout_locale(&env), "zh-TW");
-    }
-}
-
-fn text_layout_font_cache_key(font: &waterui_text::font::ResolvedFont) -> TextLayoutFontCacheKey {
-    TextLayoutFontCacheKey {
-        size: font.size.to_bits(),
-        weight: text_font_weight_cache_key(font.weight),
-        family: font.family.as_ref().map(ToString::to_string),
-    }
-}
-
-const fn text_font_weight_cache_key(weight: TextFontWeight) -> u16 {
-    match weight {
-        TextFontWeight::Thin => 100,
-        TextFontWeight::UltraLight => 200,
-        TextFontWeight::Light => 300,
-        TextFontWeight::Normal => 400,
-        TextFontWeight::Medium => 500,
-        TextFontWeight::SemiBold => 600,
-        TextFontWeight::Bold => 700,
-        TextFontWeight::UltraBold => 800,
-        TextFontWeight::Black => 900,
     }
 }
 
