@@ -1,403 +1,236 @@
-//! WaterUI Gallery - a browsable catalog of every example in this repository.
+//! WaterUI Control Catalog — a Material Design 3 component gallery.
 //!
-//! The gallery is a sidebar + detail split view ([`NavigationSplitView`]). The
-//! sidebar groups examples by category; selecting a row shows that example in
-//! the main detail area. The layout adapts to screen size automatically: on wide
-//! windows the sidebar and detail sit side by side, and on narrow windows it
-//! collapses to a single column with a back button (handled by the backend).
-//!
-//! Examples that render fine in a shared window (static layouts and GPU-drawn
-//! effects) are embedded live via each crate's `demo()` entry. Examples that need
-//! dedicated hardware or window-level capabilities (camera, microphone, native
-//! WebView, additional OS windows, network video, native map, heavy profiling)
-//! are shown with a card explaining how to run them standalone.
+//! The layout is a top app bar plus a collapsible navigation drawer and a detail
+//! area. The drawer lists the framework's controls grouped by category; the menu
+//! button in the app bar collapses the drawer to an icon-only rail and expands it
+//! again. Selecting a control shows it live and interactive in the detail area —
+//! including its style/variant options — so the catalog demonstrates each control's
+//! behavior directly instead of pointing elsewhere.
 
+use waterui::Color;
 use waterui::app::App;
 use waterui::color::Srgb;
+use waterui::form::picker::{PickerStyle, picker};
+use waterui::layout::HorizontalAlignment;
 use waterui::navigation::{NavigationSplitView, NavigationView};
-use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, SurfaceVariant};
+use waterui::prelude::slider::slider;
+use waterui::prelude::stepper::stepper;
+use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::reactive::binding;
+use waterui_icons_material_icon as mdi;
 
-/// Top-level grouping, mirroring the `examples/` directory taxonomy.
+/// A category grouping in the navigation drawer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Category {
-    Codes,
-    Data,
-    Effects,
-    Media,
-    App,
-    Components,
-    Interaction,
-    Visual,
+enum Section {
+    Actions,
+    Inputs,
+    Selection,
+    Display,
 }
 
-impl Category {
-    /// Categories in display order.
-    const ALL: [Self; 8] = [
-        Self::Codes,
-        Self::Data,
-        Self::Effects,
-        Self::Media,
-        Self::App,
-        Self::Components,
-        Self::Interaction,
-        Self::Visual,
-    ];
+impl Section {
+    const ALL: [Self; 4] = [Self::Actions, Self::Inputs, Self::Selection, Self::Display];
 
-    /// Section heading shown on the home screen.
     const fn title(self) -> &'static str {
         match self {
-            Self::Codes => "Codes",
-            Self::Data => "Data",
-            Self::Effects => "Effects",
-            Self::Media => "Media",
-            Self::App => "App Showcases",
-            Self::Components => "Components",
-            Self::Interaction => "Interaction",
-            Self::Visual => "Visual",
+            Self::Actions => "Actions",
+            Self::Inputs => "Inputs",
+            Self::Selection => "Selection",
+            Self::Display => "Display",
         }
     }
 }
 
-/// How a catalog entry surfaces its content in the gallery.
-enum Demo {
-    /// Rendered live by invoking the example crate's `demo()`.
-    Embed(fn() -> AnyView),
-    /// Listed with run instructions; needs dedicated hardware or window features.
-    Standalone {
-        /// Cargo package name to run with `water run -p <package>`.
-        package: &'static str,
-        /// Why it cannot be embedded inline.
-        reason: &'static str,
-    },
-}
-
-/// A single catalog entry.
-struct Example {
-    category: Category,
+/// A single catalog entry: a control with its drawer icon and live demo.
+struct Control {
     title: &'static str,
-    summary: &'static str,
-    demo: Demo,
+    icon: fn() -> mdi::Svg,
+    section: Section,
+    demo: fn() -> AnyView,
 }
 
-impl Example {
-    const fn embed(
-        category: Category,
-        title: &'static str,
-        summary: &'static str,
-        build: fn() -> AnyView,
-    ) -> Self {
-        Self {
-            category,
-            title,
-            summary,
-            demo: Demo::Embed(build),
-        }
-    }
-
-    const fn standalone(
-        category: Category,
-        title: &'static str,
-        summary: &'static str,
-        package: &'static str,
-        reason: &'static str,
-    ) -> Self {
-        Self {
-            category,
-            title,
-            summary,
-            demo: Demo::Standalone { package, reason },
-        }
-    }
-}
-
-/// The full catalog. Order within a category is the display order.
-fn examples() -> Vec<Example> {
-    use Category::{App, Codes, Components, Data, Effects, Interaction, Media, Visual};
+/// The catalog, in drawer order.
+fn controls() -> Vec<Control> {
     vec![
-        // -- Codes --
-        Example::embed(
-            Codes,
-            "Barcode",
-            "QR codes rendered as a scannable view",
-            || AnyView::new(barcode_example::demo()),
-        ),
-        // -- Data --
-        Example::embed(
-            Data,
-            "Charts",
-            "Bars, lines, pies and more across many chart types",
-            || AnyView::new(chart_example::demo()),
-        ),
-        Example::standalone(
-            Data,
-            "Map",
-            "Interactive map with zoom controls",
-            "map-example",
-            "Renders a native platform map, so it needs a backend with map support.",
-        ),
-        // -- Effects --
-        Example::embed(
-            Effects,
-            "Particles",
-            "GPU particle systems: rain, snow, fireworks, confetti",
-            || AnyView::new(particle_example::demo()),
-        ),
-        Example::embed(
-            Effects,
-            "Starfield",
-            "Procedural GPU starfield animation",
-            || AnyView::new(star_field_example::demo()),
-        ),
-        // -- Media --
-        Example::standalone(
-            Media,
-            "Audio Visualizer",
-            "Real-time waveform visualization",
-            "audio-visualizer-example",
-            "Needs live microphone input.",
-        ),
-        Example::standalone(
-            Media,
-            "Media Picker",
-            "Photo, video, and live-photo picking",
-            "media-picker-example",
-            "Opens the native system media picker.",
-        ),
-        Example::standalone(
-            Media,
-            "Video Player",
-            "Source switching with buffering status",
-            "video-player-example",
-            "Streams sample video over the network. Add `--features rust-fallback` for the self-rendered HDR pipeline.",
-        ),
-        Example::standalone(
-            Media,
-            "Camera Filters",
-            "Live camera capture through a GPU filter pipeline",
-            "waterkit-camera-filters-example",
-            "Needs camera access for the live preview.",
-        ),
-        // -- App showcases --
-        Example::embed(App, "Markdown", "Render a Markdown document", || {
-            AnyView::new(markdown_example::demo())
-        }),
-        Example::embed(
-            App,
-            "Localization",
-            "Live locale switching with plurals, date and unit formatting",
-            || AnyView::new(locale_example::demo()),
-        ),
-        Example::embed(
-            App,
-            "Reminders",
-            "A reminders app with sidebar and lists",
-            || AnyView::new(reminders_example::demo()),
-        ),
-        Example::embed(
-            App,
-            "Streaming Markdown",
-            "FlowMarkdown with token-by-token streaming animation",
-            || AnyView::new(flow_markdown_e2e_example::demo()),
-        ),
-        Example::standalone(
-            App,
-            "Multi-Window",
-            "Several window styles and background effects",
-            "multi-window-example",
-            "Opens additional OS windows, so it runs as its own app.",
-        ),
-        Example::standalone(
-            App,
-            "WebView",
-            "Browser chrome with navigation and JavaScript",
-            "webview-example",
-            "Embeds a native WebView; run on a backend that installs a WebView controller.",
-        ),
-        Example::standalone(
-            App,
-            "Stress",
-            "High-pressure profiling workload",
-            "stress-example",
-            "A profiling workload; run standalone so it does not throttle the gallery.",
-        ),
-        // -- Components --
-        Example::embed(
-            Components,
-            "List",
-            "Static and dynamic lists",
-            || AnyView::new(list_example::demo()),
-        ),
-        Example::embed(
-            Components,
-            "Menu",
-            "Popup, nested, and context menus",
-            || AnyView::new(menu_example::demo()),
-        ),
-        Example::embed(
-            Components,
-            "Navigation",
-            "Typed, route-driven navigation stack",
-            || AnyView::new(navigation_example::demo()),
-        ),
-        Example::embed(
-            Components,
-            "Picker",
-            "Text, date, color, file, and multi-date pickers",
-            || AnyView::new(picker_example::demo()),
-        ),
-        Example::embed(
-            Components,
-            "Snackbar",
-            "Queued snackbars with positioning",
-            || AnyView::new(snackbar_example::demo()),
-        ),
-        Example::embed(
-            Components,
-            "Form",
-            "Auto-generated forms via the #[form] derive",
-            || AnyView::new(form_example::demo()),
-        ),
-        // -- Interaction --
-        Example::embed(
-            Interaction,
-            "Animation",
-            "Scale, rotation, translation, and spring curves",
-            || AnyView::new(animation_example::demo()),
-        ),
-        Example::embed(
-            Interaction,
-            "Drag & Drop",
-            "Draggable cards into a drop zone",
-            || AnyView::new(drag_drop_example::demo()),
-        ),
-        Example::embed(
-            Interaction,
-            "Gestures",
-            "Tap, double-tap, long-press, and drag",
-            || AnyView::new(gesture_example::demo()),
-        ),
-        Example::embed(
-            Interaction,
-            "Hover & Cursor",
-            "Hover events, cursor styles, and reactive backgrounds",
-            || AnyView::new(hover_example::demo()),
-        ),
-        // -- Visual --
-        Example::embed(
-            Visual,
-            "Filters",
-            "Blur, brightness, saturation, contrast, hue, grayscale",
-            || AnyView::new(filter_example::demo()),
-        ),
-        Example::embed(
-            Visual,
-            "Flame (HDR)",
-            "Cinematic HDR flame with bloom and ACES tonemap",
-            || AnyView::new(flame_example::demo()),
-        ),
-        Example::embed(
-            Visual,
-            "Gradients",
-            "Animated mesh gradient plus linear and radial",
-            || AnyView::new(gradient_example::demo()),
-        ),
-        Example::embed(
-            Visual,
-            "Icons",
-            "SF Symbols, Material Design, and Lucide icon packs",
-            || AnyView::new(icons_example::demo()),
-        ),
-        Example::embed(
-            Visual,
-            "Images",
-            "Image processing and remote photo loading with filters",
-            || AnyView::new(image_example::demo()),
-        ),
-        Example::embed(
-            Visual,
-            "Shapes",
-            "Circle, ellipse, capsule, rounded rect, and paths",
-            || AnyView::new(shape_example::demo()),
-        ),
+        Control {
+            title: "Buttons",
+            icon: mdi::gesture_tap_button,
+            section: Section::Actions,
+            demo: || AnyView::new(buttons_demo()),
+        },
+        Control {
+            title: "Text Field",
+            icon: mdi::form_textbox,
+            section: Section::Inputs,
+            demo: || AnyView::new(text_field_demo()),
+        },
+        Control {
+            title: "Slider",
+            icon: mdi::tune,
+            section: Section::Inputs,
+            demo: || AnyView::new(slider_demo()),
+        },
+        Control {
+            title: "Stepper",
+            icon: mdi::numeric,
+            section: Section::Inputs,
+            demo: || AnyView::new(stepper_demo()),
+        },
+        Control {
+            title: "Toggle",
+            icon: mdi::toggle_switch,
+            section: Section::Selection,
+            demo: || AnyView::new(toggle_demo()),
+        },
+        Control {
+            title: "Picker",
+            icon: mdi::format_list_bulleted,
+            section: Section::Selection,
+            demo: || AnyView::new(picker_demo()),
+        },
+        Control {
+            title: "Label",
+            icon: mdi::text_box_outline,
+            section: Section::Display,
+            demo: || AnyView::new(label_demo()),
+        },
+        Control {
+            title: "Progress",
+            icon: mdi::gauge,
+            section: Section::Display,
+            demo: || AnyView::new(progress_demo()),
+        },
     ]
 }
 
-/// Sidebar: a header followed by one selectable section per category.
-fn sidebar(selection: Binding<Option<usize>>) -> impl View {
-    let all = examples();
-    let sections = Category::ALL
-        .iter()
-        .map(|&category| AnyView::new(sidebar_section(&all, category, &selection)))
-        .collect::<Vec<_>>();
+// ---------------------------------------------------------------------------
+// Layout: top app bar + collapsible drawer/rail + detail
+// ---------------------------------------------------------------------------
+
+/// The whole catalog. The split view is the root so the window gives it full
+/// bounds (it places the sidebar + detail panes itself). Toggling `expanded`
+/// rebuilds it so the sidebar can switch between a labelled drawer (wide) and an
+/// icon-only rail (narrow).
+fn catalog(expanded: Binding<bool>, selected: Binding<Option<usize>>) -> impl View {
+    let watched = expanded.clone();
+    watch(watched, move |open| {
+        let selected = selected.clone();
+        let sidebar_selected = selected.clone();
+        let sidebar_toggle = expanded.clone();
+        NavigationSplitView::new(
+            &selected,
+            move || drawer(open, sidebar_toggle.clone(), sidebar_selected.clone()),
+            control_detail,
+        )
+        .sidebar_width(if open { 256.0 } else { 88.0 })
+        .placeholder(placeholder)
+    })
+}
+
+/// The drawer header: a menu button that toggles the drawer, plus the title
+/// (shown only when expanded).
+fn drawer_header(expanded: bool, toggle: &Binding<bool>) -> impl View {
+    let menu = button(label("Toggle navigation").icon(mdi::menu()).icon_only())
+        .borderless()
+        .action(|State(open): State<Binding<bool>>| open.set(!open.get()))
+        .state(toggle);
+    let title = text("WaterUI Controls")
+        .sub_headline()
+        .bold()
+        .foreground(Foreground)
+        .visible(expanded);
+    hstack((menu, title))
+        .spacing(10.0)
+        .padding_with(EdgeInsets::new(8.0, 8.0, 6.0, 8.0))
+}
+
+/// Sidebar contents: a header, then section headers + labelled rows (drawer), or
+/// icon-only rows (rail) when collapsed.
+fn drawer(expanded: bool, toggle: Binding<bool>, selected: Binding<Option<usize>>) -> impl View {
+    let all = controls();
+    let mut rows: Vec<AnyView> = vec![AnyView::new(drawer_header(expanded, &toggle))];
+
+    for section in Section::ALL {
+        if expanded {
+            rows.push(AnyView::new(
+                text(section.title())
+                    .caption()
+                    .bold()
+                    .foreground(MutedForeground)
+                    .padding_with(EdgeInsets::new(14.0, 6.0, 12.0, 8.0)),
+            ));
+        } else {
+            rows.push(AnyView::new(Divider));
+        }
+        for (index, control) in all
+            .iter()
+            .enumerate()
+            .filter(|(_, control)| control.section == section)
+        {
+            rows.push(AnyView::new(drawer_item(
+                index, control, expanded, &selected,
+            )));
+        }
+    }
 
     scroll(
-        vstack((
-            vstack((
-                text("WaterUI Gallery").headline().foreground(Foreground),
-                text("Pick an example to preview")
-                    .caption()
-                    .foreground(MutedForeground),
-            ))
+        vstack(rows)
             .spacing(4.0)
-            .padding_with(EdgeInsets::all(12.0)),
-            vstack(sections),
-        ))
-        .padding_with(EdgeInsets::symmetric(8.0, 8.0)),
+            .alignment(HorizontalAlignment::Leading)
+            .padding_with(EdgeInsets::symmetric(8.0, 8.0)),
     )
-    .width(300.0)
 }
 
-/// One category section in the sidebar: heading plus its selectable rows.
-fn sidebar_section(
-    all: &[Example],
-    category: Category,
-    selection: &Binding<Option<usize>>,
+/// A selectable sidebar row. Uses a [`Label`] so the M3 backend renders an
+/// icon + title (or icon-only when collapsed) with proper accessibility.
+fn drawer_item(
+    index: usize,
+    control: &Control,
+    expanded: bool,
+    selected: &Binding<Option<usize>>,
 ) -> impl View {
-    let rows = all
-        .iter()
-        .enumerate()
-        .filter(|(_, example)| example.category == category)
-        .map(|(index, example)| AnyView::new(sidebar_row(index, example, selection)))
-        .collect::<Vec<_>>();
-
-    vstack((
-        text(category.title())
-            .caption()
-            .bold()
-            .foreground(Accent)
-            .padding_with(EdgeInsets::new(14.0, 8.0, 4.0, 8.0)),
-        vstack(rows),
-    ))
-}
-
-/// A selectable sidebar row that drives the detail area and highlights when active.
-///
-/// Each row is a semantic [`Button`] so it exposes a proper accessibility role
-/// and click action; the active selection is shown as the button background.
-fn sidebar_row(index: usize, example: &Example, selection: &Binding<Option<usize>>) -> impl View {
-    let icon = match example.demo {
-        Demo::Embed(_) => ">",
-        Demo::Standalone { .. } => "↗",
-    };
-    let is_selected = selection.clone().map(move |current| current == Some(index));
+    let is_selected = selected.clone().map(move |current| current == Some(index));
     let selected_bg: Color = SurfaceVariant.into();
     let clear_bg: Color = Srgb::WHITE.with_opacity(0.0).into();
     let background = is_selected.select(selected_bg, clear_bg).computed();
 
-    button(label(example.title).icon(text(icon)).trailing())
-        .action(move |State(sel): State<Binding<Option<usize>>>| sel.set(Some(index)))
-        .state(selection)
-        .background(background)
-        .padding_with(EdgeInsets::symmetric(2.0, 0.0))
+    let mode = if expanded {
+        LabelDisplayMode::TitleAndIcon
+    } else {
+        LabelDisplayMode::IconOnly
+    };
+
+    button(
+        label(control.title)
+            .icon((control.icon)())
+            .leading()
+            .display_mode(mode),
+    )
+    .borderless()
+    .action(move |State(sel): State<Binding<Option<usize>>>| sel.set(Some(index)))
+    .state(selected)
+    .background(background)
+    .padding_with(EdgeInsets::symmetric(2.0, 4.0))
 }
 
-/// Detail placeholder shown on wide layouts before anything is selected.
+/// The detail pane for the selected control: its title (in the navigation bar)
+/// and its live demo.
+fn control_detail(index: usize) -> NavigationView {
+    let all = controls();
+    let control = &all[index];
+    NavigationView::new(
+        control.title,
+        (control.demo)().padding_with(EdgeInsets::all(20.0)),
+    )
+}
+
+/// Shown before any control is selected (wide layouts).
 fn placeholder() -> impl View {
     vstack((
-        text("WaterUI Gallery").title().foreground(Foreground),
-        text("Select an example from the sidebar to preview it here.")
+        text("WaterUI Controls").title().foreground(Foreground),
+        text("Choose a control from the navigation drawer to see it live.")
             .body()
             .foreground(MutedForeground),
     ))
@@ -405,163 +238,241 @@ fn placeholder() -> impl View {
     .padding()
 }
 
-/// Builds the detail screen for the example at `index`.
-fn build_detail(index: usize) -> NavigationView {
-    let all = examples();
-    let example = &all[index];
-    let content: AnyView = match &example.demo {
-        Demo::Embed(build) => build(),
-        Demo::Standalone { package, reason } => {
-            AnyView::new(standalone_card(example.summary, package, reason))
-        }
-    };
-    NavigationView::new(example.title, content)
+/// Shared intro line for a demo.
+fn note(text_value: &'static str) -> impl View {
+    text(text_value).body().foreground(MutedForeground)
 }
 
-/// Detail screen for an example that must run on its own.
-fn standalone_card(summary: &'static str, package: &'static str, reason: &'static str) -> impl View {
-    scroll(
-        vstack((
-            text(summary).body(),
-            spacer_min(16.0),
-            Divider,
-            spacer_min(16.0),
-            text("Runs standalone").sub_headline(),
-            text(reason).body().foreground(MutedForeground),
-            spacer_min(12.0),
-            text!("water run -p {package}")
-                .body()
-                .foreground(Accent),
-        ))
-        .padding_with(EdgeInsets::all(16.0)),
-    )
+// ---------------------------------------------------------------------------
+// Control demos
+// ---------------------------------------------------------------------------
+
+/// Increments a shared tap counter; reused by every button style.
+fn bump(State(taps): State<Binding<i32>>) {
+    taps.set(taps.get() + 1);
 }
 
-/// Builds the responsive sidebar + detail split around a caller-owned selection.
-///
-/// The selection is passed in (not created here) so its owner controls its
-/// lifetime: the app owns it at the window scope so it survives content
-/// rebuilds and reliably drives the detail area.
-fn gallery(selection: Binding<Option<usize>>) -> impl View {
-    NavigationSplitView::new(
-        &selection,
-        {
-            let selection = selection.clone();
-            move || sidebar(selection.clone())
-        },
-        build_detail,
-    )
-    .sidebar_width(300.0)
-    .placeholder(placeholder)
+fn buttons_demo() -> impl View {
+    let taps: Binding<i32> = binding(0);
+    vstack((
+        note("Every button shares one action. ButtonStyle controls the appearance."),
+        text!("Taps: {taps}").body(),
+        button("Automatic").action(bump).state(&taps),
+        button("Bordered").bordered().action(bump).state(&taps),
+        button("Bordered Prominent")
+            .bordered_prominent()
+            .action(bump)
+            .state(&taps),
+        button("Plain").plain().action(bump).state(&taps),
+        button("Borderless").borderless().action(bump).state(&taps),
+        button("Link").link().action(bump).state(&taps),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
 }
+
+fn toggle_demo() -> impl View {
+    let wifi = binding(true);
+    let bluetooth = binding(false);
+    vstack((
+        note("ToggleStyle switches between a switch and a checkbox."),
+        Toggle::new(&wifi).label("Wi-Fi").style(ToggleStyle::Switch),
+        Toggle::new(&bluetooth)
+            .label("Bluetooth")
+            .style(ToggleStyle::Checkbox),
+        text!("Wi-Fi {wifi} · Bluetooth {bluetooth}").body(),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
+}
+
+fn slider_demo() -> impl View {
+    let value = binding(40.0);
+    vstack((
+        note("Drag the slider; the progress bar reflects the value."),
+        slider("Volume", &value).range(0.0..=100.0),
+        text!("Value: {value}").body(),
+        progress(value.clone().map(|v| v / 100.0)),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
+}
+
+fn stepper_demo() -> impl View {
+    let quantity = binding(2);
+    vstack((
+        note("Stepper adjusts an integer within a range."),
+        stepper("Quantity", &quantity).range(0..=10),
+        text!("Quantity: {quantity}").body(),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
+}
+
+fn text_field_demo() -> impl View {
+    let name: Binding<Str> = binding(Str::from(""));
+    vstack((
+        note("TextField binds to reactive text and echoes it live."),
+        TextField::new(&name).label("Name").prompt("Type your name"),
+        text!("Echo: {name}").body(),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
+}
+
+fn size_items() -> Vec<waterui::form::picker::PickerItem<&'static str>> {
+    vec![
+        text("Small").tag("Small"),
+        text("Medium").tag("Medium"),
+        text("Large").tag("Large"),
+    ]
+}
+
+fn picker_demo() -> impl View {
+    let size = Binding::container("Medium");
+    vstack((
+        note("PickerStyle renders the same selection as segmented, menu, or radio."),
+        text("Segmented").sub_headline(),
+        picker(size_items(), &size).style(PickerStyle::Segmented),
+        text("Menu").sub_headline(),
+        picker(size_items(), &size).style(PickerStyle::Menu),
+        text("Radio").sub_headline(),
+        picker(size_items(), &size).style(PickerStyle::Radio),
+        text!("Selected: {size}").body(),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
+}
+
+fn label_demo() -> impl View {
+    vstack((
+        note("LabelDisplayMode controls whether the title, icon, or both show."),
+        label("Title and Icon")
+            .icon(mdi::home())
+            .leading()
+            .display_mode(LabelDisplayMode::TitleAndIcon),
+        label("Title Only")
+            .icon(mdi::home())
+            .leading()
+            .display_mode(LabelDisplayMode::TitleOnly),
+        label("Icon Only")
+            .icon(mdi::home())
+            .leading()
+            .display_mode(LabelDisplayMode::IconOnly),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
+}
+
+fn progress_demo() -> impl View {
+    vstack((
+        note("Progress shows determinate completion."),
+        text("25%").caption(),
+        progress(0.25),
+        text("50%").caption(),
+        progress(0.5),
+        text("75%").caption(),
+        progress(0.75),
+    ))
+    .spacing(12.0)
+    .alignment(HorizontalAlignment::Leading)
+}
+
+// ---------------------------------------------------------------------------
+// Entry points
+// ---------------------------------------------------------------------------
 
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    gallery(Binding::container(None::<usize>))
+    catalog(binding(true), Binding::container(Some(0)))
+}
+
+#[preview]
+fn rail() -> impl View {
+    catalog(binding(false), Binding::container(Some(4)))
 }
 
 pub fn app(env: Environment) -> App {
-    // Own the selection at the window scope so it persists across rebuilds.
-    let selection = Binding::container(None::<usize>);
-    App::new(move || gallery(selection.clone()), env)
+    // Own the drawer + selection state at the window scope so they persist
+    // across content rebuilds.
+    let expanded = binding(true);
+    let selected = Binding::container(Some(0));
+    App::new(move || catalog(expanded.clone(), selected.clone()), env)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_detail, demo, placeholder, sidebar};
+    use super::catalog;
     use core::time::Duration;
     use waterui::Binding;
     use waterui::env::Environment;
-    use waterui::navigation::NavigationSplitView;
+    use waterui::reactive::binding;
     use waterui_testing::{SemanticApp, ui};
 
-    /// Mounts the shipping [`demo`] entry at the given viewport.
-    fn mount_demo(width: u32, height: u32) -> SemanticApp {
+    /// Mounts the catalog with caller-owned state (as a real app window owns its
+    /// root state) so interaction survives the test driver's full-tree rebuilds.
+    fn mount(
+        expanded: Binding<bool>,
+        selected: Binding<Option<usize>>,
+        width: u32,
+        height: u32,
+    ) -> SemanticApp {
         let mut env = Environment::new();
         hydrolysis_m3::install(&mut env);
-        ui().environment(env).viewport(width, height).mount(demo)
+        ui().environment(env)
+            .viewport(width, height)
+            .mount(move || catalog(expanded.clone(), selected.clone()))
     }
 
-    /// Mounts the split view with the selection owned at the window scope, as a
-    /// real app window owns its root state. Interaction tests use this so they
-    /// exercise the real `sidebar` / `build_detail` wiring without the test
-    /// driver's full-tree rebuild discarding builder-local state.
-    fn mount_split(selection: Binding<Option<usize>>, width: u32, height: u32) -> SemanticApp {
-        let mut env = Environment::new();
-        hydrolysis_m3::install(&mut env);
-        ui().environment(env).viewport(width, height).mount(move || {
-            let selection = selection.clone();
-            NavigationSplitView::new(
-                &selection,
-                {
-                    let selection = selection.clone();
-                    move || sidebar(selection.clone())
-                },
-                build_detail,
-            )
-            .sidebar_width(300.0)
-            .placeholder(placeholder)
-        })
-    }
-
-    /// The sidebar lists the title, every category heading, and example titles.
+    /// The expanded drawer lists section headers and every control, and the
+    /// detail pane shows the selected control's live demo.
     #[test]
-    fn sidebar_lists_catalog() {
-        let mut app = mount_demo(390, 900);
-        app.query().label("WaterUI Gallery").assert_exists();
-        for category in ["Codes", "Components", "Interaction", "Visual", "Media"] {
-            app.query().label(category).assert_exists();
+    fn catalog_lists_controls() {
+        let mut app = mount(binding(true), Binding::container(Some(0)), 1100, 760);
+        for section in ["Actions", "Inputs", "Selection", "Display"] {
+            app.query().label(section).assert_exists();
         }
-        for title in ["Barcode", "Hover & Cursor", "Gradients", "Video Player"] {
-            app.query().label_contains(title).assert_exists();
+        for control in ["Buttons", "Toggle", "Slider", "Picker", "Label"] {
+            app.query().label(control).assert_exists();
         }
-    }
-
-    /// On a wide viewport the sidebar and the detail area render together: the
-    /// responsive two-column layout with the placeholder before any selection.
-    #[test]
-    fn wide_layout_shows_sidebar_and_detail_area() {
-        let mut app = mount_demo(1000, 700);
-        app.query().label("Components").assert_exists();
-        app.query().label_contains("Select an example").assert_exists();
-    }
-
-    /// Selecting an embeddable example renders its live demo in the detail area
-    /// and replaces the placeholder, while the sidebar stays put.
-    #[test]
-    fn embedded_example_opens_live() {
-        let mut app = mount_split(Binding::container(None), 1000, 700);
-        assert!(
-            app.query().label_contains("Hover & Cursor").tap(),
-            "sidebar row should be tappable"
-        );
-        // "Cursor Styles" is a heading inside the embedded hover demo.
-        assert!(
-            app.query()
-                .label_contains("Cursor Styles")
-                .wait_for_existence(Duration::from_secs(3)),
-            "embedded hover demo should render in the detail area"
-        );
+        // Buttons is selected, so the detail shows a button-style variant.
         app.query()
-            .label_contains("Select an example")
-            .assert_not_exists();
-        app.query().label("Components").assert_exists();
+            .label_contains("Bordered Prominent")
+            .assert_exists();
     }
 
-    /// Selecting a standalone example shows the `water run` instructions card.
+    /// Selecting a control in the drawer shows its live demo in the detail pane.
     #[test]
-    fn standalone_example_shows_run_command() {
-        let mut app = mount_split(Binding::container(None), 1000, 700);
+    fn selecting_control_shows_demo() {
+        let mut app = mount(binding(true), Binding::container(Some(0)), 1100, 760);
         assert!(
-            app.query().label_contains("Video Player").tap(),
-            "sidebar row should be tappable"
+            app.query().label("Toggle").tap(),
+            "drawer item should be tappable"
         );
         assert!(
             app.query()
-                .label_contains("water run -p video-player-example")
+                .label_contains("Bluetooth")
                 .wait_for_existence(Duration::from_secs(3)),
-            "standalone card should show the run command"
+            "the Toggle demo should render after selection"
+        );
+    }
+
+    /// The menu button collapses the drawer to an icon-only rail, hiding the
+    /// section headers.
+    #[test]
+    fn menu_button_collapses_to_rail() {
+        let mut app = mount(binding(true), Binding::container(Some(0)), 1100, 760);
+        app.query().label("Actions").assert_exists();
+        assert!(
+            app.query().label("Toggle navigation").tap(),
+            "menu button should be tappable"
+        );
+        assert!(
+            app.query()
+                .label("Actions")
+                .wait_for_nonexistence(Duration::from_secs(3)),
+            "section headers should disappear in the collapsed rail"
         );
     }
 }
