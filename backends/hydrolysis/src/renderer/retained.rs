@@ -1308,6 +1308,13 @@ impl HydrolysisRenderer {
         if self.retained_window_frame.is_none() {
             return false;
         }
+        // Start-of-frame measurement reset, exactly as a structural rebuild does: the
+        // view-dimension cache is keyed by ephemeral view pointers and must not carry
+        // stale entries from the previous frame into this patch's re-measurement (a freed
+        // node's content can be reallocated at the same address). `Dynamic` node intrinsic
+        // entries survive — they hold the previous sizes the size-change check compares
+        // against.
+        self.state.measurement.begin_frame();
         // Apply any pending fine-grained reactive patches before compositing. If a patch
         // reflowed layout it escalates to a full rebuild, so bail to the rebuild path.
         if !self.patch_dirty_dynamic_nodes() {
