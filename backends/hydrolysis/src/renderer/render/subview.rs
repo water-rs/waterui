@@ -5,17 +5,22 @@ use waterui_core::MainThreadBound;
 
 /// Layout proxy that measures a child view through the hydrolysis renderer.
 ///
-/// Most children measure by recursing into arbitrary (possibly reactive) bodies,
-/// which borrows the renderer's `HydroState` and a `!Send` `Environment`. Those
-/// measurements are confined to the main thread: the relevant fields are wrapped
-/// in [`MainThreadBound`] and the subview reports `require_main_thread() == true`.
+/// The per-frame render tree is built serially on the main thread, but each
+/// child's *measurement* runs through the layout executor, which may schedule it
+/// on a worker thread. Only one kind of leaf has a measurement heavy enough to be
+/// worth parallelizing: **text**, whose shaping (parley line-breaking and glyph
+/// layout) dominates. Every other leaf measures in `O(1)` (a fill-of-proposal or a
+/// constant), so there is nothing to offload — those keep measuring on the main
+/// thread, and shapes/images get their parallelism at the GPU encode layer instead.
 ///
-/// Text leaves are different. Hydrolysis fully resolves a `Text`/`Str` node on
-/// the main thread (reading its signals and theme) into a `Send`
-/// [`ResolvedTextLayoutInput`]; the remaining work — shaping it into a layout and
-/// reading line metrics — is pure and runs through the thread-safe
-/// [`TextMeasureService`]. For those children `require_main_thread()` returns
-/// `false`, so the layout executor measures them across worker threads.
+/// So a text leaf is fully resolved on the main thread during tree-build (reading
+/// its signals and theme) into a `Send` [`ResolvedTextLayoutInput`]; the remaining
+/// shaping is pure and runs through the thread-safe [`TextMeasureService`]. For
+/// those children `require_main_thread()` returns `false`, so the executor measures
+/// them across worker threads. Every other view measures by recursing into
+/// arbitrary (possibly reactive) bodies, which borrows the renderer's `HydroState`
+/// and a `!Send` `Environment`; those are confined to the main thread via
+/// [`MainThreadBound`] and the subview reports `require_main_thread() == true`.
 pub(crate) struct HydroSubview<'a> {
     view: MainThreadBound<&'a AnyView>,
     state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
@@ -128,14 +133,16 @@ impl SubView for HydroSubview<'_> {
     }
 }
 
-/// Resolve a text leaf (`Str`/`Text`, possibly behind environment metadata or a
-/// passthrough wrapper) into a `Send` layout input on the main thread.
+/// Resolve a text leaf into a `Send` layout input on the main thread, or `None`
+/// for any non-text view (which then measures on the main thread).
 ///
-/// Mirrors the text handling in
+/// Covers every shape text reaches the layout in: `Str`, `Text`, the lowered
+/// `Native<TextConfig>`, and the string-likes (`&str`/`String`/`Cow`) that render
+/// as plain text. The string-likes are bodied on the main thread (cheap) and
+/// recursed so the heavy shaping still happens off the main thread. Mirrors the
+/// text handling in
 /// [`measure_view_dimensions_with_proposal`](super::measure_view_dimensions_with_proposal)
-/// so the worker-thread fast path and the main-thread recursion produce the same
-/// dimensions. Returns `None` for any other view, which then measures on the
-/// main thread.
+/// so the worker-thread fast path and the main-thread recursion agree.
 fn try_resolve_text_leaf(view: &AnyView, env: &Environment) -> Option<ResolvedTextLayoutInput> {
     let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
 
@@ -158,6 +165,28 @@ fn try_resolve_text_leaf(view: &AnyView, env: &Environment) -> Option<ResolvedTe
             resolved.paragraph_alignment.get(),
             &scoped_env,
         ));
+    }
+
+    if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
+        let config = text.as_inner();
+        return Some(resolve_text_layout_input(
+            &config.content.get(),
+            config.paragraph_alignment.get(),
+            &scoped_env,
+        ));
+    }
+
+    if let Some(text) = view.downcast_ref::<&'static str>() {
+        let body = AnyView::new((*text).body(&scoped_env));
+        return try_resolve_text_leaf(&body, &scoped_env);
+    }
+    if let Some(text) = view.downcast_ref::<String>() {
+        let body = AnyView::new(text.clone().body(&scoped_env));
+        return try_resolve_text_leaf(&body, &scoped_env);
+    }
+    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
+        let body = AnyView::new(text.clone().body(&scoped_env));
+        return try_resolve_text_leaf(&body, &scoped_env);
     }
 
     None
