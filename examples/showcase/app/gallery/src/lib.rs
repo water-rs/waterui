@@ -5,7 +5,12 @@
 //! framework's controls grouped by category; each group header expands or collapses
 //! its items. Selecting a control shows it live and interactive in the detail area —
 //! including its style/variant options — so the catalog demonstrates each control's
-//! behavior directly instead of pointing elsewhere.
+//! behavior directly.
+//!
+//! Interactive demo state lives in [`DemoState`], owned at the window scope and
+//! threaded into the demos. The split view rebuilds its detail builder on render,
+//! so any state created *inside* a demo would reset; owning it externally keeps the
+//! controls live (a button's counter actually counts, a toggle stays toggled).
 
 use waterui::Color;
 use waterui::app::App;
@@ -52,12 +57,39 @@ impl Section {
     }
 }
 
+/// Reactive state for every interactive demo, owned at the window scope so it
+/// survives the split view rebuilding its detail.
+#[derive(Clone)]
+struct DemoState {
+    taps: Binding<i32>,
+    wifi: Binding<bool>,
+    bluetooth: Binding<bool>,
+    volume: Binding<f64>,
+    quantity: Binding<i32>,
+    name: Binding<Str>,
+    size: Binding<&'static str>,
+}
+
+impl DemoState {
+    fn new() -> Self {
+        Self {
+            taps: binding(0),
+            wifi: binding(true),
+            bluetooth: binding(false),
+            volume: binding(40.0),
+            quantity: binding(2),
+            name: binding(Str::from("")),
+            size: Binding::container("Medium"),
+        }
+    }
+}
+
 /// A single catalog entry: a control with its drawer icon and live demo.
 struct Control {
     title: &'static str,
     icon: fn() -> mdi::Svg,
     section: Section,
-    demo: fn() -> AnyView,
+    demo: fn(&DemoState) -> AnyView,
 }
 
 /// The catalog, in drawer order.
@@ -67,49 +99,49 @@ fn controls() -> Vec<Control> {
             title: "Buttons",
             icon: mdi::gesture_tap_button,
             section: Section::Actions,
-            demo: || AnyView::new(buttons_demo()),
+            demo: |s| AnyView::new(buttons_demo(&s.taps)),
         },
         Control {
             title: "Text Field",
             icon: mdi::form_textbox,
             section: Section::Inputs,
-            demo: || AnyView::new(text_field_demo()),
+            demo: |s| AnyView::new(text_field_demo(&s.name)),
         },
         Control {
             title: "Slider",
             icon: mdi::tune,
             section: Section::Inputs,
-            demo: || AnyView::new(slider_demo()),
+            demo: |s| AnyView::new(slider_demo(&s.volume)),
         },
         Control {
             title: "Stepper",
             icon: mdi::numeric,
             section: Section::Inputs,
-            demo: || AnyView::new(stepper_demo()),
+            demo: |s| AnyView::new(stepper_demo(&s.quantity)),
         },
         Control {
             title: "Toggle",
             icon: mdi::toggle_switch,
             section: Section::Selection,
-            demo: || AnyView::new(toggle_demo()),
+            demo: |s| AnyView::new(toggle_demo(&s.wifi, &s.bluetooth)),
         },
         Control {
             title: "Picker",
             icon: mdi::format_list_bulleted,
             section: Section::Selection,
-            demo: || AnyView::new(picker_demo()),
+            demo: |s| AnyView::new(picker_demo(&s.size)),
         },
         Control {
             title: "Label",
             icon: mdi::text_box_outline,
             section: Section::Display,
-            demo: || AnyView::new(label_demo()),
+            demo: |_| AnyView::new(label_demo()),
         },
         Control {
             title: "Progress",
             icon: mdi::gauge,
             section: Section::Display,
-            demo: || AnyView::new(progress_demo()),
+            demo: |_| AnyView::new(progress_demo()),
         },
     ]
 }
@@ -118,16 +150,19 @@ fn controls() -> Vec<Control> {
 // Layout: collapsible grouped navigation drawer + detail
 // ---------------------------------------------------------------------------
 
-/// The whole catalog: a single, stable [`NavigationSplitView`]. It is never
-/// rebuilt (no `watch` at the root), so selecting a control or collapsing a
-/// group never triggers a full-window rebuild. The split places the sidebar and
-/// detail panes and collapses the sidebar to a rail on narrow windows.
-fn catalog(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) -> impl View {
+/// The whole catalog: a single, stable [`NavigationSplitView`] (no `watch` at the
+/// root, so it is never rebuilt as a unit). The split places the sidebar and detail
+/// panes and collapses the sidebar to a rail on narrow windows.
+fn catalog(
+    selected: Binding<Option<usize>>,
+    groups_open: Vec<Binding<bool>>,
+    state: DemoState,
+) -> impl View {
     let sidebar_selected = selected.clone();
     NavigationSplitView::new(
         &selected,
         move || sidebar(sidebar_selected.clone(), groups_open.clone()),
-        control_detail,
+        move |index| control_detail(index, &state),
     )
     .sidebar_width(280.0)
     .placeholder(placeholder)
@@ -135,7 +170,6 @@ fn catalog(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) ->
 
 /// Sidebar: a title header followed by one collapsible group per category.
 fn sidebar(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) -> impl View {
-    let all = controls();
     let mut rows: Vec<AnyView> = vec![AnyView::new(
         text("WaterUI Controls")
             .sub_headline()
@@ -144,9 +178,10 @@ fn sidebar(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) ->
             .padding_with(EdgeInsets::new(12.0, 12.0, 14.0, 12.0)),
     )];
 
+    let all = controls();
     for (group_index, &section) in Section::ALL.iter().enumerate() {
         let open = groups_open[group_index].clone();
-        rows.push(AnyView::new(group_header(section, &open)));
+        rows.push(AnyView::new(group_header(section, open.clone())));
         for (index, control) in all
             .iter()
             .enumerate()
@@ -166,11 +201,11 @@ fn sidebar(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) ->
 
 /// A collapsible group header: an accessible button (group icon + title) that
 /// toggles the group, plus a chevron that reflects the open state.
-fn group_header(section: Section, open: &Binding<bool>) -> impl View {
+fn group_header(section: Section, open: Binding<bool>) -> impl View {
     let header = button(label(section.title()).icon((section.icon())()).leading())
         .borderless()
         .action(|State(open): State<Binding<bool>>| open.set(!open.get()))
-        .state(open);
+        .state(&open);
     let chevron = zstack((
         mdi::chevron_right().visible(open.clone().map(|o| !o)),
         mdi::chevron_down().visible(open.clone()),
@@ -201,13 +236,13 @@ fn item_row(
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
-/// and its live demo.
-fn control_detail(index: usize) -> NavigationView {
+/// and its live demo, bound to the shared [`DemoState`].
+fn control_detail(index: usize, state: &DemoState) -> NavigationView {
     let all = controls();
     let control = &all[index];
     NavigationView::new(
         control.title,
-        (control.demo)().padding_with(EdgeInsets::all(20.0)),
+        (control.demo)(state).padding_with(EdgeInsets::all(20.0)),
     )
 }
 
@@ -229,7 +264,7 @@ fn note(text_value: &'static str) -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// Control demos
+// Control demos (state is passed in, never created here)
 // ---------------------------------------------------------------------------
 
 /// Increments a shared tap counter; reused by every button style.
@@ -237,32 +272,29 @@ fn bump(State(taps): State<Binding<i32>>) {
     taps.set(taps.get() + 1);
 }
 
-fn buttons_demo() -> impl View {
-    let taps: Binding<i32> = binding(0);
+fn buttons_demo(taps: &Binding<i32>) -> impl View {
     vstack((
         note("Every button shares one action. ButtonStyle controls the appearance."),
         text!("Taps: {taps}").body(),
-        button("Automatic").action(bump).state(&taps),
-        button("Bordered").bordered().action(bump).state(&taps),
+        button("Automatic").action(bump).state(taps),
+        button("Bordered").bordered().action(bump).state(taps),
         button("Bordered Prominent")
             .bordered_prominent()
             .action(bump)
-            .state(&taps),
-        button("Plain").plain().action(bump).state(&taps),
-        button("Borderless").borderless().action(bump).state(&taps),
-        button("Link").link().action(bump).state(&taps),
+            .state(taps),
+        button("Plain").plain().action(bump).state(taps),
+        button("Borderless").borderless().action(bump).state(taps),
+        button("Link").link().action(bump).state(taps),
     ))
     .spacing(12.0)
     .alignment(HorizontalAlignment::Leading)
 }
 
-fn toggle_demo() -> impl View {
-    let wifi = binding(true);
-    let bluetooth = binding(false);
+fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
     vstack((
         note("ToggleStyle switches between a switch and a checkbox."),
-        Toggle::new(&wifi).label("Wi-Fi").style(ToggleStyle::Switch),
-        Toggle::new(&bluetooth)
+        Toggle::new(wifi).label("Wi-Fi").style(ToggleStyle::Switch),
+        Toggle::new(bluetooth)
             .label("Bluetooth")
             .style(ToggleStyle::Checkbox),
         text!("Wi-Fi {wifi} · Bluetooth {bluetooth}").body(),
@@ -271,34 +303,31 @@ fn toggle_demo() -> impl View {
     .alignment(HorizontalAlignment::Leading)
 }
 
-fn slider_demo() -> impl View {
-    let value = binding(40.0);
+fn slider_demo(volume: &Binding<f64>) -> impl View {
     vstack((
         note("Drag the slider; the progress bar reflects the value."),
-        slider("Volume", &value).range(0.0..=100.0),
-        text!("Value: {value}").body(),
-        progress(value.clone().map(|v| v / 100.0)),
+        slider("Volume", volume).range(0.0..=100.0),
+        text!("Value: {volume}").body(),
+        progress(volume.clone().map(|v| v / 100.0)).label("Volume"),
     ))
     .spacing(12.0)
     .alignment(HorizontalAlignment::Leading)
 }
 
-fn stepper_demo() -> impl View {
-    let quantity = binding(2);
+fn stepper_demo(quantity: &Binding<i32>) -> impl View {
     vstack((
         note("Stepper adjusts an integer within a range."),
-        stepper("Quantity", &quantity).range(0..=10),
+        stepper("Quantity", quantity).range(0..=10),
         text!("Quantity: {quantity}").body(),
     ))
     .spacing(12.0)
     .alignment(HorizontalAlignment::Leading)
 }
 
-fn text_field_demo() -> impl View {
-    let name: Binding<Str> = binding(Str::from(""));
+fn text_field_demo(name: &Binding<Str>) -> impl View {
     vstack((
         note("TextField binds to reactive text and echoes it live."),
-        TextField::new(&name).label("Name").prompt("Type your name"),
+        TextField::new(name).label("Name").prompt("Type your name"),
         text!("Echo: {name}").body(),
     ))
     .spacing(12.0)
@@ -313,16 +342,15 @@ fn size_items() -> Vec<waterui::form::picker::PickerItem<&'static str>> {
     ]
 }
 
-fn picker_demo() -> impl View {
-    let size = Binding::container("Medium");
+fn picker_demo(size: &Binding<&'static str>) -> impl View {
     vstack((
         note("PickerStyle renders the same selection as segmented, menu, or radio."),
         text("Segmented").sub_headline(),
-        picker(size_items(), &size).style(PickerStyle::Segmented),
+        picker(size_items(), size).style(PickerStyle::Segmented),
         text("Menu").sub_headline(),
-        picker(size_items(), &size).style(PickerStyle::Menu),
+        picker(size_items(), size).style(PickerStyle::Menu),
         text("Radio").sub_headline(),
-        picker(size_items(), &size).style(PickerStyle::Radio),
+        picker(size_items(), size).style(PickerStyle::Radio),
         text!("Selected: {size}").body(),
     ))
     .spacing(12.0)
@@ -352,14 +380,11 @@ fn label_demo() -> impl View {
 fn progress_demo() -> impl View {
     vstack((
         note("Progress shows determinate completion."),
-        text("25%").caption(),
-        progress(0.25),
-        text("50%").caption(),
-        progress(0.5),
-        text("75%").caption(),
-        progress(0.75),
+        progress(0.25).label("Downloading"),
+        progress(0.5).label("Halfway"),
+        progress(0.75).label("Almost there"),
     ))
-    .spacing(12.0)
+    .spacing(16.0)
     .alignment(HorizontalAlignment::Leading)
 }
 
@@ -367,25 +392,28 @@ fn progress_demo() -> impl View {
 // Entry points
 // ---------------------------------------------------------------------------
 
-/// Builds fresh catalog state: the selected control plus one open-flag per group.
-fn new_state() -> (Binding<Option<usize>>, Vec<Binding<bool>>) {
+/// Builds fresh catalog state: the selected control, one open-flag per group, and
+/// the interactive demo state.
+fn new_state() -> (Binding<Option<usize>>, Vec<Binding<bool>>, DemoState) {
     let selected = Binding::container(Some(0));
     let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
-    (selected, groups_open)
+    (selected, groups_open, DemoState::new())
 }
 
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    let (selected, groups_open) = new_state();
-    catalog(selected, groups_open)
+    let (selected, groups_open, state) = new_state();
+    catalog(selected, groups_open, state)
 }
 
 pub fn app(env: Environment) -> App {
-    // Own the selection + group-open state at the window scope so it persists
-    // across rebuilds.
-    let (selected, groups_open) = new_state();
-    App::new(move || catalog(selected.clone(), groups_open.clone()), env)
+    // Own all mutable state at the window scope so it persists across rebuilds.
+    let (selected, groups_open, state) = new_state();
+    App::new(
+        move || catalog(selected.clone(), groups_open.clone(), state.clone()),
+        env,
+    )
 }
 
 #[cfg(test)]
@@ -396,11 +424,14 @@ mod tests {
     use waterui::env::Environment;
     use waterui_testing::{SemanticApp, ui};
 
+    use super::DemoState;
+
     /// Mounts the catalog with caller-owned state (as a real app window owns its
     /// root state) so interaction survives the test driver's full-tree rebuilds.
     fn mount(
         selected: Binding<Option<usize>>,
         groups_open: Vec<Binding<bool>>,
+        state: DemoState,
         width: u32,
         height: u32,
     ) -> SemanticApp {
@@ -408,15 +439,15 @@ mod tests {
         hydrolysis_m3::install(&mut env);
         ui().environment(env)
             .viewport(width, height)
-            .mount(move || catalog(selected.clone(), groups_open.clone()))
+            .mount(move || catalog(selected.clone(), groups_open.clone(), state.clone()))
     }
 
     /// The drawer lists every group header and control, and the detail pane shows
     /// the selected control's live demo.
     #[test]
     fn catalog_lists_controls() {
-        let (selected, groups_open) = new_state();
-        let mut app = mount(selected, groups_open, 1100, 760);
+        let (selected, groups_open, state) = new_state();
+        let mut app = mount(selected, groups_open, state, 1100, 760);
         for section in ["Actions", "Inputs", "Selection", "Display"] {
             app.query().label(section).assert_exists();
         }
@@ -431,8 +462,8 @@ mod tests {
     /// Selecting a control shows its live demo in the detail pane.
     #[test]
     fn selecting_control_shows_demo() {
-        let (selected, groups_open) = new_state();
-        let mut app = mount(selected, groups_open, 1100, 760);
+        let (selected, groups_open, state) = new_state();
+        let mut app = mount(selected, groups_open, state, 1100, 760);
         assert!(
             app.query().label("Toggle").tap(),
             "drawer item should be tappable"
@@ -445,20 +476,20 @@ mod tests {
         );
     }
 
-    /// Collapsing a group hides its items while the rest of the catalog stays
-    /// intact (the regression that previously blanked the window).
+    /// Collapsing a group removes its items (and releases their space), while the
+    /// rest of the catalog stays intact.
     #[test]
-    fn collapsing_group_hides_items_and_keeps_layout() {
-        let (selected, groups_open) = new_state();
+    fn collapsing_group_removes_items() {
+        let (selected, groups_open, state) = new_state();
         let inputs_open = groups_open[1].clone(); // Section::ALL[1] == Inputs
-        let mut app = mount(selected, groups_open, 1100, 760);
+        let mut app = mount(selected, groups_open, state, 1100, 760);
         app.query().label("Slider").assert_exists();
         inputs_open.set(false);
         assert!(
             app.query()
                 .label("Slider")
                 .wait_for_nonexistence(Duration::from_secs(3)),
-            "collapsing a group should hide its items"
+            "collapsing a group should remove its items"
         );
         app.query().label("Buttons").assert_exists();
         app.query()
@@ -466,22 +497,22 @@ mod tests {
             .assert_exists();
     }
 
-    /// The group-header button toggles its group accessibly (Click action), and
-    /// selecting an item updates the detail — both without blanking.
+    /// A demo control is actually interactive: tapping a button increments the
+    /// shared counter (state is owned externally, so it persists across rebuilds).
     #[test]
-    fn group_header_button_collapses_group() {
-        let (selected, groups_open) = new_state();
-        let mut app = mount(selected, groups_open, 1100, 760);
-        assert!(app.query().label("Slider").tap(), "item should be tappable");
+    fn button_demo_is_interactive() {
+        let (selected, groups_open, state) = new_state();
+        let mut app = mount(selected, groups_open, state, 1100, 760);
+        app.query().label_contains("Taps: 0").assert_exists();
         assert!(
-            app.query().label("Inputs").tap(),
-            "group header should be tappable"
+            app.query().label("Bordered Prominent").tap(),
+            "demo button should be tappable"
         );
         assert!(
             app.query()
-                .label("Slider")
-                .wait_for_nonexistence(Duration::from_secs(3)),
-            "tapping the group header should collapse its items"
+                .label_contains("Taps: 1")
+                .wait_for_existence(Duration::from_secs(3)),
+            "tapping a demo button should increment the counter"
         );
     }
 }
