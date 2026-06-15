@@ -1,10 +1,11 @@
 use super::*;
+use std::sync::Arc;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
-    pub font_cx: parley::FontContext,
-    pub layout_cx: parley::LayoutContext,
-    pub(crate) text_layout_cache: BTreeMap<TextLayoutCacheKey, parley::Layout<[u8; 4]>>,
+    /// Thread-safe text shaping/measurement, shared with worker-thread layout
+    /// measurement via `Arc`. See [`TextMeasureService`].
+    pub(crate) text: Arc<TextMeasureService>,
     pub(crate) measurement: MeasurementCaches,
     pub(crate) frame_device: Option<wgpu::Device>,
     pub(crate) frame_queue: Option<wgpu::Queue>,
@@ -13,9 +14,7 @@ pub struct HydroState {
 impl Default for HydroState {
     fn default() -> Self {
         Self {
-            font_cx: parley::FontContext::new(),
-            layout_cx: parley::LayoutContext::new(),
-            text_layout_cache: BTreeMap::new(),
+            text: Arc::new(TextMeasureService::new()),
             measurement: MeasurementCaches::default(),
             frame_device: None,
             frame_queue: None,
@@ -23,37 +22,20 @@ impl Default for HydroState {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct TextLayoutCacheKey {
-    pub(crate) text: String,
-    pub(crate) spans: Vec<TextLayoutSpanCacheKey>,
-    pub(crate) default_font: TextLayoutFontCacheKey,
-    pub(crate) default_brush: [u8; 4],
-    pub(crate) locale: String,
-    pub(crate) alignment_low: u64,
-    pub(crate) alignment_high: u64,
-    pub(crate) max_width: Option<u32>,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct TextLayoutSpanCacheKey {
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-    pub(crate) font: TextLayoutFontCacheKey,
-    pub(crate) foreground: Option<[u8; 4]>,
-    pub(crate) italic: bool,
-    pub(crate) underline: bool,
-    pub(crate) strikethrough: bool,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct TextLayoutFontCacheKey {
-    pub(crate) size: u32,
-    pub(crate) weight: u16,
-    pub(crate) family: Option<String>,
-}
-
 impl HydroState {
+    /// Mutable access to the registered fonts for startup font registration.
+    ///
+    /// Requires that no worker has cloned the [`TextMeasureService`] yet, which
+    /// holds during single-threaded setup before the first render/measure.
+    pub(crate) fn text_fonts_mut(&mut self) -> &mut parley::FontContext {
+        Arc::get_mut(&mut self.text)
+            .expect(
+                "hydrolysis font registration requires unique TextMeasureService ownership \
+                 before rendering",
+            )
+            .fonts_mut()
+    }
+
     pub(crate) fn set_frame_resources(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.frame_device = Some(device.clone());
         self.frame_queue = Some(queue.clone());

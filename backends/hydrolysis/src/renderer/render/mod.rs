@@ -6,6 +6,7 @@ mod measurement_cache;
 mod render_context;
 mod state;
 mod subview;
+mod text_service;
 mod view_helpers;
 
 pub use compositor::HydrolysisRenderTarget;
@@ -17,6 +18,10 @@ pub(crate) use render_context::WidgetRenderContext;
 pub(crate) use render_context::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 pub use state::HydroState;
 pub(crate) use subview::HydroSubview;
+pub(crate) use text_service::{
+    ResolvedTextLayoutInput, TextMeasureService, resolve_text_layout_input,
+    text_dimensions_from_layout,
+};
 pub(crate) use view_helpers::*;
 pub(crate) use view_helpers::{
     anchor_point, circle_arc_path, effective_stretch_axis, estimate_layout_intrinsic,

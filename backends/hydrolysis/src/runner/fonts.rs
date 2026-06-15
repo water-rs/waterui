@@ -108,7 +108,7 @@ pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::Hydroly
         }
     }
 
-    let state = renderer.state_mut();
+    let font_cx = renderer.state_mut().text_fonts_mut();
     let mut resource_fonts = ResourceFontFamilies::default();
     for root in roots {
         if !root.exists() {
@@ -140,8 +140,7 @@ pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::Hydroly
                     path.display()
                 )
             });
-            let families = state
-                .font_cx
+            let families = font_cx
                 .collection
                 .register_fonts(Blob::new(Arc::new(font_data)), None);
             let file_name = path
@@ -162,5 +161,5 @@ pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::Hydroly
             );
         }
     }
-    resource_fonts.install(&mut state.font_cx.collection);
+    resource_fonts.install(&mut font_cx.collection);
 }
