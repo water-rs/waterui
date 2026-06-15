@@ -13,10 +13,12 @@
 //! controls live (a button's counter actually counts, a toggle stays toggled).
 
 use waterui::Color;
+use waterui::Identifiable;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::form::picker::{PickerStyle, picker};
 use waterui::layout::HorizontalAlignment;
+use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::prelude::slider::slider;
 use waterui::prelude::stepper::stepper;
@@ -24,6 +26,7 @@ use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant}
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::reactive::collection::List as ReactiveList;
 use waterui_icons_material_icon as mdi;
 
 /// A category grouping in the navigation drawer.
@@ -53,6 +56,80 @@ impl Section {
             Self::Inputs => mdi::keyboard,
             Self::Selection => mdi::checkbox_marked,
             Self::Display => mdi::view_dashboard,
+        }
+    }
+}
+
+/// One row in the navigation drawer's reactive collection. Headers are always
+/// present; an item is present only while its group is expanded. Membership
+/// changes are diffed by [`Identifiable`] id, so collapsing a group truly
+/// removes its rows and releases their layout space (no reserved gap).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Header(usize),
+    Item(usize),
+}
+
+impl Identifiable for Row {
+    type Id = u32;
+
+    fn id(&self) -> u32 {
+        // Headers occupy 0.. ; items live in a disjoint range so the two never
+        // collide in the id-keyed reconcile.
+        match *self {
+            Self::Header(group) => group as u32,
+            Self::Item(index) => 0x1000 + index as u32,
+        }
+    }
+}
+
+/// The control indices belonging to a drawer group, in catalog order.
+fn group_item_indices(group: usize) -> Vec<usize> {
+    let section = Section::ALL[group];
+    controls()
+        .iter()
+        .enumerate()
+        .filter(|(_, control)| control.section == section)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The fully expanded drawer order: every header followed by its items.
+fn expanded_rows() -> Vec<Row> {
+    let mut rows = Vec::new();
+    for group in 0..Section::ALL.len() {
+        rows.push(Row::Header(group));
+        rows.extend(group_item_indices(group).into_iter().map(Row::Item));
+    }
+    rows
+}
+
+/// Expands or collapses a group by reconciling the reactive row collection:
+/// inserting the group's item rows right after its header, or removing them.
+/// The collection engine diffs by id, so only the toggled group's rows change.
+fn set_group_expanded(rows: &ReactiveList<Row>, group: usize, expanded: bool) {
+    let items = group_item_indices(group);
+    if expanded {
+        let snapshot = rows.snapshot();
+        let header_pos = snapshot
+            .iter()
+            .position(|row| *row == Row::Header(group))
+            .expect("drawer group header must be present");
+        let mut at = header_pos + 1;
+        for index in items {
+            let present = rows.snapshot().iter().any(|row| *row == Row::Item(index));
+            if !present {
+                rows.insert(at, Row::Item(index));
+            }
+            at += 1;
+        }
+    } else {
+        while let Some(pos) = rows
+            .snapshot()
+            .iter()
+            .position(|row| items.iter().any(|index| *row == Row::Item(*index)))
+        {
+            let _ = rows.remove(pos);
         }
     }
 }
@@ -156,55 +233,67 @@ fn controls() -> Vec<Control> {
 fn catalog(
     selected: Binding<Option<usize>>,
     groups_open: Vec<Binding<bool>>,
+    rows: ReactiveList<Row>,
     state: DemoState,
 ) -> impl View {
     let sidebar_selected = selected.clone();
     NavigationSplitView::new(
         &selected,
-        move || sidebar(sidebar_selected.clone(), groups_open.clone()),
+        move || sidebar(sidebar_selected.clone(), groups_open.clone(), rows.clone()),
         move |index| control_detail(index, &state),
     )
     .sidebar_width(280.0)
     .placeholder(placeholder)
 }
 
-/// Sidebar: a title header followed by one collapsible group per category.
-fn sidebar(selected: Binding<Option<usize>>, groups_open: Vec<Binding<bool>>) -> impl View {
-    let mut rows: Vec<AnyView> = vec![AnyView::new(
-        text("WaterUI Controls")
-            .sub_headline()
-            .bold()
-            .foreground(Foreground)
-            .padding_with(EdgeInsets::new(12.0, 12.0, 14.0, 12.0)),
-    )];
-
-    let all = controls();
-    for (group_index, &section) in Section::ALL.iter().enumerate() {
-        let open = groups_open[group_index].clone();
-        rows.push(AnyView::new(group_header(section, open.clone())));
-        for (index, control) in all
-            .iter()
-            .enumerate()
-            .filter(|(_, control)| control.section == section)
-        {
-            rows.push(AnyView::new(item_row(index, control, &selected, &open)));
-        }
-    }
+/// Sidebar: a fixed title above a reactive collection of drawer rows. Headers
+/// stay put while their groups expand and collapse; the collection diffs
+/// membership by id, so a collapse removes the group's items and releases their
+/// space rather than leaving a reserved gap.
+fn sidebar(
+    selected: Binding<Option<usize>>,
+    groups_open: Vec<Binding<bool>>,
+    rows: ReactiveList<Row>,
+) -> impl View {
+    let drawer = VStack::for_each(rows.clone(), move |row| match row {
+        Row::Header(group) => AnyView::new(group_header(
+            group,
+            groups_open[group].clone(),
+            rows.clone(),
+        )),
+        Row::Item(index) => AnyView::new(item_row(index, selected.clone())),
+    })
+    .spacing(2.0)
+    .alignment(HorizontalAlignment::Leading);
 
     scroll(
-        vstack(rows)
-            .spacing(2.0)
-            .alignment(HorizontalAlignment::Leading)
-            .padding_with(EdgeInsets::symmetric(6.0, 6.0)),
+        vstack((
+            text("WaterUI Controls")
+                .sub_headline()
+                .bold()
+                .foreground(Foreground)
+                .padding_with(EdgeInsets::new(12.0, 12.0, 14.0, 12.0)),
+            drawer,
+        ))
+        .spacing(2.0)
+        .alignment(HorizontalAlignment::Leading)
+        .padding_with(EdgeInsets::symmetric(6.0, 6.0)),
     )
 }
 
 /// A collapsible group header: an accessible button (group icon + title) that
-/// toggles the group, plus a chevron that reflects the open state.
-fn group_header(section: Section, open: Binding<bool>) -> impl View {
+/// toggles the group, plus a chevron reflecting the open state. Toggling both
+/// flips the chevron binding and reconciles the reactive row collection so the
+/// group's items appear or disappear.
+fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> impl View {
+    let section = Section::ALL[group];
     let header = button(label(section.title()).icon((section.icon())()).leading())
         .borderless()
-        .action(|State(open): State<Binding<bool>>| open.set(!open.get()))
+        .action(move |State(open): State<Binding<bool>>| {
+            let expanded = !open.get();
+            open.set(expanded);
+            set_group_expanded(&rows, group, expanded);
+        })
         .state(&open);
     let chevron = zstack((
         mdi::chevron_right().visible(open.clone().map(|o| !o)),
@@ -213,14 +302,11 @@ fn group_header(section: Section, open: Binding<bool>) -> impl View {
     hstack((header, spacer(), chevron)).padding_with(EdgeInsets::symmetric(2.0, 10.0))
 }
 
-/// A selectable control row, indented under its group and hidden when the group
-/// is collapsed. A [`button`] keeps it a proper accessible, focusable target.
-fn item_row(
-    index: usize,
-    control: &Control,
-    selected: &Binding<Option<usize>>,
-    open: &Binding<bool>,
-) -> impl View {
+/// A selectable control row, indented under its group. A [`button`] keeps it a
+/// proper accessible, focusable target; its background tracks the selection.
+fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
+    let all = controls();
+    let control = &all[index];
     let is_selected = selected.clone().map(move |current| current == Some(index));
     let selected_bg: Color = SurfaceVariant.into();
     let clear_bg: Color = Srgb::WHITE.with_opacity(0.0).into();
@@ -229,10 +315,9 @@ fn item_row(
     button(label(control.title).icon((control.icon)()).leading())
         .borderless()
         .action(move |State(sel): State<Binding<Option<usize>>>| sel.set(Some(index)))
-        .state(selected)
+        .state(&selected)
         .background(background)
         .padding_with(EdgeInsets::new(3.0, 3.0, 30.0, 8.0))
-        .visible(open.clone())
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
@@ -392,36 +477,44 @@ fn progress_demo() -> impl View {
 // Entry points
 // ---------------------------------------------------------------------------
 
-/// Builds fresh catalog state: the selected control, one open-flag per group, and
-/// the interactive demo state.
-fn new_state() -> (Binding<Option<usize>>, Vec<Binding<bool>>, DemoState) {
+/// Builds fresh catalog state: the selected control, one open-flag per group,
+/// the reactive drawer rows (initially fully expanded), and the interactive
+/// demo state.
+fn new_state() -> (
+    Binding<Option<usize>>,
+    Vec<Binding<bool>>,
+    ReactiveList<Row>,
+    DemoState,
+) {
     let selected = Binding::container(Some(0));
     let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
-    (selected, groups_open, DemoState::new())
+    let rows = ReactiveList::from(expanded_rows());
+    (selected, groups_open, rows, DemoState::new())
 }
 
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    let (selected, groups_open, state) = new_state();
-    catalog(selected, groups_open, state)
+    let (selected, groups_open, rows, state) = new_state();
+    catalog(selected, groups_open, rows, state)
 }
 
 pub fn app(env: Environment) -> App {
     // Own all mutable state at the window scope so it persists across rebuilds.
-    let (selected, groups_open, state) = new_state();
+    let (selected, groups_open, rows, state) = new_state();
     App::new(
-        move || catalog(selected.clone(), groups_open.clone(), state.clone()),
+        move || catalog(selected.clone(), groups_open.clone(), rows.clone(), state.clone()),
         env,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog, new_state};
+    use super::{Row, catalog, new_state};
     use core::time::Duration;
     use waterui::Binding;
     use waterui::env::Environment;
+    use waterui::reactive::collection::List as ReactiveList;
     use waterui_testing::{SemanticApp, ui};
 
     use super::DemoState;
@@ -431,6 +524,7 @@ mod tests {
     fn mount(
         selected: Binding<Option<usize>>,
         groups_open: Vec<Binding<bool>>,
+        rows: ReactiveList<Row>,
         state: DemoState,
         width: u32,
         height: u32,
@@ -439,15 +533,15 @@ mod tests {
         hydrolysis_m3::install(&mut env);
         ui().environment(env)
             .viewport(width, height)
-            .mount(move || catalog(selected.clone(), groups_open.clone(), state.clone()))
+            .mount(move || catalog(selected.clone(), groups_open.clone(), rows.clone(), state.clone()))
     }
 
     /// The drawer lists every group header and control, and the detail pane shows
     /// the selected control's live demo.
     #[test]
     fn catalog_lists_controls() {
-        let (selected, groups_open, state) = new_state();
-        let mut app = mount(selected, groups_open, state, 1100, 760);
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
         for section in ["Actions", "Inputs", "Selection", "Display"] {
             app.query().label(section).assert_exists();
         }
@@ -462,8 +556,8 @@ mod tests {
     /// Selecting a control shows its live demo in the detail pane.
     #[test]
     fn selecting_control_shows_demo() {
-        let (selected, groups_open, state) = new_state();
-        let mut app = mount(selected, groups_open, state, 1100, 760);
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
         assert!(
             app.query().label("Toggle").tap(),
             "drawer item should be tappable"
@@ -480,11 +574,14 @@ mod tests {
     /// rest of the catalog stays intact.
     #[test]
     fn collapsing_group_removes_items() {
-        let (selected, groups_open, state) = new_state();
-        let inputs_open = groups_open[1].clone(); // Section::ALL[1] == Inputs
-        let mut app = mount(selected, groups_open, state, 1100, 760);
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
         app.query().label("Slider").assert_exists();
-        inputs_open.set(false);
+        // Tap the Inputs group header to collapse it.
+        assert!(
+            app.query().label("Inputs").tap(),
+            "group header should be tappable"
+        );
         assert!(
             app.query()
                 .label("Slider")
@@ -501,8 +598,8 @@ mod tests {
     /// shared counter (state is owned externally, so it persists across rebuilds).
     #[test]
     fn button_demo_is_interactive() {
-        let (selected, groups_open, state) = new_state();
-        let mut app = mount(selected, groups_open, state, 1100, 760);
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
         app.query().label_contains("Taps: 0").assert_exists();
         assert!(
             app.query().label("Bordered Prominent").tap(),

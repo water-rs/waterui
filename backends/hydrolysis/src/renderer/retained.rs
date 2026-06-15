@@ -605,6 +605,59 @@ impl HydrolysisRenderer {
             .cached_subtree = Some(subtree);
     }
 
+    /// Marks every `Dynamic` node identity reachable through a *reused* subtree as
+    /// active for the current frame.
+    ///
+    /// A structural rebuild that reuses a retained subtree without re-dispatching
+    /// it (a reactive collection reusing an unchanged item's cached subtree) never
+    /// runs `render_dynamic` for that subtree's `Dynamic` nodes, so they would not
+    /// land in `dynamic_identities_current_frame` and `finish_rebuild_frame` would
+    /// prune them — dropping the cached content that the reused subtree's
+    /// `DynamicDrawOp::Node` placements point at, which then composites stale.
+    /// Re-registering the identities keeps those nodes (and their measurement
+    /// entries) alive exactly as a re-dispatch would.
+    pub(super) fn mark_subtree_dynamic_identities_active(&mut self, subtree: &DynamicSubtree) {
+        let mut identities = Vec::new();
+        self.collect_subtree_dynamic_identities(subtree, &mut identities);
+        self.lifecycle
+            .dynamic_identities_current_frame
+            .extend(identities);
+    }
+
+    /// Collects every `Dynamic` node identity reachable from `subtree`, recursing
+    /// through nested dynamic draws, placed `Dynamic` nodes' cached content,
+    /// scroll content caches, and reactive collection items — the same traversal
+    /// as [`Self::collect_subtree_active_scalar_keys`].
+    pub(super) fn collect_subtree_dynamic_identities(
+        &self,
+        subtree: &DynamicSubtree,
+        out: &mut Vec<usize>,
+    ) {
+        for transform in subtree.transform_draws() {
+            self.collect_subtree_dynamic_identities(&transform.subtree, out);
+        }
+        for opacity in subtree.opacity_draws() {
+            self.collect_subtree_dynamic_identities(&opacity.subtree, out);
+        }
+        for placement in subtree.node_draws() {
+            out.push(placement.identity);
+            if let Some(cached) = self
+                .lifecycle
+                .dynamic_nodes
+                .get(&placement.identity)
+                .and_then(|node| node.cached_subtree.as_ref())
+            {
+                self.collect_subtree_dynamic_identities(cached, out);
+            }
+        }
+        for scroll in subtree.scroll_draws() {
+            if let Some(cache) = self.scroll_content_caches.get(&scroll.cache_key) {
+                self.collect_subtree_dynamic_identities(&cache.subtree, out);
+            }
+        }
+        self.collect_collection_dynamic_identities(subtree, out);
+    }
+
     /// Collects the animation keys of every active replayable scalar (transform and
     /// opacity) reachable from `subtree`, recursing through nested dynamic draws and
     /// through placed `Dynamic` nodes (whose content lives in their `cached_subtree`).
