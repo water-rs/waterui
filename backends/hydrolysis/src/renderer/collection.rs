@@ -432,8 +432,30 @@ impl HydrolysisRenderer {
         let container_hit = parent_ctx.hit_transform * draw.base_hit_transform;
         let now = self.frame_instant;
 
-        match cache.transition.clone() {
-            Some(runtime) if cache.has_active_transition(now) => {
+        if let Some(runtime) = cache.transition.clone() {
+            // Settle finished enters and drop finished exits *before* choosing how
+            // to render. The fast path must never composite a finished-but-still-
+            // present exiting item at its stale placement — that overlaps the
+            // reflowed live items (and a rebuild interrupting the transition can
+            // strand such items there permanently). After this, any non-`Stable`
+            // entry is genuinely mid-transition.
+            let before = cache.entries.len();
+            cache
+                .entries
+                .retain(|entry| !entry.phase.is_finished_exit(now, &runtime.animation));
+            for entry in &mut cache.entries {
+                if let EntryPhase::Entering(start) = entry.phase
+                    && runtime.animation.is_complete(now.saturating_duration_since(start))
+                {
+                    entry.phase = EntryPhase::Stable;
+                }
+            }
+            let dropped = before != cache.entries.len();
+            let transitioning = cache
+                .entries
+                .iter()
+                .any(|entry| !matches!(entry.phase, EntryPhase::Stable));
+            if transitioning {
                 self.replay_transitioning_collection(
                     &cache,
                     &runtime,
@@ -441,36 +463,35 @@ impl HydrolysisRenderer {
                     container_hit,
                     now,
                 );
-                // Settle entered items and drop finished exits so the next frame
-                // takes the direct-replay fast path once everything has settled.
-                cache
-                    .entries
-                    .retain(|entry| !entry.phase.is_finished_exit(now, &runtime.animation));
-                for entry in &mut cache.entries {
-                    if let EntryPhase::Entering(start) = entry.phase
-                        && runtime.animation.is_complete(now.saturating_duration_since(start))
-                    {
-                        entry.phase = EntryPhase::Stable;
-                    }
-                }
-                if !cache.has_active_transition(now) {
-                    // The transition completed this frame: reflow the surrounding
-                    // layout to the collection's settled size.
+            } else {
+                self.replay_collection_stable(&cache, container_transform, container_hit);
+                if dropped {
+                    // The transition just finished: reflow the surrounding layout
+                    // to the collection's settled size.
                     self.request_rebuild();
                 }
             }
-            _ => {
-                for entry in &cache.entries {
-                    let item_ctx = RenderContext::with_transforms(
-                        entry.bounds,
-                        container_transform * entry.base_transform,
-                        container_hit * entry.base_hit_transform,
-                    );
-                    self.replay_dynamic_subtree(item_ctx, &entry.subtree);
-                }
-            }
+        } else {
+            self.replay_collection_stable(&cache, container_transform, container_hit);
         }
         self.collection_caches.insert(draw.cache_key, cache);
+    }
+
+    /// Composites every entry at its cached placement (no transition in flight).
+    fn replay_collection_stable(
+        &mut self,
+        cache: &CollectionCache,
+        container_transform: vello::kurbo::Affine,
+        container_hit: vello::kurbo::Affine,
+    ) {
+        for entry in &cache.entries {
+            let item_ctx = RenderContext::with_transforms(
+                entry.bounds,
+                container_transform * entry.base_transform,
+                container_hit * entry.base_hit_transform,
+            );
+            self.replay_dynamic_subtree(item_ctx, &entry.subtree);
+        }
     }
 
     /// Composites a collection mid-transition. For a stack layout each entry is
