@@ -39,9 +39,3 @@ pub use waterui_layout::{
 pub use waterui_media as media;
 #[doc(inline)]
 pub use waterui_text as text;
-
-pub mod rings;
-pub use rings::*;
-
-#[cfg(test)]
-mod rings_tests;
