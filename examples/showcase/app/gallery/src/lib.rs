@@ -12,12 +12,15 @@
 //! so any state created *inside* a demo would reset; owning it externally keeps the
 //! controls live (a button's counter actually counts, a toggle stays toggled).
 
+use core::time::Duration;
 use waterui::Color;
 use waterui::Identifiable;
+use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::form::picker::{PickerStyle, picker};
 use waterui::layout::HorizontalAlignment;
+use waterui::layout::collection_transition;
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::prelude::slider::slider;
@@ -117,7 +120,7 @@ fn set_group_expanded(rows: &ReactiveList<Row>, group: usize, expanded: bool) {
             .expect("drawer group header must be present");
         let mut at = header_pos + 1;
         for index in items {
-            let present = rows.snapshot().iter().any(|row| *row == Row::Item(index));
+            let present = rows.snapshot().as_slice().contains(&Row::Item(index));
             if !present {
                 rows.insert(at, Row::Item(index));
             }
@@ -265,6 +268,10 @@ fn sidebar(
     })
     .spacing(2.0)
     .alignment(HorizontalAlignment::Leading);
+
+    // Animate the group expand/collapse: items fade and slide in/out instead of
+    // popping, while still releasing their space.
+    let drawer = collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(220)));
 
     scroll(
         vstack((
@@ -477,15 +484,18 @@ fn progress_demo() -> impl View {
 // Entry points
 // ---------------------------------------------------------------------------
 
-/// Builds fresh catalog state: the selected control, one open-flag per group,
-/// the reactive drawer rows (initially fully expanded), and the interactive
-/// demo state.
-fn new_state() -> (
+/// The window-scoped catalog state: the selected control, one open-flag per
+/// group, the reactive drawer rows, and the interactive demo state.
+type CatalogState = (
     Binding<Option<usize>>,
     Vec<Binding<bool>>,
     ReactiveList<Row>,
     DemoState,
-) {
+);
+
+/// Builds fresh catalog state: `selected` starts on the first control, every
+/// group starts expanded, and the demo state starts at its defaults.
+fn new_state() -> CatalogState {
     let selected = Binding::container(Some(0));
     let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
     let rows = ReactiveList::from(expanded_rows());
@@ -592,6 +602,29 @@ mod tests {
         app.query()
             .label_contains("Bordered Prominent")
             .assert_exists();
+    }
+
+    /// Re-expanding a collapsed group restores its items: the transition's enter
+    /// path brings the rows back (and they settle into the accessibility tree).
+    #[test]
+    fn expanding_group_restores_items() {
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        // Collapse Inputs, then expand it again.
+        assert!(app.query().label("Inputs").tap());
+        assert!(
+            app.query()
+                .label("Slider")
+                .wait_for_nonexistence(Duration::from_secs(3)),
+            "collapsing should remove the group's items"
+        );
+        assert!(app.query().label("Inputs").tap());
+        assert!(
+            app.query()
+                .label("Slider")
+                .wait_for_existence(Duration::from_secs(3)),
+            "re-expanding should restore the group's items"
+        );
     }
 
     /// A demo control is actually interactive: tapping a button increments the
