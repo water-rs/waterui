@@ -109,20 +109,31 @@ impl InteractionEngine {
             .checked_mul(4)
             .expect("interaction animation key overflow");
         let previous = self.press_controller.slots[press_slot.index].handles.take();
+        // Flag slot reuse by an unrelated widget: the previous occupant sat at a
+        // different position than the widget now binding this slot.
+        let slot_reused = self.press_controller.slots[press_slot.index]
+            .last_bounds
+            .replace(input.bounds)
+            .is_some_and(|bounds| !interaction_bounds_match(bounds, input.bounds));
 
-        // A press only survives a rebuild if its origin still lands inside the
-        // widget's new bounds; otherwise the slot index was reused by an
-        // unrelated widget and the press state must not migrate.
+        // Inherited press/hover must not migrate to a different widget: a press
+        // only survives if its origin still lands inside the widget's bounds, and
+        // any state from a reused slot (different-position occupant) is dropped.
         if let Some(prev) = &previous
-            && prev
-                .origin_in_window()
-                .is_none_or(|origin| !input.bounds.contains(origin))
+            && (slot_reused
+                || prev
+                    .origin_in_window()
+                    .is_none_or(|origin| !input.bounds.contains(origin)))
         {
             prev.clear_press_state();
         }
-        let hovered = previous
-            .as_ref()
-            .map_or(input.hovered, |prev| prev.hovering());
+        let hovered = if slot_reused {
+            input.hovered
+        } else {
+            previous
+                .as_ref()
+                .map_or(input.hovered, |prev| prev.hovering())
+        };
         let focus_visible = input.focus.is_some_and(|focus| focus.visible);
 
         let focus_alpha = animation_controller.bind_scalar_target(
@@ -142,9 +153,10 @@ impl InteractionEngine {
             state_layer_animation(hover_target, motion),
             now,
         );
-        let visual_pressed = previous
-            .as_ref()
-            .is_some_and(|prev| prev.visually_pressed(now));
+        let visual_pressed = !slot_reused
+            && previous
+                .as_ref()
+                .is_some_and(|prev| prev.visually_pressed(now));
         let press_alpha = animation_controller.bind_scalar_target(
             AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_PRESS_OPACITY_KEY),
             if visual_pressed {
@@ -171,7 +183,8 @@ impl InteractionEngine {
             focus_alpha.clone(),
             motion.clone(),
         ));
-        if let Some(previous) = previous {
+        // A reused slot's previous state belongs to a different widget; start fresh.
+        if let Some(previous) = previous.filter(|_| !slot_reused) {
             handles.copy_interaction_state_from(&previous);
         } else {
             handles.set_initial_hovering(input.hovered);
@@ -209,6 +222,22 @@ pub(crate) struct PressSlot {
 #[derive(Debug, Default)]
 pub(crate) struct PressStateSlot {
     pub(crate) handles: Option<Rc<InteractionLayerHandles>>,
+    /// The window-space bounds of the widget that last occupied this slot. A
+    /// cursor-allocated slot index can be reassigned to a *different* widget when
+    /// an earlier collection's membership changes (its item count shifts every
+    /// later widget's slot); a bounds mismatch flags that reuse so inherited
+    /// hover/press state is not migrated to the wrong widget.
+    pub(crate) last_bounds: Option<vello::kurbo::Rect>,
+}
+
+/// Whether two window-space widget bounds are close enough to be the same widget
+/// across frames (position and size unchanged within half a pixel).
+fn interaction_bounds_match(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
+    const EPSILON: f64 = 0.5;
+    (a.x0 - b.x0).abs() <= EPSILON
+        && (a.y0 - b.y0).abs() <= EPSILON
+        && (a.x1 - b.x1).abs() <= EPSILON
+        && (a.y1 - b.y1).abs() <= EPSILON
 }
 
 impl PressController {
