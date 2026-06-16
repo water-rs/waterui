@@ -159,10 +159,19 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let (layout, children) = container.into_inner().into_inner();
-        let Some(axis_config) = lazy_stack_axis_config(layout.as_ref()) else {
-            // A non-virtualized layout (AbsoluteLayout/ZStackLayout overlay):
-            // render as a retained per-id collection so membership changes patch
-            // incrementally instead of re-dispatching the whole set.
+        // A collection opting into a membership transition must retain its items
+        // (to keep exiting items collapsing out and entering items growing in), so
+        // it always uses the retained per-id collection path even for a stack
+        // layout that would otherwise be viewport-virtualized.
+        let wants_transition = env
+            .get::<waterui_layout::collection_transition::CollectionTransition>()
+            .is_some();
+        let Some(axis_config) = lazy_stack_axis_config(layout.as_ref()).filter(|_| !wants_transition)
+        else {
+            // A non-virtualized layout (AbsoluteLayout/ZStackLayout overlay) or a
+            // transition-enabled collection: render as a retained per-id collection
+            // so membership changes patch incrementally instead of re-dispatching
+            // the whole set.
             Self::capture_collection(renderer, ctx, layout, children, env);
             return;
         };

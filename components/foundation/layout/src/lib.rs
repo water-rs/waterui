@@ -50,7 +50,7 @@ mod modifiers;
 
 pub use collections::{grid, scroll};
 pub use measure::measure_children;
-pub use containers::{absolute, container, divider, frame, spacer};
+pub use containers::{absolute, collection_transition, container, divider, frame, spacer};
 pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
 
 pub use divider::Divider;
@@ -60,6 +60,7 @@ pub mod stack;
 pub use scroll::{ScrollView, scroll};
 
 pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
+pub use collection_transition::{CollectionTransition, collection_transition};
 pub use container::LazyContainer;
 
 pub use background::{BackgroundLayout, BackgroundView, background};
