@@ -546,6 +546,34 @@ mod tests {
             .mount(move || catalog(selected.clone(), groups_open.clone(), rows.clone(), state.clone()))
     }
 
+    /// Selecting each control in turn shows its demo — a smoke test that every
+    /// catalog entry resolves and renders (the per-component MD3 visual review was
+    /// done out-of-band with GPU snapshots).
+    #[test]
+    fn every_control_renders_its_demo() {
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        let controls = [
+            ("Text Field", "Name"),
+            ("Slider", "Volume"),
+            ("Stepper", "Quantity"),
+            ("Toggle", "Bluetooth"),
+            ("Picker", "Segmented"),
+            ("Label", "Title Only"),
+            ("Progress", "Downloading"),
+            ("Buttons", "Bordered Prominent"),
+        ];
+        for (item, confirm) in controls {
+            assert!(app.query().label(item).tap(), "tap sidebar item {item}");
+            assert!(
+                app.query()
+                    .label_contains(confirm)
+                    .wait_for_existence(Duration::from_secs(3)),
+                "demo for {item} should render (waiting for {confirm})"
+            );
+        }
+    }
+
     /// The drawer lists every group header and control, and the detail pane shows
     /// the selected control's live demo.
     #[test]
