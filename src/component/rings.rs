@@ -14,11 +14,22 @@ pub struct RingData {
 pub struct ConcentricRings {
     pub data: Vec<RingData>,
     pub step: f32,
+    pub center_label: Option<String>,
 }
 
 impl ConcentricRings {
     pub fn new(data: Vec<RingData>) -> Self {
-        Self { data, step: 40.0 }
+        Self {
+            data,
+            step: 40.0,
+            center_label: None,
+        }
+    }
+
+    #[must_use]
+    pub fn center_label(mut self, label: impl Into<String>) -> Self {
+        self.center_label = Some(label.into());
+        self
     }
 
     #[must_use]
@@ -70,7 +81,9 @@ impl View for ConcentricRings {
 
         zstack((
             rings,
-            if all_empty {
+            if let Some(label) = self.center_label {
+                text(label).size(24.0).anyview()
+            } else if all_empty {
                 text!("0%").anyview()
             } else {
                 spacer().anyview()
