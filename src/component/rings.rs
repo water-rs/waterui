@@ -2,21 +2,36 @@ use crate::component::progress::progress;
 use crate::prelude::*;
 use waterui_core::id::Identifiable;
 use waterui_core::{Environment, View};
+use waterui_graphics::color::Color;
 
+#[derive(Debug, Clone)]
+pub struct RingData {
+    pub value: f64,
+    pub color: Color,
+}
+
+#[derive(Debug)]
 pub struct ConcentricRings {
-    pub values: Vec<f64>,
+    pub data: Vec<RingData>,
+    pub step: f32,
 }
 
 impl ConcentricRings {
-    pub fn new(values: Vec<f64>) -> Self {
-        Self { values }
+    pub fn new(data: Vec<RingData>) -> Self {
+        Self { data, step: 40.0 }
+    }
+
+    #[must_use]
+    pub fn step(mut self, step: f32) -> Self {
+        self.step = step;
+        self
     }
 }
 
 #[derive(Clone)]
 struct RingItem {
     idx: usize,
-    value: f64,
+    data: RingData,
 }
 
 impl Identifiable for RingItem {
@@ -28,27 +43,38 @@ impl Identifiable for RingItem {
 
 impl View for ConcentricRings {
     fn body(self, _env: &Environment) -> impl View {
+        let all_empty = !self.data.is_empty() && self.data.iter().all(|d| d.value <= 0.0);
+        let step = self.step;
+
         let items: Vec<RingItem> = self
-            .values
+            .data
             .into_iter()
             .enumerate()
-            .map(|(idx, value)| RingItem { idx, value })
+            .map(|(idx, data)| RingItem { idx, data })
             .collect();
 
-        ZStack::for_each(items, |item| {
-            // Scale radii for concentric rings
-            // Apply increasing padding for each outer ring, or decreasing for inner
-            let ring_padding = (item.idx as f32) * 40.0; // 40pt step between rings
-
-            if item.value <= 0.0 {
-                // 100% exhausted quota: countdown / completed text
-                text!("0%").padding_with(ring_padding).anyview()
+        let rings = ZStack::for_each(items, move |item| {
+            let ring_padding = (item.idx as f32) * step;
+            let val = if item.data.value <= 0.0 {
+                0.0
             } else {
-                progress(item.value)
-                    .circular()
-                    .padding_with(ring_padding)
-                    .anyview()
-            }
-        })
+                item.data.value
+            };
+
+            progress(val)
+                .circular()
+                .foreground(item.data.color)
+                .padding_with(ring_padding)
+                .anyview()
+        });
+
+        zstack((
+            rings,
+            if all_empty {
+                text!("0%").anyview()
+            } else {
+                spacer().anyview()
+            },
+        ))
     }
 }

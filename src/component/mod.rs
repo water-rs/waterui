@@ -37,6 +37,7 @@ pub use waterui_layout::{
 #[doc(inline)]
 #[cfg(feature = "media")]
 pub use waterui_media as media;
+#[doc(inline)]
 pub use waterui_text as text;
 
 pub mod rings;
