@@ -624,6 +624,47 @@ impl HydrolysisRenderer {
             .extend(identities);
     }
 
+    /// Re-applies any pending fine-grained reactive update to the `Dynamic` nodes
+    /// reachable through a *reused* retained subtree (a collection item kept across
+    /// a structural rebuild).
+    ///
+    /// A rebuild reuses an unchanged item's cached subtree without re-dispatching
+    /// it, to preserve identity, in-flight animation, and ripple state. But a
+    /// fine-grained reactive change to nested content — e.g. a reactive
+    /// `.background(Computed<Color>)` driving an active-indicator pill — set that
+    /// node's `pending_view` and then had its dirty mark subsumed (cleared) by
+    /// `begin_rebuild`. Left unconsumed, the reused subtree would composite the
+    /// stale content. This consumes each such pending view and re-dispatches the
+    /// node's content into its `cached_subtree`, exactly as a fresh dispatch would,
+    /// so the reused item reflects current reactive state. Capture depths are set
+    /// by the caller (every `build_collection_items` call site re-dispatches under
+    /// a retained capture), so nested dynamic draws defer rather than bake — the
+    /// same contract as the sibling fresh-dispatch branch.
+    pub(super) fn refresh_reused_subtree_pending_dynamic_updates(
+        &mut self,
+        subtree: &DynamicSubtree,
+    ) {
+        let mut identities = Vec::new();
+        self.collect_subtree_dynamic_identities(subtree, &mut identities);
+        for identity in identities {
+            let Some((pending_view, ctx, env)) =
+                self.lifecycle.dynamic_nodes.get(&identity).and_then(|node| {
+                    Some((
+                        Rc::clone(&node.pending_view),
+                        node.dispatch_ctx?,
+                        node.dispatch_env.clone()?,
+                    ))
+                })
+            else {
+                continue;
+            };
+            let Some(content) = pending_view.borrow_mut().take() else {
+                continue;
+            };
+            self.capture_dynamic_node_content(identity, content, ctx, &env);
+        }
+    }
+
     /// Collects every `Dynamic` node identity reachable from `subtree`, recursing
     /// through nested dynamic draws, placed `Dynamic` nodes' cached content,
     /// scroll content caches, and reactive collection items — the same traversal
@@ -823,6 +864,10 @@ impl HydrolysisRenderer {
             } else {
                 let pending_view = Rc::new(RefCell::new(None::<AnyView>));
                 let render_generation = Rc::new(Cell::new(0));
+                // Retain the `Dynamic`'s `Rc` for this node's lifetime so its identity
+                // (the `Rc` address, the map key) cannot be reused by a new `Dynamic`
+                // while this node lives — see `DynamicNode::source`.
+                let source = dynamic.clone();
                 dynamic.connect_with_pending_view(Rc::clone(&pending_view), {
                     let pending_view = Rc::clone(&pending_view);
                     let signals = renderer.signals.clone();
@@ -856,6 +901,7 @@ impl HydrolysisRenderer {
                         render_generation,
                         dispatch_ctx: None,
                         dispatch_env: None,
+                        source,
                     },
                 );
                 pending_view
@@ -991,10 +1037,25 @@ impl HydrolysisRenderer {
     /// [`DynamicDrawOp::Static`] segment, so a following dynamic draw composites
     /// strictly above it (and a later static segment strictly above the dynamic
     /// draw). Skips empty segments to keep the op list tight.
+    ///
+    /// When a clip/opacity layer is open (e.g. a `.clip()` rounding a reactive
+    /// collection item that contains a `Dynamic` whose draw op triggers this
+    /// flush), the open layers are closed in the sealed segment and re-opened in
+    /// the fresh scene. Without this the new scene would report zero open clips
+    /// while `active_scene_layers` still tracked them, tripping the balance
+    /// assertion in [`Self::flush_vello_scene_layer`]. `active_scene_layers` is
+    /// left untouched: the logical layer stack is unchanged across the seal.
     pub(super) fn flush_static_segment(&mut self) {
         if scene_has_content(&self.scene) {
+            let open_layers = self.compositor.active_scene_layers.clone();
+            for _ in &open_layers {
+                self.scene.pop_layer();
+            }
             let segment = core::mem::replace(&mut self.scene, vello::Scene::new());
             self.draw_ops.push(DynamicDrawOp::Static(segment));
+            for layer in &open_layers {
+                layer.push_to_scene(&mut self.scene);
+            }
         }
     }
 

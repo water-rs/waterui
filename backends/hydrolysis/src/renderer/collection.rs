@@ -67,6 +67,15 @@ impl EntryPhase {
     fn is_finished_exit(self, now: Instant, animation: &Animation) -> bool {
         matches!(self, Self::Exiting(start) if animation.is_complete(now.saturating_duration_since(start)))
     }
+
+    /// Whether an item in this phase is kept out of the accessibility tree. The
+    /// tree reflects the collection's settled *logical* membership: an entering
+    /// item was just added, so it belongs in the tree immediately (its fade-in is
+    /// purely visual), while an exiting item — already removed from the membership
+    /// — is suppressed while it collapses out.
+    fn suppresses_accessibility(self) -> bool {
+        matches!(self, Self::Exiting(_))
+    }
 }
 
 /// One retained item in a [`CollectionCache`], captured once and placed by the
@@ -362,6 +371,12 @@ impl HydrolysisRenderer {
                     // otherwise `finish_rebuild_frame` prunes them and the reused
                     // placements composite stale content.
                     self.mark_subtree_dynamic_identities_active(&prev.subtree);
+                    // A fine-grained reactive change to nested content (e.g. an
+                    // active-indicator `.background(Computed<Color>)`) staged a
+                    // `pending_view` whose dirty mark was subsumed when this rebuild
+                    // began; apply it now so the reused item reflects current state
+                    // instead of compositing the stale captured content.
+                    self.refresh_reused_subtree_pending_dynamic_updates(&prev.subtree);
                     prev.base_transform = base;
                     prev.base_hit_transform = base;
                     prev.bounds = local_bounds;
@@ -517,7 +532,7 @@ impl HydrolysisRenderer {
                 let item_hit = container_hit * entry.base_hit_transform;
                 let item_ctx =
                     RenderContext::with_transforms(entry.bounds, item_transform, item_hit);
-                let suppress = !matches!(entry.phase, EntryPhase::Stable);
+                let suppress = entry.phase.suppresses_accessibility();
                 self.replay_collection_entry(
                     item_ctx,
                     &entry.subtree,
@@ -561,17 +576,18 @@ impl HydrolysisRenderer {
             } else {
                 vello::kurbo::Rect::new(0.0, 0.0, effective_main, cross_extent)
             };
-            let suppress = !matches!(entry.phase, EntryPhase::Stable);
+            let suppress = entry.phase.suppresses_accessibility();
             self.replay_collection_entry(item_ctx, &entry.subtree, alpha, clip, suppress);
             main += effective_main + axis.spacing * factor;
         }
     }
 
     /// Replays one collection entry, wrapping it in an opacity+clip layer while it
-    /// is transitioning (`alpha < 1`) and replaying it directly otherwise. A
-    /// transitioning entry is kept out of the accessibility tree
-    /// (`suppress_accessibility`): the tree reflects the collection's settled
-    /// (logical) membership, while the fade/collapse is purely visual.
+    /// is transitioning (`alpha < 1`) and replaying it directly otherwise. An
+    /// *exiting* entry is kept out of the accessibility tree
+    /// (`suppress_accessibility`) because it has already left the collection's
+    /// logical membership; an entering entry stays in the tree (it is logically
+    /// present, only visually fading in). See [`EntryPhase::suppresses_accessibility`].
     fn replay_collection_entry(
         &mut self,
         item_ctx: RenderContext,
