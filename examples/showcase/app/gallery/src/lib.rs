@@ -13,11 +13,11 @@
 //! controls live (a button's counter actually counts, a toggle stays toggled).
 
 use core::time::Duration;
+
 use waterui::Color;
 use waterui::Identifiable;
 use waterui::animation::Animation;
 use waterui::app::App;
-use waterui::color::Srgb;
 use waterui::form::picker::{PickerStyle, picker};
 use waterui::layout::HorizontalAlignment;
 use waterui::layout::collection_transition;
@@ -30,7 +30,16 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List as ReactiveList;
+use waterui::reactive::Computed;
+use waterui::shape::RoundedRectangle;
 use waterui_icons_material_icon as mdi;
+
+// Material 3 navigation-drawer metrics (mdui reference: list-item / nav-drawer).
+const DRAWER_ITEM_HEIGHT: f32 = 56.0;
+const DRAWER_ITEM_RADIUS: f32 = 28.0; // full-rounded active indicator at 56dp
+const DRAWER_ICON_SIZE: f32 = 24.0;
+const DRAWER_ITEM_PADDING: f32 = 16.0;
+const DRAWER_ITEM_INDENT: f32 = 8.0; // control items nest slightly under their header
 
 /// A category grouping in the navigation drawer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,8 +254,32 @@ fn catalog(
         move || sidebar(sidebar_selected.clone(), groups_open.clone(), rows.clone()),
         move |index| control_detail(index, &state),
     )
-    .sidebar_width(280.0)
+    .sidebar_width(320.0)
     .placeholder(placeholder)
+}
+
+/// One Material 3 navigation-drawer row: a 56dp line with a leading icon, label,
+/// and optional trailing view, painted on a 28dp-rounded active-indicator pill.
+/// A Material 3 navigation-drawer row shell: a 56dp line holding a leading
+/// tappable target (a [`button`], so the row is a single accessibility node) and
+/// an optional trailing view, on a full-width 28dp-rounded active-indicator pill.
+/// `active` drives the pill's reactive fill (`SurfaceVariant` when selected, else
+/// transparent) on `.background` itself — initial-correct and selection-tracking —
+/// and `.clip` rounds it to the MD3 pill shape.
+fn drawer_row(leading: impl View, trailing: impl View, active: Computed<bool>, indent: f32) -> impl View {
+    let selected: Color = SurfaceVariant.into();
+    let clear: Color = waterui::color::Srgb::WHITE.with_opacity(0.0).into();
+    let pill = active.select(selected, clear).computed();
+    hstack((leading, spacer(), trailing))
+        .height(DRAWER_ITEM_HEIGHT)
+        .padding_with(EdgeInsets::new(
+            0.0,
+            0.0,
+            DRAWER_ITEM_PADDING + indent,
+            DRAWER_ITEM_PADDING,
+        ))
+        .background(pill)
+        .clip(RoundedRectangle::new(DRAWER_ITEM_RADIUS))
 }
 
 /// Sidebar: a fixed title above a reactive collection of drawer rows. Headers
@@ -269,9 +302,15 @@ fn sidebar(
     .spacing(2.0)
     .alignment(HorizontalAlignment::Leading);
 
-    // Animate the group expand/collapse: items fade and slide in/out instead of
-    // popping, while still releasing their space.
-    let drawer = collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(220)));
+    // Animate group expand/collapse with Material 3 emphasized easing: items fade
+    // and collapse along the stack axis as a group opens or closes, while still
+    // releasing their layout space (no reserved gap). This routes the drawer to the
+    // retained collection path, where the active-indicator pill tracks selection
+    // through the items' fine-grained reactive backgrounds.
+    let drawer = collection_transition(
+        drawer,
+        Animation::bezier(Duration::from_millis(250), 0.2, 0.0, 0.0, 1.0),
+    );
 
     scroll(
         vstack((
@@ -279,52 +318,54 @@ fn sidebar(
                 .sub_headline()
                 .bold()
                 .foreground(Foreground)
-                .padding_with(EdgeInsets::new(12.0, 12.0, 14.0, 12.0)),
+                .padding_with(EdgeInsets::new(20.0, 12.0, 28.0, 16.0)),
             drawer,
         ))
-        .spacing(2.0)
+        .spacing(4.0)
         .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::symmetric(6.0, 6.0)),
+        .padding_with(EdgeInsets::symmetric(8.0, 12.0)),
     )
 }
 
-/// A collapsible group header: an accessible button (group icon + title) that
-/// toggles the group, plus a chevron reflecting the open state. Toggling both
-/// flips the chevron binding and reconciles the reactive row collection so the
-/// group's items appear or disappear.
+/// A collapsible group header, styled as a Material 3 drawer row: section icon +
+/// title (in the muted on-surface-variant role, since a header is not selectable)
+/// with a trailing chevron that flips with the open state. Tapping toggles the
+/// group and reconciles the reactive row collection.
 fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> impl View {
     let section = Section::ALL[group];
-    let header = button(label(section.title()).icon((section.icon())()).leading())
-        .borderless()
-        .action(move |State(open): State<Binding<bool>>| {
-            let expanded = !open.get();
-            open.set(expanded);
-            set_group_expanded(&rows, group, expanded);
-        })
-        .state(&open);
+    let muted: Color = MutedForeground.into();
     let chevron = zstack((
         mdi::chevron_right().visible(open.clone().map(|o| !o)),
         mdi::chevron_down().visible(open.clone()),
-    ));
-    hstack((header, spacer(), chevron)).padding_with(EdgeInsets::symmetric(2.0, 10.0))
+    ))
+    .foreground(muted.clone())
+    .width(DRAWER_ICON_SIZE)
+    .height(DRAWER_ICON_SIZE);
+    let header = button(label(section.title()).icon((section.icon())()).leading())
+        .borderless()
+        .action(move |_env: Environment| {
+            let expanded = !open.get();
+            open.set(expanded);
+            set_group_expanded(&rows, group, expanded);
+        });
+    drawer_row(header, chevron, Computed::constant(false), 0.0)
 }
 
-/// A selectable control row, indented under its group. A [`button`] keeps it a
-/// proper accessible, focusable target; its background tracks the selection.
+/// A selectable control row, nested under its group header. Tapping selects the
+/// control; the Material 3 active-indicator pill (a `SurfaceVariant` fill — the
+/// default scheme's surface-variant matches secondary-container) tracks the
+/// selection through a fine-grained reactive opacity. A [`button`] keeps the row
+/// a single accessibility node that survives the reactive collection.
 fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
-    let all = controls();
-    let control = &all[index];
-    let is_selected = selected.clone().map(move |current| current == Some(index));
-    let selected_bg: Color = SurfaceVariant.into();
-    let clear_bg: Color = Srgb::WHITE.with_opacity(0.0).into();
-    let background = is_selected.select(selected_bg, clear_bg).computed();
-
-    button(label(control.title).icon((control.icon)()).leading())
+    let control = &controls()[index];
+    let title = control.title;
+    let icon = control.icon;
+    let is_selected = selected.clone().map(move |current| current == Some(index)).computed();
+    let activate = selected.clone();
+    let item = button(label(title).icon(icon()).leading())
         .borderless()
-        .action(move |State(sel): State<Binding<Option<usize>>>| sel.set(Some(index)))
-        .state(&selected)
-        .background(background)
-        .padding_with(EdgeInsets::new(3.0, 3.0, 30.0, 8.0))
+        .action(move |_env: Environment| activate.set(Some(index)));
+    drawer_row(item, (), is_selected, DRAWER_ITEM_INDENT)
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
