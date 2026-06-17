@@ -28,6 +28,7 @@ use waterui::graphics::Color;
 use waterui_core::dynamic::watch;
 use waterui_core::views::ForEach;
 use waterui_layout::AbsoluteLayout;
+use waterui_layout::collection_transition::collection_transition;
 use waterui_layout::container::LazyContainer;
 
 use super::MinimalTestTheme;
@@ -445,5 +446,85 @@ fn dynamic_growth_from_empty_renders_content_after_escalation() {
         "the escalated rebuild must dispatch the overlay content at its reflowed bounds; \
          a mismatch with the statically composed frame means a stale zero-size capture \
          was replayed"
+    );
+}
+
+/// Each item paints a reactive background driven by `selected` (the selected id
+/// fills `ACTIVE`, the rest fill `INACTIVE`), inside a `collection_transition`,
+/// which routes the `VStack` collection to the retained per-item path — the same
+/// path the navigation-drawer active-indicator pill uses. A sibling whose *height*
+/// tracks the same `selected` binding forces a selection change to reflow the
+/// layout and escalate to a structural rebuild, which reuses the collection's item
+/// subtrees rather than re-dispatching them.
+fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let sel = selected.clone();
+    let collection = VStack::for_each(list, move |item: SelfId<u64>| {
+        let id = *item as u32;
+        let is_selected = sel.clone().map(move |current| current == id).computed();
+        let background = is_selected
+            .select(Color::srgb(200, 90, 160), Color::srgb(228, 224, 236))
+            .computed();
+        AnyView::new(().size(120.0, 40.0).background(background))
+    });
+    let collection =
+        collection_transition(collection, Animation::linear(Duration::from_millis(1)));
+    let sizer = watch(selected.clone(), |s| ().size(80.0, 40.0 + s as f32 * 30.0));
+    AnyView::new(vstack((sizer, collection)))
+}
+
+/// Regression: a structural rebuild reuses a retained collection item's subtree
+/// without re-dispatching it (to preserve identity, animation, and ripple state).
+/// A fine-grained reactive change to nested content — here an active-indicator
+/// `.background(Computed<Color>)` — staged a `pending_view` whose dirty mark was
+/// subsumed when the rebuild began. The reused item must still apply that update,
+/// otherwise it composites the stale captured background — the navigation drawer's
+/// active pill failing to move on selection.
+#[test]
+fn reused_collection_item_reactive_background_tracks_after_rebuild_escalation() {
+    // Ground truth: built fresh with the second item already selected.
+    let truth_selected = Binding::container(1_u32);
+    let truth_builder = {
+        let selected = truth_selected.clone();
+        AnyViewBuilder::<AnyView>::new(move || reactive_bg_collection(&selected))
+    };
+    let mut truth_env = Environment::new();
+    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    // Subject: start with the first item selected, then select the second. The
+    // size-tracking sibling reflows, escalating the change to a structural rebuild
+    // that reuses the collection items.
+    let selected = Binding::container(0_u32);
+    let builder = {
+        let selected = selected.clone();
+        AnyViewBuilder::<AnyView>::new(move || reactive_bg_collection(&selected))
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
+    let start = Instant::now();
+    let _ = runtime.pump_at(true, start);
+
+    selected.set(1);
+    let result = runtime.pump_at(true, start + Duration::from_millis(16));
+    assert!(
+        result.profile.counters.rebuild_iterations > 0,
+        "the size-tracking sibling must escalate the selection change to a structural \
+         rebuild (so the collection items are reused): {:?}",
+        result.profile.counters
+    );
+    let snapshot = result
+        .snapshot
+        .expect("escalated frame must produce a snapshot");
+    assert!(
+        snapshot.rgba8 == expected.rgba8,
+        "a reused collection item must apply its nested reactive background update \
+         after a rebuild escalation; a mismatch means the active-indicator pill stayed \
+         on the stale (previously selected) item"
     );
 }
