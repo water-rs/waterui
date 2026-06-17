@@ -23,6 +23,13 @@ pub(crate) struct DynamicNode {
     /// re-dispatch the node in isolation during a reactive patch.
     pub(crate) dispatch_ctx: Option<RenderContext>,
     pub(crate) dispatch_env: Option<Environment>,
+    /// The source `Dynamic`, kept alive for this node's lifetime. `Dynamic::identity()`
+    /// is its `Rc` address, and this map is keyed by that address; holding the `Rc`
+    /// here prevents a freed address from being reused by a brand-new `Dynamic` while
+    /// the stale node still lives (an ABA hazard that would alias the new `Dynamic`
+    /// onto stale cached content). Held only for its lifetime, never read.
+    #[allow(dead_code, reason = "retains the Dynamic's Rc to prevent identity (pointer) reuse")]
+    pub(crate) source: waterui_core::dynamic::Dynamic,
 }
 
 pub(crate) struct DynamicSubtree {
