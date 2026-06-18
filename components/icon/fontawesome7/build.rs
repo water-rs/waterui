@@ -20,8 +20,10 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+use waterui_build_support::icons::{
+    FontFamily, GlyphConst, IconEntry, IconModule, SvgConst, ViewboxConst, write_icon_module,
+};
 use waterui_build_support::{rust_const_name, rust_fn_name};
 
 /// Font Awesome version
@@ -35,8 +37,6 @@ const FA_DESKTOP_URL: &str = "https://github.com/FortAwesome/Font-Awesome/releas
 struct IconData {
     /// Unicode codepoint as hex string (e.g., "f015")
     unicode: String,
-    /// Available styles for this icon
-    styles: Vec<String>,
     /// Which styles are free (not pro)
     free: Vec<String>,
     /// SVG data per style
@@ -91,20 +91,7 @@ fn main() {
 }
 
 fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, IconData>) {
-    let dest_path = Path::new(out_dir).join(format!("{style}.rs"));
-    let mut output = String::new();
-
-    // Header
-    output.push_str(&format!(
-        "// Auto-generated Font Awesome 7 {style} icons.\n"
-    ));
-    output.push_str("// Icons: CC BY 4.0 by Fonticons, Inc.\n\n");
-
-    // Re-export IconGlyph for webfont feature
-    output.push_str("#[cfg(feature = \"webfont\")]\n");
-    output.push_str("pub use waterui_icon::IconGlyph;\n\n");
-
-    // Font family constant - must match the actual font family name inside the OTF files
+    // Font family constant - must match the actual font family name inside the OTF files.
     // Use fc-scan to check: fc-scan font.otf | grep "family:"
     let font_family = match style {
         "solid" => "Font Awesome 7 Free Solid",
@@ -113,11 +100,6 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
         _ => "Font Awesome 7 Free Solid",
     };
 
-    output.push_str(&format!("/// Font family name for {style} icons.\n"));
-    output.push_str(&format!(
-        "pub const FONT_FAMILY: &str = \"{font_family}\";\n\n"
-    ));
-
     // Collect and sort icons
     let mut style_icons: Vec<(&String, &IconData)> = icons
         .iter()
@@ -125,46 +107,56 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
         .collect();
     style_icons.sort_by_key(|(name, _)| *name);
 
+    let mut entries = Vec::new();
     for (icon_name, icon_data) in style_icons {
         let const_name = rust_const_name(icon_name);
-        let fn_name = rust_fn_name(icon_name);
         let codepoint =
             u32::from_str_radix(&icon_data.unicode, 16).expect("Invalid unicode codepoint");
 
-        // Webfont constant
-        output.push_str(&format!("/// `{icon_name}` icon as webfont glyph.\n"));
-        output.push_str("#[cfg(feature = \"webfont\")]\n");
-        output.push_str(&format!(
-            "pub const {const_name}: IconGlyph = IconGlyph::new('\\u{{{codepoint:04x}}}', FONT_FAMILY);\n"
-        ));
-
-        // SVG data if available
-        if let Some(svg_data) = icon_data.svg.get(style) {
-            output.push_str(&format!("/// SVG path for `{icon_name}`.\n"));
-            output.push_str(&format!(
-                "pub const {}_PATH: &str = {:?};\n",
-                const_name, svg_data.path
-            ));
-
+        let svg = icon_data.svg.get(style).map(|svg_data| {
+            let path_const = format!("{const_name}_PATH");
+            let viewbox_const = format!("{const_name}_VIEWBOX");
             let width = svg_data.viewbox.get(2).copied().unwrap_or(512.0);
             let height = svg_data.viewbox.get(3).copied().unwrap_or(512.0);
-            output.push_str(&format!(
-                "pub const {const_name}_VIEWBOX: (f32, f32) = ({width:.1}, {height:.1});\n"
-            ));
+            let ctor =
+                format!("crate::Svg::from_path({path_const}, {viewbox_const}.0, {viewbox_const}.1)");
+            SvgConst {
+                path_const,
+                path_literal: format!("{:?}", svg_data.path),
+                viewbox: Some(ViewboxConst {
+                    const_name: viewbox_const,
+                    literal: format!("({width:.1}, {height:.1})"),
+                }),
+                fn_name: rust_fn_name(icon_name),
+                ctor,
+            }
+        });
 
-            output.push_str("#[cfg(feature = \"svg\")]\n");
-            output.push_str(&format!("/// `{icon_name}` icon as Svg.\n"));
-            output.push_str("#[inline]\n");
-            output.push_str(&format!(
-                "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_path({const_name}_PATH, {const_name}_VIEWBOX.0, {const_name}_VIEWBOX.1)\n}}\n"
-            ));
-        }
-        output.push('\n');
+        entries.push(IconEntry {
+            source_name: icon_name.clone(),
+            glyph: Some(GlyphConst {
+                const_name,
+                type_path: "IconGlyph".to_owned(),
+                escape: format!("\\u{{{codepoint:04x}}}"),
+            }),
+            svg,
+        });
     }
 
-    fs::File::create(&dest_path)
-        .and_then(|mut f| f.write_all(output.as_bytes()))
-        .expect("Failed to write output file");
+    let module = IconModule {
+        banner: vec![
+            format!("Auto-generated Font Awesome 7 {style} icons."),
+            "Icons: CC BY 4.0 by Fonticons, Inc.".to_owned(),
+        ],
+        font_family: Some(FontFamily {
+            doc: format!("Font family name for {style} icons."),
+            name: font_family.to_owned(),
+            cfg_webfont: false,
+        }),
+        reexport_glyph: true,
+        icons: entries,
+    };
+    write_icon_module(out_dir, &format!("{style}.rs"), &module);
 }
 
 /// Get icons.json from cache or download (docs.rs only).

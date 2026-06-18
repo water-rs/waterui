@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+askama = "0.14"
 heck = "0.5"
 ureq = "2.12"
 
