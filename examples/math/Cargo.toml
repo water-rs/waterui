@@ -1,0 +1,19 @@
+[package]
+name = "math-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Math rendering example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "math"]
+categories = ["gui"]
+publish = false
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui.workspace = true
+waterui-ffi.workspace = true
