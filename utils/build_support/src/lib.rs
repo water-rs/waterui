@@ -1,5 +1,7 @@
 //! Shared build-script helpers for `WaterUI` code generation.
 
+pub mod icons;
+
 use std::{fs, path::Path};
 
 use heck::{ToShoutySnakeCase, ToSnakeCase};
@@ -12,6 +14,10 @@ pub fn is_http_url(source: &str) -> bool {
 }
 
 /// Loads text from either a local file or a cached HTTP(S) source.
+///
+/// # Errors
+///
+/// Returns an error if the cached file, local file, or HTTP download cannot be read.
 pub fn load_cached_text(
     source: &str,
     cache_path: &Path,
@@ -32,6 +38,10 @@ pub fn load_cached_text(
 }
 
 /// Fetches text from either a local file or an HTTP(S) source.
+///
+/// # Errors
+///
+/// Returns an error if the HTTP request fails or the local file cannot be read.
 pub fn fetch_text(source: &str, description: &str) -> Result<String, String> {
     if is_http_url(source) {
         eprintln!("Downloading {description} from {source}...");
