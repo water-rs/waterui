@@ -11,7 +11,7 @@ use waterui_graphics::color::Color;
 
 pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
     match style {
-        ButtonStyle::Automatic | ButtonStyle::Bordered => {
+        ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::BorderedProminent => {
             ButtonMetrics::new(24.0, 10.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         }
         ButtonStyle::Plain | ButtonStyle::Borderless => ButtonMetrics::new(
@@ -26,21 +26,18 @@ pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
             0.0,
             0.0,
         ),
-        ButtonStyle::BorderedProminent => {
-            ButtonMetrics::new(24.0, 10.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
-        }
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     }
 }
 
-pub fn label_color(colors: &MaterialColorScheme, style: ButtonStyle) -> Option<Color> {
+pub fn label_color(colors: &MaterialColorScheme, style: ButtonStyle) -> Color {
     match style {
-        ButtonStyle::BorderedProminent => Some(colors.on_primary.view_color()),
-        ButtonStyle::Automatic => Some(colors.on_secondary_container.view_color()),
-        ButtonStyle::Bordered => Some(colors.primary.view_color()),
-        ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => {
-            Some(colors.primary.view_color())
-        }
+        ButtonStyle::BorderedProminent => colors.on_primary.view_color(),
+        ButtonStyle::Automatic => colors.on_secondary_container.view_color(),
+        ButtonStyle::Bordered
+        | ButtonStyle::Plain
+        | ButtonStyle::Link
+        | ButtonStyle::Borderless => colors.primary.view_color(),
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     }
 }
@@ -98,8 +95,10 @@ pub fn draw_state_layer(
     let color = match style {
         ButtonStyle::BorderedProminent => colors.on_primary.peniko(),
         ButtonStyle::Automatic => colors.on_secondary_container.peniko(),
-        ButtonStyle::Bordered => colors.primary.peniko(),
-        ButtonStyle::Link | ButtonStyle::Plain | ButtonStyle::Borderless => colors.primary.peniko(),
+        ButtonStyle::Bordered
+        | ButtonStyle::Link
+        | ButtonStyle::Plain
+        | ButtonStyle::Borderless => colors.primary.peniko(),
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     };
     state_layer::draw_bounded(draw, bounds, BUTTON_CONTAINER_RADIUS.into(), color, state);

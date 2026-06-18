@@ -26,6 +26,6 @@ mod tests {
 
     #[test]
     fn test_zoom_blur_not_color_only() {
-        assert!(!ZoomBlur::<f32, f32, f32>::COLOR_ONLY);
+        const { assert!(!ZoomBlur::<f32, f32, f32>::COLOR_ONLY) };
     }
 }

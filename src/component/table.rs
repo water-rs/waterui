@@ -372,7 +372,7 @@ mod tests {
 
         let signal = TableRowCountSignal::new(vec![
             TableColumn::new("A", rows_from(col1_rows.clone())),
-            TableColumn::new("B", rows_from(col2_rows.clone())),
+            TableColumn::new("B", rows_from(col2_rows)),
         ]);
 
         assert_eq!(signal.get(), 2);
@@ -383,6 +383,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::manual_contains,
+        reason = "`.contains()` resolves to a different in-scope method for this element type; `.iter().any()` is the correct call"
+    )]
     fn row_count_signal_watches_column_len_updates() {
         let col_rows = List::from(vec![SelfId::new(0usize)]);
         let signal =

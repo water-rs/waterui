@@ -27,7 +27,7 @@ mod tests {
 
     #[test]
     fn prewitt_is_spatial_with_zero_params() {
-        assert!(!Prewitt::COLOR_ONLY);
+        const { assert!(!Prewitt::COLOR_ONLY) };
         assert_eq!(Prewitt.params().len(), 0);
     }
 }

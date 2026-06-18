@@ -1,3 +1,21 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "intentional lossy numeric cast in performance-metric formatting"
+)]
+#![allow(
+    clippy::format_collect,
+    clippy::format_push_string,
+    reason = "builds the preview HTML/SVG performance report inline; a candidate for an askama template refactor"
+)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::struct_field_names,
+    clippy::needless_pass_by_value,
+    clippy::unnecessary_wraps,
+    reason = "linear CLI orchestration and report-generation routines"
+)]
 //! `water preview` command implementation.
 //!
 //! Renders, tests, or profiles a `WaterUI` preview.

@@ -1152,7 +1152,6 @@ impl GpuView for MorphShapeRenderer {
 }
 
 #[cfg(feature = "gpu")]
-#[cfg(feature = "gpu")]
 fn u32_to_f32(value: u32) -> f32 {
     value
         .to_f32()

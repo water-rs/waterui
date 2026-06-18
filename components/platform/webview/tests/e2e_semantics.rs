@@ -33,6 +33,8 @@ struct FakeWebViewHandle {
     state: Rc<RefCell<FakeWebViewState>>,
 }
 
+type MessageHandlers = BTreeMap<String, Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>>;
+
 #[derive(Default)]
 struct FakeWebViewState {
     history: Vec<Url>,
@@ -41,10 +43,14 @@ struct FakeWebViewState {
     redirects_enabled: bool,
     cookies: Vec<Cookie<'static>>,
     watchers: Vec<Box<dyn Fn(WebViewEvent) + 'static>>,
-    handlers: BTreeMap<String, Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>>,
+    handlers: MessageHandlers,
 }
 
 impl FakeWebViewHandle {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test double; takes the event by value to mirror the real handle's API"
+    )]
     fn emit(&self, event: WebViewEvent) {
         let state = self.state.borrow();
         for watcher in &state.watchers {

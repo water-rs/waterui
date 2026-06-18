@@ -1,3 +1,7 @@
+#![cfg_attr(
+    test,
+    allow(clippy::float_cmp, reason = "tests assert exact widget-metric values")
+)]
 //! Material Design 3 widget metrics and drawing primitives.
 //!
 //! This crate is a theme package. It implements the backend-neutral widget
@@ -108,6 +112,10 @@ pub struct MaterialTheme {
 }
 
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a `MaterialTheme` holds exactly one of these; the variant size difference is immaterial and boxing would add needless indirection"
+)]
 enum MaterialThemeColors {
     Static(MaterialColorScheme),
     Dynamic {
@@ -380,7 +388,7 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn button_label_color(&self, style: ButtonStyle) -> Option<Color> {
-        button::label_color(&self.colors(), style)
+        Some(button::label_color(&self.colors(), style))
     }
 
     fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {

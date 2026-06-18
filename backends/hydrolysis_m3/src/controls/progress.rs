@@ -1,3 +1,12 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
+#![allow(
+    clippy::unreadable_literal,
+    reason = "dense Material motion easing/timing curve constants; digit grouping does not aid readability"
+)]
 use crate::dimensions::{
     PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH, PROGRESS_LINEAR_BAR_HEIGHT,
     PROGRESS_LINEAR_BAR_HORIZONTAL_INSET, PROGRESS_LINEAR_BAR_TOP_OFFSET,

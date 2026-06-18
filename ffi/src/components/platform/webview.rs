@@ -298,9 +298,11 @@ pub struct WuiWebViewHandle {
 ///
 /// This struct is public so that the FFI layer can downcast `AnyWebViewHandle`
 /// to extract the native webview pointer for rendering.
+type WebViewWatchers = Rc<RefCell<Vec<Rc<dyn Fn(WebViewEvent)>>>>;
+
 pub struct FfiWebViewHandle {
     ffi: WuiWebViewHandle,
-    watchers: Rc<RefCell<Vec<Rc<dyn Fn(WebViewEvent)>>>>,
+    watchers: WebViewWatchers,
     watcher_installed: Cell<bool>,
 }
 

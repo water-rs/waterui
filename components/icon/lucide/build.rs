@@ -92,7 +92,7 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
 
             if let (Some(cx), Some(cy), Some(r)) = (cx, cy, r) {
                 // Approximate circle with four cubic Bezier curves
-                let k = 0.5522847498;
+                let k = 0.552_284_749_8;
                 paths.push(format!(
                     "M{},{} C{},{},{},{},{},{} C{},{},{},{},{},{} C{},{},{},{},{},{} C{},{},{},{},{},{}Z",
                     cx - r, cy,
