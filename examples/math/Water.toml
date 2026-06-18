@@ -1,0 +1,4 @@
+name = "math-example"
+
+[app]
+identifier = "dev.waterui.example.math"
