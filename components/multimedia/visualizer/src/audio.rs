@@ -26,6 +26,7 @@ pub struct AudioCapture {
 
 impl AudioCapture {
     /// Create a new audio capture and start the capture thread.
+    #[must_use]
     pub fn new() -> Self {
         let samples = Arc::new(Mutex::new(vec![0.0; SAMPLES_COUNT]));
         let smoothed = Arc::new(Mutex::new(vec![0.0; SAMPLES_COUNT]));
@@ -33,7 +34,7 @@ impl AudioCapture {
 
         let capture = Self {
             samples: samples.clone(),
-            smoothed: smoothed.clone(),
+            smoothed,
             running: running.clone(),
         };
 
@@ -59,20 +60,17 @@ impl AudioCapture {
             let mut audio_stream = Box::pin(recorder.stream());
 
             while running.load(Ordering::Relaxed) {
-                match pollster::block_on(audio_stream.next()) {
-                    Some(buffer) => {
-                        let audio_samples = buffer.samples();
-                        if let Ok(mut lock) = samples.lock() {
-                            for &s in audio_samples {
-                                lock[write_pos] = s;
-                                write_pos = (write_pos + 1) % SAMPLES_COUNT;
-                            }
+                if let Some(buffer) = pollster::block_on(audio_stream.next()) {
+                    let audio_samples = buffer.samples();
+                    if let Ok(mut lock) = samples.lock() {
+                        for &s in audio_samples {
+                            lock[write_pos] = s;
+                            write_pos = (write_pos + 1) % SAMPLES_COUNT;
                         }
                     }
-                    None => {
-                        tracing::error!("Audio stream ended");
-                        break;
-                    }
+                } else {
+                    tracing::error!("Audio stream ended");
+                    break;
                 }
             }
         });
@@ -81,12 +79,13 @@ impl AudioCapture {
     }
 
     /// Get smoothed samples with temporal interpolation.
+    #[must_use]
     pub fn get_smoothed_samples(&self, smoothing: f32) -> Vec<f32> {
         let raw = self.samples.lock().unwrap().clone();
         let mut smoothed = self.smoothed.lock().unwrap();
 
         for (i, &target) in raw.iter().enumerate() {
-            smoothed[i] = smoothed[i] * (1.0 - smoothing) + target * smoothing;
+            smoothed[i] = smoothed[i].mul_add(1.0 - smoothing, target * smoothing);
         }
 
         smoothed.clone()

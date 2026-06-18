@@ -18,7 +18,7 @@ const SNACKBAR_CORNER_RADIUS: f32 = 4.0;
 const SNACKBAR_CLIP_RADIUS: f32 = 0.08;
 const SNACKBAR_MOTION_OFFSET_Y: f32 = 20.0;
 
-pub(crate) fn theme(colors: &MaterialColorScheme) -> SnackbarTheme {
+pub fn theme(colors: &MaterialColorScheme) -> SnackbarTheme {
     SnackbarTheme {
         container_color: colors.inverse_surface.view_color(),
         supporting_text_color: colors.inverse_on_surface.view_color(),

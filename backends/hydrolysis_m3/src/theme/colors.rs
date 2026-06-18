@@ -263,20 +263,20 @@ impl MaterialRoleColor {
         ])
     }
 
-    /// Convert the role color to WaterUI's sRGB color type.
+    /// Convert the role color to `WaterUI`'s sRGB color type.
     #[must_use]
-    pub fn srgb(self) -> Srgb {
+    pub const fn srgb(self) -> Srgb {
         let color = self.0;
         Srgb::new_u8(color.red(), color.green(), color.blue())
     }
 
-    /// Convert the role color to a resolved WaterUI color.
+    /// Convert the role color to a resolved `WaterUI` color.
     #[must_use]
     pub fn resolved(self) -> ResolvedColor {
         ResolvedColor::from(self.srgb())
     }
 
-    /// Convert the role color to a WaterUI view color.
+    /// Convert the role color to a `WaterUI` view color.
     #[must_use]
     pub fn view_color(self) -> WaterColor {
         WaterColor::from(self.srgb())
@@ -515,7 +515,7 @@ impl MaterialColorScheme {
         source.scheme(mode)
     }
 
-    fn from_materialized(mode: MaterialColorMode, scheme: &MaterializedScheme) -> Self {
+    const fn from_materialized(mode: MaterialColorMode, scheme: &MaterializedScheme) -> Self {
         Self {
             mode,
             background: MaterialRoleColor::new(scheme.background),

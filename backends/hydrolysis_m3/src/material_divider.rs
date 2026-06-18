@@ -1,4 +1,4 @@
-//! Material Design 3 divider composed from the WaterUI divider primitive.
+//! Material Design 3 divider composed from the `WaterUI` divider primitive.
 
 use waterui::widget::Divider;
 
@@ -10,7 +10,6 @@ use waterui::widget::Divider;
 pub type MaterialDivider = Divider;
 
 /// Creates a Material Design 3 divider.
-#[must_use]
 pub const fn material_divider() -> MaterialDivider {
     Divider
 }

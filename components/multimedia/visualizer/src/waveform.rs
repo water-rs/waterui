@@ -65,6 +65,7 @@ pub struct Waveform {
 
 impl Waveform {
     /// Create a new Waveform visualizer.
+    #[must_use]
     pub fn new(capture: AudioCapture) -> Self {
         Self {
             theme: binding(WaveformTheme::default()),
@@ -77,6 +78,7 @@ impl Waveform {
     ///
     /// Prefer constructing one `AudioCapture` and cloning it into multiple
     /// waveform views when you need to share microphone input.
+    #[must_use]
     pub fn audio_capture(self, capture: AudioCapture) -> Self {
         Self { capture, ..self }
     }
@@ -197,6 +199,10 @@ impl WaveformRenderer {
 }
 
 impl GpuView for WaveformRenderer {
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView runs on the render thread; this future borrows the non-Send `GpuContext`/`Environment`"
+    )]
     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         let device = &ctx.device;
 
@@ -207,7 +213,7 @@ impl GpuView for WaveformRenderer {
         });
 
         // 2. Create Buffers using encase size calculation
-        let uniform_size = <Uniforms as ShaderSize>::SHADER_SIZE.get() as u64;
+        let uniform_size = <Uniforms as ShaderSize>::SHADER_SIZE.get();
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Waveform Uniforms"),
             size: uniform_size,
@@ -381,9 +387,9 @@ impl GpuView for WaveformRenderer {
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             // Use background color from config
-                            r: self.config.bg_color[0] as f64,
-                            g: self.config.bg_color[1] as f64,
-                            b: self.config.bg_color[2] as f64,
+                            r: f64::from(self.config.bg_color[0]),
+                            g: f64::from(self.config.bg_color[1]),
+                            b: f64::from(self.config.bg_color[2]),
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,

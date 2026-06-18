@@ -95,18 +95,15 @@ fn handle_webview_event(
             let system_user_agent = system_user_agent.clone();
             let address = address.clone();
             spawn_local(async move {
-                if let Ok(url) = webview.run_javascript("location.href").await {
-                    if !url.as_str().is_empty() && url.as_str() != "null" {
+                if let Ok(url) = webview.run_javascript("location.href").await
+                    && !url.as_str().is_empty() && url.as_str() != "null" {
                         address.set(url);
                     }
-                }
-                if system_user_agent.get().as_str().is_empty() {
-                    if let Ok(ua) = webview.run_javascript("navigator.userAgent").await {
-                        if !ua.as_str().is_empty() && ua.as_str() != "null" {
+                if system_user_agent.get().as_str().is_empty()
+                    && let Ok(ua) = webview.run_javascript("navigator.userAgent").await
+                        && !ua.as_str().is_empty() && ua.as_str() != "null" {
                             system_user_agent.set(ua);
                         }
-                    }
-                }
             })
             .detach();
         }

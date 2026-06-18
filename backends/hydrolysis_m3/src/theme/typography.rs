@@ -10,7 +10,7 @@ const fn font(size: f32, weight: FontWeight) -> ResolvedFont {
     ResolvedFont::with_static_family(size, weight, MATERIAL_TYPEFACE)
 }
 
-pub(crate) fn settings() -> FontSettings {
+pub fn settings() -> FontSettings {
     FontSettings::new()
         .body(font(16.0, FontWeight::Normal))
         .title(font(22.0, FontWeight::Normal))
@@ -21,7 +21,7 @@ pub(crate) fn settings() -> FontSettings {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct LabelLarge;
+pub struct LabelLarge;
 
 impl Resolvable for LabelLarge {
     type Resolved = ResolvedFont;
@@ -31,12 +31,12 @@ impl Resolvable for LabelLarge {
     }
 }
 
-pub(crate) fn label_large() -> Font {
+pub fn label_large() -> Font {
     Font::new(LabelLarge)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct LabelMedium;
+pub struct LabelMedium;
 
 impl Resolvable for LabelMedium {
     type Resolved = ResolvedFont;
@@ -46,12 +46,12 @@ impl Resolvable for LabelMedium {
     }
 }
 
-pub(crate) fn label_medium() -> Font {
+pub fn label_medium() -> Font {
     Font::new(LabelMedium)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct LabelSmall;
+pub struct LabelSmall;
 
 impl Resolvable for LabelSmall {
     type Resolved = ResolvedFont;
@@ -61,12 +61,12 @@ impl Resolvable for LabelSmall {
     }
 }
 
-pub(crate) fn label_small() -> Font {
+pub fn label_small() -> Font {
     Font::new(LabelSmall)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BodyLarge;
+pub struct BodyLarge;
 
 impl Resolvable for BodyLarge {
     type Resolved = ResolvedFont;
@@ -76,12 +76,12 @@ impl Resolvable for BodyLarge {
     }
 }
 
-pub(crate) fn body_large() -> Font {
+pub fn body_large() -> Font {
     Font::new(BodyLarge)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BodyMedium;
+pub struct BodyMedium;
 
 impl Resolvable for BodyMedium {
     type Resolved = ResolvedFont;
@@ -91,12 +91,12 @@ impl Resolvable for BodyMedium {
     }
 }
 
-pub(crate) fn body_medium() -> Font {
+pub fn body_medium() -> Font {
     Font::new(BodyMedium)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BodySmall;
+pub struct BodySmall;
 
 impl Resolvable for BodySmall {
     type Resolved = ResolvedFont;
@@ -106,12 +106,12 @@ impl Resolvable for BodySmall {
     }
 }
 
-pub(crate) fn body_small() -> Font {
+pub fn body_small() -> Font {
     Font::new(BodySmall)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TitleSmall;
+pub struct TitleSmall;
 
 impl Resolvable for TitleSmall {
     type Resolved = ResolvedFont;
@@ -121,12 +121,12 @@ impl Resolvable for TitleSmall {
     }
 }
 
-pub(crate) fn title_small() -> Font {
+pub fn title_small() -> Font {
     Font::new(TitleSmall)
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HeadlineSmall;
+pub struct HeadlineSmall;
 
 impl Resolvable for HeadlineSmall {
     type Resolved = ResolvedFont;
@@ -136,7 +136,7 @@ impl Resolvable for HeadlineSmall {
     }
 }
 
-pub(crate) fn headline_small() -> Font {
+pub fn headline_small() -> Font {
     Font::new(HeadlineSmall)
 }
 

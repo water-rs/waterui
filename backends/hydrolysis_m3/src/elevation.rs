@@ -1,4 +1,4 @@
-//! Material Design 3 elevation composed from WaterUI primitives.
+//! Material Design 3 elevation composed from `WaterUI` primitives.
 
 use waterui::style::{Shadow as ViewShadow, Vector};
 use waterui::{Environment, View, ViewExt as _};

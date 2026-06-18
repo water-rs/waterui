@@ -170,6 +170,12 @@ impl crate::IntoRust for *mut WuiNavigationSplitDetail {
     }
 }
 
+/// Releases a navigation split-detail handle.
+///
+/// # Safety
+///
+/// `value` must be a valid, owning `WuiNavigationSplitDetail` handle that has
+/// not already been dropped; it must not be used after this call.
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_split_navigation_detail(

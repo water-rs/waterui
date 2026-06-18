@@ -487,7 +487,7 @@ impl Label {
     }
 
     /// Returns the semantic text carried by this label.
-    pub fn semantic_text(&self) -> &Text {
+    pub const fn semantic_text(&self) -> &Text {
         match &self.content {
             LabelContent::Semantic { text, .. } => text,
             LabelContent::Custom { semantic_text, .. } => semantic_text,
@@ -520,7 +520,7 @@ impl Label {
         }
     }
 
-    fn has_icon(&self) -> bool {
+    const fn has_icon(&self) -> bool {
         match &self.content {
             LabelContent::Semantic { icon, .. } => icon.is_some(),
             LabelContent::Custom { .. } => false,
@@ -606,6 +606,12 @@ impl View for Label {
             },
         }
     }
+}
+
+/// Convenience function to create a label.
+#[must_use]
+pub fn label(text: impl IntoText) -> Label {
+    Label::new(text)
 }
 
 #[cfg(test)]
@@ -694,10 +700,4 @@ mod tests {
             "Hello"
         );
     }
-}
-
-/// Convenience function to create a label.
-#[must_use]
-pub fn label(text: impl IntoText) -> Label {
-    Label::new(text)
 }

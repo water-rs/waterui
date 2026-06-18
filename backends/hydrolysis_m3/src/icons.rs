@@ -4,9 +4,9 @@ use waterui::{Environment, View, ViewExt as _};
 use waterui_canvas::{Canvas, DrawingContext, LineCap, LineJoin};
 use waterui_core::resolve::Resolvable;
 
-/// A shared Material checkmark drawn with WaterUI canvas primitives.
+/// A shared Material checkmark drawn with `WaterUI` canvas primitives.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct CheckmarkIcon<ColorToken> {
+pub struct CheckmarkIcon<ColorToken> {
     color: ColorToken,
     size: f32,
     line_width: f32,

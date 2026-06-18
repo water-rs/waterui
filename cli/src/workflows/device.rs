@@ -1649,7 +1649,7 @@ mod tests {
             panic!("failing status should emit a crash event");
         };
         assert!(message.contains("backend panic"));
-        assert!(message.contains("7"));
+        assert!(message.contains('7'));
     }
 
     #[test]

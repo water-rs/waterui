@@ -175,7 +175,7 @@ impl View for MultiDatePickerFallback {
         let locale = resolve_locale(env);
 
         let calendar_state = visible_month
-            .clone()
+
             .zip(&selection.zip(&decorated))
             .computed();
         let calendar = signal_driven_view(

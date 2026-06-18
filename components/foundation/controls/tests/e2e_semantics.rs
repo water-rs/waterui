@@ -106,7 +106,7 @@ fn toggle_tap_toggles_binding() {
 #[test]
 fn toggle_accessibility_role_is_switch() {
     let enabled = Binding::bool(false);
-    let enabled_for_view = enabled.clone();
+    let enabled_for_view = enabled;
 
     let mut app = mount_view(move || control_shell(Toggle::new(&enabled_for_view).label("Wi-Fi")));
 
@@ -163,7 +163,7 @@ fn slider_increment_decrement_updates_value() {
 #[test]
 fn slider_accessibility_role_is_slider() {
     let value = Binding::f64(0.25);
-    let value_for_view = value.clone();
+    let value_for_view = value;
 
     let mut app = mount_view(move || control_shell(slider("Exposure", &value_for_view)));
 
@@ -263,7 +263,7 @@ fn text_field_set_text_updates_binding() {
 #[test]
 fn text_field_focus_updates_ui_focus() {
     let value = Binding::container(Str::from(""));
-    let value_for_view = value.clone();
+    let value_for_view = value;
 
     let mut app =
         mount_view(move || control_shell(TextField::new(&value_for_view).label("Search")));

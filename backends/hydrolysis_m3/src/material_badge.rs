@@ -1,4 +1,4 @@
-//! Material Design 3 badge components composed from WaterUI badge primitives.
+//! Material Design 3 badge components composed from `WaterUI` badge primitives.
 
 use core::fmt::{self, Debug};
 

@@ -114,7 +114,7 @@ const SECONDARY_TRANSLATE: &[Segment] = &[
     },
 ];
 
-pub fn metrics(style: ProgressIndicatorStyle) -> ProgressMetrics {
+pub const fn metrics(style: ProgressIndicatorStyle) -> ProgressMetrics {
     match style {
         ProgressIndicatorStyle::Linear => ProgressMetrics::linear(
             PROGRESS_LINEAR_LABEL_HEIGHT,
@@ -127,22 +127,6 @@ pub fn metrics(style: ProgressIndicatorStyle) -> ProgressMetrics {
         ProgressIndicatorStyle::Circular => {
             ProgressMetrics::circular(PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ProgressIndicatorStyle, metrics};
-
-    #[test]
-    fn progress_metrics_match_material_web_v0_192() {
-        let linear = metrics(ProgressIndicatorStyle::Linear);
-        assert_eq!(linear.bar_height, 4.0);
-        assert_eq!(linear.min_track_width, 80.0);
-
-        let circular = metrics(ProgressIndicatorStyle::Circular);
-        assert_eq!(circular.circular_diameter, 48.0);
-        assert_eq!(circular.circular_stroke_width, 4.0);
     }
 }
 
@@ -234,7 +218,7 @@ fn draw_indeterminate_bar(
     scale: f64,
     color: vello::peniko::Color,
 ) {
-    let x = track.x0 + track.width() * ((initial_inset_percent + translate_percent) / 100.0);
+    let x = track.width().mul_add((initial_inset_percent + translate_percent) / 100.0, track.x0);
     let width = (track.width() * scale).max(0.0);
     let rect = Rect::new(x, track.y0, x + width, track.y1);
     draw.fill_rect(rect, &Brush::from(color));
@@ -318,8 +302,7 @@ fn circular_indeterminate_arc(elapsed: Duration) -> (f64, f64) {
                 .progress(Duration::from_secs_f64((arc_phase - 0.5) * 2.0 / 1_000.0)),
         )
     };
-    let sweep_degrees = CIRCULAR_MIN_SWEEP_DEGREES
-        + (CIRCULAR_MAX_SWEEP_DEGREES - CIRCULAR_MIN_SWEEP_DEGREES) * arc_ease;
+    let sweep_degrees = (CIRCULAR_MAX_SWEEP_DEGREES - CIRCULAR_MIN_SWEEP_DEGREES).mul_add(arc_ease, CIRCULAR_MIN_SWEEP_DEGREES);
     let rotate_arc_degrees = cycle_phase(elapsed, CIRCULAR_CYCLE_DURATION) * 1080.0;
     let linear_rotate_degrees = (elapsed.as_secs_f64() % CIRCULAR_LINEAR_ROTATE_DURATION_SECS)
         / CIRCULAR_LINEAR_ROTATE_DURATION_SECS
@@ -339,15 +322,31 @@ fn circle_arc_path(center: Point, radius: f64, start_angle: f64, sweep: f64) -> 
     let step = sweep / segments as f64;
     let mut angle = start_angle;
     path.move_to(Point::new(
-        center.x + radius * angle.cos(),
-        center.y + radius * angle.sin(),
+        radius.mul_add(angle.cos(), center.x),
+        radius.mul_add(angle.sin(), center.y),
     ));
     for _ in 0..segments {
         angle += step;
         path.line_to(Point::new(
-            center.x + radius * angle.cos(),
-            center.y + radius * angle.sin(),
+            radius.mul_add(angle.cos(), center.x),
+            radius.mul_add(angle.sin(), center.y),
         ));
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProgressIndicatorStyle, metrics};
+
+    #[test]
+    fn progress_metrics_match_material_web_v0_192() {
+        let linear = metrics(ProgressIndicatorStyle::Linear);
+        assert_eq!(linear.bar_height, 4.0);
+        assert_eq!(linear.min_track_width, 80.0);
+
+        let circular = metrics(ProgressIndicatorStyle::Circular);
+        assert_eq!(circular.circular_diameter, 48.0);
+        assert_eq!(circular.circular_stroke_width, 4.0);
+    }
 }

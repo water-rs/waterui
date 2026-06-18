@@ -268,9 +268,7 @@ mod tests {
     struct StretchingBase;
 
     impl View for StretchingBase {
-        fn body(self, _env: &Environment) -> impl View {
-            ()
-        }
+        fn body(self, _env: &Environment) -> impl View {}
 
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::Horizontal

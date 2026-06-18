@@ -32,6 +32,7 @@ use waterui_str::Str;
 /// Svg::from_stroke_path("M3 12h18M3 6h18M3 18h18", 24.0, 24.0)
 /// ```
 #[derive(Debug, Clone)]
+#[must_use = "an `Svg` does nothing unless it is rendered as part of a view"]
 pub struct Svg {
     /// SVG content (path data or full SVG markup).
     pub(crate) content: Str,
@@ -49,7 +50,6 @@ impl Svg {
     /// Creates an SVG from raw SVG markup or path data.
     ///
     /// For icons, prefer `from_path` which provides explicit dimensions.
-    #[must_use]
     pub fn new(content: impl Into<Str>) -> Self {
         Self {
             content: content.into(),
@@ -64,7 +64,6 @@ impl Svg {
     ///
     /// This is the recommended constructor for filled icon SVGs where the
     /// path data comes from the `d` attribute of an SVG path element.
-    #[must_use]
     pub fn from_path(path_data: impl Into<Str>, width: f32, height: f32) -> Self {
         Self {
             content: path_data.into(),
@@ -85,7 +84,6 @@ impl Svg {
     /// - `stroke-linecap: round`
     /// - `stroke-linejoin: round`
     /// - `fill: none`
-    #[must_use]
     pub fn from_stroke_path(path_data: impl Into<Str>, width: f32, height: f32) -> Self {
         Self {
             content: path_data.into(),
@@ -97,14 +95,12 @@ impl Svg {
     }
 
     /// Sets the tint color for the SVG.
-    #[must_use]
     pub fn tint(mut self, color: impl Into<Color>) -> Self {
         self.tint = Some(color.into());
         self
     }
 
     /// Sets explicit dimensions for the SVG.
-    #[must_use]
     pub const fn size(mut self, width: f32, height: f32) -> Self {
         self.width = Some(width);
         self.height = Some(height);

@@ -1,6 +1,6 @@
 //! `water preview` command implementation.
 //!
-//! Renders, tests, or profiles a WaterUI preview.
+//! Renders, tests, or profiles a `WaterUI` preview.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -273,10 +273,10 @@ pub struct Args {
     #[command(subcommand)]
     command: Option<PreviewCommand>,
 
-    /// Preview target: a `#[preview]` function path or a WaterUI expression.
+    /// Preview target: a `#[preview]` function path or a `WaterUI` expression.
     target: Option<String>,
 
-    /// Treat the target as a WaterUI expression returning `impl View`.
+    /// Treat the target as a `WaterUI` expression returning `impl View`.
     #[arg(long)]
     expr: bool,
 
@@ -323,14 +323,14 @@ enum PreviewCommand {
 
 #[derive(ClapArgs, Debug)]
 struct PreviewTestArgs {
-    /// Preview target: a `#[preview]` function path or a WaterUI expression.
+    /// Preview target: a `#[preview]` function path or a `WaterUI` expression.
     target: Option<String>,
 
     /// Discover and test every `#[preview]` function in the crate.
     #[arg(long)]
     all: bool,
 
-    /// Treat the target as a WaterUI expression returning `impl View`.
+    /// Treat the target as a `WaterUI` expression returning `impl View`.
     #[arg(long)]
     expr: bool,
 
@@ -361,14 +361,14 @@ struct PreviewTestArgs {
 
 #[derive(ClapArgs, Debug)]
 struct PreviewPerfArgs {
-    /// Preview target: a `#[preview]` function path or a WaterUI expression.
+    /// Preview target: a `#[preview]` function path or a `WaterUI` expression.
     target: Option<String>,
 
     /// Discover and profile every `#[preview]` function in the crate.
     #[arg(long)]
     all: bool,
 
-    /// Treat the target as a WaterUI expression returning `impl View`.
+    /// Treat the target as a `WaterUI` expression returning `impl View`.
     #[arg(long)]
     expr: bool,
 
@@ -939,9 +939,7 @@ fn resolve_preview_perf_flamegraph_path(
         if all {
             PathBuf::from("__waterui_default_flamegraph__")
         } else {
-            output
-                .map(|path| path.with_extension("flamegraph.svg"))
-                .unwrap_or_else(|| PathBuf::from("__waterui_default_flamegraph__"))
+            output.map_or_else(|| PathBuf::from("__waterui_default_flamegraph__"), |path| path.with_extension("flamegraph.svg"))
         }
     })
 }
@@ -1003,9 +1001,7 @@ fn resolve_perf_mode_artifacts(
                     "internal error: single HTML report path received for multiple preview targets"
                 );
             }
-            let path = output
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| std::env::temp_dir().join("waterui-preview-perf.html"));
+            let path = output.map_or_else(|| std::env::temp_dir().join("waterui-preview-perf.html"), Path::to_path_buf);
             if let Some(parent) = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
@@ -1454,7 +1450,7 @@ fn render_preview_perf_measurement_html(
     )
 }
 
-fn preview_perf_budget_label(measurement: &PreviewPerfMeasurement) -> &'static str {
+const fn preview_perf_budget_label(measurement: &PreviewPerfMeasurement) -> &'static str {
     if measurement.p95_us > 16_666 {
         "misses 60fps"
     } else if measurement.p95_us > 8_333 {
@@ -1472,9 +1468,7 @@ fn render_preview_perf_diagnosis_html(measurement: &PreviewPerfMeasurement) -> S
         .measurement_cache_hits
         .saturating_add(measurement.measurement_cache_misses);
     let cache_hit_ratio = ratio_percent(measurement.measurement_cache_hits, cache_total);
-    let worst_frame = worst
-        .map(|frame| format!("frame {} / {}", frame.index, micros_label(frame.total_us)))
-        .unwrap_or_else(|| "none".to_string());
+    let worst_frame = worst.map_or_else(|| "none".to_string(), |frame| format!("frame {} / {}", frame.index, micros_label(frame.total_us)));
     format!(
         concat!(
             "<section class=\"diagnosis\">",
@@ -1534,7 +1528,7 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
         "CPU usage",
         "line-cpu",
         &measurement.frames,
-        |frame| f64::from(frame.cpu_percent),
+        |frame| frame.cpu_percent,
         |value| format!("{value:.1}%"),
     );
     let memory_chart = render_preview_perf_metric_chart_html(
@@ -1746,8 +1740,7 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
         fps_sample_points
     );
     format!(
-        "<section class=\"timeline-grid\">{}{}</section>",
-        timing_chart, fps_chart
+        "<section class=\"timeline-grid\">{timing_chart}{fps_chart}</section>"
     )
 }
 
@@ -1897,7 +1890,7 @@ fn frame_chart_x(index: u64, frame_count: usize) -> f64 {
     if frame_count <= 1 {
         return 6.0;
     }
-    6.0 + ((index as f64 / (frame_count - 1) as f64) * 88.0)
+    (index as f64 / (frame_count - 1) as f64).mul_add(88.0, 6.0)
 }
 
 #[derive(Clone, Copy)]
@@ -1936,7 +1929,7 @@ impl PreviewPerfChartScale {
             return 50.0;
         }
         let clamped = value.clamp(self.min, self.max);
-        92.0 - (((clamped - self.min) / (self.max - self.min)) * 84.0)
+        ((clamped - self.min) / (self.max - self.min)).mul_add(-84.0, 92.0)
     }
 }
 
@@ -2129,7 +2122,7 @@ fn resolve_preview_backend(
     Ok(backend)
 }
 
-fn resolve_preview_platform(
+const fn resolve_preview_platform(
     platform_override: Option<CliPreviewPlatform>,
 ) -> Result<CliPreviewPlatform> {
     if let Some(platform) = platform_override {
@@ -2138,10 +2131,10 @@ fn resolve_preview_platform(
     native_preview_platform()
 }
 
-fn native_preview_platform() -> Result<CliPreviewPlatform> {
+const fn native_preview_platform() -> Result<CliPreviewPlatform> {
     #[cfg(target_os = "macos")]
     {
-        return Ok(CliPreviewPlatform::Macos);
+        Ok(CliPreviewPlatform::Macos)
     }
 
     #[cfg(not(target_os = "macos"))]

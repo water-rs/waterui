@@ -1,4 +1,4 @@
-//! Cross-platform native icons for WaterUI.
+//! Cross-platform native icons for `WaterUI`.
 //!
 //! This crate provides a curated set of common icons that work across platforms:
 //! - **Apple**: Renders as native SF Symbols
@@ -26,7 +26,7 @@ macro_rules! native_icons {
         $(
             $(#[$meta])*
             #[must_use]
-            pub fn $name() -> SystemIcon {
+            pub const fn $name() -> SystemIcon {
                 SystemIcon::from_static($sf)
             }
         )*

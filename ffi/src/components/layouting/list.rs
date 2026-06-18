@@ -55,6 +55,12 @@ impl IntoFFI for ListItem {
     }
 }
 
+/// Consumes a view handle and reinterprets it as a `WuiListItem`.
+///
+/// # Safety
+///
+/// `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+/// `ListItem`; it is consumed by this call and must not be used afterwards.
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_force_as_list_item(view: *mut WuiAnyView) -> WuiListItem {

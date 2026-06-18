@@ -393,6 +393,7 @@ impl Button<fn(&Environment)> {
     /// ```rust,ignore
     /// let btn = Button::new(label("Click me")).action(|| {});
     /// ```
+    #[must_use]
     pub fn new(label: Label) -> Self {
         Self {
             label,
@@ -543,6 +544,29 @@ where
     }
 }
 
+// ============================================================================
+// Convenience function
+// ============================================================================
+
+/// Creates a new button with the specified label.
+///
+/// This is a convenience function equivalent to [`Button::new`].
+///
+/// # Arguments
+///
+/// * `label` - The semantic label to display on the button
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use waterui::prelude::*;
+///
+/// button("Click me").action(|| {});
+/// ```
+pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
+    Button::new(label.into_label())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,27 +636,4 @@ mod tests {
             .expect("icon should be preserved when only the spoken text is overridden");
         assert_eq!(icon.name.as_str(), "magnifyingglass");
     }
-}
-
-// ============================================================================
-// Convenience function
-// ============================================================================
-
-/// Creates a new button with the specified label.
-///
-/// This is a convenience function equivalent to [`Button::new`].
-///
-/// # Arguments
-///
-/// * `label` - The semantic label to display on the button
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use waterui::prelude::*;
-///
-/// button("Click me").action(|| {});
-/// ```
-pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
-    Button::new(label.into_label())
 }

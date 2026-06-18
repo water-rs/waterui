@@ -1,3 +1,5 @@
+//! Integration tests for the `view!` builder macro.
+
 #[test]
 fn view_builder_macro_contract() {
     let cases = trybuild::TestCases::new();

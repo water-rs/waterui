@@ -1,17 +1,17 @@
 //! Stress Example - High pressure real-app workload for profiling
 //!
-//! This app is intended for professional profiling through native tools and WaterUI preview perf.
+//! This app is intended for professional profiling through native tools and `WaterUI` preview perf.
 //! It drives three independent pressure paths:
 //! - System animation path (metadata -> native animation acceleration)
 //! - Custom animation path (framework/self-rendered GPU animation)
 //! - Filter path (framework interpolation + effect rendering)
 //!
 //! Tune load via env vars:
-//! - WATERUI_STRESS_SYSTEM_COUNT (default: 120)
-//! - WATERUI_STRESS_CUSTOM_COUNT (default: 96)
-//! - WATERUI_STRESS_FILTER_COUNT (default: 144)
-//! - WATERUI_STRESS_TOGGLE_MS (default: 680)
-//! - WATERUI_STRESS_FILTER_TOGGLE_MS (default: 240)
+//! - `WATERUI_STRESS_SYSTEM_COUNT` (default: 120)
+//! - `WATERUI_STRESS_CUSTOM_COUNT` (default: 96)
+//! - `WATERUI_STRESS_FILTER_COUNT` (default: 144)
+//! - `WATERUI_STRESS_TOGGLE_MS` (default: 680)
+//! - `WATERUI_STRESS_FILTER_TOGGLE_MS` (default: 240)
 
 use core::time::Duration;
 
@@ -52,13 +52,13 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View {
     let fast = Duration::from_millis(520);
     let easing = Animation::bezier(fast, 0.22, 1.0, 0.36, 1.0);
 
-    let amp = 8.0 + (index % 5) as f32 * 2.0;
-    let hi_scale = 0.9 + (index % 4) as f32 * 0.09;
-    let lo_scale = 0.45 + (index % 3) as f32 * 0.08;
+    let amp = ((index % 5) as f32).mul_add(2.0, 8.0);
+    let hi_scale = ((index % 4) as f32).mul_add(0.09, 0.9);
+    let lo_scale = ((index % 3) as f32).mul_add(0.08, 0.45);
     let hi_rot = (index % 8) as f32 * 22.5;
 
     let scale = toggle.select(hi_scale, lo_scale).with(easing.clone());
-    let rotation = toggle.select(hi_rot, -hi_rot).with(easing.clone());
+    let rotation = toggle.select(hi_rot, -hi_rot).with(easing);
     let offset_x = toggle
         .select(amp, -amp)
         .with(Animation::spring(260.0, 20.0));
@@ -89,17 +89,17 @@ fn filter_tile(
 
     let blur = blur_target
         .clone()
-        .map(move |v| (v + (idx * 0.17).sin() * 1.6).clamp(0.0, 12.0) as f32)
+        .map(move |v| (idx * 0.17).sin().mul_add(1.6, v).clamp(0.0, 12.0) as f32)
         .with(Animation::spring(220.0, 14.0));
 
     let saturation = saturation_target
         .clone()
-        .map(move |v| (v + (idx * 0.11).cos() * 0.35).clamp(0.0, 2.0) as f32)
+        .map(move |v| (idx * 0.11).cos().mul_add(0.35, v).clamp(0.0, 2.0) as f32)
         .with(Animation::ease_in_out(Duration::from_millis(380)));
 
     let hue = hue_target
         .clone()
-        .map(move |v| (v + idx * 11.0).rem_euclid(360.0) as f32)
+        .map(move |v| idx.mul_add(11.0, v).rem_euclid(360.0) as f32)
         .with(Animation::ease_in_out(Duration::from_millis(420)));
 
     zstack((

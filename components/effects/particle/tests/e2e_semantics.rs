@@ -1,3 +1,5 @@
+//! End-to-end accessibility-semantics tests for the `particle` component.
+
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;

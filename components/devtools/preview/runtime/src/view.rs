@@ -95,6 +95,10 @@ struct WorkerMessage {
     respond_to: Sender<PreviewResponse>,
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "preview runtime drives this on the main-thread support-app executor; `Environment` is `!Send` by design"
+)]
 async fn run_tcp_server(env: Environment, waterui_core_fingerprint: String) -> io::Result<()> {
     env.get::<ViewRenderer>()
         .expect("Preview support app must provide a ViewRenderer in Environment");
@@ -479,6 +483,10 @@ fn dylib_cache_capacity() -> NonZeroUsize {
         .unwrap_or_else(|| NonZeroUsize::new(DEFAULT).expect("DEFAULT is non-zero"))
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "preview runtime drives this on the main-thread support-app executor; `Environment` is `!Send` by design"
+)]
 async fn render_worker(
     env: Environment,
     worker_rx: Receiver<WorkerMessage>,
@@ -495,6 +503,10 @@ async fn render_worker(
     }
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "preview runtime drives this on the main-thread support-app executor; `Environment` is `!Send` by design"
+)]
 async fn handle_request(
     env: &Environment,
     cache: &mut DylibCache,
@@ -594,6 +606,10 @@ fn load_preview_view(
     unsafe { library.load_view(symbol) }.map_err(|e| PreviewError::RenderFailed(e.to_string()))
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "preview runtime drives this on the main-thread support-app executor; `Environment` is `!Send` by design"
+)]
 async fn handle_render(
     env: &Environment,
     cache: &mut DylibCache,
