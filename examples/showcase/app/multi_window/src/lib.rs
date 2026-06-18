@@ -9,6 +9,7 @@
 
 use waterui::app::App;
 use waterui::background::Material;
+use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -111,7 +112,7 @@ fn window_section(
         )),
     ))
     .padding_with(EdgeInsets::all(16.0))
-    .background(Color::srgb_f32(0.25, 0.27, 0.30))
+    .background(SurfaceVariant)
 }
 
 /// Create a standard titled window with opaque background
