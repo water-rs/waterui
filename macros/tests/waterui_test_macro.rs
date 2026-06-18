@@ -1,3 +1,5 @@
+//! Integration tests for the `#[waterui::test]` attribute macro.
+
 #[test]
 fn waterui_test_macro_contract() {
     let cases = trybuild::TestCases::new();

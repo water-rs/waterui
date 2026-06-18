@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Default)]
 pub(crate) struct LifecycleState {
     pub(crate) disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     pub(crate) disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
@@ -81,19 +82,6 @@ pub(crate) struct DynamicAccessibilitySubtree {
     pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
 }
 
-impl Default for LifecycleState {
-    fn default() -> Self {
-        Self {
-            disappear_previous: BTreeMap::new(),
-            disappear_current: BTreeMap::new(),
-            disappear_slot: 0,
-            dynamic_nodes: BTreeMap::new(),
-            dynamic_identities_current_frame: Vec::new(),
-            current_frame_retain: Vec::new(),
-            previous_frame_retain: Vec::new(),
-        }
-    }
-}
 
 impl LifecycleState {
     pub(crate) fn begin_rebuild_frame(&mut self) {

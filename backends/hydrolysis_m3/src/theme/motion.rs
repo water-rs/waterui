@@ -7,7 +7,7 @@ use waterui_backend_core::widget::{
 
 const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
 
-pub(crate) fn interaction() -> InteractionMotion {
+pub const fn interaction() -> InteractionMotion {
     InteractionMotion {
         hover_opacity: 0.08,
         focus_opacity: 0.12,
@@ -43,7 +43,7 @@ pub(crate) fn interaction() -> InteractionMotion {
     }
 }
 
-pub(crate) fn progress() -> ProgressMotion {
+pub const fn progress() -> ProgressMotion {
     ProgressMotion {
         linear_determinate: Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0),
         circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
@@ -52,7 +52,7 @@ pub(crate) fn progress() -> ProgressMotion {
     }
 }
 
-pub(crate) fn text_caret() -> TextCaretMotion {
+pub const fn text_caret() -> TextCaretMotion {
     TextCaretMotion {
         fade_cycle_duration: Duration::from_millis(1_060),
         frame_interval: Duration::from_millis(530),
@@ -60,14 +60,14 @@ pub(crate) fn text_caret() -> TextCaretMotion {
     }
 }
 
-pub(crate) fn navigation() -> NavigationMotion {
+pub const fn navigation() -> NavigationMotion {
     NavigationMotion {
         transition_duration: Duration::from_millis(250),
         pushpop_parallax_factor: 0.35,
     }
 }
 
-pub(crate) fn navigation_drawer() -> Animation {
+pub const fn navigation_drawer() -> Animation {
     Animation::bezier(
         Duration::from_millis(250),
         MATERIAL_STANDARD.0,
@@ -77,11 +77,11 @@ pub(crate) fn navigation_drawer() -> Animation {
     )
 }
 
-pub(crate) fn toggle_value() -> Animation {
+pub const fn toggle_value() -> Animation {
     Animation::spring(300.0, 20.0)
 }
 
-pub(crate) fn radio_selection() -> RadioSelectionMotion {
+pub const fn radio_selection() -> RadioSelectionMotion {
     RadioSelectionMotion {
         inner_grow: Animation::bezier(Duration::from_millis(300), 0.05, 0.7, 0.1, 1.0),
         inner_opacity: Animation::linear(Duration::from_millis(50)),

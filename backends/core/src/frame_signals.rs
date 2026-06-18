@@ -50,6 +50,7 @@ struct FrameSignalsInner {
 impl FrameSignals {
     /// Creates a fresh handle with no pending requests and `now` as the
     /// initial frame clock.
+    #[must_use]
     pub fn new(now: Instant) -> Self {
         Self {
             inner: Rc::new(FrameSignalsInner {
@@ -76,6 +77,7 @@ impl FrameSignals {
     ///
     /// The flag resets to `false`, so each request is observed exactly once
     /// by the frame pump.
+    #[must_use]
     pub fn take_redraw_request(&self) -> bool {
         self.inner.redraw_requested.replace(false)
     }
@@ -88,12 +90,14 @@ impl FrameSignals {
 
     /// Returns whether a structural rebuild is pending, without consuming the
     /// request.
+    #[must_use]
     pub fn has_rebuild_request(&self) -> bool {
         self.inner.rebuild_requested.get()
     }
 
     /// Consumes the pending structural rebuild request, returning whether one
     /// was set.
+    #[must_use]
     pub fn take_rebuild_request(&self) -> bool {
         self.inner.rebuild_requested.replace(false)
     }
@@ -109,12 +113,14 @@ impl FrameSignals {
     /// Consumes the pending deferred-rebuild request recorded by
     /// [`request_next_frame_rebuild`](Self::request_next_frame_rebuild),
     /// returning whether one was set.
+    #[must_use]
     pub fn take_next_frame_rebuild_request(&self) -> bool {
         self.inner.next_frame_rebuild_requested.replace(false)
     }
 
     /// Returns whether at least one dirty `Dynamic` node awaits an isolated
     /// patch, without consuming the request.
+    #[must_use]
     pub fn has_patch_request(&self) -> bool {
         self.inner.patch_requested.get()
     }
@@ -123,16 +129,19 @@ impl FrameSignals {
     ///
     /// Only the flag is consumed; the dirty-node set is taken separately via
     /// [`take_dirty_dynamic_nodes`](Self::take_dirty_dynamic_nodes).
+    #[must_use]
     pub fn take_patch_request(&self) -> bool {
         self.inner.patch_requested.replace(false)
     }
 
     /// Take the set of `Dynamic` nodes awaiting an isolated re-dispatch.
+    #[must_use]
     pub fn take_dirty_dynamic_nodes(&self) -> BTreeSet<usize> {
         core::mem::take(&mut *self.inner.dirty_dynamic_nodes.borrow_mut())
     }
 
     /// Take the set of reactive collections awaiting an isolated reconcile.
+    #[must_use]
     pub fn take_dirty_collections(&self) -> BTreeSet<usize> {
         core::mem::take(&mut *self.inner.dirty_collections.borrow_mut())
     }
@@ -140,6 +149,7 @@ impl FrameSignals {
     /// Whether an initial-content update for a `Dynamic` node dispatched at
     /// `render_generation` is already reflected by the rebuild in progress and
     /// must be ignored (the node was just dispatched with exactly this content).
+    #[must_use]
     pub fn initial_dynamic_content_already_rendered(&self, render_generation: u64) -> bool {
         self.inner.rebuild_in_progress.get()
             && render_generation == self.inner.rebuild_generation.get()
@@ -204,6 +214,7 @@ impl FrameSignals {
     ///
     /// `Dynamic` dispatch captures this value so later content updates can be
     /// attributed to the rebuild that produced the node.
+    #[must_use]
     pub fn rebuild_generation(&self) -> u64 {
         self.inner.rebuild_generation.get()
     }
@@ -216,6 +227,7 @@ impl FrameSignals {
 
     /// Returns the instant of the frame currently being produced, for watcher
     /// closures that need a consistent animation clock.
+    #[must_use]
     pub fn frame_clock(&self) -> Instant {
         self.inner.frame_clock.get()
     }

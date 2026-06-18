@@ -27,6 +27,7 @@ pub fn material_navigation_view(
 }
 
 /// Uses the small top app bar presentation.
+#[must_use]
 pub fn material_small_top_app_bar(mut view: MaterialNavigationView) -> MaterialNavigationView {
     view.view = view
         .view
@@ -35,6 +36,7 @@ pub fn material_small_top_app_bar(mut view: MaterialNavigationView) -> MaterialN
 }
 
 /// Uses the large top app bar presentation.
+#[must_use]
 pub fn material_large_top_app_bar(mut view: MaterialNavigationView) -> MaterialNavigationView {
     view.view = view
         .view

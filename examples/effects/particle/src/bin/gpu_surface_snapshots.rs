@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use particle_example::{explosion_system, flame_system, rain_system};
 use waterui::prelude::Environment;
@@ -34,7 +34,7 @@ fn composite_over_opaque_background(pixels: &[u8], background: [u8; 3]) -> Vec<u
         .collect()
 }
 
-fn write_snapshot(output_dir: &PathBuf, spec: SnapshotSpec) {
+fn write_snapshot(output_dir: &Path, spec: SnapshotSpec) {
     let size = OffscreenSize::try_from_pixels(spec.width, spec.height)
         .expect("snapshot frame size must be valid");
     let render_config = OffscreenRenderConfig::new(size);

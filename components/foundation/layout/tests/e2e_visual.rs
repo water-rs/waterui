@@ -1,3 +1,5 @@
+//! End-to-end visual-rendering tests for the `layout` component.
+
 use hydrolysis_m3::install as install_m3;
 use waterui::View;
 use waterui::ViewExt as _;

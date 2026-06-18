@@ -426,6 +426,12 @@ impl IntoRust for WuiViewDimensions {
     }
 }
 
+/// Releases the alignment-guide arrays owned by a `WuiViewDimensions`.
+///
+/// # Safety
+///
+/// `dimensions` must be a value previously produced by waterui and not already consumed;
+/// it must not be used again after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_view_dimensions(dimensions: WuiViewDimensions) {
     dimensions.horizontal_guides.consume();
@@ -486,6 +492,12 @@ pub unsafe extern "C" fn waterui_layout_measure(
     dimensions.into_ffi()
 }
 
+/// Returns the size the layout reports as fitting the given proposal.
+///
+/// # Safety
+///
+/// - The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+/// - The `children` array must contain valid `WuiSubView` entries; it is consumed and dropped after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_size_that_fits(
     layout: *mut WuiLayout,
@@ -542,6 +554,11 @@ pub unsafe extern "C" fn waterui_layout_place(
     rects.into_ffi()
 }
 
+/// Returns the lazy-stack axis the layout advertises, if any.
+///
+/// # Safety
+///
+/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_lazy_stack_axis(
     layout: *mut WuiLayout,
@@ -552,12 +569,22 @@ pub unsafe extern "C" fn waterui_layout_lazy_stack_axis(
         .unwrap_or(WuiLazyStackAxis::Unsupported)
 }
 
+/// Returns the lazy-stack inter-item spacing the layout requires.
+///
+/// # Safety
+///
+/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_lazy_stack_spacing(layout: *mut WuiLayout) -> f32 {
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     required_lazy_stack_descriptor(layout).spacing
 }
 
+/// Returns the lazy-stack cross-axis horizontal alignment the layout requires.
+///
+/// # Safety
+///
+/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_lazy_stack_horizontal_alignment(
     layout: *mut WuiLayout,
@@ -566,6 +593,11 @@ pub unsafe extern "C" fn waterui_layout_lazy_stack_horizontal_alignment(
     required_lazy_stack_descriptor(layout).horizontal_alignment
 }
 
+/// Returns the lazy-stack cross-axis vertical alignment the layout requires.
+///
+/// # Safety
+///
+/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_lazy_stack_vertical_alignment(
     layout: *mut WuiLayout,

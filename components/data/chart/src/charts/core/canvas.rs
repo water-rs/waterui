@@ -477,7 +477,7 @@ where
     let y_range_start = Binding::container(None::<f32>);
     let viewport_state = cartesian_viewport.state_signal();
     let canvas = {
-        let transition = transition.clone();
+        let transition = transition;
         let geometry = geometry.clone();
         let base_bounds = base_bounds.clone();
         let chart_frame = chart_frame.clone();
@@ -553,7 +553,7 @@ where
         canvas,
         GestureObserver::new(DragGesture::new(0.0), {
             let geometry = geometry.clone();
-            let base_bounds = base_bounds.clone();
+            let base_bounds = base_bounds;
             let selection = selection.clone();
             let cartesian_selection = cartesian_selection;
             let cartesian_viewport = cartesian_viewport;
@@ -754,7 +754,7 @@ where
     let canvas = Metadata::new(
         canvas,
         OnEvent::new(Event::HoverMove, {
-            let geometry = geometry.clone();
+            let geometry = geometry;
             let selection = selection.clone();
             move |env: Environment| {
                 if !selection.is_active() {
@@ -819,7 +819,7 @@ where
     let chart_frame = Binding::container(ChartViewport::default());
     let plot_area_frame = Binding::container(ChartViewport::default());
     let canvas = {
-        let transition = transition.clone();
+        let transition = transition;
         let geometry = geometry.clone();
         let chart_frame = chart_frame.clone();
         let plot_area_frame = plot_area_frame.clone();
@@ -905,7 +905,7 @@ where
     let canvas = Metadata::new(
         canvas,
         OnEvent::new(Event::HoverMove, {
-            let geometry = geometry.clone();
+            let geometry = geometry;
             let selection = selection.clone();
             move |env: Environment| {
                 if !selection.is_active() {

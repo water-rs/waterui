@@ -839,28 +839,6 @@ fn measured_input_field_height(
     measured_height.max(metrics.min_height)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::measured_input_field_height;
-    use waterui_backend_core::widget::InputFieldMetrics;
-
-    #[test]
-    fn labeled_input_field_height_reserves_space_for_tall_text() {
-        let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
-
-        assert_eq!(measured_input_field_height(22.0, 18.0, metrics), 56.0);
-        assert_eq!(measured_input_field_height(34.0, 18.0, metrics), 68.0);
-    }
-
-    #[test]
-    fn unlabeled_input_field_height_uses_minimum_until_text_needs_more() {
-        let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
-
-        assert_eq!(measured_input_field_height(34.0, 0.0, metrics), 56.0);
-        assert_eq!(measured_input_field_height(48.0, 0.0, metrics), 64.0);
-    }
-}
-
 pub(crate) fn measure_table_metrics(
     columns: &[TableColumn],
     state: &mut HydroState,
@@ -1103,5 +1081,27 @@ pub(crate) fn measure_picker_intrinsic(
             LayoutSize::new(width as f32, height as f32)
         }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::measured_input_field_height;
+    use waterui_backend_core::widget::InputFieldMetrics;
+
+    #[test]
+    fn labeled_input_field_height_reserves_space_for_tall_text() {
+        let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
+
+        assert_eq!(measured_input_field_height(22.0, 18.0, metrics), 56.0);
+        assert_eq!(measured_input_field_height(34.0, 18.0, metrics), 68.0);
+    }
+
+    #[test]
+    fn unlabeled_input_field_height_uses_minimum_until_text_needs_more() {
+        let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
+
+        assert_eq!(measured_input_field_height(34.0, 0.0, metrics), 56.0);
+        assert_eq!(measured_input_field_height(48.0, 0.0, metrics), 64.0);
     }
 }

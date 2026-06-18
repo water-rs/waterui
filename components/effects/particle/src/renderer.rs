@@ -893,6 +893,10 @@ mod tests {
         }
 
         impl GpuView for PrefilledParticleRenderer {
+            #[expect(
+                clippy::future_not_send,
+                reason = "GpuView runs on the render thread; this future borrows the non-Send `GpuContext`/`Environment`"
+            )]
             async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut waterui_core::Environment) {
                 self.inner.setup(ctx, env).await;
 
@@ -998,7 +1002,7 @@ mod tests {
         let target_index =
             renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
 
-        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64
+        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get()
             * u64::from(renderer.config.max_particles);
         let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle_compute_buffer_test_readback"),
@@ -1140,7 +1144,7 @@ mod tests {
         let target_index =
             renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
 
-        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64;
+        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get();
         let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle_collision_buffer_test_readback"),
             size: buffer_size,
@@ -1266,7 +1270,7 @@ mod tests {
         let target_index =
             renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
 
-        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64;
+        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get();
         let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle_circle_collision_buffer_test_readback"),
             size: buffer_size,
@@ -1392,7 +1396,7 @@ mod tests {
         let target_index =
             renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
 
-        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64 * 2;
+        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() * 2;
         let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle_neighbor_interaction_test_readback"),
             size: buffer_size,

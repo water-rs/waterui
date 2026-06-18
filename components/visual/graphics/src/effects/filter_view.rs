@@ -53,7 +53,7 @@ type MotionBlurFilter = filtrate::filters::MotionBlur<ReactiveParam, ReactivePar
 type WhitePointFilter = filtrate::filters::WhitePoint<ReactiveParam, ReactiveParam, ReactiveParam>;
 type ZoomBlurFilter = filtrate::filters::ZoomBlur<ReactiveParam, ReactiveParam, ReactiveParam>;
 
-fn temperature_tint_filter(
+const fn temperature_tint_filter(
     temperature: ReactiveParam,
     tint: ReactiveParam,
 ) -> TemperatureTintFilter {

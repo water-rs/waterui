@@ -1,3 +1,5 @@
+//! End-to-end accessibility-semantics tests for form controls.
+
 use jiff::civil::Date;
 use std::time::Duration;
 use waterui::ViewExt as _;
@@ -156,7 +158,7 @@ fn date_picker_accessibility() {
 #[test]
 fn color_picker_accessibility_tap_is_handled() {
     let selected_color = Binding::container(Color::srgb(0, 0, 0));
-    let selected_color_for_view = selected_color.clone();
+    let selected_color_for_view = selected_color;
 
     let mut app = mount_view(move || {
         form_shell(ColorPicker::new(
@@ -176,7 +178,7 @@ fn calendar_navigation_and_selection_update_binding() {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let visible_month = Binding::container(Date::new(2025, 1, 1).unwrap());
     let selected_date_for_view = selected_date.clone();
-    let visible_month_for_view = visible_month.clone();
+    let visible_month_for_view = visible_month;
 
     let mut app = mount_view(move || {
         form_shell(

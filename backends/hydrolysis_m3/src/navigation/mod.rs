@@ -1,2 +1,2 @@
-pub(crate) mod navigation;
-pub(crate) mod tabs;
+pub mod navigation;
+pub mod tabs;

@@ -1,4 +1,4 @@
-//! Real-time audio visualization components for WaterUI.
+//! Real-time audio visualization components for `WaterUI`.
 //!
 //! This crate provides GPU-accelerated audio visualization using microphone input.
 //!

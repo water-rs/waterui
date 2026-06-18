@@ -177,7 +177,7 @@ impl View for Photo {
                 LifeCycleHook::new(LifeCycle::Appear, {
                     let source = source.clone();
                     let on_event = Rc::clone(&on_event);
-                    let content_handler = content_handler.clone();
+                    let content_handler = content_handler;
                     let generation = generation.clone();
                     move || {
                         if load_started.get() {
@@ -310,6 +310,41 @@ pub fn photo(source: impl IntoComputed<Url>) -> Photo {
 }
 
 #[cfg(test)]
+fn png_contains_cicp_pq(bytes: &[u8]) -> bool {
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 8 || &bytes[0..8] != PNG_SIG {
+        return false;
+    }
+    let mut offset = 8usize;
+    while offset + 12 <= bytes.len() {
+        let len = u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as usize;
+        let chunk_start = offset + 8;
+        let chunk_end = chunk_start.saturating_add(len);
+        if chunk_end + 4 > bytes.len() {
+            return false;
+        }
+        let chunk_type = &bytes[offset + 4..offset + 8];
+        if chunk_type == b"cICP" {
+            if len != 4 {
+                return false;
+            }
+            let data = &bytes[chunk_start..chunk_end];
+            return data[1] == 16; // PQ transfer
+        }
+        if chunk_type == b"IEND" {
+            break;
+        }
+        offset = chunk_end + 4;
+    }
+    false
+}
+
+#[cfg(test)]
 mod tests {
     use std::io::Cursor;
     use std::path::PathBuf;
@@ -392,7 +427,6 @@ mod tests {
                 eprintln!(
                     "[streaming_decode_real_images_smoke] no cases validated; network may be unavailable in this environment"
                 );
-                return;
             }
         });
     }
@@ -645,39 +679,4 @@ mod tests {
             panic!("no HDR network sample produced a valid HDR PNG export");
         });
     }
-}
-
-#[cfg(test)]
-fn png_contains_cicp_pq(bytes: &[u8]) -> bool {
-    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if bytes.len() < 8 || &bytes[0..8] != PNG_SIG {
-        return false;
-    }
-    let mut offset = 8usize;
-    while offset + 12 <= bytes.len() {
-        let len = u32::from_be_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]) as usize;
-        let chunk_start = offset + 8;
-        let chunk_end = chunk_start.saturating_add(len);
-        if chunk_end + 4 > bytes.len() {
-            return false;
-        }
-        let chunk_type = &bytes[offset + 4..offset + 8];
-        if chunk_type == b"cICP" {
-            if len != 4 {
-                return false;
-            }
-            let data = &bytes[chunk_start..chunk_end];
-            return data[1] == 16; // PQ transfer
-        }
-        if chunk_type == b"IEND" {
-            break;
-        }
-        offset = chunk_end + 4;
-    }
-    false
 }

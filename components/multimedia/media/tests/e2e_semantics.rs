@@ -1,3 +1,5 @@
+//! End-to-end accessibility-semantics tests for the `media` component.
+
 use std::time::Duration;
 
 use hydrolysis_m3::install as install_m3;

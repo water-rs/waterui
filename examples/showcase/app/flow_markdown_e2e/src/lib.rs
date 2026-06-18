@@ -53,7 +53,7 @@ fn token_fade_animation(stream_cps: i32, enabled: bool) -> Option<Animation> {
 fn normalized_document_index(index: i32) -> usize {
     let count = MARKDOWN_DOCUMENTS.len();
     assert!(
-        !(count == 0),
+        (count != 0),
         "flow-markdown-e2e requires at least one markdown document"
     );
 

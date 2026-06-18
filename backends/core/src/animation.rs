@@ -363,6 +363,7 @@ impl AnimationController {
     /// Returns whether any slot is still animating at `now`, without
     /// advancing any track (used to decide whether the next frame must be
     /// scheduled).
+    #[must_use]
     pub fn has_active(&self, now: Instant) -> bool {
         self.slots
             .values()
@@ -379,6 +380,7 @@ impl AnimationController {
     /// Returns the keys of all scalar slots whose animation is still in
     /// flight, letting the renderer patch exactly the nodes that depend on
     /// them.
+    #[must_use]
     pub fn active_scalar_keys(&self) -> BTreeSet<AnimationKey> {
         self.slots
             .iter()
@@ -387,6 +389,7 @@ impl AnimationController {
     }
 
     /// Returns whether any radio-indicator choreography is still in flight.
+    #[must_use]
     pub fn has_active_radio_indicator(&self) -> bool {
         self.radio_indicator_slots
             .values()
@@ -396,6 +399,7 @@ impl AnimationController {
     /// Returns whether any repeating/timeline phase slot still requires
     /// frames at `now`: repeating slots run forever, one-shot timeline slots
     /// only until their cycle completes.
+    #[must_use]
     pub fn has_active_repeating(&self, now: Instant) -> bool {
         self.repeating_slots
             .values()
@@ -470,6 +474,7 @@ impl AnimatedScalarHandle {
 
     /// Advances the slot's track to `now` and returns the current scalar
     /// value; the renderer samples with the frame clock when drawing.
+    #[must_use]
     pub fn sample(&self, now: Instant) -> f32 {
         let mut state = self.state.borrow_mut();
         state.advance(now);
@@ -501,7 +506,7 @@ impl AnimatedScalarHandle {
 }
 
 impl AnimatedScalarState {
-    fn new(initial: f32, now: Instant) -> Self {
+    const fn new(initial: f32, now: Instant) -> Self {
         Self {
             generation: 1,
             track: AnimationTrack::new(initial),
@@ -519,7 +524,7 @@ impl AnimatedScalarState {
         self.generation
     }
 
-    fn prepare_target_generation(&mut self) -> u64 {
+    const fn prepare_target_generation(&mut self) -> u64 {
         self.generation = self
             .generation
             .checked_add(1)
@@ -555,15 +560,12 @@ impl AnimatedScalarState {
             return;
         }
 
-        match animation {
-            Some(animation) => {
-                self.track.set_target(target, Some(animation));
-                self.active_target = Some(target);
-            }
-            None => {
-                self.track.set_target(target, None);
-                self.active_target = None;
-            }
+        if let Some(animation) = animation {
+            self.track.set_target(target, Some(animation));
+            self.active_target = Some(target);
+        } else {
+            self.track.set_target(target, None);
+            self.active_target = None;
         }
     }
 
@@ -577,7 +579,7 @@ impl AnimatedScalarState {
         active
     }
 
-    fn is_active(&self) -> bool {
+    const fn is_active(&self) -> bool {
         self.track.is_active()
     }
 
@@ -587,7 +589,7 @@ impl AnimatedScalarState {
 }
 
 impl AnimatedRadioIndicatorState {
-    fn new(selected: bool, now: Instant) -> Self {
+    const fn new(selected: bool, now: Instant) -> Self {
         let selected_progress = if selected { 1.0 } else { 0.0 };
         Self {
             selected,
@@ -632,7 +634,7 @@ impl AnimatedRadioIndicatorState {
         scale_active || opacity_active || color_active
     }
 
-    fn is_active(&self) -> bool {
+    const fn is_active(&self) -> bool {
         self.inner_scale.is_active()
             || self.inner_opacity.is_active()
             || self.outer_color.is_active()

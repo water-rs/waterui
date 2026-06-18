@@ -23,6 +23,7 @@ impl Default for WaveformTheme {
 
 impl WaveformTheme {
     /// Cyberpunk-style theme with cyan glow.
+    #[must_use]
     pub fn cyber() -> Self {
         Self {
             bg_color: Color::srgb_f32(0.05, 0.05, 0.1),
@@ -34,6 +35,7 @@ impl WaveformTheme {
     }
 
     /// Voice recorder style with red bars.
+    #[must_use]
     pub fn recorder() -> Self {
         Self {
             bg_color: Color::srgb_f32(0.05, 0.05, 0.05),
@@ -45,6 +47,7 @@ impl WaveformTheme {
     }
 
     /// Minimal green oscilloscope.
+    #[must_use]
     pub fn oscilloscope() -> Self {
         Self {
             bg_color: Color::srgb_f32(0.0, 0.02, 0.0),

@@ -881,7 +881,7 @@ impl HydrolysisRenderer {
         let transient_layer_count = if let Some(scene) = self
             .transient_scene
             .take()
-            .filter(|scene| scene_has_content(scene))
+            .filter(scene_has_content)
         {
             render_layers.push(RenderLayer::Vello(scene));
             1

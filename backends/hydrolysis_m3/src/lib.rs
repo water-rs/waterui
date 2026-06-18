@@ -120,7 +120,7 @@ enum MaterialThemeColors {
 impl MaterialTheme {
     /// Create a Material Design 3 widget theme.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::with_colors(MaterialColorScheme::baseline_light())
     }
 
@@ -134,7 +134,7 @@ impl MaterialTheme {
 
     /// Create a Material Design 3 widget theme from paired light/dark color roles.
     #[must_use]
-    pub fn with_color_schemes(
+    pub const fn with_color_schemes(
         light: MaterialColorScheme,
         dark: MaterialColorScheme,
         scheme: Computed<ColorScheme>,

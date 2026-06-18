@@ -35,7 +35,6 @@ pub fn material_sub_menu(label: impl IntoLabel, items: impl MenuView) -> Materia
 }
 
 /// Creates a Material Design 3 menu divider.
-#[must_use]
 pub const fn material_menu_divider() -> Divider {
     Divider
 }

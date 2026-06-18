@@ -103,6 +103,82 @@ pub fn draw_switch_state_layer(
     state_layer::draw_unbounded_circle(draw, center, 20.0, color, state);
 }
 
+pub fn draw_checkbox(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: Rect,
+    progress: f32,
+) {
+    let progress = progress.clamp(0.0, 1.0);
+    let outline_opacity = 1.0 - progress;
+    if outline_opacity > 0.0 {
+        draw.stroke_rounded_rect(
+            bounds,
+            TOGGLE_CHECKBOX_CONTAINER_SHAPE.into(),
+            &Brush::from(
+                colors
+                    .on_surface_variant
+                    .peniko()
+                    .with_alpha(outline_opacity),
+            ),
+            TOGGLE_CHECKBOX_OUTLINE_WIDTH,
+        );
+    }
+    if progress <= 0.0 {
+        return;
+    }
+
+    let selected_scale = crate::lerp_f64(TOGGLE_CHECKBOX_SELECTED_SCALE_START, 1.0, progress);
+    let selected_transform = Affine::translate((bounds.center().x, bounds.center().y))
+        * Affine::scale(selected_scale)
+        * Affine::translate((-bounds.center().x, -bounds.center().y));
+    draw.push_transform(selected_transform);
+    draw.fill_rounded_rect(
+        bounds,
+        TOGGLE_CHECKBOX_CONTAINER_SHAPE.into(),
+        &Brush::from(colors.primary.peniko().with_alpha(progress)),
+    );
+    let check = BezPath::from_vec(vec![
+        PathEl::MoveTo(Point::new(
+            bounds.width().mul_add(0.25, bounds.x0),
+            bounds.height().mul_add(0.55, bounds.y0),
+        )),
+        PathEl::LineTo(Point::new(
+            bounds.width().mul_add(0.45, bounds.x0),
+            bounds.height().mul_add(0.75, bounds.y0),
+        )),
+        PathEl::LineTo(Point::new(
+            bounds.width().mul_add(0.78, bounds.x0),
+            bounds.height().mul_add(0.3, bounds.y0),
+        )),
+    ]);
+    draw.stroke_path(
+        &check,
+        &Brush::from(colors.on_primary.peniko().with_alpha(progress)),
+        TOGGLE_CHECKBOX_OUTLINE_WIDTH,
+    );
+    draw.pop_transform();
+}
+
+pub fn draw_checkbox_state_layer(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: Rect,
+    progress: f32,
+    state: WidgetInteractionState,
+) {
+    let center = Point::new(
+        bounds.x0 + bounds.width() / 2.0,
+        bounds.y0 + bounds.height() / 2.0,
+    );
+    let color = if progress > 0.0 {
+        colors.primary.peniko()
+    } else {
+        colors.on_surface.peniko()
+    };
+    state_layer::draw_unbounded_circle(draw, center, 20.0, color, state);
+}
+
 #[cfg(test)]
 mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
@@ -242,80 +318,4 @@ mod tests {
         assert_eq!(selected.path_stroke_count, 1);
         assert_eq!(selected.transform_depth, 0);
     }
-}
-
-pub fn draw_checkbox(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    bounds: Rect,
-    progress: f32,
-) {
-    let progress = progress.clamp(0.0, 1.0);
-    let outline_opacity = 1.0 - progress;
-    if outline_opacity > 0.0 {
-        draw.stroke_rounded_rect(
-            bounds,
-            TOGGLE_CHECKBOX_CONTAINER_SHAPE.into(),
-            &Brush::from(
-                colors
-                    .on_surface_variant
-                    .peniko()
-                    .with_alpha(outline_opacity),
-            ),
-            TOGGLE_CHECKBOX_OUTLINE_WIDTH,
-        );
-    }
-    if progress <= 0.0 {
-        return;
-    }
-
-    let selected_scale = crate::lerp_f64(TOGGLE_CHECKBOX_SELECTED_SCALE_START, 1.0, progress);
-    let selected_transform = Affine::translate((bounds.center().x, bounds.center().y))
-        * Affine::scale(selected_scale)
-        * Affine::translate((-bounds.center().x, -bounds.center().y));
-    draw.push_transform(selected_transform);
-    draw.fill_rounded_rect(
-        bounds,
-        TOGGLE_CHECKBOX_CONTAINER_SHAPE.into(),
-        &Brush::from(colors.primary.peniko().with_alpha(progress)),
-    );
-    let check = BezPath::from_vec(vec![
-        PathEl::MoveTo(Point::new(
-            bounds.width().mul_add(0.25, bounds.x0),
-            bounds.height().mul_add(0.55, bounds.y0),
-        )),
-        PathEl::LineTo(Point::new(
-            bounds.width().mul_add(0.45, bounds.x0),
-            bounds.height().mul_add(0.75, bounds.y0),
-        )),
-        PathEl::LineTo(Point::new(
-            bounds.width().mul_add(0.78, bounds.x0),
-            bounds.height().mul_add(0.3, bounds.y0),
-        )),
-    ]);
-    draw.stroke_path(
-        &check,
-        &Brush::from(colors.on_primary.peniko().with_alpha(progress)),
-        TOGGLE_CHECKBOX_OUTLINE_WIDTH,
-    );
-    draw.pop_transform();
-}
-
-pub fn draw_checkbox_state_layer(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    bounds: Rect,
-    progress: f32,
-    state: WidgetInteractionState,
-) {
-    let center = Point::new(
-        bounds.x0 + bounds.width() / 2.0,
-        bounds.y0 + bounds.height() / 2.0,
-    );
-    let color = if progress > 0.0 {
-        colors.primary.peniko()
-    } else {
-        colors.on_surface.peniko()
-    };
-    state_layer::draw_unbounded_circle(draw, center, 20.0, color, state);
 }

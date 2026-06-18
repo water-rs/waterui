@@ -5,7 +5,6 @@ use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, 
 use alloc::vec::Vec;
 use waterui::Str;
 use waterui::layout::HorizontalAlignment;
-use waterui::view::ConfigurableView;
 pub use waterui_text::font::ResolvedFont;
 use waterui_text::font::{Body, Font, FontWeight};
 use waterui_text::styled::{Style, StyledStr};

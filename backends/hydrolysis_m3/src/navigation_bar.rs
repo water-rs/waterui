@@ -1,4 +1,4 @@
-//! Material Design 3 navigation bar composed from WaterUI primitives.
+//! Material Design 3 navigation bar composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 
@@ -132,7 +132,7 @@ where
         let accessibility_label = self.accessibility_label.clone();
         let accessibility_state = self
             .selected
-            .clone()
+
             .map(|selected| AccessibilityState::new().selected(selected));
         let selected_for_state = self.selected;
         let selected_icon = self.icon.clone();
@@ -211,7 +211,6 @@ fn label_plain_text(label: &Label) -> Str {
         .content
         .get()
         .to_plain()
-        .into()
 }
 
 const fn noop(_env: &Environment) {}

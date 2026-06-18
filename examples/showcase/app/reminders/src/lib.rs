@@ -248,7 +248,7 @@ pub fn demo() -> impl View {
         },
     )
     .sidebar_width(300.0)
-    .placeholder(|| placeholder_view())
+    .placeholder(placeholder_view)
 }
 
 fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>) -> impl View {

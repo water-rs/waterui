@@ -1,7 +1,9 @@
+//! Offscreen GPU-surface snapshot example for the particle effect.
+
 use core::{f32::consts::PI, num::NonZeroU32};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use waterui_core::Environment;
 use waterui_graphics::{OffscreenRenderConfig, OffscreenRenderOutput, OffscreenSize, color::Color};
@@ -143,7 +145,7 @@ fn composite_over_opaque_background(
     }
 }
 
-fn write_snapshot(output_dir: &PathBuf, spec: SnapshotSpec) {
+fn write_snapshot(output_dir: &Path, spec: SnapshotSpec) {
     let size = OffscreenSize::try_from_pixels(spec.width, spec.height)
         .expect("snapshot frame size must be valid");
     let render_config = OffscreenRenderConfig::new(size);

@@ -105,6 +105,13 @@ pub(crate) fn pop_error_scope_now(
     }
 }
 
+/// Reborrows a raw pointer as a shared reference, naming the calling FFI
+/// function and parameter for diagnostics.
+///
+/// # Safety
+///
+/// `ptr` must be non-null and point to a valid, initialized `T` that stays
+/// alive and unaliased for the duration of the returned `'a` borrow.
 #[inline]
 #[track_caller]
 pub unsafe fn expect_non_null<'a, T>(
@@ -116,6 +123,13 @@ pub unsafe fn expect_non_null<'a, T>(
     unsafe { &*ptr }
 }
 
+/// Reborrows a raw pointer as an exclusive reference, naming the calling FFI
+/// function and parameter for diagnostics.
+///
+/// # Safety
+///
+/// `ptr` must be non-null and point to a valid, initialized `T` that stays
+/// alive and exclusively borrowed for the duration of the returned `'a` borrow.
 #[inline]
 #[track_caller]
 pub unsafe fn expect_non_null_mut<'a, T>(

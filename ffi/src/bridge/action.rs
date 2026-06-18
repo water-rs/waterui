@@ -111,7 +111,7 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{IntoRust, WuiEnv};
+    use crate::WuiEnv;
 
     fn test_env() -> *mut WuiEnv {
         waterui::Environment::new().into_ffi()

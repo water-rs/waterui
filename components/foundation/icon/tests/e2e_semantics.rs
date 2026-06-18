@@ -1,3 +1,5 @@
+//! End-to-end accessibility-semantics tests for the `icon` component.
+
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui_icon::{IconGlyph, system_icon};

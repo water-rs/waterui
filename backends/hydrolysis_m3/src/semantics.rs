@@ -1,7 +1,7 @@
 use waterui::{Environment, Signal as _, Str};
 use waterui_controls::label::Label;
 
-pub(crate) fn label_plain_text(label: &Label) -> Str {
+pub fn label_plain_text(label: &Label) -> Str {
     label
         .semantic_text()
         .clone()
@@ -9,5 +9,4 @@ pub(crate) fn label_plain_text(label: &Label) -> Str {
         .content
         .get()
         .to_plain()
-        .into()
 }

@@ -817,6 +817,12 @@ pub unsafe extern "C" fn waterui_applied_filter_set_input(
 ///
 /// This requires native to pass a drop callback that releases an acquired reference to the
 /// AHardwareBuffer when wgpu is done using it (after GPU work completes).
+///
+/// # Safety
+///
+/// - `state` must be a valid, exclusively-borrowable `WuiAppliedFilterState` pointer.
+/// - `ahb_ptr` must be a valid `AHardwareBuffer` pointer that stays alive until `drop_fn` is invoked.
+/// - `drop_fn` must safely release the buffer when called with `drop_data`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_set_input_ahardwarebuffer(
     state: *mut WuiAppliedFilterState,

@@ -845,6 +845,48 @@ fn generate_dual_plural_translation_arm(
     }
 }
 
+pub fn catalog(input: &TokenStream) -> TokenStream {
+    if !input.is_empty() {
+        return syn::Error::new(Span::call_site(), "catalog! does not accept arguments")
+            .to_compile_error()
+            .into();
+    }
+
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(err) => return TokenStream::from(err),
+    };
+
+    let bundle = match TranslationBundle::load_from_manifest_dir() {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            let message = LitStr::new(&err, Span::call_site());
+            return TokenStream::from(quote! { compile_error!(#message); });
+        }
+    };
+
+    let inserts: Vec<_> = bundle
+        .tracked_files
+        .iter()
+        .filter_map(|path| {
+            let locale = path.file_stem()?.to_str()?;
+            let locale_lit = LitStr::new(locale, Span::call_site());
+            let path_lit = LitStr::new(path.to_str()?, Span::call_site());
+            Some(quote! {
+                __catalog = __catalog
+                    .add_toml(#locale_lit, include_str!(#path_lit))
+                    .expect("catalog! generated invalid translation file");
+            })
+        })
+        .collect();
+
+    TokenStream::from(quote! {{
+        let mut __catalog = #waterui::locale::TranslationCatalog::new();
+        #(#inserts)*
+        __catalog
+    }})
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -894,46 +936,4 @@ mod tests {
             .expect_err("unknown dual plural field should fail");
         assert!(err.contains("Unknown dual plural field"));
     }
-}
-
-pub fn catalog(input: &TokenStream) -> TokenStream {
-    if !input.is_empty() {
-        return syn::Error::new(Span::call_site(), "catalog! does not accept arguments")
-            .to_compile_error()
-            .into();
-    }
-
-    let waterui = match waterui_crate_path() {
-        Ok(path) => path,
-        Err(err) => return TokenStream::from(err),
-    };
-
-    let bundle = match TranslationBundle::load_from_manifest_dir() {
-        Ok(bundle) => bundle,
-        Err(err) => {
-            let message = LitStr::new(&err, Span::call_site());
-            return TokenStream::from(quote! { compile_error!(#message); });
-        }
-    };
-
-    let inserts: Vec<_> = bundle
-        .tracked_files
-        .iter()
-        .filter_map(|path| {
-            let locale = path.file_stem()?.to_str()?;
-            let locale_lit = LitStr::new(locale, Span::call_site());
-            let path_lit = LitStr::new(path.to_str()?, Span::call_site());
-            Some(quote! {
-                __catalog = __catalog
-                    .add_toml(#locale_lit, include_str!(#path_lit))
-                    .expect("catalog! generated invalid translation file");
-            })
-        })
-        .collect();
-
-    TokenStream::from(quote! {{
-        let mut __catalog = #waterui::locale::TranslationCatalog::new();
-        #(#inserts)*
-        __catalog
-    }})
 }

@@ -84,7 +84,7 @@ struct ScrollState {
 impl ScrollController {
     /// Resets the slot cursor; called at the begin of a structural rebuild,
     /// before any scroll view is dispatched.
-    pub fn begin_rebuild_frame(&mut self) {
+    pub const fn begin_rebuild_frame(&mut self) {
         self.cursor = 0;
     }
 
@@ -143,11 +143,13 @@ impl ScrollController {
 impl ScrollHandle {
     /// Returns a key identifying the underlying scroll slot, stable for the
     /// slot's lifetime across rebuilds (the address of the shared state).
+    #[must_use]
     pub fn cache_key(&self) -> usize {
         Rc::as_ptr(&self.state) as usize
     }
 
     /// Returns the current offsets and extents of the bound scroll view.
+    #[must_use]
     pub fn metrics(&self) -> ScrollMetrics {
         let state = self.state.borrow();
         state.metrics()
@@ -161,6 +163,7 @@ impl ScrollHandle {
     /// counts scaled by 40 logical pixels per line; otherwise they are
     /// logical pixels. Input from a handle whose generation is stale is
     /// dropped and returns `false`.
+    #[must_use]
     pub fn apply_scroll_delta(&self, dx: f32, dy: f32, is_line_delta: bool) -> bool {
         let mut state = self.state.borrow_mut();
         if state.generation != self.generation {
@@ -272,7 +275,7 @@ impl ScrollState {
     }
 }
 
-fn clamp_scroll_offset(value: f64, max: f64) -> f64 {
+const fn clamp_scroll_offset(value: f64, max: f64) -> f64 {
     value.clamp(0.0, max)
 }
 

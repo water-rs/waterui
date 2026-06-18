@@ -66,6 +66,7 @@ impl GestureTarget {
     ///
     /// Used when a retained subtree is replayed at a different placement, so
     /// in-flight recognition (e.g. a pending long press) survives the move.
+    #[must_use]
     pub fn with_bounds_depth_and_group(
         &self,
         bounds: kurbo::Rect,
@@ -132,14 +133,14 @@ struct GestureDetection {
 }
 
 impl GestureDetection {
-    fn recognized(payload: GesturePayload) -> Self {
+    const fn recognized(payload: GesturePayload) -> Self {
         Self {
             recognized: Some(payload),
             failed: false,
         }
     }
 
-    fn failed() -> Self {
+    const fn failed() -> Self {
         Self {
             recognized: None,
             failed: true,
@@ -243,13 +244,15 @@ impl GestureEngine {
 
     /// Returns the number of currently registered targets; used as a
     /// truncation watermark when patching a subtree in isolation.
-    pub fn target_count(&self) -> usize {
+    #[must_use]
+    pub const fn target_count(&self) -> usize {
         self.targets.len()
     }
 
     /// Returns whether a pointer sequence is currently driving at least one
     /// recognizer (between pointer-down and the final up/cancel).
-    pub fn has_active_recognizer(&self) -> bool {
+    #[must_use]
+    pub const fn has_active_recognizer(&self) -> bool {
         !self.active_recognizers.is_empty()
     }
 
@@ -263,7 +266,7 @@ impl GestureEngine {
     /// Swaps the engine's target list with an externally captured one, used
     /// to splice subtree-captured targets back into the engine when replaying
     /// a retained subtree.
-    pub fn swap_targets(&mut self, external: &mut Vec<GestureTarget>) {
+    pub const fn swap_targets(&mut self, external: &mut Vec<GestureTarget>) {
         core::mem::swap(&mut self.targets, external);
     }
 
@@ -447,6 +450,7 @@ impl GestureEngine {
     /// Returns the earliest instant at which an active recognizer needs a
     /// [`handle_tick`](Self::handle_tick) to make progress (e.g. a pending
     /// long-press hold deadline), or `None` when no timer is armed.
+    #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         self.active_recognizers
             .iter()
@@ -489,7 +493,7 @@ impl GestureEngine {
         changed
     }
 
-    fn target_priority(target: &GestureTarget, index: usize) -> (usize, usize, usize) {
+    const fn target_priority(target: &GestureTarget, index: usize) -> (usize, usize, usize) {
         (target.depth, target.order, index)
     }
 
@@ -559,6 +563,7 @@ impl GestureEngine {
     ///
     /// Read-only diagnostics query for backend tests asserting hit-test
     /// priority; not used in render paths.
+    #[must_use]
     pub fn debug_targets_at(&self, point: kurbo::Point) -> Vec<(usize, usize, usize)> {
         self.targets
             .iter()
@@ -662,7 +667,7 @@ struct LongPressDetector {
 }
 
 impl LongPressDetector {
-    fn new(duration: Duration) -> Self {
+    const fn new(duration: Duration) -> Self {
         Self {
             duration,
             started_at: None,
@@ -765,7 +770,7 @@ struct DragDetector {
 }
 
 impl DragDetector {
-    fn new(min_distance: f32) -> Self {
+    const fn new(min_distance: f32) -> Self {
         Self {
             min_distance,
             start_point: None,
@@ -894,7 +899,7 @@ struct MagnificationDetector {
 }
 
 impl MagnificationDetector {
-    fn new(initial_scale: f32) -> Self {
+    const fn new(initial_scale: f32) -> Self {
         Self {
             initial_scale,
             scale: initial_scale,
@@ -975,7 +980,7 @@ struct RotationDetector {
 }
 
 impl RotationDetector {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             active: false,
             angle: 0.0,
@@ -1176,7 +1181,7 @@ impl GestureDetector for ExclusiveDetector {
     }
 }
 
-fn map_touch_phase_to_gesture_phase(phase: TouchPhase) -> GesturePhase {
+const fn map_touch_phase_to_gesture_phase(phase: TouchPhase) -> GesturePhase {
     match phase {
         TouchPhase::Started => GesturePhase::Started,
         TouchPhase::Moved => GesturePhase::Updated,
@@ -1185,7 +1190,7 @@ fn map_touch_phase_to_gesture_phase(phase: TouchPhase) -> GesturePhase {
     }
 }
 
-fn gesture_input_instant(input: GestureInput) -> Instant {
+const fn gesture_input_instant(input: GestureInput) -> Instant {
     match input {
         GestureInput::PointerDown { at, .. }
         | GestureInput::PointerMove { at, .. }

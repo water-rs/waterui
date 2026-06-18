@@ -40,8 +40,8 @@ pub fn draw_bar_separator(colors: &MaterialColorScheme, draw: &mut dyn DrawConte
 
 pub fn draw_back_button(colors: &MaterialColorScheme, draw: &mut dyn DrawContext, bounds: Rect) {
     let center = Point::new(
-        bounds.x0 + bounds.width() * 0.5,
-        bounds.y0 + bounds.height() * 0.5,
+        bounds.width().mul_add(0.5, bounds.x0),
+        bounds.height().mul_add(0.5, bounds.y0),
     );
     draw.fill_circle(
         center,

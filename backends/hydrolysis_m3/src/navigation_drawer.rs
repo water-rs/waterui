@@ -1,4 +1,4 @@
-//! Material Design 3 navigation drawer composed from WaterUI primitives.
+//! Material Design 3 navigation drawer composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 
@@ -73,7 +73,7 @@ where
     Content: View + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
-        let accessibility_state = self.opened.clone().map(|opened| {
+        let accessibility_state = self.opened.map(|opened| {
             AccessibilityState::new()
                 .expanded(Some(opened))
                 .hidden(!opened)
@@ -172,7 +172,7 @@ where
         let accessibility_label = self.accessibility_label.clone();
         let accessibility_state = self
             .selected
-            .clone()
+
             .map(|selected| AccessibilityState::new().selected(selected));
         let selected_for_state = self.selected;
         let selected_icon = self.icon.clone();

@@ -1,3 +1,5 @@
+//! End-to-end accessibility-semantics tests for the `webview` component.
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -174,6 +176,10 @@ impl WebViewHandle for FakeWebViewHandle {
         self.state.borrow().cookies.clone()
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "test double for a main-thread `WebViewController`; its `RefCell` state is `!Send` by design"
+    )]
     async fn run_javascript(&self, script: &str) -> Result<waterui::Str, waterui::Str> {
         Ok(waterui::Str::from(script.to_owned()))
     }

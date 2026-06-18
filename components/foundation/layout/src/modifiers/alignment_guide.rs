@@ -249,9 +249,7 @@ mod tests {
     struct StretchingView;
 
     impl View for StretchingView {
-        fn body(self, _env: &Environment) -> impl View {
-            ()
-        }
+        fn body(self, _env: &Environment) -> impl View {}
 
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::Horizontal

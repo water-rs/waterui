@@ -1,4 +1,4 @@
-//! Material Design 3 icon buttons composed from WaterUI primitives.
+//! Material Design 3 icon buttons composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 use core::marker::PhantomData;
@@ -28,11 +28,13 @@ pub trait IconButtonVariantTokens: Default + 'static {
     fn icon_color() -> Color;
 
     /// Border color.
+    #[must_use]
     fn outline_color() -> Color {
         Outline.into()
     }
 
     /// Border width.
+    #[must_use]
     fn outline_width() -> f32 {
         0.0
     }

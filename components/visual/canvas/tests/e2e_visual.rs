@@ -1,3 +1,5 @@
+//! End-to-end visual-rendering tests for the `canvas` component.
+
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
