@@ -1,4 +1,8 @@
 #![no_std]
+#![cfg_attr(
+    test,
+    allow(clippy::float_cmp, reason = "tests assert exact layout geometry values")
+)]
 //! Layout building blocks for `WaterUI`.
 //!
 //! This crate bridges the declarative [`View`](waterui_core::View) system with

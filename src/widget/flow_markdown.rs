@@ -125,7 +125,7 @@ impl FlowMarkdown {
     #[must_use]
     pub fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
         let config = nami::SignalExt::map(&self.config, move |mut config| {
-            config.typewriter_token_fade_in = animation.clone();
+            config.typewriter_token_fade_in.clone_from(&animation);
             config
         });
         self.config = nami::SignalExt::computed(&config);
@@ -1835,8 +1835,10 @@ mod tests {
 
     #[test]
     fn typewriter_run_includes_token_fade_animation_when_enabled() {
-        let mut config = FlowMarkdownConfig::default();
-        config.typewriter_token_fade_in = Some(Animation::ease_in_out(Duration::from_millis(140)));
+        let config = FlowMarkdownConfig {
+            typewriter_token_fade_in: Some(Animation::ease_in_out(Duration::from_millis(140))),
+            ..FlowMarkdownConfig::default()
+        };
         let mut state = FlowMarkdownState::new(config);
 
         let first = state.recompute("# Title", WatcherMetadata::new());

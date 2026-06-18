@@ -25,6 +25,6 @@ mod tests {
 
     #[test]
     fn test_motion_blur_not_color_only() {
-        assert!(!MotionBlur::<f32, f32>::COLOR_ONLY);
+        const { assert!(!MotionBlur::<f32, f32>::COLOR_ONLY) };
     }
 }

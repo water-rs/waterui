@@ -197,6 +197,10 @@ mod tests {
         assert_eq!(actual.opacity.to_bits(), expected.opacity.to_bits());
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test helper; passing assertion inputs by value reads clearest"
+    )]
     fn assert_resolves_to(
         env: &Environment,
         color: impl Resolvable<Resolved = ResolvedColor>,

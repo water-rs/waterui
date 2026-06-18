@@ -8,9 +8,17 @@ pub use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSi
 /// Extension trait for `RenderResult` to add PNG encoding.
 pub trait RenderResultExt {
     /// Encode the RGBA data as PNG, consuming the render result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if PNG encoding fails.
     fn into_png(self) -> Result<Vec<u8>, String>;
 
     /// Encode the RGBA data as PNG.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if PNG encoding fails.
     fn to_png(&self) -> Result<Vec<u8>, String>;
 }
 

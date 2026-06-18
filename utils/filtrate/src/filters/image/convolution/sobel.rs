@@ -23,7 +23,7 @@ mod tests {
 
     #[test]
     fn sobel_is_spatial_with_zero_params() {
-        assert!(!Sobel::COLOR_ONLY);
+        const { assert!(!Sobel::COLOR_ONLY) };
         assert_eq!(Sobel.params().len(), 0);
     }
 }

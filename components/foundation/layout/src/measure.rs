@@ -17,6 +17,10 @@ use waterui_core::layout::SubView;
 /// (under the `parallel` feature) and on the calling thread for the rest; the
 /// returned vector is in the same order as `children`.
 #[must_use]
+///
+/// # Panics
+///
+/// Panics if the internal measurement bookkeeping leaves a child unmeasured.
 pub fn measure_children<T, F>(children: &[&dyn SubView], measure: F) -> Vec<T>
 where
     F: Fn(&dyn SubView) -> T + Send + Sync,

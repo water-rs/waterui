@@ -1,3 +1,7 @@
+#![cfg_attr(
+    test,
+    allow(clippy::float_cmp, reason = "tests assert exact canvas geometry values")
+)]
 //! Canvas view for 2D vector graphics rendering.
 //!
 //! `Canvas` provides an easy-to-use API for drawing 2D graphics using Vello.

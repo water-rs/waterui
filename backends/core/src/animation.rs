@@ -243,6 +243,9 @@ impl AnimationController {
     /// owns the handle is responsible for animated transitions. Each bind
     /// advances the slot generation, so handles from earlier frames become
     /// inert. Panics if `key` is not a scalar-scope key.
+    /// # Panics
+    ///
+    /// Panics if `key` was created with a scope that does not match this animation binding.
     pub fn bind_scalar(
         &mut self,
         key: AnimationKey,
@@ -278,6 +281,9 @@ impl AnimationController {
     /// in-flight animation, while a new target starts one from the current
     /// sampled value (no snapping). A slot created on first bind starts at
     /// `target` directly. Panics if `key` is not a scalar-scope key.
+    /// # Panics
+    ///
+    /// Panics if `key` was created with a scope that does not match this animation binding.
     pub fn bind_scalar_target(
         &mut self,
         key: AnimationKey,
@@ -315,6 +321,9 @@ impl AnimationController {
     /// selecting grows the inner dot from zero while fading dot opacity and
     /// outer ring color in; deselecting fades them out without shrinking the
     /// dot. Panics if `key` is not a radio-indicator-scope key.
+    /// # Panics
+    ///
+    /// Panics if `key` was created with a scope that does not match this animation binding.
     pub fn bind_radio_indicator(
         &mut self,
         key: AnimationKey,
@@ -425,6 +434,9 @@ impl AnimationController {
     /// The slot's start instant persists across rebuilds; changing `cycle` or
     /// `repeat` restarts the timeline at `now`. Panics if `cycle` is zero or
     /// `key` is not a repeating-scope key.
+    /// # Panics
+    ///
+    /// Panics if `key` was created with a scope that does not match this animation binding.
     pub fn bind_timeline_phase(
         &mut self,
         key: AnimationKey,

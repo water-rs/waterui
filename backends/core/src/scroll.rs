@@ -102,6 +102,10 @@ impl ScrollController {
     /// pixels, and re-clamps the retained offsets. If axis, viewport, content
     /// extent, or the clamped offsets changed, the slot's generation advances
     /// and handles bound in earlier frames become inert.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the scroll controller cursor counter overflows.
     pub fn bind(
         &mut self,
         axis: Axis,
@@ -227,6 +231,10 @@ impl ScrollState {
         self.generation
     }
 
+    #[allow(
+        clippy::similar_names,
+        reason = "`old_x`/`old_y` and `scaled_dx`/`scaled_dy` are conventional 2D scroll-delta names"
+    )]
     fn apply_scroll_delta(&mut self, dx: f64, dy: f64, is_line_delta: bool) -> bool {
         let metrics = self.metrics();
         let old_x = self.offset_x;

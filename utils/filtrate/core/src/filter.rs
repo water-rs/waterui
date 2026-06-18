@@ -185,13 +185,13 @@ mod tests {
     #[test]
     fn color_only_chain_is_fully_color_only() {
         type ChainType = Chain<ColorFilter, ColorFilter>;
-        assert!(ChainType::COLOR_ONLY);
+        const { assert!(ChainType::COLOR_ONLY) };
     }
 
     #[test]
     fn mixed_chain_is_not_color_only() {
         type ChainType = Chain<ColorFilter, SpatialFilter>;
-        assert!(!ChainType::COLOR_ONLY);
+        const { assert!(!ChainType::COLOR_ONLY) };
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn deep_chain_inherits_spatial_color_only_correctly() {
-        assert!(!<Chain<Chain<ColorFilter, ColorFilter>, SpatialFilter>>::COLOR_ONLY);
+        const { assert!(!<Chain<Chain<ColorFilter, ColorFilter>, SpatialFilter>>::COLOR_ONLY) };
     }
 
     #[test]

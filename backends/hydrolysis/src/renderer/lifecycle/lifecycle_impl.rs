@@ -57,6 +57,10 @@ pub(crate) struct DynamicSubtree {
 /// preserved across capture and replay. This is the single source of painter's
 /// order for a captured subtree — there is no separate per-type batching that
 /// could reorder a dynamic draw relative to its static siblings.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the retained-scene draw-op layout is intentional; boxing would add per-op indirection on the render path"
+)]
 pub(crate) enum DynamicDrawOp {
     /// A baked static scene segment: everything drawn between the previous and the
     /// next dynamic draw at this subtree level.

@@ -61,6 +61,10 @@ impl WaveformTheme {
 
 /// Theme configuration for Spectrum visualization.
 #[derive(Debug, Clone, Copy)]
+#[allow(
+    dead_code,
+    reason = "fields are consumed by the upcoming Spectrum renderer (see the commented `pub use spectrum::Spectrum` in lib.rs)"
+)]
 pub struct SpectrumTheme {
     /// Background color [R, G, B].
     pub(crate) bg_color: [f32; 3],

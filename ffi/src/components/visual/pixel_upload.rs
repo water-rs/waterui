@@ -7,6 +7,10 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "the `Overflow` suffix documents that each variant is an overflow condition"
+)]
 pub(crate) enum PixelUploadError {
     BytesPerRowOverflow,
     DataLengthOverflow,

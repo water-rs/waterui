@@ -73,14 +73,14 @@ mod tests {
 
     #[test]
     fn photo_presets_are_zero_param_color_only() {
-        assert!(PhotoEffectMono::COLOR_ONLY);
-        assert!(PhotoEffectNoir::COLOR_ONLY);
-        assert!(PhotoEffectChrome::COLOR_ONLY);
-        assert!(PhotoEffectInstant::COLOR_ONLY);
-        assert!(PhotoEffectFade::COLOR_ONLY);
-        assert!(PhotoEffectProcess::COLOR_ONLY);
-        assert!(PhotoEffectTonal::COLOR_ONLY);
-        assert!(PhotoEffectTransfer::COLOR_ONLY);
+        const { assert!(PhotoEffectMono::COLOR_ONLY) };
+        const { assert!(PhotoEffectNoir::COLOR_ONLY) };
+        const { assert!(PhotoEffectChrome::COLOR_ONLY) };
+        const { assert!(PhotoEffectInstant::COLOR_ONLY) };
+        const { assert!(PhotoEffectFade::COLOR_ONLY) };
+        const { assert!(PhotoEffectProcess::COLOR_ONLY) };
+        const { assert!(PhotoEffectTonal::COLOR_ONLY) };
+        const { assert!(PhotoEffectTransfer::COLOR_ONLY) };
 
         assert_eq!(PhotoEffectMono.params().len(), 0);
         assert_eq!(PhotoEffectTransfer.params().len(), 0);

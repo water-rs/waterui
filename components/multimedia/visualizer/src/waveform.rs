@@ -1,3 +1,12 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
+#![allow(
+    dead_code,
+    reason = "the encase `ShaderType` derive on `Uniforms` emits a compile-time `check` fn that is never called"
+)]
 use crate::audio::{AudioCapture, SAMPLES_COUNT};
 use crate::theme::WaveformTheme;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
@@ -56,7 +65,8 @@ struct Uniforms {
 ///     .glow(0.8)
 ///     .sensitivity(Binding::f64(1.5));
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
+#[must_use = "a `Waveform` does nothing unless it is rendered as part of a view"]
 pub struct Waveform {
     theme: Binding<WaveformTheme>,
     sensitivity: Binding<f64>,
@@ -65,7 +75,6 @@ pub struct Waveform {
 
 impl Waveform {
     /// Create a new Waveform visualizer.
-    #[must_use]
     pub fn new(capture: AudioCapture) -> Self {
         Self {
             theme: binding(WaveformTheme::default()),
@@ -78,7 +87,6 @@ impl Waveform {
     ///
     /// Prefer constructing one `AudioCapture` and cloning it into multiple
     /// waveform views when you need to share microphone input.
-    #[must_use]
     pub fn audio_capture(self, capture: AudioCapture) -> Self {
         Self { capture, ..self }
     }
@@ -203,6 +211,10 @@ impl GpuView for WaveformRenderer {
         clippy::future_not_send,
         reason = "GpuView runs on the render thread; this future borrows the non-Send `GpuContext`/`Environment`"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "linear GPU pipeline and resource setup reads clearest as one sequence"
+    )]
     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         let device = &ctx.device;
 
@@ -277,7 +289,7 @@ impl GpuView for WaveformRenderer {
                 module: &shader,
                 entry_point: Some("vs_main"), // Standard VS in shader
                 buffers: &[],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -287,7 +299,7 @@ impl GpuView for WaveformRenderer {
                     blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -412,7 +424,6 @@ impl GpuView for WaveformRenderer {
 }
 
 /// Convenience constructor for [`Waveform`] from an [`AudioCapture`].
-#[must_use]
 pub fn waveform(capture: AudioCapture) -> Waveform {
     Waveform::new(capture)
 }

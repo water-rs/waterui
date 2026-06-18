@@ -1,3 +1,12 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "GPU render methods are linear sequences that hold render-state guards for their full duration"
+)]
 //! GPU renderer for particle simulation and visualization.
 
 use crate::{

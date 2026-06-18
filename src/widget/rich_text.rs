@@ -1055,6 +1055,10 @@ fn main() {
     }
 
     #[test]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "test-local helper fn defined next to its single use"
+    )]
     fn inline_code_has_code_style() {
         let markdown = "Use `cargo run`";
         let rich = RichText::from_markdown(markdown);

@@ -22,7 +22,6 @@ pub(crate) struct WidgetInteractionInput {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) hovered: bool,
     pub(crate) focus: Option<InteractionFocus>,
-    pub(crate) active_press_origin: Option<vello::kurbo::Point>,
 }
 
 impl InteractionFocus {

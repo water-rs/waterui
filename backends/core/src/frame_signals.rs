@@ -189,6 +189,10 @@ impl FrameSignals {
 
     /// Enter a structural rebuild: any pending isolated patch is subsumed by
     /// the rebuild, and the rebuild generation advances.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rebuild generation counter overflows.
     pub fn begin_rebuild(&self) {
         self.inner.rebuild_in_progress.set(true);
         self.inner.patch_requested.set(false);

@@ -862,7 +862,6 @@ impl HydrolysisRenderer {
                 bounds,
                 hovered,
                 focus,
-                active_press_origin: self.hit_test.active_press_origin,
             },
             &motion,
             &mut self.animation_controller,

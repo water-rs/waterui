@@ -199,6 +199,10 @@ enum LabelContent {
 
 /// Semantic label for controls, commands, and chrome.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the `accessibility_` prefix groups the accessibility-override fields"
+)]
 pub struct Label {
     content: LabelContent,
     display_mode: LabelDisplayMode,
@@ -331,6 +335,10 @@ impl Label {
     /// semantic representation. Other icon views remain fully supported for
     /// ordinary UI rendering and hydrolysis popup menus, but native semantic
     /// menus currently only project [`SystemIcon`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the label was created with custom content rather than a semantic text label.
     #[must_use]
     pub fn icon(mut self, icon: impl View + Clone) -> Self {
         let system_icon = (&icon as &dyn Any).downcast_ref::<SystemIcon>().cloned();
@@ -358,6 +366,10 @@ impl Label {
     /// such as `waterui-icons-lucide`, `waterui-icons-material-icon`, or
     /// `waterui-icons-fontawesome7`. See [`SystemIcon`] for the full
     /// rationale.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the label was created with custom content rather than a semantic text label.
     #[must_use]
     pub fn system_icon(mut self, icon: SystemIcon) -> Self {
         match &mut self.content {
@@ -375,6 +387,10 @@ impl Label {
     }
 
     /// Places the icon on the trailing side.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the label was created with custom content rather than a semantic text label.
     #[must_use]
     pub fn trailing(mut self) -> Self {
         match &mut self.content {
@@ -389,6 +405,10 @@ impl Label {
     }
 
     /// Places the icon on the leading side.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the label was created with custom content rather than a semantic text label.
     #[must_use]
     pub fn leading(mut self) -> Self {
         match &mut self.content {
@@ -403,6 +423,10 @@ impl Label {
     }
 
     /// Sets the spacing between icon and text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the label was created with custom content rather than a semantic text label.
     #[must_use]
     pub fn spacing(mut self, spacing: f32) -> Self {
         match &mut self.content {

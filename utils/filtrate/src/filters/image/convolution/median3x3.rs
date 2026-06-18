@@ -23,7 +23,7 @@ mod tests {
 
     #[test]
     fn median_is_spatial_with_zero_params() {
-        assert!(!Median3x3::COLOR_ONLY);
+        const { assert!(!Median3x3::COLOR_ONLY) };
         assert_eq!(Median3x3.params().len(), 0);
     }
 }

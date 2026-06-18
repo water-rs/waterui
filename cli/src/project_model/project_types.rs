@@ -1,3 +1,5 @@
+//! Newtypes and enums describing a project's identity, platforms, and targets.
+
 use std::fmt;
 use std::ops::Deref;
 

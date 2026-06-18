@@ -1,3 +1,4 @@
+#![allow(clippy::cast_possible_truncation, reason = "intentional lossy numeric cast in rendering/layout code")]
 //! Platform-agnostic gesture recognition fed by pointer phases.
 //!
 //! [`GestureEngine`] holds the gesture targets registered during view
@@ -474,7 +475,7 @@ impl GestureEngine {
         Self::dispatch_to_recognizers(&active, GestureInput::PointerCancel { at }, env)
     }
 
-    fn dispatch_to_active_recognizers(&mut self, input: GestureInput, env: &Environment) -> bool {
+    fn dispatch_to_active_recognizers(&self, input: GestureInput, env: &Environment) -> bool {
         Self::dispatch_to_recognizers(&self.active_recognizers, input, env)
     }
 

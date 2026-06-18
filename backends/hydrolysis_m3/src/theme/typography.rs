@@ -152,6 +152,10 @@ mod tests {
     use waterui::text::font::{Body, Caption, FontWeight, Footnote, Headline, Subheadline, Title};
     use waterui_core::resolve::Resolvable as _;
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test helper; passing assertion inputs by value reads clearest"
+    )]
     fn assert_material_font(
         font: waterui::text::font::ResolvedFont,
         expected_size: f32,

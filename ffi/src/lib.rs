@@ -1158,6 +1158,10 @@ pub struct WuiRetain {
     _opaque: *mut (),
 }
 
+#[allow(
+    dead_code,
+    reason = "used by the android-jni bridge (`jni::convert` / `jni::components`); dead on non-Android builds"
+)]
 impl WuiRetain {
     pub(crate) fn opaque_ptr(&self) -> *mut () {
         self._opaque

@@ -29,9 +29,9 @@ mod tests {
 
     #[test]
     fn morphology_filters_are_spatial_zero_param() {
-        assert!(!MorphologyMin::COLOR_ONLY);
-        assert!(!MorphologyMax::COLOR_ONLY);
-        assert!(!MorphologyGradient::COLOR_ONLY);
+        const { assert!(!MorphologyMin::COLOR_ONLY) };
+        const { assert!(!MorphologyMax::COLOR_ONLY) };
+        const { assert!(!MorphologyGradient::COLOR_ONLY) };
         assert_eq!(MorphologyMin.params().len(), 0);
         assert_eq!(MorphologyMax.params().len(), 0);
         assert_eq!(MorphologyGradient.params().len(), 0);

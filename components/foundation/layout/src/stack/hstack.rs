@@ -1,3 +1,4 @@
+#![allow(clippy::cast_precision_loss, reason = "intentional lossy numeric cast in rendering/layout code")]
 //! Horizontal stack layout.
 
 use alloc::{vec, vec::Vec};

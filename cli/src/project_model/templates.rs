@@ -1925,6 +1925,10 @@ pub mod hydrolysis {
         ])
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "linear enumeration of native target dependencies reads clearest as one list"
+    )]
     fn native_target_dependencies(
         ctx: &TemplateContext,
     ) -> BTreeMap<String, GeneratedDependencyValue> {

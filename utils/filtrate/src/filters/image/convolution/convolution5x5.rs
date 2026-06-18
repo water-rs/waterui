@@ -27,6 +27,6 @@ mod tests {
         k[12] = 1.0;
         let identity = Convolution5x5(k);
         assert_eq!(identity.params().len(), 25);
-        assert!(!Convolution5x5::<f32>::COLOR_ONLY);
+        const { assert!(!Convolution5x5::<f32>::COLOR_ONLY) };
     }
 }

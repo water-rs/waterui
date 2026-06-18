@@ -1,3 +1,7 @@
+#![cfg_attr(
+    test,
+    allow(clippy::float_cmp, reason = "tests assert exact filter parameter values")
+)]
 //! Long-term stable abstractions for GPU filter pipelines.
 //!
 //! `filtrate-core` provides the foundational trait surface for declaring GPU

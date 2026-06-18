@@ -1,3 +1,7 @@
+#![cfg_attr(
+    test,
+    allow(clippy::float_cmp, reason = "tests assert exact filter parameter values")
+)]
 //! GPU filter library built on top of `filtrate-core` abstractions.
 //!
 //! `filtrate` hosts the built-in filter implementations and their WGSL

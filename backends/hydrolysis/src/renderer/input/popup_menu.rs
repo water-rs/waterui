@@ -269,6 +269,10 @@ pub(crate) fn popup_menu_window(
     (popup, state)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fully specifies a popup-menu window layout; grouping into a struct would not improve clarity"
+)]
 pub(crate) fn picker_menu_window(
     entries: Vec<PickerMenuEntry>,
     selection: Binding<Id>,

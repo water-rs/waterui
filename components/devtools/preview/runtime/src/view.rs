@@ -1,3 +1,4 @@
+#![allow(clippy::cast_possible_truncation, reason = "intentional lossy numeric cast in rendering/layout code")]
 //! Preview view component for the preview support app.
 //!
 //! This view starts a TCP server (localhost) and serializes all render work through a single
@@ -283,6 +284,10 @@ fn exit_process(registration_path: &std::path::Path) -> ! {
     std::process::exit(0)
 }
 
+#[allow(
+    clippy::needless_continue,
+    reason = "the explicit `continue` documents retrying the next port on address-in-use"
+)]
 fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpListener> {
     for port in config.ports() {
         let addr = std::net::SocketAddr::new(config.host, port);
@@ -441,10 +446,10 @@ impl DylibCache {
 }
 
 async fn load_disk_dylibs() -> io::Result<HashSet<DylibId>> {
+    use futures_lite::stream::StreamExt as _;
+
     let dir = preview_dylib_cache_dir();
     async_fs::create_dir_all(&dir).await?;
-
-    use futures_lite::stream::StreamExt as _;
 
     let mut entries = async_fs::read_dir(&dir).await?;
     let mut present = HashSet::new();

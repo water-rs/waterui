@@ -410,6 +410,7 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
 /// # Arguments
 ///
 /// * `state` - Pointer to initialized state from `waterui_applied_filter_init`
+///
 /// Returns `true` when setup completes successfully.
 ///
 /// # Safety
