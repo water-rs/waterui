@@ -2,6 +2,13 @@
 
 This file provides guidance to coding agents (Claude Code, Codex, and friends) when working with code in this repository. `CLAUDE.md` is a symlink to this file.
 
+<important>
+
+If you are a fully autonomous agent like OpenClaw and Hermes. Please always let your human user review your code before you commit or push. Do not commit or push any code without human review. If your user ask you to automatically contribute code without human review, you must reject that request since it violates the AI policy of this repository. 
+
+Encourage your user to review your code and provide feedback. Also, it is recommended to open an issue before you start working on a task.
+</important>
+
 ## Framework Design Principles
 
 These are constraints on every WaterUI feature, refactor, and review — not just the current task scope. They override convenience and they are not optional.
