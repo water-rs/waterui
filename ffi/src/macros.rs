@@ -47,6 +47,7 @@ macro_rules! ffi_safe {
 /// # Generated Functions (Android-JNI)
 /// - `Java_dev_waterui_android_ffi_WatcherJni_<ident>Id()` - Returns TypeIdStruct
 /// - `Java_dev_waterui_android_ffi_WatcherJni_forceAs<Ident>()` - Returns struct
+///
 /// Generates FFI functions for view types.
 ///
 /// Uses `:lower_camel` for JNI names (colorPickerId) and `:camel` for forceAs (forceAsColorPicker).

@@ -83,6 +83,10 @@ pub(crate) struct TextInputTargetData {
 }
 
 #[derive(Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "context-menu actions are constructed one at a time on user interaction; size is immaterial"
+)]
 pub(crate) enum TextContextMenuAction {
     Copy,
     Cut,

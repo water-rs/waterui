@@ -14,7 +14,7 @@ pub const SAMPLES_COUNT: usize = 1024;
 ///
 /// Creating an `AudioCapture` starts one recorder thread. Clone the handle to
 /// share that same capture session across multiple visualizers.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AudioCapture {
     /// Raw audio samples.
     pub samples: Arc<Mutex<Vec<f32>>>,
@@ -79,6 +79,10 @@ impl AudioCapture {
     }
 
     /// Get smoothed samples with temporal interpolation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal sample mutex is poisoned.
     #[must_use]
     pub fn get_smoothed_samples(&self, smoothing: f32) -> Vec<f32> {
         let raw = self.samples.lock().unwrap().clone();

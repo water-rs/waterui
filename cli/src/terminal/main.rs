@@ -32,6 +32,10 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "clap subcommand enum constructed once per CLI invocation; variant size is immaterial"
+)]
 enum Commands {
     /// Create a new `WaterUI` project.
     Create(create::Args),

@@ -909,6 +909,10 @@ fn handle_accessibility_stepper_action(
 }
 
 #[cfg(feature = "accessibility")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the full accessibility-action context; grouping into a struct would not improve clarity"
+)]
 fn handle_accessibility_date_picker_action(
     renderer: &mut HydrolysisRenderer,
     value: &nami::Binding<DateTime>,

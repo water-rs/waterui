@@ -35,6 +35,6 @@ mod tests {
 
     #[test]
     fn test_brightness_color_only() {
-        assert!(Brightness::<f32>::COLOR_ONLY);
+        const { assert!(Brightness::<f32>::COLOR_ONLY) };
     }
 }

@@ -1,4 +1,4 @@
-//! Data model for a WaterUI project: manifests, asset declarations, support
+//! Data model for a `WaterUI` project: manifests, asset declarations, support
 //! app scaffolding, and the on-disk `.water` directory layout.
 
 pub mod assets;

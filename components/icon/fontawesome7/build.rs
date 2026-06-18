@@ -94,9 +94,9 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
     // Font family constant - must match the actual font family name inside the OTF files.
     // Use fc-scan to check: fc-scan font.otf | grep "family:"
     let font_family = match style {
-        "solid" => "Font Awesome 7 Free Solid",
         "regular" => "Font Awesome 7 Free",
         "brands" => "Font Awesome 7 Brands",
+        // "solid" and any unknown style fall back to the solid family.
         _ => "Font Awesome 7 Free Solid",
     };
 

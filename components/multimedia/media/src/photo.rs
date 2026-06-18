@@ -381,6 +381,10 @@ mod tests {
 
     #[test]
     #[ignore = "requires network access to real image URLs"]
+    #[allow(
+        clippy::vec_init_then_push,
+        reason = "platform-gated pushes make a `vec![]` initializer impractical (it would leave `mut` unused where neither gated case applies)"
+    )]
     fn streaming_decode_real_images_smoke() {
         futures::executor::block_on(async {
             let mut cases = Vec::new();

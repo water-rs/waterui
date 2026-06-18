@@ -263,9 +263,8 @@ impl PreviewLibrary {
     /// Check if the library has a symbol.
     #[must_use]
     pub fn has_symbol(&self, name: &str) -> bool {
-        let c_name = match CString::new(name.trim_end_matches('\0')) {
-            Ok(s) => s,
-            Err(_) => return false,
+        let Ok(c_name) = CString::new(name.trim_end_matches('\0')) else {
+            return false;
         };
 
         unsafe { self.lib.get::<*const ()>(c_name.as_bytes_with_nul()) }.is_ok()

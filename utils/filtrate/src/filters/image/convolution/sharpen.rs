@@ -36,6 +36,6 @@ mod tests {
 
     #[test]
     fn test_sharpen_not_color_only() {
-        assert!(!Sharpen::<f32>::COLOR_ONLY);
+        const { assert!(!Sharpen::<f32>::COLOR_ONLY) };
     }
 }

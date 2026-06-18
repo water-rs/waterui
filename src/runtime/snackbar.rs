@@ -1,3 +1,4 @@
+#![allow(clippy::cast_precision_loss, reason = "intentional lossy numeric cast in rendering/layout code")]
 //! Snackbar notification system for `WaterUI`.
 //!
 //! Snackbars provide brief messages about app processes at the bottom of the screen.
@@ -478,6 +479,10 @@ impl SnackbarManager {
     /// placement already holds [`MAX_VISIBLE_SNACKBARS`] the oldest *at that
     /// placement* is dismissed to make room — different placements never evict
     /// each other.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the snackbar presentation id counter overflows.
     pub fn show(&self, snackbar: Snackbar) {
         let duration = snackbar.duration;
         let position = snackbar.position;
@@ -676,6 +681,10 @@ struct StackedSnackbarView {
 }
 
 impl StackedSnackbarView {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "consumes the snackbar to build its view"
+    )]
     fn build_content(
         snackbar: Snackbar,
         manager: SnackbarManager,

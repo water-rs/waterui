@@ -14,8 +14,6 @@ use super::*;
 /// under an identity context. Scrolling is subsumed into it via [`DynamicScrollDraw`].
 pub(crate) struct RetainedWindowFrame {
     pub(super) subtree: DynamicSubtree,
-    /// The static root transform (device scale factor) used for the background fill.
-    pub(super) transform: vello::kurbo::Affine,
     pub(super) bounds: vello::kurbo::Rect,
     pub(super) active_layers: Vec<ActiveSceneLayer>,
     pub(super) content_morphs: Vec<DynamicMorphDraw>,
@@ -1370,7 +1368,6 @@ impl HydrolysisRenderer {
 
         self.retained_window_frame = Some(RetainedWindowFrame {
             subtree,
-            transform,
             bounds,
             active_layers,
             content_morphs,

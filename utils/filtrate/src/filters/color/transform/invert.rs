@@ -30,6 +30,6 @@ mod tests {
 
     #[test]
     fn test_invert_color_only() {
-        assert!(Invert::COLOR_ONLY);
+        const { assert!(Invert::COLOR_ONLY) };
     }
 }

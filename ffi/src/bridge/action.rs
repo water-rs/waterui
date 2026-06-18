@@ -26,8 +26,10 @@ pub unsafe extern "C" fn waterui_call_action(action: *mut WuiAction, env: *const
 // Indexed Actions - for list delete callbacks
 // ============================================================================
 
+type IndexCallback = Box<dyn Fn(&Environment, usize)>;
+
 /// Handler that takes an index parameter (used for delete callbacks).
-pub struct IndexHandler(pub Box<dyn Fn(&Environment, usize)>);
+pub struct IndexHandler(pub IndexCallback);
 
 opaque!(WuiIndexAction, IndexHandler, index_action);
 
@@ -67,8 +69,10 @@ pub unsafe extern "C" fn waterui_call_index_action(
 // Move Actions - for list move callbacks
 // ============================================================================
 
+type MoveCallback = Box<dyn Fn(&Environment, Move)>;
+
 /// Handler that takes a list move operation (used for move callbacks).
-pub struct MoveHandler(pub Box<dyn Fn(&Environment, Move)>);
+pub struct MoveHandler(pub MoveCallback);
 
 opaque!(WuiMoveAction, MoveHandler, move_action);
 

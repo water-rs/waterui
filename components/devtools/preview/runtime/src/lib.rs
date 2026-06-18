@@ -45,6 +45,10 @@ pub use waterui_preview_protocol::{
 };
 
 /// Initialize preview tracing from `RUST_LOG` when the support app wants internal timing logs.
+///
+/// # Panics
+///
+/// Panics if the log directory cannot be created.
 pub fn init_tracing_from_env() {
     use tracing_subscriber::EnvFilter;
 
