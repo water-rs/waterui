@@ -387,9 +387,17 @@ impl HydrolysisRenderer {
         }
         let rebuild_signals = renderer.signals.clone();
         let mut runtime = runtime.borrow_mut();
+        // A scene-content invalidation (reactive data change, or a canvas
+        // re-registering its signal watchers on each `build_scene`) must schedule a
+        // *future* frame's rebuild, never re-enter the current pump: requesting an
+        // immediate rebuild here lets a content that re-arms its watchers every
+        // build re-trigger this dispatch synchronously, spinning the runner's
+        // rebuild loop until it trips the 64-iteration guard.
         runtime
             .content
-            .set_invalidator(Some(Rc::new(move || rebuild_signals.request_rebuild())));
+            .set_invalidator(Some(Rc::new(move || {
+                rebuild_signals.request_next_frame_rebuild();
+            })));
 
         let mut scene = vello::Scene::new();
         let mut scene2d = VelloScene2D::new(&mut scene);
