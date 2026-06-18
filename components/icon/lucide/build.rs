@@ -13,9 +13,8 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::fs;
-use std::io::Write;
 use std::path::Path;
+use waterui_build_support::icons::{FontFamily, IconEntry, IconModule, SvgConst, write_icon_module};
 use waterui_build_support::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
 
 /// Lucide icons version
@@ -23,6 +22,9 @@ const LUCIDE_VERSION: &str = "0.562.0";
 
 /// CDN URL for icon data
 const ICON_NODES_URL: &str = "https://cdn.jsdelivr.net/npm/lucide-static@0.562.0/icon-nodes.json";
+
+/// Parsed `icon-nodes.json`: icon name -> list of `(element_type, attributes)`.
+type IconNodes = HashMap<String, Vec<(String, HashMap<String, serde_json::Value>)>>;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -57,7 +59,7 @@ fn main() {
     });
 
     // Parse icon nodes
-    let icons: HashMap<String, Vec<(String, HashMap<String, serde_json::Value>)>> =
+    let icons: IconNodes =
         serde_json::from_str(&icon_nodes_json).expect("Failed to parse icon-nodes.json");
 
     // Generate icons.rs
@@ -145,8 +147,9 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
             if !coords.is_empty() {
                 let mut path = String::new();
                 for (i, coord) in coords.iter().enumerate() {
-                    let prefix = if i == 0 { "M" } else { "L" };
-                    path.push_str(&format!("{prefix}{coord} "));
+                    path.push_str(if i == 0 { "M" } else { "L" });
+                    path.push_str(coord);
+                    path.push(' ');
                 }
                 if element_type == "polygon" {
                     path.push('Z');
@@ -164,25 +167,11 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
 }
 
 /// Generate icons.rs with all icon definitions
-fn generate_icons_rs(
-    out_dir: &str,
-    icons: &HashMap<String, Vec<(String, HashMap<String, serde_json::Value>)>>,
-) {
-    let dest_path = Path::new(out_dir).join("icons.rs");
-    let mut output = String::new();
-
-    output.push_str("// Auto-generated Lucide icon definitions.\n");
-    output.push_str("// Icons: ISC license by Lucide Contributors.\n");
-    output.push_str("// Do not edit manually.\n\n");
-
-    output.push_str("/// Font family name for Lucide webfont.\n");
-    output.push_str("#[cfg(feature = \"webfont\")]\n");
-    output.push_str("pub const FONT_FAMILY: &str = \"lucide\";\n\n");
-
+fn generate_icons_rs(out_dir: &str, icons: &IconNodes) {
     let mut icon_names: Vec<_> = icons.keys().collect();
     icon_names.sort();
 
-    let mut count = 0;
+    let mut entries = Vec::new();
     for icon_name in icon_names {
         let elements = &icons[icon_name];
         let Some(path) = extract_path(elements) else {
@@ -190,25 +179,37 @@ fn generate_icons_rs(
         };
 
         let const_name = rust_const_name(icon_name);
-        let fn_name = rust_fn_name(icon_name);
-
-        output.push_str(&format!("/// SVG path for `{icon_name}`.\n"));
-        output.push_str(&format!("pub const {const_name}_PATH: &str = {path:?};\n"));
-
-        output.push_str("#[cfg(feature = \"svg\")]\n");
-        output.push_str(&format!("/// `{icon_name}` icon as Svg.\n"));
-        output.push_str("#[inline]\n");
-        output.push_str(&format!(
-            "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_stroke_path({const_name}_PATH, 24.0, 24.0)\n}}\n"
-        ));
-
-        output.push('\n');
-        count += 1;
+        let path_const = format!("{const_name}_PATH");
+        let ctor = format!("crate::Svg::from_stroke_path({path_const}, 24.0, 24.0)");
+        entries.push(IconEntry {
+            source_name: icon_name.clone(),
+            glyph: None,
+            svg: Some(SvgConst {
+                path_const,
+                path_literal: format!("{path:?}"),
+                viewbox: None,
+                fn_name: rust_fn_name(icon_name),
+                ctor,
+            }),
+        });
     }
 
-    eprintln!("Generated {count} icon definitions");
+    let count = entries.len();
+    let module = IconModule {
+        banner: vec![
+            "Auto-generated Lucide icon definitions.".to_owned(),
+            "Icons: ISC license by Lucide Contributors.".to_owned(),
+            "Do not edit manually.".to_owned(),
+        ],
+        font_family: Some(FontFamily {
+            doc: "Font family name for Lucide webfont.".to_owned(),
+            name: "lucide".to_owned(),
+            cfg_webfont: true,
+        }),
+        reexport_glyph: false,
+        icons: entries,
+    };
+    write_icon_module(out_dir, "icons.rs", &module);
 
-    fs::File::create(&dest_path)
-        .and_then(|mut f| f.write_all(output.as_bytes()))
-        .expect("Failed to write icons.rs");
+    eprintln!("Generated {count} icon definitions");
 }

@@ -17,9 +17,10 @@ use regex::Regex;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs;
-use std::io::Write;
 use std::path::Path;
+use waterui_build_support::icons::{
+    FontFamily, GlyphConst, IconEntry, IconModule, SvgConst, write_icon_module,
+};
 use waterui_build_support::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
 
 /// Material Design Icons version
@@ -136,8 +137,6 @@ fn mdi_var_to_kebab(var_name: &str) -> String {
 
 /// Generate icons.rs with all icon definitions
 fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, String>) {
-    let dest_path = Path::new(out_dir).join("icons.rs");
-    let mut output = String::new();
     let path_const_names = icons
         .iter()
         .filter(|icon| paths.contains_key(&icon.name))
@@ -145,15 +144,7 @@ fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, 
         .collect::<HashSet<_>>();
     let mut used_symbols = HashSet::new();
 
-    output.push_str("// Auto-generated Material Design icon definitions.\n");
-    output.push_str("// Icons: Apache 2.0 by Pictogrammers.\n");
-    output.push_str("// Do not edit manually.\n\n");
-
-    output.push_str("/// Font family name for Material Design Icons webfont.\n");
-    output.push_str("#[cfg(feature = \"webfont\")]\n");
-    output.push_str("pub const FONT_FAMILY: &str = \"Material Design Icons\";\n\n");
-
-    let mut count = 0;
+    let mut entries = Vec::new();
     for icon in icons {
         let Some(path) = paths.get(&icon.name) else {
             continue;
@@ -165,8 +156,7 @@ fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, 
         } else {
             const_name.clone()
         };
-        let path_const_name = format!("{const_name}_PATH");
-        let fn_name = rust_fn_name(&icon.name);
+        let path_const = format!("{const_name}_PATH");
         let codepoint = u32::from_str_radix(&icon.codepoint, 16).unwrap_or(0);
 
         assert!(
@@ -175,34 +165,45 @@ fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, 
             icon.name
         );
         assert!(
-            used_symbols.insert(path_const_name.clone()),
-            "duplicate generated SVG path constant `{path_const_name}` for material icon `{}`",
+            used_symbols.insert(path_const.clone()),
+            "duplicate generated SVG path constant `{path_const}` for material icon `{}`",
             icon.name
         );
 
-        output.push_str(&format!("/// `{}` icon as webfont glyph.\n", icon.name));
-        output.push_str("#[cfg(feature = \"webfont\")]\n");
-        output.push_str(&format!(
-            "pub const {glyph_const_name}: crate::IconGlyph = crate::IconGlyph::new('\\u{{{codepoint:04X}}}', FONT_FAMILY);\n"
-        ));
-
-        output.push_str(&format!("/// SVG path for `{}`.\n", icon.name));
-        output.push_str(&format!("pub const {path_const_name}: &str = {path:?};\n"));
-
-        output.push_str("#[cfg(feature = \"svg\")]\n");
-        output.push_str(&format!("/// `{}` icon as Svg.\n", icon.name));
-        output.push_str("#[inline]\n");
-        output.push_str(&format!(
-            "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_path({path_const_name}, 24.0, 24.0)\n}}\n"
-        ));
-
-        output.push('\n');
-        count += 1;
+        let ctor = format!("crate::Svg::from_path({path_const}, 24.0, 24.0)");
+        entries.push(IconEntry {
+            source_name: icon.name.clone(),
+            glyph: Some(GlyphConst {
+                const_name: glyph_const_name,
+                type_path: "crate::IconGlyph".to_owned(),
+                escape: format!("\\u{{{codepoint:04X}}}"),
+            }),
+            svg: Some(SvgConst {
+                path_const,
+                path_literal: format!("{path:?}"),
+                viewbox: None,
+                fn_name: rust_fn_name(&icon.name),
+                ctor,
+            }),
+        });
     }
 
-    eprintln!("Generated {count} icon definitions");
+    let count = entries.len();
+    let module = IconModule {
+        banner: vec![
+            "Auto-generated Material Design icon definitions.".to_owned(),
+            "Icons: Apache 2.0 by Pictogrammers.".to_owned(),
+            "Do not edit manually.".to_owned(),
+        ],
+        font_family: Some(FontFamily {
+            doc: "Font family name for Material Design Icons webfont.".to_owned(),
+            name: "Material Design Icons".to_owned(),
+            cfg_webfont: true,
+        }),
+        reexport_glyph: false,
+        icons: entries,
+    };
+    write_icon_module(out_dir, "icons.rs", &module);
 
-    fs::File::create(&dest_path)
-        .and_then(|mut f| f.write_all(output.as_bytes()))
-        .expect("Failed to write icons.rs");
+    eprintln!("Generated {count} icon definitions");
 }
