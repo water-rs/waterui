@@ -1,4 +1,4 @@
-//! Material Design 3 list components composed from WaterUI primitives.
+//! Material Design 3 list components composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 
@@ -37,7 +37,7 @@ impl<Content> Debug for MaterialList<Content> {
 impl<Content> MaterialList<Content> {
     /// Creates a Material list with the provided list item children.
     #[must_use]
-    pub fn new(content: Content) -> Self {
+    pub const fn new(content: Content) -> Self {
         Self { content }
     }
 }
@@ -160,7 +160,7 @@ impl MaterialListItem {
         } else {
             LIST_ONE_LINE_ROW_HEIGHT as f32
         };
-        let content_height = height - (LIST_VERTICAL_INSET as f32) * 2.0;
+        let content_height = (LIST_VERTICAL_INSET as f32).mul_add(-2.0, height);
         let headline = self
             .headline
             .font(typography::body_large())
@@ -228,7 +228,7 @@ impl View for MaterialListItem {
 
 /// Creates a Material Design 3 list.
 #[must_use]
-pub fn material_list<Content>(content: Content) -> MaterialList<Content> {
+pub const fn material_list<Content>(content: Content) -> MaterialList<Content> {
     MaterialList::new(content)
 }
 

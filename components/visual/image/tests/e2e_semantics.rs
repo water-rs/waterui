@@ -1,3 +1,5 @@
+//! End-to-end accessibility-semantics tests for the `image` component.
+
 use image::ImageEncoder as _;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;

@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use waterui::{AnyView, component::Dynamic};
 
-use crate::{IntoRust, reactive::WuiWatcher};
+use crate::reactive::WuiWatcher;
 
 opaque!(WuiDynamic, Dynamic);
 

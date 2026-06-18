@@ -1,4 +1,4 @@
-//! Material Design 3 tabs composed from WaterUI navigation tabs.
+//! Material Design 3 tabs composed from `WaterUI` navigation tabs.
 
 use core::fmt::{self, Debug};
 

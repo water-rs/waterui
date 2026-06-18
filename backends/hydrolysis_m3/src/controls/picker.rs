@@ -207,6 +207,107 @@ fn blend_channel(from: u8, to: u8, progress: f32) -> f32 {
     from.mul_add(1.0 - progress, to * progress)
 }
 
+pub fn draw_radio_state_layer(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    center: vello::kurbo::Point,
+    _radius: f64,
+    selected: bool,
+    state: WidgetInteractionState,
+) {
+    state_layer::draw_unbounded_circle(
+        draw,
+        center,
+        20.0,
+        if selected {
+            colors.primary.peniko()
+        } else {
+            colors.on_surface.peniko()
+        },
+        state,
+    );
+}
+
+pub fn segmented_label_color(
+    colors: &MaterialColorScheme,
+    selected: bool,
+) -> waterui_graphics::color::Color {
+    if selected {
+        colors.on_secondary_container.view_color()
+    } else {
+        colors.on_surface.view_color()
+    }
+}
+
+pub fn draw_segmented_container(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    segment_count: usize,
+) {
+    draw.stroke_rounded_rect(
+        bounds,
+        PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
+        &Brush::from(colors.outline.peniko()),
+        PICKER_SEGMENTED_OUTLINE_WIDTH,
+    );
+    if segment_count <= 1 {
+        return;
+    }
+    let segment_width = bounds.width() / segment_count as f64;
+    for index in 1..segment_count {
+        let x = segment_width.mul_add(index as f64, bounds.x0);
+        draw.stroke_line(
+            vello::kurbo::Point::new(x, bounds.y0),
+            vello::kurbo::Point::new(x, bounds.y1),
+            &Brush::from(colors.outline.peniko()),
+            PICKER_SEGMENTED_OUTLINE_WIDTH,
+        );
+    }
+}
+
+pub fn draw_segmented_segment(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    selected: bool,
+    is_first: bool,
+    is_last: bool,
+) {
+    if !selected {
+        return;
+    }
+    if is_first && is_last {
+        draw.fill_rounded_rect(
+            bounds,
+            PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
+            &Brush::from(colors.secondary_container.peniko()),
+        );
+        return;
+    }
+    draw.fill_rect(bounds, &Brush::from(colors.secondary_container.peniko()));
+}
+
+pub fn draw_segmented_state_layer(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    selected: bool,
+    state: WidgetInteractionState,
+) {
+    state_layer::draw_bounded(
+        draw,
+        bounds,
+        PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
+        if selected {
+            colors.on_secondary_container.peniko()
+        } else {
+            colors.on_surface.peniko()
+        },
+        state,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
@@ -463,105 +564,4 @@ mod tests {
             ]
         );
     }
-}
-
-pub fn draw_radio_state_layer(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    center: vello::kurbo::Point,
-    _radius: f64,
-    selected: bool,
-    state: WidgetInteractionState,
-) {
-    state_layer::draw_unbounded_circle(
-        draw,
-        center,
-        20.0,
-        if selected {
-            colors.primary.peniko()
-        } else {
-            colors.on_surface.peniko()
-        },
-        state,
-    );
-}
-
-pub fn segmented_label_color(
-    colors: &MaterialColorScheme,
-    selected: bool,
-) -> waterui_graphics::color::Color {
-    if selected {
-        colors.on_secondary_container.view_color()
-    } else {
-        colors.on_surface.view_color()
-    }
-}
-
-pub fn draw_segmented_container(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    bounds: vello::kurbo::Rect,
-    segment_count: usize,
-) {
-    draw.stroke_rounded_rect(
-        bounds,
-        PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
-        &Brush::from(colors.outline.peniko()),
-        PICKER_SEGMENTED_OUTLINE_WIDTH,
-    );
-    if segment_count <= 1 {
-        return;
-    }
-    let segment_width = bounds.width() / segment_count as f64;
-    for index in 1..segment_count {
-        let x = bounds.x0 + segment_width * index as f64;
-        draw.stroke_line(
-            vello::kurbo::Point::new(x, bounds.y0),
-            vello::kurbo::Point::new(x, bounds.y1),
-            &Brush::from(colors.outline.peniko()),
-            PICKER_SEGMENTED_OUTLINE_WIDTH,
-        );
-    }
-}
-
-pub fn draw_segmented_segment(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    bounds: vello::kurbo::Rect,
-    selected: bool,
-    is_first: bool,
-    is_last: bool,
-) {
-    if !selected {
-        return;
-    }
-    if is_first && is_last {
-        draw.fill_rounded_rect(
-            bounds,
-            PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
-            &Brush::from(colors.secondary_container.peniko()),
-        );
-        return;
-    }
-    draw.fill_rect(bounds, &Brush::from(colors.secondary_container.peniko()));
-}
-
-pub fn draw_segmented_state_layer(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    bounds: vello::kurbo::Rect,
-    selected: bool,
-    state: WidgetInteractionState,
-) {
-    state_layer::draw_bounded(
-        draw,
-        bounds,
-        PICKER_SEGMENTED_CONTAINER_RADIUS.into(),
-        if selected {
-            colors.on_secondary_container.peniko()
-        } else {
-            colors.on_surface.peniko()
-        },
-        state,
-    );
 }

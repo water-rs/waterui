@@ -11,7 +11,7 @@ const RIPPLE_MINIMUM_DIAMETER: f64 = 48.0;
 /// this size; the press-grow animation scales it from the initial fraction up
 /// to 1 while its center drifts from the press point to the surface center
 /// (see `DynamicRippleTransform` in the renderer).
-pub(crate) fn ripple_diameter(bounds: Rect) -> f64 {
+pub fn ripple_diameter(bounds: Rect) -> f64 {
     bounds.width().hypot(bounds.height()).max(RIPPLE_MINIMUM_DIAMETER)
 }
 
@@ -30,7 +30,7 @@ fn draw_state_tint_rounded(
     }
 }
 
-pub(crate) fn draw_bounded(
+pub fn draw_bounded(
     draw: &mut dyn DrawContext,
     bounds: Rect,
     radii: RoundedRectRadii,
@@ -48,8 +48,8 @@ pub(crate) fn draw_bounded(
     // centered; `DynamicRippleTransform` re-samples press_progress to scale and
     // drift it, so this draws the final-state circle regardless of progress.
     let center = Point::new(
-        bounds.x0 + bounds.width() * 0.5,
-        bounds.y0 + bounds.height() * 0.5,
+        bounds.width().mul_add(0.5, bounds.x0),
+        bounds.height().mul_add(0.5, bounds.y0),
     );
     let radius = ripple_diameter(bounds) * 0.5;
     let brush = Brush::from(color.with_alpha(press_opacity.clamp(0.0, 1.0)));
@@ -59,7 +59,7 @@ pub(crate) fn draw_bounded(
     draw.pop_layer();
 }
 
-pub(crate) fn draw_unbounded_circle(
+pub fn draw_unbounded_circle(
     draw: &mut dyn DrawContext,
     center: Point,
     radius: f64,
@@ -333,6 +333,10 @@ mod tests {
     }
 
     impl GpuView for RippleVisualRenderer {
+        #[expect(
+            clippy::future_not_send,
+            reason = "GpuView runs on the render thread; this future borrows the non-Send `GpuContext`/`Environment`"
+        )]
         async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
             self.renderer = Some(
                 vello::Renderer::new(

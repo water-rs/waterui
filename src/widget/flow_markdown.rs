@@ -163,7 +163,7 @@ impl View for FlowMarkdown {
         });
         let config_guard = config.watch({
             let state = Rc::clone(&state);
-            let handler = handler.clone();
+            let handler = handler;
             move |ctx: Context<FlowMarkdownConfig>| {
                 let metadata = ctx.metadata().clone();
                 let update = state.borrow_mut().reconfigure(ctx.into_value(), metadata);
@@ -285,7 +285,7 @@ impl FlowMarkdownConfig {
     ///
     /// Use `None` to disable token fade-in.
     #[must_use]
-    pub fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
+    pub const fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
         self.typewriter_token_fade_in = animation;
         self
     }

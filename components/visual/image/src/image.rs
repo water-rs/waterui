@@ -893,9 +893,9 @@ mod tests {
     }
 
     fn f16_to_f32(bits: u16) -> f32 {
-        let sign = ((bits >> 15) & 0x1) as u32;
-        let exp = ((bits >> 10) & 0x1f) as u32;
-        let frac = (bits & 0x03ff) as u32;
+        let sign = u32::from((bits >> 15) & 0x1);
+        let exp = u32::from((bits >> 10) & 0x1f);
+        let frac = u32::from(bits & 0x03ff);
 
         let f32_bits = if exp == 0 {
             if frac == 0 {

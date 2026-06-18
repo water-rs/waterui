@@ -1,4 +1,4 @@
-//! Material Design 3 floating action buttons composed from WaterUI primitives.
+//! Material Design 3 floating action buttons composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 use core::marker::PhantomData;

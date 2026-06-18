@@ -59,13 +59,13 @@ fn tab_id(value: i32) -> Id {
 #[test]
 fn material_controls_expose_accessibility_semantics() {
     let enabled = Binding::bool(true);
-    let enabled_for_view = enabled.clone();
+    let enabled_for_view = enabled;
     let value = Binding::f64(0.32);
-    let value_for_view = value.clone();
+    let value_for_view = value;
     let count = Binding::i32(2);
-    let count_for_view = count.clone();
+    let count_for_view = count;
     let name = Binding::container(Str::from("Hydrolysis"));
-    let name_for_view = name.clone();
+    let name_for_view = name;
 
     let mut app = mount_m3(move || {
         vstack((
@@ -99,7 +99,7 @@ fn material_controls_expose_accessibility_semantics() {
 #[test]
 fn material_text_field_focus_is_routed_through_hydrolysis_accessibility_tree() {
     let name = Binding::container(Str::from(""));
-    let name_for_view = name.clone();
+    let name_for_view = name;
     let mut app = mount_m3(move || TextField::new(&name_for_view).label("Search"));
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
@@ -114,7 +114,7 @@ fn material_text_field_focus_is_routed_through_hydrolysis_accessibility_tree() {
 fn material_assist_chip_exposes_button_semantics_and_tap_action() {
     let tapped = Binding::bool(false);
     let tapped_for_view = tapped.clone();
-    let tapped_for_action = tapped.clone();
+    let tapped_for_action = tapped;
     let mut app = mount_m3(move || {
         assist_chip("Assist").action({
             let tapped_for_action = tapped_for_action.clone();
@@ -137,7 +137,7 @@ fn material_assist_chip_exposes_button_semantics_and_tap_action() {
 fn material_suggestion_chip_exposes_button_semantics_and_tap_action() {
     let tapped = Binding::bool(false);
     let tapped_for_view = tapped.clone();
-    let tapped_for_action = tapped.clone();
+    let tapped_for_action = tapped;
     let mut app = mount_m3(move || {
         suggestion_chip("Suggestion").action({
             let tapped_for_action = tapped_for_action.clone();
@@ -203,7 +203,7 @@ fn material_filter_chip_toggles_selection_and_exposes_button_semantics() {
 #[test]
 fn material_filter_chip_selected_state_changes_intrinsic_layout() {
     let unselected = Binding::bool(false);
-    let unselected_for_view = unselected.clone();
+    let unselected_for_view = unselected;
     let already_selected = Binding::bool(true);
     let mut unselected_app = mount_m3(move || {
         hstack((
@@ -227,7 +227,7 @@ fn material_filter_chip_selected_state_changes_intrinsic_layout() {
         .bounds();
 
     let selected = Binding::bool(true);
-    let selected_for_view = selected.clone();
+    let selected_for_view = selected;
     let already_selected = Binding::bool(true);
     let mut selected_app = mount_m3(move || {
         hstack((
@@ -470,8 +470,8 @@ fn material_navigation_bar_exposes_tab_semantics_and_selection() {
     let home_selected = Binding::bool(false);
     let search_selected = Binding::bool(true);
     let home_tapped = Binding::bool(false);
-    let home_for_view = home_selected.clone();
-    let search_for_view = search_selected.clone();
+    let home_for_view = home_selected;
+    let search_for_view = search_selected;
     let home_for_action = home_tapped.clone();
     let mut app = mount_m3(move || {
         navigation_bar((
@@ -506,9 +506,9 @@ fn material_navigation_drawer_exposes_item_semantics_and_open_state() {
     let inbox_selected = Binding::bool(true);
     let archive_selected = Binding::bool(false);
     let archive_tapped = Binding::bool(false);
-    let opened_for_view = opened.clone();
-    let inbox_for_view = inbox_selected.clone();
-    let archive_for_view = archive_selected.clone();
+    let opened_for_view = opened;
+    let inbox_for_view = inbox_selected;
+    let archive_for_view = archive_selected;
     let archive_for_action = archive_tapped.clone();
     let mut app = mount_m3(move || {
         navigation_drawer(
@@ -554,7 +554,7 @@ fn material_segmented_buttons_toggle_selection_and_expose_semantics() {
     let first_selected = Binding::bool(true);
     let second_selected = Binding::bool(false);
     let second_tapped = Binding::bool(false);
-    let first_for_view = first_selected.clone();
+    let first_for_view = first_selected;
     let second_for_view = second_selected.clone();
     let second_for_action = second_tapped.clone();
     let mut app = mount_m3(move || {
@@ -734,7 +734,7 @@ fn material_navigation_view_preserves_title_and_content_semantics() {
 #[ignore = "captures a real Hydrolysis focused text field PNG for direct visual review"]
 fn material_focused_text_field_snapshot() {
     let name = Binding::container(Str::from("Hydrolysis"));
-    let name_for_view = name.clone();
+    let name_for_view = name;
     let mut app = mount_m3_offscreen(move || TextField::new(&name_for_view).label("Project"));
 
     assert!(

@@ -124,7 +124,7 @@ impl HydrolysisRenderer {
         drop(refs);
         drop(subviews);
 
-        for ((index, child), rect) in resolved_children.into_iter().enumerate().zip(child_rects) {
+        for ((_index, child), rect) in resolved_children.into_iter().enumerate().zip(child_rects) {
             let child_transform =
                 vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
             let child_bounds = vello::kurbo::Rect::new(

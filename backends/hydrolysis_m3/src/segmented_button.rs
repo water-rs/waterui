@@ -1,4 +1,4 @@
-//! Material Design 3 segmented buttons composed from WaterUI primitives.
+//! Material Design 3 segmented buttons composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 
@@ -189,7 +189,7 @@ where
         let selected_for_tap = self.selected.clone();
         let accessibility_state = self
             .selected
-            .clone()
+
             .map(|selected| AccessibilityState::new().selected(selected));
         let selected_label = self.label.clone();
         let unselected_label = self.label;
@@ -324,7 +324,7 @@ where
     };
     let label = label
         .font(typography::label_large())
-        .foreground(foreground.clone());
+        .foreground(foreground);
     let inner = match leading {
         Some(leading) => AnyView::new(
             hstack((leading, label))

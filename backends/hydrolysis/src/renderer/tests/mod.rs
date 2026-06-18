@@ -244,9 +244,7 @@ fn vstack_places_state_wrapped_button_at_intrinsic_width() {
 
     let target = renderer
         .hit_test
-        .pointer_targets
-        .iter()
-        .next()
+        .pointer_targets.first()
         .expect("state-wrapped button should register a pointer target");
     assert!(
         target.bounds.width() < 200.0,

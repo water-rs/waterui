@@ -1,4 +1,4 @@
-//! Material Design 3 chip components composed from WaterUI primitives.
+//! Material Design 3 chip components composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 use core::marker::PhantomData;
@@ -49,7 +49,7 @@ const INPUT_CHIP_REMOVE_ICON_LINE_WIDTH: f32 = 2.0;
 
 /// Shared Material Design 3 outlined action chip foundation.
 ///
-/// This implementation is pure WaterUI composition: no Hydrolysis renderer type
+/// This implementation is pure `WaterUI` composition: no Hydrolysis renderer type
 /// or backend-specific view ID is introduced.
 pub struct OutlinedChip<Action = fn(&Environment), LabelColor = OnSurface> {
     label: Label,
@@ -107,7 +107,7 @@ where
         let accessibility_label = self.accessibility_label.clone();
         let label = self
             .label
-            .clone()
+
             .font(typography::label_large())
             .foreground(LabelColor::default());
 
@@ -271,7 +271,7 @@ where
         let selected_for_tap = self.selected.clone();
         let accessibility_state = self
             .selected
-            .clone()
+
             .map(|selected| AccessibilityState::new().selected(selected));
         let selected_label = self.label.clone();
         let unselected_label = self.label.clone();

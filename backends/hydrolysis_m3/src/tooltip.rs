@@ -1,4 +1,4 @@
-//! Material Design 3 tooltips composed from WaterUI primitives.
+//! Material Design 3 tooltips composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
 
@@ -188,7 +188,6 @@ fn label_plain_text(label: &Label) -> Str {
         .content
         .get()
         .to_plain()
-        .into()
 }
 
 /// Creates a Material Design 3 plain tooltip.

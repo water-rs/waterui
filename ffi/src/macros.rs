@@ -55,6 +55,11 @@ macro_rules! ffi_view {
     ($view:ty, $ffi:ty, $ident:tt) => {
         pastey::paste! {
             // ========== C-API (for Apple/GTK backends) ==========
+            /// # Safety
+            ///
+            /// `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+            /// `Native<_>` of the expected view type; it is consumed by this call and must
+            /// not be used afterwards.
             #[cfg(feature = "c-api")]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_force_as_ $ident>](view: *mut $crate::WuiAnyView) -> $ffi {
@@ -84,6 +89,11 @@ macro_rules! ffi_view {
                 $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
             }
 
+            /// # Safety
+            ///
+            /// `view_ptr` must be a valid, owning `WuiAnyView` handle (as a `jlong`) whose
+            /// erased value is a `Native<_>` of the expected view type; it is consumed by
+            /// this call and must not be used afterwards.
             #[cfg(feature = "android-jni")]
             #[unsafe(no_mangle)]
             pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAs $ident:camel>]<'local>(

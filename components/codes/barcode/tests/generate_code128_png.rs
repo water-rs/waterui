@@ -9,9 +9,7 @@ use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
 fn generate_code128_png_offscreen() {
     let content = std::env::var("WATERUI_CODE128_CONTENT")
         .unwrap_or_else(|_| "HELLO-WATERUI-128".to_string());
-    let out_path = std::env::var("WATERUI_CODE128_OUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/generated_code128.png"));
+    let out_path = std::env::var("WATERUI_CODE128_OUT").map_or_else(|_| PathBuf::from("/tmp/generated_code128.png"), PathBuf::from);
 
     let renderer = BarcodeRenderer::new(BarcodeSource::code128(content));
     let size = OffscreenSize::try_from_pixels(1024, 256).expect("valid output size");

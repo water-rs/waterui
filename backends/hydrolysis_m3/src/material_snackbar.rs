@@ -5,7 +5,7 @@ use waterui::snackbar::Snackbar;
 
 /// A Material Design 3 snackbar configuration.
 ///
-/// Rendering, queueing, dismissal, and motion are owned by WaterUI's
+/// Rendering, queueing, dismissal, and motion are owned by `WaterUI`'s
 /// `SnackbarManager`; this alias keeps the Material package API explicit while
 /// preserving the existing runtime contract.
 pub type MaterialSnackbar = Snackbar;

@@ -1,4 +1,4 @@
-//! Material Design 3 card components composed from WaterUI card primitives.
+//! Material Design 3 card components composed from `WaterUI` card primitives.
 
 use core::fmt::{self, Debug};
 

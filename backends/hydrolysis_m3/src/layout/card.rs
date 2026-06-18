@@ -9,7 +9,7 @@ const CARD_CORNER_RADIUS: f32 = 12.0;
 const CARD_CLIP_RADIUS: f32 = 0.08;
 const CARD_OUTLINE_WIDTH: f32 = 1.0;
 
-fn tokens(
+const fn tokens(
     container_color: Color,
     outline_color: Color,
     outline_width: f32,

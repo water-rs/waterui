@@ -522,7 +522,7 @@ mod tests {
     fn test_multiple_clones() {
         let s1 = Str::from(String::from("test"));
         let s2 = s1.clone();
-        let s3 = s1.clone();
+        let s3 = s1;
         let s4 = s2.clone();
 
         // no reference count exposed
@@ -540,7 +540,7 @@ mod tests {
         let s1 = Str::from(String::from("hello"));
 
         {
-            let s2 = s1;
+            let _s2 = s1;
         } // s2 is dropped here
 
         // no reference count exposed
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn test_into_string_shared() {
         let s1 = Str::from(String::from("hello"));
-        let s2 = s1.clone();
+        let _s2 = s1.clone();
 
         let string = s1.into_string();
         assert_eq!(string, "hello");
@@ -697,8 +697,8 @@ mod tests {
     #[test]
     fn test_memory_safety_into_string_with_clones() {
         let s1 = Str::from(String::from("unique test"));
-        let s2 = s1.clone();
-        let s3 = s1.clone();
+        let _s2 = s1.clone();
+        let _s3 = s1.clone();
 
         // no reference count exposed
 
@@ -757,7 +757,7 @@ mod tests {
         // no reference count exposed
 
         // Clone the owned string
-        let s2 = s.clone();
+        let _s2 = s.clone();
         // no reference count exposed
 
         // Convert back to string

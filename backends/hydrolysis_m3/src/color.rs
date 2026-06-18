@@ -1,7 +1,7 @@
 //! Material Design 3 color role tokens.
 //!
 //! These tokens resolve against the `MaterialColorScheme` installed by
-//! `hydrolysis_m3::install_with_colors` and can be used anywhere a WaterUI
+//! `hydrolysis_m3::install_with_colors` and can be used anywhere a `WaterUI`
 //! color is accepted.
 
 use waterui::View;
@@ -32,7 +32,7 @@ fn resolve_role(
     Computed::constant(role(scheme).resolved())
 }
 
-fn material_scheme_for_color_scheme(
+const fn material_scheme_for_color_scheme(
     schemes: &MaterialColorSchemes,
     mode: ColorScheme,
 ) -> MaterialColorScheme {
