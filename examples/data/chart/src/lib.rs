@@ -118,31 +118,29 @@ fn mode_controls(mode: &Binding<ChartMode>) -> impl View {
     .width(560.0)
 }
 
-fn chart_layer(mode: &Binding<ChartMode>, target: ChartMode, chart: impl View) -> impl View {
-    chart.opacity(
-        mode.clone()
-            .map(move |current| if current == target { 1.0 } else { 0.0 }),
-    )
-}
-
+/// Renders only the currently-selected chart. Switching mode re-dispatches the
+/// active chart (charts are distinct view types, so this is genuine control flow,
+/// not state-preserving membership). Rendering a single chart inline avoids
+/// stacking 15 GPU scene-views and the reactive-visibility wrapper that the
+/// retained renderer does not yet composite for scene-views.
 fn chart_layers(mode: &Binding<ChartMode>) -> impl View {
-    zstack((
-        chart_layer(mode, ChartMode::Bar, bar_chart_preview()),
-        chart_layer(mode, ChartMode::Line, line_chart_preview()),
-        chart_layer(mode, ChartMode::Pie, pie_chart_preview()),
-        chart_layer(mode, ChartMode::Scatter, scatter_chart_preview()),
-        chart_layer(mode, ChartMode::Candlestick, candlestick_chart_preview()),
-        chart_layer(mode, ChartMode::Depth, depth_chart_preview()),
-        chart_layer(mode, ChartMode::Heatmap, heatmap_chart_preview()),
-        chart_layer(mode, ChartMode::Contour, contour_chart_preview()),
-        chart_layer(mode, ChartMode::Radar, radar_chart_preview()),
-        chart_layer(mode, ChartMode::Bubble, bubble_chart_preview()),
-        chart_layer(mode, ChartMode::Area, area_chart_preview()),
-        chart_layer(mode, ChartMode::Gauge, gauge_chart_preview()),
-        chart_layer(mode, ChartMode::StressScatter10K, scatter_stress_preview()),
-        chart_layer(mode, ChartMode::StressLine1K, line_stress_preview()),
-        chart_layer(mode, ChartMode::StressHeatmap10K, heatmap_stress_preview()),
-    ))
+    watch(mode.clone(), |mode| match mode {
+        ChartMode::Bar => AnyView::new(bar_chart_preview()),
+        ChartMode::Line => AnyView::new(line_chart_preview()),
+        ChartMode::Pie => AnyView::new(pie_chart_preview()),
+        ChartMode::Scatter => AnyView::new(scatter_chart_preview()),
+        ChartMode::Candlestick => AnyView::new(candlestick_chart_preview()),
+        ChartMode::Depth => AnyView::new(depth_chart_preview()),
+        ChartMode::Heatmap => AnyView::new(heatmap_chart_preview()),
+        ChartMode::Contour => AnyView::new(contour_chart_preview()),
+        ChartMode::Radar => AnyView::new(radar_chart_preview()),
+        ChartMode::Bubble => AnyView::new(bubble_chart_preview()),
+        ChartMode::Area => AnyView::new(area_chart_preview()),
+        ChartMode::Gauge => AnyView::new(gauge_chart_preview()),
+        ChartMode::StressScatter10K => AnyView::new(scatter_stress_preview()),
+        ChartMode::StressLine1K => AnyView::new(line_stress_preview()),
+        ChartMode::StressHeatmap10K => AnyView::new(heatmap_stress_preview()),
+    })
 }
 
 /// Demo view - demonstrates different chart types
@@ -491,4 +489,27 @@ fn gauge_chart_preview() -> impl View {
 
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::demo;
+    use core::time::Duration;
+    use hydrolysis_m3::install;
+    use waterui_testing::ui;
+
+    /// The chart demo renders through the Hydrolysis M3 GPU pipeline without
+    /// panicking (regression guard for the >64 rebuild-loop crash) and the active
+    /// chart's controls are present.
+    #[test]
+    fn chart_demo_renders_without_crashing() {
+        let mut app = ui().viewport(440, 920).theme(install).mount(demo);
+        assert!(
+            app.query()
+                .label("Bar")
+                .wait_for_existence(Duration::from_secs(3)),
+            "chart demo mode controls should render"
+        );
+        let _ = app.snapshot();
+    }
 }
