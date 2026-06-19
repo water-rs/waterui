@@ -5,11 +5,6 @@
     reason = "intentional lossy numeric cast in performance-metric formatting"
 )]
 #![allow(
-    clippy::format_collect,
-    clippy::format_push_string,
-    reason = "builds the preview HTML/SVG performance report inline; a candidate for an askama template refactor"
-)]
-#![allow(
     clippy::too_many_lines,
     clippy::struct_field_names,
     clippy::needless_pass_by_value,
@@ -21,9 +16,11 @@
 //! Renders, tests, or profiles a `WaterUI` preview.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use askama::Template;
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use ignore::WalkBuilder;
@@ -44,7 +41,6 @@ use waterui_cli::preview::{
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
 
-const PREVIEW_PERF_HTML_TEMPLATE: &str = include_str!("../../templates/preview_perf_report.html");
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -824,11 +820,12 @@ async fn discover_preview_targets(
             "duplicate `#[preview]` function names are not supported because WaterUI preview exports use function names only:",
         );
         for (name, first, second) in duplicates {
-            message.push_str(&format!(
+            let _ = write!(
+                message,
                 "\n  `{name}` in {} and {}",
                 first.display(),
                 second.display()
-            ));
+            );
         }
         bail!("{message}");
     }
@@ -1367,10 +1364,6 @@ async fn write_preview_perf_html(path: &Path, reports: &[PreviewPerfReport]) -> 
         .iter()
         .map(render_preview_perf_report_html)
         .collect::<String>();
-    let total_measurements = reports
-        .iter()
-        .map(|report| report.measurements.len())
-        .sum::<usize>();
     let worst_p95 = reports
         .iter()
         .flat_map(|report| &report.measurements)
@@ -1382,12 +1375,11 @@ async fn write_preview_perf_html(path: &Path, reports: &[PreviewPerfReport]) -> 
         .flat_map(|report| &report.measurements)
         .map(|measurement| measurement.missed_120fps_frames)
         .sum::<u64>();
-    let html = PREVIEW_PERF_HTML_TEMPLATE
-        .replace("{{REPORT_COUNT}}", &reports.len().to_string())
-        .replace("{{MEASUREMENT_COUNT}}", &total_measurements.to_string())
-        .replace("{{WORST_P95}}", &micros_label(worst_p95))
-        .replace("{{MISSED_120}}", &missed_120.to_string())
-        .replace("{{REPORTS}}", &report_cards);
+    let html = render_perf_template(&PerfPageView {
+        worst_p95: micros_label(worst_p95),
+        missed_120: missed_120.to_string(),
+        reports: report_cards,
+    });
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1398,6 +1390,183 @@ async fn write_preview_perf_html(path: &Path, reports: &[PreviewPerfReport]) -> 
     Ok(())
 }
 
+/// One SVG sample dot in a perf chart, with the data attributes the report's
+/// hover inspector reads. `build`/`dispatch`/`finish` are present only for the
+/// frame-timeline charts; `value` only for the single-metric trend charts.
+#[derive(Default)]
+struct PerfSampleView {
+    cx: String,
+    cy: String,
+    frame: u64,
+    total: String,
+    gpu: String,
+    render: String,
+    rebuild: String,
+    cpu: String,
+    memory: String,
+    fps: String,
+    layers: u64,
+    clip_layers: u64,
+    clip_depth: u64,
+    build: Option<String>,
+    dispatch: Option<String>,
+    finish: Option<String>,
+    value: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/diagnosis.html", escape = "html")]
+struct DiagnosisView {
+    p95: String,
+    mean: String,
+    median: String,
+    rendered_p95: String,
+    rendered_frames: u64,
+    idle_frames: u64,
+    worst_frame: String,
+    samples: u64,
+    bottleneck_name: &'static str,
+    bottleneck_mean: String,
+    rebuild_ratio: String,
+    rebuilt_frames: u64,
+    cache_hit_ratio: String,
+    cache_hits: u64,
+    cache_misses: u64,
+}
+
+struct PhaseSegmentView {
+    class: &'static str,
+    width: String,
+    name: &'static str,
+    label: String,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/phase_stack.html", escape = "html")]
+struct PhaseStackView {
+    segments: Vec<PhaseSegmentView>,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/metric_chart.html", escape = "html")]
+struct MetricChartView {
+    title: String,
+    min_label: String,
+    max_label: String,
+    line_class: String,
+    points: String,
+    samples: Vec<PerfSampleView>,
+}
+
+struct BudgetLineView {
+    class: &'static str,
+    y: String,
+}
+
+struct TimingChartView {
+    min_label: String,
+    max_label: String,
+    budget_lines: Vec<BudgetLineView>,
+    total_points: String,
+    gpu_points: String,
+    render_points: String,
+    rebuild_points: String,
+    samples: Vec<PerfSampleView>,
+}
+
+struct FpsChartView {
+    min_label: String,
+    max_label: String,
+    budget_lines: Vec<BudgetLineView>,
+    fps_points: String,
+    samples: Vec<PerfSampleView>,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/frame_timeline.html", escape = "html")]
+struct FrameTimelineView {
+    timing: TimingChartView,
+    fps: FpsChartView,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/resources.html", escape = "html")]
+struct ResourcesView {
+    avg_cpu: String,
+    max_cpu: String,
+    max_memory: String,
+    avg_gpu: String,
+    max_gpu: String,
+    avg_layers: String,
+    max_layers: u64,
+    avg_clip: String,
+    max_clip_depth: u64,
+    charts: Vec<String>,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/flamegraph.html", escape = "html")]
+struct FlamegraphView {
+    path: String,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/measurement.html", escape = "html")]
+struct MeasurementView {
+    name: String,
+    budget_label: &'static str,
+    diagnosis: String,
+    phase_stack: String,
+    frame_timeline: String,
+    resources: String,
+    flamegraph: String,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf/report_card.html", escape = "html")]
+struct ReportCardView {
+    target: String,
+    measurements: String,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/preview_perf_report.html", escape = "html")]
+struct PerfPageView {
+    worst_p95: String,
+    missed_120: String,
+    reports: String,
+}
+
+/// Renders a template, treating any rendering error as a bug (the templates are
+/// compile-checked and the data is plain owned values, so this is infallible).
+fn render_perf_template<T: Template>(template: &T) -> String {
+    template
+        .render()
+        .expect("preview perf report template rendering is infallible")
+}
+
+/// Builds the chart-agnostic part of a sample dot (position + the data
+/// attributes every chart exposes). Callers fill in the chart-specific
+/// `build`/`dispatch`/`finish` (frame timeline) or `value` (metric trend).
+fn perf_common_sample(frame: &PreviewPerfFrame, cx: f64, cy: f64) -> PerfSampleView {
+    PerfSampleView {
+        cx: format!("{cx:.2}"),
+        cy: format!("{cy:.2}"),
+        frame: frame.index,
+        total: micros_label(frame.total_us),
+        gpu: micros_label(frame.gpu_frame_us),
+        render: micros_label(frame.render_us),
+        rebuild: micros_label(frame.rebuild_us),
+        cpu: format!("{:.1}%", frame.cpu_percent),
+        memory: bytes_label(frame.memory_bytes),
+        fps: fps_label(preview_perf_throughput_fps(frame)),
+        layers: frame.scene_layers,
+        clip_layers: frame.clip_layers,
+        clip_depth: frame.max_clip_depth,
+        ..PerfSampleView::default()
+    }
+}
+
 fn render_preview_perf_report_html(report: &PreviewPerfReport) -> String {
     let measurements = report
         .measurements
@@ -1406,27 +1575,19 @@ fn render_preview_perf_report_html(report: &PreviewPerfReport) -> String {
             render_preview_perf_measurement_html(measurement, report.flamegraph.as_deref())
         })
         .collect::<String>();
-    format!(
-        "<section class=\"report\"><h2>{}</h2><div class=\"measurements\">{}</div></section>",
-        html_escape(report.target.as_str()),
-        measurements
-    )
+    render_perf_template(&ReportCardView {
+        target: report.target.clone(),
+        measurements,
+    })
 }
 
 fn render_preview_perf_flamegraph_html(flamegraph: Option<&Path>) -> String {
     let Some(flamegraph) = flamegraph else {
         return String::new();
     };
-    let path = html_escape(&flamegraph.to_string_lossy());
-    format!(
-        concat!(
-            "<section class=\"flamegraph\">",
-            "<div><h3>Flamegraph</h3><a href=\"{}\">Open SVG</a></div>",
-            "<div class=\"flamegraph-viewport\"><object data=\"{}\" type=\"image/svg+xml\"></object></div>",
-            "</section>"
-        ),
-        path, path
-    )
+    render_perf_template(&FlamegraphView {
+        path: flamegraph.to_string_lossy().into_owned(),
+    })
 }
 
 fn render_preview_perf_measurement_html(
@@ -1438,34 +1599,15 @@ fn render_preview_perf_measurement_html(
     let frame_timeline = render_preview_perf_frame_timeline_html(measurement);
     let phase_stack = render_preview_perf_phase_stack_html(measurement);
     let flamegraph = render_preview_perf_flamegraph_html(flamegraph);
-    format!(
-        concat!(
-            "<article class=\"measurement\">",
-            "<div class=\"measurement-head\"><h3>{}</h3><span>{}</span></div>",
-            "<nav class=\"tabs\" role=\"tablist\" aria-label=\"Performance views\">",
-            "<button class=\"active\" type=\"button\" role=\"tab\" aria-selected=\"true\" data-tab-target=\"overview\">Overview</button>",
-            "<button type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab-target=\"frames\">Frames</button>",
-            "<button type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab-target=\"resources\">Resources</button>",
-            "<button type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab-target=\"flamegraph\">Flamegraph</button>",
-            "</nav>",
-            "<section class=\"tab-panel active\" data-tab-panel=\"overview\">{}{}",
-            "</section>",
-            "<section class=\"tab-panel\" data-tab-panel=\"frames\">{}",
-            "</section>",
-            "<section class=\"tab-panel\" data-tab-panel=\"resources\">{}",
-            "</section>",
-            "<section class=\"tab-panel\" data-tab-panel=\"flamegraph\">{}",
-            "</section>",
-            "</article>"
-        ),
-        html_escape(measurement.name.as_str()),
-        preview_perf_budget_label(measurement),
+    render_perf_template(&MeasurementView {
+        name: measurement.name.clone(),
+        budget_label: preview_perf_budget_label(measurement),
         diagnosis,
         phase_stack,
         frame_timeline,
         resources,
-        flamegraph
-    )
+        flamegraph,
+    })
 }
 
 const fn preview_perf_budget_label(measurement: &PreviewPerfMeasurement) -> &'static str {
@@ -1487,34 +1629,23 @@ fn render_preview_perf_diagnosis_html(measurement: &PreviewPerfMeasurement) -> S
         .saturating_add(measurement.measurement_cache_misses);
     let cache_hit_ratio = ratio_percent(measurement.measurement_cache_hits, cache_total);
     let worst_frame = worst.map_or_else(|| "none".to_string(), |frame| format!("frame {} / {}", frame.index, micros_label(frame.total_us)));
-    format!(
-        concat!(
-            "<section class=\"diagnosis\">",
-            "<div><span>p95</span><strong>{}</strong><small>mean {} / median {}</small></div>",
-            "<div><span>rendered p95</span><strong>{}</strong><small>{} rendered / {} idle</small></div>",
-            "<div><span>worst sample</span><strong>{}</strong><small>{} samples</small></div>",
-            "<div><span>bottleneck</span><strong>{}</strong><small>{}</small></div>",
-            "<div><span>rebuild pressure</span><strong>{:.1}%</strong><small>{}/{} frames</small></div>",
-            "<div><span>layout cache</span><strong>{:.1}% hit</strong><small>{} hits / {} misses</small></div>",
-            "</section>"
-        ),
-        micros_label(measurement.p95_us),
-        micros_label(measurement.mean_us),
-        micros_label(measurement.median_us),
-        micros_label(measurement.rendered_p95_us),
-        measurement.rendered_frames,
-        measurement.idle_frames,
+    render_perf_template(&DiagnosisView {
+        p95: micros_label(measurement.p95_us),
+        mean: micros_label(measurement.mean_us),
+        median: micros_label(measurement.median_us),
+        rendered_p95: micros_label(measurement.rendered_p95_us),
+        rendered_frames: measurement.rendered_frames,
+        idle_frames: measurement.idle_frames,
         worst_frame,
-        measurement.samples,
-        bottleneck.name,
-        micros_label(bottleneck.mean_us),
-        rebuild_ratio,
-        measurement.rebuilt_frames,
-        measurement.samples,
-        cache_hit_ratio,
-        measurement.measurement_cache_hits,
-        measurement.measurement_cache_misses
-    )
+        samples: measurement.samples,
+        bottleneck_name: bottleneck.name,
+        bottleneck_mean: micros_label(bottleneck.mean_us),
+        rebuild_ratio: format!("{rebuild_ratio:.1}"),
+        rebuilt_frames: measurement.rebuilt_frames,
+        cache_hit_ratio: format!("{cache_hit_ratio:.1}"),
+        cache_hits: measurement.measurement_cache_hits,
+        cache_misses: measurement.measurement_cache_misses,
+    })
 }
 
 struct PreviewPerfBottleneck {
@@ -1577,36 +1708,18 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
         |frame| frame.clip_layers as f64,
         |value| format!("{value:.0}"),
     );
-    format!(
-        concat!(
-            "<section class=\"resources\">",
-            "<div><span>CPU avg</span><strong>{:.1}%</strong></div>",
-            "<div><span>CPU max</span><strong>{:.1}%</strong></div>",
-            "<div><span>memory max</span><strong>{}</strong></div>",
-            "<div><span>GPU pipeline avg</span><strong>{}</strong></div>",
-            "<div><span>GPU pipeline max</span><strong>{}</strong></div>",
-            "<div><span>layer avg</span><strong>{:.1}</strong></div>",
-            "<div><span>layer max</span><strong>{}</strong></div>",
-            "<div><span>clip avg</span><strong>{:.1}</strong></div>",
-            "<div><span>clip depth max</span><strong>{}</strong></div>",
-            "</section>",
-            "<section class=\"trend-grid\">{}{}{}{}{}</section>"
-        ),
-        summary.avg_cpu_percent,
-        summary.max_cpu_percent,
-        bytes_label(summary.max_memory_bytes),
-        micros_label(summary.avg_gpu_frame_us),
-        micros_label(summary.max_gpu_frame_us),
-        summary.avg_scene_layers,
-        summary.max_scene_layers,
-        summary.avg_clip_layers,
-        summary.max_clip_depth,
-        cpu_chart,
-        memory_chart,
-        gpu_chart,
-        layer_chart,
-        clip_chart
-    )
+    render_perf_template(&ResourcesView {
+        avg_cpu: format!("{:.1}", summary.avg_cpu_percent),
+        max_cpu: format!("{:.1}", summary.max_cpu_percent),
+        max_memory: bytes_label(summary.max_memory_bytes),
+        avg_gpu: micros_label(summary.avg_gpu_frame_us),
+        max_gpu: micros_label(summary.max_gpu_frame_us),
+        avg_layers: format!("{:.1}", summary.avg_scene_layers),
+        max_layers: summary.max_scene_layers,
+        avg_clip: format!("{:.1}", summary.avg_clip_layers),
+        max_clip_depth: summary.max_clip_depth,
+        charts: vec![cpu_chart, memory_chart, gpu_chart, layer_chart, clip_chart],
+    })
 }
 
 fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement) -> String {
@@ -1653,113 +1766,53 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
         render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
             frame.gpu_frame_us as f64
         });
-    let points = measurement
+    let timing_samples = measurement
         .frames
         .iter()
         .map(|frame| {
-            let x = frame_chart_x(frame.index, measurement.frames.len());
-            let y = timing_scale.y(frame.total_us as f64);
-            format!(
-                concat!(
-                    "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-build=\"{}\" data-dispatch=\"{}\" data-finish=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
-                ),
-                x,
-                y,
-                frame.index,
-                micros_label(frame.total_us),
-                micros_label(frame.gpu_frame_us),
-                micros_label(frame.render_us),
-                micros_label(frame.rebuild_us),
-                micros_label(frame.build_content_us),
-                micros_label(frame.scene_dispatch_us),
-                micros_label(frame.scene_finish_us),
-                frame.cpu_percent,
-                bytes_label(frame.memory_bytes),
-                fps_label(preview_perf_throughput_fps(frame)),
-                frame.scene_layers,
-                frame.clip_layers,
-                frame.max_clip_depth
-            )
+            let cx = frame_chart_x(frame.index, measurement.frames.len());
+            let cy = timing_scale.y(frame.total_us as f64);
+            PerfSampleView {
+                build: Some(micros_label(frame.build_content_us)),
+                dispatch: Some(micros_label(frame.scene_dispatch_us)),
+                finish: Some(micros_label(frame.scene_finish_us)),
+                ..perf_common_sample(frame, cx, cy)
+            }
         })
-        .collect::<String>();
-    let fps_sample_points = measurement
+        .collect();
+    let fps_samples = measurement
         .frames
         .iter()
         .map(|frame| {
-            let x = frame_chart_x(frame.index, measurement.frames.len());
-            let y = fps_scale.y(preview_perf_throughput_fps(frame).min(1_000.0));
-            format!(
-                concat!(
-                    "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-build=\"{}\" data-dispatch=\"{}\" data-finish=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\"></circle>"
-                ),
-                x,
-                y,
-                frame.index,
-                micros_label(frame.total_us),
-                micros_label(frame.gpu_frame_us),
-                micros_label(frame.render_us),
-                micros_label(frame.rebuild_us),
-                micros_label(frame.build_content_us),
-                micros_label(frame.scene_dispatch_us),
-                micros_label(frame.scene_finish_us),
-                frame.cpu_percent,
-                bytes_label(frame.memory_bytes),
-                fps_label(preview_perf_throughput_fps(frame)),
-                frame.scene_layers,
-                frame.clip_layers,
-                frame.max_clip_depth
-            )
+            let cx = frame_chart_x(frame.index, measurement.frames.len());
+            let cy = fps_scale.y(preview_perf_throughput_fps(frame).min(1_000.0));
+            PerfSampleView {
+                build: Some(micros_label(frame.build_content_us)),
+                dispatch: Some(micros_label(frame.scene_dispatch_us)),
+                finish: Some(micros_label(frame.scene_finish_us)),
+                ..perf_common_sample(frame, cx, cy)
+            }
         })
-        .collect::<String>();
-    let timing_chart = format!(
-        concat!(
-            "<section class=\"line-chart\">",
-            "<div><h4>Frame time</h4><span>{} - {}</span></div>",
-            "<svg viewBox=\"0 0 100 100\" role=\"img\" aria-label=\"Raw frame timing trend\">",
-            "{}",
-            "<polyline class=\"line-total\" points=\"{}\"></polyline>",
-            "<polyline class=\"line-gpu\" points=\"{}\"></polyline>",
-            "<polyline class=\"line-render\" points=\"{}\"></polyline>",
-            "<polyline class=\"line-rebuild\" points=\"{}\"></polyline>",
-            "<g class=\"sample-points\">{}</g>",
-            "</svg>",
-            "<div class=\"hover-inspector\" aria-live=\"polite\">Hover a sample</div>",
-            "<div class=\"legend\"><span class=\"total\">total</span><span class=\"gpu\">GPU pipeline</span><span class=\"render\">render</span><span class=\"rebuild\">rebuild</span><span class=\"budget-label\">budget markers appear when inside range</span></div>",
-            "</section>"
-        ),
-        micros_label(timing_scale.min.round() as u64),
-        micros_label(timing_scale.max.round() as u64),
-        render_preview_perf_budget_lines(timing_scale),
-        total_points,
-        gpu_points,
-        render_points,
-        rebuild_points,
-        points
-    );
-    let fps_chart = format!(
-        concat!(
-            "<section class=\"line-chart\">",
-            "<div><h4>Throughput FPS</h4><span>{} - {}</span></div>",
-            "<svg viewBox=\"0 0 100 100\" role=\"img\" aria-label=\"Throughput FPS trend\">",
-            "{}",
-            "<polyline class=\"line-fps\" points=\"{}\"></polyline>",
-            "<g class=\"sample-points\">{}</g>",
-            "</svg>",
-            "<div class=\"hover-inspector\" aria-live=\"polite\">Hover a frame</div>",
-            "<div class=\"legend\"><span class=\"fps\">offscreen throughput FPS</span><span class=\"budget-label\">display budgets appear when inside range</span></div>",
-            "</section>"
-        ),
-        fps_label(fps_scale.min),
-        fps_label(fps_scale.max),
-        render_preview_perf_fps_budget_lines(fps_scale),
-        fps_points,
-        fps_sample_points
-    );
-    format!(
-        "<section class=\"timeline-grid\">{timing_chart}{fps_chart}</section>"
-    )
+        .collect();
+    render_perf_template(&FrameTimelineView {
+        timing: TimingChartView {
+            min_label: micros_label(timing_scale.min.round() as u64),
+            max_label: micros_label(timing_scale.max.round() as u64),
+            budget_lines: render_preview_perf_budget_lines(timing_scale),
+            total_points,
+            gpu_points,
+            render_points,
+            rebuild_points,
+            samples: timing_samples,
+        },
+        fps: FpsChartView {
+            min_label: fps_label(fps_scale.min),
+            max_label: fps_label(fps_scale.max),
+            budget_lines: render_preview_perf_fps_budget_lines(fps_scale),
+            fps_points,
+            samples: fps_samples,
+        },
+    })
 }
 
 fn render_preview_perf_phase_stack_html(measurement: &PreviewPerfMeasurement) -> String {
@@ -1794,26 +1847,14 @@ fn render_preview_perf_phase_stack_html(measurement: &PreviewPerfMeasurement) ->
         .max(1);
     let segments = phases
         .iter()
-        .map(|(name, value, class)| {
-            let width = ratio_percent(*value, total).max(0.5);
-            format!(
-                "<i class=\"{}\" style=\"width:{:.2}%\"><span>{} {}</span></i>",
-                class,
-                width,
-                name,
-                micros_label(*value)
-            )
+        .map(|(name, value, class)| PhaseSegmentView {
+            class,
+            width: format!("{:.2}", ratio_percent(*value, total).max(0.5)),
+            name,
+            label: micros_label(*value),
         })
-        .collect::<String>();
-    format!(
-        concat!(
-            "<section class=\"phase-stack\">",
-            "<div><h4>Phase breakdown</h4><span>mean frame work</span></div>",
-            "<div class=\"phase-bar\">{}</div>",
-            "</section>"
-        ),
-        segments
-    )
+        .collect();
+    render_perf_template(&PhaseStackView { segments })
 }
 
 fn render_preview_perf_float_polyline_points(
@@ -1861,47 +1902,22 @@ fn render_preview_perf_metric_chart_html(
         .iter()
         .map(|frame| {
             let current_value = value(frame);
-            format!(
-                concat!(
-                    "<circle class=\"sample-point\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"2.4\" tabindex=\"0\" ",
-                    "data-frame=\"{}\" data-total=\"{}\" data-gpu=\"{}\" data-render=\"{}\" data-rebuild=\"{}\" data-cpu=\"{:.1}%\" data-memory=\"{}\" data-fps=\"{}\" data-layers=\"{}\" data-clip-layers=\"{}\" data-clip-depth=\"{}\" data-value=\"{}\"></circle>"
-                ),
-                frame_chart_x(frame.index, frames.len()),
-                scale.y(current_value),
-                frame.index,
-                micros_label(frame.total_us),
-                micros_label(frame.gpu_frame_us),
-                micros_label(frame.render_us),
-                micros_label(frame.rebuild_us),
-                frame.cpu_percent,
-                bytes_label(frame.memory_bytes),
-                fps_label(preview_perf_throughput_fps(frame)),
-                frame.scene_layers,
-                frame.clip_layers,
-                frame.max_clip_depth,
-                html_escape(&label(current_value))
-            )
+            let cx = frame_chart_x(frame.index, frames.len());
+            let cy = scale.y(current_value);
+            PerfSampleView {
+                value: Some(label(current_value)),
+                ..perf_common_sample(frame, cx, cy)
+            }
         })
-        .collect::<String>();
-    format!(
-        concat!(
-            "<section class=\"line-chart metric-chart\">",
-            "<div><h4>{}</h4><span>{} - {}</span></div>",
-            "<svg viewBox=\"0 0 100 100\" role=\"img\" aria-label=\"{} trend\">",
-            "<polyline class=\"{}\" points=\"{}\"></polyline>",
-            "<g class=\"sample-points\">{}</g>",
-            "</svg>",
-            "<div class=\"hover-inspector\" aria-live=\"polite\">Hover a frame</div>",
-            "</section>"
-        ),
-        html_escape(title),
-        html_escape(&label(actual_min)),
-        html_escape(&label(actual_max)),
-        html_escape(title),
-        line_class,
+        .collect();
+    render_perf_template(&MetricChartView {
+        title: title.to_owned(),
+        min_label: label(actual_min),
+        max_label: label(actual_max),
+        line_class: line_class.to_owned(),
         points,
-        samples
-    )
+        samples,
+    })
 }
 
 fn frame_chart_x(index: u64, frame_count: usize) -> f64 {
@@ -1951,28 +1967,24 @@ impl PreviewPerfChartScale {
     }
 }
 
-fn render_preview_perf_budget_lines(scale: PreviewPerfChartScale) -> String {
+fn render_preview_perf_budget_lines(scale: PreviewPerfChartScale) -> Vec<BudgetLineView> {
     [(8_333.0, "budget-120"), (16_666.0, "budget-60")]
         .into_iter()
         .filter(|(value, _)| scale.contains(*value))
-        .map(|(value, class)| {
-            let y = scale.y(value);
-            format!(
-                "<line class=\"budget {class}\" x1=\"6\" y1=\"{y:.2}\" x2=\"94\" y2=\"{y:.2}\"></line>"
-            )
+        .map(|(value, class)| BudgetLineView {
+            class,
+            y: format!("{:.2}", scale.y(value)),
         })
         .collect()
 }
 
-fn render_preview_perf_fps_budget_lines(scale: PreviewPerfChartScale) -> String {
+fn render_preview_perf_fps_budget_lines(scale: PreviewPerfChartScale) -> Vec<BudgetLineView> {
     [(120.0, "budget-120"), (60.0, "budget-60")]
         .into_iter()
         .filter(|(value, _)| scale.contains(*value))
-        .map(|(value, class)| {
-            let y = scale.y(value);
-            format!(
-                "<line class=\"budget {class}\" x1=\"6\" y1=\"{y:.2}\" x2=\"94\" y2=\"{y:.2}\"></line>"
-            )
+        .map(|(value, class)| BudgetLineView {
+            class,
+            y: format!("{:.2}", scale.y(value)),
         })
         .collect()
 }
@@ -1994,12 +2006,6 @@ fn ratio_percent(numerator: u64, denominator: u64) -> f64 {
         return 0.0;
     }
     (numerator as f64 / denominator as f64) * 100.0
-}
-
-fn html_escape(value: &str) -> String {
-    askama::filters::escape(value, askama::filters::Html)
-        .expect("HTML escaping should be infallible")
-        .to_string()
 }
 
 async fn open_preview_perf_html(path: &Path) -> Result<()> {
@@ -2285,6 +2291,134 @@ Example:\n  #[preview]\n  fn {}() -> impl View {{ ... }}",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_circle_fixture() -> PerfSampleView {
+        PerfSampleView {
+            cx: "6.00".to_owned(),
+            cy: "50.00".to_owned(),
+            frame: 0,
+            total: "10ms".to_owned(),
+            gpu: "4ms".to_owned(),
+            render: "3ms".to_owned(),
+            rebuild: "2ms".to_owned(),
+            cpu: "5.0%".to_owned(),
+            memory: "1.0 MiB".to_owned(),
+            fps: "100.0fps".to_owned(),
+            layers: 3,
+            clip_layers: 1,
+            clip_depth: 2,
+            ..PerfSampleView::default()
+        }
+    }
+
+    #[test]
+    fn perf_diagnosis_template_is_faithful() {
+        let html = render_perf_template(&DiagnosisView {
+            p95: "12ms".to_owned(),
+            mean: "8ms".to_owned(),
+            median: "7ms".to_owned(),
+            rendered_p95: "11ms".to_owned(),
+            rendered_frames: 90,
+            idle_frames: 10,
+            worst_frame: "frame 3 / 20ms".to_owned(),
+            samples: 100,
+            bottleneck_name: "render",
+            bottleneck_mean: "5ms".to_owned(),
+            rebuild_ratio: "12.5".to_owned(),
+            rebuilt_frames: 12,
+            cache_hit_ratio: "98.0".to_owned(),
+            cache_hits: 980,
+            cache_misses: 20,
+        });
+        assert!(html.contains("<section class=\"diagnosis\">"));
+        assert!(html.contains(
+            "<div><span>p95</span><strong>12ms</strong><small>mean 8ms / median 7ms</small></div>"
+        ));
+        assert!(html.contains(
+            "<div><span>rebuild pressure</span><strong>12.5%</strong><small>12/100 frames</small></div>"
+        ));
+        assert!(html.contains(
+            "<div><span>layout cache</span><strong>98.0% hit</strong><small>980 hits / 20 misses</small></div>"
+        ));
+    }
+
+    #[test]
+    fn perf_metric_chart_circle_carries_value_not_build() {
+        let html = render_perf_template(&MetricChartView {
+            title: "CPU usage".to_owned(),
+            min_label: "1.0%".to_owned(),
+            max_label: "9.0%".to_owned(),
+            line_class: "line-cpu".to_owned(),
+            points: "6.00,50.00 94.00,20.00".to_owned(),
+            samples: vec![PerfSampleView {
+                value: Some("5.0%".to_owned()),
+                ..sample_circle_fixture()
+            }],
+        });
+        assert!(html.contains(
+            "<polyline class=\"line-cpu\" points=\"6.00,50.00 94.00,20.00\"></polyline>"
+        ));
+        assert!(html.contains("aria-label=\"CPU usage trend\""));
+        assert!(html.contains("data-value=\"5.0%\""));
+        assert!(html.contains("data-cpu=\"5.0%\""));
+        // Metric-trend circles do not carry the frame-timeline-only phase attrs.
+        assert!(!html.contains("data-build"));
+    }
+
+    #[test]
+    fn perf_frame_timeline_circle_carries_build_not_value() {
+        let timeline_sample = || PerfSampleView {
+            build: Some("1ms".to_owned()),
+            dispatch: Some("2ms".to_owned()),
+            finish: Some("3ms".to_owned()),
+            ..sample_circle_fixture()
+        };
+        let html = render_perf_template(&FrameTimelineView {
+            timing: TimingChartView {
+                min_label: "1ms".to_owned(),
+                max_label: "20ms".to_owned(),
+                budget_lines: vec![BudgetLineView {
+                    class: "budget-120",
+                    y: "30.00".to_owned(),
+                }],
+                total_points: "6.00,50.00".to_owned(),
+                gpu_points: "6.00,60.00".to_owned(),
+                render_points: "6.00,70.00".to_owned(),
+                rebuild_points: "6.00,80.00".to_owned(),
+                samples: vec![timeline_sample()],
+            },
+            fps: FpsChartView {
+                min_label: "50.0fps".to_owned(),
+                max_label: "120.0fps".to_owned(),
+                budget_lines: Vec::new(),
+                fps_points: "6.00,40.00".to_owned(),
+                samples: vec![timeline_sample()],
+            },
+        });
+        assert!(html.contains("<section class=\"timeline-grid\">"));
+        assert!(html.contains(
+            "<line class=\"budget budget-120\" x1=\"6\" y1=\"30.00\" x2=\"94\" y2=\"30.00\"></line>"
+        ));
+        assert!(html.contains("<polyline class=\"line-total\" points=\"6.00,50.00\"></polyline>"));
+        assert!(html.contains("<polyline class=\"line-fps\" points=\"6.00,40.00\"></polyline>"));
+        assert!(html.contains("data-build=\"1ms\" data-dispatch=\"2ms\" data-finish=\"3ms\""));
+        // Frame-timeline circles do not carry the metric-trend-only value attr.
+        assert!(!html.contains("data-value"));
+    }
+
+    #[test]
+    fn perf_page_template_embeds_summary_and_reports() {
+        let html = render_perf_template(&PerfPageView {
+            worst_p95: "16ms".to_owned(),
+            missed_120: "4".to_owned(),
+            reports: "<section class=\"report\"><h2>demo</h2></section>".to_owned(),
+        });
+        assert!(html.contains("<title>WaterUI Preview Perf</title>"));
+        assert!(html.contains("<strong>16ms</strong>"));
+        assert!(html.contains("<strong>4</strong>"));
+        assert!(html.contains("<section class=\"report\"><h2>demo</h2></section>"));
+        assert!(html.contains("formatSample"));
+    }
 
     #[test]
     fn formats_missing_preview_symbol_message() {

@@ -1,0 +1,9 @@
+{%- import "preview_perf/_macros.html" as macros -%}
+<section class="line-chart metric-chart">
+<div><h4>{{ title }}</h4><span>{{ min_label }} - {{ max_label }}</span></div>
+<svg viewBox="0 0 100 100" role="img" aria-label="{{ title }} trend">
+<polyline class="{{ line_class }}" points="{{ points }}"></polyline>
+<g class="sample-points">{% for s in samples %}{% call macros::sample_circle(s) %}{% endfor %}</g>
+</svg>
+<div class="hover-inspector" aria-live="polite">Hover a frame</div>
+</section>
