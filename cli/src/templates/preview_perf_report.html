@@ -542,12 +542,12 @@
         <p>Hydrolysis offscreen GPU pipeline</p>
       </div>
       <section class="summary" aria-label="Summary">
-        <div><span>worst p95</span><strong>{{WORST_P95}}</strong></div>
-        <div><span>missed 120fps</span><strong>{{MISSED_120}}</strong></div>
+        <div><span>worst p95</span><strong>{{ worst_p95 }}</strong></div>
+        <div><span>missed 120fps</span><strong>{{ missed_120 }}</strong></div>
       </section>
     </header>
     <section class="reports">
-      {{REPORTS}}
+      {{ reports|safe }}
     </section>
   </main>
   <script>

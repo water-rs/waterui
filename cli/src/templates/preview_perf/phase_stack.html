@@ -1,0 +1,4 @@
+<section class="phase-stack">
+<div><h4>Phase breakdown</h4><span>mean frame work</span></div>
+<div class="phase-bar">{% for seg in segments %}<i class="{{ seg.class }}" style="width:{{ seg.width }}%"><span>{{ seg.name }} {{ seg.label }}</span></i>{% endfor %}</div>
+</section>
