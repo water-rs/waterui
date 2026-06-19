@@ -4,13 +4,6 @@
     clippy::cast_sign_loss,
     reason = "intentional lossy numeric cast in rendering/layout code"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::format_push_string,
-        reason = "the offscreen-gallery test appends its result manifest line by line"
-    )
-)]
 //! GPU-accelerated Image view using wgpu.
 //!
 //! This module provides [`Image`], a View that displays images on the GPU.
@@ -1008,6 +1001,8 @@ mod tests {
     #[ignore = "manual export: writes offscreen PNG renders to /tmp for visual inspection"]
     fn export_offscreen_real_images_to_tmp() {
         waterui_testing::block_on(async {
+            use core::fmt::Write as _;
+
             let dir = export_dir();
             std::fs::create_dir_all(&dir).expect("export directory should be creatable");
             let mut manifest = String::new();
@@ -1020,9 +1015,10 @@ mod tests {
             png_output
                 .save_png(dir.join("01_png_sdr.png"))
                 .expect("png output should be writable");
-            manifest.push_str(&alloc::format!(
-                "01_png_sdr.png source={png_url} decode_path={png_path:?}\n"
-            ));
+            let _ = writeln!(
+                manifest,
+                "01_png_sdr.png source={png_url} decode_path={png_path:?}"
+            );
 
             #[cfg(any(target_vendor = "apple", target_os = "android"))]
             {
@@ -1037,11 +1033,12 @@ mod tests {
                 hdr_output
                     .save_png(dir.join("02_hdr_avif_offscreen_hdr16.png"))
                     .expect("hdr avif output should be writable");
-                manifest.push_str(&alloc::format!(
-                    "02_hdr_avif_offscreen_hdr16.png source={hdr_url} decode_path={hdr_path:?} max_rgb={:.6} hdr_ratio={:.6}\n",
+                let _ = writeln!(
+                    manifest,
+                    "02_hdr_avif_offscreen_hdr16.png source={hdr_url} decode_path={hdr_path:?} max_rgb={:.6} hdr_ratio={:.6}",
                     hdr_output.max_rgb_linear(),
                     hdr_output.hdr_pixel_ratio()
-                ));
+                );
             }
 
             #[cfg(target_vendor = "apple")]
@@ -1056,11 +1053,12 @@ mod tests {
                 heic_output
                     .save_png(dir.join("03_heic_h265_offscreen_hdr16.png"))
                     .expect("heic output should be writable");
-                manifest.push_str(&alloc::format!(
-                    "03_heic_h265_offscreen_hdr16.png source={heic_url} decode_path={heic_path:?} max_rgb={:.6} hdr_ratio={:.6}\n",
+                let _ = writeln!(
+                    manifest,
+                    "03_heic_h265_offscreen_hdr16.png source={heic_url} decode_path={heic_path:?} max_rgb={:.6} hdr_ratio={:.6}",
                     heic_output.max_rgb_linear(),
                     heic_output.hdr_pixel_ratio()
-                ));
+                );
             }
 
             std::fs::write(dir.join("manifest.txt"), manifest)
