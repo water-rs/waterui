@@ -73,6 +73,9 @@ web-sys = { version = "0.3", optional = true, features = [
     "Window",
 ] }
 
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [features]
 default = []
 accessibility = ["dep:accesskit"]

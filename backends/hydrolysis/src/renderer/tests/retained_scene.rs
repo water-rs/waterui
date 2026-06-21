@@ -148,13 +148,6 @@ fn dynamic_same_size(value: &Binding<i32>) -> AnyView {
     AnyView::new(vstack((watched, padding_list())))
 }
 
-/// A `Dynamic` node whose content changes *height* with `value`. A content change here
-/// reflows the surrounding layout, so it must escalate to a full structural rebuild.
-fn dynamic_changing_size(value: &Binding<i32>) -> AnyView {
-    let watched = watch(value.clone(), |v| ().size(80.0, 40.0 + (v as f32) * 30.0));
-    AnyView::new(vstack((watched, padding_list())))
-}
-
 fn dynamic_runtime(
     make_view: fn(&Binding<i32>) -> AnyView,
     value: &Binding<i32>,
@@ -191,22 +184,68 @@ fn dynamic_content_change_patches_without_rebuild() {
     );
 }
 
-/// Phase 3: a content change that reflows layout escalates to a full structural rebuild
-/// (the surrounding layout must be recomputed), proving the patch path is not silently
-/// dropping size-affecting changes.
+/// A `Dynamic` whose content changes *height* and paints a visible colour, above a
+/// long list of visible rows, so a reflow is observable in pixels.
+fn dynamic_changing_size_visible(value: &Binding<i32>) -> AnyView {
+    let watched = watch(value.clone(), |v| {
+        Color::srgb(200, 90, 160).size(80.0, 40.0 + (v as f32) * 30.0)
+    });
+    let rows = (0..40).map(SelfId::new).collect::<Vec<_>>();
+    let list = VStack::for_each(rows, |item: SelfId<u64>| {
+        let channel = u8::try_from(40 + (*item % 8) * 24).unwrap_or(255);
+        Color::srgb(channel, 120, 80).size(360.0, 44.0)
+    });
+    AnyView::new(vstack((watched, list)))
+}
+
+/// The retained tree reflows a size-changing `Dynamic` content change incrementally
+/// — it relays out the persistent tree in place (the surrounding rows shift down)
+/// without a whole-window structural rebuild. This is the fix for the chart's layout
+/// flicker (Bug 2): the legacy engine reset the scene and re-dispatched the whole
+/// window for any size-affecting change, which flashed. The reflowed frame must be
+/// pixel-identical to composing the same content statically.
 #[test]
-fn dynamic_size_change_escalates_to_rebuild() {
+fn dynamic_size_change_reflows_without_rebuild() {
+    // Ground truth: the same composition built statically at the final value.
+    let truth_value = Binding::container(1_i32);
+    let truth_builder = {
+        let value = truth_value.clone();
+        AnyViewBuilder::<AnyView>::new(move || dynamic_changing_size_visible(&value))
+    };
+    let mut truth_env = Environment::new();
+    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
     let value = Binding::container(0_i32);
-    let mut runtime = dynamic_runtime(dynamic_changing_size, &value);
+    let builder = {
+        let value = value.clone();
+        AnyViewBuilder::<AnyView>::new(move || dynamic_changing_size_visible(&value))
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
     let start = Instant::now();
-    let _ = runtime.pump_at(false, start);
+    let _ = runtime.pump_at(true, start);
 
     value.set(1);
-    let result = runtime.pump_at(false, start + Duration::from_millis(16));
-    assert!(
-        result.profile.counters.rebuild_iterations > 0,
-        "a size-changing Dynamic content change must escalate to a structural rebuild: {:?}",
+    let result = runtime.pump_at(true, start + Duration::from_millis(16));
+    assert_eq!(
+        result.profile.counters.rebuild_iterations, 0,
+        "a size-changing Dynamic change must reflow via incremental relayout, not a \
+         whole-window structural rebuild (Bug 2 — the flicker): {:?}",
         result.profile.counters
+    );
+    let snapshot = result
+        .snapshot
+        .expect("reflowed frame must produce a snapshot");
+    assert!(
+        snapshot.rgba8 == expected.rgba8,
+        "the incremental reflow must place the grown content and shifted rows exactly \
+         as a static composition would; a mismatch means the in-place relayout is wrong"
     );
 }
 
@@ -221,8 +260,12 @@ fn collection_overlay(list: &List<SelfId<u64>>) -> AnyView {
         ().size(360.0, 600.0),
         LazyContainer::new(
             AbsoluteLayout,
-            ForEach::new(list, |_item: SelfId<u64>| {
-                Color::srgb(40, 90, 160).size(80.0, 40.0)
+            ForEach::new(list, |item: SelfId<u64>| {
+                // Colour by id so the topmost (last) item — and thus the composited
+                // pixels — changes when membership changes. `AbsoluteLayout` stacks
+                // every item at the same origin, so the last opaque item shows.
+                let id = u8::try_from(*item % 4).unwrap_or(0);
+                Color::srgb(40 + id * 50, 90, 160).size(80.0, 40.0)
             }),
         ),
     )))
@@ -246,10 +289,13 @@ fn collection_add_patches_without_rebuild() {
     let list: List<SelfId<u64>> = List::new();
     let mut runtime = collection_runtime(&list);
     let start = Instant::now();
-    let _ = runtime.pump_at(false, start);
+    let empty = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("empty overlay frame must produce a snapshot");
 
     list.push(SelfId::new(1));
-    let result = runtime.pump_at(false, start + Duration::from_millis(16));
+    let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
         result.profile.counters.rebuild_iterations, 0,
         "adding a collection item must patch in isolation, not rebuild: {:?}",
@@ -258,6 +304,14 @@ fn collection_add_patches_without_rebuild() {
     assert!(
         !result.rebuilt,
         "a collection add patch frame must not perform a structural rebuild"
+    );
+    let added = result
+        .snapshot
+        .expect("collection-add frame must produce a snapshot");
+    assert!(
+        added.rgba8 != empty.rgba8,
+        "the added item must actually appear (the reactive collection must reconcile \
+         the new id into the rendered tree, not just avoid a rebuild)"
     );
 }
 
@@ -269,10 +323,14 @@ fn collection_remove_patches_without_rebuild() {
     let list: List<SelfId<u64>> = List::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
     let mut runtime = collection_runtime(&list);
     let start = Instant::now();
-    let _ = runtime.pump_at(false, start);
+    let three = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("three-item overlay frame must produce a snapshot");
 
-    let _removed = list.remove(1);
-    let result = runtime.pump_at(false, start + Duration::from_millis(16));
+    // Remove the last (topmost) item so the composited overlay pixels change.
+    let _removed = list.remove(2);
+    let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
         result.profile.counters.rebuild_iterations, 0,
         "removing a collection item must patch in isolation, not rebuild: {:?}",
@@ -281,6 +339,14 @@ fn collection_remove_patches_without_rebuild() {
     assert!(
         !result.rebuilt,
         "a collection remove patch frame must not perform a structural rebuild"
+    );
+    let two = result
+        .snapshot
+        .expect("collection-remove frame must produce a snapshot");
+    assert!(
+        two.rgba8 != three.rgba8,
+        "the removed item must actually disappear (the reactive collection must evict \
+         the departed id from the rendered tree)"
     );
 }
 
@@ -391,13 +457,14 @@ fn transform_in_scroll_never_rebuilds() {
     );
 }
 
-/// A size-changing `Dynamic` patch escalates to a rebuild that must re-dispatch the new
-/// content at its reflowed bounds — not replay a capture made under the stale placement.
+/// A size-changing `Dynamic` patch reflows the new content at its grown bounds — not
+/// replay a capture made under the stale placement — without a whole-window rebuild.
 /// An overlay-style `Dynamic` that grows from empty (zero-size) to visible content is the
-/// canonical case (snackbar presentation): the grown frame must render pixel-identical to
+/// canonical case (snackbar presentation): the retained tree rebuilds only that node's
+/// child and relays out in place, and the grown frame must render pixel-identical to
 /// composing the same content statically.
 #[test]
-fn dynamic_growth_from_empty_renders_content_after_escalation() {
+fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     use waterui::component::text;
     use waterui_core::Dynamic;
 
@@ -433,19 +500,19 @@ fn dynamic_growth_from_empty_renders_content_after_escalation() {
 
     handler.set(overlay_content());
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
-    assert!(
-        result.profile.counters.rebuild_iterations > 0,
-        "growing a Dynamic from empty must escalate to a structural rebuild: {:?}",
+    assert_eq!(
+        result.profile.counters.rebuild_iterations, 0,
+        "growing a Dynamic from empty must reflow via incremental relayout of the \
+         retained tree, not a whole-window structural rebuild: {:?}",
         result.profile.counters
     );
     let snapshot = result
         .snapshot
-        .expect("escalated overlay frame must produce a snapshot");
+        .expect("reflowed overlay frame must produce a snapshot");
     assert!(
         snapshot.rgba8 == expected.rgba8,
-        "the escalated rebuild must dispatch the overlay content at its reflowed bounds; \
-         a mismatch with the statically composed frame means a stale zero-size capture \
-         was replayed"
+        "the reflow must place the overlay content at its grown bounds; a mismatch with \
+         the statically composed frame means a stale zero-size capture was replayed"
     );
 }
 
@@ -467,21 +534,18 @@ fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
             .computed();
         AnyView::new(().size(120.0, 40.0).background(background))
     });
-    let collection =
-        collection_transition(collection, Animation::linear(Duration::from_millis(1)));
+    let collection = collection_transition(collection, Animation::linear(Duration::from_millis(1)));
     let sizer = watch(selected.clone(), |s| ().size(80.0, 40.0 + s as f32 * 30.0));
     AnyView::new(vstack((sizer, collection)))
 }
 
-/// Regression: a structural rebuild reuses a retained collection item's subtree
-/// without re-dispatching it (to preserve identity, animation, and ripple state).
-/// A fine-grained reactive change to nested content — here an active-indicator
-/// `.background(Computed<Color>)` — staged a `pending_view` whose dirty mark was
-/// subsumed when the rebuild began. The reused item must still apply that update,
-/// otherwise it composites the stale captured background — the navigation drawer's
-/// active pill failing to move on selection.
+/// Regression: a retained collection item's nested reactive content tracks its
+/// signal across a sibling-driven reflow. The active-indicator `.background(
+/// Computed<Color>)` must repaint when `selected` changes — the navigation drawer's
+/// active pill moving on selection — and the size-tracking sibling's reflow must be
+/// an incremental relayout of the retained tree, not a whole-window rebuild.
 #[test]
-fn reused_collection_item_reactive_background_tracks_after_rebuild_escalation() {
+fn reused_collection_item_reactive_background_tracks_on_selection() {
     // Ground truth: built fresh with the second item already selected.
     let truth_selected = Binding::container(1_u32);
     let truth_builder = {
@@ -512,19 +576,19 @@ fn reused_collection_item_reactive_background_tracks_after_rebuild_escalation() 
 
     selected.set(1);
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
-    assert!(
-        result.profile.counters.rebuild_iterations > 0,
-        "the size-tracking sibling must escalate the selection change to a structural \
-         rebuild (so the collection items are reused): {:?}",
+    assert_eq!(
+        result.profile.counters.rebuild_iterations, 0,
+        "the size-tracking sibling's reflow must be an incremental relayout of the \
+         retained tree, not a whole-window structural rebuild: {:?}",
         result.profile.counters
     );
     let snapshot = result
         .snapshot
-        .expect("escalated frame must produce a snapshot");
+        .expect("reflowed frame must produce a snapshot");
     assert!(
         snapshot.rgba8 == expected.rgba8,
-        "a reused collection item must apply its nested reactive background update \
-         after a rebuild escalation; a mismatch means the active-indicator pill stayed \
-         on the stale (previously selected) item"
+        "a retained collection item must apply its nested reactive background update \
+         on selection; a mismatch means the active-indicator pill stayed on the stale \
+         (previously selected) item"
     );
 }

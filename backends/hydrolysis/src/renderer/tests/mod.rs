@@ -1,18 +1,17 @@
 use super::*;
 use std::borrow::Cow;
 
+mod perf_full_rebuild;
 mod perf_scroll;
 mod retained_scene;
+mod tree;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
-use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
 use waterui::{Binding, Color, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::slider::slider;
 use waterui_controls::toggle::ToggleStyle;
-use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
-use waterui_core::id::SelfId;
 use waterui_form::picker::PickerStyle;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
@@ -237,71 +236,17 @@ fn vstack_places_state_wrapped_button_at_intrinsic_width() {
     let mut renderer = test_renderer();
     let bounds = Rect::new(0.0, 0.0, 720.0, 320.0);
 
-    renderer.reset_scene();
-    renderer.begin_rebuild_frame();
-    renderer.dispatch(view, &env, bounds);
-    renderer.finish_rebuild_frame();
+    capture_root_window(&mut renderer, view, &env, bounds);
 
     let target = renderer
         .hit_test
-        .pointer_targets.first()
+        .pointer_targets
+        .first()
         .expect("state-wrapped button should register a pointer target");
     assert!(
         target.bounds.width() < 200.0,
         "state-wrapped button hit bounds must stay intrinsic, got width {}",
         target.bounds.width()
-    );
-}
-
-#[test]
-fn render_layout_container_places_non_stretch_layout_at_intrinsic_size() {
-    #[derive(Debug)]
-    struct RecordingLayout {
-        placed_bounds: Rc<RefCell<Option<LayoutRect>>>,
-    }
-
-    impl Layout for RecordingLayout {
-        fn size_that_fits(
-            &self,
-            _proposal: ProposalSize,
-            _children: &[&dyn SubView],
-        ) -> LayoutSize {
-            LayoutSize::new(80.0, 40.0)
-        }
-
-        fn place(&self, bounds: LayoutRect, _children: &[&dyn SubView]) -> Vec<LayoutRect> {
-            *self.placed_bounds.borrow_mut() = Some(bounds);
-            Vec::new()
-        }
-    }
-
-    let placed_bounds = Rc::new(RefCell::new(None));
-    let layout = RecordingLayout {
-        placed_bounds: Rc::clone(&placed_bounds),
-    };
-    let env = Environment::new();
-    let mut renderer = test_renderer();
-    let ctx = RenderContext::with_transforms(
-        Rect::new(0.0, 0.0, 300.0, 300.0),
-        Affine::IDENTITY,
-        Affine::IDENTITY,
-    );
-
-    HydrolysisRenderer::render_layout_container(
-        &mut renderer,
-        ctx,
-        Box::new(layout),
-        Vec::new(),
-        &env,
-    );
-
-    assert_eq!(
-        placed_bounds
-            .borrow()
-            .as_ref()
-            .map(LayoutRect::size)
-            .copied(),
-        Some(LayoutSize::new(80.0, 40.0))
     );
 }
 
@@ -325,10 +270,7 @@ fn draggable_metadata_delivers_drag_data_to_drop_destination() {
     let env = Environment::new();
     let bounds = Rect::new(0.0, 0.0, 160.0, 80.0);
 
-    renderer.reset_scene();
-    renderer.begin_rebuild_frame();
-    renderer.dispatch(view, &env, bounds);
-    renderer.finish_rebuild_frame();
+    capture_root_window(&mut renderer, view, &env, bounds);
 
     let _ = renderer.handle_pointer_down(30.0, 30.0, PointerButton::Primary, &env);
     assert!(renderer.handle_pointer_move(110.0, 30.0, &env));
@@ -401,10 +343,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
     let bounds = vello::kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
     let surface = platform.surface();
     renderer.set_frame_resources(surface.device(), surface.queue());
-    renderer.reset_scene();
-    renderer.begin_rebuild_frame();
-    renderer.dispatch(view, &env, bounds);
-    renderer.finish_rebuild_frame();
+    capture_root_window(&mut renderer, view, &env, bounds);
 
     let point = vello::kurbo::Point::new(60.0, 60.0);
     let debug_targets = renderer.gesture_engine.debug_targets_at(point);
@@ -458,90 +397,6 @@ fn string_views_measure_through_body_recursion() {
 }
 
 #[test]
-fn dynamic_initial_content_builds_real_subtree_before_second_rebuild() {
-    let env = Environment::new();
-    let (handler, dynamic) = Dynamic::new();
-    handler.set("Hydrolysis dynamic");
-    let mut renderer = test_renderer();
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    renderer.reset_scene();
-    renderer.begin_rebuild_frame();
-    renderer.dispatch(dynamic, &env, bounds);
-    renderer.finish_rebuild_frame();
-
-    let node = renderer
-        .lifecycle
-        .dynamic_nodes
-        .values()
-        .next()
-        .expect("initial Dynamic render must register a lifecycle node");
-    let subtree = node
-        .cached_subtree
-        .as_ref()
-        .expect("initial Dynamic render must cache a subtree");
-
-    #[cfg(feature = "accessibility")]
-    assert!(
-        !subtree.accessibility.root_children.is_empty(),
-        "initial Dynamic render must cache the real content subtree, not an empty placeholder"
-    );
-    assert!(
-        !renderer.take_rebuild_request(),
-        "initial Dynamic content must not force a rebuild before a previous layout exists"
-    );
-}
-
-#[test]
-fn dynamic_body_snapshot_after_render_does_not_schedule_rebuild() {
-    let env = Environment::new();
-    let (handler, dynamic) = Dynamic::new();
-    handler.set_with_metadata(
-        "Hydrolysis dynamic",
-        nami::watcher::Metadata::new().with(DynamicInitialContent),
-    );
-    let mut renderer = test_renderer();
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    renderer.reset_scene();
-    renderer.begin_rebuild_frame();
-    renderer.dispatch(dynamic, &env, bounds);
-
-    handler.set_with_metadata(
-        "Hydrolysis dynamic snapshot",
-        nami::watcher::Metadata::new().with(DynamicInitialContent),
-    );
-    assert!(
-        !renderer.take_rebuild_request(),
-        "body-time Dynamic snapshots after the node rendered must not schedule rebuild loops"
-    );
-    let pending_is_empty = renderer
-        .lifecycle
-        .dynamic_nodes
-        .values()
-        .next()
-        .expect("rendered Dynamic must register a lifecycle node")
-        .pending_view
-        .borrow()
-        .is_none();
-    assert!(
-        pending_is_empty,
-        "body-time Dynamic snapshots after render must not leave stale pending content"
-    );
-
-    handler.set("Hydrolysis dynamic update");
-    assert!(
-        renderer.take_patch_request(),
-        "real Dynamic updates after render must schedule a fine-grained reactive patch"
-    );
-    assert!(
-        !renderer.take_rebuild_request(),
-        "an isolated Dynamic content change must not force a full structural rebuild"
-    );
-    renderer.finish_rebuild_frame();
-}
-
-#[test]
 fn fixed_scroll_content_keeps_offscreen_children_registered() {
     let mut env = Environment::new();
     env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
@@ -573,283 +428,14 @@ fn capture_root_window<V: waterui_core::View>(
     renderer.set_window_bounds(bounds);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.capture_window_scene(view, env, bounds, Affine::IDENTITY, Affine::IDENTITY);
+    renderer.capture_window_tree(
+        AnyView::new(view),
+        env,
+        bounds,
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
     renderer.finish_rebuild_frame();
-}
-
-fn root_scroll_cache_key(renderer: &HydrolysisRenderer) -> usize {
-    renderer
-        .retained_window_frame
-        .as_ref()
-        .expect("root scroll must retain a window frame")
-        .subtree
-        .scroll_draws()
-        .next()
-        .expect("root scroll must record a scroll draw")
-        .cache_key
-}
-
-fn root_scroll_handle(renderer: &HydrolysisRenderer) -> crate::scroll::ScrollHandle {
-    renderer
-        .retained_window_frame
-        .as_ref()
-        .expect("root scroll must retain a window frame")
-        .subtree
-        .scroll_draws()
-        .next()
-        .expect("root scroll must record a scroll draw")
-        .handle
-        .clone()
-}
-
-#[test]
-fn fixed_scroll_content_refreshes_window_frame_after_offset_change() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
-    let mut renderer = test_renderer();
-    let view = scroll(vstack((
-        ().size(120.0, 600.0),
-        button("Offscreen").action(|| {}),
-    )));
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    capture_root_window(&mut renderer, view, &env, bounds);
-
-    let handle = root_scroll_handle(&renderer);
-    assert!(handle.apply_scroll_delta(0.0, -48.0, false));
-
-    assert!(
-        renderer.window_scroll_draws_reusable(),
-        "fixed scroll content is viewport-independent and must re-composite by translation"
-    );
-    assert!(
-        renderer.refresh_window_frame(&env),
-        "the window frame must refresh by translating retained scroll content"
-    );
-}
-
-#[test]
-fn scroll_content_cache_replay_preserves_dynamic_morphs() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
-    let mut renderer = test_renderer();
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    let make_view = || {
-        scroll(vstack((
-            Circle
-                .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
-                .duration(Duration::from_millis(1_100))
-                .size(60.0, 60.0),
-            ().size(120.0, 600.0),
-        )))
-    };
-
-    capture_root_window(&mut renderer, make_view(), &env, bounds);
-
-    let cache_key = root_scroll_cache_key(&renderer);
-    assert!(
-        !renderer
-            .scroll_content_caches
-            .get(&cache_key)
-            .expect("scroll content cache must be stored")
-            .dynamic_morphs
-            .is_empty(),
-        "scroll content cache must retain renderer-side dynamic morph draws"
-    );
-
-    renderer.set_scroll_content_cache_reuse(true);
-    capture_root_window(&mut renderer, make_view(), &env, bounds);
-
-    assert!(
-        !renderer
-            .retained_window_frame
-            .as_ref()
-            .expect("cache replay must retain a window frame")
-            .subtree
-            .scroll_draws()
-            .next()
-            .expect("cache replay must record a scroll draw")
-            .content_morphs
-            .is_empty(),
-        "scroll draw must carry cached dynamic morphs for replay"
-    );
-}
-
-#[test]
-fn animated_transform_scroll_content_cache_replays_while_animation_is_active() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
-    let mut renderer = test_renderer();
-    let scale = Binding::f32(1.0);
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    let make_view = || {
-        let animated_scale = scale
-            .clone()
-            .with(Animation::linear(Duration::from_millis(1_000)));
-        scroll(vstack((
-            ().size(60.0, 60.0)
-                .scale(animated_scale.clone(), animated_scale),
-            ().size(120.0, 600.0),
-        )))
-    };
-
-    capture_root_window(&mut renderer, make_view(), &env, bounds);
-
-    let cache_key = root_scroll_cache_key(&renderer);
-    let lazy_viewport = {
-        let cache = renderer
-            .scroll_content_caches
-            .get(&cache_key)
-            .expect("scroll content cache must be stored");
-        assert!(
-            !cache.animation_dependent,
-            "captured dynamic transform metadata must not poison scroll content cache reuse"
-        );
-        assert!(
-            cache.subtree.transform_draws().next().is_some(),
-            "animated transform metadata must be captured as replayable dynamic transform draw"
-        );
-        cache.lazy_viewport
-    };
-
-    scale.set(2.0);
-    assert!(
-        renderer.animations_active(),
-        "changing an animated transform signal must leave the animation controller active"
-    );
-    assert!(
-        renderer.retained_window_can_drive_active_animations(),
-        "the window frame must redraw captured transform animations in scroll content without dispatch"
-    );
-    renderer.animation_controller.bind_scalar_target(
-        AnimationKey::renderer_local_scalar(usize::MAX - 1),
-        1.0,
-        Animation::linear(Duration::from_millis(250)),
-        renderer.frame_instant(),
-    );
-    assert!(
-        renderer.retained_window_can_drive_active_animations(),
-        "renderer-local interaction animations must not force captured transform animations back through scene dispatch"
-    );
-    let cache = renderer
-        .scroll_content_caches
-        .get(&cache_key)
-        .expect("scroll content cache must remain stored");
-    assert!(
-        renderer.can_reuse_scroll_content_cache(cache, lazy_viewport),
-        "active transform animation should reuse cached scroll content through dynamic transform replay"
-    );
-}
-
-#[test]
-fn animated_opacity_scroll_content_cache_replays_while_animation_is_active() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
-    let mut renderer = test_renderer();
-    let opacity = Binding::f32(1.0);
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    let make_view = || {
-        let animated_opacity = opacity
-            .clone()
-            .with(Animation::linear(Duration::from_millis(1_000)));
-        scroll(vstack((
-            ().size(60.0, 60.0).opacity(animated_opacity),
-            ().size(120.0, 600.0),
-        )))
-    };
-
-    capture_root_window(&mut renderer, make_view(), &env, bounds);
-
-    let cache_key = root_scroll_cache_key(&renderer);
-    let lazy_viewport = {
-        let cache = renderer
-            .scroll_content_caches
-            .get(&cache_key)
-            .expect("scroll content cache must be stored");
-        assert!(
-            !cache.animation_dependent,
-            "animated opacity is captured as a replayable dynamic opacity layer and must not poison cache reuse"
-        );
-        assert!(
-            cache.subtree.opacity_draws().next().is_some(),
-            "animated opacity must be captured as a replayable dynamic opacity draw"
-        );
-        cache.lazy_viewport
-    };
-
-    opacity.set(0.35);
-    assert!(
-        renderer.animations_active(),
-        "changing animated opacity must leave the animation controller active"
-    );
-    assert!(
-        renderer.retained_window_can_drive_active_animations(),
-        "the window frame must redraw captured opacity animations in scroll content without dispatch"
-    );
-    let cache = renderer
-        .scroll_content_caches
-        .get(&cache_key)
-        .expect("scroll content cache must remain stored");
-    assert!(
-        renderer.can_reuse_scroll_content_cache(cache, lazy_viewport),
-        "active opacity animation should reuse cached scroll content through dynamic opacity replay"
-    );
-}
-
-#[test]
-fn lazy_scroll_content_rejects_window_refresh_after_offset_change() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
-    let mut renderer = test_renderer();
-    let rows = (0..40).map(SelfId::new).collect::<Vec<_>>();
-    let view = scroll(waterui_layout::stack::VStack::for_each(rows, |_| {
-        ().size(120.0, 40.0)
-    }));
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    capture_root_window(&mut renderer, view, &env, bounds);
-
-    let cache_key = root_scroll_cache_key(&renderer);
-    assert!(
-        renderer
-            .scroll_content_caches
-            .get(&cache_key)
-            .expect("lazy scroll content cache must be stored")
-            .viewport_dependent
-    );
-    let handle = root_scroll_handle(&renderer);
-    assert!(handle.apply_scroll_delta(0.0, -48.0, false));
-
-    assert!(
-        !renderer.window_scroll_draws_reusable(),
-        "lazy scroll content depends on viewport materialization and must not reuse a stale retained window frame"
-    );
-}
-
-#[test]
-fn fixed_vstack_inside_scroll_does_not_use_lazy_stack_slots() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
-    let mut renderer = test_renderer();
-    let view = scroll(vstack((
-        waterui_controls::button::button("Short"),
-        waterui_controls::button::button("A much longer button label"),
-        waterui_controls::button::button("Short again"),
-    )));
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-
-    renderer.reset_scene();
-    renderer.begin_rebuild_frame();
-    renderer.dispatch(view, &env, bounds);
-    renderer.finish_rebuild_frame();
-
-    assert!(
-        renderer.lazy.lazy_stack_controller.slots.is_empty(),
-        "FixedContainer layout must not be virtualized by Hydrolysis lazy stack slots"
-    );
 }
 
 #[test]
@@ -1430,8 +1016,8 @@ fn bare_text_at_window_root_renders_into_scene() {
 
     renderer.begin_rebuild_frame();
     renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
-    renderer.capture_window_scene(
-        waterui_text::text("probe"),
+    renderer.capture_window_tree(
+        AnyView::new(waterui_text::text("probe")),
         &env,
         Rect::new(0.0, 0.0, 160.0, 160.0),
         Affine::IDENTITY,
@@ -1452,8 +1038,8 @@ fn bare_str_at_window_root_renders_into_scene() {
 
     renderer.begin_rebuild_frame();
     renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
-    renderer.capture_window_scene(
-        Str::from("probe"),
+    renderer.capture_window_tree(
+        AnyView::new(Str::from("probe")),
         &env,
         Rect::new(0.0, 0.0, 160.0, 160.0),
         Affine::IDENTITY,
@@ -1550,17 +1136,24 @@ fn text_leaves_measure_off_thread_and_match_main_thread() {
 }
 
 #[test]
-fn bare_str_direct_dispatch_renders_into_scene() {
+fn bare_str_renders_into_scene() {
     let mut renderer = test_renderer();
     let mut env = Environment::new();
     env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
 
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
-    renderer.dispatch(Str::from("probe"), &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+    renderer.set_window_bounds(bounds);
+    renderer.capture_window_tree(
+        AnyView::new(Str::from("probe")),
+        &env,
+        bounds,
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
     assert!(
         !renderer.scene_is_empty(),
-        "directly dispatched string must draw glyphs"
+        "a bare string must build a text node and draw glyphs"
     );
     renderer.finish_rebuild_frame();
 }

@@ -145,10 +145,9 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
         };
     }
 
-    /// Schedules a full structural rebuild and invalidates retained scroll content, used
-    /// when the renderer reports a structural change that retained content cannot reflect.
+    /// Schedules a full structural rebuild, used when the renderer reports a
+    /// structural change that the retained render tree cannot reflect parametrically.
     pub(super) fn request_invalidating_rebuild(&mut self) {
-        self.renderer.invalidate_retained_scroll_content();
         self.request_structural_rebuild();
     }
 
@@ -188,11 +187,9 @@ pub(super) fn schedule_animation_update<P: PlatformWindow>(
     }
     let explicit_rebuild_pending =
         runtime.mode.is_explicit_rebuild() || runtime.renderer.has_rebuild_request();
-    if !explicit_rebuild_pending
-        && runtime
-            .renderer
-            .retained_window_can_drive_active_animations()
-    {
+    if !explicit_rebuild_pending {
+        // Every animated scalar is re-sampled in the render tree's node flush, so a
+        // window refresh re-encodes the active animation with no rebuild or re-measure.
         runtime.request_window_refresh();
         return;
     }
@@ -319,9 +316,9 @@ pub(super) fn schedule_scroll_scene_rebuild<P: PlatformWindow>(
     }
     if runtime.renderer.take_rebuild_request() {
         runtime.request_invalidating_rebuild();
-    } else if runtime.renderer.has_retained_window_frame() && !runtime.mode.is_rebuild() {
-        // Scrolling re-composites the window frame at the new offset; a lazy list that
-        // scrolled past its captured window is escalated to a rebuild during the refresh.
+    } else if !runtime.mode.is_rebuild() {
+        // Scrolling re-composites at the new offset via a window refresh; the render
+        // tree's ScrollNode re-reads its handle's offset on each flush.
         runtime.request_window_refresh();
     } else {
         runtime.request_structural_rebuild();
@@ -414,9 +411,6 @@ pub(super) fn rebuild_window_scene<P: PlatformWindow>(
         runtime.renderer.reset_scene();
         runtime
             .renderer
-            .set_scroll_content_cache_reuse(runtime.mode.reuses_scroll_caches());
-        runtime
-            .renderer
             .set_applied_filter_input_cache_reuse(reuse_filter_inputs);
         runtime.renderer.begin_rebuild_frame();
         runtime.renderer.set_window_bounds(bounds);
@@ -425,7 +419,7 @@ pub(super) fn rebuild_window_scene<P: PlatformWindow>(
         phases.build_content += build_content_started_at.elapsed();
         let _ = drain_local_tasks();
         let scene_dispatch_started_at = Instant::now();
-        runtime.renderer.capture_window_scene(
+        runtime.renderer.capture_window_tree(
             content,
             env,
             bounds,
@@ -491,12 +485,19 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
         if !replay_requested {
             return false;
         }
-        // Semantic mode has no render pass, but replay-driven changes
-        // (re-sampled transforms, patched dynamic nodes, redraw-only scalar
-        // updates) still move the accessibility tree: replay the retained
-        // frame so semantics stay in sync, escalating to a rebuild when
-        // replay cannot drive the change.
-        if runtime.renderer.refresh_window_frame(env) {
+        // Semantic mode has no GPU present, but replay-driven changes (re-sampled
+        // transforms, patched dynamic nodes, redraw-only scalar updates) still move
+        // the accessibility tree, which the render tree emits during `flush`. Re-flush
+        // the retained tree so semantics stay in sync; if no tree exists yet, fall
+        // back to a structural rebuild.
+        let scale_factor = runtime.platform.scale_factor();
+        let (width, height) = runtime.platform.surface().size();
+        let bounds = create_bounds(width, height, scale_factor);
+        let transform = vello::kurbo::Affine::scale(scale_factor);
+        if runtime
+            .renderer
+            .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY)
+        {
             runtime.clear_frame_mode();
             return true;
         }
@@ -536,33 +537,27 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
-        let (scene_rebuilt, mut rebuild_iterations, mut rebuild_phases) =
+        let (scene_rebuilt, rebuild_iterations, mut rebuild_phases) =
             rebuild_window_scene(runtime, env, drain_local_tasks);
         rebuilt |= scene_rebuilt;
         let clear_color = window_clear_color(&runtime.window, env);
         if runtime.mode.is_window_refresh() {
             let refresh_started_at = Instant::now();
-            if runtime.renderer.refresh_window_frame(env) {
-                let refresh_duration = refresh_started_at.elapsed();
-                rebuild_phases.rebuild += refresh_duration;
-                rebuild_phases.scene_dispatch += refresh_duration;
-                runtime.clear_frame_mode();
-            } else {
-                // The window frame could not be replayed (escalated patch, stale baked
-                // animation, or a lazy scroll past its captured window); fall back to a
-                // rebuild that still reuses retained scroll-content caches where valid.
-                runtime.request_scroll_fallback_rebuild();
-                let (fallback_rebuilt, fallback_iterations, fallback_duration) =
-                    rebuild_window_scene(runtime, env, drain_local_tasks);
-                rebuilt |= fallback_rebuilt;
-                rebuild_iterations = rebuild_iterations
-                    .checked_add(fallback_iterations)
-                    .expect("hydrolysis runner: rebuild iteration counter overflow");
-                rebuild_phases.rebuild += fallback_duration.rebuild;
-                rebuild_phases.build_content += fallback_duration.build_content;
-                rebuild_phases.scene_dispatch += fallback_duration.scene_dispatch;
-                rebuild_phases.scene_finish += fallback_duration.scene_finish;
-            }
+            // Re-flush the retained render tree: a geometry-static frame
+            // (animation/scroll/re-present) pays only re-encode; a reactive patch
+            // relays out the (cheap) retained tree in place. No rebuild fallback —
+            // the tree drives every parametric change.
+            let scale_factor = runtime.platform.scale_factor();
+            let (width, height) = runtime.platform.surface().size();
+            let bounds = create_bounds(width, height, scale_factor);
+            let transform = vello::kurbo::Affine::scale(scale_factor);
+            runtime
+                .renderer
+                .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY);
+            let refresh_duration = refresh_started_at.elapsed();
+            rebuild_phases.rebuild += refresh_duration;
+            rebuild_phases.scene_dispatch += refresh_duration;
+            runtime.clear_frame_mode();
         }
 
         let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());
@@ -1017,20 +1012,13 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
     // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
     if runtime.renderer.take_patch_request() && !runtime.mode.is_rebuild() {
-        if runtime.renderer.has_retained_window_frame() {
-            runtime.request_window_refresh();
-        } else {
-            runtime.request_structural_rebuild();
-        }
+        // The window refresh re-flushes the retained tree, which applies the pending
+        // Dynamic patch to only the affected subtree and relays out if it changed size.
+        runtime.request_window_refresh();
         runtime.platform.request_redraw();
     }
     if runtime.renderer.advance_text_caret_animation(now) {
         runtime.renderer.request_redraw();
-        runtime.platform.request_redraw();
-    }
-    if runtime.renderer.window_dynamic_morphs_active() && !runtime.mode.is_rebuild() {
-        // Keep advancing active morph animations (root or scroll content) by replaying.
-        runtime.request_window_refresh();
         runtime.platform.request_redraw();
     }
     if window_wants_continuous_render(&runtime.window) && !runtime.mode.is_rebuild() {

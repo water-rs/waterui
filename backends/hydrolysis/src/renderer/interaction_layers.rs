@@ -8,7 +8,7 @@
 //! feedback on the cheap window-refresh path.
 
 use super::*;
-use waterui_backend_core::widget::{InteractionMotion, WidgetInteractionState};
+use waterui_backend_core::widget::InteractionMotion;
 
 /// Shared handle bundle for one interactive widget's state layers.
 ///
@@ -20,7 +20,6 @@ pub(crate) struct InteractionLayerHandles {
     hover_alpha: AnimatedScalarHandle,
     press_alpha: AnimatedScalarHandle,
     press_progress: AnimatedScalarHandle,
-    focus_alpha: AnimatedScalarHandle,
     /// Origin of the active press in WINDOW coordinates (the raw pointer-down
     /// point), shared with the retained ripple transform. The ripple maps it
     /// into its own local frame at replay using the live transform chain, so it
@@ -42,14 +41,12 @@ impl InteractionLayerHandles {
         hover_alpha: AnimatedScalarHandle,
         press_alpha: AnimatedScalarHandle,
         press_progress: AnimatedScalarHandle,
-        focus_alpha: AnimatedScalarHandle,
         motion: InteractionMotion,
     ) -> Self {
         Self {
             hover_alpha,
             press_alpha,
             press_progress,
-            focus_alpha,
             origin: Cell::new(None),
             hovering: Cell::new(false),
             pressing: Cell::new(false),
@@ -111,28 +108,6 @@ impl InteractionLayerHandles {
     /// The active press origin in window coordinates (the raw pointer-down point).
     pub(crate) fn origin_in_window(&self) -> Option<vello::kurbo::Point> {
         self.origin.get()
-    }
-
-    /// The active press origin in window coordinates. The ripple maps it into
-    /// its local frame at replay; see [`DynamicRippleTransform::affine`].
-    pub(crate) fn origin(&self) -> Option<vello::kurbo::Point> {
-        self.origin.get()
-    }
-
-    pub(crate) fn hover_alpha(&self) -> &AnimatedScalarHandle {
-        &self.hover_alpha
-    }
-
-    pub(crate) fn press_alpha(&self) -> &AnimatedScalarHandle {
-        &self.press_alpha
-    }
-
-    pub(crate) fn press_progress(&self) -> &AnimatedScalarHandle {
-        &self.press_progress
-    }
-
-    pub(crate) fn focus_alpha(&self) -> &AnimatedScalarHandle {
-        &self.focus_alpha
     }
 
     pub(crate) fn set_hovering(&self, hovering: bool, now: Instant) -> bool {
@@ -224,180 +199,7 @@ impl InteractionLayerHandles {
     }
 }
 
-/// The press ripple's replayable kinematics: the fragment is painted at full
-/// progress (centered, final size); replay scales and translates it back along
-/// the Material ripple path as the progress handle is re-sampled.
-pub(crate) struct DynamicRippleTransform {
-    pub(super) progress: DynamicTransformScalar,
-    /// Live interaction handles providing the press origin at replay time.
-    pub(super) handles: Rc<InteractionLayerHandles>,
-    /// Painted bounds of the state layer in local coordinates.
-    pub(super) bounds: vello::kurbo::Rect,
-    /// Ripple scale at progress 0 relative to its painted (final) size.
-    pub(super) initial_scale: f64,
-}
-
-impl DynamicRippleTransform {
-    /// `window_to_local` maps the window-space press origin into this fragment's
-    /// local frame. It is the inverse of the replay transform chain that places
-    /// the fragment, so the ripple starts at the real click point regardless of
-    /// how deeply the widget is nested or how far its scroll has moved.
-    pub(super) fn affine(
-        &self,
-        now: Instant,
-        window_to_local: vello::kurbo::Affine,
-    ) -> vello::kurbo::Affine {
-        let progress = f64::from(self.progress.sample(now)).clamp(0.0, 1.0);
-        let center = vello::kurbo::Point::new(
-            self.bounds.x0 + self.bounds.width() * 0.5,
-            self.bounds.y0 + self.bounds.height() * 0.5,
-        );
-        let origin = self
-            .handles
-            .origin()
-            .map(|window_origin| window_to_local * window_origin)
-            .unwrap_or(center);
-        let scale = self.initial_scale + (1.0 - self.initial_scale) * progress;
-        // The fragment is painted centered at `center`; at progress `p` the
-        // ripple center sits at origin.lerp(center, p) with scale `scale`.
-        let target_center = vello::kurbo::Point::new(
-            origin.x + (center.x - origin.x) * progress,
-            origin.y + (center.y - origin.y) * progress,
-        );
-        vello::kurbo::Affine::translate((
-            target_center.x - center.x * scale,
-            target_center.y - center.y * scale,
-        )) * vello::kurbo::Affine::scale(scale)
-    }
-}
-
 impl HydrolysisRenderer {
-    /// Paints a closure into a fresh fragment scene using the widget's local
-    /// coordinates, leaving the live scene untouched.
-    fn paint_fragment(
-        &mut self,
-        ctx: RenderContext,
-        paint: &dyn Fn(&mut VelloDrawContext<'_>),
-    ) -> DynamicSubtree {
-        let mut subtree = DynamicSubtree::for_capture(self.render_depth);
-        let mut fragment_scene = vello::Scene::new();
-        core::mem::swap(&mut self.scene, &mut fragment_scene);
-        {
-            let local = ctx.with_identity_transforms(ctx.bounds);
-            let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, local.transform);
-            paint(&mut draw);
-        }
-        core::mem::swap(&mut self.scene, &mut fragment_scene);
-        // A state-layer fragment is pure paint: its whole content is one static
-        // segment, which the wrapping opacity/transform draw modulates at replay.
-        subtree.draw_ops.push(DynamicDrawOp::Static(fragment_scene));
-        subtree
-    }
-
-    /// Captures the hover, press, and focus state layers of one interactive
-    /// widget as replayable retained draws.
-    ///
-    /// `paint` is the widget's themed state-layer painter; it is invoked with
-    /// synthetic [`WidgetInteractionState`] values that select exactly one
-    /// layer at unit opacity and full progress, so the captured fragments can
-    /// be modulated by the live animation handles at replay time.
-    pub(crate) fn capture_state_layers(
-        &mut self,
-        ctx: RenderContext,
-        handles: &Rc<InteractionLayerHandles>,
-        layer_bounds: vello::kurbo::Rect,
-        with_focus: bool,
-        paint: &dyn Fn(&mut VelloDrawContext<'_>, WidgetInteractionState),
-    ) {
-        let now = self.frame_instant;
-        let local_bounds = layer_bounds;
-
-        // Hover layer: painted at unit opacity, replayed with the hover alpha.
-        let hover_state = WidgetInteractionState {
-            hovered: true,
-            state_layer_opacity: 1.0,
-            ..WidgetInteractionState::NONE
-        };
-        let hover_subtree = self.paint_fragment(ctx, &|draw| paint(draw, hover_state));
-        // The widget's own painted content (drawn before this call) becomes a
-        // static segment; the state layers stack above it in draw order.
-        self.flush_static_segment();
-        self.draw_ops
-            .push(DynamicDrawOp::Opacity(DynamicOpacityDraw::paint_only(
-                DynamicTransformScalar::with_handle(
-                    handles.hover_alpha().sample(now),
-                    handles.hover_alpha().clone(),
-                ),
-                ctx,
-                local_bounds,
-                hover_subtree,
-            )));
-
-        // Press ripple: painted at full progress and unit opacity, replayed
-        // through the Material ripple kinematics and the press alpha.
-        let ripple_center = vello::kurbo::Point::new(
-            local_bounds.x0 + local_bounds.width() * 0.5,
-            local_bounds.y0 + local_bounds.height() * 0.5,
-        );
-        let press_state = WidgetInteractionState {
-            pressed: true,
-            press_layer_opacity: 1.0,
-            press_origin: Some(ripple_center),
-            press_progress: 1.0,
-            ..WidgetInteractionState::NONE
-        };
-        let press_subtree = self.paint_fragment(ctx, &|draw| paint(draw, press_state));
-        let ripple = DynamicRippleTransform {
-            progress: DynamicTransformScalar::with_handle(
-                handles.press_progress().sample(now),
-                handles.press_progress().clone(),
-            ),
-            handles: Rc::clone(handles),
-            bounds: local_bounds,
-            initial_scale: RIPPLE_INITIAL_SCALE,
-        };
-        let mut press_wrapper = DynamicSubtree::for_capture(self.render_depth);
-        press_wrapper
-            .draw_ops
-            .push(DynamicDrawOp::Transform(DynamicTransformDraw::paint_only(
-                DynamicTransformComponents::ripple(ripple),
-                local_bounds,
-                press_subtree,
-            )));
-        self.flush_static_segment();
-        self.draw_ops
-            .push(DynamicDrawOp::Opacity(DynamicOpacityDraw::paint_only(
-                DynamicTransformScalar::with_handle(
-                    handles.press_alpha().sample(now),
-                    handles.press_alpha().clone(),
-                ),
-                ctx,
-                local_bounds,
-                press_wrapper,
-            )));
-
-        // Focus affordance: painted at full progress, replayed with focus alpha.
-        if with_focus {
-            let focus_state = WidgetInteractionState {
-                focus_visible: true,
-                focus_progress: 1.0,
-                ..WidgetInteractionState::NONE
-            };
-            let focus_subtree = self.paint_fragment(ctx, &|draw| paint(draw, focus_state));
-            self.flush_static_segment();
-            self.draw_ops
-                .push(DynamicDrawOp::Opacity(DynamicOpacityDraw::paint_only(
-                    DynamicTransformScalar::with_handle(
-                        handles.focus_alpha().sample(now),
-                        handles.focus_alpha().clone(),
-                    ),
-                    ctx,
-                    local_bounds,
-                    focus_subtree,
-                )));
-        }
-    }
-
     /// Applies any deferred press fade-outs and reports whether more
     /// animation frames are needed for pending releases.
     pub(crate) fn flush_interaction_releases(&mut self, now: Instant) -> bool {
@@ -420,8 +222,3 @@ impl HydrolysisRenderer {
         })
     }
 }
-
-/// Scale of the Material press ripple at progress 0, relative to its final
-/// solid-circle size. Material Web's ripple wave starts at `scale(0.4)` and
-/// grows to `scale(1)` while its center drifts to the surface center.
-const RIPPLE_INITIAL_SCALE: f64 = 0.4;

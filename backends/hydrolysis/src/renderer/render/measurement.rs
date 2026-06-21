@@ -344,25 +344,6 @@ fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
 }
 
 impl HydrolysisRenderer {
-    pub(crate) fn render_text_config(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        text: Native<TextConfig>,
-        env: &Environment,
-    ) {
-        let text = text.into_inner();
-        let styled = renderer.read_signal(&text.content);
-        let alignment = renderer.read_signal(&text.paragraph_alignment);
-        Self::render_styled_text(
-            &mut renderer.state,
-            &mut renderer.scene,
-            ctx,
-            styled,
-            alignment,
-            env,
-        );
-    }
-
     pub(crate) fn render_styled_text(
         state: &mut HydroState,
         scene: &mut vello::Scene,
@@ -771,9 +752,22 @@ pub(crate) fn measure_text_field_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
+    let label_size = measure_label_intrinsic(&text_field.label, state, env);
+    measure_text_field_intrinsic_with_label_size(text_field, label_size, state, env)
+}
+
+/// Measures a text field's intrinsic size from a precomputed label size. The
+/// dispatch path passes the label measured via `measure_label_intrinsic`; the
+/// retained-node path passes the label measured from its built `RetainedSubview`,
+/// so layout and the floating-label render agree on the label height.
+pub(crate) fn measure_text_field_intrinsic_with_label_size(
+    text_field: &ResolvedTextFieldConfig,
+    label_size: LayoutSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.input_field_metrics();
-    let label_size = measure_label_intrinsic(&text_field.label, state, env);
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
     let prompt = text_field.prompt.content.get();
     let value = text_field.value.get();
@@ -799,9 +793,22 @@ pub(crate) fn measure_secure_field_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
+    let label_size = measure_label_intrinsic(&secure_field.label, state, env);
+    measure_secure_field_intrinsic_with_label_size(secure_field, label_size, state, env)
+}
+
+/// Measures a secure field's intrinsic size from a precomputed label size. The
+/// dispatch path passes the label measured via `measure_label_intrinsic`; the
+/// retained-node path passes the label measured from its built `RetainedSubview`,
+/// so layout and the floating-label render agree on the label height.
+pub(crate) fn measure_secure_field_intrinsic_with_label_size(
+    secure_field: &SecureFieldConfig,
+    label_size: LayoutSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.input_field_metrics();
-    let label_size = measure_label_intrinsic(&secure_field.label, state, env);
     let secure_len = secure_field.value.get().expose().chars().count();
     let masked = if secure_len == 0 {
         StyledStr::plain("")

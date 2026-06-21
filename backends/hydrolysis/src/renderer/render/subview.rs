@@ -203,8 +203,6 @@ impl core::fmt::Debug for HydroSubview<'_> {
 
 impl core::fmt::Debug for HydrolysisRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HydrolysisRenderer")
-            .field("dispatcher", &self.dispatcher)
-            .finish_non_exhaustive()
+        f.debug_struct("HydrolysisRenderer").finish_non_exhaustive()
     }
 }

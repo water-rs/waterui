@@ -261,20 +261,6 @@ impl HydrolysisRenderer {
         );
     }
 
-    pub(super) fn register_gesture_target_recognizer(
-        &mut self,
-        bounds: vello::kurbo::Rect,
-        target: GestureTarget,
-        depth: usize,
-        group_id: usize,
-    ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        self.gesture_engine
-            .register_existing_target(target.with_bounds_depth_and_group(bounds, depth, group_id));
-    }
-
     pub(super) fn allocate_gesture_group_id(&mut self) -> usize {
         let group_id = self.next_gesture_group_id;
         self.next_gesture_group_id = self

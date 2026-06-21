@@ -53,15 +53,6 @@ impl InteractionEngine {
         self.hover_controller.rewind_to(cursor);
     }
 
-    pub(crate) fn swap_hover_controller(&mut self, other: &mut HoverController) {
-        core::mem::swap(&mut self.hover_controller, other);
-    }
-
-    pub(crate) fn bind_press_slot(&mut self) -> PressSlot {
-        let (slot, _) = self.press_controller.bind();
-        slot
-    }
-
     pub(crate) fn set_hovering(&mut self, slot: HoverSlot, hovering: bool) {
         self.hover_controller.set_hovering(slot, hovering);
     }
@@ -85,10 +76,6 @@ impl InteractionEngine {
 
     pub(crate) fn handles_for(&self, slot: PressSlot) -> Option<Rc<InteractionLayerHandles>> {
         self.press_controller.slots[slot.index].handles.clone()
-    }
-
-    pub(crate) fn attach_handles(&mut self, slot: PressSlot, handles: Rc<InteractionLayerHandles>) {
-        self.press_controller.slots[slot.index].handles = Some(handles);
     }
 
     pub(crate) fn bind_widget_state(
@@ -179,7 +166,6 @@ impl InteractionEngine {
             hover_alpha.clone(),
             press_alpha.clone(),
             press_progress_handle.clone(),
-            focus_alpha.clone(),
             motion.clone(),
         ));
         // A reused slot's previous state belongs to a different widget; start fresh.
@@ -424,7 +410,6 @@ mod tests {
             bind(&mut controller, 0),
             bind(&mut controller, 1),
             bind(&mut controller, 2),
-            bind(&mut controller, 3),
             motion(),
         )
     }

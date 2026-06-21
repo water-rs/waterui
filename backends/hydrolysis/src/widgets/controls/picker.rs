@@ -10,14 +10,13 @@ use accesskit::{
     Toggled as AccessibilityToggled,
 };
 use nami::{Binding, Signal};
+use std::cell::RefCell;
 use std::rc::Rc;
-use waterui::ViewExt;
 use waterui_backend_core::widget::RadioIndicatorState;
-use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::id::Id;
-use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
+use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
@@ -29,205 +28,236 @@ use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        render_picker(ctx, view, env);
-    }
-
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_picker_intrinsic(view.as_inner(), state, env)
     }
+}
 
-    fn accessibility(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        view: &Self,
-        env: &Environment,
-    ) {
-        #[cfg(feature = "accessibility")]
-        {
-            let picker = view.as_inner();
-            let items = renderer.read_signal(&picker.items);
-            assert!(
-                !(items.is_empty()),
-                "hydrolysis picker requires at least one item"
-            );
-            match picker.style {
-                PickerStyle::Automatic | PickerStyle::Menu => {
-                    let selected = renderer.read_signal(&picker.selection);
-                    let selected_index = items
-                        .iter()
-                        .position(|item| item.tag == selected)
-                        .unwrap_or_else(|| {
-                            panic!("hydrolysis picker selection is not present in picker items")
-                        });
-                    let mut option_labels = Vec::with_capacity(items.len());
-                    let mut max_item_text_height: f64 = 0.0;
-                    for item in &items {
-                        let label = renderer
-                            .read_resolved_text_styled(&item.content, env)
-                            .to_plain();
-                        let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
-                            renderer.state_mut(),
-                            StyledStr::plain(label.clone()),
-                            env,
-                        );
-                        max_item_text_height =
-                            max_item_text_height.max(f64::from(label_size.height));
-                        option_labels.push(label);
-                    }
-                    let selected_text = option_labels[selected_index].clone();
-                    let mut node = AccessibilityNode::new(
-                        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
-                    );
+/// Emits a picker's accessibility tree from its config. Shared by the dispatch
+/// path ([`Native<PickerConfig>::accessibility`]) and the retained `Widget`-node
+/// path so both produce the same a11y tree.
+pub(crate) fn picker_accessibility(
+    renderer: &mut HydrolysisRenderer,
+    ctx: RenderContext,
+    picker: &PickerConfig,
+    env: &Environment,
+) {
+    #[cfg(feature = "accessibility")]
+    {
+        let items = renderer.read_signal(&picker.items);
+        assert!(
+            !(items.is_empty()),
+            "hydrolysis picker requires at least one item"
+        );
+        match picker.style {
+            PickerStyle::Automatic | PickerStyle::Menu => {
+                let selected = renderer.read_signal(&picker.selection);
+                let selected_index = items
+                    .iter()
+                    .position(|item| item.tag == selected)
+                    .unwrap_or_else(|| {
+                        panic!("hydrolysis picker selection is not present in picker items")
+                    });
+                let mut option_labels = Vec::with_capacity(items.len());
+                let mut max_item_text_height: f64 = 0.0;
+                for item in &items {
                     let label = renderer
-                        .resolve_accessibility_label(env, Some(selected_text.as_str().to_owned()));
-                    if let Some(label) = label {
-                        node.set_label(label);
-                    }
-                    node.set_value(selected_text.as_str().to_owned());
-                    node.add_action(AccessibilityAction::Focus);
-                    node.add_action(AccessibilityAction::Click);
-                    let metrics = widget_theme(env).picker_metrics(PickerStyle::Menu);
-                    let row_height = menu_picker_row_height(max_item_text_height, metrics);
-                    let popup_rect =
-                        menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
-                    for (index, item) in items.iter().enumerate() {
-                        let mut option =
-                            AccessibilityNode::new(renderer.resolve_accessibility_role(
-                                env,
-                                AccessibilityNodeRole::ListBoxOption,
-                            ));
-                        option.set_label(option_labels[index].as_str().to_owned());
-                        let is_selected = item.tag == selected;
-                        option.set_selected(is_selected);
-                        option.set_toggled(AccessibilityToggled::from(is_selected));
-                        option.add_action(AccessibilityAction::Focus);
-                        option.add_action(AccessibilityAction::Click);
-                        let option_bounds = transformed_rect(
-                            ctx.hit_transform,
-                            menu_picker_option_rect(popup_rect, row_height, index),
-                        );
-                        if let Some(option_id) = renderer.register_accessibility_child_node(
-                            option,
-                            option_bounds,
-                            env,
-                            Some(AccessibilityActionTarget::PickerSelect {
-                                selection: picker.selection.clone(),
-                                target: item.tag,
-                            }),
-                        ) {
-                            node.push_child(option_id);
-                        }
-                    }
-                    let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-                    let _ = renderer.register_accessibility_node(
-                        node,
-                        bounds,
+                        .read_resolved_text_styled(&item.content, env)
+                        .to_plain();
+                    let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
+                        renderer.state_mut(),
+                        StyledStr::plain(label.clone()),
                         env,
-                        Some(AccessibilityActionTarget::PointerPrimaryClick {
-                            point: accessibility_activation_point(bounds),
+                    );
+                    max_item_text_height = max_item_text_height.max(f64::from(label_size.height));
+                    option_labels.push(label);
+                }
+                let selected_text = option_labels[selected_index].clone();
+                let mut node = AccessibilityNode::new(
+                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
+                );
+                let label = renderer
+                    .resolve_accessibility_label(env, Some(selected_text.as_str().to_owned()));
+                if let Some(label) = label {
+                    node.set_label(label);
+                }
+                node.set_value(selected_text.as_str().to_owned());
+                node.add_action(AccessibilityAction::Focus);
+                node.add_action(AccessibilityAction::Click);
+                let metrics = widget_theme(env).picker_metrics(PickerStyle::Menu);
+                let row_height = menu_picker_row_height(max_item_text_height, metrics);
+                let popup_rect =
+                    menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
+                for (index, item) in items.iter().enumerate() {
+                    let mut option = AccessibilityNode::new(
+                        renderer
+                            .resolve_accessibility_role(env, AccessibilityNodeRole::ListBoxOption),
+                    );
+                    option.set_label(option_labels[index].as_str().to_owned());
+                    let is_selected = item.tag == selected;
+                    option.set_selected(is_selected);
+                    option.set_toggled(AccessibilityToggled::from(is_selected));
+                    option.add_action(AccessibilityAction::Focus);
+                    option.add_action(AccessibilityAction::Click);
+                    let option_bounds = transformed_rect(
+                        ctx.hit_transform,
+                        menu_picker_option_rect(popup_rect, row_height, index),
+                    );
+                    if let Some(option_id) = renderer.register_accessibility_child_node(
+                        option,
+                        option_bounds,
+                        env,
+                        Some(AccessibilityActionTarget::PickerSelect {
+                            selection: picker.selection.clone(),
+                            target: item.tag,
                         }),
-                    );
-                }
-                PickerStyle::Radio | PickerStyle::Segmented => {
-                    let mut group = AccessibilityNode::new(
-                        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
-                    );
-                    let group_label = renderer.resolve_accessibility_label(env, None);
-                    if let Some(label) = group_label {
-                        group.set_label(label);
+                    ) {
+                        node.push_child(option_id);
                     }
-                    let group_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-                    let metrics = widget_theme(env).picker_metrics(picker.style);
-                    let mut row_y = ctx.bounds.y0 + metrics.vertical_inset;
-                    let selected = renderer.read_signal(&picker.selection);
-                    let segment_width = ctx.bounds.width() / items.len() as f64;
-                    for (index, item) in items.iter().enumerate() {
-                        let label = renderer
-                            .read_resolved_text_styled(&item.content, env)
-                            .to_plain()
-                            .to_string();
-                        let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
-                            renderer.state_mut(),
-                            StyledStr::plain(label.clone()),
-                            env,
-                        );
-                        let row_rect = if picker.style == PickerStyle::Segmented {
-                            let x0 = ctx.bounds.x0 + segment_width * index as f64;
-                            vello::kurbo::Rect::new(
-                                x0,
-                                ctx.bounds.y0,
-                                x0 + segment_width,
-                                ctx.bounds.y1,
-                            )
-                        } else {
-                            let row_height =
-                                f64::from(label_size.height).max(metrics.radio_indicator_size);
-                            let rect = vello::kurbo::Rect::new(
-                                ctx.bounds.x0,
-                                row_y,
-                                ctx.bounds.x1,
-                                (row_y + row_height).min(ctx.bounds.y1),
-                            );
-                            row_y = rect.y1 + metrics.radio_row_spacing;
-                            rect
-                        };
-                        if row_rect.height() <= 0.0 {
-                            break;
-                        }
-                        let mut option =
-                            AccessibilityNode::new(renderer.resolve_accessibility_role(
-                                env,
-                                AccessibilityNodeRole::RadioButton,
-                            ));
-                        option.set_label(label);
-                        let is_selected = item.tag == selected;
-                        option.set_toggled(AccessibilityToggled::from(is_selected));
-                        option.set_selected(is_selected);
-                        option.add_action(AccessibilityAction::Focus);
-                        option.add_action(AccessibilityAction::Click);
-                        let row_bounds = transformed_rect(ctx.hit_transform, row_rect);
-                        if let Some(child_id) = renderer.register_accessibility_child_node(
-                            option,
-                            row_bounds,
-                            env,
-                            Some(AccessibilityActionTarget::PickerSelect {
-                                selection: picker.selection.clone(),
-                                target: item.tag,
-                            }),
-                        ) {
-                            group.push_child(child_id);
-                        }
-                    }
-                    let _ = renderer.register_accessibility_node(group, group_bounds, env, None);
                 }
-                _ => panic!("hydrolysis PickerStyle variant is not implemented"),
+                let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                let _ = renderer.register_accessibility_node(
+                    node,
+                    bounds,
+                    env,
+                    Some(AccessibilityActionTarget::PointerPrimaryClick {
+                        point: accessibility_activation_point(bounds),
+                    }),
+                );
             }
+            PickerStyle::Radio | PickerStyle::Segmented => {
+                let mut group = AccessibilityNode::new(
+                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
+                );
+                let group_label = renderer.resolve_accessibility_label(env, None);
+                if let Some(label) = group_label {
+                    group.set_label(label);
+                }
+                let group_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                let metrics = widget_theme(env).picker_metrics(picker.style);
+                let mut row_y = ctx.bounds.y0 + metrics.vertical_inset;
+                let selected = renderer.read_signal(&picker.selection);
+                let segment_width = ctx.bounds.width() / items.len() as f64;
+                for (index, item) in items.iter().enumerate() {
+                    let label = renderer
+                        .read_resolved_text_styled(&item.content, env)
+                        .to_plain()
+                        .to_string();
+                    let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
+                        renderer.state_mut(),
+                        StyledStr::plain(label.clone()),
+                        env,
+                    );
+                    let row_rect = if picker.style == PickerStyle::Segmented {
+                        let x0 = ctx.bounds.x0 + segment_width * index as f64;
+                        vello::kurbo::Rect::new(
+                            x0,
+                            ctx.bounds.y0,
+                            x0 + segment_width,
+                            ctx.bounds.y1,
+                        )
+                    } else {
+                        let row_height =
+                            f64::from(label_size.height).max(metrics.radio_indicator_size);
+                        let rect = vello::kurbo::Rect::new(
+                            ctx.bounds.x0,
+                            row_y,
+                            ctx.bounds.x1,
+                            (row_y + row_height).min(ctx.bounds.y1),
+                        );
+                        row_y = rect.y1 + metrics.radio_row_spacing;
+                        rect
+                    };
+                    if row_rect.height() <= 0.0 {
+                        break;
+                    }
+                    let mut option = AccessibilityNode::new(
+                        renderer
+                            .resolve_accessibility_role(env, AccessibilityNodeRole::RadioButton),
+                    );
+                    option.set_label(label);
+                    let is_selected = item.tag == selected;
+                    option.set_toggled(AccessibilityToggled::from(is_selected));
+                    option.set_selected(is_selected);
+                    option.add_action(AccessibilityAction::Focus);
+                    option.add_action(AccessibilityAction::Click);
+                    let row_bounds = transformed_rect(ctx.hit_transform, row_rect);
+                    if let Some(child_id) = renderer.register_accessibility_child_node(
+                        option,
+                        row_bounds,
+                        env,
+                        Some(AccessibilityActionTarget::PickerSelect {
+                            selection: picker.selection.clone(),
+                            target: item.tag,
+                        }),
+                    ) {
+                        group.push_child(child_id);
+                    }
+                }
+                let _ = renderer.register_accessibility_node(group, group_bounds, env, None);
+            }
+            _ => panic!("hydrolysis PickerStyle variant is not implemented"),
         }
+    }
+    #[cfg(not(feature = "accessibility"))]
+    {
+        let _ = (renderer, ctx, picker, env);
     }
 }
 
-pub(crate) fn render_picker(
+/// Measures a retained picker leaf from its config (mirrors
+/// [`measure_picker_intrinsic`]).
+pub(crate) fn measure_picker_node(
+    config: &PickerConfig,
+    _proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    ViewDimensions::new(measure_picker_intrinsic(config, state, env))
+}
+
+/// Renders a retained picker leaf every flush: emits a11y (unless hidden) then the
+/// style-specific chrome + options, reading the items/selection signals each frame.
+pub(crate) fn render_picker_node(
     ctx: &mut WidgetRenderContext<'_>,
-    picker: Native<PickerConfig>,
+    config: &Rc<RefCell<PickerConfig>>,
     env: &Environment,
 ) {
-    let renderer = ctx.renderer_mut();
-    let picker = picker.into_inner();
-    let items = renderer.read_signal(&picker.items);
+    let hidden = env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    if !hidden {
+        let render_ctx = ctx.render_context();
+        picker_accessibility(ctx.renderer_mut(), render_ctx, &config.borrow(), env);
+    }
+    render_picker_parts(ctx, config, env);
+}
+
+pub(crate) fn render_picker_parts(
+    ctx: &mut WidgetRenderContext<'_>,
+    config: &Rc<RefCell<PickerConfig>>,
+    env: &Environment,
+) {
+    // The items/selection signals are read through `read_signal` so a membership or
+    // selection change schedules a frame and this persistent node re-renders.
+    let (items_signal, selection, style) = {
+        let picker = config.borrow();
+        (picker.items.clone(), picker.selection.clone(), picker.style)
+    };
+    let items = ctx.renderer_mut().read_signal(&items_signal);
     assert!(
         !(items.is_empty()),
         "hydrolysis picker requires at least one item"
     );
-    match picker.style {
+    match style {
         PickerStyle::Automatic | PickerStyle::Menu => {
-            render_menu_picker(ctx, picker.selection, items, env);
+            render_menu_picker(ctx, selection, items, env);
         }
         PickerStyle::Radio => {
-            render_radio_picker(ctx, picker.selection, items, env);
+            render_radio_picker(ctx, selection, items, env);
         }
         PickerStyle::Segmented => {
-            render_segmented_picker(ctx, picker.selection, items, env);
+            render_segmented_picker(ctx, selection, items, env);
         }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
     }
@@ -312,11 +342,6 @@ pub(crate) fn render_menu_picker(
             theme.draw_input_field(&mut draw, bounds, interaction);
             theme.draw_picker_indicator(&mut draw, bounds);
         }
-        let render_ctx = ctx.render_context();
-        ctx.renderer_mut()
-            .capture_state_layers(render_ctx, &handles, bounds, false, &|draw, state| {
-                theme.draw_picker_state_layer(draw, bounds, state);
-            });
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection.clone();
         let menu_entries = entries.clone();
@@ -420,7 +445,7 @@ pub(crate) fn render_radio_picker(
             }
         };
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
-        let (_, press_slot, handles) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let (_, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
             let mut draw = ctx.draw_context();
             theme.draw_radio_indicator(
@@ -430,26 +455,6 @@ pub(crate) fn render_radio_picker(
                 radio_indicator_state,
             );
         }
-        let radio_layer_bounds = vello::kurbo::Rect::from_center_size(
-            indicator_center,
-            (indicator_radius * 4.0, indicator_radius * 4.0),
-        );
-        let render_ctx = ctx.render_context();
-        ctx.renderer_mut().capture_state_layers(
-            render_ctx,
-            &handles,
-            radio_layer_bounds,
-            false,
-            &|draw, state| {
-                theme.draw_radio_state_layer(
-                    draw,
-                    indicator_center,
-                    indicator_radius,
-                    is_selected,
-                    state,
-                );
-            },
-        );
 
         let label_rect = vello::kurbo::Rect::new(
             indicator_center.x + indicator_radius + metrics.radio_label_spacing,
@@ -492,7 +497,7 @@ pub(crate) fn render_segmented_picker(
         let segment_rect = vello::kurbo::Rect::new(x0, bounds.y0, x0 + segment_width, bounds.y1);
         let is_selected = item.tag == selected;
         let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
-        let (_, press_slot, handles) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let (_, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
         {
             let mut draw = ctx.draw_context();
             theme.draw_segmented_picker_segment(
@@ -503,28 +508,22 @@ pub(crate) fn render_segmented_picker(
                 index + 1 == item_count,
             );
         }
-        let render_ctx = ctx.render_context();
-        ctx.renderer_mut().capture_state_layers(
-            render_ctx,
-            &handles,
-            segment_rect,
-            false,
-            &|draw, state| {
-                theme.draw_segmented_picker_state_layer(draw, segment_rect, is_selected, state);
-            },
-        );
-
+        // Render the segment label directly as styled text (no dispatch), mirroring
+        // the radio/menu picker styles. The item's resolved `StyledStr` carries its
+        // own per-chunk styling; the selected/unselected foreground override is
+        // applied to all chunks so the live selection signal drives the color each
+        // frame without rebuilding a view.
         let label = ctx
             .renderer_mut()
             .read_resolved_text_styled(&item.content, env);
         let label_size =
-            HydrolysisRenderer::measure_text_intrinsic_size(ctx.state_mut(), label, env);
+            HydrolysisRenderer::measure_text_intrinsic_size(ctx.state_mut(), label.clone(), env);
         let label_rect = segmented_label_rect(segment_rect, label_size, metrics);
-        let label_view = match theme.segmented_picker_label_color(is_selected) {
-            Some(color) => AnyView::new(item.content.foreground(color)),
-            None => AnyView::new(item.content),
+        let styled = match theme.segmented_picker_label_color(is_selected) {
+            Some(color) => label.foreground(color),
+            None => label,
         };
-        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
+        ctx.render_styled_text(styled, HorizontalAlignment::Leading, env, label_rect);
 
         let tag = item.tag;
         ctx.renderer_mut()

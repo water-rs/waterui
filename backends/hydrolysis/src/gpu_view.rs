@@ -62,7 +62,13 @@ where
             renderer.reset_scene();
             renderer.begin_rebuild_frame();
             let bounds = vello::kurbo::Rect::new(0.0, 0.0, frame.width as f64, frame.height as f64);
-            renderer.dispatch(self.view.clone(), env, bounds);
+            renderer.capture_window_tree(
+                waterui_core::AnyView::new(self.view.clone()),
+                env,
+                bounds,
+                vello::kurbo::Affine::IDENTITY,
+                vello::kurbo::Affine::IDENTITY,
+            );
             renderer.finish_rebuild_frame();
             self.needs_rebuild = false;
         }

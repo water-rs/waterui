@@ -533,10 +533,12 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     renderer.set_frame_resources(surface.device(), surface.queue());
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.dispatch(
-        SceneView::new(TestSceneContent(Rc::clone(&build_called))),
+    renderer.capture_window_tree(
+        AnyView::new(SceneView::new(TestSceneContent(Rc::clone(&build_called)))),
         &env,
         bounds,
+        vello::kurbo::Affine::IDENTITY,
+        vello::kurbo::Affine::IDENTITY,
     );
     renderer.finish_rebuild_frame();
     assert!(build_called.get(), "expected scene view build_scene to run");

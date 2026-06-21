@@ -4,170 +4,33 @@
 use super::*;
 
 impl HydrolysisRenderer {
-    pub(super) fn render_environment_metadata(
+    /// Apply a clip-shape layer around the given content render. Shared by the
+    /// dispatch handler and the retained `Wrapper` node so the clip effect lives
+    /// in exactly one place.
+    pub(super) fn apply_clip_shape(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<Environment>,
-        env: &Environment,
+        value: &ClipShape,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let (content, scoped_env) = flatten_environment_metadata_owned(AnyView::new(metadata), env);
-        renderer.dispatch_boxed_with_render_depth(content, &scoped_env, ctx);
-    }
-
-    pub(super) fn render_retain_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<Retain>,
-        env: &Environment,
-    ) {
-        let Metadata { content, value } = metadata;
-        renderer.lifecycle.current_frame_retain.push(value);
-        renderer.dispatch_boxed_with_render_depth(content, env, ctx);
-    }
-
-    pub(super) fn render_opacity_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<Opacity>,
-        env: &Environment,
-    ) {
-        let Metadata { content, value } = metadata;
-        // Inside a dynamic-subtree capture, an animated opacity is captured as a
-        // replayable dynamic layer (re-sampled at replay) instead of baked into the
-        // scene, so animation-only frames can refresh by replay without re-dispatch.
-        if renderer.dynamic_transform_capture_depth > 0 && value.value.identity().is_some() {
-            let alpha = renderer
-                .dynamic_transform_scalar_with_discriminator(&value.value, OPACITY_ANIMATION_KEY);
-            renderer.capture_dynamic_opacity(ctx, env, content, alpha);
-            return;
-        }
-        let alpha = renderer
-            .resolve_animated_scalar_with_discriminator(&value.value, OPACITY_ANIMATION_KEY);
-        renderer.push_layer_rect(alpha, ctx.transform, ctx.bounds);
-
-        let previous_opacity = renderer.hit_test.hit_test_opacity;
-        renderer.hit_test.hit_test_opacity = previous_opacity * alpha;
-        renderer.dispatch_boxed_with_render_depth(content, env, ctx);
-        renderer.hit_test.hit_test_opacity = previous_opacity;
-
-        renderer.pop_layer();
-    }
-
-    pub(super) fn render_scale_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<Scale>,
-        env: &Environment,
-    ) {
-        let Metadata { content, value } = metadata;
-        let center = anchor_point(ctx.bounds, value.anchor);
-        if renderer.dynamic_transform_capture_depth > 0
-            && (value.x.identity().is_some() || value.y.identity().is_some())
-        {
-            let scale_x = renderer
-                .dynamic_transform_scalar_with_discriminator(&value.x, SCALE_X_ANIMATION_KEY);
-            let scale_y = renderer
-                .dynamic_transform_scalar_with_discriminator(&value.y, SCALE_Y_ANIMATION_KEY);
-            renderer.capture_dynamic_transform(
-                ctx,
-                env,
-                content,
-                DynamicTransformComponents::scale(scale_x, scale_y, center),
-            );
-            return;
-        }
-        let (scale_x, scale_y) = (
-            renderer.resolve_animated_scalar_with_discriminator(&value.x, SCALE_X_ANIMATION_KEY),
-            renderer.resolve_animated_scalar_with_discriminator(&value.y, SCALE_Y_ANIMATION_KEY),
-        );
-        let transform = vello::kurbo::Affine::translate((center.x, center.y))
-            * vello::kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
-            * vello::kurbo::Affine::translate((-center.x, -center.y));
-        Self::dispatch_any(renderer, ctx.child(transform, ctx.bounds), env, content);
-    }
-
-    pub(super) fn render_rotation_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<Rotation>,
-        env: &Environment,
-    ) {
-        let Metadata { content, value } = metadata;
-        let center = anchor_point(ctx.bounds, value.anchor);
-        if renderer.dynamic_transform_capture_depth > 0 && value.angle.identity().is_some() {
-            let angle = renderer
-                .dynamic_transform_scalar_with_discriminator(&value.angle, ROTATION_ANIMATION_KEY);
-            renderer.capture_dynamic_transform(
-                ctx,
-                env,
-                content,
-                DynamicTransformComponents::rotation(angle, center),
-            );
-            return;
-        }
-        let radians = f64::from(
-            renderer
-                .resolve_animated_scalar_with_discriminator(&value.angle, ROTATION_ANIMATION_KEY),
-        )
-        .to_radians();
-        let transform = vello::kurbo::Affine::translate((center.x, center.y))
-            * vello::kurbo::Affine::rotate(radians)
-            * vello::kurbo::Affine::translate((-center.x, -center.y));
-        Self::dispatch_any(renderer, ctx.child(transform, ctx.bounds), env, content);
-    }
-
-    pub(super) fn render_offset_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<Offset>,
-        env: &Environment,
-    ) {
-        let Metadata { content, value } = metadata;
-        if renderer.dynamic_transform_capture_depth > 0
-            && (value.x.identity().is_some() || value.y.identity().is_some())
-        {
-            let offset_x = renderer
-                .dynamic_transform_scalar_with_discriminator(&value.x, OFFSET_X_ANIMATION_KEY);
-            let offset_y = renderer
-                .dynamic_transform_scalar_with_discriminator(&value.y, OFFSET_Y_ANIMATION_KEY);
-            renderer.capture_dynamic_transform(
-                ctx,
-                env,
-                content,
-                DynamicTransformComponents::offset(offset_x, offset_y),
-            );
-            return;
-        }
-        let (offset_x, offset_y) = (
-            renderer.resolve_animated_scalar_with_discriminator(&value.x, OFFSET_X_ANIMATION_KEY),
-            renderer.resolve_animated_scalar_with_discriminator(&value.y, OFFSET_Y_ANIMATION_KEY),
-        );
-        let transform = vello::kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
-        Self::dispatch_any(renderer, ctx.child(transform, ctx.bounds), env, content);
-    }
-
-    pub(super) fn render_clip_shape_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<ClipShape>,
-        env: &Environment,
-    ) {
-        let Metadata { content, value } = metadata;
         let clip_path = path_commands_to_path(value.commands(), ctx.bounds);
         renderer.push_layer_path(1.0, ctx.transform, clip_path);
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
         renderer.pop_layer();
     }
 
-    pub(super) fn render_border_metadata(
+    /// Render the given content then stroke the border over it, mirroring the
+    /// historical order (content first, border on top). Shared by the dispatch
+    /// handler and the retained `Wrapper` node. The border color resolves against
+    /// `env`, so it is threaded through.
+    pub(super) fn apply_border(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<Border>,
         env: &Environment,
+        border: &Border,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
-        let border = value;
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
 
         if border.width <= 0.0 {
             return;
@@ -248,14 +111,16 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(super) fn render_shadow_metadata(
+    /// Draw the shadow first, then render the given content over it (matching the
+    /// historical order). Shared by the dispatch handler and the retained
+    /// `Wrapper` node. The shadow color resolves against `env`.
+    pub(super) fn apply_shadow(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<Shadow>,
         env: &Environment,
+        shadow: &Shadow,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
-        let shadow = value;
         let blur = f64::from(shadow.radius.max(0.0));
         let offset_x = f64::from(shadow.offset.x);
         let offset_y = f64::from(shadow.offset.y);
@@ -274,19 +139,23 @@ impl HydrolysisRenderer {
             blur,
             blur,
         );
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
     }
 
-    pub(super) fn render_focused_metadata(
+    /// Render the wrapped content, then bind the single text input it registered to
+    /// the `.focused(binding)` binding and reconcile focus state. Shared by the
+    /// dispatch handler and the retained `Wrapper` node ([`WrapperEffect::Focused`]):
+    /// the binding is read through `read_signal` so a change schedules a frame, and
+    /// the target bookkeeping counts inputs registered during the content render, so
+    /// it works identically whether the content is dispatched or node-flushed.
+    pub(super) fn apply_focused(
         renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<Focused>,
-        env: &Environment,
+        value: &Focused,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
         let should_focus = renderer.read_signal(&value.0);
         let start = renderer.text_editing.text_input_targets.len();
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
         let end = renderer.text_editing.text_input_targets.len();
         let focus_target_count = end - start;
         assert!(
@@ -317,13 +186,17 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(super) fn render_hittable_metadata(
+    /// Render the given content and, when hit-testing is disabled, truncate every
+    /// interaction-target vector back to its pre-render length (and clear focus if
+    /// the focused text input fell inside the wrapped range). Shared by the dispatch
+    /// handler and the retained `Wrapper` node. The bookkeeping counts targets
+    /// registered during the content render, so it works identically whether the
+    /// content is dispatched or node-flushed.
+    pub(super) fn apply_hittable(
         renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<Hittable>,
-        env: &Environment,
+        value: &Hittable,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
         let enabled = renderer.read_signal(&value.enabled);
         let pointer_start = renderer.hit_test.pointer_targets.len();
         let gesture_start = renderer.gesture_engine.target_count();
@@ -333,7 +206,7 @@ impl HydrolysisRenderer {
         let scroll_start = renderer.hit_test.scroll_targets.len();
         let text_start = renderer.text_editing.text_input_targets.len();
 
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
 
         if enabled {
             return;
@@ -363,39 +236,47 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(super) fn render_cursor_metadata(
+    /// Register the cursor hit-target, then render the given content. Shared by
+    /// the dispatch handler and the retained `Wrapper` node.
+    pub(super) fn apply_cursor(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<Cursor>,
-        env: &Environment,
+        value: &Cursor,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
         let style = renderer.read_signal(&value.style);
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         renderer.register_cursor_target(bounds, style);
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
     }
 
-    pub(super) fn render_gesture_observer_metadata(
+    /// Register the gesture target (and, for a tappable view with a role, its
+    /// accessibility node), then render the given content under accessibility
+    /// suppression when the role excludes descendants. Shared by the dispatch
+    /// handler and the retained `Wrapper` node.
+    ///
+    /// The build-resolved state lives in [`GestureObserverEffect`] (the two pieces
+    /// derived from `content` — the default a11y label and the gesture group
+    /// identity — are resolved at build time, since a node has no `content` at
+    /// flush). Everything else is re-resolved against `env` each call (role/label
+    /// overrides, suppression), matching the dispatch path. The action is shared
+    /// so the node can re-register the same action every flush.
+    pub(super) fn apply_gesture_observer(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<GestureObserver>,
         env: &Environment,
+        effect: &GestureObserverEffect,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
-        let GestureObserver {
-            gesture,
-            mut action,
-            ..
-        } = value;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         #[cfg(feature = "accessibility")]
-        if matches!(gesture, Gesture::Tap(_)) && env.get::<AccessibilityRole>().is_some() {
+        if matches!(effect.gesture, Gesture::Tap(_)) && env.get::<AccessibilityRole>().is_some() {
             let mut node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
             );
-            let default_label = renderer.accessibility_label_from_view(&content, env);
-            if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+            if let Some(label) =
+                renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
+            {
                 node.set_label(label);
             }
             node.add_action(AccessibilityAction::Focus);
@@ -410,14 +291,14 @@ impl HydrolysisRenderer {
                 }),
             );
         }
-        let gesture_group_identity = gesture_group_identity(&content);
-        let group_id = renderer.gesture_group_id_for_identity(gesture_group_identity);
+        let group_id = renderer.gesture_group_id_for_identity(effect.gesture_group_identity);
         let captured_env = env.clone();
+        let action = Rc::clone(&effect.action);
         let layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
             let action_env = captured_env.layered_on(runtime_env);
-            action(&action_env);
+            action.borrow_mut()(&action_env);
         });
-        renderer.register_gesture_target(bounds, group_id, gesture, layered_action);
+        renderer.register_gesture_target(bounds, group_id, effect.gesture.clone(), layered_action);
 
         #[cfg(feature = "accessibility")]
         if env
@@ -425,34 +306,38 @@ impl HydrolysisRenderer {
             .is_some_and(AccessibilityChildren::excludes_descendants)
         {
             renderer.push_accessibility_suppression();
-            Self::dispatch_any(renderer, ctx, env, content);
+            render_content(renderer);
             renderer.pop_accessibility_suppression();
             return;
         }
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
     }
 
-    pub(super) fn render_on_event_metadata(
+    /// Register the hover-enter/move/exit target for `handler`, then render the
+    /// given content. Shared by the dispatch handler and the retained `Wrapper`
+    /// node. The handler is shared (`Rc<RefCell<OnEvent>>`) so the node can
+    /// re-register the same handler every flush; the dispatch handler wraps its
+    /// owned value once. The registered closure resolves the action environment
+    /// against `env` exactly as before.
+    pub(super) fn apply_on_event(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<OnEvent>,
         env: &Environment,
+        handler: Rc<RefCell<OnEvent>>,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
-        let event = value.event();
+        let event = handler.borrow().event();
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         match event {
             Event::HoverEnter => {
-                let mut handler = value;
                 let captured_env = env.clone();
                 renderer.register_hover_enter_target(bounds, move |env| {
                     let action_env = captured_env.layered_on(env);
-                    handler.handle(&action_env);
+                    handler.borrow_mut().handle(&action_env);
                     true
                 });
             }
             Event::HoverMove => {
-                let mut handler = value;
                 let captured_env = env.clone();
                 renderer.register_hover_move_target(bounds, move |point, env| {
                     let hover_event = HoverEvent::new(waterui_core::layout::Point::new(
@@ -460,158 +345,65 @@ impl HydrolysisRenderer {
                         point.y as f32 - bounds.y0 as f32,
                     ));
                     let hover_env = captured_env.layered_on(&env.extending(hover_event));
-                    handler.handle(&hover_env);
+                    handler.borrow_mut().handle(&hover_env);
                     true
                 });
             }
             Event::HoverExit => {
-                let mut handler = value;
                 let captured_env = env.clone();
                 renderer.register_hover_exit_target(bounds, move |env| {
                     let action_env = captured_env.layered_on(env);
-                    handler.handle(&action_env);
+                    handler.borrow_mut().handle(&action_env);
                     true
                 });
             }
             _ => panic!("hydrolysis event variant is not supported"),
         }
-        Self::dispatch_any(renderer, ctx, env, content);
+        render_content(renderer);
     }
 
-    pub(super) fn render_context_menu_metadata(
+    /// Register the context-menu hit-target, then render the given content. Shared
+    /// by the dispatch handler and the retained `Wrapper` node. The node owns the
+    /// [`ResolvedContextMenu`] by reference, so the menu items are cloned for
+    /// registration.
+    pub(super) fn apply_context_menu(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<ResolvedContextMenu>,
-        env: &Environment,
+        value: &ResolvedContextMenu,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        renderer.register_context_menu_target(bounds, value.items);
-        Self::dispatch_any(renderer, ctx, env, content);
+        renderer.register_context_menu_target(bounds, value.items.clone());
+        render_content(renderer);
     }
 
-    pub(super) fn render_draggable_metadata(
+    /// Register the draggable hit-target, then render the given content. Shared by
+    /// the dispatch handler and the retained `Wrapper` node. The node owns the
+    /// [`Draggable`] by reference, so the data provider is cloned for registration.
+    pub(super) fn apply_draggable(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<Draggable>,
-        env: &Environment,
+        value: &Draggable,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        renderer.register_draggable_target(bounds, value.data);
-        Self::dispatch_any(renderer, ctx, env, content);
+        renderer.register_draggable_target(bounds, value.data.clone());
+        render_content(renderer);
     }
 
-    pub(super) fn render_drop_destination_metadata(
+    /// Register the drop-destination hit-target from pre-wrapped handler handles,
+    /// then render the given content. Shared by the dispatch handler and the
+    /// retained `Wrapper` node (which holds the handles by value and re-registers
+    /// the same `Rc`s every flush).
+    pub(super) fn apply_drop_destination(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        metadata: Metadata<DropDestination>,
         env: &Environment,
+        handles: &DropDestinationHandles,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let Metadata { content, value } = metadata;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        renderer.register_drop_destination_target(bounds, value, env);
-        Self::dispatch_any(renderer, ctx, env, content);
-    }
-
-    pub(super) fn render_passthrough_metadata<T: MetadataKey>(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: Metadata<T>,
-        env: &Environment,
-    ) {
-        let Metadata { content, value } = metadata;
-        let _ = value;
-        Self::dispatch_any(renderer, ctx, env, content);
-    }
-
-    pub(super) fn render_passthrough_ignorable_metadata<T: MetadataKey>(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: IgnorableMetadata<T>,
-        env: &Environment,
-    ) {
-        let IgnorableMetadata { content, value } = metadata;
-        let _ = value;
-        Self::dispatch_any(renderer, ctx, env, content);
-    }
-
-    pub(super) fn render_accessibility_label_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: IgnorableMetadata<AccessibilityLabel>,
-        env: &Environment,
-    ) {
-        let IgnorableMetadata { content, value } = metadata;
-        let mut local_env = env.clone();
-        local_env.insert(value);
-        Self::dispatch_any(renderer, ctx, &local_env, content);
-    }
-
-    pub(super) fn render_accessibility_role_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: IgnorableMetadata<AccessibilityRole>,
-        env: &Environment,
-    ) {
-        let IgnorableMetadata { content, value } = metadata;
-        let mut local_env = env.clone();
-        local_env.insert(value);
-        Self::dispatch_any(renderer, ctx, &local_env, content);
-    }
-
-    pub(super) fn render_accessibility_hidden_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: IgnorableMetadata<AccessibilityHidden>,
-        env: &Environment,
-    ) {
-        let IgnorableMetadata { content, value } = metadata;
-        let mut local_env = env.clone();
-        local_env.insert(value);
-        Self::dispatch_any(renderer, ctx, &local_env, content);
-    }
-
-    pub(super) fn render_accessibility_children_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: IgnorableMetadata<AccessibilityChildren>,
-        env: &Environment,
-    ) {
-        let IgnorableMetadata { content, value } = metadata;
-        let mut local_env = env.clone();
-        local_env.insert(value);
-        Self::dispatch_any(renderer, ctx, &local_env, content);
-    }
-
-    pub(super) fn render_accessibility_state_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: IgnorableMetadata<AccessibilityState>,
-        env: &Environment,
-    ) {
-        let IgnorableMetadata { content, value } = metadata;
-        let mut local_env = env.clone();
-        if value.is_hidden() {
-            local_env.insert(AccessibilityHidden::new(true));
-        }
-        local_env.insert(value);
-        Self::dispatch_any(renderer, ctx, &local_env, content);
-    }
-
-    pub(super) fn render_accessibility_state_signal_metadata(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        metadata: IgnorableMetadata<AccessibilityStateSignal>,
-        env: &Environment,
-    ) {
-        let IgnorableMetadata { content, value } = metadata;
-        let state = value.state().get();
-        let mut local_env = env.clone();
-        if state.is_hidden() {
-            local_env.insert(AccessibilityHidden::new(true));
-        }
-        local_env.insert(state);
-        Self::dispatch_any(renderer, ctx, &local_env, content);
+        renderer.register_drop_destination_handles(bounds, handles, env);
+        render_content(renderer);
     }
 }

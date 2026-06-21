@@ -90,7 +90,13 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 configure_environment(&mut env);
                 let view = crate::renderer::normalize_view_for_render(view, &env);
                 let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-                renderer.dispatch(view, &env, bounds);
+                renderer.capture_window_tree(
+                    view,
+                    &env,
+                    bounds,
+                    vello::kurbo::Affine::IDENTITY,
+                    vello::kurbo::Affine::IDENTITY,
+                );
                 renderer.finish_rebuild_frame();
                 renderer.render_scene_to_texture(crate::renderer::HydrolysisRenderTarget {
                     device,

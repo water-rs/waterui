@@ -94,12 +94,15 @@ impl Default for AccessibilityBuilder {
 
 #[cfg(feature = "accessibility")]
 impl AccessibilityBuilder {
+    /// Reset the per-flush accessibility emission state. Called before EVERY flush
+    /// (rebuild and refresh both go through `HydrolysisRenderer::reset_scene`), so
+    /// the full a11y tree it re-emits starts clean — crucially resetting
+    /// `next_node_id` so a node keeps a stable id across frames (a `Cell`-stable id
+    /// is what `ui_focus`/`tree.focus()` compare against). Previously this only
+    /// cleared the pending update, so on a geometry-static refresh flush the node
+    /// list accumulated and ids drifted, desyncing UI focus.
     pub(crate) fn reset_scene(&mut self) {
         self.pending_tree_update = None;
-        self.pending_text_input_nodes.clear();
-    }
-
-    pub(crate) fn begin_rebuild_frame(&mut self) {
         self.nodes.clear();
         self.root_children.clear();
         self.actions.clear();
@@ -108,15 +111,8 @@ impl AccessibilityBuilder {
         self.suppression_depth = 0;
     }
 
-    pub(crate) fn swap_render_state(
-        &mut self,
-        subtree_nodes: &mut Vec<(AccessibilityNodeId, AccessibilityNode)>,
-        subtree_root_children: &mut Vec<AccessibilityNodeId>,
-        subtree_actions: &mut BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
-    ) {
-        core::mem::swap(&mut self.nodes, subtree_nodes);
-        core::mem::swap(&mut self.root_children, subtree_root_children);
-        core::mem::swap(&mut self.actions, subtree_actions);
+    pub(crate) fn begin_rebuild_frame(&mut self) {
+        self.reset_scene();
     }
 
     pub(crate) fn next_node_id(&mut self) -> AccessibilityNodeId {
@@ -222,66 +218,6 @@ impl AccessibilityBuilder {
 }
 
 impl HydrolysisRenderer {
-    #[cfg(feature = "accessibility")]
-    pub(crate) fn next_accessibility_node_id(&mut self) -> AccessibilityNodeId {
-        self.accessibility.next_node_id()
-    }
-
-    #[cfg(feature = "accessibility")]
-    pub(crate) fn replay_dynamic_accessibility_subtree(
-        &mut self,
-        transform: vello::kurbo::Affine,
-        subtree: &DynamicAccessibilitySubtree,
-    ) -> AccessibilityNodeIdRemap {
-        if self.accessibility.suppression_depth > 0 {
-            return AccessibilityNodeIdRemap::new(self.accessibility.next_node_id);
-        }
-
-        let id_map = AccessibilityNodeIdRemap::new(self.accessibility.next_node_id);
-        let mut root_child_cursor = 0usize;
-
-        for (local_id, node) in &subtree.nodes {
-            let mapped_id = self.next_accessibility_node_id();
-            assert!(
-                mapped_id == id_map.map(*local_id),
-                "hydrolysis dynamic accessibility node ids must be replayed in local id order"
-            );
-            let mut mapped_node = node.clone();
-            remap_accessibility_node_references(&mut mapped_node, id_map);
-            if let Some(bounds) = mapped_node.bounds() {
-                let bounds = transformed_rect(transform, accesskit_rect_to_kurbo_rect(bounds));
-                mapped_node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
-            }
-            while subtree
-                .root_children
-                .as_slice()
-                .get(root_child_cursor)
-                .is_some_and(|root_child| root_child.0 < local_id.0)
-            {
-                root_child_cursor = root_child_cursor
-                    .checked_add(1)
-                    .expect("hydrolysis dynamic accessibility root child cursor overflow");
-            }
-            if subtree
-                .root_children
-                .as_slice()
-                .get(root_child_cursor)
-                .is_some_and(|root_child| root_child == local_id)
-            {
-                self.accessibility.root_children.push(mapped_id);
-            }
-            self.accessibility.nodes.push((mapped_id, mapped_node));
-            if let Some(action_target) = subtree.actions.get(local_id) {
-                self.accessibility.actions.insert(
-                    mapped_id,
-                    transform_accessibility_action_target(action_target, transform),
-                );
-            }
-        }
-
-        id_map
-    }
-
     #[cfg(feature = "accessibility")]
     pub fn set_accessibility_root_label(&mut self, label: &str) {
         self.accessibility.root_label.clear();
@@ -603,114 +539,6 @@ impl HydrolysisRenderer {
     #[cfg(feature = "accessibility")]
     pub(crate) fn finalize_accessibility_tree_update(&mut self) {
         self.accessibility.finalize_tree_update();
-    }
-}
-
-#[cfg(feature = "accessibility")]
-pub(crate) fn register_accessibility_text_run_node(
-    renderer: &mut HydrolysisRenderer,
-    value: &str,
-    bounds: vello::kurbo::Rect,
-    env: &Environment,
-) -> Option<AccessibilityNodeId> {
-    let mut text_run = AccessibilityNode::new(AccessibilityNodeRole::TextRun);
-    text_run.set_value(value.to_owned());
-    text_run.set_character_lengths(accessibility_character_lengths(value));
-    renderer.register_accessibility_child_node(text_run, bounds, env, None)
-}
-
-#[cfg(feature = "accessibility")]
-fn accessibility_character_lengths(value: &str) -> Vec<u8> {
-    value
-        .chars()
-        .map(|ch| {
-            u8::try_from(ch.len_utf8())
-                .expect("hydrolysis accessibility text run utf8 length must fit into u8")
-        })
-        .collect()
-}
-
-#[cfg(feature = "accessibility")]
-pub(crate) fn collapsed_accessibility_text_selection(
-    node_id: AccessibilityNodeId,
-    character_index: usize,
-) -> AccessibilityTextSelection {
-    AccessibilityTextSelection {
-        anchor: AccessibilityTextPosition {
-            node: node_id,
-            character_index,
-        },
-        focus: AccessibilityTextPosition {
-            node: node_id,
-            character_index,
-        },
-    }
-}
-
-#[cfg(feature = "accessibility")]
-fn transform_accessibility_action_target(
-    target: &AccessibilityActionTarget,
-    transform: vello::kurbo::Affine,
-) -> AccessibilityActionTarget {
-    match target {
-        AccessibilityActionTarget::PointerPrimaryClick { point } => {
-            AccessibilityActionTarget::PointerPrimaryClick {
-                point: transform * *point,
-            }
-        }
-        AccessibilityActionTarget::Toggle { binding } => AccessibilityActionTarget::Toggle {
-            binding: binding.clone(),
-        },
-        AccessibilityActionTarget::Slider { value, range, step } => {
-            AccessibilityActionTarget::Slider {
-                value: value.clone(),
-                range: range.clone(),
-                step: *step,
-            }
-        }
-        AccessibilityActionTarget::Stepper { value, step, range } => {
-            AccessibilityActionTarget::Stepper {
-                value: value.clone(),
-                step: step.clone(),
-                range: range.clone(),
-            }
-        }
-        AccessibilityActionTarget::DatePicker {
-            value,
-            range,
-            ty,
-            origin,
-        } => {
-            let transformed =
-                transform * vello::kurbo::Point::new(f64::from(origin.x), f64::from(origin.y));
-            AccessibilityActionTarget::DatePicker {
-                value: value.clone(),
-                range: range.clone(),
-                ty: *ty,
-                origin: LayoutPoint::new(transformed.x as f32, transformed.y as f32),
-            }
-        }
-        AccessibilityActionTarget::TextField { value, line_limit } => {
-            AccessibilityActionTarget::TextField {
-                value: value.clone(),
-                line_limit: *line_limit,
-            }
-        }
-        AccessibilityActionTarget::SecureField { value } => {
-            AccessibilityActionTarget::SecureField {
-                value: value.clone(),
-            }
-        }
-        AccessibilityActionTarget::PickerSelect { selection, target } => {
-            AccessibilityActionTarget::PickerSelect {
-                selection: selection.clone(),
-                target: *target,
-            }
-        }
-        AccessibilityActionTarget::Scroll { handle, axis } => AccessibilityActionTarget::Scroll {
-            handle: handle.clone(),
-            axis: *axis,
-        },
     }
 }
 

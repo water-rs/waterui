@@ -1,26 +1,72 @@
 use crate::animation::AnimationKey;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TextInputModel,
-    TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
-    measure_secure_field_intrinsic, measure_text_field_intrinsic, measure_view_intrinsic,
-    normalize_view_for_render, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview,
+    TextInputModel, TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
+    measure_secure_field_intrinsic, measure_secure_field_intrinsic_with_label_size,
+    measure_text_field_intrinsic, measure_text_field_intrinsic_with_label_size, transformed_rect,
 };
 use core::num::NonZeroUsize;
 use nami::Signal;
+use std::cell::RefCell;
+use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
-use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
+use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
 use waterui_text::styled::StyledStr;
 
+/// The retained render state of a text field: the clonable [`ResolvedTextFieldConfig`]
+/// drives the input model + accessibility, and its floating label is held as a
+/// [`RetainedSubview`] built once and re-flushed each frame under the animated
+/// label transform so reactive label content stays live.
+pub(crate) struct TextFieldRenderState {
+    config: ResolvedTextFieldConfig,
+    label_view: RetainedSubview,
+}
+
+impl TextFieldRenderState {
+    pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
+        Self {
+            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            config,
+        }
+    }
+
+    /// Eagerly build the label sub-view (the measure path has only
+    /// `&mut HydroState`, no renderer, so it must be built before then).
+    pub(crate) fn prebuild(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
+        self.label_view.ensure_built(renderer, env);
+    }
+}
+
+/// The retained render state of a secure field: the clonable [`SecureFieldConfig`]
+/// drives the input model + accessibility, and its floating label is held as a
+/// [`RetainedSubview`] built once and re-flushed each frame under the animated
+/// label transform so reactive label content stays live.
+pub(crate) struct SecureFieldRenderState {
+    config: SecureFieldConfig,
+    label_view: RetainedSubview,
+}
+
+impl SecureFieldRenderState {
+    pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
+        Self {
+            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            config,
+        }
+    }
+
+    /// Eagerly build the label sub-view (the measure path has only
+    /// `&mut HydroState`, no renderer, so it must be built before then).
+    pub(crate) fn prebuild(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
+        self.label_view.ensure_built(renderer, env);
+    }
+}
+
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
-#[cfg(feature = "accessibility")]
-use crate::renderer::{
-    collapsed_accessibility_text_selection, register_accessibility_text_run_node,
-};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -36,171 +82,84 @@ const TEXT_FIELD_LABEL_ANIMATION_KEY: usize = 1;
 const SECURE_FIELD_LABEL_ANIMATION_KEY: usize = 2;
 
 impl HydroNativeView for Native<ResolvedTextFieldConfig> {
-    fn accessibility_is_render_driven() -> bool {
-        true
-    }
-
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        render_text_field(ctx, view, env);
-    }
-
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env)
-    }
-
-    fn accessibility(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        view: &Self,
-        env: &Environment,
-    ) {
-        #[cfg(feature = "accessibility")]
-        {
-            let text_field = view.as_inner();
-            let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
-                env,
-                if line_limit == Some(1) {
-                    AccessibilityNodeRole::TextInput
-                } else {
-                    AccessibilityNodeRole::MultilineTextInput
-                },
-            ));
-            let prompt_signal = text_field.prompt.content.clone();
-            let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
-            let default_label = renderer
-                .accessibility_label_from_label(&text_field.label, env)
-                .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            if !prompt.is_empty() {
-                node.set_placeholder(prompt);
-            }
-            let value = renderer
-                .read_signal(&text_field.value)
-                .to_plain()
-                .to_string();
-            if !value.is_empty() {
-                node.set_value(value.clone());
-            }
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            if let Some(text_run_node_id) =
-                register_accessibility_text_run_node(renderer, &value, bounds, env)
-            {
-                node.set_children(vec![text_run_node_id]);
-                node.set_text_selection(collapsed_accessibility_text_selection(
-                    text_run_node_id,
-                    value.chars().count(),
-                ));
-            }
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            node.add_action(AccessibilityAction::SetValue);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::TextField {
-                    value: text_field.value.clone(),
-                    line_limit,
-                }),
-            );
-        }
     }
 }
 
 impl HydroNativeView for Native<SecureFieldConfig> {
-    fn accessibility_is_render_driven() -> bool {
-        true
-    }
-
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        render_secure_field(ctx, view, env);
-    }
-
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env)
     }
+}
 
-    fn accessibility(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        view: &Self,
-        env: &Environment,
-    ) {
-        #[cfg(feature = "accessibility")]
-        {
-            let secure_field = view.as_inner();
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
-            );
-            let default_label = renderer.accessibility_label_from_label(&secure_field.label, env);
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            let secure_len = renderer
-                .read_signal(&secure_field.value)
-                .expose()
-                .chars()
-                .count();
-            let masked_value = "*".repeat(secure_len);
-            node.set_value(masked_value.clone());
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            if let Some(text_run_node_id) =
-                register_accessibility_text_run_node(renderer, &masked_value, bounds, env)
-            {
-                node.set_children(vec![text_run_node_id]);
-                node.set_text_selection(collapsed_accessibility_text_selection(
-                    text_run_node_id,
-                    masked_value.chars().count(),
-                ));
-            }
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            node.add_action(AccessibilityAction::SetValue);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::SecureField {
-                    value: secure_field.value.clone(),
-                }),
-            );
-        }
+/// Renders a retained text-field leaf every flush: text fields are
+/// render-driven a11y, so the inline a11y is emitted by `render_text_field_parts`
+/// itself; this node suppresses it when the field is accessibility-hidden (the
+/// dispatch path's render-driven suppression contract).
+pub(crate) fn render_text_field_node(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<TextFieldRenderState>>,
+    env: &Environment,
+) {
+    #[cfg(feature = "accessibility")]
+    let hidden = env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().push_accessibility_suppression();
+    }
+    render_text_field_parts(ctx, state, env);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().pop_accessibility_suppression();
     }
 }
 
-pub(crate) fn render_text_field(
+pub(crate) fn render_text_field_parts(
     ctx: &mut WidgetRenderContext<'_>,
-    text_field: Native<ResolvedTextFieldConfig>,
+    state: &Rc<RefCell<TextFieldRenderState>>,
     env: &Environment,
 ) {
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
     ctx.renderer_mut()
         .set_text_caret_motion(theme.text_caret_motion());
-    let text_field = text_field.into_inner();
+    let mut state = state.borrow_mut();
+    // Read every retained field from the retained config each frame: the `label`/
+    // `value`/`prompt`/`selection_menu` are clonable signals (the value is read
+    // through `read_signal` below so a binding change schedules a frame). The label
+    // is a retained node sub-view flushed under the animated transform each frame.
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw) = {
+        let text_field = &state.config;
+        (
+            text_field.label.clone(),
+            text_field.value.clone(),
+            text_field.prompt.content.clone(),
+            text_field.selection_menu.clone(),
+            text_field.line_limit,
+        )
+    };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label = ctx
         .renderer_mut()
-        .accessibility_label_from_label(&text_field.label, env);
-    let label_view = normalize_view_for_render(AnyView::new(text_field.label), env);
-    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
+        .accessibility_label_from_label(&label, env);
+    #[cfg(not(feature = "accessibility"))]
+    let _ = label;
+    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let label_height = material_input_label_height(label_size, input_metrics.label_height);
-    let line_limit = text_field.line_limit.map(NonZeroUsize::get);
+    let line_limit = line_limit_raw.map(NonZeroUsize::get);
     #[cfg(feature = "accessibility")]
     {
         let prompt = ctx
             .renderer_mut()
-            .read_signal(&text_field.prompt.content)
+            .read_signal(&prompt_signal)
             .to_plain()
             .to_string();
         let value = ctx
             .renderer_mut()
-            .read_signal(&text_field.value)
+            .read_signal(&value_binding)
             .to_plain()
             .to_string();
         let default_label =
@@ -234,7 +193,7 @@ pub(crate) fn render_text_field(
             bounds,
             env,
             Some(AccessibilityActionTarget::TextField {
-                value: text_field.value.clone(),
+                value: value_binding.clone(),
                 line_limit,
             }),
         ) {
@@ -259,24 +218,12 @@ pub(crate) fn render_text_field(
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
     }
-    let field_render_ctx = ctx.render_context();
-    ctx.renderer_mut().capture_state_layers(
-        field_render_ctx,
-        &field_handles,
-        field_rect,
-        true,
-        &|draw, state| {
-            theme.draw_input_field_state_layer(draw, field_rect, state);
-        },
-    );
-    let prompt_signal = text_field.prompt.content.clone();
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
-    let value_binding = text_field.value;
     let value_identity = value_binding.identity();
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
         line_limit,
-        selection_menu: text_field.selection_menu,
+        selection_menu,
     };
     let (prompt, value, preedit) = {
         let preedit = if is_focused {
@@ -312,10 +259,10 @@ pub(crate) fn render_text_field(
         label_target
     };
     if label_height > 0.0 {
-        dispatch_material_label(
+        flush_material_label(
             ctx,
             env,
-            label_view,
+            &mut state.label_view,
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
@@ -438,28 +385,61 @@ pub(crate) fn render_text_field(
         });
 }
 
-pub(crate) fn render_secure_field(
+/// Renders a retained secure-field leaf every flush: secure fields are
+/// render-driven a11y, so the inline a11y is emitted by `render_secure_field_parts`
+/// itself; this node suppresses it when the field is accessibility-hidden (the
+/// dispatch path's render-driven suppression contract).
+pub(crate) fn render_secure_field_node(
     ctx: &mut WidgetRenderContext<'_>,
-    secure_field: Native<SecureFieldConfig>,
+    state: &Rc<RefCell<SecureFieldRenderState>>,
+    env: &Environment,
+) {
+    #[cfg(feature = "accessibility")]
+    let hidden = env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().push_accessibility_suppression();
+    }
+    render_secure_field_parts(ctx, state, env);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().pop_accessibility_suppression();
+    }
+}
+
+pub(crate) fn render_secure_field_parts(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<SecureFieldRenderState>>,
     env: &Environment,
 ) {
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
     ctx.renderer_mut()
         .set_text_caret_motion(theme.text_caret_motion());
-    let secure_field = secure_field.into_inner();
+    let mut state = state.borrow_mut();
+    // Read the retained label/value from the retained config each frame (the value
+    // is a clonable `Binding<Secure>`; it is read through `read_signal` below so a
+    // binding change schedules a frame). The label is a retained node sub-view
+    // flushed under the animated transform each frame.
+    let (label, value_binding) = {
+        let secure_field = &state.config;
+        (secure_field.label.clone(), secure_field.value.clone())
+    };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label = ctx
         .renderer_mut()
-        .accessibility_label_from_label(&secure_field.label, env);
-    let label_view = normalize_view_for_render(AnyView::new(secure_field.label), env);
-    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
+        .accessibility_label_from_label(&label, env);
+    #[cfg(not(feature = "accessibility"))]
+    let _ = label;
+    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let label_height = material_input_label_height(label_size, input_metrics.label_height);
     #[cfg(feature = "accessibility")]
     {
         let secure_len = ctx
             .renderer_mut()
-            .read_signal(&secure_field.value)
+            .read_signal(&value_binding)
             .expose()
             .chars()
             .count();
@@ -483,7 +463,7 @@ pub(crate) fn render_secure_field(
             bounds,
             env,
             Some(AccessibilityActionTarget::SecureField {
-                value: secure_field.value.clone(),
+                value: value_binding.clone(),
             }),
         ) {
             ctx.renderer_mut()
@@ -507,18 +487,7 @@ pub(crate) fn render_secure_field(
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
     }
-    let field_render_ctx = ctx.render_context();
-    ctx.renderer_mut().capture_state_layers(
-        field_render_ctx,
-        &field_handles,
-        field_rect,
-        true,
-        &|draw, state| {
-            theme.draw_input_field_state_layer(draw, field_rect, state);
-        },
-    );
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
-    let value_binding = secure_field.value;
     let value_identity = value_binding.identity();
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
@@ -560,10 +529,10 @@ pub(crate) fn render_secure_field(
         label_target
     };
     if label_height > 0.0 {
-        dispatch_material_label(
+        flush_material_label(
             ctx,
             env,
-            label_view,
+            &mut state.label_view,
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
@@ -667,6 +636,42 @@ pub(crate) fn render_secure_field(
         });
 }
 
+/// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring
+/// [`measure_text_field_intrinsic`] but reading the label size from its already-built
+/// [`RetainedSubview`] so layout and the floating-label render agree.
+pub(crate) fn measure_text_field_node(
+    render_state: &TextFieldRenderState,
+    _proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    let label_size = render_state.label_view.measure_built(state, env);
+    ViewDimensions::new(measure_text_field_intrinsic_with_label_size(
+        &render_state.config,
+        label_size,
+        state,
+        env,
+    ))
+}
+
+/// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
+/// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
+/// already-built [`RetainedSubview`] so layout and the floating-label render agree.
+pub(crate) fn measure_secure_field_node(
+    render_state: &SecureFieldRenderState,
+    _proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    let label_size = render_state.label_view.measure_built(state, env);
+    ViewDimensions::new(measure_secure_field_intrinsic_with_label_size(
+        &render_state.config,
+        label_size,
+        state,
+        env,
+    ))
+}
+
 fn material_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
         f64::from(label_size.height).max(min_label_height)
@@ -703,10 +708,14 @@ fn material_input_resting_label_rect(
     )
 }
 
-fn dispatch_material_label(
+/// Flushes the floating label sub-view under the Material animated transform
+/// (translate from resting to floating position + scale). The label is a retained
+/// node sub-view re-laid-out and re-flushed each frame, so reactive label content
+/// stays live without re-dispatch.
+fn flush_material_label(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
-    label_view: AnyView,
+    label_view: &mut RetainedSubview,
     field_rect: vello::kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
@@ -722,12 +731,9 @@ fn dispatch_material_label(
     let height = label_height / scale;
     let transform = vello::kurbo::Affine::translate((x, y)) * vello::kurbo::Affine::scale(scale);
     let child = ctx.child(transform, vello::kurbo::Rect::new(0.0, 0.0, width, height));
-    HydrolysisRenderer::dispatch_any_without_accessibility(
-        ctx.renderer_mut(),
-        child,
-        env,
-        label_view,
-    );
+    #[allow(clippy::cast_possible_truncation)]
+    let size = LayoutSize::new(width as f32, height as f32);
+    label_view.flush_in_ctx(ctx.renderer_mut(), child, env, size);
 }
 
 fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {

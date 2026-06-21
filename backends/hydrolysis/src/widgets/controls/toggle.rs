@@ -1,26 +1,49 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_label_intrinsic,
-    transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_label_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::layout::Size as LayoutSize;
+use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
+use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
 use crate::widgets::util::widget_theme;
 
-impl HydroNativeView for Native<ToggleConfig> {
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        render_toggle(ctx, view, env);
+/// The retained render state of a toggle: the clonable [`ToggleConfig`] drives the
+/// control + accessibility, and its main label is held as a [`RetainedSubview`]
+/// built once and re-flushed each frame so reactive label content stays live.
+pub(crate) struct ToggleRenderState {
+    config: ToggleConfig,
+    label_view: RetainedSubview,
+}
+
+impl ToggleRenderState {
+    pub(crate) fn from_config(config: ToggleConfig) -> Self {
+        Self {
+            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            config,
+        }
     }
 
+    /// Eagerly build the label sub-view (the measure path has only
+    /// `&mut HydroState`, no renderer, so it must be built before then).
+    pub(crate) fn prebuild(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
+        self.label_view.ensure_built(renderer, env);
+    }
+}
+
+impl HydroNativeView for Native<ToggleConfig> {
     fn intrinsic(
         state: &mut crate::renderer::HydroState,
         view: &Self,
@@ -28,65 +51,119 @@ impl HydroNativeView for Native<ToggleConfig> {
     ) -> LayoutSize {
         measure_toggle_intrinsic(view.as_inner(), state, env)
     }
+}
 
-    fn accessibility(
-        renderer: &mut crate::renderer::HydrolysisRenderer,
-        ctx: RenderContext,
-        view: &Self,
-        env: &Environment,
-    ) {
-        #[cfg(feature = "accessibility")]
-        {
-            let toggle = view.as_inner();
-            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
-                env,
-                match toggle.style {
-                    ToggleStyle::Automatic | ToggleStyle::Switch => AccessibilityNodeRole::Switch,
-                    ToggleStyle::Checkbox => AccessibilityNodeRole::CheckBox,
-                    _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
-                },
-            ));
-            let default_label = renderer.accessibility_label_from_label(&toggle.label, env);
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            let checked = renderer.read_signal(&toggle.toggle);
-            node.set_toggled(AccessibilityToggled::from(checked));
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::Toggle {
-                    binding: toggle.toggle.clone(),
-                }),
-            );
+/// Emits a toggle's accessibility node from its config. Shared by the dispatch
+/// path ([`Native<ToggleConfig>::accessibility`]) and the retained `Widget`-node
+/// path so both produce the same a11y tree.
+pub(crate) fn toggle_accessibility(
+    renderer: &mut HydrolysisRenderer,
+    ctx: RenderContext,
+    toggle: &ToggleConfig,
+    env: &Environment,
+) {
+    #[cfg(feature = "accessibility")]
+    {
+        let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
+            env,
+            match toggle.style {
+                ToggleStyle::Automatic | ToggleStyle::Switch => AccessibilityNodeRole::Switch,
+                ToggleStyle::Checkbox => AccessibilityNodeRole::CheckBox,
+                _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+            },
+        ));
+        let default_label = renderer.accessibility_label_from_label(&toggle.label, env);
+        let label = renderer.resolve_accessibility_label(env, default_label);
+        if let Some(label) = label {
+            node.set_label(label);
         }
+        let checked = renderer.read_signal(&toggle.toggle);
+        node.set_toggled(AccessibilityToggled::from(checked));
+        node.add_action(AccessibilityAction::Focus);
+        node.add_action(AccessibilityAction::Click);
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let _ = renderer.register_accessibility_node(
+            node,
+            bounds,
+            env,
+            Some(AccessibilityActionTarget::Toggle {
+                binding: toggle.toggle.clone(),
+            }),
+        );
+    }
+    #[cfg(not(feature = "accessibility"))]
+    {
+        let _ = (renderer, ctx, toggle, env);
     }
 }
 
-pub(crate) fn render_toggle(
+/// Measures a retained toggle leaf from its [`ToggleRenderState`], reading the
+/// label size from its already-built [`RetainedSubview`] so layout and render agree.
+pub(crate) fn measure_toggle_node(
+    render_state: &ToggleRenderState,
+    _proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    let theme = widget_theme(env);
+    let metrics = theme.toggle_metrics(render_state.config.style);
+    let label_size = render_state.label_view.measure_built(state, env);
+    let label_width = f64::from(label_size.width);
+    let width = if label_width > 0.0 {
+        label_width + metrics.label_spacing + metrics.width
+    } else {
+        metrics.width
+    };
+    let height = f64::from(label_size.height).max(metrics.height);
+    ViewDimensions::new(LayoutSize::new(width as f32, height as f32))
+}
+
+/// Renders a retained toggle leaf every flush: emits a11y (unless hidden) then the
+/// control + label + tap target, reading the config's live signals each frame.
+pub(crate) fn render_toggle_node(
     ctx: &mut WidgetRenderContext<'_>,
-    toggle: Native<ToggleConfig>,
+    state: &Rc<RefCell<ToggleRenderState>>,
+    env: &Environment,
+) {
+    let hidden = env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    if !hidden {
+        let render_ctx = ctx.render_context();
+        toggle_accessibility(ctx.renderer_mut(), render_ctx, &state.borrow().config, env);
+    }
+    render_toggle_parts(ctx, state, env);
+}
+
+pub(crate) fn render_toggle_parts(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<ToggleRenderState>>,
     env: &Environment,
 ) {
     let theme = widget_theme(env);
-    let toggle = toggle.into_inner();
-    let style = toggle.style;
+    let mut state = state.borrow_mut();
+    let style = state.config.style;
     let metrics = theme.toggle_metrics(style);
-    let label_size = measure_label_intrinsic(&toggle.label, ctx.state_mut(), env);
+    // The label is a retained node sub-view re-flushed at its rect; reactive
+    // content stays live through the node's own per-frame re-flush, with no dispatch.
+    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let (control_bounds, label_bounds) =
         toggle_control_and_label_bounds(ctx.bounds, style, metrics, label_size);
     if label_bounds.width() > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(toggle.label), label_bounds);
+        let render_ctx = ctx.render_context();
+        state
+            .label_view
+            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_bounds);
     }
 
-    let thumb_progress = ctx
-        .renderer_mut()
-        .resolve_toggle_progress(&toggle.toggle, theme.toggle_value_animation());
+    // Reading the toggle value through `resolve_toggle_progress` watches the
+    // signal (it registers a `request_rebuild` watcher), so a value change
+    // schedules a frame and this persistent node re-renders the new state.
+    let thumb_progress = {
+        let binding = state.config.toggle.clone();
+        ctx.renderer_mut()
+            .resolve_toggle_progress(&binding, theme.toggle_value_animation())
+    };
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let (interaction, press_slot, handles) =
         ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
@@ -106,25 +183,15 @@ pub(crate) fn render_toggle(
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         }
     }
-    let render_ctx = ctx.render_context();
-    ctx.renderer_mut()
-        .capture_state_layers(render_ctx, &handles, control_bounds, false, &|draw, state| match style {
-            ToggleStyle::Automatic | ToggleStyle::Switch => {
-                theme.draw_toggle_switch_state_layer(draw, control_bounds, thumb_progress, state);
-            }
-            ToggleStyle::Checkbox => {
-                theme.draw_toggle_checkbox_state_layer(draw, control_bounds, thumb_progress, state);
-            }
-            _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
-        });
-
-    let toggle_binding = toggle.toggle;
+    // Toggle the value through the retained binding so the node and the dispatch
+    // path register equivalent tap targets.
+    let binding = state.config.toggle.clone();
     ctx.renderer_mut().register_interactive_pointer_target(
         hit_bounds,
         press_slot,
         move |_renderer, _point, _env| {
-            let next = !toggle_binding.get();
-            toggle_binding.set(next);
+            let next = !binding.get();
+            binding.set(next);
             true
         },
     );

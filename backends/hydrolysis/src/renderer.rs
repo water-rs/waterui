@@ -19,7 +19,6 @@
 
 mod accessibility;
 mod bindings;
-mod collection;
 mod dispatch;
 mod effects;
 mod frame;
@@ -33,18 +32,18 @@ mod retained;
 mod signals;
 #[cfg(test)]
 mod tests;
+mod tree;
 mod views;
 
-pub(crate) use collection::*;
 pub(crate) use dispatch::*;
 pub(crate) use effects::*;
 pub(crate) use frame::*;
 pub(crate) use retained::*;
+pub(crate) use tree::*;
 pub(crate) use views::*;
 pub(crate) use waterui_backend_core::frame_signals::FrameSignals;
 
 use accessibility::*;
-use core::any::Any;
 use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
 use core::time::Duration;
@@ -64,7 +63,7 @@ pub(crate) use render::{
 };
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
@@ -72,13 +71,11 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
     NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
-    TextPosition as AccessibilityTextPosition, TextSelection as AccessibilityTextSelection,
     Toggled as AccessibilityToggled, Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
-use rustc_hash::FxHashMap;
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
@@ -162,7 +159,7 @@ use crate::engine::{
     RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
     vello_backend::VelloDrawContext,
 };
-use crate::gesture::{GestureEngine, GestureTarget};
+use crate::gesture::GestureEngine;
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
 };
@@ -180,9 +177,7 @@ const MORPH_PROGRESS_ANIMATION_KEY: usize = 0x0100_0007;
 
 #[cfg(feature = "accessibility")]
 pub(crate) use accessibility::{
-    AccessibilityActionTarget, accessibility_activation_point,
-    collapsed_accessibility_text_selection, register_accessibility_text_run_node,
-    slider_step_for_range,
+    AccessibilityActionTarget, accessibility_activation_point, slider_step_for_range,
 };
 pub(crate) use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
@@ -191,7 +186,6 @@ pub(crate) use input::{
 
 /// Core hydrolysis renderer state.
 pub struct HydrolysisRenderer {
-    dispatcher: HydroDispatcher,
     state: HydroState,
     vello_renderer: vello::Renderer,
     scene: vello::Scene,
@@ -211,24 +205,6 @@ pub struct HydrolysisRenderer {
     animation_controller: AnimationController,
     frame_instant: Instant,
     scroll_controller: ScrollController,
-    scroll_content_caches: BTreeMap<usize, ScrollContentCache>,
-    /// Retained per-item caches for non-virtualized reactive collections
-    /// (`ForEach`/`List` in `AbsoluteLayout`/`ZStackLayout` overlays). Keyed by
-    /// a stable [`CollectionController`] slot address; persists across rebuilds
-    /// so item identities survive a resize. See [`collection`].
-    collection_caches: BTreeMap<usize, CollectionCache>,
-    reuse_scroll_content_caches: bool,
-    scroll_content_capture_depth: usize,
-    scroll_content_viewport_dependent: bool,
-    scroll_content_animation_dependent: bool,
-    retained_window_frame: Option<RetainedWindowFrame>,
-    dynamic_morph_capture_depth: u32,
-    dynamic_morph_draws: Vec<DynamicMorphDraw>,
-    dynamic_transform_capture_depth: u32,
-    /// The current subtree's draw ops in dispatch (painter's) order: static scene
-    /// segments interleaved with deferred dynamic draws. Swapped out per subtree
-    /// capture by `SubtreeCaptureScope`; see [`DynamicDrawOp`].
-    draw_ops: Vec<DynamicDrawOp>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     frame_applied_filter_count: u32,
@@ -237,11 +213,24 @@ pub struct HydrolysisRenderer {
     reuse_applied_filter_inputs: bool,
     active_applied_filters: Vec<ActiveAppliedFilter>,
     active_applied_filter_cursor: usize,
-    /// Effect runtimes holding persistent GPU resources; see [`EffectRuntimeSlots`].
-    effect_runtime_slots: EffectRuntimeSlots,
+    /// Retained render-tree GPU surfaces (`GpuSurfaceNode`-owned runtimes),
+    /// registered at node build time. Polled by
+    /// [`HydrolysisRenderer::poll_gpu_surface_redraw_handles`] for off-thread
+    /// redraw requests; dead entries (node dropped on a Dynamic swap) are pruned
+    /// by strong count. These never enter the cursor-truncated `gpu_surface_slots`.
+    node_gpu_surfaces: Vec<Rc<RefCell<EmbeddedGpuSurfaceRuntime>>>,
+    /// Retained render-tree applied filters (`AppliedFilterNode`-owned runtimes),
+    /// registered at node build time. Refreshed by
+    /// [`HydrolysisRenderer::refresh_active_applied_filters`] on redraw-only
+    /// frames; dead entries are pruned by strong count. These never enter the
+    /// cursor-truncated `active_applied_filters`.
+    node_applied_filters: Vec<Rc<RefCell<AppliedFilterRuntime>>>,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     accessibility: AccessibilityBuilder,
+    /// The persistent window render tree (`tree::RenderNode`), built on a structural
+    /// rebuild and re-flushed each frame. `None` before the first build.
+    render_tree: Option<RenderNode>,
 }
 
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
@@ -269,14 +258,10 @@ impl HydrolysisRenderer {
 
     #[must_use]
     pub fn new_with_options(device: &wgpu::Device, options: vello::RendererOptions) -> Self {
-        let mut dispatcher = HydroDispatcher::new();
-        Self::register_core_handlers(&mut dispatcher);
-
         let vello_renderer =
             vello::Renderer::new(device, options).expect("failed to create hydrolysis renderer");
         let frame_instant = Instant::now();
         Self {
-            dispatcher,
             state: HydroState::default(),
             vello_renderer,
             scene: vello::Scene::new(),
@@ -295,17 +280,6 @@ impl HydrolysisRenderer {
             animation_controller: AnimationController::default(),
             frame_instant,
             scroll_controller: ScrollController::default(),
-            scroll_content_caches: BTreeMap::new(),
-            collection_caches: BTreeMap::new(),
-            reuse_scroll_content_caches: false,
-            scroll_content_capture_depth: 0,
-            scroll_content_viewport_dependent: false,
-            scroll_content_animation_dependent: false,
-            retained_window_frame: None,
-            dynamic_morph_capture_depth: 0,
-            dynamic_morph_draws: Vec::new(),
-            dynamic_transform_capture_depth: 0,
-            draw_ops: Vec::new(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_applied_filter_count: 0,
@@ -314,10 +288,12 @@ impl HydrolysisRenderer {
             reuse_applied_filter_inputs: false,
             active_applied_filters: Vec::new(),
             active_applied_filter_cursor: 0,
-            effect_runtime_slots: EffectRuntimeSlots::default(),
+            node_gpu_surfaces: Vec::new(),
+            node_applied_filters: Vec::new(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             accessibility: AccessibilityBuilder::default(),
+            render_tree: None,
         }
     }
 }

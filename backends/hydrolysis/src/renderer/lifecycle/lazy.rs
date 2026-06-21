@@ -1,39 +1,25 @@
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
 use waterui_layout::stack::{HStackLayout, VStackLayout};
 
 #[derive(Default)]
 pub(crate) struct LazyState {
-    pub(crate) lazy_stack_controller: LazyStackController,
     pub(crate) lazy_list_controller: LazyListController,
     pub(crate) lazy_table_controller: LazyTableController,
-    pub(crate) collection_controller: CollectionController,
     pub(crate) lazy_viewport_stack: Vec<vello::kurbo::Rect>,
     pub(crate) pending_scroll_handles: Vec<ScrollHandle>,
 }
 
 impl LazyState {
     pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.lazy_stack_controller.begin_rebuild_frame();
         self.lazy_list_controller.begin_rebuild_frame();
         self.lazy_table_controller.begin_rebuild_frame();
-        self.collection_controller.begin_rebuild_frame();
         self.lazy_viewport_stack.clear();
         self.pending_scroll_handles.clear();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.lazy_stack_controller.finish_rebuild_frame();
         self.lazy_list_controller.finish_rebuild_frame();
         self.lazy_table_controller.finish_rebuild_frame();
-        self.collection_controller.finish_rebuild_frame();
-    }
-
-    /// Cache keys of every collection slot still bound after the rebuild that
-    /// just finished. The renderer GCs `collection_caches` to this set so a
-    /// collection removed from the tree releases its retained item subtrees.
-    pub(crate) fn live_collection_keys(&self) -> BTreeSet<usize> {
-        self.collection_controller.live_keys()
     }
 
     pub(crate) fn push_pending_scroll_handle(&mut self, handle: ScrollHandle) {
@@ -48,12 +34,6 @@ impl LazyState {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct LazyStackController {
-    pub(crate) slots: BTreeMap<LazyStackSlotKey, LazyStackSlot>,
-    pub(crate) active_keys: BTreeSet<LazyStackSlotKey>,
-}
-
-#[derive(Debug, Default)]
 pub(crate) struct LazyListController {
     pub(crate) slots: Vec<LazyListSlot>,
     pub(crate) cursor: usize,
@@ -63,38 +43,6 @@ pub(crate) struct LazyListController {
 pub(crate) struct LazyTableController {
     pub(crate) slots: Vec<LazyTableSlot>,
     pub(crate) cursor: usize,
-}
-
-/// Registry of retained collection slots, keyed by body order across rebuilds.
-///
-/// One slot per non-virtualized `LazyContainer` (`AbsoluteLayout`/`ZStackLayout`
-/// overlay collection) encountered during dispatch. The slot is a stable heap
-/// allocation reused via cursor reuse, so its address is a `cache_key` that
-/// stays constant across structural rebuilds — letting the renderer keep one
-/// `CollectionCache` (per-item retained subtrees) alive for the collection's
-/// lifetime and reconcile membership changes incrementally instead of
-/// re-dispatching every item on each rebuild. Mirrors [`ScrollController`].
-#[derive(Debug, Default)]
-pub(crate) struct CollectionController {
-    slots: Vec<Rc<CollectionSlot>>,
-    cursor: usize,
-}
-
-/// Marker allocation whose address identifies a collection slot. Reused across
-/// rebuilds so the address (the `cache_key`) is stable for the slot's lifetime.
-#[derive(Debug)]
-pub(crate) struct CollectionSlot;
-
-#[derive(Debug, Default)]
-pub(crate) struct LazyStackSlot {
-    pub(crate) item_extents: Vec<Option<f64>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct LazyStackSlotKey {
-    pub(crate) depth: usize,
-    pub(crate) transform: [u64; 6],
-    pub(crate) bounds: [u64; 4],
 }
 
 #[derive(Debug, Default)]
@@ -132,33 +80,6 @@ pub(crate) enum LazyStackAxisConfig {
         spacing: f64,
         alignment: VerticalAlignment,
     },
-}
-
-impl LazyStackController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.active_keys.clear();
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.retain(|key, _| self.active_keys.contains(key));
-    }
-
-    pub(crate) fn bind(&mut self, key: LazyStackSlotKey) -> &mut LazyStackSlot {
-        self.active_keys.insert(key);
-        self.slots.entry(key).or_default()
-    }
-
-    pub(crate) fn slot(&self, key: LazyStackSlotKey) -> &LazyStackSlot {
-        self.slots
-            .get(&key)
-            .expect("lazy stack slot must be bound before read")
-    }
-
-    pub(crate) fn slot_mut(&mut self, key: LazyStackSlotKey) -> &mut LazyStackSlot {
-        self.slots
-            .get_mut(&key)
-            .expect("lazy stack slot must be bound before mutation")
-    }
 }
 
 impl LazyListController {
@@ -205,45 +126,6 @@ impl LazyTableController {
     }
 }
 
-impl CollectionController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    /// Binds the next collection in body order to its persistent slot and
-    /// returns the slot's `cache_key` (the slot allocation's stable address).
-    /// Reuses the slot at the current cursor, creating it on first encounter.
-    pub(crate) fn bind(&mut self) -> usize {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("collection controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(Rc::new(CollectionSlot));
-        }
-        Rc::as_ptr(&self.slots[index]) as usize
-    }
-
-    /// The `cache_key` of every slot still bound after a rebuild.
-    pub(crate) fn live_keys(&self) -> BTreeSet<usize> {
-        self.slots
-            .iter()
-            .map(|slot| Rc::as_ptr(slot) as usize)
-            .collect()
-    }
-}
-
-impl LazyStackSlot {
-    pub(crate) fn prepare_len(&mut self, len: usize) {
-        self.item_extents.resize(len, None);
-    }
-}
-
 impl LazyListSlot {
     pub(crate) fn prepare_len(&mut self, len: usize) {
         self.row_extents.resize(len, None);
@@ -281,6 +163,76 @@ pub(crate) fn lazy_stack_axis_config(layout: &dyn Layout) -> Option<LazyStackAxi
         });
     }
     None
+}
+
+/// Places one lazy-stack item: given its measured `size`, `stretch_axis`, the
+/// container `bounds`, and the running main-axis `cursor`, returns the item's rect.
+/// Shared by the immediate-mode `render_lazy_container` handler and the retained
+/// render tree's `LazyStackNode` so the cross-axis sizing/alignment rules live in
+/// exactly one place.
+pub(crate) fn place_lazy_stack_item(
+    axis_config: LazyStackAxisConfig,
+    stretch_axis: StretchAxis,
+    size: waterui_core::layout::Size,
+    bounds: vello::kurbo::Rect,
+    cursor: f64,
+) -> vello::kurbo::Rect {
+    match axis_config {
+        LazyStackAxisConfig::Vertical { alignment, .. } => {
+            assert!(
+                !(matches!(
+                    stretch_axis,
+                    StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
+                )),
+                "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
+            );
+            let child_width = if matches!(
+                stretch_axis,
+                StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
+            ) || size.width.is_infinite()
+            {
+                bounds.width()
+            } else {
+                f64::from(size.width).min(bounds.width())
+            };
+            let child_height = f64::from(size.height);
+            let x = if alignment == HorizontalAlignment::Leading {
+                bounds.x0
+            } else if alignment == HorizontalAlignment::Trailing {
+                bounds.x1 - child_width
+            } else {
+                bounds.x0 + (bounds.width() - child_width) / 2.0
+            };
+            vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
+        }
+        LazyStackAxisConfig::Horizontal { alignment, .. } => {
+            assert!(
+                !(matches!(
+                    stretch_axis,
+                    StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
+                )),
+                "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
+            );
+            let child_width = f64::from(size.width);
+            let child_height = if matches!(
+                stretch_axis,
+                StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
+            ) || size.height.is_infinite()
+            {
+                bounds.height()
+            } else {
+                f64::from(size.height).min(bounds.height())
+            };
+            let y = if alignment == VerticalAlignment::Top {
+                bounds.y0
+            } else if alignment == VerticalAlignment::Bottom {
+                bounds.y1 - child_height
+            } else {
+                bounds.y0 + (bounds.height() - child_height) / 2.0
+            };
+            vello::kurbo::Rect::new(cursor, y, cursor + child_width, y + child_height)
+        }
+    }
 }
 
 pub(crate) fn sum_cached_or_estimated(extents: &[Option<f64>], estimate: f64) -> f64 {
@@ -395,35 +347,3 @@ pub(crate) fn table_metrics_from_slot(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const KEY_A: LazyStackSlotKey = LazyStackSlotKey {
-        depth: 1,
-        transform: [1, 0, 0, 1, 0, 0],
-        bounds: [0, 0, 100, 100],
-    };
-    const KEY_B: LazyStackSlotKey = LazyStackSlotKey {
-        depth: 1,
-        transform: [1, 0, 0, 1, 0, 200],
-        bounds: [0, 0, 100, 100],
-    };
-
-    #[test]
-    fn lazy_stack_slots_are_bound_by_key_not_frame_order() {
-        let mut controller = LazyStackController::default();
-        controller.bind(KEY_A).prepare_len(1);
-        controller.slot_mut(KEY_A).item_extents[0] = Some(24.0);
-        controller.bind(KEY_B).prepare_len(1);
-        controller.slot_mut(KEY_B).item_extents[0] = Some(48.0);
-        controller.finish_rebuild_frame();
-
-        controller.begin_rebuild_frame();
-        controller.bind(KEY_B).prepare_len(1);
-
-        assert_eq!(controller.slot(KEY_B).item_extents[0], Some(48.0));
-        controller.finish_rebuild_frame();
-        assert!(!controller.slots.contains_key(&KEY_A));
-    }
-}
