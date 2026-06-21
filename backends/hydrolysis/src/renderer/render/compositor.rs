@@ -94,8 +94,6 @@ pub(crate) struct Compositor {
     /// (parallel) encode itself.
     pub(crate) vello_renderer_pool: std::sync::Mutex<Vec<vello::Renderer>>,
     pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
-    pub(crate) gpu_surface_slots: Vec<EmbeddedGpuSurfaceRuntime>,
-    pub(crate) gpu_surface_cursor: usize,
     pub(crate) render_layers: Vec<RenderLayer>,
     pub(crate) active_scene_layers: Vec<ActiveSceneLayer>,
     pub(crate) active_filter_images: Vec<vello::peniko::ImageData>,

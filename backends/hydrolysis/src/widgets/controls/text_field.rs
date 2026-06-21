@@ -2,9 +2,10 @@ use crate::animation::AnimationKey;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview,
-    TextInputModel, TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
-    measure_secure_field_intrinsic, measure_secure_field_intrinsic_with_label_size,
-    measure_text_field_intrinsic, measure_text_field_intrinsic_with_label_size, transformed_rect,
+    TextInputModel, TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext,
+    clamp_to_char_boundary, measure_secure_field_intrinsic,
+    measure_secure_field_intrinsic_with_label_size, measure_text_field_intrinsic,
+    measure_text_field_intrinsic_with_label_size, transformed_rect,
 };
 use core::num::NonZeroUsize;
 use nami::Signal;
@@ -24,6 +25,10 @@ use waterui_text::styled::StyledStr;
 pub(crate) struct TextFieldRenderState {
     config: ResolvedTextFieldConfig,
     label_view: RetainedSubview,
+    /// The caret/selection anchor+focus for this field, owned by the node so it
+    /// persists across frames without a renderer-global, flush-order-indexed slot
+    /// pool. Node-owned control state is reset only when this node is dropped.
+    selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
 impl TextFieldRenderState {
@@ -31,6 +36,7 @@ impl TextFieldRenderState {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
             config,
+            selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
     }
 
@@ -48,6 +54,8 @@ impl TextFieldRenderState {
 pub(crate) struct SecureFieldRenderState {
     config: SecureFieldConfig,
     label_view: RetainedSubview,
+    /// Node-owned caret/selection state; see [`TextFieldRenderState::selection_slot`].
+    selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
 impl SecureFieldRenderState {
@@ -55,6 +63,7 @@ impl SecureFieldRenderState {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
             config,
+            selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
     }
 
@@ -218,7 +227,7 @@ pub(crate) fn render_text_field_parts(
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
     }
-    let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
+    let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
@@ -487,7 +496,7 @@ pub(crate) fn render_secure_field_parts(
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
     }
-    let selection_slot = ctx.renderer_mut().bind_text_selection_slot();
+    let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),

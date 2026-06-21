@@ -95,7 +95,6 @@ impl HydrolysisRenderer {
         self.frame_applied_filter_count = 0;
         self.frame_applied_filter_capture = Duration::ZERO;
         self.frame_applied_filter_effect = Duration::ZERO;
-        self.active_applied_filter_cursor = 0;
         self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
@@ -104,11 +103,8 @@ impl HydrolysisRenderer {
         self.scroll_controller.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
-        self.compositor.gpu_surface_cursor = 0;
         self.compositor.render_layers.clear();
         self.compositor.active_scene_layers.clear();
-        self.popup_menu.begin_rebuild_frame();
-        self.text_editing.text_selection_cursor = 0;
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
     }
@@ -118,12 +114,38 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn begin_redraw_frame(&mut self) {
-        self.state.measurement.reset_counters();
+        // Clear the per-frame `stable_ptr`-keyed view-dimension cache, not just the
+        // counters: the refresh path now runs full layout every frame, so it measures
+        // `RetainedSubview`/widget content through that cache. Its keys are view heap
+        // addresses, unique only within a frame (a freed view's address is reused next
+        // frame), so a stale entry would otherwise be read as a different view's size.
+        // The persistent, content-keyed text-shaping cache is untouched and keeps full
+        // layout cheap.
+        self.state.measurement.begin_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
         self.frame_applied_filter_count = 0;
         self.frame_applied_filter_capture = Duration::ZERO;
         self.frame_applied_filter_effect = Duration::ZERO;
+    }
+
+    /// Drop text-input focus / selection-drag indices that point past the
+    /// text-input targets re-emitted this frame. Targets are pure-emission (rebuilt
+    /// in flush order every frame), so after any flush — rebuild or refresh — a
+    /// previously focused field may no longer exist. Shared by both frame paths.
+    pub(crate) fn validate_focused_text_input_after_flush(&mut self) {
+        if matches!(
+            self.text_editing.focused_text_input.get(),
+            Some(index) if index >= self.text_editing.text_input_targets.len()
+        ) {
+            self.set_focused_text_input(None);
+        }
+        if matches!(
+            self.text_editing.active_text_selection_drag,
+            Some(index) if index >= self.text_editing.text_input_targets.len()
+        ) {
+            self.text_editing.active_text_selection_drag = None;
+        }
     }
 
     pub fn finish_rebuild_frame(&mut self) {
@@ -148,18 +170,7 @@ impl HydrolysisRenderer {
             .measurement
             .retain_dynamic_identities(|identity| live_dynamics.contains(&identity));
 
-        if matches!(
-            self.text_editing.focused_text_input.get(),
-            Some(index) if index >= self.text_editing.text_input_targets.len()
-        ) {
-            self.set_focused_text_input(None);
-        }
-        if matches!(
-            self.text_editing.active_text_selection_drag,
-            Some(index) if index >= self.text_editing.text_input_targets.len()
-        ) {
-            self.text_editing.active_text_selection_drag = None;
-        }
+        self.validate_focused_text_input_after_flush();
 
         self.animation_controller
             .finish_rebuild_frame_with_inactive_slot_retention(false);
@@ -167,15 +178,6 @@ impl HydrolysisRenderer {
         self.hit_test.finish_rebuild_frame();
         self.lazy.finish_rebuild_frame();
         self.navigation.finish_rebuild_frame();
-        self.compositor
-            .gpu_surface_slots
-            .truncate(self.compositor.gpu_surface_cursor);
-        self.active_applied_filters
-            .truncate(self.active_applied_filter_cursor);
-        self.popup_menu.finish_rebuild_frame();
-        self.text_editing
-            .text_selection_slots
-            .truncate(self.text_editing.text_selection_cursor);
         self.signals.finish_rebuild();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
