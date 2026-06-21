@@ -246,6 +246,61 @@ fn widget_reactive_label_stays_live() {
     );
 }
 
+/// The single-pump contract: a reactive *value* change that alters a leaf's size
+/// reflows the layout through the cheap refresh pump. Full layout runs every frame,
+/// so a widening text pushes its trailing sibling — and the frame is a window
+/// *refresh*, not a structural `body()` rebuild (`watch_signal` schedules a refresh).
+/// This is what lets every reactive update read current state + relayout + redraw on
+/// one uniform path instead of re-running the view tree.
+#[test]
+fn reactive_size_change_reflows_via_refresh_not_rebuild() {
+    use core::time::Duration;
+    use std::time::Instant;
+    use waterui::prelude::Color;
+    use waterui::reactive::binding;
+    use waterui::text;
+    use waterui_core::Str;
+    use waterui_core::handler::AnyViewBuilder;
+    use waterui_layout::stack::hstack;
+
+    let label = binding(Str::from("x"));
+    let builder = {
+        let label = label.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let label = label.clone();
+            AnyView::new(hstack((
+                text!("{label}", label = label.clone()),
+                ().size(40.0, 40.0).background(Color::srgb_hex("#2563EB")),
+            )))
+        })
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 320, 80);
+    let start = Instant::now();
+    let before = rt
+        .pump_at(true, start)
+        .snapshot
+        .expect("first frame snapshot");
+    label.set(Str::from("a very wide label that grows"));
+    let result = rt.pump_at(true, start + Duration::from_millis(16));
+    assert!(
+        !result.rebuilt,
+        "a reactive value change must reflow through the refresh pump, not a structural \
+         body() rebuild"
+    );
+    let after = result.snapshot.expect("post-change snapshot");
+    assert_eq!(
+        (before.width, before.height),
+        (after.width, after.height),
+        "snapshots must share dimensions to compare pixel-for-pixel"
+    );
+    assert_ne!(
+        before.rgba8, after.rgba8,
+        "a widening reactive text must reflow its sibling through full per-frame layout"
+    );
+}
+
 /// A reactive *value* inside a native widget (a `Progress` bound to a
 /// `Binding<f64>`) stays live on the render-tree path: the progress indicator is a
 /// persistent `Widget` node that re-renders from its retained config every flush,

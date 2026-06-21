@@ -46,12 +46,11 @@ pub(crate) struct PopupMenuStateGroup(pub(crate) Rc<RefCell<Vec<Binding<WindowSt
 #[derive(Default)]
 pub(crate) struct PopupMenuState {
     pub(crate) active_popup_menu_group: Option<PopupMenuStateGroup>,
-    pub(crate) picker_menu_slots: Vec<PickerMenuSlot>,
-    pub(crate) picker_menu_cursor: usize,
-}
-
-pub(crate) struct PickerMenuSlot {
-    pub(crate) open: Rc<Cell<bool>>,
+    /// Open/closed handles for the picker menus currently in the render tree, each
+    /// owned by its picker node. This is only a registry for "dismiss every menu"
+    /// (outside click) — it is Rc-pruned, never flush-order-indexed, so a dropped
+    /// picker's handle falls out by strong count and the live ones are deduplicated.
+    pub(crate) node_picker_menus: Vec<Rc<Cell<bool>>>,
 }
 
 #[derive(Clone)]
@@ -71,26 +70,28 @@ pub(crate) struct PickerMenuRequest {
 }
 
 impl PopupMenuState {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.picker_menu_cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        for slot in self.picker_menu_slots.drain(self.picker_menu_cursor..) {
-            slot.open.set(false);
+    /// Register a picker node's open handle for "dismiss every menu". Prunes handles
+    /// of dropped pickers (the registry is then their only holder) and deduplicates,
+    /// so a node re-registering its handle on every flush is idempotent.
+    pub(crate) fn register_picker_menu(&mut self, open: &Rc<Cell<bool>>) {
+        self.node_picker_menus
+            .retain(|handle| Rc::strong_count(handle) > 1);
+        if !self
+            .node_picker_menus
+            .iter()
+            .any(|handle| Rc::ptr_eq(handle, open))
+        {
+            self.node_picker_menus.push(Rc::clone(open));
         }
     }
 
-    pub(crate) fn bind_picker_menu_state(&mut self) -> Rc<Cell<bool>> {
-        let index = self.picker_menu_cursor;
-        self.picker_menu_cursor = self
-            .picker_menu_cursor
-            .checked_add(1)
-            .expect("picker menu slot cursor overflow");
-        if index == self.picker_menu_slots.len() {
-            self.picker_menu_slots.push(PickerMenuSlot::new());
+    /// Close every open picker menu (an outside click dismisses them all).
+    pub(crate) fn close_all_picker_menus(&mut self) {
+        self.node_picker_menus
+            .retain(|handle| Rc::strong_count(handle) > 1);
+        for handle in &self.node_picker_menus {
+            handle.set(false);
         }
-        Rc::clone(&self.picker_menu_slots[index].open)
     }
 }
 
@@ -116,14 +117,6 @@ impl PopupMenuStateGroup {
 }
 
 impl_extractor!(PopupMenuStateGroup);
-
-impl PickerMenuSlot {
-    pub(crate) fn new() -> Self {
-        Self {
-            open: Rc::new(Cell::new(false)),
-        }
-    }
-}
 
 fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> LayoutPoint {
     let window_origin = env
@@ -622,9 +615,11 @@ impl HydrolysisRenderer {
         if let Some(group) = self.popup_menu.active_popup_menu_group.take() {
             group.close_all();
         }
-        for slot in &self.popup_menu.picker_menu_slots {
-            slot.open.set(false);
-        }
+        self.popup_menu.close_all_picker_menus();
+    }
+
+    pub(crate) fn register_picker_menu(&mut self, open: &Rc<Cell<bool>>) {
+        self.popup_menu.register_picker_menu(open);
     }
 
     pub(crate) fn topmost_context_menu_target_at_point(

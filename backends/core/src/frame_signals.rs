@@ -82,6 +82,21 @@ impl FrameSignals {
         self.inner.redraw_requested.replace(false)
     }
 
+    /// Requests a re-flush of the retained render tree on the next frame: a
+    /// reactive *value* changed (text content, color, a leaf's intrinsic size), so
+    /// the tree structure is unchanged but it must re-read its signals, re-run
+    /// layout, and re-encode.
+    ///
+    /// Routed through the same window-refresh path as a `Dynamic` patch
+    /// ([`take_patch_request`](Self::take_patch_request) observes it) but with an
+    /// empty dirty-node set, so the patch step is a no-op and the change is reflected
+    /// purely by the always-on relayout + reflush. This is the common reactive
+    /// update — far cheaper than a structural rebuild, which re-runs the whole view
+    /// `body()`.
+    pub fn request_refresh(&self) {
+        self.inner.patch_requested.set(true);
+    }
+
     /// Requests a structural rebuild — a re-dispatch of the whole window view
     /// tree — on the next frame (the most expensive request kind).
     pub fn request_rebuild(&self) {

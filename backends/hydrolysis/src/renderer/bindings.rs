@@ -110,25 +110,6 @@ impl HydrolysisRenderer {
             .unwrap_or_else(|| panic!("lazy viewport stack underflow in {caller}"));
     }
 
-    pub(crate) fn bind_picker_menu_state(&mut self) -> Rc<Cell<bool>> {
-        self.popup_menu.bind_picker_menu_state()
-    }
-
-    pub(crate) fn bind_text_selection_slot(&mut self) -> Rc<RefCell<TextSelectionSlot>> {
-        let index = self.text_editing.text_selection_cursor;
-        self.text_editing.text_selection_cursor = self
-            .text_editing
-            .text_selection_cursor
-            .checked_add(1)
-            .expect("text selection slot cursor overflow");
-        if index == self.text_editing.text_selection_slots.len() {
-            self.text_editing
-                .text_selection_slots
-                .push(Rc::new(RefCell::new(TextSelectionSlot::default())));
-        }
-        Rc::clone(&self.text_editing.text_selection_slots[index])
-    }
-
     pub(crate) fn next_text_input_index(&self) -> usize {
         self.text_editing.text_input_targets.len()
     }

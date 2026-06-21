@@ -1495,8 +1495,12 @@ impl RenderNode {
                 );
             }
             RenderNode::Text(text) => {
-                let styled = text.content.get();
-                let alignment = text.alignment.get();
+                // Read the content/alignment signals through `read_signal` so a change
+                // re-subscribes this frame and schedules a window refresh — the same
+                // cheap pump every other reactive leaf uses. (A bare reactive `Text`
+                // has no surrounding widget to watch it, so the node must do so itself.)
+                let styled = renderer.read_signal(&text.content);
+                let alignment = renderer.read_signal(&text.alignment);
                 text.emit_accessibility(renderer, ctx, &styled, env);
                 let (state, scene) = renderer.state_and_scene_mut();
                 HydrolysisRenderer::render_styled_text(state, scene, ctx, styled, alignment, env);
@@ -2669,12 +2673,19 @@ impl RenderNode {
         use crate::widgets::controls::picker::{measure_picker_node, render_picker_node};
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let config = Rc::new(RefCell::new(config));
+        // Node-owned menu open/closed state: it persists across frames as a field of
+        // this node's render closure, not in a renderer-global, flush-order-indexed
+        // slot pool. The renderer keeps only an Rc-pruned registry of these handles so
+        // an outside click can dismiss every open menu; a dropped picker's handle falls
+        // out of the registry by strong count.
+        let menu_open = Rc::new(Cell::new(false));
         let render = {
             let config = Rc::clone(&config);
+            let menu_open = Rc::clone(&menu_open);
             Box::new(
                 move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
                     let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_picker_node(&mut widget_ctx, &config, env);
+                    render_picker_node(&mut widget_ctx, &config, &menu_open, env);
                 },
             ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
         };
@@ -3758,22 +3769,49 @@ impl HydrolysisRenderer {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
         };
+        // Roll over this frame's Retain watcher guards exactly like the rebuild path:
+        // a full re-flush re-reads (re-subscribes) every reactive input, so last
+        // frame's guards must move current -> previous (dropped next frame) instead of
+        // accumulating. ONLY the lifecycle (Retain) bracket runs here — never the
+        // animation/scroll controller brackets, whose in-flight cross-frame state the
+        // refresh path must preserve. `patch` may build new `Dynamic` subtrees that
+        // subscribe, so this precedes it.
+        self.lifecycle.begin_rebuild_frame();
+        // Reset the flush-bound interaction cursors (press/hover slot indices,
+        // hit-test order). A full re-flush re-binds every widget's interaction slot in
+        // the same walk order, so resetting + rebinding + truncating here keeps the
+        // cursor mapping stable across refresh frames (slot state persists by index,
+        // with bounds-matching guarding against reuse) — without this, a refresh would
+        // hand every widget a fresh slot and drop its hover/press state. The
+        // animation/scroll/nav controllers are deliberately NOT reset (cross-frame).
+        self.hit_test.begin_rebuild_frame();
         // Apply any pending reactive Dynamic content changes incrementally
-        // (rebuild only the affected child subtrees). If a swap occurred, relayout
-        // the whole retained tree — cheap (microseconds, per the perf gate) and it
-        // lets a size-changing swap reflow its ancestors without the legacy
-        // reset-and-redispatch flash. A pure animation/scroll/re-present frame
-        // changes nothing, so it skips relayout and pays only re-encode.
-        let changed = tree.patch(self);
+        // (rebuild only the affected child subtrees), then run FULL layout every
+        // frame. Layout is cheap by construction: the only heavy work — text
+        // shaping — is memoized in the persistent, content-keyed text cache, and
+        // containers just recompute `place()` arithmetic over cached child
+        // measurements. Always relaying out lets a reactive value change that
+        // alters a leaf's size (text content, a widget's intrinsic size) reflow
+        // its ancestors through this same cheap pump, with no `body()` rebuild and
+        // no reset-and-redispatch flash. `begin_redraw_frame` (above) cleared the
+        // per-frame `stable_ptr` view-dimension cache so this measure pass is sound.
+        let _ = tree.patch(self);
         self.reset_scene();
         self.begin_redraw_frame();
-        if changed {
-            let size = Size::new(bounds.width() as f32, bounds.height() as f32);
-            tree.layout(self, env, size);
-        }
+        let size = Size::new(bounds.width() as f32, bounds.height() as f32);
+        tree.layout(self, env, size);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
         self.flush_vello_scene_layer();
+        self.hit_test.finish_rebuild_frame();
+        self.lifecycle.finish_rebuild_frame();
+        // A reactive value change can remove the focused field; drop focus/drag that
+        // now points past the re-emitted text-input targets, then republish the a11y
+        // tree so a value/label change is reflected on this cheap path (parity with
+        // the rebuild path's `finish_rebuild_frame`).
+        self.validate_focused_text_input_after_flush();
+        #[cfg(feature = "accessibility")]
+        self.finalize_accessibility_tree_update();
         self.render_tree = Some(tree);
         true
     }
