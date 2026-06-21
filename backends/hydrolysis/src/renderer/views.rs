@@ -223,6 +223,9 @@ pub(crate) fn render_morph_shape_parts(
 ) {
     let bounds = ctx.bounds;
     let transform = ctx.transform;
+    // Stable identity of this morph node: the retained shape `Rc`'s address keys the
+    // time-based morph slot so it survives structural changes (no `render_depth`).
+    let node_id = Rc::as_ptr(shape) as usize;
     let renderer = ctx.renderer_mut();
     let (path, fill) = {
         let resolved = shape.borrow();
@@ -230,7 +233,7 @@ pub(crate) fn render_morph_shape_parts(
             renderer
                 .resolve_animated_scalar_with_discriminator(progress, MORPH_PROGRESS_ANIMATION_KEY)
         } else {
-            renderer.sample_morph_progress(resolved.animation)
+            renderer.sample_morph_progress(resolved.animation, node_id)
         };
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),

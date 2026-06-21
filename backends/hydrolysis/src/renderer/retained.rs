@@ -50,14 +50,20 @@ impl HydrolysisRenderer {
         handle.sample(now)
     }
 
+    /// Sample a time-based shape-morph phase. `node_id` is the stable identity of
+    /// the owning morph node (its retained `Rc` address), so the timeline slot keys
+    /// off node identity and survives across frames and structural changes — unlike a
+    /// positional `render_depth`, which shifts when a sibling subtree's node count
+    /// changes and would restart the morph mid-animation.
     pub(crate) fn sample_morph_progress(
         &mut self,
         animation: waterui_shape::MorphAnimation,
+        node_id: usize,
     ) -> f32 {
         if animation.duration.is_zero() {
             return 1.0;
         }
-        let key = AnimationKey::renderer_local_repeating(self.render_depth);
+        let key = AnimationKey::renderer_local_repeating(node_id);
         let elapsed = self.animation_controller.bind_timeline_phase(
             key,
             animation.duration,

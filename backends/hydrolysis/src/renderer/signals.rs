@@ -100,8 +100,13 @@ impl HydrolysisRenderer {
             .bind_radio_indicator(key, selected, motion, self.frame_instant)
     }
 
-    pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration) -> Duration {
-        let key = AnimationKey::renderer_local_repeating(self.render_depth);
+    /// Sample a free-running repeating phase (e.g. an indeterminate progress
+    /// indicator). `node_id` is the stable identity of the owning node (its retained
+    /// `Rc` address), so the phase slot keys off node identity and survives across
+    /// frames and structural changes — unlike a positional `render_depth`, which
+    /// shifts when a sibling subtree's node count changes and would reset the phase.
+    pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration, node_id: usize) -> Duration {
+        let key = AnimationKey::renderer_local_repeating(node_id);
         self.animation_controller
             .bind_repeating_phase(key, cycle, self.frame_instant)
     }
