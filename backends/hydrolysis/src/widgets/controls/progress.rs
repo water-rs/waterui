@@ -167,6 +167,9 @@ pub(crate) fn render_progress_parts(
     env: &Environment,
 ) {
     let theme = widget_theme(env);
+    // Stable identity of this progress node: the retained state `Rc`'s address keys
+    // the indeterminate repeating phase so it survives structural changes.
+    let node_id = Rc::as_ptr(state) as usize;
     let mut progress = state.borrow_mut();
     let style = progress.style;
     let four_color = progress.four_color;
@@ -234,7 +237,7 @@ pub(crate) fn render_progress_parts(
             } else {
                 let elapsed = ctx
                     .renderer_mut()
-                    .sample_repeating_motion(motion.linear_indeterminate_cycle);
+                    .sample_repeating_motion(motion.linear_indeterminate_cycle, node_id);
                 let mut draw = ctx.draw_context();
                 theme.draw_progress_linear_indeterminate(&mut draw, bar_rect, elapsed, four_color);
             }
@@ -287,7 +290,7 @@ pub(crate) fn render_progress_parts(
             } else {
                 let elapsed = ctx
                     .renderer_mut()
-                    .sample_repeating_motion(motion.circular_indeterminate_cycle);
+                    .sample_repeating_motion(motion.circular_indeterminate_cycle, node_id);
                 let mut draw = ctx.draw_context();
                 theme.draw_progress_circular_indeterminate(
                     &mut draw,
