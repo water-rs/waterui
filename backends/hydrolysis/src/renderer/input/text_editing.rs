@@ -17,8 +17,6 @@ pub(crate) enum TextInputModel {
 #[derive(Default)]
 pub(crate) struct TextEditingState {
     pub(crate) text_input_targets: Vec<TextInputTarget>,
-    pub(crate) text_selection_slots: Vec<Rc<RefCell<TextSelectionSlot>>>,
-    pub(crate) text_selection_cursor: usize,
     pub(crate) active_text_selection_drag: Option<usize>,
     pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
     pub(crate) active_text_context_menu: Option<ActiveTextContextMenu>,

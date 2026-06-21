@@ -10,7 +10,7 @@ use accesskit::{
     Toggled as AccessibilityToggled,
 };
 use nami::{Binding, Signal};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui_backend_core::widget::RadioIndicatorState;
 use waterui_core::Environment;
@@ -221,6 +221,7 @@ pub(crate) fn measure_picker_node(
 pub(crate) fn render_picker_node(
     ctx: &mut WidgetRenderContext<'_>,
     config: &Rc<RefCell<PickerConfig>>,
+    menu_open: &Rc<Cell<bool>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -230,12 +231,13 @@ pub(crate) fn render_picker_node(
         let render_ctx = ctx.render_context();
         picker_accessibility(ctx.renderer_mut(), render_ctx, &config.borrow(), env);
     }
-    render_picker_parts(ctx, config, env);
+    render_picker_parts(ctx, config, menu_open, env);
 }
 
 pub(crate) fn render_picker_parts(
     ctx: &mut WidgetRenderContext<'_>,
     config: &Rc<RefCell<PickerConfig>>,
+    menu_open: &Rc<Cell<bool>>,
     env: &Environment,
 ) {
     // The items/selection signals are read through `read_signal` so a membership or
@@ -251,7 +253,7 @@ pub(crate) fn render_picker_parts(
     );
     match style {
         PickerStyle::Automatic | PickerStyle::Menu => {
-            render_menu_picker(ctx, selection, items, env);
+            render_menu_picker(ctx, selection, items, menu_open, env);
         }
         PickerStyle::Radio => {
             render_radio_picker(ctx, selection, items, env);
@@ -293,12 +295,16 @@ pub(crate) fn render_menu_picker(
     ctx: &mut WidgetRenderContext<'_>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
+    menu_open: &Rc<Cell<bool>>,
     env: &Environment,
 ) {
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Menu);
     let selected = ctx.renderer_mut().read_signal(&selection);
-    let menu_open = ctx.renderer_mut().bind_picker_menu_state();
+    // Register this node-owned open handle so an outside click can dismiss it; the
+    // registry is Rc-pruned, so re-registering the same handle each frame is a no-op.
+    ctx.renderer_mut().register_picker_menu(menu_open);
+    let menu_open = Rc::clone(menu_open);
     let selected_index = items
         .iter()
         .position(|item| item.tag == selected)

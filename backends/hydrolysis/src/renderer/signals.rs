@@ -9,7 +9,11 @@ impl HydrolysisRenderer {
         S: Signal + Clone + 'static,
     {
         let signals = self.signals.clone();
-        let guard = signal.watch(move |_| signals.request_rebuild());
+        // A reactive *value* change re-flushes the retained tree (re-read, re-layout,
+        // re-encode) — the cheap per-frame pump — instead of re-running the whole view
+        // `body()`. Structural changes go through `Dynamic`/`when` (a patch), not a
+        // plain signal read, so a refresh is sufficient here.
+        let guard = signal.watch(move |_| signals.request_refresh());
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
     }
 
@@ -68,7 +72,7 @@ impl HydrolysisRenderer {
                 .try_get::<Animation>()
                 .unwrap_or_else(|| default_animation.clone());
             watcher_handle.apply_target(target, Some(animation), signals.frame_clock());
-            signals.request_rebuild();
+            signals.request_refresh();
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
         handle.sample(now).clamp(0.0, 1.0)

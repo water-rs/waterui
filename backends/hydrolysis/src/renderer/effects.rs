@@ -242,13 +242,6 @@ pub(crate) struct AppliedFilterOutputTexture {
     view: wgpu::TextureView,
 }
 
-#[derive(Clone)]
-pub(crate) struct ActiveAppliedFilter {
-    runtime: Rc<RefCell<AppliedFilterRuntime>>,
-    width: u32,
-    height: u32,
-}
-
 pub(crate) struct ViewEffectRuntime {
     pub(crate) effect: ViewEffectErased,
     pub(crate) setup_complete: bool,
@@ -273,20 +266,19 @@ impl HydrolysisRenderer {
         // registry still holds the `Rc`).
         self.node_applied_filters
             .retain(|runtime| Rc::strong_count(runtime) > 1);
-        let mut active_filters = self
-            .active_applied_filters
-            .iter()
-            .map(|filter| (Rc::clone(&filter.runtime), filter.width, filter.height))
-            .collect::<Vec<_>>();
         // Node-owned filters supply their dimensions from the runtime's last
         // flush (the redraw-only frame does not re-flush the tree). A filter that
         // has never rendered has no input texture yet and is skipped.
-        active_filters.extend(self.node_applied_filters.iter().filter_map(|runtime| {
-            runtime
-                .borrow()
-                .input_dimensions()
-                .map(|(width, height)| (Rc::clone(runtime), width, height))
-        }));
+        let active_filters = self
+            .node_applied_filters
+            .iter()
+            .filter_map(|runtime| {
+                runtime
+                    .borrow()
+                    .input_dimensions()
+                    .map(|(width, height)| (Rc::clone(runtime), width, height))
+            })
+            .collect::<Vec<_>>();
         if active_filters.is_empty() {
             return;
         }
@@ -359,11 +351,6 @@ impl HydrolysisRenderer {
 
     pub fn poll_gpu_surface_redraw_handles(&mut self) -> bool {
         let mut requested = false;
-        for runtime in &self.compositor.gpu_surface_slots {
-            if runtime.take_external_redraw_request() {
-                requested = true;
-            }
-        }
         // Retained render-tree GPU surfaces own their runtime; prune any whose
         // node has been dropped (only this registry still holds the `Rc`), then
         // poll the live ones for off-thread redraw requests.

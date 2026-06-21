@@ -211,19 +211,16 @@ pub struct HydrolysisRenderer {
     frame_applied_filter_capture: Duration,
     frame_applied_filter_effect: Duration,
     reuse_applied_filter_inputs: bool,
-    active_applied_filters: Vec<ActiveAppliedFilter>,
-    active_applied_filter_cursor: usize,
     /// Retained render-tree GPU surfaces (`GpuSurfaceNode`-owned runtimes),
     /// registered at node build time. Polled by
     /// [`HydrolysisRenderer::poll_gpu_surface_redraw_handles`] for off-thread
     /// redraw requests; dead entries (node dropped on a Dynamic swap) are pruned
-    /// by strong count. These never enter the cursor-truncated `gpu_surface_slots`.
+    /// by strong count.
     node_gpu_surfaces: Vec<Rc<RefCell<EmbeddedGpuSurfaceRuntime>>>,
     /// Retained render-tree applied filters (`AppliedFilterNode`-owned runtimes),
     /// registered at node build time. Refreshed by
     /// [`HydrolysisRenderer::refresh_active_applied_filters`] on redraw-only
-    /// frames; dead entries are pruned by strong count. These never enter the
-    /// cursor-truncated `active_applied_filters`.
+    /// frames; dead entries are pruned by strong count.
     node_applied_filters: Vec<Rc<RefCell<AppliedFilterRuntime>>>,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -286,8 +283,6 @@ impl HydrolysisRenderer {
             frame_applied_filter_capture: Duration::ZERO,
             frame_applied_filter_effect: Duration::ZERO,
             reuse_applied_filter_inputs: false,
-            active_applied_filters: Vec::new(),
-            active_applied_filter_cursor: 0,
             node_gpu_surfaces: Vec::new(),
             node_applied_filters: Vec::new(),
             lazy: LazyState::default(),
