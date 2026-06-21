@@ -1,5 +1,5 @@
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext, measure_view_dimensions,
+    HydroNativeView, HydroState, measure_view_dimensions,
     measure_view_dimensions_with_proposal, normalize_layout_view,
 };
 use waterui_core::dynamic::Dynamic;
@@ -60,11 +60,6 @@ fn measure_dynamic(
 }
 
 impl HydroNativeView for Native<Dynamic> {
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        let render_ctx = ctx.render_context();
-        HydrolysisRenderer::render_dynamic(ctx.renderer_mut(), render_ctx, view, env);
-    }
-
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_dynamic(state, view.as_inner(), env, ProposalSize::UNSPECIFIED).size
     }

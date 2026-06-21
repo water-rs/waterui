@@ -2,7 +2,7 @@ use std::path::Path;
 
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
 use waterui::graphics::SceneViewMergeToParent;
-use waterui_core::{Environment, View};
+use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 
@@ -80,7 +80,13 @@ impl TestHost {
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
         let env = self.env.clone().extending(SceneViewMergeToParent);
-        renderer.dispatch(view, &env, bounds);
+        renderer.capture_window_tree(
+            AnyView::new(view),
+            &env,
+            bounds,
+            vello::kurbo::Affine::IDENTITY,
+            vello::kurbo::Affine::IDENTITY,
+        );
         renderer.finish_rebuild_frame();
 
         let frame = surface

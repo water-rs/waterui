@@ -107,7 +107,6 @@ impl HydrolysisRenderer {
         let pending_releases = self.flush_interaction_releases(now);
         self.animation_controller.tick(now)
             || pending_releases
-            || self.collection_transitions_active(now)
             || self.navigation.slots.iter().any(|slot| {
                 slot.transition
                     .as_ref()
@@ -119,7 +118,6 @@ impl HydrolysisRenderer {
         let now = self.frame_instant;
         self.animation_controller.has_active(now)
             || self.has_pending_interaction_releases(now)
-            || self.collection_transitions_active(now)
             || self.navigation.slots.iter().any(|slot| {
                 slot.transition
                     .as_ref()

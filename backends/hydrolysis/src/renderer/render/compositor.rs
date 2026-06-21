@@ -1,4 +1,6 @@
 use super::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -141,9 +143,18 @@ pub(crate) struct ActiveSceneLayer {
     pub(crate) shape: LayerShape,
 }
 
+/// Where a [`GpuSurfaceLayer`]'s runtime lives. The retained render tree owns
+/// its runtime directly inside its `GpuSurfaceNode` (`Owned`), so a reactive
+/// swap renders the new surface and a per-frame re-flush re-binds the same
+/// runtime structurally — no cursor desync.
+#[derive(Clone)]
+pub(crate) enum GpuSurfaceSource {
+    Owned(Rc<RefCell<EmbeddedGpuSurfaceRuntime>>),
+}
+
 #[derive(Clone)]
 pub(crate) struct GpuSurfaceLayer {
-    pub(crate) slot_index: usize,
+    pub(crate) source: GpuSurfaceSource,
     pub(crate) transform: vello::kurbo::Affine,
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
@@ -403,20 +414,6 @@ impl EmbeddedGpuSurfaceRuntime {
             start_time: now,
             last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
         }
-    }
-
-    pub(crate) fn replace_surface(&mut self, surface: GpuSurface, env: &Environment) {
-        let now = Instant::now();
-        self.surface = surface;
-        self.env = env.clone();
-        self.setup_complete = false;
-        self.output_format = wgpu::TextureFormat::Rgba8Unorm;
-        self.output_size = (1, 1);
-        self.output_texture = None;
-        self.output_view = None;
-        self.redraw_handle = RedrawHandle::new();
-        self.start_time = now;
-        self.last_frame_time = now - Duration::from_secs_f32(1.0 / 60.0);
     }
 
     pub(crate) fn take_external_redraw_request(&self) -> bool {
@@ -878,16 +875,13 @@ impl HydrolysisRenderer {
         let fullscreen_uniform =
             encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]], true);
         let mut render_layers = core::mem::take(&mut self.compositor.render_layers);
-        let transient_layer_count = if let Some(scene) = self
-            .transient_scene
-            .take()
-            .filter(scene_has_content)
-        {
-            render_layers.push(RenderLayer::Vello(scene));
-            1
-        } else {
-            0
-        };
+        let transient_layer_count =
+            if let Some(scene) = self.transient_scene.take().filter(scene_has_content) {
+                render_layers.push(RenderLayer::Vello(scene));
+                1
+            } else {
+                0
+            };
         if render_layers.is_empty() {
             self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
             return;
@@ -898,22 +892,17 @@ impl HydrolysisRenderer {
             let texture = target
                 .texture
                 .expect("hydrolysis direct GpuSurface render requires target texture");
-            let needs_redraw = self
-                .compositor
-                .gpu_surface_slots
-                .get_mut(layer.slot_index)
-                .unwrap_or_else(|| {
-                    panic!("hydrolysis gpu surface slot {} missing", layer.slot_index)
-                })
-                .render_direct_to_target(DirectGpuSurfaceTarget {
-                    device: target.device,
-                    queue: target.queue,
-                    texture,
-                    view: target.view.clone(),
-                    format: target.format,
-                    width: target.width,
-                    height: target.height,
-                });
+            let direct_target = DirectGpuSurfaceTarget {
+                device: target.device,
+                queue: target.queue,
+                texture,
+                view: target.view.clone(),
+                format: target.format,
+                width: target.width,
+                height: target.height,
+            };
+            let GpuSurfaceSource::Owned(runtime) = &layer.source;
+            let needs_redraw = runtime.borrow_mut().render_direct_to_target(direct_target);
             self.compositor.render_layers = render_layers;
             if needs_redraw {
                 self.request_redraw();
@@ -990,24 +979,19 @@ impl HydrolysisRenderer {
                     );
                 }
                 RenderLayer::GpuSurface(layer) => {
-                    let prepared = self
-                        .compositor
-                        .gpu_surface_slots
-                        .get_mut(layer.slot_index)
-                        .unwrap_or_else(|| {
-                            panic!("hydrolysis gpu surface slot {} missing", layer.slot_index)
-                        })
-                        .prepare_layer(
-                            target.device,
-                            target.queue,
-                            EmbeddedLayerTarget {
-                                format: target.format,
-                                width: target.width,
-                                height: target.height,
-                                transform: layer.transform,
-                                bounds: layer.bounds,
-                            },
-                        );
+                    let embedded_target = EmbeddedLayerTarget {
+                        format: target.format,
+                        width: target.width,
+                        height: target.height,
+                        transform: layer.transform,
+                        bounds: layer.bounds,
+                    };
+                    let GpuSurfaceSource::Owned(runtime) = &layer.source;
+                    let prepared = runtime.borrow_mut().prepare_layer(
+                        target.device,
+                        target.queue,
+                        embedded_target,
+                    );
                     if prepared.needs_redraw {
                         needs_redraw = true;
                     }

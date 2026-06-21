@@ -32,12 +32,6 @@ pub(crate) fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
     }
 }
 
-impl Drop for HydrolysisRenderer {
-    fn drop(&mut self) {
-        self.lifecycle.drop_all_hooks();
-    }
-}
-
 impl HydrolysisRenderer {
     pub(crate) fn set_window_bounds(&mut self, bounds: vello::kurbo::Rect) {
         self.window_bounds = bounds;
@@ -95,10 +89,6 @@ impl HydrolysisRenderer {
         // A full rebuild re-dispatches every Dynamic node, so any pending isolated
         // reactive patch is subsumed by it.
         self.signals.begin_rebuild();
-        if !self.reuse_scroll_content_caches {
-            self.scroll_content_caches.clear();
-        }
-        self.retained_window_frame = None;
         self.state.measurement.begin_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
@@ -106,7 +96,6 @@ impl HydrolysisRenderer {
         self.frame_applied_filter_capture = Duration::ZERO;
         self.frame_applied_filter_effect = Duration::ZERO;
         self.active_applied_filter_cursor = 0;
-        self.effect_runtime_slots.begin_rebuild_frame();
         self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
@@ -122,10 +111,6 @@ impl HydrolysisRenderer {
         self.text_editing.text_selection_cursor = 0;
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
-    }
-
-    pub(crate) fn set_scroll_content_cache_reuse(&mut self, reuse: bool) {
-        self.reuse_scroll_content_caches = reuse;
     }
 
     pub(crate) fn set_applied_filter_input_cache_reuse(&mut self, reuse: bool) {
@@ -148,8 +133,20 @@ impl HydrolysisRenderer {
             self.compositor.active_scene_layers.len()
         );
         self.flush_vello_scene_layer();
-        self.lifecycle
-            .finish_rebuild_frame(&mut self.state, self.reuse_scroll_content_caches);
+        self.lifecycle.finish_rebuild_frame();
+        // Prune the measure-path `Dynamic` dimension cache down to the identities
+        // still present in the retained render tree. The cache is read by
+        // `measure_dynamic` when a `Dynamic` leaf is measured after its content was
+        // handed to a `DynamicHostNode`; the live `DynamicHostNode`s in `render_tree`
+        // are exactly the alive identities now that the dispatch path is gone.
+        let live_dynamics = self
+            .render_tree
+            .as_ref()
+            .map(RenderNode::collect_dynamic_identities)
+            .unwrap_or_default();
+        self.state
+            .measurement
+            .retain_dynamic_identities(|identity| live_dynamics.contains(&identity));
 
         if matches!(
             self.text_editing.focused_text_input.get(),
@@ -165,22 +162,16 @@ impl HydrolysisRenderer {
         }
 
         self.animation_controller
-            .finish_rebuild_frame_with_inactive_slot_retention(self.reuse_scroll_content_caches);
+            .finish_rebuild_frame_with_inactive_slot_retention(false);
         self.scroll_controller.finish_rebuild_frame();
         self.hit_test.finish_rebuild_frame();
         self.lazy.finish_rebuild_frame();
-        // Drop retained collection caches whose slot was not rebound this frame
-        // (the collection left the tree); reused slots keep their per-item caches.
-        let live_collections = self.lazy.live_collection_keys();
-        self.collection_caches
-            .retain(|key, _| live_collections.contains(key));
         self.navigation.finish_rebuild_frame();
         self.compositor
             .gpu_surface_slots
             .truncate(self.compositor.gpu_surface_cursor);
         self.active_applied_filters
             .truncate(self.active_applied_filter_cursor);
-        self.effect_runtime_slots.finish_rebuild_frame();
         self.popup_menu.finish_rebuild_frame();
         self.text_editing
             .text_selection_slots
@@ -337,11 +328,6 @@ impl HydrolysisRenderer {
 
     pub fn take_patch_request(&self) -> bool {
         self.signals.take_patch_request()
-    }
-
-    #[must_use]
-    pub fn has_retained_window_frame(&self) -> bool {
-        self.retained_window_frame.is_some()
     }
 
     pub fn take_next_frame_rebuild_request(&self) -> bool {

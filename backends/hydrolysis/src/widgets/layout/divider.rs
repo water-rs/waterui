@@ -1,13 +1,38 @@
-use crate::renderer::{HydrolysisRenderer, RenderContext, WidgetRenderContext};
+use crate::renderer::{HydroState, WidgetRenderContext};
+use std::cell::RefCell;
+use std::rc::Rc;
 use waterui::widget::Divider;
 use waterui_core::Environment;
+use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_layout::stack::Axis as StackAxis;
 
 use crate::widgets::util::widget_theme;
 
-pub(crate) fn render_divider(
+/// Measures a retained divider leaf: a 1×1 minimum, matching the dispatch path's
+/// `measure_view_dimensions` for `Divider`. The divider stretches on its cross
+/// axis during placement; its intrinsic size is the line thickness floor.
+pub(crate) fn measure_divider_node(
+    _divider: &Divider,
+    _proposal: ProposalSize,
+    _state: &mut HydroState,
+    _env: &Environment,
+) -> ViewDimensions {
+    ViewDimensions::new(LayoutSize::new(1.0, 1.0))
+}
+
+/// Renders a retained divider leaf every flush: draws the separator line from the
+/// theme metrics, oriented by the enclosing stack axis. No accessibility.
+pub(crate) fn render_divider_node(
     ctx: &mut WidgetRenderContext<'_>,
-    _divider: Divider,
+    divider: &Rc<RefCell<Divider>>,
+    env: &Environment,
+) {
+    render_divider_parts(ctx, divider, env);
+}
+
+pub(crate) fn render_divider_parts(
+    ctx: &mut WidgetRenderContext<'_>,
+    _divider: &Rc<RefCell<Divider>>,
     env: &Environment,
 ) {
     let theme = widget_theme(env);
@@ -31,14 +56,4 @@ pub(crate) fn render_divider(
 
     let mut draw = ctx.draw_context();
     theme.draw_divider(&mut draw, rect);
-}
-
-pub(crate) fn render_divider_with_renderer(
-    renderer: &mut HydrolysisRenderer,
-    ctx: RenderContext,
-    divider: Divider,
-    env: &Environment,
-) {
-    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-    render_divider(&mut widget_ctx, divider, env);
 }
