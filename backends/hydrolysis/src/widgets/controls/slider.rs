@@ -4,88 +4,211 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_slider_intrinsic, measure_view_intrinsic, normalize_view_for_render,
-    slider_value_epsilon, transformed_rect,
+    measure_slider_intrinsic, slider_value_epsilon, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use core::ops::RangeInclusive;
+use nami::Binding;
+use std::cell::RefCell;
+use std::rc::Rc;
+use waterui_controls::label::Label;
 use waterui_controls::slider::SliderConfig;
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
+use waterui_core::layout::{ProposalSize, ViewDimensions};
 
+use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
 use crate::widgets::util::widget_theme;
 
-impl HydroNativeView for Native<SliderConfig> {
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        render_slider(ctx, view, env);
-    }
+/// The retained render state of a slider. A `SliderConfig`'s value-end labels are
+/// move-only `AnyView`s (they cannot be re-dispatched twice), so the persistent
+/// `Widget` node holds them as [`RetainedSubview`]s built once and re-flushed each
+/// frame; the clonable `label`/`range`/`value` drive the track and accessibility.
+pub(crate) struct SliderRenderState {
+    label: Label,
+    /// The main label as a retained node sub-view, re-flushed each frame at its
+    /// rect (reactive content stays live through the node's own re-flush). The
+    /// clonable `label` is kept alongside for accessibility resolution.
+    label_view: RetainedSubview,
+    min_value_label: RetainedSubview,
+    max_value_label: RetainedSubview,
+    range: RangeInclusive<f64>,
+    value: Binding<f64>,
+}
 
-    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
-        measure_slider_intrinsic(view.as_inner(), state, env)
-    }
-
-    fn accessibility(
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        view: &Self,
-        env: &Environment,
-    ) {
-        #[cfg(feature = "accessibility")]
-        {
-            let slider = view.as_inner();
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Slider),
-            );
-            let default_label = renderer.accessibility_label_from_label(&slider.label, env);
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            let start = *slider.range.start();
-            let end = *slider.range.end();
-            assert!(start < end, "hydrolysis slider requires range start < end");
-            let current = renderer.read_signal(&slider.value).clamp(start, end);
-            node.set_numeric_value(current);
-            node.set_min_numeric_value(start);
-            node.set_max_numeric_value(end);
-            node.set_numeric_value_step(slider_step_for_range(slider.range.clone()));
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Increment);
-            node.add_action(AccessibilityAction::Decrement);
-            node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::Slider {
-                    value: slider.value.clone(),
-                    range: slider.range.clone(),
-                    step: slider_step_for_range(slider.range.clone()),
-                }),
-            );
+impl SliderRenderState {
+    pub(crate) fn from_config(config: SliderConfig) -> Self {
+        let SliderConfig {
+            label,
+            min_value_label,
+            max_value_label,
+            range,
+            value,
+            ..
+        } = config;
+        Self {
+            label_view: RetainedSubview::new(AnyView::new(label.clone())),
+            label,
+            min_value_label: RetainedSubview::new(min_value_label),
+            max_value_label: RetainedSubview::new(max_value_label),
+            range,
+            value,
         }
+    }
+
+    /// Eagerly build the label sub-views (the measure path has only
+    /// `&mut HydroState`, no renderer, so labels must be built before then).
+    pub(crate) fn prebuild_labels(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
+        self.label_view.ensure_built(renderer, env);
+        self.min_value_label.ensure_built(renderer, env);
+        self.max_value_label.ensure_built(renderer, env);
     }
 }
 
-pub(crate) fn render_slider(
+impl HydroNativeView for Native<SliderConfig> {
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_slider_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+/// Field-level accessibility emission for the [`SliderRenderState`]-based
+/// retained node path.
+fn slider_accessibility_parts(
+    renderer: &mut HydrolysisRenderer,
+    ctx: RenderContext,
+    label: &Label,
+    range: &RangeInclusive<f64>,
+    value: &Binding<f64>,
+    env: &Environment,
+) {
+    #[cfg(feature = "accessibility")]
+    {
+        let mut node = AccessibilityNode::new(
+            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Slider),
+        );
+        let default_label = renderer.accessibility_label_from_label(label, env);
+        let resolved = renderer.resolve_accessibility_label(env, default_label);
+        if let Some(resolved) = resolved {
+            node.set_label(resolved);
+        }
+        let start = *range.start();
+        let end = *range.end();
+        assert!(start < end, "hydrolysis slider requires range start < end");
+        let current = renderer.read_signal(value).clamp(start, end);
+        node.set_numeric_value(current);
+        node.set_min_numeric_value(start);
+        node.set_max_numeric_value(end);
+        node.set_numeric_value_step(slider_step_for_range(range.clone()));
+        node.add_action(AccessibilityAction::Focus);
+        node.add_action(AccessibilityAction::Increment);
+        node.add_action(AccessibilityAction::Decrement);
+        node.add_action(AccessibilityAction::SetValue);
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let _ = renderer.register_accessibility_node(
+            node,
+            bounds,
+            env,
+            Some(AccessibilityActionTarget::Slider {
+                value: value.clone(),
+                range: range.clone(),
+                step: slider_step_for_range(range.clone()),
+            }),
+        );
+    }
+    #[cfg(not(feature = "accessibility"))]
+    {
+        let _ = (renderer, ctx, label, range, value, env);
+    }
+}
+
+/// Measures a retained slider leaf from its [`SliderRenderState`], mirroring
+/// [`measure_slider_intrinsic`] but reading the value-end labels from their
+/// already-built [`RetainedSubview`]s (the measure path has no renderer to build
+/// on, so the labels are pre-built at tree-build time).
+pub(crate) fn measure_slider_node(
+    render_state: &SliderRenderState,
+    _proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    let theme = widget_theme(env);
+    let metrics = theme.slider_metrics();
+    let label_size = render_state.label_view.measure_built(state, env);
+    let min_label_size = render_state.min_value_label.measure_built(state, env);
+    let max_label_size = render_state.max_value_label.measure_built(state, env);
+
+    let control_row_height = (metrics.thumb_radius * 2.0)
+        .max(f64::from(min_label_size.height))
+        .max(f64::from(max_label_size.height));
+    let label_height = f64::from(label_size.height);
+    let intrinsic_height = if label_height > 0.0 {
+        label_height + metrics.vertical_spacing + control_row_height
+    } else {
+        control_row_height
+    };
+
+    let min_width = f64::from(label_size.width).max(
+        f64::from(min_label_size.width)
+            + metrics.horizontal_spacing
+            + metrics.min_track_width
+            + metrics.horizontal_spacing
+            + f64::from(max_label_size.width)
+            + metrics.horizontal_inset * 2.0,
+    );
+    ViewDimensions::new(LayoutSize::new(min_width as f32, intrinsic_height as f32))
+}
+
+/// Renders a retained slider leaf every flush: emits a11y (unless hidden) then the
+/// track + thumb + labels + drag target, reading the value signal each frame.
+pub(crate) fn render_slider_node(
     ctx: &mut WidgetRenderContext<'_>,
-    slider: Native<SliderConfig>,
+    state: &Rc<RefCell<SliderRenderState>>,
+    env: &Environment,
+) {
+    let hidden = env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    if !hidden {
+        let render_ctx = ctx.render_context();
+        let slider = state.borrow();
+        slider_accessibility_parts(
+            ctx.renderer_mut(),
+            render_ctx,
+            &slider.label,
+            &slider.range,
+            &slider.value,
+            env,
+        );
+    }
+    render_slider_parts(ctx, state, env);
+}
+
+pub(crate) fn render_slider_parts(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<SliderRenderState>>,
     env: &Environment,
 ) {
     let theme = widget_theme(env);
     let metrics = theme.slider_metrics();
-    let mut slider = slider.into_inner();
-    let label_view = normalize_view_for_render(AnyView::new(slider.label), env);
-    slider.min_value_label = normalize_view_for_render(slider.min_value_label, env);
-    slider.max_value_label = normalize_view_for_render(slider.max_value_label, env);
+    let mut state = state.borrow_mut();
+    // Every label is a retained node sub-view re-flushed at its rect; reactive
+    // content stays live through the node's own per-frame re-flush, with no
+    // dispatch. The main label sizes the top row, the value-end labels flank the
+    // track.
     let label_height = if ctx.bounds.height() >= 36.0 {
-        f64::from(measure_view_intrinsic(&label_view, ctx.state_mut(), env).height).max(20.0)
+        f64::from(
+            state
+                .label_view
+                .measure_intrinsic(ctx.renderer_mut(), env)
+                .height,
+        )
+        .max(20.0)
     } else {
         0.0
     };
@@ -96,11 +219,18 @@ pub(crate) fn render_slider(
             ctx.bounds.x1,
             (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
         );
-        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
+        let render_ctx = ctx.render_context();
+        state
+            .label_view
+            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_rect);
     }
 
-    let min_label_size = measure_view_intrinsic(&slider.min_value_label, ctx.state_mut(), env);
-    let max_label_size = measure_view_intrinsic(&slider.max_value_label, ctx.state_mut(), env);
+    let min_label_size = state
+        .min_value_label
+        .measure_intrinsic(ctx.renderer_mut(), env);
+    let max_label_size = state
+        .max_value_label
+        .measure_intrinsic(ctx.renderer_mut(), env);
     let min_label_width = f64::from(min_label_size.width);
     let max_label_width = f64::from(max_label_size.width);
     let min_label_x0 = ctx.bounds.x0 + metrics.horizontal_inset;
@@ -114,16 +244,22 @@ pub(crate) fn render_slider(
     if min_label_width > 0.0 && control_height > 0.0 {
         let min_label_rect =
             vello::kurbo::Rect::new(min_label_x0, control_top, min_label_x1, control_bottom);
-        ctx.dispatch_in_rect_without_accessibility(env, slider.min_value_label, min_label_rect);
+        let render_ctx = ctx.render_context();
+        state
+            .min_value_label
+            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, min_label_rect);
     }
     if max_label_width > 0.0 && control_height > 0.0 {
         let max_label_rect =
             vello::kurbo::Rect::new(max_label_x0, control_top, max_label_x1, control_bottom);
-        ctx.dispatch_in_rect_without_accessibility(env, slider.max_value_label, max_label_rect);
+        let render_ctx = ctx.render_context();
+        state
+            .max_value_label
+            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, max_label_rect);
     }
 
-    let range_start = *slider.range.start();
-    let range_end = *slider.range.end();
+    let range_start = *state.range.start();
+    let range_end = *state.range.end();
     let span = range_end - range_start;
     assert!(span > 0.0, "hydrolysis slider requires range start < end");
 
@@ -145,9 +281,13 @@ pub(crate) fn render_slider(
         track_center_y + metrics.track_height / 2.0,
     );
 
+    // Reading the value through `read_signal` watches it (registers a
+    // `request_rebuild` watcher), so a value change schedules a frame and this
+    // persistent node re-renders the new fill/thumb position.
+    let value_binding = state.value.clone();
     let clamped = ctx
         .renderer_mut()
-        .read_signal(&slider.value)
+        .read_signal(&value_binding)
         .clamp(range_start, range_end);
     let progress = (clamped - range_start) / span;
     let fill_right = track_left + (track_right - track_left) * progress;
@@ -178,22 +318,6 @@ pub(crate) fn render_slider(
         theme.draw_slider_track(&mut draw, track_rect, fill_rect);
         theme.draw_slider_thumb(&mut draw, thumb_center, metrics.thumb_radius, interaction);
     }
-    let thumb_layer_bounds = vello::kurbo::Rect::from_center_size(
-        thumb_center,
-        (metrics.thumb_radius * 4.0, metrics.thumb_radius * 4.0),
-    );
-    let render_ctx = ctx.render_context();
-    ctx.renderer_mut().capture_state_layers(
-        render_ctx,
-        &handles,
-        thumb_layer_bounds,
-        false,
-        &|draw, state| {
-            theme.draw_slider_thumb_state_layer(draw, thumb_center, metrics.thumb_radius, state);
-        },
-    );
-
-    let value_binding = slider.value;
     let usable_track = track_right - track_left;
     assert!(
         usable_track > 0.0,

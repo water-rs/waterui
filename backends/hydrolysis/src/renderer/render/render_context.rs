@@ -5,8 +5,8 @@ use crate::renderer::navigation::{
     NavigationTransitionDirection, NavigationTransitionFrame, draw_navigation_transition,
 };
 use waterui::navigation::NavigationTransition;
+use waterui_core::Environment;
 use waterui_core::layout::HorizontalAlignment;
-use waterui_core::{AnyView, Environment};
 use waterui_text::styled::StyledStr;
 
 /// Render context passed to handlers.
@@ -88,10 +88,6 @@ impl<'a> WidgetRenderContext<'a> {
         bounds: vello::kurbo::Rect,
     ) -> RenderContext {
         self.render_context().child(transform, bounds)
-    }
-
-    pub(crate) fn with_identity_transforms(&self, bounds: vello::kurbo::Rect) -> RenderContext {
-        self.render_context().with_identity_transforms(bounds)
     }
 
     pub(crate) fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
@@ -186,29 +182,5 @@ impl<'a> WidgetRenderContext<'a> {
             from_scene,
             to_scene,
         });
-    }
-
-    pub(crate) fn dispatch_in_rect(
-        &mut self,
-        env: &Environment,
-        view: AnyView,
-        rect: vello::kurbo::Rect,
-    ) {
-        HydrolysisRenderer::dispatch_in_rect(self.renderer, self.render_context(), env, view, rect);
-    }
-
-    pub(crate) fn dispatch_in_rect_without_accessibility(
-        &mut self,
-        env: &Environment,
-        view: AnyView,
-        rect: vello::kurbo::Rect,
-    ) {
-        HydrolysisRenderer::dispatch_in_rect_without_accessibility(
-            self.renderer,
-            self.render_context(),
-            env,
-            view,
-            rect,
-        );
     }
 }

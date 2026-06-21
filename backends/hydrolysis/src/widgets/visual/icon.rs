@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::prelude::theme_color::{MutedForeground, Surface};
@@ -8,8 +10,8 @@ use waterui_icon::SystemIcon;
 use waterui_layout::stack::zstack;
 
 use crate::renderer::{
-    HydroNativeView, HydroState, WidgetRenderContext, measure_view_dimensions_with_proposal,
-    measure_view_intrinsic, normalize_view_for_render,
+    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, WidgetRenderContext,
+    measure_view_dimensions_with_proposal, measure_view_intrinsic, normalize_view_for_render,
 };
 
 /// Side length of the unsupported-`SystemIcon` placeholder marker, in points.
@@ -47,12 +49,30 @@ fn system_icon_placeholder(icon: &SystemIcon, env: &Environment) -> AnyView {
     )
 }
 
-impl HydroNativeView for Native<SystemIcon> {
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        let content = system_icon_placeholder(view.as_inner(), env);
-        ctx.dispatch_in_rect(env, content, ctx.bounds);
+/// The retained render state of a system icon: the placeholder marker is a
+/// move-only `AnyView` (built once from the static icon name), so the persistent
+/// `Widget` node holds it as a [`RetainedSubview`] built once and re-flushed each
+/// frame. The marker's own dispatch drives accessibility (icon a11y is
+/// render-driven).
+pub(crate) struct IconRenderState {
+    placeholder: RetainedSubview,
+}
+
+impl IconRenderState {
+    pub(crate) fn from_icon(icon: &SystemIcon, env: &Environment) -> Self {
+        Self {
+            placeholder: RetainedSubview::new(system_icon_placeholder(icon, env)),
+        }
     }
 
+    /// Eagerly build the placeholder sub-view (the measure path has only `&mut
+    /// HydroState`, no renderer, so it must be built before then).
+    pub(crate) fn prebuild(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
+        self.placeholder.ensure_built(renderer, env);
+    }
+}
+
+impl HydroNativeView for Native<SystemIcon> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_view_intrinsic(&system_icon_placeholder(view.as_inner(), env), state, env)
     }
@@ -70,8 +90,38 @@ impl HydroNativeView for Native<SystemIcon> {
             env,
         )
     }
+}
 
-    fn accessibility_is_render_driven() -> bool {
-        true
-    }
+/// Measures a retained icon leaf from its [`IconRenderState`]: the icon sizes
+/// itself to the placeholder marker, mirroring the dispatch path's `dimensions`.
+pub(crate) fn measure_icon_node(
+    state: &IconRenderState,
+    _proposal: ProposalSize,
+    hydro: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    ViewDimensions::new(state.placeholder.measure_built(hydro, env))
+}
+
+/// Renders a retained icon leaf every flush: flushes the placeholder marker
+/// sub-view, whose own dispatch drives accessibility (icon a11y is render-driven).
+pub(crate) fn render_icon_node(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<IconRenderState>>,
+    env: &Environment,
+) {
+    render_icon_parts(ctx, state, env);
+}
+
+pub(crate) fn render_icon_parts(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<IconRenderState>>,
+    env: &Environment,
+) {
+    let bounds = ctx.bounds;
+    let render_ctx = ctx.render_context();
+    let mut state = state.borrow_mut();
+    state
+        .placeholder
+        .flush_in_rect(ctx.renderer_mut(), render_ctx, env, bounds);
 }

@@ -20,6 +20,31 @@ pub(crate) struct DropTarget {
     pub(crate) on_exit: Option<Rc<RefCell<BoxedAction<()>>>>,
 }
 
+/// Shareable, pre-wrapped drop-destination handlers. A [`DropDestination`]'s
+/// boxed closures are wrapped in `Rc<RefCell<…>>` once (the form the hit-test
+/// stores), so a retained `Wrapper` node can hold them by value and re-register
+/// the same handles on every flush without moving the closures out.
+#[derive(Clone)]
+pub(crate) struct DropDestinationHandles {
+    on_drop: Rc<RefCell<BoxedAction<()>>>,
+    on_enter: Option<Rc<RefCell<BoxedAction<()>>>>,
+    on_exit: Option<Rc<RefCell<BoxedAction<()>>>>,
+}
+
+impl DropDestinationHandles {
+    pub(crate) fn from_destination(destination: DropDestination) -> Self {
+        Self {
+            on_drop: Rc::new(RefCell::new(destination.on_drop)),
+            on_enter: destination
+                .on_enter
+                .map(|handler| Rc::new(RefCell::new(handler))),
+            on_exit: destination
+                .on_exit
+                .map(|handler| Rc::new(RefCell::new(handler))),
+        }
+    }
+}
+
 pub(crate) struct ActiveDrag {
     pub(crate) data: DragData,
     pub(crate) hovered_target: Option<DropTargetKey>,
@@ -788,10 +813,14 @@ impl HydrolysisRenderer {
         );
     }
 
-    pub(crate) fn register_drop_destination_target(
+    /// Register a drop target from pre-wrapped, shareable handler handles. A
+    /// retained `Wrapper` node wraps the destination's handlers once at build and
+    /// re-registers the same `Rc`s on every flush (it holds the destination by
+    /// reference and cannot move the handlers out each frame).
+    pub(crate) fn register_drop_destination_handles(
         &mut self,
         bounds: vello::kurbo::Rect,
-        destination: DropDestination,
+        handles: &DropDestinationHandles,
         env: &Environment,
     ) {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
@@ -805,13 +834,9 @@ impl HydrolysisRenderer {
                 order,
             },
             env: env.clone(),
-            on_drop: Rc::new(RefCell::new(destination.on_drop)),
-            on_enter: destination
-                .on_enter
-                .map(|handler| Rc::new(RefCell::new(handler))),
-            on_exit: destination
-                .on_exit
-                .map(|handler| Rc::new(RefCell::new(handler))),
+            on_drop: Rc::clone(&handles.on_drop),
+            on_enter: handles.on_enter.clone(),
+            on_exit: handles.on_exit.clone(),
         });
     }
 

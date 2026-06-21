@@ -1,6 +1,6 @@
 use crate::renderer::lazy::{LazyStackAxisConfig, lazy_stack_axis_config};
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext,
+    HydroNativeView, HydroState,
     estimate_layout_intrinsic, measure_layout_dimensions, measure_view_intrinsic,
     normalize_layout_view,
 };
@@ -27,11 +27,6 @@ fn materialize_all(children: &AnyViews<AnyView>, env: &Environment) -> Vec<AnyVi
 }
 
 impl HydroNativeView for Native<FixedContainer> {
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        let render_ctx = ctx.render_context();
-        HydrolysisRenderer::render_fixed_container(ctx.renderer_mut(), render_ctx, view, env);
-    }
-
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         estimate_layout_intrinsic(layout, children.iter(), state, env)
@@ -49,11 +44,6 @@ impl HydroNativeView for Native<FixedContainer> {
 }
 
 impl HydroNativeView for Native<LazyContainer> {
-    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
-        let render_ctx = ctx.render_context();
-        HydrolysisRenderer::render_lazy_container(ctx.renderer_mut(), render_ctx, view, env);
-    }
-
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         let child_count = children.len().get();
