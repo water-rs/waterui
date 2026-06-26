@@ -3772,30 +3772,41 @@ impl HydrolysisRenderer {
         // Roll over this frame's Retain watcher guards exactly like the rebuild path:
         // a full re-flush re-reads (re-subscribes) every reactive input, so last
         // frame's guards must move current -> previous (dropped next frame) instead of
-        // accumulating. ONLY the lifecycle (Retain) bracket runs here — never the
-        // animation/scroll controller brackets, whose in-flight cross-frame state the
-        // refresh path must preserve. `patch` may build new `Dynamic` subtrees that
-        // subscribe, so this precedes it.
+        // accumulating. `patch` may build new `Dynamic` subtrees that subscribe, so
+        // this precedes it.
         self.lifecycle.begin_rebuild_frame();
-        // Reset the flush-bound interaction cursors (press/hover slot indices,
-        // hit-test order). A full re-flush re-binds every widget's interaction slot in
-        // the same walk order, so resetting + rebinding + truncating here keeps the
-        // cursor mapping stable across refresh frames (slot state persists by index,
-        // with bounds-matching guarding against reuse) — without this, a refresh would
-        // hand every widget a fresh slot and drop its hover/press state. The
-        // animation/scroll/nav controllers are deliberately NOT reset (cross-frame).
+        // Reset the FLUSH-BOUND slot cursors that the full re-flush re-binds every
+        // frame in stable walk order: interaction (press/hover/hit-test order), scroll
+        // (each `ScrollNode::layout` re-binds its handle), and lazy list/table. Because
+        // the flush re-binds each one at the same cursor index, resetting + rebinding +
+        // truncating keeps per-slot state stable (the scroll offset and hover/press
+        // state persist by index) AND bounds the cursor — without this, full layout
+        // every frame hands out a fresh slot each refresh, resetting the scroll offset
+        // and leaking slots. The animation controller (signal/node-identity keyed) and
+        // navigation transitions are cross-frame and deliberately NOT reset here.
         self.hit_test.begin_rebuild_frame();
+        self.scroll_controller.begin_rebuild_frame();
+        self.lazy.begin_rebuild_frame();
         // Apply any pending reactive Dynamic content changes incrementally
-        // (rebuild only the affected child subtrees), then run FULL layout every
-        // frame. Layout is cheap by construction: the only heavy work — text
-        // shaping — is memoized in the persistent, content-keyed text cache, and
-        // containers just recompute `place()` arithmetic over cached child
-        // measurements. Always relaying out lets a reactive value change that
-        // alters a leaf's size (text content, a widget's intrinsic size) reflow
-        // its ancestors through this same cheap pump, with no `body()` rebuild and
-        // no reset-and-redispatch flash. `begin_redraw_frame` (above) cleared the
+        // (rebuild only the affected child subtrees). `structural_change` is true
+        // when a `Dynamic`/collection added or removed a subtree this frame — the
+        // only time the signal/node-identity-keyed animation slots or the
+        // `Dynamic`-dimension measurement cache can hold entries for now-gone nodes,
+        // so prune them only then (clear-active before the flush re-binds the live
+        // ones, drop-unbound after). A geometry-static or pure-value refresh removes
+        // nothing, so it skips this and leaves in-flight animations untouched.
+        let structural_change = tree.patch(self);
+        if structural_change {
+            self.animation_controller.begin_rebuild_frame();
+        }
+        // Then run FULL layout every frame. Layout is cheap by construction: the only
+        // heavy work — text shaping — is memoized in the persistent, content-keyed
+        // text cache, and containers just recompute `place()` arithmetic over cached
+        // child measurements. Always relaying out lets a reactive value change that
+        // alters a leaf's size (text content, a widget's intrinsic size) reflow its
+        // ancestors through this same cheap pump, with no `body()` rebuild and no
+        // reset-and-redispatch flash. `begin_redraw_frame` (below) cleared the
         // per-frame `stable_ptr` view-dimension cache so this measure pass is sound.
-        let _ = tree.patch(self);
         self.reset_scene();
         self.begin_redraw_frame();
         let size = Size::new(bounds.width() as f32, bounds.height() as f32);
@@ -3804,6 +3815,19 @@ impl HydrolysisRenderer {
         tree.flush(self, ctx, env);
         self.flush_vello_scene_layer();
         self.hit_test.finish_rebuild_frame();
+        self.scroll_controller.finish_rebuild_frame();
+        self.lazy.finish_rebuild_frame();
+        if structural_change {
+            // Drop animation slots + `Dynamic`-dimension cache entries for subtrees
+            // the patch removed: the flush above re-bound every live animation, so
+            // anything still unbound belongs to a gone node.
+            self.animation_controller
+                .finish_rebuild_frame_with_inactive_slot_retention(false);
+            let live_dynamics = tree.collect_dynamic_identities();
+            self.state
+                .measurement
+                .retain_dynamic_identities(|identity| live_dynamics.contains(&identity));
+        }
         self.lifecycle.finish_rebuild_frame();
         // A reactive value change can remove the focused field; drop focus/drag that
         // now points past the re-emitted text-input targets, then republish the a11y
