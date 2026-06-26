@@ -399,6 +399,16 @@ pub(super) fn rebuild_window_scene<P: PlatformWindow>(
         if !runtime.mode.is_rebuild() {
             break;
         }
+        // Build once: the view tree's `body()` is dispatched recursively only on the
+        // first frame (no tree yet). Once the persistent tree exists, any later
+        // rebuild request — resize, interaction chrome, navigation, an effect asking
+        // for another frame — is satisfied by refreshing that retained tree (read
+        // current state + apply structural patches + full layout + flush), never by
+        // re-running `build_content`. This is the single per-frame pump.
+        if runtime.renderer.has_render_tree() {
+            runtime.request_window_refresh();
+            break;
+        }
         let reuse_filter_inputs =
             !renderer_requested_rebuild && !runtime.mode.reuses_scroll_caches();
         rebuild_iterations = rebuild_iterations
@@ -554,10 +564,26 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
             runtime
                 .renderer
                 .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY);
+            // Mirror the (former) rebuild frame's post-layout interaction sync: now
+            // that every frame refreshes the retained tree, an in-flight press/drag
+            // must follow the re-laid-out widget, and hover must be re-evaluated at
+            // the pointer so a reflow that moved a widget under the cursor updates its
+            // hover chrome.
+            runtime
+                .renderer
+                .sync_active_interactions_after_layout(runtime.pointer_position);
             let refresh_duration = refresh_started_at.elapsed();
             rebuild_phases.rebuild += refresh_duration;
             rebuild_phases.scene_dispatch += refresh_duration;
             runtime.clear_frame_mode();
+            if let Some((x, y)) = runtime.pointer_position
+                && runtime.renderer.sync_pointer_hover_state(x, y, env)
+            {
+                // Hover changed under a static pointer (a reflow moved a widget): the
+                // change is recorded in interaction state; schedule one more refresh
+                // to re-encode the updated chrome.
+                runtime.renderer.request_redraw();
+            }
         }
 
         let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());

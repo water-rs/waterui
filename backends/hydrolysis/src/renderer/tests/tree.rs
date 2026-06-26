@@ -444,6 +444,68 @@ fn render_tree_live_path_processes_watch_switch() {
     );
 }
 
+/// Build-once contract: the view tree's `body()` is dispatched recursively exactly
+/// ONCE — on the first frame, which builds the persistent render tree. Every later
+/// frame (a reactive value change, a structural `watch` switch) refreshes that
+/// retained tree (`rebuilt == false`), never re-running `build_content` / `body()`.
+/// This is what makes the per-frame pump uniform: build once at startup, then read
+/// current state + patch + full layout + draw every frame.
+#[test]
+fn body_dispatched_once_then_every_frame_refreshes() {
+    use core::time::Duration;
+    use std::time::Instant;
+    use waterui::reactive::binding;
+    use waterui::text;
+    use waterui_core::dynamic::watch;
+    use waterui_core::handler::AnyViewBuilder;
+    use waterui_layout::stack::vstack;
+
+    let label = binding(0i32);
+    let mode = binding(false);
+    let builder = {
+        let label = label.clone();
+        let mode = mode.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let label = label.clone();
+            let mode = mode.clone();
+            AnyView::new(vstack((
+                text!("N={label}", label = label.clone()),
+                watch(mode, |selected| {
+                    if selected {
+                        AnyView::new(waterui_text::text("B"))
+                    } else {
+                        AnyView::new(waterui_text::text("A"))
+                    }
+                }),
+            )))
+        })
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 200, 160);
+    let start = Instant::now();
+
+    assert!(
+        rt.pump_at(false, start).rebuilt,
+        "the first frame must build the persistent tree (recursive body() once)"
+    );
+    label.set(7);
+    assert!(
+        !rt.pump_at(false, start + Duration::from_millis(16)).rebuilt,
+        "a reactive value change must refresh the persistent tree, not re-run body()"
+    );
+    mode.set(true);
+    assert!(
+        !rt.pump_at(false, start + Duration::from_millis(32)).rebuilt,
+        "a structural watch switch must patch + refresh, not rebuild the whole tree"
+    );
+    label.set(9);
+    assert!(
+        !rt.pump_at(false, start + Duration::from_millis(48)).rebuilt,
+        "subsequent reactive changes keep refreshing the one persistent tree"
+    );
+}
+
 /// Visual verification of the chart-switch fix: a `watch`-driven swap between two
 /// distinctly-coloured boxes (through the same `Captured` path a `SceneView`
 /// chart takes) rendered via the render-tree path. Exports before/after PNGs for
