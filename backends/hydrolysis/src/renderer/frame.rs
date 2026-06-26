@@ -37,6 +37,17 @@ impl HydrolysisRenderer {
         self.window_bounds = bounds;
     }
 
+    /// Whether the persistent render tree has been built. The view tree's `body()`
+    /// is dispatched recursively exactly once — on the first frame, when this is
+    /// `false`. Afterwards every change (reactive value, structural patch, scroll,
+    /// resize, interaction) is reflected by refreshing this retained tree, so the
+    /// runner routes any later rebuild request through the refresh pump instead of
+    /// re-running `build_content`.
+    #[must_use]
+    pub fn has_render_tree(&self) -> bool {
+        self.render_tree.is_some()
+    }
+
     #[must_use]
     pub fn state(&self) -> &HydroState {
         &self.state
