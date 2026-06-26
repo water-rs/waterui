@@ -718,6 +718,68 @@ fn render_tree_scroll_snapshot() {
     eprintln!("wrote /tmp/waterui_tree_scroll_before.png and /tmp/waterui_tree_scroll_after.png");
 }
 
+/// The scroll offset must survive the refresh pump. With full layout every frame,
+/// the `ScrollNode` re-binds its handle on each refresh; the scroll-controller
+/// cursor must therefore be reset on the refresh path too (like the interaction
+/// cursors), or the n-th scroll view is handed a fresh (offset 0) slot and the
+/// scroll silently resets. Asserts the scrolled frame differs from the unscrolled
+/// one, and that a following no-op refresh keeps the offset (no reset, no drift).
+#[test]
+fn scroll_offset_persists_across_refresh() {
+    use core::time::Duration;
+    use std::time::Instant;
+    use waterui_core::handler::AnyViewBuilder;
+
+    fn block(hex: &'static str) -> AnyView {
+        use waterui::prelude::*;
+        AnyView::new(().size(160.0, 60.0).background(Color::srgb_hex(hex)))
+    }
+    fn screen() -> AnyView {
+        use waterui::prelude::*;
+        AnyView::new(scroll(vstack((
+            block("#DC2626"),
+            block("#16A34A"),
+            block("#2563EB"),
+            block("#CA8A04"),
+            block("#9333EA"),
+        ))))
+    }
+
+    let builder = AnyViewBuilder::<AnyView>::new(screen);
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
+    let start = Instant::now();
+
+    let unscrolled = rt
+        .pump_at(true, start)
+        .snapshot
+        .expect("first frame snapshot");
+    rt.push_input_event(crate::platform::InputEvent::Scroll {
+        x: 80.0,
+        y: 80.0,
+        dx: 0.0,
+        dy: -150.0,
+        is_line_delta: false,
+    });
+    let scrolled = rt
+        .pump_at(true, start + Duration::from_millis(16))
+        .snapshot
+        .expect("scrolled frame snapshot");
+    assert_ne!(
+        unscrolled.rgba8, scrolled.rgba8,
+        "scrolling must change the rendered content — the offset must apply through the refresh pump"
+    );
+    let still_scrolled = rt
+        .pump_at(true, start + Duration::from_millis(32))
+        .snapshot
+        .expect("re-pumped frame snapshot");
+    assert_eq!(
+        scrolled.rgba8, still_scrolled.rgba8,
+        "a no-op refresh must preserve the scroll offset, not reset or drift it"
+    );
+}
+
 /// Verifies a reactive collection (`ForEach` in a scroll → `LazyContainer`)
 /// renders via the tree path: the exported PNG must show the stacked coloured
 /// rows.
