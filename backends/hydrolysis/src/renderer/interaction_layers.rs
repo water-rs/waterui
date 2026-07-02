@@ -21,10 +21,9 @@ pub(crate) struct InteractionLayerHandles {
     press_alpha: AnimatedScalarHandle,
     press_progress: AnimatedScalarHandle,
     /// Origin of the active press in WINDOW coordinates (the raw pointer-down
-    /// point), shared with the retained ripple transform. The ripple maps it
-    /// into its own local frame at replay using the live transform chain, so it
-    /// stays correct under arbitrary nesting and scroll offsets — see
-    /// [`DynamicRippleTransform::affine`].
+    /// point). Widgets map it into their own local frame at draw time via
+    /// `local_interaction_state` and the live hit transform, so it stays
+    /// correct under arbitrary nesting and scroll offsets.
     origin: Cell<Option<vello::kurbo::Point>>,
     hovering: Cell<bool>,
     pressing: Cell<bool>,

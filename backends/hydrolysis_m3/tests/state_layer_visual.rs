@@ -41,11 +41,46 @@ fn plain_button_press_shows_growing_ripple() {
         .mount(|| button("Press Me"));
     let (cx, cy) = press_center(&mut app, "Press Me");
     save(&mut app, "press-before");
-    assert!(app.semantic_mut().pointer_down_at(cx, cy), "press must hit");
+    // Queue the press without the semantic settle so the captures land inside
+    // the 225ms ripple growth instead of pumping straight past it.
+    app.queue_pointer_down(cx - 40.0, cy + 10.0);
+    save(&mut app, "press-0ms");
+    std::thread::sleep(Duration::from_millis(60));
+    save(&mut app, "press-60ms");
     std::thread::sleep(Duration::from_millis(80));
-    save(&mut app, "press-80ms");
-    std::thread::sleep(Duration::from_millis(140));
-    save(&mut app, "press-220ms");
+    save(&mut app, "press-140ms");
+    std::thread::sleep(Duration::from_millis(120));
+    save(&mut app, "press-260ms");
+}
+
+#[test]
+#[ignore = "writes visual acceptance PNGs for direct image review"]
+fn released_ripple_fades_at_full_size_without_shrinking() {
+    // Regression stage for the reverse-playback bug: after release the wave
+    // must hold its expanded, centered shape and only lose opacity — the
+    // captures after pointer-up must never show a smaller circle drifting
+    // back toward the press point.
+    let mut app = ui()
+        .viewport(360, 200)
+        .theme(install)
+        .mount(|| button("Release Me"));
+    let (cx, cy) = press_center(&mut app, "Release Me");
+    // Press off-center so a shrinking ripple would visibly drift.
+    let (px, py) = (cx - 40.0, cy + 10.0);
+    app.queue_pointer_down(px, py);
+    let _ = app.snapshot();
+    // Hold until the growth (225ms) has completed, then release: the fade-out
+    // applies immediately (the minimum press duration equals the grow time).
+    std::thread::sleep(Duration::from_millis(250));
+    save(&mut app, "hold-250ms-full-size");
+    app.queue_pointer_up(px, py);
+    let _ = app.snapshot();
+    std::thread::sleep(Duration::from_millis(50));
+    save(&mut app, "release-50ms-fading");
+    std::thread::sleep(Duration::from_millis(60));
+    save(&mut app, "release-110ms-fainter");
+    std::thread::sleep(Duration::from_millis(120));
+    save(&mut app, "release-230ms-gone");
 }
 
 #[test]
@@ -68,8 +103,7 @@ fn ripple_survives_same_frame_structural_patch() {
     // The chart-demo scenario: the button's action (dispatched on pointer
     // down) flips a signal that a `watch` subtree rebuilds from in the same
     // refresh frame. The press ripple on the button must keep animating.
-    let mode = binding(false);
-    let mode_for_view = mode.clone();
+    let mode_for_view = binding(false);
     let mut app = ui().viewport(360, 240).theme(install).mount(move || {
         let mode_for_action = mode_for_view.clone();
         let swapped = watch(mode_for_view.clone(), |mode| {
