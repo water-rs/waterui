@@ -153,12 +153,23 @@ impl InteractionEngine {
             press_layer_opacity_animation(visual_pressed, motion),
             now,
         );
+        // Material ripple geometry only ever plays forward: the wave grows from
+        // the press point and, once released, holds its expanded shape while the
+        // press layer fades out. While the layer is still visible the progress
+        // therefore keeps its 1.0 target (re-targeting 0 with the grow animation
+        // would play the expansion backwards — a shrinking ripple); it snaps to 0
+        // only once the fade-out has finished and the wave is invisible.
+        let ripple_visible = visual_pressed || press_alpha.sample(now) > 0.0;
         let press_progress_handle = animation_controller.bind_scalar_target(
             AnimationKey::renderer_local_scalar(
                 animation_key_base + INTERACTION_PRESS_PROGRESS_KEY,
             ),
-            if visual_pressed { 1.0 } else { 0.0 },
-            motion.press_grow.clone(),
+            if ripple_visible { 1.0 } else { 0.0 },
+            if ripple_visible {
+                motion.press_grow.clone()
+            } else {
+                Animation::linear(Duration::ZERO)
+            },
             now,
         );
 
@@ -372,6 +383,7 @@ fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> A
 #[cfg(test)]
 mod tests {
     use super::super::interaction_layers::InteractionLayerHandles;
+    use super::{InteractionEngine, WidgetInteractionInput};
     use crate::animation::{AnimationController, AnimationKey};
     use crate::time::Instant;
     use core::time::Duration;
@@ -412,6 +424,67 @@ mod tests {
             bind(&mut controller, 2),
             motion(),
         )
+    }
+
+    #[test]
+    fn released_ripple_holds_full_size_while_fading_out() {
+        let started = Instant::now();
+        let mut engine = InteractionEngine::default();
+        let mut controller = AnimationController::default();
+        let motion = motion();
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
+
+        let bind = |engine: &mut InteractionEngine,
+                        controller: &mut AnimationController,
+                        now: Instant| {
+            engine.begin_rebuild_frame();
+            controller.begin_rebuild_frame();
+            let bound = engine.bind_widget_state(
+                WidgetInteractionInput {
+                    bounds,
+                    hovered: false,
+                    focus: None,
+                },
+                &motion,
+                controller,
+                now,
+            );
+            controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+            engine.finish_rebuild_frame();
+            bound
+        };
+
+        let (_, slot, _) = bind(&mut engine, &mut controller, started);
+        engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
+
+        // Release after the grow completed (test grow: 225ms linear); the
+        // minimum press duration (75ms) has elapsed, so the release applies
+        // the fade-out (120ms linear) immediately.
+        let released = started + Duration::from_millis(230);
+        engine.clear_all_presses(released);
+
+        // Rebind mid-fade: the ripple must keep its expanded shape (progress
+        // stays 1.0) instead of playing the grow animation backwards.
+        let fading = released + Duration::from_millis(30);
+        let (state, _, _) = bind(&mut engine, &mut controller, fading);
+        assert!(
+            state.press_layer_opacity > 0.0,
+            "fade-out must still be in flight"
+        );
+        assert!(
+            (state.press_progress - 1.0).abs() < f32::EPSILON,
+            "ripple geometry must not shrink during the fade-out"
+        );
+
+        // Once the fade-out has finished the wave is invisible and the
+        // progress snaps back to its resting value for the next press.
+        let faded = released + Duration::from_millis(150);
+        let (state, _, _) = bind(&mut engine, &mut controller, faded);
+        assert_eq!(state.press_layer_opacity, 0.0, "fade-out must be complete");
+        assert_eq!(
+            state.press_progress, 0.0,
+            "invisible ripple resets instantly, without animating"
+        );
     }
 
     #[test]

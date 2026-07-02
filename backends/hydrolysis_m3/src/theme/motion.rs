@@ -7,39 +7,40 @@ use waterui_backend_core::widget::{
 
 const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
 
+/// The MD3 standard easing curve over `duration`.
+const fn material_standard(duration: Duration) -> Animation {
+    Animation::bezier(
+        duration,
+        MATERIAL_STANDARD.0,
+        MATERIAL_STANDARD.1,
+        MATERIAL_STANDARD.2,
+        MATERIAL_STANDARD.3,
+    )
+}
+
+/// MD3 interaction state-layer motion, matching the mdui reference
+/// implementation: the ripple grows from the press point over 225ms with
+/// standard easing while fading in linearly over 75ms; a release never plays
+/// the growth backwards — the wave holds its expanded shape and only fades out
+/// linearly over 150ms once the expansion has completed
+/// (`minimum_press_duration` equals the grow duration for exactly that
+/// gating). Hover/focus state layers cross-fade over 280ms with standard
+/// easing.
 pub const fn interaction() -> InteractionMotion {
     InteractionMotion {
         hover_opacity: 0.08,
         focus_opacity: 0.12,
         pressed_opacity: 0.12,
         dragged_opacity: 0.16,
-        hover_enter: Animation::linear(Duration::from_millis(15)),
-        hover_exit: Animation::linear(Duration::from_millis(15)),
-        focus_enter: Animation::bezier(
-            Duration::from_millis(150),
-            MATERIAL_STANDARD.0,
-            MATERIAL_STANDARD.1,
-            MATERIAL_STANDARD.2,
-            MATERIAL_STANDARD.3,
-        ),
-        focus_exit: Animation::bezier(
-            Duration::from_millis(150),
-            MATERIAL_STANDARD.0,
-            MATERIAL_STANDARD.1,
-            MATERIAL_STANDARD.2,
-            MATERIAL_STANDARD.3,
-        ),
-        press_fade_in: Animation::linear(Duration::from_millis(105)),
-        press_fade_out: Animation::linear(Duration::from_millis(375)),
-        press_grow: Animation::bezier(
-            Duration::from_millis(450),
-            MATERIAL_STANDARD.0,
-            MATERIAL_STANDARD.1,
-            MATERIAL_STANDARD.2,
-            MATERIAL_STANDARD.3,
-        ),
+        hover_enter: material_standard(Duration::from_millis(280)),
+        hover_exit: material_standard(Duration::from_millis(280)),
+        focus_enter: material_standard(Duration::from_millis(280)),
+        focus_exit: material_standard(Duration::from_millis(280)),
+        press_fade_in: Animation::linear(Duration::from_millis(75)),
+        press_fade_out: Animation::linear(Duration::from_millis(150)),
+        press_grow: material_standard(Duration::from_millis(225)),
         minimum_press_duration: Duration::from_millis(225),
-        touch_delay: Duration::from_millis(150),
+        touch_delay: Duration::from_millis(70),
     }
 }
 
@@ -68,13 +69,7 @@ pub const fn navigation() -> NavigationMotion {
 }
 
 pub const fn navigation_drawer() -> Animation {
-    Animation::bezier(
-        Duration::from_millis(250),
-        MATERIAL_STANDARD.0,
-        MATERIAL_STANDARD.1,
-        MATERIAL_STANDARD.2,
-        MATERIAL_STANDARD.3,
-    )
+    material_standard(Duration::from_millis(250))
 }
 
 pub const fn toggle_value() -> Animation {
@@ -99,7 +94,7 @@ mod tests {
     use waterui::animation::Animation;
 
     #[test]
-    fn material_state_layer_motion_matches_material_web() {
+    fn material_state_layer_motion_matches_mdui_reference() {
         let motion = interaction();
         assert_eq!(motion.hover_opacity, 0.08);
         assert_eq!(motion.focus_opacity, 0.12);
@@ -107,30 +102,37 @@ mod tests {
         assert_eq!(motion.dragged_opacity, 0.16);
         assert_eq!(
             motion.hover_enter,
-            Animation::linear(Duration::from_millis(15))
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(
+            motion.hover_exit,
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
         );
         assert_eq!(
             motion.focus_enter,
-            Animation::bezier(Duration::from_millis(150), 0.2, 0.0, 0.0, 1.0)
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
         );
         assert_eq!(
             motion.focus_exit,
-            Animation::bezier(Duration::from_millis(150), 0.2, 0.0, 0.0, 1.0)
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
         );
         assert_eq!(
             motion.press_fade_in,
-            Animation::linear(Duration::from_millis(105))
+            Animation::linear(Duration::from_millis(75))
         );
         assert_eq!(
             motion.press_fade_out,
-            Animation::linear(Duration::from_millis(375))
+            Animation::linear(Duration::from_millis(150))
         );
         assert_eq!(
             motion.press_grow,
-            Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0)
+            Animation::bezier(Duration::from_millis(225), 0.2, 0.0, 0.0, 1.0)
         );
+        // The deferred fade-out gate equals the grow duration: a quick tap's
+        // ripple finishes expanding before it starts to fade (mdui waits for
+        // the radius-in animation to end before applying the fade-out).
         assert_eq!(motion.minimum_press_duration, Duration::from_millis(225));
-        assert_eq!(motion.touch_delay, Duration::from_millis(150));
+        assert_eq!(motion.touch_delay, Duration::from_millis(70));
     }
 
     #[test]
