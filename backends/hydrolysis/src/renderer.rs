@@ -19,7 +19,7 @@
 
 mod accessibility;
 mod bindings;
-mod dispatch;
+mod native_measure;
 mod effects;
 mod frame;
 mod input;
@@ -35,7 +35,7 @@ mod tests;
 mod tree;
 mod views;
 
-pub(crate) use dispatch::*;
+pub(crate) use native_measure::*;
 pub(crate) use effects::*;
 pub(crate) use frame::*;
 pub(crate) use retained::*;

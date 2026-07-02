@@ -97,9 +97,3 @@ pub(crate) fn dimensions_for_known_native_views(
     hydro_native_view_types!(try_native_dimensions);
     None
 }
-
-impl HydrolysisRenderer {
-    pub(super) fn next_hit_test_order(&mut self) -> usize {
-        self.hit_test.next_hit_test_order()
-    }
-}
