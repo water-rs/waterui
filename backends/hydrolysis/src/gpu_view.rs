@@ -56,7 +56,13 @@ where
 
         let animation_dirty = renderer.advance_animations();
         let rebuild_requested = renderer.take_rebuild_request();
-        let should_rebuild = self.needs_rebuild || animation_dirty || rebuild_requested;
+        // A pure reactive value change raises the *patch* trigger (the retained
+        // tree's refresh pump), not the rebuild trigger — without consuming it the
+        // embedded surface would keep presenting a stale scene until an animation
+        // or structural change happened to fire.
+        let patch_requested = renderer.take_patch_request();
+        let should_rebuild =
+            self.needs_rebuild || animation_dirty || rebuild_requested || patch_requested;
 
         if should_rebuild {
             renderer.reset_scene();
@@ -83,10 +89,13 @@ where
             height: frame.height,
             base_color: vello::peniko::Color::TRANSPARENT,
         });
-        let next_rebuild = renderer.take_rebuild_request();
+        // Work raised during this render — a structural request or a reactive
+        // patch — needs another frame. The patch bit is only peeked (not taken)
+        // so the next render's `take_patch_request` still observes it.
+        let next_frame = renderer.take_rebuild_request() || renderer.has_patch_request();
         renderer.clear_frame_resources();
 
-        if animation_dirty || next_rebuild {
+        if animation_dirty || next_frame {
             frame.request_redraw();
         }
     }
