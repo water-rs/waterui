@@ -1,6 +1,0 @@
-waterui_path = "../../../.."
-
-[package]
-type = "playground"
-name = "Snackbar Example"
-bundle_identifier = "com.waterui.snackbar_example"

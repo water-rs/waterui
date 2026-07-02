@@ -1,0 +1,19 @@
+[package]
+name = "map-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Map example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["ui", "framework", "example", "map"]
+categories = ["gui"]
+publish = false
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui.workspace = true
+waterui-map.workspace = true

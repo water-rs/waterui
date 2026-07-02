@@ -1,0 +1,20 @@
+[package]
+name = "video-player-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Video player example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+keywords = ["ui", "framework", "example", "video"]
+categories = ["gui"]
+publish = false
+
+[features]
+dev = ["waterui/dynamic_linking"]
+# Route playback through WaterUI's self-rendered pipeline (GpuSurface +
+# waterkit-codec) and switch to the HDR10 test sources.
+rust-fallback = []
+
+[dependencies]
+waterui.workspace = true

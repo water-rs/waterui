@@ -1,6 +1,0 @@
-waterui_path = "../../../.."
-
-[package]
-type = "playground"
-name = "Multi-Window Gallery"
-bundle_identifier = "com.waterui.example.multi_window"
