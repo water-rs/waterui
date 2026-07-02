@@ -47,60 +47,26 @@ pub(super) fn probe_accessibility_runtime() -> bool {
     }
 }
 
-/// The work scheduled for the next pump of a window. Exactly one mode is active at a
-/// time; `Rebuild` always takes precedence over the parametric refreshes, so a pending
-/// rebuild can never be silently dropped by a later refresh request.
+/// The work scheduled for the next pump of a window.
+///
+/// There is exactly one kind of scheduled work: refresh the window's retained render
+/// tree (apply pending `Dynamic`/collection patches, re-read every reactive input, run
+/// full layout, re-encode the vello scene). The tree itself is built from the app's
+/// `body()` exactly once — the first pump with no retained tree builds it; every later
+/// request, whatever its trigger (input, animation, reactive change, resize, scroll,
+/// accessibility action), is satisfied by refreshing that same tree.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum FrameMode {
     /// Nothing scheduled.
     Idle,
-    /// Full structural rebuild (re-dispatch the view tree). `downgradable` is true when
-    /// the rebuild was requested only by an animation/visual effect, so animation
-    /// scheduling may downgrade it to a parametric refresh; false for an explicit
-    /// structural rebuild that must run. `reuse_scroll` is true for a rebuild that fell
-    /// back from a failed scroll refresh and may reuse retained scroll-content caches.
-    Rebuild {
-        downgradable: bool,
-        reuse_scroll: bool,
-    },
-    /// Parametric refresh of the retained window frame — animation replay, reactive patch,
-    /// and scroll-offset changes (scrolling is subsumed into the window frame).
-    WindowRefresh,
+    /// Refresh the retained window tree on the next pump (building it first if this
+    /// renderer has not built it yet).
+    Refresh,
 }
 
 impl FrameMode {
     pub(super) const fn is_pending(self) -> bool {
         !matches!(self, FrameMode::Idle)
-    }
-
-    pub(super) const fn is_rebuild(self) -> bool {
-        matches!(self, FrameMode::Rebuild { .. })
-    }
-
-    pub(super) const fn is_explicit_rebuild(self) -> bool {
-        matches!(
-            self,
-            FrameMode::Rebuild {
-                downgradable: false,
-                ..
-            }
-        )
-    }
-
-    pub(super) const fn is_window_refresh(self) -> bool {
-        matches!(self, FrameMode::WindowRefresh)
-    }
-
-    /// Whether a rebuild in this mode may reuse retained scroll-content caches (a scroll
-    /// refresh that fell back to a rebuild) rather than invalidating them.
-    pub(super) const fn reuses_scroll_caches(self) -> bool {
-        matches!(
-            self,
-            FrameMode::Rebuild {
-                reuse_scroll: true,
-                ..
-            }
-        )
     }
 }
 
@@ -127,50 +93,17 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             window,
             platform,
             renderer,
-            mode: FrameMode::Rebuild {
-                downgradable: false,
-                reuse_scroll: false,
-            },
+            mode: FrameMode::Refresh,
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
             refresh_rate_hz: None,
         }
     }
 
-    /// Schedules a full structural rebuild, superseding any pending parametric refresh.
-    pub(super) fn request_structural_rebuild(&mut self) {
-        self.mode = FrameMode::Rebuild {
-            downgradable: false,
-            reuse_scroll: false,
-        };
-    }
-
-    /// Schedules a full structural rebuild, used when the renderer reports a
-    /// structural change that the retained render tree cannot reflect parametrically.
-    pub(super) fn request_invalidating_rebuild(&mut self) {
-        self.request_structural_rebuild();
-    }
-
-    /// Schedules a full rebuild that animation scheduling may still downgrade to a
-    /// parametric refresh.
-    pub(super) fn request_downgradable_rebuild(&mut self) {
-        self.mode = FrameMode::Rebuild {
-            downgradable: true,
-            reuse_scroll: false,
-        };
-    }
-
-    /// Schedules a rebuild that fell back from a failed scroll refresh; the rebuild may
-    /// reuse retained scroll-content caches rather than re-dispatching them.
-    pub(super) fn request_scroll_fallback_rebuild(&mut self) {
-        self.mode = FrameMode::Rebuild {
-            downgradable: false,
-            reuse_scroll: true,
-        };
-    }
-
-    pub(super) fn request_window_refresh(&mut self) {
-        self.mode = FrameMode::WindowRefresh;
+    /// Schedules a refresh of the retained window tree on the next pump (the first
+    /// pump builds the tree).
+    pub(super) fn request_refresh(&mut self) {
+        self.mode = FrameMode::Refresh;
     }
 
     pub(super) fn clear_frame_mode(&mut self) {
@@ -185,21 +118,9 @@ pub(super) fn schedule_animation_update<P: PlatformWindow>(
     if !animations_active {
         return;
     }
-    let explicit_rebuild_pending =
-        runtime.mode.is_explicit_rebuild() || runtime.renderer.has_rebuild_request();
-    if !explicit_rebuild_pending {
-        // Every animated scalar is re-sampled in the render tree's node flush, so a
-        // window refresh re-encodes the active animation with no rebuild or re-measure.
-        runtime.request_window_refresh();
-        return;
-    }
-    // The animation cannot be driven by a parametric refresh; force a rebuild. Keep it
-    // downgradable unless an explicit structural rebuild is already pending.
-    if explicit_rebuild_pending {
-        runtime.request_structural_rebuild();
-    } else {
-        runtime.request_downgradable_rebuild();
-    }
+    // Every animated scalar is re-sampled in the render tree's node flush, so a
+    // refresh re-encodes the active animation with no rebuild or re-measure.
+    runtime.request_refresh();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,7 +213,10 @@ impl FrameProfile {
     }
 }
 
-pub(super) fn schedule_redraw_or_rebuild<P: PlatformWindow>(
+/// Wakes the platform window after an input event: a change the renderer flagged as
+/// structural (its rebuild request) refreshes the retained tree; anything else only
+/// re-presents the existing scene.
+pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     changed: bool,
 ) {
@@ -300,29 +224,25 @@ pub(super) fn schedule_redraw_or_rebuild<P: PlatformWindow>(
         return;
     }
     if runtime.renderer.take_rebuild_request() {
-        runtime.request_invalidating_rebuild();
+        runtime.request_refresh();
     } else {
         runtime.renderer.request_redraw();
     }
     runtime.platform.request_redraw();
 }
 
-pub(super) fn schedule_scroll_scene_rebuild<P: PlatformWindow>(
+/// Wakes the platform window after a scroll event. Scrolling re-composites at the new
+/// offset via a refresh; the render tree's `ScrollNode` re-reads its handle's offset on
+/// each flush.
+pub(super) fn schedule_scroll_refresh<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     changed: bool,
 ) {
     if !changed {
         return;
     }
-    if runtime.renderer.take_rebuild_request() {
-        runtime.request_invalidating_rebuild();
-    } else if !runtime.mode.is_rebuild() {
-        // Scrolling re-composites at the new offset via a window refresh; the render
-        // tree's ScrollNode re-reads its handle's offset on each flush.
-        runtime.request_window_refresh();
-    } else {
-        runtime.request_structural_rebuild();
-    }
+    let _ = runtime.renderer.take_rebuild_request();
+    runtime.request_refresh();
     runtime.platform.request_redraw();
 }
 
@@ -370,7 +290,87 @@ pub(super) fn render_window<P: PlatformWindow>(
     let _ = render_window_with_capture(runtime, env, false, drain_local_tasks);
 }
 
-pub(super) fn rebuild_window_scene<P: PlatformWindow>(
+/// Refreshes the retained window tree in place: apply pending `Dynamic` patches,
+/// re-read every reactive input, run full layout, and re-encode the scene. A
+/// geometry-static frame (animation, scroll, re-present) pays only re-encode.
+fn refresh_window_scene<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    phases: &mut FramePhases,
+) {
+    let refresh_started_at = Instant::now();
+    let scale_factor = runtime.platform.scale_factor();
+    let (width, height) = runtime.platform.surface().size();
+    let bounds = create_bounds(width, height, scale_factor);
+    let transform = vello::kurbo::Affine::scale(scale_factor);
+    runtime
+        .renderer
+        .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY);
+    // An in-flight press/drag must follow the re-laid-out widget, and hover must be
+    // re-evaluated at the pointer so a reflow that moved a widget under the cursor
+    // updates its hover chrome.
+    runtime
+        .renderer
+        .sync_active_interactions_after_layout(runtime.pointer_position);
+    phases.scene_dispatch += refresh_started_at.elapsed();
+    if let Some((x, y)) = runtime.pointer_position
+        && runtime.renderer.sync_pointer_hover_state(x, y, env)
+    {
+        // Hover changed under a static pointer (a reflow moved a widget): the change
+        // is recorded in interaction state; schedule one more frame to re-encode the
+        // updated chrome.
+        runtime.renderer.request_redraw();
+    }
+}
+
+/// Builds the retained window tree from the app's `body()`. Runs exactly once per
+/// renderer lifetime — every later frame refreshes the retained tree instead.
+fn build_window_scene<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    bounds: vello::kurbo::Rect,
+    root_transform: vello::kurbo::Affine,
+    reuse_filter_inputs: bool,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
+    phases: &mut FramePhases,
+) {
+    runtime.renderer.reset_scene();
+    runtime
+        .renderer
+        .set_applied_filter_input_cache_reuse(reuse_filter_inputs);
+    runtime.renderer.begin_rebuild_frame();
+    runtime.renderer.set_window_bounds(bounds);
+    let build_content_started_at = Instant::now();
+    let content = runtime.window.build_content();
+    phases.build_content += build_content_started_at.elapsed();
+    let _ = drain_local_tasks();
+    let scene_dispatch_started_at = Instant::now();
+    runtime.renderer.capture_window_tree(
+        content,
+        env,
+        bounds,
+        root_transform,
+        vello::kurbo::Affine::IDENTITY,
+    );
+    runtime
+        .renderer
+        .render_active_text_context_menu_overlay(env, root_transform);
+    phases.scene_dispatch += scene_dispatch_started_at.elapsed();
+    let scene_finish_started_at = Instant::now();
+    runtime.renderer.finish_rebuild_frame();
+    runtime
+        .renderer
+        .sync_active_interactions_after_layout(runtime.pointer_position);
+    phases.scene_finish += scene_finish_started_at.elapsed();
+}
+
+/// One pump of the window's retained render tree: builds the tree from the app's
+/// `body()` on the very first pump, then satisfies every scheduled refresh by
+/// re-reading reactive values, re-running layout, and re-encoding the scene.
+///
+/// Returns whether the tree was built this pump, the number of build passes (0 or 1,
+/// kept for frame diagnostics), and the phase timing breakdown.
+pub(super) fn pump_window_scene<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
     drain_local_tasks: &mut dyn FnMut() -> bool,
@@ -384,95 +384,65 @@ pub(super) fn rebuild_window_scene<P: PlatformWindow>(
         .renderer
         .set_frame_resources(surface.device(), surface.queue());
 
-    let rebuild_started_at = Instant::now();
+    let pump_started_at = Instant::now();
     let mut phases = FramePhases::default();
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
 
-    let mut rebuilt = false;
-    let mut rebuild_iterations = 0u32;
-    loop {
-        let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
-        if renderer_requested_rebuild {
-            runtime.request_invalidating_rebuild();
-        }
-        if !runtime.mode.is_rebuild() {
-            break;
-        }
-        // Build once: the view tree's `body()` is dispatched recursively only on the
-        // first frame (no tree yet). Once the persistent tree exists, any later
-        // rebuild request — resize, interaction chrome, navigation, an effect asking
-        // for another frame — is satisfied by refreshing that retained tree (read
-        // current state + apply structural patches + full layout + flush), never by
-        // re-running `build_content`. This is the single per-frame pump.
+    let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
+    if renderer_requested_rebuild {
+        runtime.request_refresh();
+    }
+
+    let mut built = false;
+    if runtime.mode.is_pending() {
         if runtime.renderer.has_render_tree() {
-            runtime.request_window_refresh();
-            break;
-        }
-        let reuse_filter_inputs =
-            !renderer_requested_rebuild && !runtime.mode.reuses_scroll_caches();
-        rebuild_iterations = rebuild_iterations
-            .checked_add(1)
-            .expect("hydrolysis runner: rebuild iteration counter overflow");
-        assert!(
-            rebuild_iterations <= 64,
-            "hydrolysis runner: rebuild loop exceeded 64 iterations in a single pump"
-        );
-        runtime.renderer.reset_scene();
-        runtime
-            .renderer
-            .set_applied_filter_input_cache_reuse(reuse_filter_inputs);
-        runtime.renderer.begin_rebuild_frame();
-        runtime.renderer.set_window_bounds(bounds);
-        let build_content_started_at = Instant::now();
-        let content = runtime.window.build_content();
-        phases.build_content += build_content_started_at.elapsed();
-        let _ = drain_local_tasks();
-        let scene_dispatch_started_at = Instant::now();
-        runtime.renderer.capture_window_tree(
-            content,
-            env,
-            bounds,
-            root_transform,
-            vello::kurbo::Affine::IDENTITY,
-        );
-        runtime
-            .renderer
-            .render_active_text_context_menu_overlay(env, root_transform);
-        phases.scene_dispatch += scene_dispatch_started_at.elapsed();
-        let scene_finish_started_at = Instant::now();
-        runtime.renderer.finish_rebuild_frame();
-        runtime
-            .renderer
-            .sync_active_interactions_after_layout(runtime.pointer_position);
-        phases.scene_finish += scene_finish_started_at.elapsed();
-        runtime.clear_frame_mode();
-        rebuilt = true;
-        if let Some((x, y)) = runtime.pointer_position
-            && runtime.renderer.sync_pointer_hover_state(x, y, env)
-        {
+            refresh_window_scene(runtime, env, &mut phases);
+            runtime.clear_frame_mode();
+        } else {
+            build_window_scene(
+                runtime,
+                env,
+                bounds,
+                root_transform,
+                !renderer_requested_rebuild,
+                drain_local_tasks,
+                &mut phases,
+            );
+            built = true;
+            runtime.clear_frame_mode();
+            // Anything the build itself flagged as needing another pass — a hover
+            // change under the pointer, a renderer-side structural request raised
+            // mid-build — is satisfied by refreshing the freshly built tree in the
+            // same frame.
+            let mut refresh_after_build = false;
+            if let Some((x, y)) = runtime.pointer_position
+                && runtime.renderer.sync_pointer_hover_state(x, y, env)
+            {
+                if runtime.renderer.take_rebuild_request() {
+                    refresh_after_build = true;
+                } else {
+                    runtime.renderer.request_redraw();
+                }
+            }
             if runtime.renderer.take_rebuild_request() {
-                runtime.request_structural_rebuild();
-            } else {
-                runtime.renderer.request_redraw();
+                refresh_after_build = true;
+            }
+            if refresh_after_build {
+                refresh_window_scene(runtime, env, &mut phases);
             }
         }
     }
     if runtime.renderer.take_next_frame_rebuild_request() {
-        // An effect needs another frame. Keep it downgradable only if nothing else was
-        // already scheduled; an in-flight refresh/rebuild forces an explicit rebuild.
-        if runtime.mode.is_pending() {
-            runtime.request_structural_rebuild();
-        } else {
-            runtime.request_downgradable_rebuild();
-        }
+        // An effect needs another frame.
+        runtime.request_refresh();
         runtime.platform.request_redraw();
-    } else if runtime.renderer.animations_active() && !runtime.mode.is_rebuild() {
+    } else if runtime.renderer.animations_active() && !runtime.mode.is_pending() {
         schedule_animation_update(runtime, true);
         runtime.platform.request_redraw();
     }
-    phases.rebuild = rebuild_started_at.elapsed();
-    (rebuilt, rebuild_iterations, phases)
+    phases.rebuild = pump_started_at.elapsed();
+    (built, u32::from(built), phases)
 }
 
 pub(super) fn pump_window_semantics<P: PlatformWindow>(
@@ -486,35 +456,36 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
         .set_accessibility_root_label(runtime.window.title.get().as_str());
 
     if runtime.renderer.take_rebuild_request() {
-        runtime.request_invalidating_rebuild();
+        runtime.request_refresh();
     }
-    if !runtime.mode.is_rebuild() {
-        let replay_requested = runtime.mode.is_window_refresh()
-            || runtime.renderer.has_patch_request()
-            || runtime.renderer.take_redraw_request();
-        if !replay_requested {
-            return false;
-        }
-        // Semantic mode has no GPU present, but replay-driven changes (re-sampled
-        // transforms, patched dynamic nodes, redraw-only scalar updates) still move
-        // the accessibility tree, which the render tree emits during `flush`. Re-flush
-        // the retained tree so semantics stay in sync; if no tree exists yet, fall
-        // back to a structural rebuild.
+    let work_pending = runtime.mode.is_pending()
+        || runtime.renderer.has_patch_request()
+        || runtime.renderer.take_redraw_request();
+    if !work_pending {
+        return false;
+    }
+    // Semantic mode has no GPU present, but replay-driven changes (re-sampled
+    // transforms, patched dynamic nodes, redraw-only scalar updates) still move
+    // the accessibility tree, which the render tree emits during `flush`. Re-flush
+    // the retained tree so semantics stay in sync; if no tree exists yet, the pump
+    // below builds it first.
+    if runtime.renderer.has_render_tree() {
         let scale_factor = runtime.platform.scale_factor();
         let (width, height) = runtime.platform.surface().size();
         let bounds = create_bounds(width, height, scale_factor);
         let transform = vello::kurbo::Affine::scale(scale_factor);
-        if runtime
+        let flushed = runtime
             .renderer
-            .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY)
-        {
-            runtime.clear_frame_mode();
-            return true;
-        }
-        runtime.request_scroll_fallback_rebuild();
+            .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY);
+        assert!(
+            flushed,
+            "hydrolysis runner: retained render tree vanished during semantics pump"
+        );
+        runtime.clear_frame_mode();
+        return true;
     }
 
-    let (rebuilt, _, _) = rebuild_window_scene(runtime, env, &mut || false);
+    let (rebuilt, _, _) = pump_window_scene(runtime, env, &mut || false);
     runtime.renderer.clear_frame_resources();
     runtime
         .platform
@@ -547,44 +518,10 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
-        let (scene_rebuilt, rebuild_iterations, mut rebuild_phases) =
-            rebuild_window_scene(runtime, env, drain_local_tasks);
+        let (scene_rebuilt, rebuild_iterations, rebuild_phases) =
+            pump_window_scene(runtime, env, drain_local_tasks);
         rebuilt |= scene_rebuilt;
         let clear_color = window_clear_color(&runtime.window, env);
-        if runtime.mode.is_window_refresh() {
-            let refresh_started_at = Instant::now();
-            // Re-flush the retained render tree: a geometry-static frame
-            // (animation/scroll/re-present) pays only re-encode; a reactive patch
-            // relays out the (cheap) retained tree in place. No rebuild fallback —
-            // the tree drives every parametric change.
-            let scale_factor = runtime.platform.scale_factor();
-            let (width, height) = runtime.platform.surface().size();
-            let bounds = create_bounds(width, height, scale_factor);
-            let transform = vello::kurbo::Affine::scale(scale_factor);
-            runtime
-                .renderer
-                .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY);
-            // Mirror the (former) rebuild frame's post-layout interaction sync: now
-            // that every frame refreshes the retained tree, an in-flight press/drag
-            // must follow the re-laid-out widget, and hover must be re-evaluated at
-            // the pointer so a reflow that moved a widget under the cursor updates its
-            // hover chrome.
-            runtime
-                .renderer
-                .sync_active_interactions_after_layout(runtime.pointer_position);
-            let refresh_duration = refresh_started_at.elapsed();
-            rebuild_phases.rebuild += refresh_duration;
-            rebuild_phases.scene_dispatch += refresh_duration;
-            runtime.clear_frame_mode();
-            if let Some((x, y)) = runtime.pointer_position
-                && runtime.renderer.sync_pointer_hover_state(x, y, env)
-            {
-                // Hover changed under a static pointer (a reflow moved a widget): the
-                // change is recorded in interaction state; schedule one more refresh
-                // to re-encode the updated chrome.
-                runtime.renderer.request_redraw();
-            }
-        }
 
         let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());
         let surface = runtime.platform.surface();
@@ -599,7 +536,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                 | wgpu::SurfaceError::Timeout
                 | wgpu::SurfaceError::Other,
             )) => {
-                runtime.request_structural_rebuild();
+                runtime.request_refresh();
                 runtime.platform.request_redraw();
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
@@ -823,7 +760,7 @@ where
                     waterui_core::layout::Size::new(logical_width, logical_height),
                 );
                 runtime.window.frame.set(frame);
-                runtime.request_structural_rebuild();
+                runtime.request_refresh();
                 runtime.platform.request_redraw();
             }
             InputEvent::PointerDown { x, y, button } => {
@@ -841,7 +778,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::PointerUp { x, y, button } => {
                 runtime.pointer_position = Some((x, y));
@@ -858,7 +795,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::PointerMove { x, y } => {
                 runtime.pointer_position = Some((x, y));
@@ -873,7 +810,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::PointerCancel => {
                 let changed = runtime
@@ -885,7 +822,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Scroll {
                 x,
@@ -907,19 +844,19 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_scroll_scene_rebuild(runtime, changed);
+                schedule_scroll_refresh(runtime, changed);
             }
             InputEvent::Magnification { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));
                 let changed = runtime
                     .renderer
                     .handle_magnification(x, y, delta, phase, env);
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Rotation { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));
                 let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::TextInput { text } => {
                 let changed = runtime.renderer.handle_text_input(text.as_str());
@@ -930,7 +867,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Key {
                 key,
@@ -946,7 +883,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImePreedit { text } => {
                 let changed = runtime.renderer.handle_ime_preedit(text.as_str());
@@ -957,7 +894,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeCommit { text } => {
                 let changed = runtime.renderer.handle_ime_commit(text.as_str());
@@ -968,7 +905,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeDisabled => {
                 let changed = runtime.renderer.handle_ime_disabled();
@@ -978,7 +915,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_redraw_or_rebuild(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Key {
                 state: KeyState::Released,
@@ -1030,32 +967,32 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
     if runtime.renderer.handle_gesture_tick(now, env) {
-        runtime.request_structural_rebuild();
+        runtime.request_refresh();
     }
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
     // A pending fine-grained reactive patch composites through the window-refresh path,
     // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
     // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
-    if runtime.renderer.take_patch_request() && !runtime.mode.is_rebuild() {
-        // The window refresh re-flushes the retained tree, which applies the pending
+    if runtime.renderer.take_patch_request() {
+        // The refresh re-flushes the retained tree, which applies the pending
         // Dynamic patch to only the affected subtree and relays out if it changed size.
-        runtime.request_window_refresh();
+        runtime.request_refresh();
         runtime.platform.request_redraw();
     }
     if runtime.renderer.advance_text_caret_animation(now) {
         runtime.renderer.request_redraw();
         runtime.platform.request_redraw();
     }
-    if window_wants_continuous_render(&runtime.window) && !runtime.mode.is_rebuild() {
+    if window_wants_continuous_render(&runtime.window) {
         // Game-engine mode: keep presenting every display refresh while the window is
         // visible. The redraw is delivered through the AutoVsync-gated present, so this
         // paces to the monitor refresh rather than spinning the CPU.
-        runtime.request_window_refresh();
+        runtime.request_refresh();
         runtime.platform.request_redraw();
     }
     if runtime.renderer.take_rebuild_request() {
-        runtime.request_invalidating_rebuild();
+        runtime.request_refresh();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
     if runtime.mode.is_pending() {
