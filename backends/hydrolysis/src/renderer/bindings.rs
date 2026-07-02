@@ -231,7 +231,7 @@ impl HydrolysisRenderer {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        let order = self.next_hit_test_order();
+        let order = self.hit_test.next_hit_test_order();
         self.gesture_engine.register_target(
             bounds,
             gesture,
@@ -279,7 +279,7 @@ impl HydrolysisRenderer {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        let order = self.next_hit_test_order();
+        let order = self.hit_test.next_hit_test_order();
         self.text_editing.text_input_targets.push(TextInputTarget {
             bounds: data.target.bounds,
             cursor_area: data.target.cursor_area,
