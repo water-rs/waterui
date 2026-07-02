@@ -42,13 +42,42 @@ fn resolved_press_layer_opacity(state: WidgetInteractionState) -> f32 {
     }
 }
 
+/// Initial ripple size as a fraction of the full diameter: a press starts at
+/// this scale over the press point and grows to full size as the renderer's
+/// press-grow animation advances `press_progress` from 0 to 1.
+const RIPPLE_INITIAL_SCALE: f64 = 0.4;
+
 /// The full Material ripple diameter for a target: the surface diagonal,
-/// floored at [`RIPPLE_MINIMUM_DIAMETER`]. The ripple is a solid circle of
-/// this size; the press-grow animation scales it from the initial fraction up
-/// to 1 while its center drifts from the press point to the surface center
-/// (see `DynamicRippleTransform` in the renderer).
+/// floored at [`RIPPLE_MINIMUM_DIAMETER`]. The ripple is drawn fresh each
+/// frame from the sampled interaction state — [`ripple_kinematics`] scales it
+/// from the initial fraction up to full size while its center drifts from the
+/// press point to the surface center.
 pub fn ripple_diameter(bounds: Rect) -> f64 {
     bounds.width().hypot(bounds.height()).max(RIPPLE_MINIMUM_DIAMETER)
+}
+
+/// Material ripple kinematics for one frame: given the target's `bounds` and
+/// the sampled `state`, returns the ripple's current center and radius.
+///
+/// The center drifts linearly from the press point (already mapped by the
+/// renderer into the same coordinate space as `bounds`; the bounds center when
+/// absent) to the bounds center, and the radius grows from
+/// [`RIPPLE_INITIAL_SCALE`] of the full [`ripple_diameter`] to the full size,
+/// both driven by `press_progress`.
+fn ripple_kinematics(bounds: Rect, state: WidgetInteractionState) -> (Point, f64) {
+    let progress = f64::from(state.press_progress.clamp(0.0, 1.0));
+    let bounds_center = Point::new(
+        bounds.width().mul_add(0.5, bounds.x0),
+        bounds.height().mul_add(0.5, bounds.y0),
+    );
+    let origin = state.press_origin.unwrap_or(bounds_center);
+    let center = Point::new(
+        (bounds_center.x - origin.x).mul_add(progress, origin.x),
+        (bounds_center.y - origin.y).mul_add(progress, origin.y),
+    );
+    let scale = (1.0 - RIPPLE_INITIAL_SCALE).mul_add(progress, RIPPLE_INITIAL_SCALE);
+    let radius = ripple_diameter(bounds) * 0.5 * scale;
+    (center, radius)
 }
 
 /// Draws the resting state layer (hover/focus tint) into `bounds`.
@@ -76,18 +105,15 @@ pub fn draw_bounded(
     draw_state_tint_rounded(draw, bounds, radii, color, resolved_state_layer_opacity(state));
 
     let press_opacity = resolved_press_layer_opacity(state);
-    if state.press_origin.is_none() || press_opacity == 0.0 {
+    if press_opacity == 0.0 {
         return;
     }
 
-    // Solid Material ripple. The captured fragment is painted at full size,
-    // centered; `DynamicRippleTransform` re-samples press_progress to scale and
-    // drift it, so this draws the final-state circle regardless of progress.
-    let center = Point::new(
-        bounds.width().mul_add(0.5, bounds.x0),
-        bounds.height().mul_add(0.5, bounds.y0),
-    );
-    let radius = ripple_diameter(bounds) * 0.5;
+    // Solid Material ripple, drawn fresh each frame at its current animated
+    // geometry: the retained tree re-encodes the scene every frame while the
+    // press animations run, so the sampled press_progress/press_origin drive
+    // the growth and drift directly.
+    let (center, radius) = ripple_kinematics(bounds, state);
     let brush = Brush::from(color.with_alpha(press_opacity.clamp(0.0, 1.0)));
 
     draw.push_rounded_layer(1.0, bounds, radii);
@@ -114,10 +140,10 @@ pub fn draw_unbounded_circle(
         return;
     }
     let bounds = Rect::from_center_size(center, (radius * 2.0, radius * 2.0));
-    let ripple_radius = ripple_diameter(bounds) * 0.5;
+    let (ripple_center, ripple_radius) = ripple_kinematics(bounds, state);
     let brush = Brush::from(color.with_alpha(press_opacity.clamp(0.0, 1.0)));
     draw.push_layer(1.0, None);
-    draw.fill_circle(center, ripple_radius, &brush);
+    draw.fill_circle(ripple_center, ripple_radius, &brush);
     draw.pop_layer();
 }
 
@@ -146,9 +172,44 @@ mod tests {
     }
 
     #[test]
+    fn material_ripple_animates_from_press_point_to_full_coverage() {
+        // Mid-press: the ripple sits between the press point and the bounds
+        // center, at a radius between the initial fraction and full size.
+        let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let origin = Point::new(10.0, 12.0);
+        let mut recorder = RecordingDrawContext::default();
+        state_layer::draw_bounded(
+            &mut recorder,
+            bounds,
+            8.0.into(),
+            Color::new([1.0, 1.0, 1.0, 1.0]),
+            WidgetInteractionState {
+                pressed: true,
+                press_layer_opacity: 0.12,
+                press_origin: Some(origin),
+                press_progress: 0.5,
+                ..WidgetInteractionState::NONE
+            },
+        );
+        let circle = recorder
+            .filled_circle
+            .expect("mid-press ripple must fill a solid circle");
+        assert_eq!(
+            circle.center,
+            Point::new(30.0, 16.0),
+            "center drifts halfway from the press point to the bounds center"
+        );
+        let full_radius = ripple_diameter(bounds) * 0.5;
+        assert!(
+            (circle.radius - full_radius * 0.7).abs() < 1e-6,
+            "radius is halfway between the 0.4 initial fraction and full size"
+        );
+    }
+
+    #[test]
     fn material_ripple_press_layer_is_a_solid_circle() {
-        // The captured fragment is drawn at full size and solid (no soft-edge
-        // gradient); the renderer scales/drifts it via DynamicRippleTransform.
+        // At full progress the ripple covers the target: a solid circle (no
+        // soft-edge gradient) centered in bounds at the full ripple diameter.
         let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
         let mut recorder = RecordingDrawContext::default();
         state_layer::draw_bounded(
