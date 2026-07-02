@@ -892,6 +892,11 @@ impl HydrolysisRenderer {
             &mut self.animation_controller,
             now,
         );
+        // Every widget that binds an interaction target draws its hover/focus/press
+        // state layers from the sampled state each flush, so its chrome is
+        // state-dependent by construction: a press or hover change must schedule a
+        // re-flush (not just a re-present of the stale scene).
+        handles.mark_chrome_state_dependent();
         if self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
             self.hit_test.hover_targets.push(HoverTarget {
                 bounds,

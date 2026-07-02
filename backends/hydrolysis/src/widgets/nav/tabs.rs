@@ -241,19 +241,24 @@ pub(crate) fn render_tabs_parts(
         };
         {
             let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
-            let (_, press_slot, _) =
+            let (interaction, press_slot, _) =
                 ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+            let interaction =
+                crate::renderer::local_interaction_state(interaction, ctx.hit_transform);
             let is_selected = index == selected_index;
-            if is_selected {
-                let highlight = tabs_active_indicator_rect(
-                    button_rect,
-                    position,
-                    theme_metrics.active_indicator_height,
-                    f64::from(label_size.width),
-                );
+            {
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
-                theme.draw_tabs_highlight(&mut draw, highlight);
+                if is_selected {
+                    let highlight = tabs_active_indicator_rect(
+                        button_rect,
+                        position,
+                        theme_metrics.active_indicator_height,
+                        f64::from(label_size.width),
+                    );
+                    theme.draw_tabs_highlight(&mut draw, highlight);
+                }
+                theme.draw_tabs_button_state_layer(&mut draw, button_rect, is_selected, interaction);
             }
             let selection_binding = selection.clone();
             let tab_id = state.borrow().tabs[index].tag;

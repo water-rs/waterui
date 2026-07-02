@@ -477,6 +477,48 @@ fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
     assert_eq!(state.press_origin, None);
 }
 
+/// Regression guard for the retained-path state-layer loss: a began press must
+/// surface through the re-bound `WidgetInteractionState` as a visible press
+/// layer once the fade-in has run, because widgets draw their themed state
+/// layers from exactly this sampled state on every flush.
+#[test]
+fn began_press_samples_a_visible_press_layer_after_fade_in() {
+    let mut renderer = test_renderer();
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+
+    renderer.begin_rebuild_frame();
+    let (_, slot, _) = renderer.bind_interaction_target(bounds, &env);
+    renderer.hit_test.interaction.begin_press(
+        slot,
+        Point::new(20.0, 20.0),
+        renderer.frame_instant(),
+    );
+    renderer.finish_rebuild_frame();
+
+    // Advance past the press fade-in (105ms in MinimalTestTheme) and re-bind:
+    // the sampled state must carry a visible press layer, its origin, and
+    // non-zero grow progress.
+    let later = renderer
+        .frame_instant()
+        .checked_add(Duration::from_millis(200))
+        .expect("test press deadline overflow");
+    renderer.set_frame_instant(later);
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(bounds, &env);
+    assert!(state.pressed, "held press must stay visually pressed");
+    assert!(
+        state.press_layer_opacity > 0.0,
+        "press layer must be visible after fade-in"
+    );
+    assert!(
+        state.press_progress > 0.0,
+        "press ripple must have grow progress"
+    );
+    assert_eq!(state.press_origin, Some(Point::new(20.0, 20.0)));
+}
+
 #[test]
 fn interaction_engine_resolves_focus_state() {
     let mut renderer = test_renderer();

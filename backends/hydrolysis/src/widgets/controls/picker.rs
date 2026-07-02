@@ -340,15 +340,14 @@ pub(crate) fn render_menu_picker(
     {
         let bounds = ctx.bounds;
         let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
-        let (interaction, press_slot, handles) =
+        let (interaction, press_slot, _) =
             ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
         {
             let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
-            // The field chrome samples interaction state (focus/hover tint).
-            handles.mark_chrome_state_dependent();
             theme.draw_input_field(&mut draw, bounds, interaction);
             theme.draw_picker_indicator(&mut draw, bounds);
+            theme.draw_picker_state_layer(&mut draw, bounds, interaction);
         }
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection.clone();
@@ -453,7 +452,9 @@ pub(crate) fn render_radio_picker(
             }
         };
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
-        let (_, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let (interaction, press_slot, _) =
+            ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         {
             let mut draw = ctx.draw_context();
             theme.draw_radio_indicator(
@@ -461,6 +462,13 @@ pub(crate) fn render_radio_picker(
                 indicator_center,
                 indicator_radius,
                 radio_indicator_state,
+            );
+            theme.draw_radio_state_layer(
+                &mut draw,
+                indicator_center,
+                indicator_radius,
+                is_selected,
+                interaction,
             );
         }
 
@@ -505,7 +513,9 @@ pub(crate) fn render_segmented_picker(
         let segment_rect = vello::kurbo::Rect::new(x0, bounds.y0, x0 + segment_width, bounds.y1);
         let is_selected = item.tag == selected;
         let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
-        let (_, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let (interaction, press_slot, _) =
+            ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         {
             let mut draw = ctx.draw_context();
             theme.draw_segmented_picker_segment(
@@ -515,6 +525,7 @@ pub(crate) fn render_segmented_picker(
                 index == 0,
                 index + 1 == item_count,
             );
+            theme.draw_segmented_picker_state_layer(&mut draw, segment_rect, is_selected, interaction);
         }
         // Render the segment label directly as styled text (no dispatch), mirroring
         // the radio/menu picker styles. The item's resolved `StyledStr` carries its
