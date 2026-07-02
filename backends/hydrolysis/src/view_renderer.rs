@@ -1,6 +1,3 @@
-use core::future::Future;
-use core::pin::Pin;
-use std::boxed::Box;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -50,14 +47,14 @@ impl Default for HydrolysisViewRenderer {
 }
 
 impl CustomViewRenderer for HydrolysisViewRenderer {
-    fn render_to_rgba(
-        &self,
-        view: AnyView,
-        size: RenderSize,
-    ) -> Pin<Box<dyn Future<Output = RenderResult> + 'static>> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "view rendering runs on the main thread; the future borrows non-Send GPU and Environment state"
+    )]
+    async fn render_to_rgba(&self, view: AnyView, size: RenderSize) -> RenderResult {
         let surface = Rc::clone(&self.surface);
         let configure_environment = Rc::clone(&self.configure_environment);
-        Box::pin(async move {
+        {
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             let width = size.width.max(1.0).round() as u32;
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -121,6 +118,6 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 width,
                 height,
             }
-        })
+        }
     }
 }

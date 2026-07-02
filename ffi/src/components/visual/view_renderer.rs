@@ -7,7 +7,6 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::{Future, ready};
-use core::pin::Pin;
 
 use waterui_core::AnyView;
 use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
@@ -60,7 +59,7 @@ impl CustomViewRenderer for FFIViewRenderer {
         &self,
         view: AnyView,
         size: RenderSize,
-    ) -> Pin<Box<dyn Future<Output = RenderResult> + 'static>> {
+    ) -> impl Future<Output = RenderResult> {
         let render_fn = self.render_fn;
         let view_ptr = Box::into_raw(Box::new(view));
         let view_ptr_void = view_ptr.cast::<()>();
@@ -129,7 +128,7 @@ impl CustomViewRenderer for FFIViewRenderer {
             drop(Box::from_raw(callback_data.cast::<CallbackData>()));
         }
 
-        Box::pin(ready(recv_result))
+        ready(recv_result)
     }
 }
 
