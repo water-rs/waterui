@@ -26,6 +26,13 @@ pub(crate) struct HydroSubview<'a> {
     state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
     env: MainThreadBound<Environment>,
     stretch_axis: StretchAxis,
+    /// Per-proposal memo for this layout pass (containers probe children with
+    /// repeated proposals). The `SubView` contract wants caches thread-safe *when
+    /// measurement can run on a worker*; this subview only caches on the
+    /// main-thread recursion path (`require_main_thread() == true`), so the
+    /// contract-sanctioned `MainThreadBound` confinement makes the interior
+    /// `RefCell` sound. The worker-safe text path never touches it — text memoizes
+    /// in the `Mutex`-guarded, content-keyed [`TextMeasureService`] instead.
     measure_cache: MainThreadBound<RefCell<Vec<(ProposalSize, ViewDimensions)>>>,
     /// Present when this child is a text leaf resolved on the main thread. When
     /// set, `measure` shapes through `service` on any thread and the subview is
