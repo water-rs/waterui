@@ -1,7 +1,7 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, schedule_redraw_or_rebuild,
-    schedule_scroll_scene_rebuild,
+    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, schedule_redraw_or_refresh,
+    schedule_scroll_refresh,
 };
 use crate::platform::PlatformWindow as _;
 use crate::renderer::HydrolysisRenderer;
@@ -16,9 +16,9 @@ fn changed_redraw_only_input_wakes_platform_window() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
 
-    schedule_redraw_or_rebuild(&mut runtime, true);
+    schedule_redraw_or_refresh(&mut runtime, true);
 
-    assert!(!runtime.mode.is_rebuild());
+    assert!(!runtime.mode.is_pending());
     assert!(runtime.renderer.take_redraw_request());
     assert!(runtime.platform.take_redraw_request());
 }
@@ -29,9 +29,9 @@ fn changed_rebuild_input_wakes_platform_window() {
     runtime.clear_frame_mode();
     runtime.renderer.request_rebuild();
 
-    schedule_redraw_or_rebuild(&mut runtime, true);
+    schedule_redraw_or_refresh(&mut runtime, true);
 
-    assert!(runtime.mode.is_rebuild());
+    assert!(runtime.mode.is_pending());
     assert!(
         runtime.platform.take_redraw_request(),
         "rebuild input must wake the platform event loop for the next frame"
@@ -43,9 +43,9 @@ fn changed_scroll_input_schedules_frame_and_wakes_platform_window() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
 
-    // With no retained window frame yet, a scroll schedules a structural rebuild;
-    // once a frame is retained, scrolling re-composites it via a window refresh.
-    schedule_scroll_scene_rebuild(&mut runtime, true);
+    // Scrolling re-composites the retained frame via a refresh (the first pump
+    // builds the tree if it does not exist yet).
+    schedule_scroll_refresh(&mut runtime, true);
 
     assert!(runtime.mode.is_pending());
     assert!(
@@ -76,7 +76,7 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
     let env = Environment::new();
 
     assert!(advance_runtime(&mut runtime, &env, deadline).is_some());
-    assert!(!runtime.mode.is_rebuild());
+    assert!(!runtime.mode.is_pending());
     assert!(runtime.renderer.take_redraw_request());
     assert!(runtime.platform.take_redraw_request());
 }

@@ -299,7 +299,7 @@ impl HeadlessRuntime {
             .renderer
             .handle_accessibility_action(request, &action_env);
         if changed {
-            self.runtime.request_structural_rebuild();
+            self.runtime.request_refresh();
             self.runtime.platform.request_redraw();
         }
         changed
@@ -309,7 +309,7 @@ impl HeadlessRuntime {
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {
-            self.runtime.request_structural_rebuild();
+            self.runtime.request_refresh();
             self.runtime.platform.request_redraw();
         }
         changed
@@ -403,7 +403,7 @@ impl HeadlessRuntime {
             let _ = advance_runtime(popup, &self.env, at);
         }
         let should_render = capture_snapshot
-            || self.runtime.mode.is_rebuild()
+            || self.runtime.mode.is_pending()
             || self.runtime.platform.take_redraw_request();
         let mut render_result = should_render.then(|| {
             render_window_with_capture(&mut self.runtime, &self.env, capture_snapshot, &mut || {
