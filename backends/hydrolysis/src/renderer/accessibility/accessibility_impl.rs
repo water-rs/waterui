@@ -147,7 +147,13 @@ impl AccessibilityBuilder {
     }
 
     pub(crate) fn apply_state(&self, env: &Environment, node: &mut AccessibilityNode) {
-        let Some(state) = env.get::<AccessibilityState>() else {
+        // The tree build stores accessibility state as a live signal (a static
+        // state is a constant signal), so a reactive state — e.g. a filter chip's
+        // selected binding — is resolved fresh on every emission.
+        let Some(state) = env
+            .get::<AccessibilityStateSignal>()
+            .map(|signal| signal.state().get())
+        else {
             return;
         };
         if state.is_disabled() {
@@ -384,6 +390,7 @@ impl HydrolysisRenderer {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
+        self.watch_accessibility_state(env);
         self.accessibility
             .register_node_internal(node, bounds, env, action_target, true)
     }
@@ -396,8 +403,19 @@ impl HydrolysisRenderer {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
+        self.watch_accessibility_state(env);
         self.accessibility
             .register_node_internal(node, bounds, env, action_target, false)
+    }
+
+    /// Subscribes the scoped accessibility-state signal (if any) to the refresh
+    /// pump, so a state change — a chip toggling selected, a row expanding —
+    /// re-flushes the tree and re-emits the node with the current state.
+    #[cfg(feature = "accessibility")]
+    fn watch_accessibility_state(&mut self, env: &Environment) {
+        if let Some(signal) = env.get::<AccessibilityStateSignal>() {
+            self.watch_signal(signal.state());
+        }
     }
 
     #[cfg(feature = "accessibility")]

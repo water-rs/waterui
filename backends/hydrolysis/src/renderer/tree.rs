@@ -1980,6 +1980,13 @@ impl RenderNode {
             Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
             Err(view) => view,
         };
+        // Accessibility state is stored in the scoped environment as a *live*
+        // `AccessibilityStateSignal` (a static state becomes a constant signal):
+        // descendants capture environment clones at build time, so a resolved
+        // snapshot would freeze the state forever — a `when(selected, …)` chip
+        // would keep emitting `selected == false` after every toggle. Emission
+        // resolves the signal at flush time (`apply_state`), and node
+        // registration subscribes it to the refresh pump.
         let view = match view.downcast::<IgnorableMetadata<AccessibilityState>>() {
             Ok(meta) => {
                 let IgnorableMetadata { content, value } = *meta;
@@ -1987,7 +1994,7 @@ impl RenderNode {
                 if value.is_hidden() {
                     scoped.insert(AccessibilityHidden::new(true));
                 }
-                scoped.insert(value);
+                scoped.insert(AccessibilityStateSignal::new(Computed::constant(value)));
                 let child = RenderNode::build(content, &scoped, renderer);
                 return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
             }
@@ -1996,12 +2003,13 @@ impl RenderNode {
         let view = match view.downcast::<IgnorableMetadata<AccessibilityStateSignal>>() {
             Ok(meta) => {
                 let IgnorableMetadata { content, value } = *meta;
-                let state = value.state().get();
                 let mut scoped = env.clone();
-                if state.is_hidden() {
+                // Subtree hiding follows the state at build time; the per-node
+                // hidden/selected/checked flags themselves stay live via the signal.
+                if value.state().get().is_hidden() {
                     scoped.insert(AccessibilityHidden::new(true));
                 }
-                scoped.insert(state);
+                scoped.insert(value);
                 let child = RenderNode::build(content, &scoped, renderer);
                 return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
             }
