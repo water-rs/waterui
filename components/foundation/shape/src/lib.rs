@@ -31,7 +31,9 @@ use num_traits::ToPrimitive;
 use std::time::Instant;
 
 use nami::{Computed, Signal, signal::IntoComputed};
-use waterui_core::{Environment, MainThreadBound, View, easing::EasingCurve, metadata::MetadataKey};
+#[cfg(feature = "gpu")]
+use waterui_core::MainThreadBound;
+use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};

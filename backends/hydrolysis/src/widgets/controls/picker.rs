@@ -271,6 +271,7 @@ pub(crate) fn menu_picker_row_height(max_item_text_height: f64, metrics: PickerM
         .max(max_item_text_height + metrics.vertical_inset * 2.0)
 }
 
+#[cfg(feature = "accessibility")]
 pub(crate) fn menu_picker_popup_rect(
     field_bounds: vello::kurbo::Rect,
     row_height: f64,
@@ -282,6 +283,7 @@ pub(crate) fn menu_picker_popup_rect(
     vello::kurbo::Rect::new(field_bounds.x0, y0, field_bounds.x1, y1)
 }
 
+#[cfg(feature = "accessibility")]
 pub(crate) fn menu_picker_option_rect(
     popup_rect: vello::kurbo::Rect,
     row_height: f64,
