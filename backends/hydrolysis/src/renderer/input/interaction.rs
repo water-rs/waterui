@@ -1,11 +1,16 @@
 use super::*;
 use crate::animation::AnimationKey;
-use waterui_backend_core::widget::{InteractionMotion, WidgetInteractionState};
+use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
 
 const INTERACTION_FOCUS_KEY: usize = 0;
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
-const INTERACTION_PRESS_OPACITY_KEY: usize = 2;
-const INTERACTION_PRESS_PROGRESS_KEY: usize = 3;
+/// First animation key of the per-wave pairs; each press wave claims two
+/// consecutive keys (opacity, grow progress).
+const INTERACTION_WAVE_KEYS_BASE: usize = 2;
+const INTERACTION_KEYS_PER_WAVE: usize = 2;
+/// Renderer-local animation keys claimed by one widget's interaction slot.
+const INTERACTION_KEYS_PER_SLOT: usize =
+    INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * MAX_PRESS_WAVES;
 
 #[derive(Debug, Default)]
 pub(crate) struct InteractionEngine {
@@ -92,7 +97,7 @@ impl InteractionEngine {
         let (press_slot, _) = self.press_controller.bind();
         let animation_key_base = press_slot
             .index
-            .checked_mul(4)
+            .checked_mul(INTERACTION_KEYS_PER_SLOT)
             .expect("interaction animation key overflow");
         let previous = self.press_controller.slots[press_slot.index].handles.take();
         // Flag slot reuse by an unrelated widget: the previous occupant sat at a
@@ -102,16 +107,16 @@ impl InteractionEngine {
             .replace(input.bounds)
             .is_some_and(|bounds| !interaction_bounds_match(bounds, input.bounds));
 
-        // Inherited press/hover must not migrate to a different widget: a press
-        // only survives if its origin still lands inside the widget's bounds, and
-        // any state from a reused slot (different-position occupant) is dropped.
-        if let Some(prev) = &previous
-            && (slot_reused
-                || prev
-                    .origin_in_window()
-                    .is_none_or(|origin| !input.bounds.contains(origin)))
-        {
-            prev.clear_press_state();
+        // Inherited press/hover must not migrate to a different widget: a wave
+        // only survives if its press origin still lands inside the widget's
+        // bounds, and any state from a reused slot (different-position
+        // occupant) is dropped.
+        if let Some(prev) = &previous {
+            if slot_reused {
+                prev.clear_press_state();
+            } else {
+                prev.retain_waves_with_origin(|origin| input.bounds.contains(origin));
+            }
         }
         let hovered = if slot_reused {
             input.hovered
@@ -139,44 +144,47 @@ impl InteractionEngine {
             state_layer_animation(hover_target, motion),
             now,
         );
-        let visual_pressed = !slot_reused
-            && previous
-                .as_ref()
-                .is_some_and(|prev| prev.visually_pressed(now));
-        let press_alpha = animation_controller.bind_scalar_target(
-            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_PRESS_OPACITY_KEY),
-            if visual_pressed {
-                motion.pressed_opacity
-            } else {
-                0.0
-            },
-            press_layer_opacity_animation(visual_pressed, motion),
-            now,
-        );
-        // Material ripple geometry only ever plays forward: the wave grows from
-        // the press point and, once released, holds its expanded shape while the
-        // press layer fades out. While the layer is still visible the progress
-        // therefore keeps its 1.0 target (re-targeting 0 with the grow animation
-        // would play the expansion backwards — a shrinking ripple); it snaps to 0
-        // only once the fade-out has finished and the wave is invisible.
-        let ripple_visible = visual_pressed || press_alpha.sample(now) > 0.0;
-        let press_progress_handle = animation_controller.bind_scalar_target(
-            AnimationKey::renderer_local_scalar(
-                animation_key_base + INTERACTION_PRESS_PROGRESS_KEY,
-            ),
-            if ripple_visible { 1.0 } else { 0.0 },
-            if ripple_visible {
-                motion.press_grow.clone()
-            } else {
-                Animation::linear(Duration::ZERO)
-            },
-            now,
-        );
+        let waves = core::array::from_fn(|index| {
+            let wave_key_base =
+                animation_key_base + INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * index;
+            let wave_visual = previous.as_ref().is_some_and(|prev| {
+                prev.wave(index)
+                    .visually_pressed(motion.minimum_press_duration, now)
+            });
+            let alpha = animation_controller.bind_scalar_target(
+                AnimationKey::renderer_local_scalar(wave_key_base),
+                if wave_visual {
+                    motion.pressed_opacity
+                } else {
+                    0.0
+                },
+                press_layer_opacity_animation(wave_visual, motion),
+                now,
+            );
+            // Material ripple geometry only ever plays forward: a wave grows
+            // from its press point and, once released, holds its expanded shape
+            // while its layer fades out. While the layer is still visible the
+            // progress therefore keeps its 1.0 target (re-targeting 0 with the
+            // grow animation would play the expansion backwards — a shrinking
+            // ripple); it snaps to 0 only once the fade-out has finished and
+            // the wave is invisible.
+            let wave_visible = wave_visual || alpha.sample(now) > 0.0;
+            let progress = animation_controller.bind_scalar_target(
+                AnimationKey::renderer_local_scalar(wave_key_base + 1),
+                if wave_visible { 1.0 } else { 0.0 },
+                if wave_visible {
+                    motion.press_grow.clone()
+                } else {
+                    Animation::linear(Duration::ZERO)
+                },
+                now,
+            );
+            WaveLayer::new(alpha, progress)
+        });
 
         let handles = Rc::new(InteractionLayerHandles::new(
             hover_alpha.clone(),
-            press_alpha.clone(),
-            press_progress_handle.clone(),
+            waves,
             motion.clone(),
         ));
         // A reused slot's previous state belongs to a different widget; start fresh.
@@ -189,13 +197,11 @@ impl InteractionEngine {
 
         let state = WidgetInteractionState {
             hovered,
-            pressed: visual_pressed,
+            pressed: handles.visually_pressed(now),
             focus_visible,
             focus_progress: focus_alpha.sample(now),
             state_layer_opacity: hover_alpha.sample(now),
-            press_layer_opacity: press_alpha.sample(now),
-            press_origin: handles.origin_in_window(),
-            press_progress: press_progress_handle.sample(now),
+            press_waves: handles.sample_waves(now),
         };
         (state, press_slot, handles)
     }
@@ -358,9 +364,8 @@ pub(crate) fn local_interaction_state(
     mut state: WidgetInteractionState,
     hit_transform: vello::kurbo::Affine,
 ) -> WidgetInteractionState {
-    state.press_origin = state
-        .press_origin
-        .map(|origin| hit_transform.inverse() * origin);
+    let inverse = hit_transform.inverse();
+    state.press_waves.map_origins(|origin| inverse * origin);
     state
 }
 
@@ -382,7 +387,7 @@ fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> A
 
 #[cfg(test)]
 mod tests {
-    use super::super::interaction_layers::InteractionLayerHandles;
+    use super::super::interaction_layers::{InteractionLayerHandles, WaveLayer};
     use super::{InteractionEngine, WidgetInteractionInput};
     use crate::animation::{AnimationController, AnimationKey};
     use crate::time::Instant;
@@ -410,7 +415,7 @@ mod tests {
 
     fn handles(now: Instant) -> InteractionLayerHandles {
         let mut controller = AnimationController::default();
-        let bind = |controller: &mut AnimationController, key: usize| {
+        let mut bind = |key: usize| {
             controller.bind_scalar_target(
                 AnimationKey::renderer_local_scalar(key),
                 0.0,
@@ -418,12 +423,11 @@ mod tests {
                 now,
             )
         };
-        InteractionLayerHandles::new(
-            bind(&mut controller, 0),
-            bind(&mut controller, 1),
-            bind(&mut controller, 2),
-            motion(),
-        )
+        let hover_alpha = bind(0);
+        let waves = core::array::from_fn(|index| {
+            WaveLayer::new(bind(1 + index * 2), bind(2 + index * 2))
+        });
+        InteractionLayerHandles::new(hover_alpha, waves, motion())
     }
 
     #[test]
@@ -467,23 +471,101 @@ mod tests {
         // stays 1.0) instead of playing the grow animation backwards.
         let fading = released + Duration::from_millis(30);
         let (state, _, _) = bind(&mut engine, &mut controller, fading);
+        let wave = state
+            .press_waves
+            .latest()
+            .expect("fading wave must still be sampled");
+        assert!(wave.opacity > 0.0, "fade-out must still be in flight");
         assert!(
-            state.press_layer_opacity > 0.0,
-            "fade-out must still be in flight"
-        );
-        assert!(
-            (state.press_progress - 1.0).abs() < f32::EPSILON,
+            (wave.progress - 1.0).abs() < f32::EPSILON,
             "ripple geometry must not shrink during the fade-out"
         );
 
-        // Once the fade-out has finished the wave is invisible and the
-        // progress snaps back to its resting value for the next press.
-        let faded = released + Duration::from_millis(150);
+        // Once the fade-out has finished the wave is invisible and dropped
+        // from the sampled set.
+        let faded = released + Duration::from_millis(160);
         let (state, _, _) = bind(&mut engine, &mut controller, faded);
-        assert_eq!(state.press_layer_opacity, 0.0, "fade-out must be complete");
+        assert!(
+            state.press_waves.is_empty(),
+            "fully faded wave must no longer be sampled"
+        );
+    }
+
+    #[test]
+    fn rapid_represses_overlap_independent_waves() {
+        let started = Instant::now();
+        let mut engine = InteractionEngine::default();
+        let mut controller = AnimationController::default();
+        let motion = motion();
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
+
+        let bind = |engine: &mut InteractionEngine,
+                    controller: &mut AnimationController,
+                    now: Instant| {
+            engine.begin_rebuild_frame();
+            controller.begin_rebuild_frame();
+            let bound = engine.bind_widget_state(
+                WidgetInteractionInput {
+                    bounds,
+                    hovered: false,
+                    focus: None,
+                },
+                &motion,
+                controller,
+                now,
+            );
+            controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+            engine.finish_rebuild_frame();
+            bound
+        };
+
+        let (_, slot, _) = bind(&mut engine, &mut controller, started);
+        engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
+
+        // Quick tap: released long before the grow (225ms) finishes.
+        engine.clear_all_presses(started + Duration::from_millis(40));
+
+        // Re-press at a different point while the first wave is mid-flight.
+        let repressed = started + Duration::from_millis(100);
+        let (_, slot, _) = bind(&mut engine, &mut controller, repressed);
+        engine.begin_press(slot, vello::kurbo::Point::new(80.0, 30.0), repressed);
+
+        // Both waves are visible: the released first wave keeps its own grow
+        // progress and origin while the fresh wave starts over from zero.
+        let sampled_at = repressed + Duration::from_millis(10);
+        let (state, _, _) = bind(&mut engine, &mut controller, sampled_at);
+        let waves: Vec<_> = state.press_waves.iter().collect();
+        assert_eq!(waves.len(), 2, "both press waves must be visible");
         assert_eq!(
-            state.press_progress, 0.0,
-            "invisible ripple resets instantly, without animating"
+            waves[0].origin,
+            Some(vello::kurbo::Point::new(10.0, 10.0)),
+            "the older wave keeps the first press origin"
+        );
+        assert_eq!(
+            waves[1].origin,
+            Some(vello::kurbo::Point::new(80.0, 30.0)),
+            "the newest wave grows from the second press origin"
+        );
+        assert!(
+            waves[0].progress > waves[1].progress,
+            "the older wave must be further into its growth than the fresh wave"
+        );
+
+        // The first wave's fade-out (applied at the 100ms rebind once its
+        // 75ms minimum press elapsed, 120ms long) must not touch the second,
+        // still-pressed wave.
+        let first_faded = started + Duration::from_millis(240);
+        let (state, _, _) = bind(&mut engine, &mut controller, first_faded);
+        let waves: Vec<_> = state.press_waves.iter().collect();
+        assert_eq!(waves.len(), 1, "the first wave must have faded out alone");
+        assert_eq!(
+            waves[0].origin,
+            Some(vello::kurbo::Point::new(80.0, 30.0)),
+            "the held second wave must survive"
+        );
+        assert!(
+            waves[0].opacity > 0.0,
+            "the held second wave must stay visible"
         );
     }
 

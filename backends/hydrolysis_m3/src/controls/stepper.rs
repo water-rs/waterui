@@ -59,7 +59,14 @@ pub fn draw_button_state_layer(
     bounds: Rect,
     state: WidgetInteractionState,
 ) {
-    let progress = f64::from(state.press_progress.clamp(0.0, 1.0));
+    // The press shape morph follows the most recent wave's growth.
+    let progress = f64::from(
+        state
+            .press_waves
+            .latest()
+            .map_or(0.0, |wave| wave.progress)
+            .clamp(0.0, 1.0),
+    );
     let radius = (STEPPER_PRESSED_CONTAINER_RADIUS - STEPPER_CONTAINER_RADIUS).mul_add(progress, STEPPER_CONTAINER_RADIUS);
     state_layer::draw_bounded(
         draw,
