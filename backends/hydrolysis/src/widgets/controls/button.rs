@@ -4,8 +4,8 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::accessibility_activation_point;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes,
-    transformed_rect,
+    WidgetRenderContext, local_interaction_state, measure_label_intrinsic, measure_view_intrinsic,
+    popup_menu_nodes, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -335,7 +335,7 @@ pub(crate) fn render_button_parts(
     }
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (_, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
@@ -366,6 +366,13 @@ pub(crate) fn render_button_parts(
             ctx.render_styled_text_single_line_centered(styled, env, label_target);
         }
     }
+    {
+        // Hover/focus/press state layers, drawn fresh each flush from the sampled
+        // interaction state (the press/hover animations keep frames pumping).
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let mut draw = ctx.draw_context();
+        theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
+    }
 
     // Invoke the action through the shared state cell so the retained node and the
     // dispatch path register equivalent tap targets without moving the action out.
@@ -390,7 +397,7 @@ pub(crate) fn render_menu_parts(
     let style = ButtonStyle::Borderless;
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (_, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
@@ -416,6 +423,12 @@ pub(crate) fn render_menu_parts(
                 subview.flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_bounds);
             }
         }
+    }
+    {
+        // Hover/focus/press state layers over the menu trigger chrome.
+        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let mut draw = ctx.draw_context();
+        theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
     }
 
     let items = state.borrow().items.clone();

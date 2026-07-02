@@ -214,18 +214,17 @@ pub(crate) fn render_text_field_parts(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _, field_handles) =
+    let (mut field_interaction, _, _) =
         ctx.renderer_mut().bind_focused_interaction_target(
             transformed_rect(hit_transform, field_rect),
             env,
             is_focused,
         );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
-    // The input field chrome samples interaction state (focus indicator).
-    field_handles.mark_chrome_state_dependent();
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
+        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
     let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();
@@ -483,18 +482,17 @@ pub(crate) fn render_secure_field_parts(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _, field_handles) =
+    let (mut field_interaction, _, _) =
         ctx.renderer_mut().bind_focused_interaction_target(
             transformed_rect(hit_transform, field_rect),
             env,
             is_focused,
         );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
-    // The input field chrome samples interaction state (focus indicator).
-    field_handles.mark_chrome_state_dependent();
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect, field_interaction);
+        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
     let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();

@@ -306,17 +306,20 @@ pub(crate) fn render_slider_parts(
             control_bottom,
         ),
     );
-    let (interaction, press_slot, handles) =
+    let (interaction, press_slot, _) =
         ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
-    // The slider thumb chrome reacts to presses, so it re-renders on
-    // interaction changes.
-    handles.mark_chrome_state_dependent();
     let thumb_center = vello::kurbo::Point::new(fill_right, track_center_y);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_slider_track(&mut draw, track_rect, fill_rect);
         theme.draw_slider_thumb(&mut draw, thumb_center, metrics.thumb_radius, interaction);
+        theme.draw_slider_thumb_state_layer(
+            &mut draw,
+            thumb_center,
+            metrics.thumb_radius,
+            interaction,
+        );
     }
     let usable_track = track_right - track_left;
     assert!(

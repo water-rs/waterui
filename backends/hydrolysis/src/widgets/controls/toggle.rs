@@ -165,20 +165,29 @@ pub(crate) fn render_toggle_parts(
             .resolve_toggle_progress(&binding, theme.toggle_value_animation())
     };
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot, handles) =
+    let (interaction, press_slot, _) =
         ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
         let mut draw = ctx.draw_context();
         match style {
             ToggleStyle::Automatic | ToggleStyle::Switch => {
-                // The switch thumb itself reacts to presses, so its chrome must
-                // re-render on interaction changes.
-                handles.mark_chrome_state_dependent();
                 theme.draw_toggle_switch(&mut draw, control_bounds, thumb_progress, interaction);
+                theme.draw_toggle_switch_state_layer(
+                    &mut draw,
+                    control_bounds,
+                    thumb_progress,
+                    interaction,
+                );
             }
             ToggleStyle::Checkbox => {
                 theme.draw_toggle_checkbox(&mut draw, control_bounds, thumb_progress);
+                theme.draw_toggle_checkbox_state_layer(
+                    &mut draw,
+                    control_bounds,
+                    thumb_progress,
+                    interaction,
+                );
             }
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         }

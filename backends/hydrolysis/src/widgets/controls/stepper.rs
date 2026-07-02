@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_label_intrinsic, transformed_rect,
+    local_interaction_state, measure_label_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -208,18 +208,22 @@ pub(crate) fn render_stepper_parts(
     let hit_transform = ctx.hit_transform;
     let minus_hit_bounds = transformed_rect(hit_transform, minus_bounds);
     let plus_hit_bounds = transformed_rect(hit_transform, plus_bounds);
-    let (_, minus_press_slot, _) = ctx
+    let (minus_interaction, minus_press_slot, _) = ctx
         .renderer_mut()
         .bind_interaction_target(minus_hit_bounds, env);
-    let (_, plus_press_slot, _) = ctx
+    let (plus_interaction, plus_press_slot, _) = ctx
         .renderer_mut()
         .bind_interaction_target(plus_hit_bounds, env);
+    let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
+    let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
     {
         let mut draw = ctx.draw_context();
         theme.draw_stepper_button(&mut draw, minus_bounds);
         theme.draw_stepper_decrement_icon(&mut draw, minus_bounds);
+        theme.draw_stepper_button_state_layer(&mut draw, minus_bounds, minus_interaction);
         theme.draw_stepper_button(&mut draw, plus_bounds);
         theme.draw_stepper_increment_icon(&mut draw, plus_bounds);
+        theme.draw_stepper_button_state_layer(&mut draw, plus_bounds, plus_interaction);
     }
 
     let range_start = *range.start();

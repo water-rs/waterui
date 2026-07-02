@@ -5,8 +5,9 @@ use std::rc::Rc;
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, VisibleSubviewCache,
-    WidgetRenderContext, materialize_list_item, materialize_list_row, measure_list_intrinsic,
-    measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
+    WidgetRenderContext, local_interaction_state, materialize_list_item, materialize_list_row,
+    measure_list_intrinsic, measure_list_item_row_height, measure_view_intrinsic,
+    transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -328,22 +329,34 @@ pub(crate) fn render_list_parts(
             );
             let up_interaction = (index > 0).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, up_rect);
-                let (_, slot, handles) = ctx
+                let (state, slot, _) = ctx
                     .renderer_mut()
                     .bind_interaction_target(hit_bounds, &row_env);
-                (hit_bounds, handles, slot)
+                (hit_bounds, state, slot)
             });
             let down_interaction = (index + 1 < total_rows).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, down_rect);
-                let (_, slot, handles) = ctx
+                let (state, slot, _) = ctx
                     .renderer_mut()
                     .bind_interaction_target(hit_bounds, &row_env);
-                (hit_bounds, handles, slot)
+                (hit_bounds, state, slot)
             });
             {
+                let up_state = up_interaction
+                    .as_ref()
+                    .map(|(_, state, _)| local_interaction_state(*state, ctx.hit_transform));
+                let down_state = down_interaction
+                    .as_ref()
+                    .map(|(_, state, _)| local_interaction_state(*state, ctx.hit_transform));
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_move_control(&mut draw, control_rect);
+                if let Some(state) = up_state {
+                    theme.draw_list_move_control_state_layer(&mut draw, up_rect, state);
+                }
+                if let Some(state) = down_state {
+                    theme.draw_list_move_control_state_layer(&mut draw, down_rect, state);
+                }
             }
             if let Some((hit_bounds, _, press_slot)) = up_interaction {
                 let state = Rc::clone(state);
@@ -382,13 +395,16 @@ pub(crate) fn render_list_parts(
             );
             trailing_x = delete_rect.x0 - list_metrics.trailing_control_spacing;
             let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
-            let (_, delete_press_slot, _) = ctx
+            let (delete_interaction, delete_press_slot, _) = ctx
                 .renderer_mut()
                 .bind_interaction_target(delete_hit_bounds, &row_env);
             {
+                let delete_interaction =
+                    local_interaction_state(delete_interaction, ctx.hit_transform);
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_delete_control(&mut draw, delete_rect);
+                theme.draw_list_delete_control_state_layer(&mut draw, delete_rect, delete_interaction);
             }
             let state = Rc::clone(state);
             ctx.renderer_mut().register_interactive_pointer_target(
