@@ -1,6 +1,0 @@
-waterui_path = "../../../.."
-
-[package]
-type = "playground"
-name = "Gesture Example"
-bundle_identifier = "com.waterui.gesture_example"
