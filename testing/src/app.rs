@@ -244,6 +244,22 @@ impl OffscreenApp {
         let artifacts = self.app.artifacts(suite);
         artifacts.capture_snapshot(case, stage, self.snapshot())
     }
+
+    /// Queues a primary pointer-down without the semantic settle used by
+    /// [`SemanticApp::pointer_down_at`]. The event is processed by the next
+    /// pump (e.g. [`Self::snapshot`]), so visual stage tests can capture
+    /// animation phases that begin at the event — the settle would otherwise
+    /// pump frames for its full timeout and skip past short transients such
+    /// as the Material ripple growth.
+    pub fn queue_pointer_down(&mut self, x: f32, y: f32) {
+        let _ = self.app.driver.pointer_down(x, y, &self.app.env);
+    }
+
+    /// Queues a primary pointer-up without the semantic settle; see
+    /// [`Self::queue_pointer_down`].
+    pub fn queue_pointer_up(&mut self, x: f32, y: f32) {
+        let _ = self.app.driver.pointer_up(x, y, &self.app.env);
+    }
 }
 
 impl core::ops::Deref for OffscreenApp {
