@@ -131,40 +131,6 @@ impl WidgetInteractionState {
         press_progress: 0.0,
     };
 
-    /// Material Design 3 hover state-layer opacity.
-    pub const HOVER_STATE_LAYER_OPACITY: f32 = 0.08;
-    /// Material Design 3 focus state-layer opacity.
-    pub const FOCUS_STATE_LAYER_OPACITY: f32 = 0.12;
-    /// Material Design 3 pressed state-layer opacity.
-    pub const PRESSED_STATE_LAYER_OPACITY: f32 = 0.12;
-
-    /// Return the dominant state-layer opacity for the current state.
-    #[must_use]
-    pub const fn state_layer_opacity(self) -> f32 {
-        if self.state_layer_opacity > 0.0 {
-            return self.state_layer_opacity;
-        }
-        if self.focus_visible {
-            Self::FOCUS_STATE_LAYER_OPACITY
-        } else if self.hovered {
-            Self::HOVER_STATE_LAYER_OPACITY
-        } else {
-            0.0
-        }
-    }
-
-    /// Return the animated pressed ripple opacity.
-    #[must_use]
-    pub const fn press_layer_opacity(self) -> f32 {
-        if self.press_layer_opacity > 0.0 {
-            return self.press_layer_opacity;
-        }
-        if self.pressed {
-            Self::PRESSED_STATE_LAYER_OPACITY
-        } else {
-            0.0
-        }
-    }
 }
 
 /// Motion policy for interactive widget chrome.
