@@ -6,6 +6,42 @@ use vello::peniko::Color;
 /// targets still produce a ripple at least this wide.
 const RIPPLE_MINIMUM_DIAMETER: f64 = 48.0;
 
+/// MD3 hover state-layer opacity token (8%).
+const HOVER_STATE_LAYER_OPACITY: f32 = 0.08;
+/// MD3 focus state-layer opacity token (12%).
+const FOCUS_STATE_LAYER_OPACITY: f32 = 0.12;
+/// MD3 pressed state-layer opacity token (12%).
+const PRESSED_STATE_LAYER_OPACITY: f32 = 0.12;
+
+/// The dominant resting state-layer opacity for `state`: the renderer-sampled
+/// animated value when one is in flight, otherwise the MD3 token for the
+/// active boolean state (focus outranks hover).
+fn resolved_state_layer_opacity(state: WidgetInteractionState) -> f32 {
+    if state.state_layer_opacity > 0.0 {
+        return state.state_layer_opacity;
+    }
+    if state.focus_visible {
+        FOCUS_STATE_LAYER_OPACITY
+    } else if state.hovered {
+        HOVER_STATE_LAYER_OPACITY
+    } else {
+        0.0
+    }
+}
+
+/// The pressed ripple opacity for `state`: the renderer-sampled animated value
+/// when one is in flight, otherwise the MD3 pressed token.
+fn resolved_press_layer_opacity(state: WidgetInteractionState) -> f32 {
+    if state.press_layer_opacity > 0.0 {
+        return state.press_layer_opacity;
+    }
+    if state.pressed {
+        PRESSED_STATE_LAYER_OPACITY
+    } else {
+        0.0
+    }
+}
+
 /// The full Material ripple diameter for a target: the surface diagonal,
 /// floored at [`RIPPLE_MINIMUM_DIAMETER`]. The ripple is a solid circle of
 /// this size; the press-grow animation scales it from the initial fraction up
@@ -37,9 +73,9 @@ pub fn draw_bounded(
     color: Color,
     state: WidgetInteractionState,
 ) {
-    draw_state_tint_rounded(draw, bounds, radii, color, state.state_layer_opacity());
+    draw_state_tint_rounded(draw, bounds, radii, color, resolved_state_layer_opacity(state));
 
-    let press_opacity = state.press_layer_opacity();
+    let press_opacity = resolved_press_layer_opacity(state);
     if state.press_origin.is_none() || press_opacity == 0.0 {
         return;
     }
@@ -66,14 +102,14 @@ pub fn draw_unbounded_circle(
     color: Color,
     state: WidgetInteractionState,
 ) {
-    let state_opacity = state.state_layer_opacity();
+    let state_opacity = resolved_state_layer_opacity(state);
     if state_opacity > 0.0 {
         draw.push_layer(state_opacity, None);
         draw.fill_circle(center, radius, &Brush::from(color));
         draw.pop_layer();
     }
 
-    let press_opacity = state.press_layer_opacity();
+    let press_opacity = resolved_press_layer_opacity(state);
     if press_opacity == 0.0 {
         return;
     }
