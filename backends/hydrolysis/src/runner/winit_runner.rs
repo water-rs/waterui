@@ -308,7 +308,7 @@ impl WinitRunner {
     fn flush_cross_window_rebuild_requests(&mut self) {
         for runtime in self.windows.values_mut() {
             if runtime.renderer.take_rebuild_request() {
-                runtime.request_invalidating_rebuild();
+                runtime.request_refresh();
                 runtime.platform.request_redraw();
             }
         }
@@ -455,7 +455,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                                 window_id = ?event.window_id,
                                 "missing accessibility tree update for initial request, scheduling rebuild"
                             );
-                            runtime.request_structural_rebuild();
+                            runtime.request_refresh();
                             runtime.platform.request_redraw();
                         }
                     }
@@ -472,7 +472,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                             .renderer
                             .handle_accessibility_action(request, &action_env)
                         {
-                            runtime.request_structural_rebuild();
+                            runtime.request_refresh();
                             runtime.platform.request_redraw();
                         }
                         self.flush_cross_window_rebuild_requests();
