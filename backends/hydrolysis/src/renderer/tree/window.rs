@@ -146,6 +146,7 @@ impl HydrolysisRenderer {
         if let Some(mut tree) = self.render_tree.take() {
             tree.patch(self);
             tree.layout(self, env, size);
+            self.refresh_content_min_size(&tree, env);
             tree.flush(self, ctx, env);
             self.render_tree = Some(tree);
             return;
@@ -153,6 +154,7 @@ impl HydrolysisRenderer {
         self.render_depth = 0;
         let mut node = RenderNode::build(content, env, self);
         node.layout(self, env, size);
+        self.refresh_content_min_size(&node, env);
         node.flush(self, ctx, env);
         self.render_tree = Some(node);
     }
@@ -216,6 +218,7 @@ impl HydrolysisRenderer {
         self.begin_redraw_frame();
         let size = Size::new(bounds.width() as f32, bounds.height() as f32);
         tree.layout(self, env, size);
+        self.refresh_content_min_size(&tree, env);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
         // The overlay-mode text context menu re-encodes with the frame it floats
@@ -247,5 +250,42 @@ impl HydrolysisRenderer {
         self.finalize_accessibility_tree_update();
         self.render_tree = Some(tree);
         true
+    }
+
+    /// Re-measures the window content's minimum size. Runs after every layout
+    /// pass: layout is cheap by construction (text shaping is memoized), and the
+    /// minimum only exists while a tree does.
+    ///
+    /// Per axis: the tree measured at a zero proposal is the hard minimum, but
+    /// fill-style containers (stacks, frames with only ideal sizes) legitimately
+    /// compress to the proposal, so a non-positive axis falls back to the ideal
+    /// measurement (unspecified proposal) — mirroring the macOS backend's
+    /// `resolvedWindowMinAxis` so both derive the same resize floor.
+    fn refresh_content_min_size(&mut self, tree: &RenderNode, env: &Environment) {
+        let min = tree.measure(&mut self.state, env, ProposalSize::ZERO).size;
+        let ideal = tree
+            .measure(&mut self.state, env, ProposalSize::UNSPECIFIED)
+            .size;
+        let resolve = |min_axis: f32, ideal_axis: f32| {
+            if min_axis.is_finite() && min_axis > 0.0 {
+                min_axis
+            } else if ideal_axis.is_finite() && ideal_axis > 0.0 {
+                ideal_axis
+            } else {
+                0.0
+            }
+        };
+        self.content_min_size = Some(Size::new(
+            resolve(min.width, ideal.width),
+            resolve(min.height, ideal.height),
+        ));
+    }
+
+    /// The window content's minimum size from the latest layout pass, or `None`
+    /// before the first build. The runner uses it as the default window resize
+    /// floor when the app sets no explicit `Window::min_size`.
+    #[must_use]
+    pub fn content_min_size(&self) -> Option<Size> {
+        self.content_min_size
     }
 }

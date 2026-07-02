@@ -304,6 +304,8 @@ impl IntoRust for WuiSize {
     }
 }
 
+crate::ffi_computed!(Size, WuiSize, size);
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WuiVerticalAlignment {

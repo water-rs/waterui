@@ -111,6 +111,25 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
+/// Applies the window's effective content-size limits to the platform window:
+/// the explicit `Window::min_size`/`max_size` signals when set (read through the
+/// renderer so a change schedules a frame), with the content's measured layout
+/// minimum as the default resize floor.
+pub(super) fn apply_window_size_limits<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+    let explicit_min = runtime
+        .window
+        .min_size
+        .clone()
+        .map(|signal| runtime.renderer.read_signal(&signal));
+    let max = runtime
+        .window
+        .max_size
+        .clone()
+        .map(|signal| runtime.renderer.read_signal(&signal));
+    let min = explicit_min.or_else(|| runtime.renderer.content_min_size());
+    runtime.platform.set_size_limits(min, max);
+}
+
 pub(super) fn schedule_animation_update<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     animations_active: bool,
@@ -481,11 +500,13 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
             flushed,
             "hydrolysis runner: retained render tree vanished during semantics pump"
         );
+        apply_window_size_limits(runtime);
         runtime.clear_frame_mode();
         return true;
     }
 
     let (rebuilt, _, _) = pump_window_scene(runtime, env, &mut || false);
+    apply_window_size_limits(runtime);
     runtime.renderer.clear_frame_resources();
     runtime
         .platform
@@ -521,6 +542,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         let (scene_rebuilt, rebuild_iterations, rebuild_phases) =
             pump_window_scene(runtime, env, drain_local_tasks);
         rebuilt |= scene_rebuilt;
+        apply_window_size_limits(runtime);
         let clear_color = window_clear_color(&runtime.window, env);
 
         let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());

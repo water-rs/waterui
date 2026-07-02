@@ -48,6 +48,14 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.apply_properties(window);
     }
 
+    fn set_size_limits(
+        &mut self,
+        min: Option<waterui_core::layout::Size>,
+        max: Option<waterui_core::layout::Size>,
+    ) {
+        self.inner.set_size_limits(min, max);
+    }
+
     fn drain_events(&mut self) -> Vec<InputEvent> {
         self.pending_events.drain(..).collect()
     }
@@ -66,6 +74,19 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
     fn set_cursor_style(&mut self, style: waterui::cursor::CursorStyle) {
         self.inner.set_cursor_style(style);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl HeadlessPlatformWindow {
+    /// The last (min, max) content-size limits the runner applied, for tests.
+    pub(super) fn applied_size_limits(
+        &self,
+    ) -> Option<(
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    )> {
+        self.inner.applied_size_limits()
     }
 }
 
