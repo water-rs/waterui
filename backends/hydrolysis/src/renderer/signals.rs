@@ -8,13 +8,28 @@ impl HydrolysisRenderer {
     where
         S: Signal + Clone + 'static,
     {
-        let signals = self.signals.clone();
         // A reactive *value* change re-flushes the retained tree (re-read, re-layout,
         // re-encode) — the cheap per-frame pump — instead of re-running the whole view
         // `body()`. Structural changes go through `Dynamic`/`when` (a patch), not a
         // plain signal read, so a refresh is sufficient here.
+        let Some(identity) = signal.identity() else {
+            // Identity-less signal: subscribe fresh each read, retained for one frame.
+            let signals = self.signals.clone();
+            let guard = signal.watch(move |_| signals.request_refresh());
+            self.lifecycle.current_frame_retain.push(Retain::new(guard));
+            return;
+        };
+        // Identity-stable signal: one subscription per signal, reused across frames
+        // for as long as the flush keeps reading it (see `SignalWatchRegistry`).
+        let key = identity.raw();
+        if self.lifecycle.signal_watches.mark_seen(key) {
+            return;
+        }
+        let signals = self.signals.clone();
         let guard = signal.watch(move |_| signals.request_refresh());
-        self.lifecycle.current_frame_retain.push(Retain::new(guard));
+        self.lifecycle
+            .signal_watches
+            .insert(key, Box::new(signal.clone()), Retain::new(guard));
     }
 
     pub(crate) fn read_signal<S>(&mut self, signal: &S) -> S::Output
