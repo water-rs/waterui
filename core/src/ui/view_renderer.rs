@@ -41,8 +41,10 @@ pub struct RenderResult {
 
 /// Trait for custom view renderers.
 ///
-/// Native backends implement this to provide view-to-RGBA capture.
-/// The trait uses async to allow for GPU operations.
+/// Native backends implement this to provide view-to-RGBA capture. The method
+/// returns `impl Future`, so implementations write a plain `async fn` — the
+/// object-safe boxing needed to store the renderer in the [`Environment`] is an
+/// internal detail of [`ViewRenderer`], never part of this contract.
 pub trait CustomViewRenderer: 'static {
     /// Render a view to RGBA bytes.
     ///
@@ -55,14 +57,35 @@ pub trait CustomViewRenderer: 'static {
         &self,
         view: AnyView,
         size: RenderSize,
-    ) -> Pin<Box<dyn Future<Output = RenderResult> + 'static>>;
+    ) -> impl Future<Output = RenderResult>;
+}
+
+/// Object-safe shim over [`CustomViewRenderer`] so [`ViewRenderer`] can box the
+/// renderer: the public trait keeps its friendly `impl Future` signature and
+/// the blanket impl pins the future here, behind the erasure boundary.
+trait CustomViewRendererImpl: 'static {
+    fn render_to_rgba<'a>(
+        &'a self,
+        view: AnyView,
+        size: RenderSize,
+    ) -> Pin<Box<dyn 'a + Future<Output = RenderResult>>>;
+}
+
+impl<T: CustomViewRenderer> CustomViewRendererImpl for T {
+    fn render_to_rgba<'a>(
+        &'a self,
+        view: AnyView,
+        size: RenderSize,
+    ) -> Pin<Box<dyn 'a + Future<Output = RenderResult>>> {
+        Box::pin(CustomViewRenderer::render_to_rgba(self, view, size))
+    }
 }
 
 /// Type-erased view renderer stored in Environment.
 ///
 /// This wrapper allows storing the renderer in the Environment without
 /// exposing the concrete implementation type.
-pub struct ViewRenderer(Box<dyn CustomViewRenderer>);
+pub struct ViewRenderer(Box<dyn CustomViewRendererImpl>);
 
 impl ViewRenderer {
     /// Create a new view renderer from a custom implementation.
