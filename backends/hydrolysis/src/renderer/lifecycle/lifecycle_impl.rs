@@ -20,10 +20,14 @@ pub(crate) struct LifecycleState {
 /// seen for a whole frame belongs to a subtree that no longer flushes (patched
 /// away or scrolled out of a virtualized window) and is pruned.
 ///
-/// `SignalIdentity` derives from the signal's shared allocation address, so the
-/// entry holds a clone of the signal itself: that pins the allocation, making
-/// address-reuse ABA (a pruned signal's address resurfacing as a different live
-/// signal under the same key) impossible while the entry exists.
+/// A root signal's `SignalIdentity` derives from its shared allocation address,
+/// so the entry holds a clone of the signal itself: that pins the allocation,
+/// making address-reuse ABA (a pruned signal's address resurfacing as a
+/// different live signal under the same key) impossible while the entry exists.
+/// Derived signals (`map`/`zip`/`WithMetadata`) mix a call-site discriminator
+/// into the address, so their keys are hashes rather than pinned addresses; a
+/// cross-type collision would silently drop a subscription, so `mark_seen`
+/// fast-fails when the key's recorded signal type does not match.
 #[derive(Default)]
 pub(crate) struct SignalWatchRegistry {
     entries: FxHashMap<usize, SignalWatchEntry>,
@@ -33,6 +37,9 @@ pub(crate) struct SignalWatchRegistry {
 struct SignalWatchEntry {
     /// Clone of the watched signal; pins the identity allocation (see type docs).
     _signal: Box<dyn Any>,
+    /// Concrete type of the subscribed signal, used to detect identity-key
+    /// collisions between different signal types.
+    signal_type: core::any::TypeId,
     /// The watcher subscription, cancelled on drop.
     _guard: Retain,
     last_seen: u64,
@@ -54,8 +61,18 @@ impl SignalWatchRegistry {
 
     /// Marks an existing subscription for `identity` as read this frame.
     /// Returns `false` when no subscription exists yet.
-    pub(crate) fn mark_seen(&mut self, identity: usize) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics when the identity key is already held by a *different* signal
+    /// type — a derived-identity hash collision that would otherwise silently
+    /// swallow the second signal's updates.
+    pub(crate) fn mark_seen(&mut self, identity: usize, signal_type: core::any::TypeId) -> bool {
         self.entries.get_mut(&identity).is_some_and(|entry| {
+            assert!(
+                entry.signal_type == signal_type,
+                "hydrolysis renderer: signal identity {identity:#x} is shared by two different signal types (derived-identity hash collision)"
+            );
             entry.last_seen = self.generation;
             true
         })
@@ -63,11 +80,18 @@ impl SignalWatchRegistry {
 
     /// Records a fresh subscription for `identity`, alive until the signal goes
     /// a whole frame without being read.
-    pub(crate) fn insert(&mut self, identity: usize, signal: Box<dyn Any>, guard: Retain) {
+    pub(crate) fn insert(
+        &mut self,
+        identity: usize,
+        signal_type: core::any::TypeId,
+        signal: Box<dyn Any>,
+        guard: Retain,
+    ) {
         self.entries.insert(
             identity,
             SignalWatchEntry {
                 _signal: signal,
+                signal_type,
                 _guard: guard,
                 last_seen: self.generation,
             },

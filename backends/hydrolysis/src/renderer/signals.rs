@@ -22,14 +22,18 @@ impl HydrolysisRenderer {
         // Identity-stable signal: one subscription per signal, reused across frames
         // for as long as the flush keeps reading it (see `SignalWatchRegistry`).
         let key = identity.raw();
-        if self.lifecycle.signal_watches.mark_seen(key) {
+        let signal_type = core::any::TypeId::of::<S>();
+        if self.lifecycle.signal_watches.mark_seen(key, signal_type) {
             return;
         }
         let signals = self.signals.clone();
         let guard = signal.watch(move |_| signals.request_refresh());
-        self.lifecycle
-            .signal_watches
-            .insert(key, Box::new(signal.clone()), Retain::new(guard));
+        self.lifecycle.signal_watches.insert(
+            key,
+            signal_type,
+            Box::new(signal.clone()),
+            Retain::new(guard),
+        );
     }
 
     pub(crate) fn read_signal<S>(&mut self, signal: &S) -> S::Output
