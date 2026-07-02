@@ -440,18 +440,26 @@ fn capture_root_window<V: waterui_core::View>(
 
 #[test]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
+    let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
+    press_waves.push(waterui_backend_core::widget::PressWave {
+        origin: Some(Point::new(125.0, 84.0)),
+        progress: 0.5,
+        opacity: 0.12,
+    });
     let state = WidgetInteractionState {
-        press_origin: Some(Point::new(125.0, 84.0)),
-        press_progress: 0.5,
-        press_layer_opacity: 0.12,
+        press_waves,
         ..WidgetInteractionState::NONE
     };
 
     let local = crate::renderer::local_interaction_state(state, Affine::translate((100.0, 80.0)));
 
-    assert_eq!(local.press_origin, Some(Point::new(25.0, 4.0)));
-    assert_eq!(local.press_progress, state.press_progress);
-    assert_eq!(local.press_layer_opacity, state.press_layer_opacity);
+    let wave = local
+        .press_waves
+        .latest()
+        .expect("wave must survive the local-space mapping");
+    assert_eq!(wave.origin, Some(Point::new(25.0, 4.0)));
+    assert_eq!(wave.progress, 0.5);
+    assert_eq!(wave.opacity, 0.12);
 }
 
 #[test]
@@ -474,7 +482,7 @@ fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
         renderer.bind_interaction_target(Rect::new(100.0, 100.0, 180.0, 180.0), &env);
 
     assert!(!state.pressed);
-    assert_eq!(state.press_origin, None);
+    assert!(state.press_waves.is_empty());
 }
 
 /// Regression guard for the retained-path state-layer loss: a began press must
@@ -508,15 +516,16 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     renderer.begin_rebuild_frame();
     let (state, _, _) = renderer.bind_interaction_target(bounds, &env);
     assert!(state.pressed, "held press must stay visually pressed");
+    let wave = state
+        .press_waves
+        .latest()
+        .expect("held press must sample a visible wave");
     assert!(
-        state.press_layer_opacity > 0.0,
+        wave.opacity > 0.0,
         "press layer must be visible after fade-in"
     );
-    assert!(
-        state.press_progress > 0.0,
-        "press ripple must have grow progress"
-    );
-    assert_eq!(state.press_origin, Some(Point::new(20.0, 20.0)));
+    assert!(wave.progress > 0.0, "press ripple must have grow progress");
+    assert_eq!(wave.origin, Some(Point::new(20.0, 20.0)));
 }
 
 #[test]
