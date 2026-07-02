@@ -976,6 +976,11 @@ impl HydrolysisRenderer {
                         },
                     );
                 }
+                // Embedded GPU surfaces render serially by design: `GpuView` is a
+                // user-facing, main-thread contract (`!Send` setup/render futures,
+                // `&mut Environment`), so parallelizing this loop would force
+                // `Send` onto every user renderer. Vello layers get their
+                // parallelism in `encode_vello_layers_parallel` instead.
                 RenderLayer::GpuSurface(layer) => {
                     let embedded_target = EmbeddedLayerTarget {
                         format: target.format,

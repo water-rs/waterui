@@ -17,6 +17,7 @@
 //!   [`render`]: interaction, lifecycle, navigation, a11y, and measurement
 //!   subsystems
 
+#[cfg(feature = "accessibility")]
 mod accessibility;
 mod bindings;
 mod native_measure;
@@ -43,6 +44,7 @@ pub(crate) use tree::*;
 pub(crate) use views::*;
 pub(crate) use waterui_backend_core::frame_signals::FrameSignals;
 
+#[cfg(feature = "accessibility")]
 use accessibility::*;
 use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
@@ -224,6 +226,7 @@ pub struct HydrolysisRenderer {
     node_applied_filters: Vec<Rc<RefCell<AppliedFilterRuntime>>>,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
+    #[cfg(feature = "accessibility")]
     accessibility: AccessibilityBuilder,
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
     /// rebuild and re-flushed each frame. `None` before the first build.
@@ -287,6 +290,7 @@ impl HydrolysisRenderer {
             node_applied_filters: Vec::new(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
+            #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
         }
