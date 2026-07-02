@@ -886,6 +886,14 @@ typedef struct Computed_ResolvedFont Computed_ResolvedFont;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_Size Computed_Size;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Str Computed_Str;
 
 /**
@@ -1109,6 +1117,8 @@ typedef struct WuiWatcher_ResolvedColor WuiWatcher_ResolvedColor;
 typedef struct WuiWatcher_ResolvedFont WuiWatcher_ResolvedFont;
 
 typedef struct WuiWatcher_Secure WuiWatcher_Secure;
+
+typedef struct WuiWatcher_Size WuiWatcher_Size;
 
 typedef struct WuiWatcher_Str WuiWatcher_Str;
 
@@ -2463,6 +2473,8 @@ typedef struct WuiWindowBackground {
   };
 } WuiWindowBackground;
 
+typedef struct Computed_Size WuiComputed_Size;
+
 /**
  * FFI-compatible representation of a window.
  */
@@ -2503,6 +2515,15 @@ typedef struct WuiWindow {
    * The background style of the window.
    */
   struct WuiWindowBackground background;
+  /**
+   * Explicit minimum content size, or null to derive the minimum from the
+   * content's layout (the root view measured at a zero proposal).
+   */
+  WuiComputed_Size *min_size;
+  /**
+   * Explicit maximum content size, or null for an unconstrained window.
+   */
+  WuiComputed_Size *max_size;
 } WuiWindow;
 
 /**
@@ -4383,6 +4404,13 @@ struct WuiWatcher_MenuItems *waterui_new_watcher_menu_items(void *data,
                                                                          struct WuiWatcherMetadata*),
                                                             void (*drop)(void*));
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiMenu waterui_force_as_menu(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_menu_id(void);
@@ -4678,6 +4706,13 @@ struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
                                                                 struct WuiWatcherMetadata*),
                                                    void (*drop)(void*));
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiResolvedColor waterui_force_as_resolved_color(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_resolved_color_id(void);
@@ -4719,10 +4754,24 @@ struct WuiColor *waterui_color_from_srgba(float red, float green, float blue, fl
 WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
                                                  const struct WuiEnv *env);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiResolvedGradient waterui_force_as_resolved_gradient(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_resolved_gradient_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiResolvedShape waterui_force_as_resolved_shape(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_resolved_shape_id(void);
@@ -6197,6 +6246,13 @@ struct WuiWatcher_WindowState *waterui_new_watcher_window_state(void *data,
  */
 void waterui_env_install_window_manager(struct WuiEnv *env, WindowShowFn show_fn);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiStr waterui_force_as_plain(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_plain_id(void);
@@ -6206,50 +6262,134 @@ struct WuiTypeId waterui_plain_id(void);
  */
 struct WuiTypeId waterui_empty_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_button_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiTextField waterui_force_as_text_field(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_text_field_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiToggle waterui_force_as_toggle(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_toggle_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiSlider waterui_force_as_slider(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_slider_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiStepper waterui_force_as_stepper(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_stepper_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiColorPicker waterui_force_as_color_picker(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_color_picker_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiPicker waterui_force_as_picker(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_picker_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiSecureField waterui_force_as_secure_field(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_secure_field_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiDatePicker waterui_force_as_date_picker(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_date_picker_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiMultiDatePicker waterui_force_as_multi_date_picker(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_multi_date_picker_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_progress_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiMap waterui_force_as_map(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_map_id(void);
@@ -6348,14 +6488,77 @@ void waterui_drop_layout(struct WuiLayout *value);
  */
 struct WuiTypeId waterui_spacer_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_fixed_container_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiContainer waterui_force_as_layout_container(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_layout_container_id(void);
 
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiSize waterui_read_computed_size(const WuiComputed_Size *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_size(const WuiComputed_Size *computed,
+                                                    struct WuiWatcher_Size *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_size(WuiComputed_Size *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_Size *waterui_clone_computed_size(const WuiComputed_Size *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Size *waterui_new_watcher_size(void *data,
+                                                 void (*call)(void*,
+                                                              struct WuiSize,
+                                                              struct WuiWatcherMetadata*),
+                                                 void (*drop)(void*));
+
+/**
+ * Releases the alignment-guide arrays owned by a `WuiViewDimensions`.
+ *
+ * # Safety
+ *
+ * `dimensions` must be a value previously produced by waterui and not already consumed;
+ * it must not be used again after this call.
+ */
 void waterui_drop_view_dimensions(struct WuiViewDimensions dimensions);
 
 /**
@@ -6375,6 +6578,14 @@ struct WuiViewDimensions waterui_layout_measure(struct WuiLayout *layout,
                                                 struct WuiProposalSize proposal,
                                                 struct WuiArray_WuiSubView children);
 
+/**
+ * Returns the size the layout reports as fitting the given proposal.
+ *
+ * # Safety
+ *
+ * - The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ * - The `children` array must contain valid `WuiSubView` entries; it is consumed and dropped after this call.
+ */
 struct WuiSize waterui_layout_size_that_fits(struct WuiLayout *layout,
                                              struct WuiProposalSize proposal,
                                              struct WuiArray_WuiSubView children);
@@ -6395,22 +6606,72 @@ struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
                                              struct WuiRect bounds,
                                              struct WuiArray_WuiSubView children);
 
+/**
+ * Returns the lazy-stack axis the layout advertises, if any.
+ *
+ * # Safety
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ */
 enum WuiLazyStackAxis waterui_layout_lazy_stack_axis(struct WuiLayout *layout);
 
+/**
+ * Returns the lazy-stack inter-item spacing the layout requires.
+ *
+ * # Safety
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ */
 float waterui_layout_lazy_stack_spacing(struct WuiLayout *layout);
 
+/**
+ * Returns the lazy-stack cross-axis horizontal alignment the layout requires.
+ *
+ * # Safety
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ */
 enum WuiHorizontalAlignment waterui_layout_lazy_stack_horizontal_alignment(struct WuiLayout *layout);
 
+/**
+ * Returns the lazy-stack cross-axis vertical alignment the layout requires.
+ *
+ * # Safety
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ */
 enum WuiVerticalAlignment waterui_layout_lazy_stack_vertical_alignment(struct WuiLayout *layout);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiScrollView waterui_force_as_scroll_view(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_scroll_view_id(void);
 
+/**
+ * Consumes a view handle and reinterprets it as a `WuiListItem`.
+ *
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `ListItem`; it is consumed by this call and must not be used afterwards.
+ */
 struct WuiListItem waterui_force_as_list_item(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_list_item_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiList waterui_force_as_list(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_list_id(void);
@@ -6456,18 +6717,46 @@ struct WuiWatcher_Vec_TableColumn *waterui_new_watcher_table_cols(void *data,
                                                                                struct WuiWatcherMetadata*),
                                                                   void (*drop)(void*));
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_table_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiTableColumn waterui_force_as_table_column(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_table_column_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiVideo waterui_force_as_video(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_video_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_video_player_id(void);
@@ -6513,14 +6802,36 @@ struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
                                                                 struct WuiWatcherMetadata*),
                                                    void (*drop)(void*));
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiNavigationView waterui_force_as_navigation_view(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_navigation_view_id(void);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_navigation_stack_id(void);
 
+/**
+ * Releases a navigation split-detail handle.
+ *
+ * # Safety
+ *
+ * `value` must be a valid, owning `WuiNavigationSplitDetail` handle that has
+ * not already been dropped; it must not be used after this call.
+ */
 void waterui_drop_split_navigation_detail(struct WuiNavigationSplitDetail *value);
 
 /**
@@ -6534,6 +6845,13 @@ void waterui_drop_split_navigation_detail(struct WuiNavigationSplitDetail *value
 struct WuiNavigationView waterui_split_navigation_detail_content(struct WuiNavigationSplitDetail *handler,
                                                                  struct WuiId selected);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiNavigationSplitLayout waterui_force_as_split_navigation_container(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_split_navigation_container_id(void);
@@ -6556,6 +6874,13 @@ void waterui_drop_tab_content(struct WuiTabContent *value);
  */
 struct WuiNavigationView waterui_tab_content(struct WuiTabContent *handler);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiTabs waterui_force_as_tabs(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_tabs_id(void);
@@ -6636,6 +6961,13 @@ void waterui_navigation_pop(const struct WuiEnv *env);
  */
 void waterui_drop_dynamic(struct WuiDynamic *value);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_dynamic_id(void);
@@ -6648,6 +6980,13 @@ struct WuiTypeId waterui_dynamic_id(void);
  */
 void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_AnyView *watcher);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiSystemIcon waterui_force_as_system_icon(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_system_icon_id(void);
@@ -6658,6 +6997,13 @@ struct WuiTypeId waterui_system_icon_id(void);
  */
 void waterui_drop_web_view(struct WuiWebView *value);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiWebView *waterui_force_as_webview(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_webview_id(void);
@@ -6851,6 +7197,13 @@ struct WuiWatcher_Font *waterui_new_watcher_font(void *data,
                                                               struct WuiWatcherMetadata*),
                                                  void (*drop)(void*));
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiText waterui_force_as_text(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_text_id(void);
@@ -6986,6 +7339,7 @@ struct WuiAppliedFilterState *waterui_applied_filter_init(struct WuiAppliedFilte
  * # Arguments
  *
  * * `state` - Pointer to initialized state from `waterui_applied_filter_init`
+ *
  * Returns `true` when setup completes successfully.
  *
  * # Safety
@@ -7094,6 +7448,12 @@ bool waterui_applied_filter_set_input(struct WuiAppliedFilterState *state,
  *
  * This requires native to pass a drop callback that releases an acquired reference to the
  * AHardwareBuffer when wgpu is done using it (after GPU work completes).
+ *
+ * # Safety
+ *
+ * - `state` must be a valid, exclusively-borrowable `WuiAppliedFilterState` pointer.
+ * - `ahb_ptr` must be a valid `AHardwareBuffer` pointer that stays alive until `drop_fn` is invoked.
+ * - `drop_fn` must safely release the buffer when called with `drop_data`.
  */
 bool waterui_applied_filter_set_input_ahardwarebuffer(struct WuiAppliedFilterState *state,
                                                       void *ahb_ptr,
@@ -7149,6 +7509,13 @@ void *waterui_applied_filter_get_capture_metal_texture(struct WuiAppliedFilterSt
  */
 void waterui_applied_filter_drop(struct WuiAppliedFilterState *state);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_gpu_surface_id(void);
@@ -7316,6 +7683,13 @@ void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
 void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
                                    struct WuiGpuSurfaceInput input);
 
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
 struct WuiViewEffect waterui_force_as_view_effect(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_view_effect_id(void);

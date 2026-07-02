@@ -2,7 +2,7 @@ use core::ptr::null_mut;
 
 use waterui::Str;
 use waterui::window::{Window, WindowBackground, WindowManager, WindowState, WindowStyle};
-use waterui_layout::Rect;
+use waterui_layout::{Rect, Size};
 
 use crate::{
     IntoFFI, IntoRust, WuiAnyView, WuiEnv,
@@ -165,6 +165,11 @@ pub struct WuiWindow {
     pub style: WuiWindowStyle,
     /// The background style of the window.
     pub background: WuiWindowBackground,
+    /// Explicit minimum content size, or null to derive the minimum from the
+    /// content's layout (the root view measured at a zero proposal).
+    pub min_size: *mut WuiComputed<Size>,
+    /// Explicit maximum content size, or null for an unconstrained window.
+    pub max_size: *mut WuiComputed<Size>,
 }
 
 impl IntoFFI for Window {
@@ -195,6 +200,8 @@ impl IntoFFI for Window {
             toolbar,
             style: self.style.into(),
             background: self.background.into(),
+            min_size: self.min_size.into_ffi(),
+            max_size: self.max_size.into_ffi(),
         }
     }
 }

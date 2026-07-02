@@ -231,6 +231,11 @@ pub struct HydrolysisRenderer {
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
     /// rebuild and re-flushed each frame. `None` before the first build.
     render_tree: Option<RenderNode>,
+    /// The window content's minimum size — the retained tree measured at a zero
+    /// proposal — refreshed on every layout pass. The runner feeds it to the
+    /// platform window as the default resize floor when the app sets no explicit
+    /// `Window::min_size`.
+    content_min_size: Option<waterui_core::layout::Size>,
 }
 
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
@@ -293,6 +298,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
+            content_min_size: None,
         }
     }
 }

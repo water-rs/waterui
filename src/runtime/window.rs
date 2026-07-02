@@ -80,6 +80,28 @@ pub struct Window {
     /// defaults to `false`. Honored by self-drawn renderers (hydrolysis); native
     /// backends drive their own display link.
     pub continuous_render: bool,
+    /// Explicit minimum content size the window can be resized down to.
+    ///
+    /// When `None` (the default), the backend derives the minimum from the
+    /// content's own layout: the root view is measured at a zero proposal
+    /// (`ProposalSize::ZERO`), so the window can never be resized smaller than
+    /// its content's minimum — the same negotiation every [`Layout`] container
+    /// performs on its children, applied at the window boundary.
+    ///
+    /// Platform support: enforced by desktop backends (hydrolysis/winit,
+    /// macOS `NSWindow.contentMinSize`/`contentMaxSize`). iOS/iPadOS has no
+    /// per-window size control today (the Apple backend's multi-window support
+    /// is macOS-only); Android's single-Activity model has no per-window
+    /// runtime size limits; embedded (dew) displays are fixed-size — those
+    /// targets ignore this.
+    ///
+    /// [`Layout`]: waterui_core::ui::Layout
+    pub min_size: Option<Computed<Size>>,
+    /// Explicit maximum content size the window can be resized up to.
+    ///
+    /// `None` (the default) leaves the window unconstrained. Same platform
+    /// support notes as [`Self::min_size`].
+    pub max_size: Option<Computed<Size>>,
 }
 
 /// The state of a window.
@@ -226,7 +248,29 @@ impl Window {
             style: WindowStyle::default(),
             background: WindowBackground::default(),
             continuous_render: false,
+            min_size: None,
+            max_size: None,
         }
+    }
+
+    /// Set an explicit minimum content size for the window.
+    ///
+    /// Without one, the backend derives the minimum from the content's layout
+    /// (the root view measured at a zero proposal). See [`Self::min_size`] for
+    /// platform support notes.
+    #[must_use]
+    pub fn min_size(mut self, size: impl IntoComputed<Size>) -> Self {
+        self.min_size = Some(size.into_computed());
+        self
+    }
+
+    /// Set an explicit maximum content size for the window.
+    ///
+    /// See [`Self::max_size`] for platform support notes.
+    #[must_use]
+    pub fn max_size(mut self, size: impl IntoComputed<Size>) -> Self {
+        self.max_size = Some(size.into_computed());
+        self
     }
 
     /// Set whether the window is resizable.
