@@ -219,6 +219,9 @@ pub(crate) fn exceeds_line_limit(value: &str, max_lines: Option<usize>) -> bool 
     max_lines.is_some_and(|max| line_count(value) > max)
 }
 
+/// Appends `inserted` to `buffer` (normalized, line-limit enforced); used by the
+/// accessibility text-input action handlers.
+#[cfg(feature = "accessibility")]
 pub(crate) fn apply_text_insert(
     buffer: &mut String,
     inserted: &str,

@@ -1,8 +1,6 @@
 #[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext, measure_view_intrinsic,
-};
+use crate::renderer::{AccessibilityActionTarget, HydrolysisRenderer};
+use crate::renderer::{HydroNativeView, HydroState, WidgetRenderContext, measure_view_intrinsic};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -21,6 +19,7 @@ impl HydroNativeView for Native<ScrollView> {
     }
 }
 
+#[cfg(feature = "accessibility")]
 pub(crate) fn register_scroll_accessibility_node(
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
@@ -29,48 +28,45 @@ pub(crate) fn register_scroll_accessibility_node(
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
 ) {
-    #[cfg(feature = "accessibility")]
-    {
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ScrollView),
-        );
-        let label = renderer.resolve_accessibility_label(env, None);
-        if let Some(label) = label {
-            node.set_label(label);
-        }
-        node.set_scroll_x(metrics.offset_x);
-        node.set_scroll_x_min(0.0);
-        node.set_scroll_x_max(metrics.max_x);
-        node.set_scroll_y(metrics.offset_y);
-        node.set_scroll_y_min(0.0);
-        node.set_scroll_y_max(metrics.max_y);
-        match axis {
-            ScrollAxis::Horizontal => {
-                node.add_action(AccessibilityAction::ScrollLeft);
-                node.add_action(AccessibilityAction::ScrollRight);
-            }
-            ScrollAxis::Vertical => {
-                node.add_action(AccessibilityAction::ScrollUp);
-                node.add_action(AccessibilityAction::ScrollDown);
-            }
-            ScrollAxis::All => {
-                node.add_action(AccessibilityAction::ScrollLeft);
-                node.add_action(AccessibilityAction::ScrollRight);
-                node.add_action(AccessibilityAction::ScrollUp);
-                node.add_action(AccessibilityAction::ScrollDown);
-            }
-            _ => panic!("scroll axis variant is not supported by hydrolysis"),
-        }
-        let _ = renderer.register_accessibility_node(
-            node,
-            bounds,
-            env,
-            Some(AccessibilityActionTarget::Scroll {
-                handle: handle.clone(),
-                axis,
-            }),
-        );
+    let mut node = AccessibilityNode::new(
+        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ScrollView),
+    );
+    let label = renderer.resolve_accessibility_label(env, None);
+    if let Some(label) = label {
+        node.set_label(label);
     }
+    node.set_scroll_x(metrics.offset_x);
+    node.set_scroll_x_min(0.0);
+    node.set_scroll_x_max(metrics.max_x);
+    node.set_scroll_y(metrics.offset_y);
+    node.set_scroll_y_min(0.0);
+    node.set_scroll_y_max(metrics.max_y);
+    match axis {
+        ScrollAxis::Horizontal => {
+            node.add_action(AccessibilityAction::ScrollLeft);
+            node.add_action(AccessibilityAction::ScrollRight);
+        }
+        ScrollAxis::Vertical => {
+            node.add_action(AccessibilityAction::ScrollUp);
+            node.add_action(AccessibilityAction::ScrollDown);
+        }
+        ScrollAxis::All => {
+            node.add_action(AccessibilityAction::ScrollLeft);
+            node.add_action(AccessibilityAction::ScrollRight);
+            node.add_action(AccessibilityAction::ScrollUp);
+            node.add_action(AccessibilityAction::ScrollDown);
+        }
+        _ => panic!("scroll axis variant is not supported by hydrolysis"),
+    }
+    let _ = renderer.register_accessibility_node(
+        node,
+        bounds,
+        env,
+        Some(AccessibilityActionTarget::Scroll {
+            handle: handle.clone(),
+            axis,
+        }),
+    );
 }
 
 pub(crate) fn draw_scroll_indicators(

@@ -70,10 +70,6 @@ pub(crate) struct AccessibilityBuilder {
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
 }
 
-#[cfg(not(feature = "accessibility"))]
-#[derive(Default)]
-pub(crate) struct AccessibilityBuilder;
-
 #[cfg(feature = "accessibility")]
 impl Default for AccessibilityBuilder {
     fn default() -> Self {
