@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Drag Drop Example"
+bundle_identifier = "com.waterui.example.drop_and_drop"

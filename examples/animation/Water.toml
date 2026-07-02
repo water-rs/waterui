@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Animation Example"
+bundle_identifier = "com.waterui.animation_example"

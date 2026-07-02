@@ -1,0 +1,21 @@
+[package]
+name = "image-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "GPU-accelerated image processing example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["ui", "framework", "example", "image", "gpu"]
+categories = ["gui"]
+publish = false
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui.workspace = true
+waterui-media.workspace = true
+[package.metadata.cargo-machete]
+ignored = ["waterui-media"]
