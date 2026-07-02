@@ -93,6 +93,7 @@ Keep the change set strictly scoped to the task.
 - Follow fast fail principle: if an unexpected case is encountered, crash early with a clear error message rather than fallback.
 - Utilize rust's type system to enforce invariants at compile time rather than runtime checks.
 - Use struct,trait and genetic abstractions rather than enum and type-erasure when possible.
+- Public traits expose the friendliest signature even when it is not object-safe (`-> impl Future`/`-> impl View`, generic methods, RPITIT). When dynamic dispatch is needed internally, do NOT degrade the public trait: add a private object-safe shim trait (`XxxImpl`) with a blanket `impl<T: Xxx> XxxImpl for T`, and store `Box<dyn XxxImpl>` behind a public wrapper type (`AnyXxx` / `ViewRenderer`-style). Type erasure is an implementation detail, never the user-facing API shape (see `core/src/ui/view_renderer.rs` for the canonical example).
 - Put shader to a separate file rather than embedding as string literal. Same for large text assets.
 - Do not write duplicated code. If you find yourself copying and pasting code, consider refactoring it into a shared function or module.
 - Always render on GPU rather than CPU
