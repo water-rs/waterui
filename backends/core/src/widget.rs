@@ -97,6 +97,77 @@ impl ButtonMetrics {
     }
 }
 
+/// Maximum number of press ripple waves tracked concurrently per widget.
+///
+/// Every press spawns its own wave (Material/mdui semantics), so rapid
+/// re-presses overlap: older waves keep fading while the newest grows. A wave
+/// lives for at most its grow plus fade-out duration (a few hundred
+/// milliseconds), so this bound sits well above what any human click rate can
+/// keep alive; when it is exceeded the oldest wave's slot is recycled.
+pub const MAX_PRESS_WAVES: usize = 4;
+
+/// One in-flight press ripple wave.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PressWave {
+    /// Absolute logical-unit origin of the press that spawned this wave.
+    /// `None` centers the wave in the target (synthetic/keyboard presses).
+    pub origin: Option<Point>,
+    /// Animated grow progress in the 0.0..=1.0 range.
+    pub progress: f32,
+    /// Animated wave opacity sampled by the renderer.
+    pub opacity: f32,
+}
+
+/// The press ripple waves currently visible on a widget, ordered oldest to
+/// newest.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PressWaves {
+    waves: [Option<PressWave>; MAX_PRESS_WAVES],
+}
+
+impl PressWaves {
+    /// No visible press waves.
+    pub const EMPTY: Self = Self {
+        waves: [None; MAX_PRESS_WAVES],
+    };
+
+    /// Appends a wave as the newest entry, recycling the oldest slot when the
+    /// set is full.
+    pub fn push(&mut self, wave: PressWave) {
+        if let Some(slot) = self.waves.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(wave);
+            return;
+        }
+        self.waves.rotate_left(1);
+        self.waves[MAX_PRESS_WAVES - 1] = Some(wave);
+    }
+
+    /// Iterates the visible waves from oldest to newest.
+    pub fn iter(&self) -> impl Iterator<Item = PressWave> + '_ {
+        self.waves.iter().filter_map(|wave| *wave)
+    }
+
+    /// Whether no wave is visible.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.waves.iter().all(Option::is_none)
+    }
+
+    /// The most recently spawned wave.
+    #[must_use]
+    pub fn latest(&self) -> Option<PressWave> {
+        self.waves.iter().rev().find_map(|wave| *wave)
+    }
+
+    /// Maps every wave origin, e.g. from window space into a widget-local
+    /// frame.
+    pub fn map_origins(&mut self, mut map: impl FnMut(Point) -> Point) {
+        for wave in self.waves.iter_mut().flatten() {
+            wave.origin = wave.origin.map(&mut map);
+        }
+    }
+}
+
 /// Interactive state snapshot for widget chrome.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WidgetInteractionState {
@@ -110,12 +181,9 @@ pub struct WidgetInteractionState {
     pub focus_progress: f32,
     /// Animated state-layer opacity sampled by the renderer.
     pub state_layer_opacity: f32,
-    /// Animated press-layer opacity sampled by the renderer.
-    pub press_layer_opacity: f32,
-    /// Absolute logical-unit origin of the active press interaction.
-    pub press_origin: Option<Point>,
-    /// Animated press grow progress in the 0.0..=1.0 range.
-    pub press_progress: f32,
+    /// The press ripple waves currently visible on the widget: one per press,
+    /// so rapid re-presses overlap while older waves fade out.
+    pub press_waves: PressWaves,
 }
 
 impl WidgetInteractionState {
@@ -126,11 +194,8 @@ impl WidgetInteractionState {
         focus_visible: false,
         focus_progress: 0.0,
         state_layer_opacity: 0.0,
-        press_layer_opacity: 0.0,
-        press_origin: None,
-        press_progress: 0.0,
+        press_waves: PressWaves::EMPTY,
     };
-
 }
 
 /// Motion policy for interactive widget chrome.

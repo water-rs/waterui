@@ -85,6 +85,35 @@ fn released_ripple_fades_at_full_size_without_shrinking() {
 
 #[test]
 #[ignore = "writes visual acceptance PNGs for direct image review"]
+fn rapid_represses_overlap_independent_waves() {
+    // mdui multi-wave behavior: a quick tap's wave keeps fading at full size
+    // while a second press spawns a fresh wave growing from its own point —
+    // the overlap capture must show both at once.
+    let mut app = ui()
+        .viewport(360, 200)
+        .theme(install)
+        .mount(|| button("Tap Tap"));
+    let (cx, cy) = press_center(&mut app, "Tap Tap");
+    // Stay inside the button bounds; opposite corners make the two waves'
+    // distinct origins obvious.
+    let (p1x, p1y) = (cx - 25.0, cy + 8.0);
+    let (p2x, p2y) = (cx + 25.0, cy - 8.0);
+    app.queue_pointer_down(p1x, p1y);
+    let _ = app.snapshot();
+    app.queue_pointer_up(p1x, p1y);
+    let _ = app.snapshot();
+    // The first wave finishes growing (225ms) and starts its deferred fade.
+    std::thread::sleep(Duration::from_millis(240));
+    app.queue_pointer_down(p2x, p2y);
+    let _ = app.snapshot();
+    std::thread::sleep(Duration::from_millis(60));
+    save(&mut app, "repress-overlap-60ms");
+    std::thread::sleep(Duration::from_millis(80));
+    save(&mut app, "repress-140ms-second-wave");
+}
+
+#[test]
+#[ignore = "writes visual acceptance PNGs for direct image review"]
 fn plain_button_hover_shows_state_layer() {
     let mut app = ui()
         .viewport(360, 200)

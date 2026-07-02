@@ -1,4 +1,4 @@
-use crate::{Brush, DrawContext, WidgetInteractionState};
+use crate::{Brush, DrawContext, PressWave, PressWaves, WidgetInteractionState};
 use vello::kurbo::{Point, Rect, RoundedRectRadii};
 use vello::peniko::Color;
 
@@ -29,48 +29,54 @@ fn resolved_state_layer_opacity(state: WidgetInteractionState) -> f32 {
     }
 }
 
-/// The pressed ripple opacity for `state`: the renderer-sampled animated value
-/// when one is in flight, otherwise the MD3 pressed token.
-fn resolved_press_layer_opacity(state: WidgetInteractionState) -> f32 {
-    if state.press_layer_opacity > 0.0 {
-        return state.press_layer_opacity;
+/// The press waves to draw for `state`: the renderer-sampled waves when any
+/// are in flight, otherwise — for states constructed without renderer
+/// animation (static previews, tests) — a single full-coverage wave at the
+/// MD3 pressed token while the state reads as pressed.
+fn resolved_press_waves(state: WidgetInteractionState) -> PressWaves {
+    if !state.press_waves.is_empty() {
+        return state.press_waves;
     }
+    let mut waves = PressWaves::EMPTY;
     if state.pressed {
-        PRESSED_STATE_LAYER_OPACITY
-    } else {
-        0.0
+        waves.push(PressWave {
+            origin: None,
+            progress: 1.0,
+            opacity: PRESSED_STATE_LAYER_OPACITY,
+        });
     }
+    waves
 }
 
-/// Initial ripple size as a fraction of the full diameter: a press starts at
-/// this scale over the press point and grows to full size as the renderer's
-/// press-grow animation advances `press_progress` from 0 to 1.
+/// Initial ripple size as a fraction of the full diameter: a wave starts at
+/// this scale over its press point and grows to full size as the renderer's
+/// press-grow animation advances the wave's progress from 0 to 1.
 const RIPPLE_INITIAL_SCALE: f64 = 0.4;
 
 /// The full Material ripple diameter for a target: the surface diagonal,
-/// floored at [`RIPPLE_MINIMUM_DIAMETER`]. The ripple is drawn fresh each
-/// frame from the sampled interaction state — [`ripple_kinematics`] scales it
-/// from the initial fraction up to full size while its center drifts from the
+/// floored at [`RIPPLE_MINIMUM_DIAMETER`]. Waves are drawn fresh each frame
+/// from the sampled interaction state — [`ripple_kinematics`] scales each
+/// from the initial fraction up to full size while its center drifts from its
 /// press point to the surface center.
 pub fn ripple_diameter(bounds: Rect) -> f64 {
     bounds.width().hypot(bounds.height()).max(RIPPLE_MINIMUM_DIAMETER)
 }
 
 /// Material ripple kinematics for one frame: given the target's `bounds` and
-/// the sampled `state`, returns the ripple's current center and radius.
+/// one sampled `wave`, returns the wave's current center and radius.
 ///
-/// The center drifts linearly from the press point (already mapped by the
-/// renderer into the same coordinate space as `bounds`; the bounds center when
-/// absent) to the bounds center, and the radius grows from
+/// The center drifts linearly from the wave's press point (already mapped by
+/// the renderer into the same coordinate space as `bounds`; the bounds center
+/// when absent) to the bounds center, and the radius grows from
 /// [`RIPPLE_INITIAL_SCALE`] of the full [`ripple_diameter`] to the full size,
-/// both driven by `press_progress`.
-fn ripple_kinematics(bounds: Rect, state: WidgetInteractionState) -> (Point, f64) {
-    let progress = f64::from(state.press_progress.clamp(0.0, 1.0));
+/// both driven by the wave's progress.
+fn ripple_kinematics(bounds: Rect, wave: PressWave) -> (Point, f64) {
+    let progress = f64::from(wave.progress.clamp(0.0, 1.0));
     let bounds_center = Point::new(
         bounds.width().mul_add(0.5, bounds.x0),
         bounds.height().mul_add(0.5, bounds.y0),
     );
-    let origin = state.press_origin.unwrap_or(bounds_center);
+    let origin = wave.origin.unwrap_or(bounds_center);
     let center = Point::new(
         (bounds_center.x - origin.x).mul_add(progress, origin.x),
         (bounds_center.y - origin.y).mul_add(progress, origin.y),
@@ -78,6 +84,21 @@ fn ripple_kinematics(bounds: Rect, state: WidgetInteractionState) -> (Point, f64
     let scale = (1.0 - RIPPLE_INITIAL_SCALE).mul_add(progress, RIPPLE_INITIAL_SCALE);
     let radius = ripple_diameter(bounds) * 0.5 * scale;
     (center, radius)
+}
+
+/// Fills every visible wave as a solid circle at its current animated
+/// geometry. The waves are ordered oldest to newest, so overlapping ripples
+/// from rapid re-presses composite naturally (mdui semantics: older waves keep
+/// fading while the newest grows).
+fn fill_waves(draw: &mut dyn DrawContext, bounds: Rect, color: Color, waves: PressWaves) {
+    for wave in waves.iter() {
+        if wave.opacity <= 0.0 {
+            continue;
+        }
+        let (center, radius) = ripple_kinematics(bounds, wave);
+        let brush = Brush::from(color.with_alpha(wave.opacity.clamp(0.0, 1.0)));
+        draw.fill_circle(center, radius, &brush);
+    }
 }
 
 /// Draws the resting state layer (hover/focus tint) into `bounds`.
@@ -104,20 +125,17 @@ pub fn draw_bounded(
 ) {
     draw_state_tint_rounded(draw, bounds, radii, color, resolved_state_layer_opacity(state));
 
-    let press_opacity = resolved_press_layer_opacity(state);
-    if press_opacity == 0.0 {
+    let waves = resolved_press_waves(state);
+    if waves.is_empty() {
         return;
     }
 
-    // Solid Material ripple, drawn fresh each frame at its current animated
-    // geometry: the retained tree re-encodes the scene every frame while the
-    // press animations run, so the sampled press_progress/press_origin drive
-    // the growth and drift directly.
-    let (center, radius) = ripple_kinematics(bounds, state);
-    let brush = Brush::from(color.with_alpha(press_opacity.clamp(0.0, 1.0)));
-
+    // Solid Material ripple waves, drawn fresh each frame at their current
+    // animated geometry: the retained tree re-encodes the scene every frame
+    // while press animations run, so each wave's sampled progress/origin
+    // drives its growth and drift directly.
     draw.push_rounded_layer(1.0, bounds, radii);
-    draw.fill_circle(center, radius, &brush);
+    fill_waves(draw, bounds, color, waves);
     draw.pop_layer();
 }
 
@@ -135,22 +153,20 @@ pub fn draw_unbounded_circle(
         draw.pop_layer();
     }
 
-    let press_opacity = resolved_press_layer_opacity(state);
-    if press_opacity == 0.0 {
+    let waves = resolved_press_waves(state);
+    if waves.is_empty() {
         return;
     }
     let bounds = Rect::from_center_size(center, (radius * 2.0, radius * 2.0));
-    let (ripple_center, ripple_radius) = ripple_kinematics(bounds, state);
-    let brush = Brush::from(color.with_alpha(press_opacity.clamp(0.0, 1.0)));
     draw.push_layer(1.0, None);
-    draw.fill_circle(ripple_center, ripple_radius, &brush);
+    fill_waves(draw, bounds, color, waves);
     draw.pop_layer();
 }
 
 #[cfg(test)]
 mod tests {
     use super::{RIPPLE_MINIMUM_DIAMETER, ripple_diameter};
-    use crate::{Brush, DrawContext, WidgetInteractionState, theme::state_layer};
+    use crate::{Brush, DrawContext, PressWave, PressWaves, WidgetInteractionState, theme::state_layer};
     use std::path::Path;
     use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, RoundedRectRadii};
     use vello::peniko::Color;
@@ -171,6 +187,18 @@ mod tests {
         assert_eq!(ripple_diameter(tiny), RIPPLE_MINIMUM_DIAMETER);
     }
 
+    fn pressed_state(waves: &[PressWave]) -> WidgetInteractionState {
+        let mut press_waves = PressWaves::EMPTY;
+        for wave in waves {
+            press_waves.push(*wave);
+        }
+        WidgetInteractionState {
+            pressed: true,
+            press_waves,
+            ..WidgetInteractionState::NONE
+        }
+    }
+
     #[test]
     fn material_ripple_animates_from_press_point_to_full_coverage() {
         // Mid-press: the ripple sits between the press point and the bounds
@@ -183,16 +211,14 @@ mod tests {
             bounds,
             8.0.into(),
             Color::new([1.0, 1.0, 1.0, 1.0]),
-            WidgetInteractionState {
-                pressed: true,
-                press_layer_opacity: 0.12,
-                press_origin: Some(origin),
-                press_progress: 0.5,
-                ..WidgetInteractionState::NONE
-            },
+            pressed_state(&[PressWave {
+                origin: Some(origin),
+                progress: 0.5,
+                opacity: 0.12,
+            }]),
         );
         let circle = recorder
-            .filled_circle
+            .single_circle()
             .expect("mid-press ripple must fill a solid circle");
         assert_eq!(
             circle.center,
@@ -217,16 +243,14 @@ mod tests {
             bounds,
             8.0.into(),
             Color::new([1.0, 1.0, 1.0, 1.0]),
-            WidgetInteractionState {
-                pressed: true,
-                press_layer_opacity: 0.12,
-                press_origin: Some(Point::new(10.0, 12.0)),
-                press_progress: 1.0,
-                ..WidgetInteractionState::NONE
-            },
+            pressed_state(&[PressWave {
+                origin: Some(Point::new(10.0, 12.0)),
+                progress: 1.0,
+                opacity: 0.12,
+            }]),
         );
         let circle = recorder
-            .filled_circle
+            .single_circle()
             .expect("press ripple must fill a solid circle");
         assert_eq!(circle.center, Point::new(50.0, 20.0), "circle is centered");
         assert!(
@@ -236,6 +260,81 @@ mod tests {
         assert!(
             matches!(circle.brush, RecordedBrush::Solid(alpha) if (alpha - 0.12).abs() < 1e-6),
             "ripple is a solid color at the press opacity, not a gradient"
+        );
+    }
+
+    #[test]
+    fn overlapping_press_waves_draw_oldest_to_newest() {
+        // Rapid re-press: the older, released wave keeps fading at full size
+        // while the fresh wave grows from its own press point — both are
+        // filled the same frame, oldest first.
+        let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let mut recorder = RecordingDrawContext::default();
+        state_layer::draw_bounded(
+            &mut recorder,
+            bounds,
+            8.0.into(),
+            Color::new([1.0, 1.0, 1.0, 1.0]),
+            pressed_state(&[
+                PressWave {
+                    origin: Some(Point::new(10.0, 12.0)),
+                    progress: 1.0,
+                    opacity: 0.06,
+                },
+                PressWave {
+                    origin: Some(Point::new(80.0, 30.0)),
+                    progress: 0.0,
+                    opacity: 0.12,
+                },
+            ]),
+        );
+        let circles = &recorder.filled_circles;
+        assert_eq!(circles.len(), 2, "both waves must be filled");
+        assert_eq!(
+            circles[0].center,
+            Point::new(50.0, 20.0),
+            "the older wave is centered at full coverage"
+        );
+        assert!(
+            matches!(circles[0].brush, RecordedBrush::Solid(alpha) if (alpha - 0.06).abs() < 1e-6),
+            "the older wave fades at its own sampled opacity"
+        );
+        assert_eq!(
+            circles[1].center,
+            Point::new(80.0, 30.0),
+            "the fresh wave starts over its own press point"
+        );
+        let full_radius = ripple_diameter(bounds) * 0.5;
+        assert!(
+            (circles[1].radius - full_radius * 0.4).abs() < 1e-6,
+            "the fresh wave starts at the initial scale fraction"
+        );
+    }
+
+    #[test]
+    fn static_pressed_state_synthesizes_a_full_coverage_wave() {
+        // A pressed state constructed without renderer animation (static
+        // previews, tests) still renders a press layer: one centered,
+        // full-coverage wave at the MD3 pressed token.
+        let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let mut recorder = RecordingDrawContext::default();
+        state_layer::draw_bounded(
+            &mut recorder,
+            bounds,
+            8.0.into(),
+            Color::new([1.0, 1.0, 1.0, 1.0]),
+            WidgetInteractionState {
+                pressed: true,
+                ..WidgetInteractionState::NONE
+            },
+        );
+        let circle = recorder
+            .single_circle()
+            .expect("static pressed state must fill a press layer");
+        assert_eq!(circle.center, Point::new(50.0, 20.0));
+        assert!(
+            matches!(circle.brush, RecordedBrush::Solid(alpha) if (alpha - 0.12).abs() < 1e-6),
+            "synthesized wave uses the MD3 pressed token"
         );
     }
 
@@ -254,7 +353,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingDrawContext {
-        filled_circle: Option<RecordedCircle>,
+        filled_circles: Vec<RecordedCircle>,
     }
 
     impl RecordingDrawContext {
@@ -263,6 +362,15 @@ mod tests {
                 Brush::Solid(color) => RecordedBrush::Solid(color.components[3]),
                 Brush::Gradient(_) => RecordedBrush::Gradient,
             }
+        }
+
+        fn single_circle(&self) -> Option<RecordedCircle> {
+            assert!(
+                self.filled_circles.len() <= 1,
+                "expected at most one filled circle, recorded {}",
+                self.filled_circles.len()
+            );
+            self.filled_circles.first().copied()
         }
     }
 
@@ -281,7 +389,7 @@ mod tests {
         fn stroke_line(&mut self, _from: Point, _to: Point, _brush: &Brush, _width: f64) {}
         fn stroke_circle(&mut self, _center: Point, _radius: f64, _brush: &Brush, _width: f64) {}
         fn fill_circle(&mut self, center: Point, radius: f64, brush: &Brush) {
-            self.filled_circle = Some(RecordedCircle {
+            self.filled_circles.push(RecordedCircle {
                 center,
                 radius,
                 brush: Self::record_brush(brush),
@@ -460,6 +568,12 @@ mod tests {
                 20.0.into(),
                 &Brush::from(Color::new([0.40, 0.31, 0.64, 1.0])),
             );
+            let mut press_waves = PressWaves::EMPTY;
+            press_waves.push(PressWave {
+                origin: Some(Point::new(56.0, 48.0)),
+                progress: 0.72,
+                opacity: 0.30,
+            });
             state_layer::draw_bounded(
                 &mut draw,
                 bounds,
@@ -467,9 +581,7 @@ mod tests {
                 Color::new([1.0, 1.0, 1.0, 1.0]),
                 WidgetInteractionState {
                     pressed: true,
-                    press_layer_opacity: 0.30,
-                    press_origin: Some(Point::new(56.0, 48.0)),
-                    press_progress: 0.72,
+                    press_waves,
                     ..WidgetInteractionState::NONE
                 },
             );
