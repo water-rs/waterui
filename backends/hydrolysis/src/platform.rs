@@ -247,6 +247,19 @@ pub trait SurfaceProvider {
 pub trait PlatformWindow {
     fn surface(&mut self) -> &mut dyn SurfaceProvider;
     fn apply_properties(&mut self, window: &WuiWindow);
+    /// Applies the window's effective content-size limits (logical units).
+    ///
+    /// `min` is the explicit `Window::min_size` when set, otherwise the content's
+    /// measured layout minimum; `max` is the explicit `Window::max_size`. Targets
+    /// without per-window runtime size limits (offscreen surfaces, web canvases,
+    /// fixed embedded displays) keep this default no-op.
+    fn set_size_limits(
+        &mut self,
+        min: Option<waterui_core::layout::Size>,
+        max: Option<waterui_core::layout::Size>,
+    ) {
+        let _ = (min, max);
+    }
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
     fn scale_factor(&self) -> f64;
@@ -675,6 +688,13 @@ impl SurfaceProvider for OffscreenSurface {
 pub struct OffscreenWindow {
     surface: OffscreenSurface,
     scale_factor: f64,
+    /// Last applied (min, max) content-size limits, recorded so tests can
+    /// assert what the runner derived; offscreen surfaces have no real window
+    /// to constrain.
+    size_limits: Option<(
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    )>,
 }
 
 impl OffscreenWindow {
@@ -683,6 +703,7 @@ impl OffscreenWindow {
         Self {
             surface: OffscreenSurface::new_blocking(width, height, format),
             scale_factor: 1.0,
+            size_limits: None,
         }
     }
 
@@ -696,12 +717,24 @@ impl OffscreenWindow {
         Self {
             surface: pollster::block_on(OffscreenSurface::new_for_tests(width, height, format)),
             scale_factor: 1.0,
+            size_limits: None,
         }
     }
 
     #[must_use]
     pub fn surface_ref(&self) -> &OffscreenSurface {
         &self.surface
+    }
+
+    /// The last (min, max) content-size limits the runner applied, for tests.
+    #[must_use]
+    pub fn applied_size_limits(
+        &self,
+    ) -> Option<(
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    )> {
+        self.size_limits
     }
 }
 
@@ -719,6 +752,14 @@ impl PlatformWindow for OffscreenWindow {
             frame.width().max(1.0) as u32,
             frame.height().max(1.0) as u32,
         );
+    }
+
+    fn set_size_limits(
+        &mut self,
+        min: Option<waterui_core::layout::Size>,
+        max: Option<waterui_core::layout::Size>,
+    ) {
+        self.size_limits = Some((min, max));
     }
 
     fn drain_events(&mut self) -> Vec<InputEvent> {
@@ -899,6 +940,12 @@ mod winit_impl {
         modifiers: Modifiers,
         ime_allowed: bool,
         current_cursor_style: CursorStyle,
+        /// Last applied (min, max) content-size limits, so per-frame application
+        /// only reaches winit when the effective limits actually change.
+        applied_size_limits: Option<(
+            Option<waterui_core::layout::Size>,
+            Option<waterui_core::layout::Size>,
+        )>,
     }
 
     impl WinitWindow {
@@ -913,6 +960,7 @@ mod winit_impl {
                 modifiers: Modifiers::default(),
                 ime_allowed: false,
                 current_cursor_style: CursorStyle::Arrow,
+                applied_size_limits: None,
             }
         }
 
@@ -1129,6 +1177,23 @@ mod winit_impl {
                 self.surface.resize(size.width, size.height);
             }
             &mut self.surface
+        }
+
+        fn set_size_limits(
+            &mut self,
+            min: Option<waterui_core::layout::Size>,
+            max: Option<waterui_core::layout::Size>,
+        ) {
+            if self.applied_size_limits == Some((min, max)) {
+                return;
+            }
+            self.window.set_min_inner_size(
+                min.map(|size| LogicalSize::new(f64::from(size.width), f64::from(size.height))),
+            );
+            self.window.set_max_inner_size(
+                max.map(|size| LogicalSize::new(f64::from(size.width), f64::from(size.height))),
+            );
+            self.applied_size_limits = Some((min, max));
         }
 
         fn apply_properties(&mut self, window: &waterui::window::Window) {
