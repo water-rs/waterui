@@ -170,6 +170,10 @@ impl HydrolysisRenderer {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
         };
+        // Track the live window bounds every flush: resize reaches this path (the
+        // build path only runs once at startup), and text-context-menu clamping /
+        // effect-rect checks read the stored bounds.
+        self.set_window_bounds(bounds);
         // Roll over this frame's Retain watcher guards exactly like the rebuild path:
         // a full re-flush re-reads (re-subscribes) every reactive input, so last
         // frame's guards must move current -> previous (dropped next frame) instead of
@@ -214,6 +218,10 @@ impl HydrolysisRenderer {
         tree.layout(self, env, size);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
+        // The overlay-mode text context menu re-encodes with the frame it floats
+        // over; only drawing it on the one-time build path left it visible for a
+        // single frame.
+        self.render_active_text_context_menu_overlay(env, transform);
         self.flush_vello_scene_layer();
         self.hit_test.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
