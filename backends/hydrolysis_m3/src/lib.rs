@@ -422,9 +422,10 @@ impl WidgetTheme for MaterialTheme {
         draw: &mut dyn DrawContext,
         bounds: Rect,
         progress: f32,
+        selected: bool,
         state: WidgetInteractionState,
     ) {
-        toggle::draw_switch(&self.colors(), draw, bounds, progress, state);
+        toggle::draw_switch(&self.colors(), draw, bounds, progress, selected, state);
     }
 
     fn draw_toggle_switch_state_layer(
@@ -432,9 +433,10 @@ impl WidgetTheme for MaterialTheme {
         draw: &mut dyn DrawContext,
         bounds: Rect,
         progress: f32,
+        selected: bool,
         state: WidgetInteractionState,
     ) {
-        toggle::draw_switch_state_layer(&self.colors(), draw, bounds, progress, state);
+        toggle::draw_switch_state_layer(&self.colors(), draw, bounds, progress, selected, state);
     }
 
     fn draw_toggle_checkbox(&self, draw: &mut dyn DrawContext, bounds: Rect, progress: f32) {

@@ -159,7 +159,7 @@ pub(crate) fn render_toggle_parts(
     // Reading the toggle value through `resolve_toggle_progress` watches the
     // signal (it registers a `request_rebuild` watcher), so a value change
     // schedules a frame and this persistent node re-renders the new state.
-    let thumb_progress = {
+    let (thumb_progress, selected) = {
         let binding = state.config.toggle.clone();
         ctx.renderer_mut()
             .resolve_toggle_progress(&binding, theme.toggle_value_animation())
@@ -172,11 +172,18 @@ pub(crate) fn render_toggle_parts(
         let mut draw = ctx.draw_context();
         match style {
             ToggleStyle::Automatic | ToggleStyle::Switch => {
-                theme.draw_toggle_switch(&mut draw, control_bounds, thumb_progress, interaction);
+                theme.draw_toggle_switch(
+                    &mut draw,
+                    control_bounds,
+                    thumb_progress,
+                    selected,
+                    interaction,
+                );
                 theme.draw_toggle_switch_state_layer(
                     &mut draw,
                     control_bounds,
                     thumb_progress,
+                    selected,
                     interaction,
                 );
             }

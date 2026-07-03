@@ -14,6 +14,18 @@ pub const TOGGLE_SWITCH_OUTLINE_WIDTH: f64 = 2.0;
 pub const TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE: f64 = 16.0;
 pub const TOGGLE_SWITCH_SELECTED_HANDLE_SIZE: f64 = 24.0;
 pub const TOGGLE_SWITCH_PRESSED_HANDLE_SIZE: f64 = 28.0;
+/// Gap between the track's left edge and the unselected thumb (mdui `left: 6`
+/// with a 16dp thumb puts the resting center at 14dp).
+pub const TOGGLE_SWITCH_THUMB_UNSELECTED_INSET: f64 = 6.0;
+/// Gap between the track's right edge and the selected thumb (mdui `left: 24`
+/// with a 24dp thumb in a 52dp track puts the resting center 16dp from the
+/// right edge).
+pub const TOGGLE_SWITCH_THUMB_SELECTED_INSET: f64 = 4.0;
+/// Size of the thumb icon (mdui switch `checked-icon` font size).
+pub const TOGGLE_SWITCH_ICON_SIZE: f64 = 16.0;
+/// Initial scale of the thumb icon while it transitions in/out (mdui
+/// `transform: scale(0.92)`).
+pub const TOGGLE_SWITCH_ICON_SCALE_START: f64 = 0.92;
 pub const TOGGLE_LABEL_SPACING: f64 = 8.0;
 pub const TOGGLE_CHECKBOX_SIZE: f64 = 18.0;
 pub const TOGGLE_CHECKBOX_CONTAINER_SHAPE: f64 = 2.0;

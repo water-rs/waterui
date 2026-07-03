@@ -991,6 +991,12 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     if runtime.renderer.handle_gesture_tick(now, env) {
         runtime.request_refresh();
     }
+    // Smoothed wheel scrolling eases offsets toward their targets per frame;
+    // while any scroll view is still gliding, keep refreshing on the redraw
+    // cadence.
+    if runtime.renderer.tick_smooth_scrolls(now) {
+        runtime.request_refresh();
+    }
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
     // A pending fine-grained reactive patch composites through the window-refresh path,

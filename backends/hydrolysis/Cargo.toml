@@ -47,6 +47,26 @@ accesskit_winit = { version = "0.32.1", optional = true }
 [build-dependencies]
 cfg_aliases = "0.2.1"
 
+# Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
+# window's NSView declares the 120Hz frame-rate demand (see
+# platform/macos_display_link.rs). All of these are already in winit's own
+# dependency graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSResponder",
+    "NSView",
+    "objc2-quartz-core",
+] }
+objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSRunLoop",
+    "NSString",
+] }
+objc2-quartz-core = { version = "0.3", optional = true, features = [
+    "CADisplayLink",
+    "CAFrameRateRange",
+] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 serde = { workspace = true, features = ["derive"] }
@@ -80,7 +100,15 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 default = []
 accessibility = ["dep:accesskit"]
 testing = []
-winit = ["accessibility", "dep:winit", "dep:accesskit_winit"]
+winit = [
+    "accessibility",
+    "dep:winit",
+    "dep:accesskit_winit",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+    "dep:objc2-quartz-core",
+]
 web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 [package.metadata.cargo-machete]
 ignored = ["cfg_aliases", "waterui-backend-core"]

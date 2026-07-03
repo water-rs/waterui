@@ -623,30 +623,44 @@ fn handle_accessibility_pointer_action(
     }
 }
 
+/// One accessibility scroll step in logical pixels. Assistive-tech scroll
+/// actions are programmatic: they move the offset immediately (the pixel
+/// path) instead of gliding through the smoothed-wheel animation, so the
+/// result is deterministic for the caller.
+#[cfg(feature = "accessibility")]
+const ACCESSIBILITY_SCROLL_STEP: f32 = crate::scroll::SCROLL_LINE_STEP as f32;
+
 #[cfg(feature = "accessibility")]
 fn handle_accessibility_scroll_action(
     handle: &ScrollHandle,
     axis: ScrollAxis,
     action: AccessibilityAction,
 ) -> bool {
+    let step = ACCESSIBILITY_SCROLL_STEP;
     match action {
         AccessibilityAction::ScrollLeft => match axis {
-            ScrollAxis::Horizontal | ScrollAxis::All => handle.apply_scroll_delta(1.0, 0.0, true),
+            ScrollAxis::Horizontal | ScrollAxis::All => {
+                handle.apply_scroll_delta(step, 0.0, false)
+            }
             ScrollAxis::Vertical => false,
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         },
         AccessibilityAction::ScrollRight => match axis {
-            ScrollAxis::Horizontal | ScrollAxis::All => handle.apply_scroll_delta(-1.0, 0.0, true),
+            ScrollAxis::Horizontal | ScrollAxis::All => {
+                handle.apply_scroll_delta(-step, 0.0, false)
+            }
             ScrollAxis::Vertical => false,
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         },
         AccessibilityAction::ScrollUp => match axis {
-            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, 1.0, true),
+            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, step, false),
             ScrollAxis::Horizontal => false,
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         },
         AccessibilityAction::ScrollDown => match axis {
-            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, -1.0, true),
+            ScrollAxis::Vertical | ScrollAxis::All => {
+                handle.apply_scroll_delta(0.0, -step, false)
+            }
             ScrollAxis::Horizontal => false,
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         },

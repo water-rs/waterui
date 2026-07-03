@@ -468,6 +468,7 @@ pub(crate) fn render_list_parts(
     let hit_transform = ctx.hit_transform;
     ctx.renderer_mut().register_scroll_target(
         transformed_rect(hit_transform, viewport),
+        handle.clone(),
         move |dx, dy, is_line_delta| handle_for_input.apply_scroll_delta(dx, dy, is_line_delta),
     );
     draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical);

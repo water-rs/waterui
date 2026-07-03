@@ -197,7 +197,12 @@ impl InteractionEngine {
 
         let state = WidgetInteractionState {
             hovered,
-            pressed: handles.visually_pressed(now),
+            // Chrome reads the PHYSICAL press (mdui removes [pressed] the
+            // instant the pointer lifts, so the 28dp pressed thumb and the
+            // pressed tint drop immediately on release). The ripple's Material
+            // minimum-press gating lives in the waves themselves and must not
+            // leak into pressed chrome after release.
+            pressed: handles.pressing(),
             focus_visible,
             focus_progress: focus_alpha.sample(now),
             state_layer_opacity: hover_alpha.sample(now),

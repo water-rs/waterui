@@ -85,6 +85,9 @@ pub(crate) struct HoverTarget {
 pub(crate) struct ScrollTarget {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) action: ScrollAction,
+    /// The scroll view's offset handle, ticked per frame while a smoothed
+    /// wheel scroll glides toward its target.
+    pub(crate) handle: crate::scroll::ScrollHandle,
 }
 
 /// Outcome of synchronizing hover targets against a pointer position.
@@ -1047,24 +1050,32 @@ impl HydrolysisRenderer {
         self.register_hover_target(bounds, None, Some(Rc::new(RefCell::new(action))), None);
     }
 
-    pub(crate) fn register_scroll_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
-    where
-        F: 'static + FnMut(f32, f32, bool) -> bool,
-    {
-        self.register_scroll_target_action(bounds, Rc::new(RefCell::new(action)));
-    }
-
-    pub(crate) fn register_scroll_target_action(
+    pub(crate) fn register_scroll_target<F>(
         &mut self,
         bounds: vello::kurbo::Rect,
-        action: ScrollAction,
-    ) {
+        handle: crate::scroll::ScrollHandle,
+        action: F,
+    ) where
+        F: 'static + FnMut(f32, f32, bool) -> bool,
+    {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.hit_test
-            .scroll_targets
-            .push(ScrollTarget { bounds, action });
+        self.hit_test.scroll_targets.push(ScrollTarget {
+            bounds,
+            action: Rc::new(RefCell::new(action)),
+            handle,
+        });
+    }
+
+    /// Advances every scroll view's smoothed wheel scroll and reports whether
+    /// more animation frames are needed.
+    pub(crate) fn tick_smooth_scrolls(&mut self, now: Instant) -> bool {
+        let mut active = false;
+        for target in &self.hit_test.scroll_targets {
+            active |= target.handle.tick_smooth_scroll(now);
+        }
+        active
     }
 }
 
