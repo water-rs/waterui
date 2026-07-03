@@ -51,6 +51,7 @@ into_ffi! {ToggleConfig,
         label: WuiLabel,
         toggle: *mut WuiBinding<bool>,
         style: WuiToggleStyle,
+        disabled: *mut WuiComputed<bool>,
     }
 }
 
@@ -70,6 +71,7 @@ into_ffi! {SliderConfig,
         max_value_label: *mut WuiAnyView,
         range: WuiRange<f64>,
         value: *mut WuiBinding<f64>,
+        disabled: *mut WuiComputed<bool>,
     }
 }
 

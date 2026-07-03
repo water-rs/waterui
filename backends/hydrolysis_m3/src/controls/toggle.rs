@@ -38,8 +38,8 @@ fn switch_thumb_center(bounds: Rect, progress: f32) -> Point {
     let unselected_x = bounds.x0
         + TOGGLE_SWITCH_THUMB_UNSELECTED_INSET
         + TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE / 2.0;
-    let selected_x = bounds.x1
-        - (TOGGLE_SWITCH_THUMB_SELECTED_INSET + TOGGLE_SWITCH_SELECTED_HANDLE_SIZE / 2.0);
+    let selected_x =
+        bounds.x1 - (TOGGLE_SWITCH_THUMB_SELECTED_INSET + TOGGLE_SWITCH_SELECTED_HANDLE_SIZE / 2.0);
     Point::new(
         crate::lerp_f64(unselected_x, selected_x, progress),
         bounds.y0 + bounds.height() / 2.0,
@@ -67,11 +67,23 @@ pub fn draw_switch(
     state: WidgetInteractionState,
 ) {
     let progress = progress.clamp(0.0, 1.0);
-    let track_color = lerp_color(
-        colors.surface_container_highest.peniko(),
-        colors.primary.peniko(),
-        progress,
-    );
+    // mdui disabled switch: the track drops to surface-container-highest at
+    // 12% (unchecked) or on-surface at 12% (checked), the outline to
+    // on-surface at 12%, the thumb to on-surface at 38% (unchecked) or opaque
+    // surface (checked), and the checked icon to on-surface at 38%.
+    let track_color = if state.disabled {
+        lerp_color(
+            colors.surface_container_highest.peniko_disabled_container(),
+            colors.on_surface.peniko_disabled_container(),
+            progress,
+        )
+    } else {
+        lerp_color(
+            colors.surface_container_highest.peniko(),
+            colors.primary.peniko(),
+            progress,
+        )
+    };
     let handle_size = if state.pressed {
         TOGGLE_SWITCH_PRESSED_HANDLE_SIZE
     } else {
@@ -91,14 +103,25 @@ pub fn draw_switch(
     if outline_width > 0.01 {
         let inset = outline_width / 2.0;
         let outline_bounds = bounds.inflate(-inset, -inset);
+        let outline_color = if state.disabled {
+            colors.on_surface.peniko_disabled_container()
+        } else {
+            colors.outline.peniko()
+        };
         draw.stroke_rounded_rect(
             outline_bounds,
             (track_radius - inset).into(),
-            &Brush::from(colors.outline.peniko()),
+            &Brush::from(outline_color),
             outline_width,
         );
     }
-    let thumb_color = if state.pressed || state.hovered || state.focus_visible {
+    let thumb_color = if state.disabled {
+        lerp_color(
+            colors.on_surface.peniko_disabled_content(),
+            colors.surface.peniko(),
+            progress,
+        )
+    } else if state.pressed || state.hovered || state.focus_visible {
         if selected {
             colors.primary_container.peniko()
         } else {
@@ -125,14 +148,14 @@ pub fn draw_switch(
                 TOGGLE_SWITCH_ICON_SIZE * icon_scale,
             ),
         );
+        let icon_color = if state.disabled {
+            colors.on_surface.peniko_disabled_content()
+        } else {
+            colors.on_primary_container.peniko()
+        };
         draw.stroke_path(
             &check_glyph_path(icon_bounds),
-            &Brush::from(
-                colors
-                    .on_primary_container
-                    .peniko()
-                    .with_alpha(icon_opacity),
-            ),
+            &Brush::from(icon_color.with_alpha(icon_color.components[3] * icon_opacity)),
             TOGGLE_CHECKBOX_OUTLINE_WIDTH,
         );
     }
@@ -161,19 +184,22 @@ pub fn draw_checkbox(
     draw: &mut dyn DrawContext,
     bounds: Rect,
     progress: f32,
+    state: WidgetInteractionState,
 ) {
     let progress = progress.clamp(0.0, 1.0);
     let outline_opacity = 1.0 - progress;
     if outline_opacity > 0.0 {
+        // MD3 disabled checkbox: the unchecked outline drops to on-surface at
+        // the 38% disabled-content opacity.
+        let outline_color = if state.disabled {
+            colors.on_surface.peniko_disabled_content()
+        } else {
+            colors.on_surface_variant.peniko()
+        };
         draw.stroke_rounded_rect(
             bounds,
             TOGGLE_CHECKBOX_CONTAINER_SHAPE.into(),
-            &Brush::from(
-                colors
-                    .on_surface_variant
-                    .peniko()
-                    .with_alpha(outline_opacity),
-            ),
+            &Brush::from(outline_color.with_alpha(outline_color.components[3] * outline_opacity)),
             TOGGLE_CHECKBOX_OUTLINE_WIDTH,
         );
     }
@@ -186,14 +212,24 @@ pub fn draw_checkbox(
         * Affine::scale(selected_scale)
         * Affine::translate((-bounds.center().x, -bounds.center().y));
     draw.push_transform(selected_transform);
+    // MD3 disabled checkbox (checked): container on-surface at 38%, checkmark
+    // in the surface color.
+    let (container_color, check_color) = if state.disabled {
+        (
+            colors.on_surface.peniko_disabled_content(),
+            colors.surface.peniko(),
+        )
+    } else {
+        (colors.primary.peniko(), colors.on_primary.peniko())
+    };
     draw.fill_rounded_rect(
         bounds,
         TOGGLE_CHECKBOX_CONTAINER_SHAPE.into(),
-        &Brush::from(colors.primary.peniko().with_alpha(progress)),
+        &Brush::from(container_color.with_alpha(container_color.components[3] * progress)),
     );
     draw.stroke_path(
         &check_glyph_path(bounds),
-        &Brush::from(colors.on_primary.peniko().with_alpha(progress)),
+        &Brush::from(check_color.with_alpha(check_color.components[3] * progress)),
         TOGGLE_CHECKBOX_OUTLINE_WIDTH,
     );
     draw.pop_transform();
@@ -251,18 +287,29 @@ mod tests {
     struct RecordingDrawContext {
         rounded_stroke_count: usize,
         rounded_stroke_widths: Vec<f64>,
+        rounded_stroke_brushes: Vec<vello::peniko::Color>,
         rounded_fill_count: usize,
+        rounded_fill_brushes: Vec<vello::peniko::Color>,
         path_stroke_count: usize,
         circle_centers: Vec<Point>,
         circle_radii: Vec<f64>,
+        circle_brushes: Vec<vello::peniko::Color>,
         transform_depth: usize,
+    }
+
+    fn solid(brush: &Brush) -> vello::peniko::Color {
+        match brush {
+            Brush::Solid(color) => *color,
+            Brush::Gradient(_) => panic!("toggle chrome must use solid brushes"),
+        }
     }
 
     impl DrawContext for RecordingDrawContext {
         fn fill_rect(&mut self, _rect: Rect, _brush: &Brush) {}
 
-        fn fill_rounded_rect(&mut self, _rect: Rect, _radii: RoundedRectRadii, _brush: &Brush) {
+        fn fill_rounded_rect(&mut self, _rect: Rect, _radii: RoundedRectRadii, brush: &Brush) {
             self.rounded_fill_count += 1;
+            self.rounded_fill_brushes.push(solid(brush));
         }
 
         fn stroke_rect(&mut self, _rect: Rect, _brush: &Brush, _width: f64) {}
@@ -271,20 +318,22 @@ mod tests {
             &mut self,
             _rect: Rect,
             _radii: RoundedRectRadii,
-            _brush: &Brush,
+            brush: &Brush,
             width: f64,
         ) {
             self.rounded_stroke_count += 1;
             self.rounded_stroke_widths.push(width);
+            self.rounded_stroke_brushes.push(solid(brush));
         }
 
         fn stroke_line(&mut self, _from: Point, _to: Point, _brush: &Brush, _width: f64) {}
 
         fn stroke_circle(&mut self, _center: Point, _radius: f64, _brush: &Brush, _width: f64) {}
 
-        fn fill_circle(&mut self, center: Point, radius: f64, _brush: &Brush) {
+        fn fill_circle(&mut self, center: Point, radius: f64, brush: &Brush) {
             self.circle_centers.push(center);
             self.circle_radii.push(radius);
+            self.circle_brushes.push(solid(brush));
         }
 
         fn fill_path(&mut self, _path: &BezPath, _brush: &Brush) {}
@@ -343,7 +392,14 @@ mod tests {
         let bounds = Rect::from_origin_size((0.0, 0.0), (52.0, 32.0));
 
         let mut mid = RecordingDrawContext::default();
-        draw_switch(&colors, &mut mid, bounds, 0.5, true, WidgetInteractionState::NONE);
+        draw_switch(
+            &colors,
+            &mut mid,
+            bounds,
+            0.5,
+            true,
+            WidgetInteractionState::NONE,
+        );
 
         assert_eq!(mid.rounded_stroke_widths, vec![1.0]);
     }
@@ -404,7 +460,10 @@ mod tests {
             true,
             WidgetInteractionState::NONE,
         );
-        assert_eq!(selected.path_stroke_count, 1, "checked thumb shows the check glyph");
+        assert_eq!(
+            selected.path_stroke_count, 1,
+            "checked thumb shows the check glyph"
+        );
 
         let mut unselected = RecordingDrawContext::default();
         draw_switch(
@@ -415,7 +474,10 @@ mod tests {
             false,
             WidgetInteractionState::NONE,
         );
-        assert_eq!(unselected.path_stroke_count, 0, "unselected thumb has no icon");
+        assert_eq!(
+            unselected.path_stroke_count, 0,
+            "unselected thumb has no icon"
+        );
     }
 
     #[test]
@@ -424,6 +486,92 @@ mod tests {
 
         assert_eq!(metrics.label_spacing, TOGGLE_LABEL_SPACING);
         assert_eq!(TOGGLE_LABEL_SPACING, 8.0);
+    }
+
+    #[test]
+    fn disabled_material_switch_uses_disabled_palette() {
+        // mdui disabled switch: unchecked track surface-container-highest at
+        // 12% with an on-surface 12% outline and an on-surface 38% thumb;
+        // checked track on-surface at 12% with an opaque surface thumb.
+        let colors = MaterialColorScheme::baseline_light();
+        let bounds = Rect::from_origin_size((0.0, 0.0), (52.0, 32.0));
+        let disabled = WidgetInteractionState {
+            disabled: true,
+            ..WidgetInteractionState::NONE
+        };
+
+        let mut unchecked = RecordingDrawContext::default();
+        draw_switch(&colors, &mut unchecked, bounds, 0.0, false, disabled);
+        assert_eq!(
+            unchecked.rounded_fill_brushes,
+            vec![crate::lerp_color(
+                colors.surface_container_highest.peniko_disabled_container(),
+                colors.on_surface.peniko_disabled_container(),
+                0.0,
+            )],
+            "disabled unchecked track drops to surface-container-highest at 12%"
+        );
+        assert_eq!(
+            unchecked.rounded_stroke_brushes,
+            vec![colors.on_surface.peniko_disabled_container()],
+            "disabled unchecked outline drops to on-surface at 12%"
+        );
+        assert_eq!(
+            unchecked.circle_brushes,
+            vec![crate::lerp_color(
+                colors.on_surface.peniko_disabled_content(),
+                colors.surface.peniko(),
+                0.0,
+            )],
+            "disabled unchecked thumb drops to on-surface at 38%"
+        );
+
+        let mut checked = RecordingDrawContext::default();
+        draw_switch(&colors, &mut checked, bounds, 1.0, true, disabled);
+        assert_eq!(
+            checked.rounded_fill_brushes,
+            vec![crate::lerp_color(
+                colors.surface_container_highest.peniko_disabled_container(),
+                colors.on_surface.peniko_disabled_container(),
+                1.0,
+            )],
+            "disabled checked track drops to on-surface at 12%"
+        );
+        assert_eq!(
+            checked.circle_brushes,
+            vec![crate::lerp_color(
+                colors.on_surface.peniko_disabled_content(),
+                colors.surface.peniko(),
+                1.0,
+            )],
+            "disabled checked thumb is the opaque surface color"
+        );
+    }
+
+    #[test]
+    fn disabled_material_checkbox_uses_disabled_palette() {
+        let colors = MaterialColorScheme::baseline_light();
+        let bounds = Rect::from_origin_size((0.0, 0.0), (18.0, 18.0));
+        let disabled = WidgetInteractionState {
+            disabled: true,
+            ..WidgetInteractionState::NONE
+        };
+
+        let mut unchecked = RecordingDrawContext::default();
+        draw_checkbox(&colors, &mut unchecked, bounds, 0.0, disabled);
+        assert_eq!(
+            unchecked.rounded_stroke_brushes,
+            vec![colors.on_surface.peniko_disabled_content()],
+            "disabled unchecked outline drops to on-surface at 38%"
+        );
+
+        let mut checked = RecordingDrawContext::default();
+        draw_checkbox(&colors, &mut checked, bounds, 1.0, disabled);
+        assert_eq!(
+            checked.rounded_fill_brushes,
+            vec![colors.on_surface.peniko_disabled_content()],
+            "disabled checked container drops to on-surface at 38%"
+        );
     }
 
     #[test]
@@ -456,10 +604,22 @@ mod tests {
         let bounds = Rect::from_origin_size((0.0, 0.0), (18.0, 18.0));
 
         let mut unselected = RecordingDrawContext::default();
-        draw_checkbox(&colors, &mut unselected, bounds, 0.0);
+        draw_checkbox(
+            &colors,
+            &mut unselected,
+            bounds,
+            0.0,
+            WidgetInteractionState::NONE,
+        );
 
         let mut selected = RecordingDrawContext::default();
-        draw_checkbox(&colors, &mut selected, bounds, 1.0);
+        draw_checkbox(
+            &colors,
+            &mut selected,
+            bounds,
+            1.0,
+            WidgetInteractionState::NONE,
+        );
 
         assert_eq!(unselected.rounded_stroke_count, 1);
         assert_eq!(unselected.rounded_fill_count, 0);

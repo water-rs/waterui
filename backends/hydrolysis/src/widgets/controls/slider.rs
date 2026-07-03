@@ -32,6 +32,7 @@ use crate::widgets::util::widget_theme;
 /// frame; the clonable `label`/`range`/`value` drive the track and accessibility.
 pub(crate) struct SliderRenderState {
     label: Label,
+    disabled: nami::Computed<bool>,
     /// The main label as a retained node sub-view, re-flushed each frame at its
     /// rect (reactive content stays live through the node's own re-flush). The
     /// clonable `label` is kept alongside for accessibility resolution.
@@ -50,11 +51,13 @@ impl SliderRenderState {
             max_value_label,
             range,
             value,
+            disabled,
             ..
         } = config;
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
             label,
+            disabled,
             min_value_label: RetainedSubview::new(min_value_label),
             max_value_label: RetainedSubview::new(max_value_label),
             range,
@@ -85,6 +88,7 @@ fn slider_accessibility_parts(
     label: &Label,
     range: &RangeInclusive<f64>,
     value: &Binding<f64>,
+    disabled: &nami::Computed<bool>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -106,24 +110,27 @@ fn slider_accessibility_parts(
         node.set_max_numeric_value(end);
         node.set_numeric_value_step(slider_step_for_range(range.clone()));
         node.add_action(AccessibilityAction::Focus);
-        node.add_action(AccessibilityAction::Increment);
-        node.add_action(AccessibilityAction::Decrement);
-        node.add_action(AccessibilityAction::SetValue);
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        let _ = renderer.register_accessibility_node(
-            node,
-            bounds,
-            env,
+        // A disabled slider stays in the tree (focusable, announced as
+        // disabled) but exposes no value actions and no action target.
+        let action_target = if renderer.read_signal(disabled) {
+            node.set_disabled();
+            None
+        } else {
+            node.add_action(AccessibilityAction::Increment);
+            node.add_action(AccessibilityAction::Decrement);
+            node.add_action(AccessibilityAction::SetValue);
             Some(AccessibilityActionTarget::Slider {
                 value: value.clone(),
                 range: range.clone(),
                 step: slider_step_for_range(range.clone()),
-            }),
-        );
+            })
+        };
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let _ = renderer.register_accessibility_node(node, bounds, env, action_target);
     }
     #[cfg(not(feature = "accessibility"))]
     {
-        let _ = (renderer, ctx, label, range, value, env);
+        let _ = (renderer, ctx, label, range, value, disabled, env);
     }
 }
 
@@ -183,6 +190,7 @@ pub(crate) fn render_slider_node(
             &slider.label,
             &slider.range,
             &slider.value,
+            &slider.disabled,
             env,
         );
     }
@@ -197,10 +205,18 @@ pub(crate) fn render_slider_parts(
     let theme = widget_theme(env);
     let metrics = theme.slider_metrics();
     let mut state = state.borrow_mut();
+    // Reading the disabled signal watches it, so a change schedules a frame
+    // and this persistent node re-renders (and re-registers input) with the
+    // new state.
+    let disabled = {
+        let signal = state.disabled.clone();
+        ctx.renderer_mut().read_signal(&signal)
+    };
     // Every label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no
     // dispatch. The main label sizes the top row, the value-end labels flank the
-    // track.
+    // track. A disabled control dims every label to the theme's
+    // disabled-content alpha (Material: on-surface at 38%).
     let label_height = if ctx.bounds.height() >= 36.0 {
         f64::from(
             state
@@ -219,10 +235,16 @@ pub(crate) fn render_slider_parts(
             ctx.bounds.x1,
             (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
         );
+        if disabled {
+            ctx.push_layer_rect(theme.disabled_content_alpha(), label_rect);
+        }
         let render_ctx = ctx.render_context();
         state
             .label_view
             .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_rect);
+        if disabled {
+            ctx.pop_layer();
+        }
     }
 
     let min_label_size = state
@@ -244,18 +266,30 @@ pub(crate) fn render_slider_parts(
     if min_label_width > 0.0 && control_height > 0.0 {
         let min_label_rect =
             vello::kurbo::Rect::new(min_label_x0, control_top, min_label_x1, control_bottom);
+        if disabled {
+            ctx.push_layer_rect(theme.disabled_content_alpha(), min_label_rect);
+        }
         let render_ctx = ctx.render_context();
         state
             .min_value_label
             .flush_in_rect(ctx.renderer_mut(), render_ctx, env, min_label_rect);
+        if disabled {
+            ctx.pop_layer();
+        }
     }
     if max_label_width > 0.0 && control_height > 0.0 {
         let max_label_rect =
             vello::kurbo::Rect::new(max_label_x0, control_top, max_label_x1, control_bottom);
+        if disabled {
+            ctx.push_layer_rect(theme.disabled_content_alpha(), max_label_rect);
+        }
         let render_ctx = ctx.render_context();
         state
             .max_value_label
             .flush_in_rect(ctx.renderer_mut(), render_ctx, env, max_label_rect);
+        if disabled {
+            ctx.pop_layer();
+        }
     }
 
     let range_start = *state.range.start();
@@ -306,13 +340,14 @@ pub(crate) fn render_slider_parts(
             control_bottom,
         ),
     );
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) = ctx
+        .renderer_mut()
+        .bind_control_interaction_target(hit_bounds, env, disabled);
     let thumb_center = vello::kurbo::Point::new(fill_right, track_center_y);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
-        theme.draw_slider_track(&mut draw, track_rect, fill_rect);
+        theme.draw_slider_track(&mut draw, track_rect, fill_rect, interaction);
         theme.draw_slider_thumb(&mut draw, thumb_center, metrics.thumb_radius, interaction);
         theme.draw_slider_thumb_state_layer(
             &mut draw,
@@ -326,6 +361,12 @@ pub(crate) fn render_slider_parts(
         usable_track > 0.0,
         "hydrolysis slider resolved a non-positive track width"
     );
+    // A disabled slider registers no drag target: the pointer neither presses
+    // nor drags it. Targets are re-registered every flush, so re-enabling
+    // restores interactivity on the next frame.
+    if disabled {
+        return;
+    }
     let inverse_transform = ctx.hit_transform.inverse();
     let value_epsilon = slider_value_epsilon(span, usable_track);
     ctx.renderer_mut().register_interactive_pointer_drag_target(

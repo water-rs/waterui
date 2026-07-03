@@ -622,7 +622,14 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_button_chrome(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _style: ButtonStyle) {}
+    fn draw_button_chrome(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _style: ButtonStyle,
+        _state: WidgetInteractionState,
+    ) {
+    }
 
     fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
         ToggleMetrics {
@@ -646,7 +653,14 @@ impl WidgetTheme for MinimalTestTheme {
     ) {
     }
 
-    fn draw_toggle_checkbox(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _progress: f32) {}
+    fn draw_toggle_checkbox(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _progress: f32,
+        _state: WidgetInteractionState,
+    ) {
+    }
 
     fn stepper_metrics(&self) -> StepperMetrics {
         StepperMetrics {
@@ -769,7 +783,14 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_slider_track(&self, _draw: &mut dyn DrawContext, _track_rect: Rect, _fill_rect: Rect) {}
+    fn draw_slider_track(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _track_rect: Rect,
+        _fill_rect: Rect,
+        _state: WidgetInteractionState,
+    ) {
+    }
 
     fn draw_slider_thumb(
         &self,
@@ -964,6 +985,7 @@ fn widget_theme_can_be_replaced_in_environment() {
         &mut draw,
         Rect::new(0.0, 0.0, 10.0, 10.0),
         ButtonStyle::Plain,
+        WidgetInteractionState::NONE,
     );
 }
 

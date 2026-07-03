@@ -852,7 +852,24 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(bounds, env, None)
+        self.bind_interaction_target_with_focus(bounds, env, None, false)
+    }
+
+    /// Binds an interaction target for a control that supports the disabled
+    /// state: a disabled control samples an at-rest [`WidgetInteractionState`]
+    /// (with its `disabled` flag set) and registers no hover target, so the
+    /// pointer neither hovers nor presses it.
+    pub(crate) fn bind_control_interaction_target(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
+        self.bind_interaction_target_with_focus(bounds, env, None, disabled)
     }
 
     pub(crate) fn bind_focused_interaction_target(
@@ -869,6 +886,7 @@ impl HydrolysisRenderer {
             bounds,
             env,
             Some(InteractionFocus::visible(focused)),
+            false,
         )
     }
 
@@ -877,12 +895,19 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         env: &Environment,
         focus: Option<InteractionFocus>,
+        disabled: bool,
     ) -> (
         WidgetInteractionState,
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
         let (hover_slot, hovered) = self.hit_test.interaction.bind_hover();
+        if disabled {
+            // No hover target is registered for a disabled control, so pointer
+            // moves never sync its slot; reset it so a stale hover from before
+            // the control was disabled does not resurface on re-enable.
+            self.hit_test.interaction.set_hovering(hover_slot, false);
+        }
         let motion = widget_theme(env).interaction_motion();
         let now = self.frame_instant();
         let (state, press_slot, handles) = self.hit_test.interaction.bind_widget_state(
@@ -890,6 +915,7 @@ impl HydrolysisRenderer {
                 bounds,
                 hovered,
                 focus,
+                disabled,
             },
             &motion,
             &mut self.animation_controller,
@@ -900,7 +926,7 @@ impl HydrolysisRenderer {
         // state-dependent by construction: a press or hover change must schedule a
         // re-flush (not just a re-present of the stale scene).
         handles.mark_chrome_state_dependent();
-        if self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
+        if !disabled && self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
             self.hit_test.hover_targets.push(HoverTarget {
                 bounds,
                 slot: hover_slot,
