@@ -832,12 +832,16 @@ pub trait WidgetTheme {
     fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics;
     /// Return the default animation for toggle value changes.
     fn toggle_value_animation(&self) -> Animation;
-    /// Draw switch-style toggle chrome.
+    /// Draw switch-style toggle chrome. `progress` is the animated 0..=1
+    /// value and `selected` is the toggle's current target, so staged
+    /// choreography (e.g. a thumb icon that enters late and exits early) can
+    /// tell which direction the animation is heading.
     fn draw_toggle_switch(
         &self,
         draw: &mut dyn DrawContext,
         bounds: Rect,
         progress: f32,
+        selected: bool,
         state: WidgetInteractionState,
     );
     /// Draw switch-style toggle state layer.
@@ -846,6 +850,7 @@ pub trait WidgetTheme {
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
         _progress: f32,
+        _selected: bool,
         _state: WidgetInteractionState,
     ) {
     }

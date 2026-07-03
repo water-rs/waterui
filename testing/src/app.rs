@@ -260,6 +260,13 @@ impl OffscreenApp {
     pub fn queue_pointer_up(&mut self, x: f32, y: f32) {
         let _ = self.app.driver.pointer_up(x, y, &self.app.env);
     }
+
+    /// Queues a pointer move without the semantic settle; see
+    /// [`Self::queue_pointer_down`]. Visual stage tests use this to park the
+    /// pointer away from a widget so idle captures are free of hover state.
+    pub fn queue_pointer_move(&mut self, x: f32, y: f32) {
+        let _ = self.app.driver.pointer_move(x, y, &self.app.env);
+    }
 }
 
 impl core::ops::Deref for OffscreenApp {
