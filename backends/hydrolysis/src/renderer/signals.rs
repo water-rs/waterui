@@ -62,19 +62,22 @@ impl HydrolysisRenderer {
         self.frame_instant
     }
 
+    /// Resolves a boolean toggle signal into its animated progress and the
+    /// current target value (the direction the animation is heading).
     pub(crate) fn resolve_toggle_progress<S>(
         &mut self,
         signal: &S,
         default_animation: Animation,
-    ) -> f32
+    ) -> (f32, bool)
     where
         S: Signal<Output = bool> + Clone + 'static,
     {
+        let selected = signal.get();
         let Some(identity) = signal.identity() else {
-            return if signal.get() { 1.0 } else { 0.0 };
+            return (if selected { 1.0 } else { 0.0 }, selected);
         };
         let now = self.frame_instant;
-        let target = if signal.get() { 1.0 } else { 0.0 };
+        let target = if selected { 1.0 } else { 0.0 };
         let key = AnimationKey::scalar(identity);
         let handle = self.animation_controller.bind_scalar_target(
             key,
@@ -94,7 +97,7 @@ impl HydrolysisRenderer {
             signals.request_refresh();
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
-        handle.sample(now).clamp(0.0, 1.0)
+        (handle.sample(now).clamp(0.0, 1.0), selected)
     }
 
     pub(crate) fn sample_widget_scalar_target(

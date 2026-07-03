@@ -641,6 +641,7 @@ impl WidgetTheme for MinimalTestTheme {
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
         _progress: f32,
+        _selected: bool,
         _state: WidgetInteractionState,
     ) {
     }

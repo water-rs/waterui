@@ -263,6 +263,7 @@ impl RenderNode {
                 let target_handle = handle.clone();
                 renderer.register_scroll_target(
                     transformed_rect(ctx.hit_transform, viewport_rect),
+                    handle.clone(),
                     move |dx, dy, is_line_delta| {
                         target_handle.apply_scroll_delta(dx, dy, is_line_delta)
                     },

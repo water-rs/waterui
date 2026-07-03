@@ -72,8 +72,11 @@ pub const fn navigation_drawer() -> Animation {
     material_standard(Duration::from_millis(250))
 }
 
+/// Switch value motion, matching the M3 reference: thumb slide, thumb size,
+/// track color, and outline width all transition together over 200ms with the
+/// MD3 standard easing (the M3 reference `transition-duration(short4)` + standard curve).
 pub const fn toggle_value() -> Animation {
-    Animation::spring(300.0, 20.0)
+    material_standard(Duration::from_millis(200))
 }
 
 pub const fn radio_selection() -> RadioSelectionMotion {
@@ -182,8 +185,11 @@ mod tests {
     }
 
     #[test]
-    fn material_toggle_motion_uses_hydrolysis_animation_engine_policy() {
-        assert_eq!(toggle_value(), Animation::spring(300.0, 20.0));
+    fn material_toggle_motion_matches_m3_reference() {
+        assert_eq!(
+            toggle_value(),
+            Animation::bezier(Duration::from_millis(200), 0.2, 0.0, 0.0, 1.0)
+        );
     }
 
     #[test]

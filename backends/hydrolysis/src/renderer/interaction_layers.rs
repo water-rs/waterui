@@ -132,8 +132,11 @@ impl InteractionLayerHandles {
         self.waves.iter().any(|wave| wave.pressing.get())
     }
 
-    /// Whether any wave should currently read as pressed: an active press, or
-    /// a released press still inside the Material minimum press duration.
+    /// Whether any wave's press layer should currently read as pressed: an
+    /// active press, or a released press still inside the Material minimum
+    /// press duration. This gates the RIPPLE only — pressed chrome follows
+    /// [`Self::pressing`], the physical pointer state.
+    #[cfg(test)]
     pub(crate) fn visually_pressed(&self, now: Instant) -> bool {
         self.waves
             .iter()

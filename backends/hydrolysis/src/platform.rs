@@ -780,6 +780,9 @@ impl PlatformWindow for OffscreenWindow {
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_impl;
 
+#[cfg(all(feature = "winit", target_os = "macos"))]
+mod macos_display_link;
+
 #[cfg(feature = "winit")]
 mod winit_impl {
     use std::sync::Arc;
@@ -946,12 +949,21 @@ mod winit_impl {
             Option<waterui_core::layout::Size>,
             Option<waterui_core::layout::Size>,
         )>,
+        /// Explicit ProMotion opt-in: declares the 120Hz frame-rate demand to
+        /// the window server while redraws are being requested. `None` before
+        /// macOS 14.
+        #[cfg(target_os = "macos")]
+        frame_rate_demand: Option<super::macos_display_link::FrameRateDemandLink>,
     }
 
     impl WinitWindow {
         pub async fn new(window: Arc<NativeWindow>) -> Self {
             let surface = WinitSurface::new(window.clone()).await;
             Self {
+                #[cfg(target_os = "macos")]
+                frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(
+                    &window,
+                ),
                 window,
                 surface,
                 pending_surface_size: None,
@@ -1261,6 +1273,12 @@ mod winit_impl {
 
         fn request_redraw(&self) {
             self.window.request_redraw();
+            // Hold the ProMotion frame-rate demand while frames are being
+            // requested, so animations run at 120Hz on high-refresh panels.
+            #[cfg(target_os = "macos")]
+            if let Some(demand) = &self.frame_rate_demand {
+                demand.hold_demand();
+            }
         }
 
         fn scale_factor(&self) -> f64 {
