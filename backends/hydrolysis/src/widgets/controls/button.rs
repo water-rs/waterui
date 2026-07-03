@@ -11,7 +11,7 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use nami::Signal;
+use nami::{Signal, SignalExt};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::ViewExt as _;
@@ -62,7 +62,7 @@ impl ButtonRenderState {
         }
         let theme = widget_theme(env);
         let style = self.config.style;
-        let color = theme.button_label_color(style);
+        let color = disabled_aware_label_color(theme, style, &self.config.disabled);
         let styled = styled_button_label(theme, style, self.config.label.clone());
         let mut subview = RetainedSubview::new(button_label_view(color, AnyView::new(styled)));
         subview.ensure_built(renderer, env);
@@ -104,17 +104,21 @@ pub(crate) fn button_accessibility(
             node.set_label(label);
         }
         node.add_action(AccessibilityAction::Focus);
-        node.add_action(AccessibilityAction::Click);
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        let activation_point = accessibility_activation_point(bounds);
-        let _ = renderer.register_accessibility_node(
-            node,
-            bounds,
-            env,
+        // A disabled button stays in the tree (focusable, announced as
+        // disabled) but exposes no click action and no action target.
+        let disabled = renderer.read_signal(&button.disabled);
+        let action_target = if disabled {
+            node.set_disabled();
+            None
+        } else {
+            node.add_action(AccessibilityAction::Click);
+            let activation_point = accessibility_activation_point(bounds);
             Some(AccessibilityActionTarget::PointerPrimaryClick {
                 point: activation_point,
-            }),
-        );
+            })
+        };
+        let _ = renderer.register_accessibility_node(node, bounds, env, action_target);
     }
     #[cfg(not(feature = "accessibility"))]
     {
@@ -136,8 +140,12 @@ pub(crate) fn measure_button_node(
     let label_size = match &render_state.label_view {
         Some(subview) => subview.measure_built(state, env),
         None => {
-            let styled =
-                styled_button_title(theme, render_state.config.style, &render_state.config.label, env);
+            let styled = styled_button_title(
+                theme,
+                render_state.config.style,
+                &render_state.config.label,
+                env,
+            );
             HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
         }
     };
@@ -213,13 +221,9 @@ impl MenuRenderState {
     /// Eagerly build the label sub-view (the measure path has no renderer),
     /// applying the theme's default label foreground first (mirroring the dispatch
     /// path's `button_label_view`).
-    pub(crate) fn prebuild_label(
-        &mut self,
-        renderer: &mut HydrolysisRenderer,
-        env: &Environment,
-    ) {
+    pub(crate) fn prebuild_label(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
         if let MenuLabel::View(subview) = &mut self.label {
-            let color = widget_theme(env).button_label_color(ButtonStyle::Borderless);
+            let color = widget_theme(env).button_label_color(ButtonStyle::Borderless, false);
             subview.map_source(|view| button_label_view(color, view));
             subview.ensure_built(renderer, env);
         }
@@ -333,12 +337,21 @@ pub(crate) fn render_button_parts(
         let label = state.borrow().config.label.clone();
         watch_button_title(ctx.renderer_mut(), &label, env);
     }
+    // Reading the disabled signal watches it, so a change schedules a frame
+    // and this persistent node re-renders (and re-registers input) with the
+    // new state.
+    let disabled = {
+        let signal = state.borrow().config.disabled.clone();
+        ctx.renderer_mut().read_signal(&signal)
+    };
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) = ctx
+        .renderer_mut()
+        .bind_control_interaction_target(hit_bounds, env, disabled);
     {
         let mut draw = ctx.draw_context();
-        theme.draw_button_chrome(&mut draw, bounds, style);
+        theme.draw_button_chrome(&mut draw, bounds, style, interaction);
     }
 
     let metrics = theme.button_metrics(style);
@@ -358,9 +371,10 @@ pub(crate) fn render_button_parts(
             let render_ctx = ctx.render_context();
             subview.flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_target);
         } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
-            // Title label: centered styled text rendered fresh each frame.
+            // Title label: centered styled text rendered fresh each frame,
+            // picking the enabled or disabled label color for this frame.
             let mut styled = styled_button_title(theme, style, &state_mut.config.label, env);
-            if let Some(color) = theme.button_label_color(style) {
+            if let Some(color) = theme.button_label_color(style, disabled) {
                 styled = styled_with_default_foreground(styled, color);
             }
             ctx.render_styled_text_single_line_centered(styled, env, label_target);
@@ -374,6 +388,12 @@ pub(crate) fn render_button_parts(
         theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
     }
 
+    // A disabled button registers no tap target: the pointer neither presses
+    // it nor invokes its action. Targets are re-registered every flush, so
+    // re-enabling restores interactivity on the next frame.
+    if disabled {
+        return;
+    }
     // Invoke the action through the shared state cell so the retained node and the
     // dispatch path register equivalent tap targets without moving the action out.
     let state = Rc::clone(state);
@@ -400,7 +420,7 @@ pub(crate) fn render_menu_parts(
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let mut draw = ctx.draw_context();
-        theme.draw_button_chrome(&mut draw, bounds, style);
+        theme.draw_button_chrome(&mut draw, bounds, style, interaction);
     }
 
     let metrics = theme.button_metrics(style);
@@ -412,7 +432,7 @@ pub(crate) fn render_menu_parts(
                 if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 =>
             {
                 let mut styled = styled_button_title(theme, style, label, env);
-                if let Some(color) = theme.button_label_color(style) {
+                if let Some(color) = theme.button_label_color(style, false) {
                     styled = styled_with_default_foreground(styled, color);
                 }
                 ctx.render_styled_text_single_line_centered(styled, env, label_bounds);
@@ -488,6 +508,58 @@ fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
     match color {
         Some(color) => AnyView::new(label.foreground(color)),
         None => label,
+    }
+}
+
+/// The theme label color for a general (retained) button label, switching
+/// reactively between the enabled and disabled label colors so the retained
+/// sub-view recolors without being rebuilt.
+fn disabled_aware_label_color(
+    theme: &dyn waterui_backend_core::widget::WidgetTheme,
+    style: ButtonStyle,
+    disabled: &nami::Computed<bool>,
+) -> Option<Color> {
+    let enabled_color = theme.button_label_color(style, false);
+    let disabled_color = theme.button_label_color(style, true);
+    match (enabled_color, disabled_color) {
+        (None, None) => None,
+        (Some(when_false), Some(when_true)) => Some(Color::new(SelectResolvedColor {
+            condition: disabled.clone(),
+            when_true,
+            when_false,
+        })),
+        (enabled_color, disabled_color) => panic!(
+            "theme must override the button label color for both the enabled and \
+             disabled states, or neither (enabled: {enabled_color:?}, disabled: {disabled_color:?})"
+        ),
+    }
+}
+
+/// A [`Resolvable`] color that follows `condition`: it resolves to
+/// `when_true` while the signal is `true` and `when_false` otherwise, so a
+/// retained label recolors reactively (e.g. on disable) without being rebuilt.
+#[derive(Debug, Clone)]
+struct SelectResolvedColor {
+    condition: nami::Computed<bool>,
+    when_true: Color,
+    when_false: Color,
+}
+
+impl waterui_core::resolve::Resolvable for SelectResolvedColor {
+    type Resolved = waterui_graphics::color::ResolvedColor;
+
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        let when_true = self.when_true.resolve(env);
+        let when_false = self.when_false.resolve(env);
+        nami::zip::zip(
+            nami::zip::zip(self.condition.clone(), when_true),
+            when_false,
+        )
+        .map(
+            |((condition, when_true), when_false)| {
+                if condition { when_true } else { when_false }
+            },
+        )
     }
 }
 

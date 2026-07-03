@@ -1174,7 +1174,7 @@ impl ToJavaStruct for crate::components::text::WuiText {
     }
 }
 
-/// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long)
+/// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long, disabledPtr: Long)
 ///
 /// `label` is now a `WuiLabel` struct; we project its `view` pointer as the
 /// labelPtr and its `accessibility_label` pointer separately. Display mode is
@@ -1187,12 +1187,13 @@ impl ToJavaStruct for crate::components::button::WuiButton {
             .expect("ButtonStruct class not found");
         env.new_object(
             &class,
-            "(JJIJ)V",
+            "(JJIJJ)V",
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.action as jlong),
                 JValue::Int(self.style as i32),
                 JValue::Long(self.label.accessibility_label as jlong),
+                JValue::Long(self.disabled as jlong),
             ],
         )
         .expect("Failed to create ButtonStruct")
@@ -1238,7 +1239,7 @@ impl ToJavaStruct for crate::components::form::WuiSecureField {
     }
 }
 
-/// WuiToggle -> ToggleStruct(labelPtr, bindingPtr, style)
+/// WuiToggle -> ToggleStruct(labelPtr, bindingPtr, style, disabledPtr)
 impl ToJavaStruct for crate::components::form::WuiToggle {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1246,11 +1247,12 @@ impl ToJavaStruct for crate::components::form::WuiToggle {
             .expect("ToggleStruct class not found");
         env.new_object(
             &class,
-            "(JJI)V",
+            "(JJIJ)V",
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.toggle as jlong),
                 JValue::Int(self.style as i32),
+                JValue::Long(self.disabled as jlong),
             ],
         )
         .expect("Failed to create ToggleStruct")
@@ -1265,7 +1267,7 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
             .expect("SliderStruct class not found");
         env.new_object(
             &class,
-            "(JJJDDJ)V",
+            "(JJJDDJJ)V",
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.min_value_label as jlong),
@@ -1273,6 +1275,7 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
                 JValue::Double(self.range.start),
                 JValue::Double(self.range.end),
                 JValue::Long(self.value as jlong),
+                JValue::Long(self.disabled as jlong),
             ],
         )
         .expect("Failed to create SliderStruct")

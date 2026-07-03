@@ -1107,13 +1107,18 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Hittable::new(enabled))
     }
 
-    /// Disables this view - grays it out and blocks all interactions.
+    /// Disables every interactive control in this view subtree.
     ///
-    /// This is a convenience modifier that composes `opacity(0.5)` + `hittable(false)`.
-    /// When disabled, the view becomes semi-transparent and ignores all touch events.
+    /// Installs a [`waterui_core::interaction::Disabled`] scope into the
+    /// subtree's environment, so controls (toggles, buttons, sliders, …)
+    /// render their platform-correct disabled appearance and stop responding
+    /// to input. Nested `.disabled(...)` scopes OR-combine: a control stays
+    /// disabled while any enclosing scope is disabled. The subtree also stops
+    /// hit-testing entirely and its accessibility nodes report the disabled
+    /// state to assistive technologies.
     ///
     /// # Arguments
-    /// * `is_disabled` - Whether the view is disabled (can be reactive)
+    /// * `is_disabled` - Whether the subtree is disabled (can be reactive)
     ///
     /// # Example
     ///
@@ -1134,17 +1139,19 @@ pub trait ViewExt: View + Sized {
     fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {
         let is_disabled = is_disabled.into_computed();
 
-        // Compose: opacity + hit testing
-        // opacity: 0.5 when disabled, 1.0 when enabled
-        // hittable: false when disabled, true when enabled
         let accessibility_state =
             is_disabled.map(|disabled| AccessibilityState::new().disabled(disabled));
-        let opacity_value = is_disabled.map(|d| if d { 0.5 } else { 1.0 });
         let hittable_value = is_disabled.map(|d| !d);
+        let scope = is_disabled;
 
-        self.a11y_state_signal(accessibility_state)
-            .opacity(opacity_value)
-            .hittable(hittable_value)
+        use_env(move |mut env: Environment| {
+            waterui_core::interaction::Disabled::install(&mut env, scope);
+            Metadata::new(
+                self.a11y_state_signal(accessibility_state)
+                    .hittable(hittable_value),
+                env,
+            )
+        })
     }
 
     /// Injects cloneable state into this view subtree's environment.

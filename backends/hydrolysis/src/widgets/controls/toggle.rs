@@ -80,16 +80,20 @@ pub(crate) fn toggle_accessibility(
         let checked = renderer.read_signal(&toggle.toggle);
         node.set_toggled(AccessibilityToggled::from(checked));
         node.add_action(AccessibilityAction::Focus);
-        node.add_action(AccessibilityAction::Click);
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        let _ = renderer.register_accessibility_node(
-            node,
-            bounds,
-            env,
+        // A disabled toggle stays in the tree (focusable, announced as
+        // disabled) but exposes no click action and no action target.
+        let disabled = renderer.read_signal(&toggle.disabled);
+        let action_target = if disabled {
+            node.set_disabled();
+            None
+        } else {
+            node.add_action(AccessibilityAction::Click);
             Some(AccessibilityActionTarget::Toggle {
                 binding: toggle.toggle.clone(),
-            }),
-        );
+            })
+        };
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let _ = renderer.register_accessibility_node(node, bounds, env, action_target);
     }
     #[cfg(not(feature = "accessibility"))]
     {
@@ -144,16 +148,31 @@ pub(crate) fn render_toggle_parts(
     let mut state = state.borrow_mut();
     let style = state.config.style;
     let metrics = theme.toggle_metrics(style);
+    // Reading the disabled signal watches it, so a change schedules a frame
+    // and this persistent node re-renders (and re-registers input) with the
+    // new state.
+    let disabled = {
+        let signal = state.config.disabled.clone();
+        ctx.renderer_mut().read_signal(&signal)
+    };
     // The label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no dispatch.
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let (control_bounds, label_bounds) =
         toggle_control_and_label_bounds(ctx.bounds, style, metrics, label_size);
     if label_bounds.width() > 0.0 {
+        // A disabled control dims its label to the theme's disabled-content
+        // alpha (Material: on-surface at 38% for default-colored labels).
+        if disabled {
+            ctx.push_layer_rect(theme.disabled_content_alpha(), label_bounds);
+        }
         let render_ctx = ctx.render_context();
         state
             .label_view
             .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_bounds);
+        if disabled {
+            ctx.pop_layer();
+        }
     }
 
     // Reading the toggle value through `resolve_toggle_progress` watches the
@@ -165,8 +184,9 @@ pub(crate) fn render_toggle_parts(
             .resolve_toggle_progress(&binding, theme.toggle_value_animation())
     };
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) = ctx
+        .renderer_mut()
+        .bind_control_interaction_target(hit_bounds, env, disabled);
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
         let mut draw = ctx.draw_context();
@@ -188,7 +208,7 @@ pub(crate) fn render_toggle_parts(
                 );
             }
             ToggleStyle::Checkbox => {
-                theme.draw_toggle_checkbox(&mut draw, control_bounds, thumb_progress);
+                theme.draw_toggle_checkbox(&mut draw, control_bounds, thumb_progress, interaction);
                 theme.draw_toggle_checkbox_state_layer(
                     &mut draw,
                     control_bounds,
@@ -198,6 +218,12 @@ pub(crate) fn render_toggle_parts(
             }
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         }
+    }
+    // A disabled toggle registers no tap target: the pointer neither presses
+    // nor toggles it. Targets are re-registered every flush, so re-enabling
+    // restores interactivity on the next frame.
+    if disabled {
+        return;
     }
     // Toggle the value through the retained binding so the node and the dispatch
     // path register equivalent tap targets.

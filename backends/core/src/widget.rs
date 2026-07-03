@@ -169,8 +169,16 @@ impl PressWaves {
 }
 
 /// Interactive state snapshot for widget chrome.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a per-frame state snapshot of independent interaction flags, not a configuration"
+)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WidgetInteractionState {
+    /// The widget is disabled: it must render its inactive appearance and the
+    /// renderer suppresses hover, press, and focus for it, so the remaining
+    /// fields stay at rest while this is `true`.
+    pub disabled: bool,
     /// Pointer is inside the widget bounds.
     pub hovered: bool,
     /// Primary pointer is actively pressing the widget.
@@ -189,6 +197,7 @@ pub struct WidgetInteractionState {
 impl WidgetInteractionState {
     /// No active interaction state.
     pub const NONE: Self = Self {
+        disabled: false,
         hovered: false,
         pressed: false,
         focus_visible: false,
@@ -808,16 +817,30 @@ pub trait WidgetTheme {
 
     /// Return metrics for a button style.
     fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics;
-    /// Optional button label foreground override.
-    fn button_label_color(&self, _style: ButtonStyle) -> Option<Color> {
+    /// Optional button label foreground override. `disabled` selects the
+    /// inactive label color (e.g. Material's on-surface at 38%).
+    fn button_label_color(&self, _style: ButtonStyle, _disabled: bool) -> Option<Color> {
         None
     }
     /// Optional button label font override.
     fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {
         None
     }
-    /// Draw button chrome for a style.
-    fn draw_button_chrome(&self, draw: &mut dyn DrawContext, bounds: Rect, style: ButtonStyle);
+    /// Content alpha for labels accompanying a disabled control (Material's
+    /// 38% disabled-content token). Backends dim a disabled control's label
+    /// views with this alpha.
+    fn disabled_content_alpha(&self) -> f32 {
+        0.38
+    }
+    /// Draw button chrome for a style. `state` carries the disabled flag so
+    /// themes can render the inactive container.
+    fn draw_button_chrome(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        style: ButtonStyle,
+        state: WidgetInteractionState,
+    );
     /// Draw the button state layer for a style.
     fn draw_button_state_layer(
         &self,
@@ -854,8 +877,15 @@ pub trait WidgetTheme {
         _state: WidgetInteractionState,
     ) {
     }
-    /// Draw checkbox-style toggle chrome.
-    fn draw_toggle_checkbox(&self, draw: &mut dyn DrawContext, bounds: Rect, progress: f32);
+    /// Draw checkbox-style toggle chrome. `state` carries the disabled flag
+    /// so themes can render the inactive container.
+    fn draw_toggle_checkbox(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        progress: f32,
+        state: WidgetInteractionState,
+    );
     /// Draw checkbox-style toggle state layer.
     fn draw_toggle_checkbox_state_layer(
         &self,
@@ -999,8 +1029,15 @@ pub trait WidgetTheme {
 
     /// Return slider metrics.
     fn slider_metrics(&self) -> SliderMetrics;
-    /// Draw slider track chrome.
-    fn draw_slider_track(&self, draw: &mut dyn DrawContext, track_rect: Rect, fill_rect: Rect);
+    /// Draw slider track chrome. `state` carries the disabled flag so themes
+    /// can render the inactive track.
+    fn draw_slider_track(
+        &self,
+        draw: &mut dyn DrawContext,
+        track_rect: Rect,
+        fill_rect: Rect,
+        state: WidgetInteractionState,
+    );
     /// Draw slider thumb chrome.
     fn draw_slider_thumb(
         &self,

@@ -259,17 +259,37 @@ impl HydrolysisRenderer {
                 ),
             };
         }
-        let target = self
-            .accessibility
-            .actions
-            .get(&target_node)
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!(
-                    "hydrolysis accessibility action {:?} targets unmapped node {:?}",
-                    action, target_node
-                )
-            });
+        let Some(target) = self.accessibility.actions.get(&target_node).cloned() else {
+            // A node may legitimately register no action target: a disabled
+            // control stays in the tree (focusable, announced as disabled)
+            // but exposes no activate/value actions, and static content never
+            // had any. Focus still lands when advertised; any action the node
+            // does not advertise is rejected as unhandled. An *advertised*
+            // action without a registered target is a widget bug.
+            let node = self
+                .accessibility
+                .nodes
+                .iter()
+                .find_map(|(id, node)| (*id == target_node).then_some(node))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "hydrolysis accessibility action {:?} targets unknown node {:?}",
+                        action, target_node
+                    )
+                });
+            if action == AccessibilityAction::Focus
+                && node.supports_action(AccessibilityAction::Focus)
+            {
+                let changed = self.accessibility.focus != target_node;
+                self.accessibility.focus = target_node;
+                return changed;
+            }
+            assert!(
+                !node.supports_action(action),
+                "hydrolysis accessibility node {target_node:?} advertises action {action:?} but registered no action target"
+            );
+            return false;
+        };
         let changed = match target {
             AccessibilityActionTarget::PointerPrimaryClick { point } => {
                 handle_accessibility_pointer_action(self, action, point, env)
@@ -639,9 +659,7 @@ fn handle_accessibility_scroll_action(
     let step = ACCESSIBILITY_SCROLL_STEP;
     match action {
         AccessibilityAction::ScrollLeft => match axis {
-            ScrollAxis::Horizontal | ScrollAxis::All => {
-                handle.apply_scroll_delta(step, 0.0, false)
-            }
+            ScrollAxis::Horizontal | ScrollAxis::All => handle.apply_scroll_delta(step, 0.0, false),
             ScrollAxis::Vertical => false,
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         },
@@ -658,9 +676,7 @@ fn handle_accessibility_scroll_action(
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         },
         AccessibilityAction::ScrollDown => match axis {
-            ScrollAxis::Vertical | ScrollAxis::All => {
-                handle.apply_scroll_delta(0.0, -step, false)
-            }
+            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, -step, false),
             ScrollAxis::Horizontal => false,
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         },

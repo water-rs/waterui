@@ -111,7 +111,7 @@ pub use nami as reactive;
 pub use nami::signal::IntoSignal;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_constant};
 pub use state::IntoSignalF32;
-pub use ui::{accessibility, event, gesture, layout, view, view_renderer, views};
+pub use ui::{accessibility, event, gesture, interaction, layout, view, view_renderer, views};
 pub use view::View;
 pub use view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 pub use waterui_str::Str;

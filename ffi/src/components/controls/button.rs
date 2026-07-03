@@ -1,5 +1,6 @@
 use crate::WuiLabel;
 use crate::action::WuiAction;
+use crate::reactive::WuiComputed;
 use waterui::component::button::{ButtonConfig, ButtonStyle};
 
 into_ffi! {ButtonStyle, Automatic,
@@ -20,6 +21,9 @@ pub struct WuiButton {
     pub label: WuiLabel,
     pub action: *mut WuiAction,
     pub style: WuiButtonStyle,
+    /// Reactive disabled state: the control renders as inactive and must
+    /// ignore input while this signal is `true`.
+    pub disabled: *mut WuiComputed<bool>,
 }
 
 impl crate::IntoFFI for ButtonConfig {
@@ -30,6 +34,7 @@ impl crate::IntoFFI for ButtonConfig {
             label: self.label.into_ffi(),
             action: self.action.into_ffi(),
             style: self.style.into_ffi(),
+            disabled: self.disabled.into_ffi(),
         }
     }
 }
