@@ -2571,6 +2571,11 @@ typedef struct WuiButton {
   struct WuiLabel label;
   struct WuiAction *action;
   enum WuiButtonStyle style;
+  /**
+   * Reactive disabled state: the control renders as inactive and must
+   * ignore input while this signal is `true`.
+   */
+  WuiComputed_bool *disabled;
 } WuiButton;
 
 typedef struct Computed_Vec_ResolvedMenuItem WuiComputed_Vec_ResolvedMenuItem;
@@ -2587,6 +2592,7 @@ typedef struct WuiToggle {
   struct WuiLabel label;
   WuiBinding_bool *toggle;
   enum WuiToggleStyle style;
+  WuiComputed_bool *disabled;
 } WuiToggle;
 
 /**
@@ -2609,6 +2615,7 @@ typedef struct WuiSlider {
   struct WuiAnyView *max_value_label;
   struct WuiRange_f64 range;
   WuiBinding_f64 *value;
+  WuiComputed_bool *disabled;
 } WuiSlider;
 
 /**

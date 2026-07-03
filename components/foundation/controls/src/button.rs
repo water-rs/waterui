@@ -130,7 +130,9 @@ use fmt::Debug;
 use alloc::boxed::Box;
 use executor_core::spawn_local;
 use nami::Computed;
+use nami::signal::IntoComputed;
 use waterui_core::handler::{BoxedAction, Handler, shared_action};
+use waterui_core::interaction::Disabled;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
 use waterui_text::IntoText;
@@ -254,6 +256,10 @@ pub struct ButtonConfig {
     pub action: BoxedAction<()>,
     /// The visual style of the button.
     pub style: ButtonStyle,
+    /// Whether the button is disabled: it renders as inactive and ignores
+    /// input. Resolved from the explicit [`Button::disabled`] signal combined
+    /// with any enclosing `.disabled(...)` scope.
+    pub disabled: Computed<bool>,
 }
 
 impl_debug!(ButtonConfig);
@@ -264,6 +270,7 @@ impl ButtonConfig {
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
+        self.disabled = Disabled::resolve(env, self.disabled);
         self
     }
 }
@@ -276,6 +283,7 @@ where
         label: button.label,
         action: Box::new(button.action),
         style: button.style,
+        disabled: button.disabled,
     }
 }
 
@@ -305,6 +313,7 @@ impl ViewConfiguration for ButtonConfig {
             label: self.label,
             action: self.action,
             style: self.style,
+            disabled: self.disabled,
         }
     }
 }
@@ -320,6 +329,7 @@ where
             label: self.label,
             action: Box::new(self.action),
             style: self.style,
+            disabled: self.disabled,
         }
     }
 }
@@ -342,6 +352,7 @@ pub struct Button<Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
+    disabled: Computed<bool>,
 }
 
 impl<Action> Button<Action> {
@@ -373,6 +384,7 @@ impl<Action: Clone> Clone for Button<Action> {
             label: self.label.clone(),
             action: self.action.clone(),
             style: self.style,
+            disabled: self.disabled.clone(),
         }
     }
 }
@@ -399,6 +411,7 @@ impl Button<fn(&Environment)> {
             label,
             action: noop,
             style: ButtonStyle::Automatic,
+            disabled: Computed::constant(false),
         }
     }
 }
@@ -420,6 +433,17 @@ impl<Action> Button<Action> {
     #[must_use]
     pub const fn style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Sets whether the button is disabled.
+    ///
+    /// A disabled button renders as inactive and ignores input. This combines
+    /// with any enclosing `.disabled(...)` scope: the button is disabled while
+    /// either signal is `true`.
+    #[must_use]
+    pub fn disabled(mut self, disabled: impl IntoComputed<bool>) -> Self {
+        self.disabled = disabled.into_computed();
         self
     }
 
@@ -479,6 +503,7 @@ impl<Action> Button<Action> {
             label: self.label,
             action: waterui_core::handler::boxed_action(action),
             style: self.style,
+            disabled: self.disabled,
         }
     }
 
@@ -523,11 +548,12 @@ where
             label,
             mut action,
             style: _,
+            disabled,
         } = value;
         Self {
             label,
             action: shared_action(move |env: Environment| action(&env)),
-            disabled: Computed::constant(false),
+            disabled,
             selected: Computed::constant(false),
             shortcut: None,
             captured_env: Environment::new(),

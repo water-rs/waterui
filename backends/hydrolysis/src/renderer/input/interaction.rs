@@ -27,6 +27,9 @@ pub(crate) struct WidgetInteractionInput {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) hovered: bool,
     pub(crate) focus: Option<InteractionFocus>,
+    /// The widget is disabled: inherited hover/press state is dropped and the
+    /// sampled state stays at rest until the widget is enabled again.
+    pub(crate) disabled: bool,
 }
 
 impl InteractionFocus {
@@ -110,22 +113,25 @@ impl InteractionEngine {
         // Inherited press/hover must not migrate to a different widget: a wave
         // only survives if its press origin still lands inside the widget's
         // bounds, and any state from a reused slot (different-position
-        // occupant) is dropped.
+        // occupant) is dropped. A disabled widget drops everything — a control
+        // disabled mid-hover or mid-press comes to rest immediately.
         if let Some(prev) = &previous {
-            if slot_reused {
+            if slot_reused || input.disabled {
                 prev.clear_press_state();
             } else {
                 prev.retain_waves_with_origin(|origin| input.bounds.contains(origin));
             }
         }
-        let hovered = if slot_reused {
+        let hovered = if input.disabled {
+            false
+        } else if slot_reused {
             input.hovered
         } else {
             previous
                 .as_ref()
                 .map_or(input.hovered, |prev| prev.hovering())
         };
-        let focus_visible = input.focus.is_some_and(|focus| focus.visible);
+        let focus_visible = !input.disabled && input.focus.is_some_and(|focus| focus.visible);
 
         let focus_alpha = animation_controller.bind_scalar_target(
             AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_FOCUS_KEY),
@@ -187,15 +193,17 @@ impl InteractionEngine {
             waves,
             motion.clone(),
         ));
-        // A reused slot's previous state belongs to a different widget; start fresh.
-        if let Some(previous) = previous.filter(|_| !slot_reused) {
+        // A reused slot's previous state belongs to a different widget; start
+        // fresh. A disabled widget also starts at rest.
+        if let Some(previous) = previous.filter(|_| !slot_reused && !input.disabled) {
             handles.copy_interaction_state_from(&previous);
         } else {
-            handles.set_initial_hovering(input.hovered);
+            handles.set_initial_hovering(hovered);
         }
         self.press_controller.slots[press_slot.index].handles = Some(Rc::clone(&handles));
 
         let state = WidgetInteractionState {
+            disabled: input.disabled,
             hovered,
             // Chrome reads the PHYSICAL press (mdui removes [pressed] the
             // instant the pointer lifts, so the 28dp pressed thumb and the
@@ -429,9 +437,8 @@ mod tests {
             )
         };
         let hover_alpha = bind(0);
-        let waves = core::array::from_fn(|index| {
-            WaveLayer::new(bind(1 + index * 2), bind(2 + index * 2))
-        });
+        let waves =
+            core::array::from_fn(|index| WaveLayer::new(bind(1 + index * 2), bind(2 + index * 2)));
         InteractionLayerHandles::new(hover_alpha, waves, motion())
     }
 
@@ -443,25 +450,25 @@ mod tests {
         let motion = motion();
         let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
 
-        let bind = |engine: &mut InteractionEngine,
-                        controller: &mut AnimationController,
-                        now: Instant| {
-            engine.begin_rebuild_frame();
-            controller.begin_rebuild_frame();
-            let bound = engine.bind_widget_state(
-                WidgetInteractionInput {
-                    bounds,
-                    hovered: false,
-                    focus: None,
-                },
-                &motion,
-                controller,
-                now,
-            );
-            controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-            engine.finish_rebuild_frame();
-            bound
-        };
+        let bind =
+            |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
+                engine.begin_rebuild_frame();
+                controller.begin_rebuild_frame();
+                let bound = engine.bind_widget_state(
+                    WidgetInteractionInput {
+                        bounds,
+                        hovered: false,
+                        focus: None,
+                        disabled: false,
+                    },
+                    &motion,
+                    controller,
+                    now,
+                );
+                controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+                engine.finish_rebuild_frame();
+                bound
+            };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
         engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
@@ -504,25 +511,25 @@ mod tests {
         let motion = motion();
         let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
 
-        let bind = |engine: &mut InteractionEngine,
-                    controller: &mut AnimationController,
-                    now: Instant| {
-            engine.begin_rebuild_frame();
-            controller.begin_rebuild_frame();
-            let bound = engine.bind_widget_state(
-                WidgetInteractionInput {
-                    bounds,
-                    hovered: false,
-                    focus: None,
-                },
-                &motion,
-                controller,
-                now,
-            );
-            controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-            engine.finish_rebuild_frame();
-            bound
-        };
+        let bind =
+            |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
+                engine.begin_rebuild_frame();
+                controller.begin_rebuild_frame();
+                let bound = engine.bind_widget_state(
+                    WidgetInteractionInput {
+                        bounds,
+                        hovered: false,
+                        focus: None,
+                        disabled: false,
+                    },
+                    &motion,
+                    controller,
+                    now,
+                );
+                controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+                engine.finish_rebuild_frame();
+                bound
+            };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
         engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
@@ -572,6 +579,65 @@ mod tests {
             waves[0].opacity > 0.0,
             "the held second wave must stay visible"
         );
+    }
+
+    #[test]
+    fn disabled_widget_drops_press_and_hover_and_samples_at_rest() {
+        let started = Instant::now();
+        let mut engine = InteractionEngine::default();
+        let mut controller = AnimationController::default();
+        let motion = motion();
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
+
+        let bind = |engine: &mut InteractionEngine,
+                    controller: &mut AnimationController,
+                    now: Instant,
+                    hovered: bool,
+                    disabled: bool| {
+            engine.begin_rebuild_frame();
+            controller.begin_rebuild_frame();
+            let bound = engine.bind_widget_state(
+                WidgetInteractionInput {
+                    bounds,
+                    hovered,
+                    focus: None,
+                    disabled,
+                },
+                &motion,
+                controller,
+                now,
+            );
+            controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+            engine.finish_rebuild_frame();
+            bound
+        };
+
+        // Hovered and mid-press, then the widget becomes disabled: the
+        // sampled state comes to rest immediately and carries the flag.
+        let (_, slot, _) = bind(&mut engine, &mut controller, started, true, false);
+        engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
+
+        let disabled_at = started + Duration::from_millis(50);
+        let (state, _, _) = bind(&mut engine, &mut controller, disabled_at, true, true);
+        assert!(state.disabled);
+        assert!(!state.hovered, "disabled widget must not sample hover");
+        assert!(!state.pressed, "disabled widget must not sample press");
+
+        // The in-flight ripple is released, fades out (mdui keeps the fade),
+        // and must be gone once the fade-out has finished.
+        let faded_at = disabled_at + Duration::from_millis(200);
+        let (state, _, _) = bind(&mut engine, &mut controller, faded_at, true, true);
+        assert!(
+            state.press_waves.is_empty(),
+            "the released ripple must finish fading while disabled"
+        );
+
+        // Re-enabling starts at rest: the stale press must not resurface.
+        let reenabled_at = faded_at + Duration::from_millis(50);
+        let (state, _, _) = bind(&mut engine, &mut controller, reenabled_at, false, false);
+        assert!(!state.disabled);
+        assert!(!state.pressed);
+        assert!(state.press_waves.is_empty());
     }
 
     #[test]

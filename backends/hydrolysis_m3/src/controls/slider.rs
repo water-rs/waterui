@@ -23,16 +23,27 @@ pub fn draw_track(
     draw: &mut dyn DrawContext,
     track_rect: vello::kurbo::Rect,
     fill_rect: vello::kurbo::Rect,
+    state: WidgetInteractionState,
 ) {
+    // MD3 disabled slider: the inactive track drops to on-surface at 12% and
+    // the active track to on-surface at 38%.
+    let (track_color, fill_color) = if state.disabled {
+        (
+            colors.on_surface.peniko_disabled_container(),
+            colors.on_surface.peniko_disabled_content(),
+        )
+    } else {
+        (colors.secondary_container.peniko(), colors.primary.peniko())
+    };
     draw.fill_rounded_rect(
         track_rect,
         (SLIDER_TRACK_HEIGHT / 2.0).into(),
-        &Brush::from(colors.secondary_container.peniko()),
+        &Brush::from(track_color),
     );
     draw.fill_rounded_rect(
         fill_rect,
         (SLIDER_TRACK_HEIGHT / 2.0).into(),
-        &Brush::from(colors.primary.peniko()),
+        &Brush::from(fill_color),
     );
 }
 
@@ -49,6 +60,22 @@ pub fn draw_thumb(
         SLIDER_HANDLE_WIDTH
     };
     let bounds = vello::kurbo::Rect::from_center_size(center, (width, SLIDER_HANDLE_HEIGHT));
+    // MD3 disabled slider handle: on-surface at 38% over an opaque surface
+    // underlay, so content behind the semi-transparent handle cannot bleed
+    // through (mdui paints the handle over the background role).
+    if state.disabled {
+        draw.fill_rounded_rect(
+            bounds,
+            (width / 2.0).into(),
+            &Brush::from(colors.surface.peniko()),
+        );
+        draw.fill_rounded_rect(
+            bounds,
+            (width / 2.0).into(),
+            &Brush::from(colors.on_surface.peniko_disabled_content()),
+        );
+        return;
+    }
     draw.fill_rounded_rect(
         bounds,
         (width / 2.0).into(),
@@ -177,6 +204,57 @@ mod tests {
     }
 
     #[test]
+    fn disabled_slider_uses_disabled_palette() {
+        // MD3 disabled slider: inactive track on-surface at 12%, active track
+        // on-surface at 38%, handle on-surface at 38% over an opaque surface
+        // underlay.
+        let colors = MaterialColorScheme::baseline_light();
+        let disabled = WidgetInteractionState {
+            disabled: true,
+            ..WidgetInteractionState::NONE
+        };
+
+        let mut track = RecordingDrawContext::default();
+        draw_track(
+            &colors,
+            &mut track,
+            Rect::new(0.0, 0.0, 120.0, SLIDER_TRACK_HEIGHT),
+            Rect::new(0.0, 0.0, 72.0, SLIDER_TRACK_HEIGHT),
+            disabled,
+        );
+        assert!(matches!(
+            &track.rounded_fills[0].1,
+            Brush::Solid(color) if *color == colors.on_surface.peniko_disabled_container()
+        ));
+        assert!(matches!(
+            &track.rounded_fills[1].1,
+            Brush::Solid(color) if *color == colors.on_surface.peniko_disabled_content()
+        ));
+
+        let mut thumb = RecordingDrawContext::default();
+        draw_thumb(
+            &colors,
+            &mut thumb,
+            Point::new(64.0, 48.0),
+            SLIDER_HANDLE_HEIGHT / 2.0,
+            disabled,
+        );
+        assert_eq!(
+            thumb.rounded_fills.len(),
+            2,
+            "surface underlay then 38% handle"
+        );
+        assert!(matches!(
+            &thumb.rounded_fills[0].1,
+            Brush::Solid(color) if *color == colors.surface.peniko()
+        ));
+        assert!(matches!(
+            &thumb.rounded_fills[1].1,
+            Brush::Solid(color) if *color == colors.on_surface.peniko_disabled_content()
+        ));
+    }
+
+    #[test]
     fn slider_track_uses_material_role_colors() {
         let colors = MaterialColorScheme::baseline_light();
         let mut draw = RecordingDrawContext::default();
@@ -185,6 +263,7 @@ mod tests {
             &mut draw,
             Rect::new(0.0, 0.0, 120.0, SLIDER_TRACK_HEIGHT),
             Rect::new(0.0, 0.0, 72.0, SLIDER_TRACK_HEIGHT),
+            WidgetInteractionState::NONE,
         );
 
         assert_eq!(draw.rounded_fills.len(), 2);

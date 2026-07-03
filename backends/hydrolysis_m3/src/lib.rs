@@ -387,16 +387,22 @@ impl WidgetTheme for MaterialTheme {
         button::metrics(style)
     }
 
-    fn button_label_color(&self, style: ButtonStyle) -> Option<Color> {
-        Some(button::label_color(&self.colors(), style))
+    fn button_label_color(&self, style: ButtonStyle, disabled: bool) -> Option<Color> {
+        Some(button::label_color(&self.colors(), style, disabled))
     }
 
     fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {
         Some(theme::typography::label_large())
     }
 
-    fn draw_button_chrome(&self, draw: &mut dyn DrawContext, bounds: Rect, style: ButtonStyle) {
-        button::draw_chrome(&self.colors(), draw, bounds, style);
+    fn draw_button_chrome(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        style: ButtonStyle,
+        state: WidgetInteractionState,
+    ) {
+        button::draw_chrome(&self.colors(), draw, bounds, style, state);
     }
 
     fn draw_button_state_layer(
@@ -439,8 +445,14 @@ impl WidgetTheme for MaterialTheme {
         toggle::draw_switch_state_layer(&self.colors(), draw, bounds, progress, selected, state);
     }
 
-    fn draw_toggle_checkbox(&self, draw: &mut dyn DrawContext, bounds: Rect, progress: f32) {
-        toggle::draw_checkbox(&self.colors(), draw, bounds, progress);
+    fn draw_toggle_checkbox(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        progress: f32,
+        state: WidgetInteractionState,
+    ) {
+        toggle::draw_checkbox(&self.colors(), draw, bounds, progress, state);
     }
 
     fn draw_toggle_checkbox_state_layer(
@@ -631,8 +643,14 @@ impl WidgetTheme for MaterialTheme {
         slider::metrics()
     }
 
-    fn draw_slider_track(&self, draw: &mut dyn DrawContext, track_rect: Rect, fill_rect: Rect) {
-        slider::draw_track(&self.colors(), draw, track_rect, fill_rect);
+    fn draw_slider_track(
+        &self,
+        draw: &mut dyn DrawContext,
+        track_rect: Rect,
+        fill_rect: Rect,
+        state: WidgetInteractionState,
+    ) {
+        slider::draw_track(&self.colors(), draw, track_rect, fill_rect, state);
     }
 
     fn draw_slider_thumb(

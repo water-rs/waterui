@@ -1066,8 +1066,6 @@ fn lifecycle_hooks_fire_on_build_and_drop() {
 /// filter survives across frames without a cursor-bound effect slot.
 #[test]
 fn applied_filter_renders_through_retained_tree() {
-    use waterui_graphics::filter_view::FilterViewExt;
-
     init_executors();
 
     fn blurred_box() -> AnyView {

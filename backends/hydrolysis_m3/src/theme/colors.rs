@@ -281,7 +281,26 @@ impl MaterialRoleColor {
     pub fn view_color(self) -> WaterColor {
         WaterColor::from(self.srgb())
     }
+
+    /// This role at the MD3 disabled-container opacity (12%).
+    #[must_use]
+    pub fn peniko_disabled_container(self) -> Color {
+        self.peniko().with_alpha(DISABLED_CONTAINER_OPACITY)
+    }
+
+    /// This role at the MD3 disabled-content opacity (38%).
+    #[must_use]
+    pub fn peniko_disabled_content(self) -> Color {
+        self.peniko().with_alpha(DISABLED_CONTENT_OPACITY)
+    }
 }
+
+/// MD3 disabled-container opacity token (12%): disabled fills and outlines.
+pub const DISABLED_CONTAINER_OPACITY: f32 = 0.12;
+
+/// MD3 disabled-content opacity token (38%): disabled labels, icons, and
+/// active indicators.
+pub const DISABLED_CONTENT_OPACITY: f32 = 0.38;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Material You system color roles generated from a source color.
