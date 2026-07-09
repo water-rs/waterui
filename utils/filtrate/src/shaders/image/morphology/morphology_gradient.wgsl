@@ -11,7 +11,7 @@ struct Uniforms {
 @group(0) @binding(1) var output_texture: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = vec2<u32>(uniforms.output_dimensions);
     if gid.x >= dims.x || gid.y >= dims.y {
