@@ -27,7 +27,7 @@ fn weighted_bright_sample(sample_color: vec4<f32>, threshold: f32) -> vec4<f32> 
     return vec4<f32>(sample_color.rgb * weight, weight);
 }
 
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = vec2<u32>(uniforms.output_dimensions);
     if gid.x >= dims.x || gid.y >= dims.y {
