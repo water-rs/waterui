@@ -162,33 +162,23 @@ impl RenderNode {
         // snapshot would freeze the state forever — a `when(selected, …)` chip
         // would keep emitting `selected == false` after every toggle. Emission
         // resolves the signal at flush time (`apply_state`), and node
-        // registration subscribes it to the refresh pump.
+        // registration subscribes it to the refresh pump. Only the *static*
+        // state bakes a subtree-suppressing `AccessibilityHidden` (a constant
+        // can never un-hide); a reactive signal must not — a build-time hidden
+        // snapshot would freeze the subtree hidden after the signal turns
+        // visible. A signal-hidden node is emitted with the accesskit hidden
+        // flag instead, so it follows the signal every flush.
         let view = match view.downcast::<IgnorableMetadata<AccessibilityState>>() {
             Ok(meta) => {
                 let IgnorableMetadata { content, value } = *meta;
-                let mut scoped = env.clone();
-                if value.is_hidden() {
-                    scoped.insert(AccessibilityHidden::new(true));
-                }
-                scoped.insert(AccessibilityStateSignal::new(Computed::constant(value)));
+                let scoped = a11y_scoped_env_for_state(env, &value);
                 let child = RenderNode::build(content, &scoped, renderer);
                 return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<AccessibilityStateSignal>>() {
-            Ok(meta) => {
-                let IgnorableMetadata { content, value } = *meta;
-                let mut scoped = env.clone();
-                // Subtree hiding follows the state at build time; the per-node
-                // hidden/selected/checked flags themselves stay live via the signal.
-                if value.state().get().is_hidden() {
-                    scoped.insert(AccessibilityHidden::new(true));
-                }
-                scoped.insert(value);
-                let child = RenderNode::build(content, &scoped, renderer);
-                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
-            }
+            Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
             Err(view) => view,
         };
         // Passthrough metadata: the dispatch handlers discard the value and just
@@ -630,14 +620,13 @@ impl RenderNode {
     /// only effect is `env.insert(value)` (the accessibility metadata wrappers): the
     /// extended environment travels with the node so it is read at every flush, and
     /// the wrapped content recurses so reactive descendants stay live.
-    fn build_env_scoped<T: MetadataKey + 'static>(
+    fn build_env_scoped<T: MetadataKey + Clone + 'static>(
         meta: IgnorableMetadata<T>,
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
         let IgnorableMetadata { content, value } = meta;
-        let mut scoped = env.clone();
-        scoped.insert(value);
+        let scoped = a11y_scoped_env(env, &value);
         let child = RenderNode::build(content, &scoped, renderer);
         RenderNode::Env(Box::new(EnvNode { env: scoped, child }))
     }
