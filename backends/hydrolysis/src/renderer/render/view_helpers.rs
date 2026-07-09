@@ -1,4 +1,6 @@
 use super::*;
+use waterui_core::Computed;
+use waterui_core::metadata::MetadataKey;
 
 pub(crate) fn gesture_group_identity(view: &AnyView) -> usize {
     gesture_group_identity_with_budget(view, 64)
@@ -29,6 +31,41 @@ pub(crate) fn flatten_environment_metadata_owned(
         view = content;
     }
     (view, scoped_env)
+}
+
+/// Extends `env` with an accessibility metadata value exactly like the retained
+/// build's `Env`-scoping arm does. Layout normalization pre-resolves composite
+/// bodies (`view.body(env)`), and a body may snapshot its environment into a
+/// `Metadata<Environment>` override (the `With`-style env wrappers behind
+/// `.foreground()` and friends), so normalization must resolve content under
+/// the same scoped environment the build-time `Env` node installs — otherwise
+/// the snapshot, which replaces the environment wholesale when flattened,
+/// silently drops the accessibility scoping above it.
+pub(crate) fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
+    env: &Environment,
+    value: &T,
+) -> Environment {
+    let mut scoped = env.clone();
+    scoped.insert(value.clone());
+    scoped
+}
+
+/// The `Env` scoping for a static [`AccessibilityState`]: a hidden state
+/// suppresses the whole subtree's emission (a constant can never un-hide), and
+/// the state is stored as a constant [`AccessibilityStateSignal`] so emission
+/// resolves one code path for static and reactive state alike.
+pub(crate) fn a11y_scoped_env_for_state(
+    env: &Environment,
+    value: &AccessibilityState,
+) -> Environment {
+    let mut scoped = env.clone();
+    if value.is_hidden() {
+        scoped.insert(AccessibilityHidden::new(true));
+    }
+    scoped.insert(AccessibilityStateSignal::new(Computed::constant(
+        value.clone(),
+    )));
+    scoped
 }
 
 fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
@@ -216,14 +253,47 @@ fn normalize_layout_view_with_budget(
         DropDestination,
         Background
     );
+    // Label/role/children stay plain passthrough here: they are
+    // nearest-consumer metadata — the leaf that emits the semantic node reads
+    // them from the build-time `Env` scope, and they must not be baked into the
+    // environments that composite bodies snapshot below (a group label would
+    // then relabel every descendant leaf).
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
         AccessibilityLabel,
         AccessibilityRole,
-        AccessibilityHidden,
-        AccessibilityChildren,
-        AccessibilityState,
-        AccessibilityStateSignal
+        AccessibilityChildren
+    );
+
+    // Hidden and (reactive) state have *subtree* semantics: every emission
+    // below resolves them from its environment. Their content must therefore be
+    // normalized under the same scoped environment the build arm installs — a
+    // composite body resolved below may snapshot its environment into a
+    // `Metadata<Environment>` override, and a snapshot taken without the
+    // scoping would drop the hidden/state scope wholesale at flush (an
+    // `a11y_state_signal(hidden)` overlay stayed visible exactly this way).
+    macro_rules! normalize_env_scoping_ignorable_metadata {
+        ($($ty:ty, $scope:expr);+ $(;)?) => {
+            $(
+                if view.is::<IgnorableMetadata<$ty>>() {
+                    let IgnorableMetadata { content, value } = *view
+                        .downcast::<IgnorableMetadata<$ty>>()
+                        .expect("layout normalization failed to downcast ignorable metadata");
+                    let scoped = $scope(env, &value);
+                    let normalized_content =
+                        normalize_layout_view_with_budget(content, &scoped, next_remaining);
+                    return AnyView::new(IgnorableMetadata {
+                        content: normalized_content,
+                        value,
+                    });
+                }
+            )+
+        };
+    }
+    normalize_env_scoping_ignorable_metadata!(
+        AccessibilityHidden, a11y_scoped_env;
+        AccessibilityStateSignal, a11y_scoped_env;
+        AccessibilityState, a11y_scoped_env_for_state
     );
 
     if view.is::<Native<FixedContainer>>() {
