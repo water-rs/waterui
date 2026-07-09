@@ -107,9 +107,25 @@ impl RetainedSubview {
         node.measure(state, env, proposal).size
     }
 
-    /// Build (once), lay out (only when the rect size changes), and flush the
-    /// sub-view at `rect` under `env`. A zero-area rect renders nothing, matching
-    /// the dispatch path's empty-rect guard.
+    /// Apply pending reactive structural changes (`Dynamic` content, collection
+    /// membership) inside a built sub-view tree. The window refresh pump only
+    /// patches the window's own node tree — a widget-owned sub-view is its own
+    /// retained tree root, so its flush must run the same patch step or a
+    /// `Dynamic`/collection nested in a widget (e.g. a drawer collection inside a
+    /// navigation split's sidebar) never applies its pending update. A structural
+    /// change is reported to the renderer so the next refresh frame runs the
+    /// full prune cycle for the dropped subtrees' animation/measurement slots.
+    fn patch_built(node: &mut RenderNode, renderer: &mut HydrolysisRenderer) -> bool {
+        let structural = node.patch(renderer);
+        if structural {
+            renderer.note_subview_structural_change();
+        }
+        structural
+    }
+
+    /// Build (once), patch, lay out (when the rect size or the structure
+    /// changed), and flush the sub-view at `rect` under `env`. A zero-area rect
+    /// renders nothing, matching the dispatch path's empty-rect guard.
     pub(crate) fn flush_in_rect(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -124,9 +140,10 @@ impl RetainedSubview {
         let Some(node) = &mut self.node else {
             return;
         };
+        let structural = Self::patch_built(node, renderer);
         #[allow(clippy::cast_possible_truncation)]
         let size = Size::new(rect.width() as f32, rect.height() as f32);
-        if size != self.laid_out {
+        if structural || size != self.laid_out {
             node.layout(renderer, env, size);
             self.laid_out = size;
         }
@@ -157,7 +174,8 @@ impl RetainedSubview {
         let Some(node) = &mut self.node else {
             return;
         };
-        if size != self.laid_out {
+        let structural = Self::patch_built(node, renderer);
+        if structural || size != self.laid_out {
             node.layout(renderer, env, size);
             self.laid_out = size;
         }
@@ -182,7 +200,8 @@ impl RetainedSubview {
         let Some(node) = &mut self.node else {
             return scene;
         };
-        if size != self.laid_out {
+        let structural = Self::patch_built(node, renderer);
+        if structural || size != self.laid_out {
             node.layout(renderer, env, size);
             self.laid_out = size;
         }

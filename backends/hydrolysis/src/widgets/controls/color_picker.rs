@@ -195,10 +195,13 @@ pub(crate) fn render_color_picker_parts(
             ctx.bounds.x1,
             (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
         );
+        // The label's semantics are merged into the picker's own node by
+        // `color_picker_accessibility`, so the sub-view flushes visual-only.
         let render_ctx = ctx.render_context();
-        state
-            .label_view
-            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_bounds);
+        let label_view = &mut state.label_view;
+        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+            label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
+        });
     }
 
     let field_bounds = Rect::new(

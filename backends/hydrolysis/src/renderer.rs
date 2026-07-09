@@ -236,6 +236,13 @@ pub struct HydrolysisRenderer {
     /// platform window as the default resize floor when the app sets no explicit
     /// `Window::min_size`.
     content_min_size: Option<waterui_core::layout::Size>,
+    /// Set when a widget-owned [`RetainedSubview`] applied a structural patch
+    /// (a `Dynamic` swap or a collection membership reconcile) during a flush.
+    /// The subview patch runs mid-flush — after the window pump's structural
+    /// bookkeeping window — so the flag carries the change into the next refresh
+    /// frame, which then runs the full animation-slot / measurement-cache prune
+    /// cycle for the dropped subtrees.
+    subview_structural_change: bool,
 }
 
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
@@ -245,6 +252,38 @@ const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
 impl HydrolysisRenderer {
+    /// Runs `f` with accessibility-node registration suppressed. For a control
+    /// whose own node already carries an internal sub-view's semantics (a merged
+    /// label, a numeric value): flushing that sub-view inside this scope keeps it
+    /// visual-only, so the control stays a single accessibility node instead of
+    /// double-exposing its label as a separate node. Compiles to a plain call
+    /// without the `accessibility` feature, so call sites need no gating.
+    pub(crate) fn with_suppressed_accessibility<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        #[cfg(feature = "accessibility")]
+        self.push_accessibility_suppression();
+        let result = f(self);
+        #[cfg(feature = "accessibility")]
+        self.pop_accessibility_suppression();
+        result
+    }
+
+    /// Records that a widget-owned sub-view applied a structural patch during
+    /// this flush, and requests a refresh frame so the change's prune cycle (and
+    /// any layout it invalidated in ancestors) settles on the next pump.
+    pub(crate) fn note_subview_structural_change(&mut self) {
+        self.subview_structural_change = true;
+        self.signals.request_refresh();
+    }
+
+    /// Consumes the carried subview structural-change flag; the refresh pump
+    /// folds it into this frame's `structural_change` so the prune cycle runs.
+    pub(crate) fn take_subview_structural_change(&mut self) -> bool {
+        core::mem::take(&mut self.subview_structural_change)
+    }
+
     #[must_use]
     pub fn new(device: &wgpu::Device) -> Self {
         Self::new_with_options(
@@ -299,6 +338,7 @@ impl HydrolysisRenderer {
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
             content_min_size: None,
+            subview_structural_change: false,
         }
     }
 }

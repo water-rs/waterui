@@ -202,7 +202,10 @@ impl HydrolysisRenderer {
         // so prune them only then (clear-active before the flush re-binds the live
         // ones, drop-unbound after). A geometry-static or pure-value refresh removes
         // nothing, so it skips this and leaves in-flight animations untouched.
-        let structural_change = tree.patch(self);
+        // Fold in a structural patch a widget-owned sub-view applied during the
+        // previous frame's flush (mid-flush, past that frame's bookkeeping
+        // window): this frame runs the prune cycle for its dropped subtrees.
+        let structural_change = self.take_subview_structural_change() | tree.patch(self);
         if structural_change {
             self.animation_controller.begin_rebuild_frame();
         }

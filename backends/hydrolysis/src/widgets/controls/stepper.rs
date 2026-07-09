@@ -185,11 +185,14 @@ pub(crate) fn render_stepper_parts(
     );
     // The label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no dispatch.
+    // Its semantics are merged into the stepper's own node by
+    // `stepper_accessibility`, so the sub-view flushes visual-only.
     if label_bounds.width() > 0.0 {
         let render_ctx = ctx.render_context();
-        state
-            .label_view
-            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_bounds);
+        let label_view = &mut state.label_view;
+        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+            label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
+        });
     }
 
     let button_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - button_size) / 2.0).max(0.0);

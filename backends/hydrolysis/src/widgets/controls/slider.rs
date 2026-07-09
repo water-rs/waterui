@@ -238,10 +238,15 @@ pub(crate) fn render_slider_parts(
         if disabled {
             ctx.push_layer_rect(theme.disabled_content_alpha(), label_rect);
         }
+        // The label's semantics are merged into the slider's own node by
+        // `slider_accessibility_parts`, so the sub-view flushes visual-only.
+        // The min/max value labels below stay exposed: their text (e.g.
+        // "Dark"/"Bright") is not carried by the slider node.
         let render_ctx = ctx.render_context();
-        state
-            .label_view
-            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_rect);
+        let label_view = &mut state.label_view;
+        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+            label_view.flush_in_rect(renderer, render_ctx, env, label_rect);
+        });
         if disabled {
             ctx.pop_layer();
         }
