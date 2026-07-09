@@ -25,7 +25,9 @@ struct GpuBench {
     device: wgpu::Device,
     queue: wgpu::Queue,
     input_texture: wgpu::Texture,
+    input_view: wgpu::TextureView,
     output_texture: wgpu::Texture,
+    output_view: wgpu::TextureView,
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
@@ -86,6 +88,8 @@ impl GpuBench {
         Some(Self {
             device,
             queue,
+            input_view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            output_view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             input_texture,
             output_texture,
             format,
@@ -110,9 +114,7 @@ impl GpuBench {
             device: &self.device,
             queue: &self.queue,
             texture: &self.input_texture,
-            view: self
-                .input_texture
-                .create_view(&wgpu::TextureViewDescriptor::default()),
+            view: self.input_view.clone(),
             format: self.format,
             width: self.width,
             height: self.height,
@@ -121,9 +123,7 @@ impl GpuBench {
             device: &self.device,
             queue: &self.queue,
             texture: &self.output_texture,
-            view: self
-                .output_texture
-                .create_view(&wgpu::TextureViewDescriptor::default()),
+            view: self.output_view.clone(),
             format: self.format,
             width: self.width,
             height: self.height,

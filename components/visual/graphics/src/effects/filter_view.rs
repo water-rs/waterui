@@ -400,6 +400,16 @@ const MAX_FILTER_PARAMS: usize = 64;
 const FILTER_UNIFORM_WORDS: usize = 4 + MAX_FILTER_PARAMS;
 const SPATIAL_OUTPUT_FORMAT_TOKEN: &str = "OUTPUT_STORAGE_FORMAT";
 
+/// Workgroup shape shared by every spatial compute shader. The WGSL sources
+/// reference the `WORKGROUP_X` / `WORKGROUP_Y` tokens, which
+/// [`specialize_spatial_shader`] substitutes with these values so shader
+/// declarations and `dispatch_workgroups` can never drift apart.
+/// 256 threads benchmarks at the memory-bandwidth floor on tiler GPUs.
+const SPATIAL_WORKGROUP_X: u32 = 16;
+const SPATIAL_WORKGROUP_Y: u32 = 16;
+const SPATIAL_WORKGROUP_X_TOKEN: &str = "WORKGROUP_X";
+const SPATIAL_WORKGROUP_Y_TOKEN: &str = "WORKGROUP_Y";
+
 /// Policy for HDR behavior in filter pipelines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HdrPolicy {
@@ -450,7 +460,10 @@ fn specialize_spatial_shader(
     storage_format: wgpu::TextureFormat,
 ) -> Result<alloc::string::String, &'static str> {
     let storage_ty = storage_format_to_wgsl(storage_format)?;
-    Ok(shader_source.replace(SPATIAL_OUTPUT_FORMAT_TOKEN, storage_ty))
+    Ok(shader_source
+        .replace(SPATIAL_OUTPUT_FORMAT_TOKEN, storage_ty)
+        .replace(SPATIAL_WORKGROUP_X_TOKEN, &SPATIAL_WORKGROUP_X.to_string())
+        .replace(SPATIAL_WORKGROUP_Y_TOKEN, &SPATIAL_WORKGROUP_Y.to_string()))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1882,8 +1895,8 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                             });
                         compute_pass.set_pipeline(dispatch_pipeline);
                         compute_pass.set_bind_group(0, bind_group, &[]);
-                        let workgroups_x = target_width.div_ceil(8);
-                        let workgroups_y = target_height.div_ceil(8);
+                        let workgroups_x = target_width.div_ceil(SPATIAL_WORKGROUP_X);
+                        let workgroups_y = target_height.div_ceil(SPATIAL_WORKGROUP_Y);
                         compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
                     }
 
@@ -2968,6 +2981,17 @@ mod tests {
         let shader_text = shader.as_str();
         assert!(shader_text.contains("texture_storage_2d<rgba16float, write>"));
         assert!(!shader_text.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
+    }
+
+    #[test]
+    fn specialize_spatial_shader_rewrites_workgroup_tokens() {
+        let src = "@compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)";
+        let shader = specialize_spatial_shader(src, wgpu::TextureFormat::Rgba8Unorm)
+            .expect("specialization should succeed");
+        let expected = alloc::format!(
+            "@compute @workgroup_size({SPATIAL_WORKGROUP_X}, {SPATIAL_WORKGROUP_Y})"
+        );
+        assert_eq!(shader, expected);
     }
 
     #[test]

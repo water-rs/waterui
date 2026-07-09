@@ -262,6 +262,14 @@ struct UploadedAuxImage {
     view: wgpu::TextureView,
 }
 
+/// Bind group reused across frames; only the captured input view varies
+/// between renders, so the cache is keyed on that view's identity.
+#[derive(Debug)]
+struct CachedBindGroup {
+    input_view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+}
+
 #[derive(Debug, Default)]
 struct MultiInputRuntime {
     bind_group_layout: Option<wgpu::BindGroupLayout>,
@@ -271,6 +279,7 @@ struct MultiInputRuntime {
     last_uniform: Option<MultiInputUniform>,
     uploaded_aux_images: [Option<UploadedAuxImage>; MAX_AUX_IMAGES],
     fallback_aux: Option<UploadedAuxImage>,
+    cached_bind_group: Option<CachedBindGroup>,
     setup_error: Option<&'static str>,
 }
 
@@ -526,6 +535,7 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
         self.runtime.sampler = Some(sampler);
         self.runtime.uniform_buffer = Some(uniform_buffer);
         self.runtime.last_uniform = None;
+        self.runtime.cached_bind_group = None;
 
         self.runtime.fallback_aux = Some(Self::create_aux_image_texture(
             ctx.device,
@@ -592,36 +602,51 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
                 .map_or(&fallback_aux.view, |value| &value.view)
         });
 
-        let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("multi-input filter bind group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&input.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(aux_views[0]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(aux_views[1]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(aux_views[2]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        if self
+            .runtime
+            .cached_bind_group
+            .as_ref()
+            .is_none_or(|cached| cached.input_view != input.view)
+        {
+            let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("multi-input filter bind group"),
+                layout: bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&input.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(aux_views[0]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(aux_views[1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(aux_views[2]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            self.runtime.cached_bind_group = Some(CachedBindGroup {
+                input_view: input.view.clone(),
+                bind_group,
+            });
+        }
+        let Some(cached) = self.runtime.cached_bind_group.as_ref() else {
+            return Err("multi-input filter bind group missing after creation");
+        };
+        let bind_group = &cached.bind_group;
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -640,7 +665,7 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
                 occlusion_query_set: None,
             });
             render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.set_bind_group(0, bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
 

@@ -5,5 +5,5 @@ struct Uniforms { output_dimensions: vec2<f32>, input_dimensions: vec2<f32>, par
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 fn param(index:u32)->f32{let v=uniforms.params[index/4u];switch index%4u{case 0u:{return v.x;}case 1u:{return v.y;}case 2u:{return v.z;}default:{return v.w;}}}
 fn mirror_repeat(v: f32) -> f32 { let tiled = fract(v); let tile_index = floor(v); return select(tiled, 1.0 - tiled, i32(tile_index) % 2 == 0); }
-@compute @workgroup_size(8,8)
+@compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) { let dims=vec2<u32>(uniforms.output_dimensions); if gid.x>=dims.x||gid.y>=dims.y{return;} let coord=vec2<i32>(gid.xy); let repeat_x=max(param(0u), 1.0); let repeat_y=max(param(1u), 1.0); let uv=(vec2<f32>(gid.xy)+vec2<f32>(0.5))/uniforms.output_dimensions; let tiled_uv = vec2<f32>(mirror_repeat(uv.x * repeat_x), mirror_repeat(uv.y * repeat_y)); let input_dims=vec2<i32>(vec2<u32>(uniforms.input_dimensions)); let mapped=clamp(vec2<i32>(tiled_uv*uniforms.input_dimensions), vec2<i32>(0), input_dims-vec2<i32>(1)); textureStore(output_texture, coord, textureLoad(input_texture, mapped, 0)); }

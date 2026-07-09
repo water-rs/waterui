@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
-waterui = { version = "0.2.1", path = "../..", default-features = false }
+waterui = { version = "0.2.1", path = "../..", default-features = false, features = ["gpu"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nami.workspace = true
