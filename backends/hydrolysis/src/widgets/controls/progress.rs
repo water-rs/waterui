@@ -196,10 +196,13 @@ pub(crate) fn render_progress_parts(
                     ctx.bounds.x1,
                     (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
                 );
+                // The label's semantics are merged into the indicator's own node by
+                // `progress_accessibility`, so the sub-view flushes visual-only.
                 let render_ctx = ctx.render_context();
-                progress
-                    .label
-                    .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_rect);
+                let label = &mut progress.label;
+                ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+                    label.flush_in_rect(renderer, render_ctx, env, label_rect);
+                });
             }
 
             let bar_y = ctx.bounds.y0 + label_height + metrics.bar_top_offset;
@@ -250,13 +253,13 @@ pub(crate) fn render_progress_parts(
                     ctx.bounds.y1,
                 );
                 if value_label_rect.height() > 0.0 {
+                    // The formatted value text duplicates the numeric value the
+                    // indicator's node already carries, so it flushes visual-only.
                     let render_ctx = ctx.render_context();
-                    progress.value_label.flush_in_rect(
-                        ctx.renderer_mut(),
-                        render_ctx,
-                        env,
-                        value_label_rect,
-                    );
+                    let value_label = &mut progress.value_label;
+                    ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+                        value_label.flush_in_rect(renderer, render_ctx, env, value_label_rect);
+                    });
                 }
             }
         }

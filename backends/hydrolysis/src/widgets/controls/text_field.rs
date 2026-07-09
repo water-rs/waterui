@@ -740,7 +740,11 @@ fn flush_material_label(
     let child = ctx.child(transform, vello::kurbo::Rect::new(0.0, 0.0, width, height));
     #[allow(clippy::cast_possible_truncation)]
     let size = LayoutSize::new(width as f32, height as f32);
-    label_view.flush_in_ctx(ctx.renderer_mut(), child, env, size);
+    // The label's semantics are merged into the field's own text-input node, so
+    // the floating label sub-view flushes visual-only.
+    ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+        label_view.flush_in_ctx(renderer, child, env, size);
+    });
 }
 
 fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {

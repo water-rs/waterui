@@ -166,10 +166,13 @@ pub(crate) fn render_toggle_parts(
         if disabled {
             ctx.push_layer_rect(theme.disabled_content_alpha(), label_bounds);
         }
+        // The label's semantics are merged into the toggle's own node by
+        // `toggle_accessibility`, so the sub-view flushes visual-only.
         let render_ctx = ctx.render_context();
-        state
-            .label_view
-            .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_bounds);
+        let label_view = &mut state.label_view;
+        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+            label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
+        });
         if disabled {
             ctx.pop_layer();
         }

@@ -383,9 +383,13 @@ pub(crate) fn render_button_parts(
         let mut state_mut = state.borrow_mut();
         if let Some(subview) = &mut state_mut.label_view {
             // General label: a retained node sub-view re-flushed at its rect (reactive
-            // content stays live through the node's own re-flush).
+            // content stays live through the node's own re-flush). Its semantics are
+            // merged into the button's own node by `button_accessibility`, so the
+            // sub-view flushes visual-only.
             let render_ctx = ctx.render_context();
-            subview.flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_target);
+            ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+                subview.flush_in_rect(renderer, render_ctx, env, label_target);
+            });
         } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
@@ -455,8 +459,12 @@ pub(crate) fn render_menu_parts(
             }
             MenuLabel::Title(_) => {}
             MenuLabel::View(subview) => {
+                // The trigger's semantics are merged into the menu's own node by
+                // `menu_accessibility`, so the label sub-view flushes visual-only.
                 let render_ctx = ctx.render_context();
-                subview.flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_bounds);
+                ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
+                    subview.flush_in_rect(renderer, render_ctx, env, label_bounds);
+                });
             }
         }
     }
