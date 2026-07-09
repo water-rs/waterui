@@ -15,6 +15,7 @@ use nami::{Signal, SignalExt};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::ViewExt as _;
+use waterui_backend_core::widget::ButtonMetrics;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
@@ -126,12 +127,37 @@ pub(crate) fn button_accessibility(
     }
 }
 
+/// Resolves button-chrome size from the label size and theme metrics. The
+/// metric minimums are floors for unconstrained layout; a tighter explicit
+/// proposal caps them, so a fixed-size parent (e.g. a 40pt calendar day cell)
+/// receives the size it proposed instead of chrome and hit bounds overflowing
+/// the assigned slot. Padded label content keeps its intrinsic footprint — the
+/// parent decides how any remaining overflow is aligned.
+fn button_chrome_size(
+    label_size: LayoutSize,
+    metrics: &ButtonMetrics,
+    proposal: ProposalSize,
+) -> LayoutSize {
+    let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
+    let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
+    let min_width = proposal.width.map_or(metrics.min_width, |width| {
+        metrics.min_width.min(f64::from(width))
+    });
+    let min_height = proposal.height.map_or(metrics.min_height, |height| {
+        metrics.min_height.min(f64::from(height))
+    });
+    LayoutSize::new(
+        content_width.max(min_width) as f32,
+        content_height.max(min_height) as f32,
+    )
+}
+
 /// Measures a retained button leaf from its [`ButtonRenderState`]: a general label
 /// is measured from its built [`RetainedSubview`], a title from its styled text —
 /// mirroring the render path so layout and render agree.
 pub(crate) fn measure_button_node(
     render_state: &ButtonRenderState,
-    _proposal: ProposalSize,
+    proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
 ) -> ViewDimensions {
@@ -149,12 +175,7 @@ pub(crate) fn measure_button_node(
             HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
         }
     };
-    let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
-    let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
-    ViewDimensions::new(LayoutSize::new(
-        content_width.max(metrics.min_width) as f32,
-        content_height.max(metrics.min_height) as f32,
-    ))
+    ViewDimensions::new(button_chrome_size(label_size, &metrics, proposal))
 }
 
 /// Renders a retained button leaf every flush: emits a11y (unless hidden) then the
@@ -285,7 +306,7 @@ pub(crate) fn menu_accessibility(
 /// Measures a retained menu leaf from its [`MenuRenderState`].
 pub(crate) fn measure_menu_node(
     state: &MenuRenderState,
-    _proposal: ProposalSize,
+    proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
 ) -> ViewDimensions {
@@ -298,12 +319,7 @@ pub(crate) fn measure_menu_node(
         }
         MenuLabel::View(subview) => subview.measure_built(hydro, env),
     };
-    let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
-    let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
-    ViewDimensions::new(LayoutSize::new(
-        content_width.max(metrics.min_width) as f32,
-        content_height.max(metrics.min_height) as f32,
-    ))
+    ViewDimensions::new(button_chrome_size(label_size, &metrics, proposal))
 }
 
 /// Renders a retained menu leaf every flush: emits a11y (unless hidden) then the
@@ -473,12 +489,7 @@ pub(crate) fn measure_button_intrinsic(
     let theme = widget_theme(env);
     let metrics = theme.button_metrics(button.style);
     let label_size = measure_button_label_intrinsic(theme, button.style, &button.label, state, env);
-    let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
-    let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
-    LayoutSize::new(
-        content_width.max(metrics.min_width) as f32,
-        content_height.max(metrics.min_height) as f32,
-    )
+    button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
 }
 
 pub(crate) fn measure_menu_intrinsic(
@@ -496,12 +507,7 @@ pub(crate) fn measure_menu_intrinsic(
     } else {
         measure_view_intrinsic(&menu.label, state, env)
     };
-    let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
-    let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
-    LayoutSize::new(
-        content_width.max(metrics.min_width) as f32,
-        content_height.max(metrics.min_height) as f32,
-    )
+    button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
 }
 
 fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
