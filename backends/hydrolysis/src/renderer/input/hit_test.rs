@@ -570,7 +570,13 @@ impl HydrolysisRenderer {
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
                 self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
             }
-            if !changed && !target.captures_drag {
+            // A target with a press slot is an opaque interactive control: it
+            // consumes the primary press even when its action reports no state
+            // change (a button action's `false` means "no rebuild needed", not
+            // "unhandled"). Only slot-less utility targets stay transparent —
+            // otherwise one tap would fire every overlapping control beneath
+            // the topmost one.
+            if !changed && !target.captures_drag && target.press_slot.is_none() {
                 continue;
             }
             tracing::trace!(
