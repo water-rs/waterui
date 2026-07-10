@@ -652,7 +652,9 @@ impl RenderNode {
             }
         });
         let len = views.len().get();
-        let items = (0..len)
+        // The initial membership renders at rest — only items added or removed
+        // by a *later* change animate (`reconcile` marks phases).
+        let entries = (0..len)
             .map(|index| {
                 let id = views
                     .get_id(index)
@@ -660,18 +662,20 @@ impl RenderNode {
                 let view = views
                     .get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
-                (
+                CollectionEntry::stable(
                     id,
                     RenderNode::build(normalize_layout_view(view, env), env, renderer),
                 )
             })
             .collect();
+        let transition = collection_transition_runtime(env, layout.as_ref());
         RenderNode::Collection(Box::new(CollectionNode {
             layout,
             views,
             env: env.clone(),
-            items,
+            entries,
             placed: Vec::new(),
+            transition,
             dirty,
             dirty_key,
             guard,
