@@ -41,16 +41,19 @@ impl RenderNode {
             RenderNode::Env(node) => node.child.patch(renderer),
             RenderNode::Wrapper(node) => node.child.patch(renderer),
             RenderNode::Collection(node) => {
-                // Reconcile membership first (keeps surviving items' nodes), then
-                // always patch every item so surviving items' nested reactive
-                // content (e.g. an active-indicator `.background(Computed)`) updates.
+                // Reconcile membership first (keeps surviving items' nodes and,
+                // with a transition, starts enters/exits), then advance the
+                // transition clock — settling finished phases and resolving this
+                // frame's presence factors — then always patch every entry so
+                // surviving items' nested reactive content (e.g. an
+                // active-indicator `.background(Computed)`) updates.
                 let membership_changed = node.dirty.replace(false);
                 if membership_changed {
                     node.reconcile(renderer);
                 }
-                let mut changed = membership_changed;
-                for (_, child) in &mut node.items {
-                    changed |= child.patch(renderer);
+                let mut changed = membership_changed | node.advance_transitions(renderer);
+                for entry in &mut node.entries {
+                    changed |= entry.node.patch(renderer);
                 }
                 changed
             }
@@ -104,8 +107,8 @@ impl RenderNode {
             RenderNode::Env(node) => node.child.collect_dynamic_identities_into(out),
             RenderNode::Wrapper(node) => node.child.collect_dynamic_identities_into(out),
             RenderNode::Collection(node) => {
-                for (_, child) in &node.items {
-                    child.collect_dynamic_identities_into(out);
+                for entry in &node.entries {
+                    entry.node.collect_dynamic_identities_into(out);
                 }
             }
             RenderNode::Scroll(node) => node.child.collect_dynamic_identities_into(out),
