@@ -1,4 +1,7 @@
-#![allow(clippy::cast_precision_loss, reason = "intentional lossy numeric cast in rendering/layout code")]
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
 //! Horizontal stack layout.
 
 use alloc::{vec, vec::Vec};
@@ -155,6 +158,71 @@ fn hstack_stretch_allocations(
     stretch_indices.iter().map(|&idx| (idx, width)).collect()
 }
 
+/// The floor below which overflow compression never squeezes a child, so tiny
+/// labels stay readable even when the row cannot possibly fit.
+const MIN_COMPRESSED_WIDTH: f32 = 20.0;
+
+/// Fairly compresses non-stretching children into `available` width by
+/// clamping them to a common cap (water-filling): the cap is the largest `T`
+/// with `Σ min(wᵢ, T) ≤ available`, so the widest children absorb the deficit
+/// first and equal-width children shrink by the same amount — not the previous
+/// order-dependent largest-first squeeze, which crushed the leading children
+/// of an equal-width row (e.g. a calendar's day columns) while later siblings
+/// kept their full width. Children at or below the cap (small labels) keep
+/// their intrinsic width; clamped children are re-measured at the cap so
+/// wrapped content reports its true height. No-op when everything fits.
+fn compress_children_evenly(
+    measurements: &mut [ChildMeasurement],
+    children: &[&dyn SubView],
+    compress_indices: &[usize],
+    available: f32,
+    height_proposal: Option<f32>,
+) {
+    let total: f32 = compress_indices
+        .iter()
+        .map(|&idx| measurements[idx].size().width)
+        .sum();
+    if compress_indices.is_empty() || total <= available {
+        return;
+    }
+
+    let mut widths: Vec<f32> = compress_indices
+        .iter()
+        .map(|&idx| measurements[idx].size().width)
+        .collect();
+    widths.sort_unstable_by(|left, right| right.total_cmp(left));
+
+    // Lower the cap level by level: with the k+1 widest children clamped and
+    // everyone else keeping their width, the cap solves
+    // (k + 1) · cap + Σ smaller = available; it is the answer once it no
+    // longer dips below the next child's width.
+    let mut prefix = 0.0_f32;
+    let mut cap = f32::NEG_INFINITY;
+    for (k, &width) in widths.iter().enumerate() {
+        prefix += width;
+        let candidate = (available - (total - prefix)) / (k + 1) as f32;
+        let next = if k + 1 < widths.len() {
+            widths[k + 1]
+        } else {
+            f32::NEG_INFINITY
+        };
+        if candidate >= next {
+            cap = candidate;
+            break;
+        }
+    }
+    let cap = cap.max(MIN_COMPRESSED_WIDTH);
+
+    for &idx in compress_indices {
+        if measurements[idx].size().width <= cap {
+            continue;
+        }
+        let constrained_proposal = ProposalSize::new(Some(cap), height_proposal);
+        measurements[idx].dimensions = children[idx].measure(constrained_proposal);
+        measurements[idx].dimensions.size.width = measurements[idx].size().width.min(cap);
+    }
+}
+
 #[allow(clippy::cast_precision_loss)]
 #[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
@@ -232,48 +300,14 @@ impl Layout for HStackLayout {
             (0..measurements.len()).collect()
         };
 
-        let fixed_width: f32 = fixed_indices
-            .iter()
-            .map(|&idx| measurements[idx].size().width)
-            .sum();
-
-        if proposal.width.is_some()
-            && !fixed_indices.is_empty()
-            && fixed_width > available_for_children
-        {
-            // Need to compress - find the largest child and give it remaining space
-            // Small children keep their intrinsic width
-            let overflow = fixed_width - available_for_children;
-
-            // Find indices of non-main-axis-stretching children sorted by width (largest first)
-            let mut compress_indices = fixed_indices;
-            compress_indices.sort_by(|&a, &b| {
-                measurements[b]
-                    .size()
-                    .width
-                    .total_cmp(&measurements[a].size().width)
-            });
-
-            // Compress largest children first until we fit
-            let mut remaining_overflow = overflow;
-            for &idx in &compress_indices {
-                if remaining_overflow <= 0.0 {
-                    break;
-                }
-
-                let current_width = measurements[idx].size().width;
-                // Don't compress below a minimum (e.g., 20px for very small labels)
-                let min_width = 20.0_f32.min(current_width);
-                let max_reduction = current_width - min_width;
-                let reduction = remaining_overflow.min(max_reduction);
-
-                if reduction > 0.0 {
-                    let new_width = current_width - reduction;
-                    let constrained_proposal = ProposalSize::new(Some(new_width), proposal.height);
-                    measurements[idx].dimensions = children[idx].measure(constrained_proposal);
-                    remaining_overflow -= reduction;
-                }
-            }
+        if proposal.width.is_some() {
+            compress_children_evenly(
+                &mut measurements,
+                children,
+                &fixed_indices,
+                available_for_children,
+                proposal.height,
+            );
         }
 
         // If there are main-axis stretching children and width is constrained, measure them with
@@ -351,51 +385,13 @@ impl Layout for HStackLayout {
             (0..measurements.len()).collect()
         };
 
-        let fixed_width: f32 = fixed_indices
-            .iter()
-            .map(|&idx| measurements[idx].size().width)
-            .sum();
-
-        // Check if we need to compress children (when fixed children don't fit)
-        let needs_compression = !fixed_indices.is_empty() && fixed_width > available_width;
-
-        if needs_compression {
-            // Compress largest children first, keeping small labels at intrinsic width
-            let overflow = fixed_width - available_width;
-
-            // Find indices of non-main-axis-stretching children sorted by width (largest first)
-            let mut compress_indices = fixed_indices;
-            compress_indices.sort_by(|&a, &b| {
-                measurements[b]
-                    .size()
-                    .width
-                    .total_cmp(&measurements[a].size().width)
-            });
-
-            // Compress largest children first until we fit
-            let mut remaining_overflow = overflow;
-            for &idx in &compress_indices {
-                if remaining_overflow <= 0.0 {
-                    break;
-                }
-
-                let current_width = measurements[idx].size().width;
-                // Don't compress below a minimum (keep small labels readable)
-                let min_width = 20.0_f32.min(current_width);
-                let max_reduction = current_width - min_width;
-                let reduction = remaining_overflow.min(max_reduction);
-
-                if reduction > 0.0 {
-                    let new_width = current_width - reduction;
-                    let constrained_proposal =
-                        ProposalSize::new(Some(new_width), Some(bounds.height()));
-                    measurements[idx].dimensions = children[idx].measure(constrained_proposal);
-                    measurements[idx].dimensions.size.width =
-                        measurements[idx].size().width.min(new_width);
-                    remaining_overflow -= reduction;
-                }
-            }
-        }
+        compress_children_evenly(
+            &mut measurements,
+            children,
+            &fixed_indices,
+            available_width,
+            Some(bounds.height()),
+        );
 
         // Calculate stretch child width from remaining space
         let actual_fixed_width: f32 = measurements
@@ -730,6 +726,103 @@ mod tests {
         // Height: max of non-vertically-stretching children = max(20, 44) = 44
         // Note: vertical_stretch stretches vertically so its height doesn't contribute
         assert!((size.height - 44.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_hstack_compresses_equal_children_evenly() {
+        // Seven equal 40pt columns with 8pt spacing (a calendar's day row) in
+        // a 272pt bound: the 56pt deficit must be shared equally — every
+        // column shrinks to 32 at a uniform 40pt pitch — never taken
+        // order-dependently from the leading children.
+        let layout = HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: 8.0,
+        };
+
+        let mut columns: Vec<MockSubView> = (0..7)
+            .map(|_| MockSubView {
+                size: Size::new(40.0, 40.0),
+                stretch_axis: StretchAxis::None,
+            })
+            .collect();
+        let children: Vec<&dyn SubView> = columns
+            .iter_mut()
+            .map(|child| child as &dyn SubView)
+            .collect();
+
+        let bounds = Rect::new(Point::zero(), Size::new(272.0, 40.0));
+        let rects = layout.place(bounds, &children);
+
+        for rect in &rects {
+            assert!(
+                (rect.width() - 32.0).abs() < 0.001,
+                "expected even 32pt columns, got {}",
+                rect.width()
+            );
+        }
+        for pair in rects.windows(2) {
+            assert!(
+                ((pair[1].x() - pair[0].x()) - 40.0).abs() < 0.001,
+                "expected uniform 40pt pitch, got {}",
+                pair[1].x() - pair[0].x()
+            );
+        }
+    }
+
+    #[test]
+    fn test_hstack_compression_keeps_small_children_intrinsic() {
+        // A 50pt label next to a 200pt text in 140pt of space: the text alone
+        // absorbs the deficit (clamped to 90) while the label keeps its
+        // intrinsic width.
+        let layout = HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: 10.0,
+        };
+
+        let mut label = MockSubView {
+            size: Size::new(50.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let mut long_text = ResponsiveSubView {
+            intrinsic: Size::new(200.0, 20.0),
+            wrapped_height: 40.0,
+            wrap_at_or_below: 60.0,
+            stretch_axis: StretchAxis::None,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut label, &mut long_text];
+
+        let bounds = Rect::new(Point::zero(), Size::new(150.0, 40.0));
+        let rects = layout.place(bounds, &children);
+
+        assert!((rects[0].width() - 50.0).abs() < 0.001);
+        assert!((rects[1].width() - 90.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_hstack_compression_floors_at_min_readable_width() {
+        // Two 60pt children in 10pt of space: the cap floors at the minimum
+        // readable width, so both clamp to 20 and the row overflows instead of
+        // collapsing children to nothing.
+        let layout = HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: 0.0,
+        };
+
+        let mut first = MockSubView {
+            size: Size::new(60.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let mut second = MockSubView {
+            size: Size::new(60.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut first, &mut second];
+
+        let bounds = Rect::new(Point::zero(), Size::new(10.0, 20.0));
+        let rects = layout.place(bounds, &children);
+
+        assert!((rects[0].width() - 20.0).abs() < 0.001);
+        assert!((rects[1].width() - 20.0).abs() < 0.001);
     }
 
     #[test]

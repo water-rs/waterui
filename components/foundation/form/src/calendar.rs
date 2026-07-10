@@ -108,10 +108,7 @@ impl View for Calendar {
         let visible_month = self.visible_month;
         let locale = resolve_locale(env);
 
-        let calendar_state = visible_month
-
-            .zip(&selection.zip(&decorated))
-            .computed();
+        let calendar_state = visible_month.zip(&selection.zip(&decorated)).computed();
         let calendar = signal_driven_view(
             calendar_state,
             move |(month, (selected_date, decorated_dates))| {
@@ -377,6 +374,16 @@ fn month_navigation_button(
     }
 }
 
+/// Wraps day-grid content in its column cell: ideally [`CALENDAR_DAY_SIZE`]
+/// wide but free to shrink with its row, so the seven columns compress evenly
+/// on layouts narrower than the full grid instead of overflowing the calendar.
+fn day_grid_cell(content: impl View, height: f32) -> Frame {
+    Frame::new(content)
+        .width(CALENDAR_DAY_SIZE)
+        .min_width(0.0)
+        .height(height)
+}
+
 fn weekday_header(locale: &Locale) -> impl View {
     [
         Weekday::Monday,
@@ -389,9 +396,10 @@ fn weekday_header(locale: &Locale) -> impl View {
     ]
     .into_iter()
     .map(|weekday| {
-        Frame::new(Text::new(format_calendar_weekday(locale, weekday)).caption())
-            .width(CALENDAR_DAY_SIZE)
-            .height(CALENDAR_WEEKDAY_HEIGHT)
+        day_grid_cell(
+            Text::new(format_calendar_weekday(locale, weekday)).caption(),
+            CALENDAR_WEEKDAY_HEIGHT,
+        )
     })
     .collect::<HStack<_>>()
     .spacing(CALENDAR_CELL_SPACING)
@@ -414,11 +422,10 @@ fn single_day_cell_content(
             selection.set(cell.date);
         })
     } else {
-        AnyView::new(
-            Frame::new(day_cell_placeholder(cell, decorated))
-                .width(CALENDAR_DAY_SIZE)
-                .height(CALENDAR_DAY_SIZE),
-        )
+        AnyView::new(day_grid_cell(
+            day_cell_placeholder(cell, decorated),
+            CALENDAR_DAY_SIZE,
+        ))
     }
 }
 
@@ -443,11 +450,10 @@ pub(crate) fn multi_day_cell_content(
             selection.set(dates);
         })
     } else {
-        AnyView::new(
-            Frame::new(day_cell_placeholder(cell, decorated))
-                .width(CALENDAR_DAY_SIZE)
-                .height(CALENDAR_DAY_SIZE),
-        )
+        AnyView::new(day_grid_cell(
+            day_cell_placeholder(cell, decorated),
+            CALENDAR_DAY_SIZE,
+        ))
     }
 }
 
@@ -461,9 +467,7 @@ fn selectable_day_cell(
         .plain()
         .accessibility_label(day_cell_accessibility_label(date))
         .action(action);
-    let content = Frame::new(button)
-        .width(CALENDAR_DAY_SIZE)
-        .height(CALENDAR_DAY_SIZE);
+    let content = day_grid_cell(button, CALENDAR_DAY_SIZE);
 
     if is_selected {
         AnyView::new(BackgroundView::new(
