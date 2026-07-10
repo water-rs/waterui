@@ -592,3 +592,140 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
          (previously selected) item"
     );
 }
+
+/// A `collection_transition` stack whose rows are distinct solid colors, so a
+/// snapshot uniquely identifies which rows are visible and at what extent.
+fn transition_color_stack(list: &List<SelfId<u64>>) -> AnyView {
+    let collection = VStack::for_each(list.clone(), |item: SelfId<u64>| {
+        #[allow(clippy::cast_possible_truncation)]
+        let shade = 40 + (*item as u8) * 70;
+        AnyView::new(().size(120.0, 40.0).background(Color::srgb(shade, 90, 160)))
+    });
+    AnyView::new(collection_transition(
+        collection,
+        Animation::linear(Duration::from_millis(1_000)),
+    ))
+}
+
+/// Removing an item from a `collection_transition` collection animates it out:
+/// a mid-flight frame differs from both the before frame (the row is collapsing)
+/// and the settled frame (it has not finished), and after the animation the
+/// frame is pixel-identical to a fresh build of the final membership — the
+/// exiting row's node is dropped and its space fully released.
+#[test]
+fn collection_membership_exit_animates_then_settles() {
+    // Ground truth: built fresh with the settled membership (rows 0 and 2).
+    let truth_list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let truth_builder =
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&truth_list));
+    let mut truth_env = Environment::new();
+    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    // Subject: rows 0, 1, 2; remove the middle row and watch it collapse out.
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+
+    let _ = list.remove(1);
+    // The exit starts on the first frame that processes the membership change.
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-transition frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8,
+        "~500ms into a 1000ms exit the removed row must be visibly collapsing, \
+         not still rendered at rest"
+    );
+    assert!(
+        mid.rgba8 != expected.rgba8,
+        "~500ms into a 1000ms exit the removed row must still be partially \
+         visible, not already settled"
+    );
+
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == expected.rgba8,
+        "after the exit animation completes the collection must render \
+         pixel-identical to a fresh build of the settled membership"
+    );
+}
+
+/// Re-adding an item mid-exit turns the exit into a fresh enter (no pop), and
+/// an added item fades/grows in: the settled frame matches a fresh build of the
+/// grown membership.
+#[test]
+fn collection_membership_enter_animates_then_settles() {
+    // Ground truth: built fresh with all three rows.
+    let truth_list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let truth_builder =
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&truth_list));
+    let mut truth_env = Environment::new();
+    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    // Subject: rows 0 and 2; insert row 1 between them and watch it grow in.
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut env = Environment::new();
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+
+    list.insert(1, SelfId::new(1));
+    // The enter starts on the first frame that processes the membership change.
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-transition frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8,
+        "~500ms into a 1000ms enter the inserted row must be visibly growing in"
+    );
+    assert!(
+        mid.rgba8 != expected.rgba8,
+        "~500ms into a 1000ms enter the inserted row must not yet be at rest"
+    );
+
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == expected.rgba8,
+        "after the enter animation completes the collection must render \
+         pixel-identical to a fresh build of the grown membership"
+    );
+}
