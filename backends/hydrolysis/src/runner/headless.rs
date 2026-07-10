@@ -132,7 +132,15 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
     {
         let runnable_tx = self.runnable_tx.clone();
         let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
-            let _ = runnable_tx.send(runnable);
+            if let Err(unsent) = runnable_tx.send(runnable) {
+                // Teardown race: a waker held by another thread (decoder,
+                // audio, dispatch callback) fired after the runtime dropped
+                // the receiver. The task can never run again, and dropping a
+                // `spawn_local` runnable off its spawning thread panics by
+                // design (async-task's thread check), so leak it instead —
+                // bounded to shutdown, reclaimed at process exit.
+                std::mem::forget(unsent);
+            }
         });
         runnable.schedule();
         task

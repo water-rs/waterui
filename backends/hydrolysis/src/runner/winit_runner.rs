@@ -79,7 +79,13 @@ impl LocalExecutor for WinitMainThreadExecutor {
         let runnable_tx = self.runnable_tx.clone();
         let event_proxy = self.event_proxy.clone();
         let (runnable, task) = spawn_local_task(fut, move |runnable: Runnable| {
-            if runnable_tx.send(runnable).is_err() {
+            if let Err(unsent) = runnable_tx.send(runnable) {
+                // Teardown race: a waker held by another thread fired after
+                // the event loop dropped the receiver. Dropping a
+                // `spawn_local` runnable off its spawning thread panics by
+                // design (async-task's thread check), so leak it instead —
+                // bounded to shutdown, reclaimed at process exit.
+                std::mem::forget(unsent);
                 return;
             }
             let _ = event_proxy.send_event(RunnerEvent::PollLocalTasks);
