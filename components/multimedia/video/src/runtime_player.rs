@@ -807,7 +807,10 @@ fn video_player_hook(env: &Environment, config: VideoPlayerConfig) -> AnyView {
             .map(move |item: RuntimeMediaItem| {
                 let subtitle_tracks = item.subtitle_tracks;
                 let player = PlayerBindings {
-                    is_playing: Binding::bool(true),
+                    // A chromed player starts paused with a visible "Play"
+                    // control (platform convention); only the raw `Video`
+                    // surface (no `PlayerBindings`) autoplays.
+                    is_playing: Binding::bool(false),
                     progress_display: Binding::f64(0.0),
                     seek_request: Binding::f64(0.0),
                     picture_in_picture_request: binding(0_u64),
