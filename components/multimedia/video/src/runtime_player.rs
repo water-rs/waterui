@@ -1,3 +1,4 @@
+use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use core::fmt;
 use std::collections::hash_map::DefaultHasher;
 use std::{
@@ -668,33 +669,14 @@ fn apply_ui_update(
 }
 
 fn start_ui_update_pump(
-    receiver: Receiver<UiUpdate>,
+    receiver: AsyncReceiver<UiUpdate>,
     on_event: OnEvent,
     player: Option<PlayerBindings>,
     subtitle: Option<SubtitleBindings>,
 ) {
     spawn_local(async move {
-        loop {
-            let mut disconnected = false;
-
-            loop {
-                match receiver.try_recv() {
-                    Ok(update) => {
-                        apply_ui_update(&on_event, player.as_ref(), subtitle.as_ref(), update);
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-
-            if disconnected {
-                break;
-            }
-
-            native_executor::sleep(Duration::from_millis(8)).await;
+        while let Ok(update) = receiver.recv().await {
+            apply_ui_update(&on_event, player.as_ref(), subtitle.as_ref(), update);
         }
     })
     .detach();
@@ -754,35 +736,28 @@ fn video_hook(env: &Environment, config: VideoConfig) -> AnyView {
 
     let on_event: OnEvent = bind_event_handler_to_env(on_event, env.clone());
     let source = runtime_media_item_signal(&source);
-    AnyView::new(
-        source
-            .map(move |item: RuntimeMediaItem| {
-                let subtitle_tracks = item.subtitle_tracks;
-                let subtitle = SubtitleBindings {
-                    text: binding(String::new()),
-                    track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
-                };
-                let (ui_updates, ui_receiver) = mpsc::channel();
-                start_ui_update_pump(ui_receiver, on_event.clone(), None, Some(subtitle.clone()));
-                let surface = VideoSurface::new(VideoSurfaceConfig {
-                    source: item.source,
-                    subtitle_tracks,
-                    subtitle_selection: subtitle_selection.clone(),
-                    has_next: has_next.clone(),
-                    has_previous: has_previous.clone(),
-                    volume: volume.clone(),
-                    playback_rate: playback_rate.clone(),
-                    preserve_pitch: preserve_pitch.clone(),
-                    aspect_ratio,
-                    loops,
-                    playback_policy,
-                    ui_updates,
-                    player: None,
-                });
-                overlay(surface, subtitle_banner(&subtitle.text)).alignment(Alignment::Bottom)
-            })
-            .computed(),
-    )
+    let item = waterui_core::Signal::get(&source);
+    let subtitle = SubtitleBindings {
+        text: binding(String::new()),
+        track_labels: binding(runtime_subtitle_track_labels(&item.subtitle_tracks)),
+    };
+    let (ui_updates, ui_receiver) = async_channel::unbounded();
+    start_ui_update_pump(ui_receiver, on_event, None, Some(subtitle.clone()));
+    let surface = VideoSurface::new(VideoSurfaceConfig {
+        source,
+        subtitle_selection,
+        has_next,
+        has_previous,
+        volume,
+        playback_rate,
+        preserve_pitch,
+        aspect_ratio,
+        loops,
+        playback_policy,
+        ui_updates,
+        player: None,
+    });
+    AnyView::new(overlay(surface, subtitle_banner(&subtitle.text)).alignment(Alignment::Bottom))
 }
 
 fn video_player_hook(env: &Environment, config: VideoPlayerConfig) -> AnyView {
@@ -802,74 +777,51 @@ fn video_player_hook(env: &Environment, config: VideoPlayerConfig) -> AnyView {
 
     let on_event: OnEvent = bind_event_handler_to_env(on_event, env.clone());
     let source = runtime_media_item_signal(&source);
-    AnyView::new(
-        source
-            .map(move |item: RuntimeMediaItem| {
-                let subtitle_tracks = item.subtitle_tracks;
-                let player = PlayerBindings {
-                    // A chromed player starts paused with a visible "Play"
-                    // control (platform convention); only the raw `Video`
-                    // surface (no `PlayerBindings`) autoplays.
-                    is_playing: Binding::bool(false),
-                    progress_display: Binding::f64(0.0),
-                    seek_request: Binding::f64(0.0),
-                    picture_in_picture_request: binding(0_u64),
-                    duration_seconds: Binding::f64(0.0),
-                    position_seconds: Binding::f64(0.0),
-                    is_buffering: Binding::bool(false),
-                    playback_rate: playback_rate.clone(),
-                    preserve_pitch: preserve_pitch.clone(),
-                };
-                let subtitle = SubtitleBindings {
-                    text: binding(String::new()),
-                    track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
-                };
-                let (ui_updates, ui_receiver) = mpsc::channel();
-                start_ui_update_pump(
-                    ui_receiver,
-                    on_event.clone(),
-                    Some(player.clone()),
-                    Some(subtitle.clone()),
-                );
-
-                let source = item.source;
-                let subtitle_selection = subtitle_selection.clone();
-                let has_previous = has_previous.clone();
-                let has_next = has_next.clone();
-                let volume = volume.clone();
-                let playback_rate = playback_rate.clone();
-                let preserve_pitch = preserve_pitch.clone();
-                let on_event = on_event.clone();
-                let ui_updates = ui_updates;
-
-                show_controls
-                    .clone()
-                    .map(move |show_controls| {
-                        video_player_chrome(
-                            VideoSurfaceConfig {
-                                source: source.clone(),
-                                subtitle_tracks: subtitle_tracks.clone(),
-                                subtitle_selection: subtitle_selection.clone(),
-                                has_next: has_next.clone(),
-                                has_previous: has_previous.clone(),
-                                volume: volume.clone(),
-                                playback_rate: playback_rate.clone(),
-                                preserve_pitch: preserve_pitch.clone(),
-                                aspect_ratio,
-                                loops: true,
-                                playback_policy,
-                                ui_updates: ui_updates.clone(),
-                                player: Some(player.clone()),
-                            },
-                            &player,
-                            &subtitle,
-                            show_controls,
-                            on_event.clone(),
-                        )
-                    })
-                    .computed()
-            })
-            .computed(),
+    let item = waterui_core::Signal::get(&source);
+    let player = PlayerBindings {
+        // A chromed player starts paused with a visible "Play"
+        // control (platform convention); only the raw `Video`
+        // surface (no `PlayerBindings`) autoplays.
+        is_playing: Binding::bool(false),
+        progress_display: Binding::f64(0.0),
+        seek_request: Binding::f64(0.0),
+        picture_in_picture_request: binding(0_u64),
+        duration_seconds: Binding::f64(0.0),
+        position_seconds: Binding::f64(0.0),
+        is_buffering: Binding::bool(false),
+        playback_rate: playback_rate.clone(),
+        preserve_pitch: preserve_pitch.clone(),
+    };
+    let subtitle = SubtitleBindings {
+        text: binding(String::new()),
+        track_labels: binding(runtime_subtitle_track_labels(&item.subtitle_tracks)),
+    };
+    let (ui_updates, ui_receiver) = async_channel::unbounded();
+    start_ui_update_pump(
+        ui_receiver,
+        on_event.clone(),
+        Some(player.clone()),
+        Some(subtitle.clone()),
+    );
+    video_player_chrome(
+        VideoSurfaceConfig {
+            source,
+            subtitle_selection,
+            has_next,
+            has_previous,
+            volume,
+            playback_rate,
+            preserve_pitch,
+            aspect_ratio,
+            loops: true,
+            playback_policy,
+            ui_updates,
+            player: Some(player.clone()),
+        },
+        &player,
+        &subtitle,
+        show_controls,
+        on_event,
     )
 }
 
@@ -1384,8 +1336,7 @@ struct VideoSurface {
 
 #[derive(Clone)]
 struct VideoSurfaceConfig {
-    source: Url,
-    subtitle_tracks: Vec<RuntimeSubtitleTrack>,
+    source: Computed<RuntimeMediaItem>,
     subtitle_selection: Binding<SubtitleSelection>,
     has_next: Binding<bool>,
     has_previous: Binding<bool>,
@@ -1395,7 +1346,7 @@ struct VideoSurfaceConfig {
     aspect_ratio: AspectRatio,
     loops: bool,
     playback_policy: PlaybackPolicy,
-    ui_updates: Sender<UiUpdate>,
+    ui_updates: AsyncSender<UiUpdate>,
     player: Option<PlayerBindings>,
 }
 
@@ -1612,6 +1563,7 @@ struct ControlFlags {
 
 struct VideoRenderer {
     picture_in_picture_host_id: PictureInPictureHostId,
+    source_signal: Computed<RuntimeMediaItem>,
     source: Url,
     subtitle_tracks: Vec<RuntimeSubtitleTrack>,
     subtitle_selection: Binding<SubtitleSelection>,
@@ -1624,7 +1576,7 @@ struct VideoRenderer {
     aspect_ratio: AspectRatio,
     loops: bool,
     playback_policy: PlaybackPolicy,
-    ui_updates: Sender<UiUpdate>,
+    ui_updates: AsyncSender<UiUpdate>,
     player: Option<PlayerBindings>,
     decode_worker: Option<DecoderWorker>,
     render_pipeline: Option<wgpu::RenderPipeline>,
@@ -1706,7 +1658,6 @@ impl VideoRenderer {
     fn new(picture_in_picture_host_id: PictureInPictureHostId, config: VideoSurfaceConfig) -> Self {
         let VideoSurfaceConfig {
             source,
-            subtitle_tracks,
             subtitle_selection,
             has_next,
             has_previous,
@@ -1719,12 +1670,16 @@ impl VideoRenderer {
             ui_updates,
             player,
         } = config;
+        let initial_item = waterui_core::Signal::get(&source);
+        let current_source = initial_item.source;
+        let subtitle_tracks = initial_item.subtitle_tracks;
         let play_requested = player.as_ref().is_none_or(|p| p.is_playing.get());
         let last_playback_rate = clamp_playback_rate(playback_rate.get());
 
         Self {
             picture_in_picture_host_id,
-            source,
+            source_signal: source,
+            source: current_source,
             subtitle_tracks,
             subtitle_selection,
             active_subtitle_track: None,
@@ -1804,7 +1759,7 @@ impl VideoRenderer {
     }
 
     fn push_ui_update(&self, update: UiUpdate) {
-        let _ = self.ui_updates.send(update);
+        let _ = self.ui_updates.try_send(update);
     }
 
     fn ensure_media_command_poller(&mut self) {
@@ -1888,6 +1843,68 @@ impl VideoRenderer {
         self.render_pipeline = Some(render_pipeline);
         self.sampler = Some(sampler);
         self.color_uniform_buffer = Some(color_uniform_buffer);
+    }
+
+    fn reconcile_source(&mut self) {
+        let item = waterui_core::Signal::get(&self.source_signal);
+        if item.source == self.source && item.subtitle_tracks == self.subtitle_tracks {
+            return;
+        }
+
+        self.stop_decode_worker();
+        if let Some(player) = self.audio_player.take() {
+            player.stop();
+        }
+        self.audio_open_generation = self.audio_open_generation.wrapping_add(1);
+        self.pending_audio_open = None;
+        self.media_session = None;
+
+        self.source = item.source;
+        self.subtitle_tracks = item.subtitle_tracks;
+        self.active_subtitle_track = None;
+        self.pending_frame = None;
+        self.duration = Duration::ZERO;
+        self.source_path = None;
+        self.source_asset = FileAssetState::Unresolved;
+        self.subtitle_asset = None;
+        self.source_flags = SourceFlags::default();
+        self.subtitle_cues.clear();
+        self.last_subtitle_text = None;
+        self.download_retry_at = None;
+        self.downloaded_bytes = 0;
+        self.download_total_bytes = None;
+        self.last_reported_buffer_level_ms = None;
+        self.dropped_video_frames = 0;
+        self.last_metrics_report_at = None;
+        self.playback_flags = PlaybackFlags::default();
+        self.playback_anchor_pts = Duration::ZERO;
+        self.playback_anchor_instant = None;
+        self.control_flags.seek_inflight = false;
+        self.pending_seek_request = None;
+        self.pending_seek_request_sync = None;
+        self.last_handled_seek_request = Some(0.0);
+        self.last_reported_progress = 0.0;
+        self.color_profile = VideoColorProfile::default();
+        self.color_profile_source_path = None;
+        self.color_flags.profile_initialized = false;
+        self.color_flags.uniform_dirty = true;
+        self.surface_prefers_hdr_cache = OnceLock::new();
+        self.y_texture = None;
+        self.uv_texture = None;
+        self.bind_group = None;
+        self.vertex_buffer = None;
+        self.vertex_layout_key = None;
+
+        self.push_ui_update(UiUpdate::Progress(0.0));
+        self.push_ui_update(UiUpdate::Duration(0.0));
+        self.push_ui_update(UiUpdate::Position(0.0));
+        self.push_ui_update(UiUpdate::Subtitle(String::new()));
+        self.push_ui_update(UiUpdate::SubtitleTracks(runtime_subtitle_track_labels(
+            &self.subtitle_tracks,
+        )));
+        if let Some(redraw) = self.redraw_handle.as_ref() {
+            redraw.request_redraw();
+        }
     }
 
     const fn should_poll_source(&self) -> bool {
@@ -3460,6 +3477,7 @@ impl VideoRenderer {
     }
 
     fn step_decoder_if_needed(&mut self, frame: &GpuFrame) {
+        self.reconcile_source();
         self.poll_source_download_updates();
         if let Err(message) = self.ensure_subtitle_cues() {
             self.set_subtitle_text(None);
