@@ -122,7 +122,7 @@ impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChar
             self.data,
             |data: &Vec<BubblePoint>| bubble_bounds(data),
             move |ctx, data, bounds| bubble_geometry(ctx, data, bounds, min_radius, max_radius),
-            move |ctx, data, geometry| {
+            move |ctx, data, geometry, transition_alpha| {
                 draw_bubble(
                     ctx,
                     data,
@@ -131,6 +131,7 @@ impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChar
                     min_radius,
                     max_radius,
                     opacity,
+                    transition_alpha,
                 );
             },
             self.selection,

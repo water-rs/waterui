@@ -90,39 +90,80 @@ impl View for ChartCanvasAccessibilityBoundary {
 }
 
 #[derive(Debug, Clone)]
-struct ChartTransitionState<D> {
-    epoch: Instant,
-    animator: ChartAnimator,
-    last_data: Option<D>,
+struct ChartRenderFrame<D, G> {
+    data: D,
+    geometry: G,
+    key: ChartGeometryKey,
 }
 
-impl<D> ChartTransitionState<D> {
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChartGeometryKey {
+    canvas: ChartViewport,
+    visible_bounds: Option<DataBounds>,
+}
+
+#[derive(Debug, Clone)]
+struct ChartTransitionState<D, G> {
+    epoch: Instant,
+    animator: ChartAnimator,
+    current: Option<ChartRenderFrame<D, G>>,
+    previous: Option<ChartRenderFrame<D, G>>,
+}
+
+impl<D, G> ChartTransitionState<D, G> {
     fn new() -> Self {
         Self {
             epoch: Instant::now(),
             animator: ChartAnimator::new(),
-            last_data: None,
+            current: None,
+            previous: None,
         }
     }
 
-    fn progress_for(&mut self, data: &D) -> f32
+    fn update(
+        &mut self,
+        data: D,
+        key: ChartGeometryKey,
+        build_geometry: impl FnOnce(&D) -> G,
+    ) -> bool
     where
-        D: Clone + PartialEq,
+        D: PartialEq,
     {
         let now = self.epoch.elapsed();
-        match &self.last_data {
-            None => self.last_data = Some(data.clone()),
-            Some(previous) if previous != data => {
-                self.animator.start_transition(
-                    now,
-                    CHART_TRANSITION.duration,
-                    CHART_TRANSITION.easing,
-                );
-                self.last_data = Some(data.clone());
-            }
-            Some(_) => {}
+        if let Some(current) = &self.current
+            && current.data == data
+            && current.key == key
+        {
+            return false;
         }
-        self.animator.update(now).progress
+
+        let geometry = build_geometry(&data);
+        let data_changed = self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.data != data);
+        if data_changed {
+            self.previous = self.current.take();
+            self.animator
+                .start_transition(now, CHART_TRANSITION.duration, CHART_TRANSITION.easing);
+        } else {
+            self.previous = None;
+            self.animator.finish();
+        }
+        self.current = Some(ChartRenderFrame {
+            data,
+            geometry,
+            key,
+        });
+        true
+    }
+
+    fn progress(&mut self) -> f32 {
+        let progress = self.animator.update(self.epoch.elapsed()).progress;
+        if !self.animator.is_animating() {
+            self.previous = None;
+        }
+        progress
     }
 
     const fn is_animating(&self) -> bool {
@@ -458,7 +499,7 @@ where
     T: Clone + PartialEq + 'static,
     B: Fn(&D) -> DataBounds + 'static,
     G: Fn(&DrawingContext<'_>, &D, DataBounds) -> CartesianGeometry<T> + 'static,
-    F: FnMut(&mut DrawingContext<'_>, &D, &CartesianGeometry<T>) + 'static,
+    F: FnMut(&mut DrawingContext<'_>, &D, &CartesianGeometry<T>, f32) + 'static,
 {
     cartesian_selection.validate();
     cartesian_viewport.validate();
@@ -468,7 +509,7 @@ where
     if selection.is_active() {
         selection = selection.persist_internal();
     }
-    let transition = Binding::container(ChartTransitionState::<D>::new());
+    let transition = Binding::container(ChartTransitionState::<D, CartesianGeometry<T>>::new());
     let geometry = Binding::container(None::<CartesianGeometry<T>>);
     let base_bounds = Binding::container(DataBounds::default());
     let chart_frame = Binding::container(ChartViewport::default());
@@ -487,33 +528,52 @@ where
             signal.zip(&viewport_state),
             move |ctx, (data, viewport_state)| {
                 let current_base_bounds = normalize_bounds(bounds_of(&data));
-                base_bounds.set(current_base_bounds);
+                if base_bounds.get() != current_base_bounds {
+                    base_bounds.set(current_base_bounds);
+                }
                 let visible_bounds =
                     cartesian_viewport.resolve_bounds(current_base_bounds, viewport_state);
-                let chart_geometry = build_geometry(ctx, &data, visible_bounds);
-                geometry.set(Some(chart_geometry.clone()));
                 let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
                 if chart_frame.get() != current_chart_frame {
                     chart_frame.set(current_chart_frame);
                 }
-                let current_plot_area = chart_geometry.viewport();
-                if plot_area_frame.get() != current_plot_area {
-                    plot_area_frame.set(current_plot_area);
-                }
-                let (progress, animating) = {
-                    transition.with_mut(|transition| {
-                        let progress = transition.progress_for(&data);
-                        let animating = transition.is_animating();
-                        (progress, animating)
-                    })
-                };
-                if animating {
-                    ctx.request_next_frame();
-                }
-                ctx.save();
-                ctx.set_global_alpha(progress);
-                draw_chart(ctx, &data, &chart_geometry);
-                ctx.restore();
+                transition.with_mut(|transition| {
+                    let changed = transition.update(
+                        data,
+                        ChartGeometryKey {
+                            canvas: current_chart_frame,
+                            visible_bounds: Some(visible_bounds),
+                        },
+                        |data| build_geometry(ctx, data, visible_bounds),
+                    );
+                    let progress = transition.progress();
+                    let animating = transition.is_animating();
+                    let current = transition
+                        .current
+                        .as_ref()
+                        .expect("chart render state must contain the current frame after update");
+                    if changed {
+                        geometry.set(Some(current.geometry.clone()));
+                        let current_plot_area = current.geometry.viewport();
+                        if plot_area_frame.get() != current_plot_area {
+                            plot_area_frame.set(current_plot_area);
+                        }
+                    }
+                    if let Some(previous) = &transition.previous {
+                        let alpha = 1.0 - progress;
+                        ctx.save();
+                        ctx.set_global_alpha(alpha);
+                        draw_chart(ctx, &previous.data, &previous.geometry, alpha);
+                        ctx.restore();
+                    }
+                    ctx.save();
+                    ctx.set_global_alpha(progress);
+                    draw_chart(ctx, &current.data, &current.geometry, progress);
+                    ctx.restore();
+                    if animating {
+                        ctx.request_next_frame();
+                    }
+                });
             },
         )
     };
@@ -805,7 +865,7 @@ where
     G: HitGeometry<T>,
     T: Clone + PartialEq + 'static,
     B: Fn(&DrawingContext<'_>, &D) -> G + 'static,
-    F: FnMut(&mut DrawingContext<'_>, &D, &G) + 'static,
+    F: FnMut(&mut DrawingContext<'_>, &D, &G, f32) + 'static,
 {
     if !composition.is_empty() {
         selection = selection.activate_proxy();
@@ -814,7 +874,7 @@ where
         selection = selection.persist_internal();
     }
 
-    let transition = Binding::container(ChartTransitionState::<D>::new());
+    let transition = Binding::container(ChartTransitionState::<D, G>::new());
     let geometry = Binding::container(None::<G>);
     let chart_frame = Binding::container(ChartViewport::default());
     let plot_area_frame = Binding::container(ChartViewport::default());
@@ -824,30 +884,47 @@ where
         let chart_frame = chart_frame.clone();
         let plot_area_frame = plot_area_frame.clone();
         Canvas::with_signal(signal, move |ctx, data| {
-            let chart_geometry = build_geometry(ctx, &data);
-            geometry.set(Some(chart_geometry.clone()));
             let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
             if chart_frame.get() != current_chart_frame {
                 chart_frame.set(current_chart_frame);
             }
-            let current_plot_area = chart_geometry.viewport();
-            if plot_area_frame.get() != current_plot_area {
-                plot_area_frame.set(current_plot_area);
-            }
-            let (progress, animating) = {
-                transition.with_mut(|transition| {
-                    let progress = transition.progress_for(&data);
-                    let animating = transition.is_animating();
-                    (progress, animating)
-                })
-            };
-            if animating {
-                ctx.request_next_frame();
-            }
-            ctx.save();
-            ctx.set_global_alpha(progress);
-            draw_chart(ctx, &data, &chart_geometry);
-            ctx.restore();
+            transition.with_mut(|transition| {
+                let changed = transition.update(
+                    data,
+                    ChartGeometryKey {
+                        canvas: current_chart_frame,
+                        visible_bounds: None,
+                    },
+                    |data| build_geometry(ctx, data),
+                );
+                let progress = transition.progress();
+                let animating = transition.is_animating();
+                let current = transition
+                    .current
+                    .as_ref()
+                    .expect("chart render state must contain the current frame after update");
+                if changed {
+                    geometry.set(Some(current.geometry.clone()));
+                    let current_plot_area = current.geometry.viewport();
+                    if plot_area_frame.get() != current_plot_area {
+                        plot_area_frame.set(current_plot_area);
+                    }
+                }
+                if let Some(previous) = &transition.previous {
+                    let alpha = 1.0 - progress;
+                    ctx.save();
+                    ctx.set_global_alpha(alpha);
+                    draw_chart(ctx, &previous.data, &previous.geometry, alpha);
+                    ctx.restore();
+                }
+                ctx.save();
+                ctx.set_global_alpha(progress);
+                draw_chart(ctx, &current.data, &current.geometry, progress);
+                ctx.restore();
+                if animating {
+                    ctx.request_next_frame();
+                }
+            });
         })
     };
     let canvas = ChartCanvasAccessibilityBoundary::new(canvas);
@@ -1471,6 +1548,10 @@ fn viridis(value: f32, min: f32, max: f32) -> Srgb {
 
     previous.1
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Line rendering receives independent style values plus the scene-transition alpha"
+)]
 pub(crate) fn draw_line(
     ctx: &mut DrawingContext<'_>,
     data: &[DataPoint],
@@ -1479,6 +1560,7 @@ pub(crate) fn draw_line(
     line_width: f32,
     show_fill: bool,
     fill_opacity: f32,
+    transition_alpha: f32,
 ) {
     if data.len() < 2 {
         return;
@@ -1501,7 +1583,7 @@ pub(crate) fn draw_line(
         line.close();
 
         ctx.save();
-        ctx.set_global_alpha(fill_opacity);
+        ctx.set_global_alpha(fill_opacity * transition_alpha);
         ctx.set_fill_style(color);
         ctx.fill_path(&line);
         ctx.restore();
@@ -1571,6 +1653,10 @@ pub(crate) fn draw_scatter(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Bubble rendering receives independent radius/color values plus the scene-transition alpha"
+)]
 pub(crate) fn draw_bubble(
     ctx: &mut DrawingContext<'_>,
     data: &[BubblePoint],
@@ -1579,6 +1665,7 @@ pub(crate) fn draw_bubble(
     min_radius: f32,
     max_radius: f32,
     opacity: f32,
+    transition_alpha: f32,
 ) {
     if data.is_empty() {
         return;
@@ -1607,7 +1694,7 @@ pub(crate) fn draw_bubble(
         };
 
         ctx.save();
-        ctx.set_global_alpha((bubble_alpha * opacity).clamp(0.0, 1.0));
+        ctx.set_global_alpha((bubble_alpha * opacity * transition_alpha).clamp(0.0, 1.0));
         ctx.set_fill_style(bubble_color);
         ctx.fill_circle(center, radius);
         ctx.restore();
@@ -1662,6 +1749,7 @@ pub(crate) fn draw_depth(
     bounds: DataBounds,
     bid: Srgb,
     ask: Srgb,
+    transition_alpha: f32,
 ) {
     if data.bids.is_empty() && data.asks.is_empty() {
         return;
@@ -1691,7 +1779,7 @@ pub(crate) fn draw_depth(
         path.close();
 
         ctx.save();
-        ctx.set_global_alpha(0.28);
+        ctx.set_global_alpha(0.28 * transition_alpha);
         ctx.set_fill_style(color);
         ctx.fill_path(&path);
         ctx.restore();
@@ -1721,15 +1809,32 @@ pub(crate) fn draw_heatmap(ctx: &mut DrawingContext<'_>, data: &HeatmapData) {
         return;
     }
 
-    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let cell_w = plot.width() / u32_to_f32(data.cols);
-    let cell_h = plot.height() / u32_to_f32(data.rows);
+    draw_heatmap_values(
+        ctx,
+        data.rows,
+        data.cols,
+        &data.values,
+        data.min_value,
+        data.max_value,
+    );
+}
 
-    for row in 0..data.rows {
-        for col in 0..data.cols {
-            let idx = u32_to_usize(row * data.cols + col);
-            let value = data.values[idx];
-            let color = viridis(value, data.min_value, data.max_value);
+fn draw_heatmap_values(
+    ctx: &mut DrawingContext<'_>,
+    rows: u32,
+    cols: u32,
+    values: &[f32],
+    min_value: f32,
+    max_value: f32,
+) {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let cell_w = plot.width() / u32_to_f32(cols);
+    let cell_h = plot.height() / u32_to_f32(rows);
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = u32_to_usize(row * cols + col);
+            let color = viridis(values[idx], min_value, max_value);
             let rect = Rect::new(
                 Point::new(
                     u32_to_f32(col).mul_add(cell_w, plot.min_x()),
@@ -1758,7 +1863,12 @@ fn contour_interpolate(p1: Point, p2: Point, v1: f32, v2: f32, level: f32) -> Po
     )
 }
 
-pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, line_width: f32) {
+pub(crate) fn draw_contour(
+    ctx: &mut DrawingContext<'_>,
+    data: &ContourData,
+    line_width: f32,
+    transition_alpha: f32,
+) {
     if data.rows < 2 || data.cols < 2 || data.values.is_empty() || data.levels.is_empty() {
         return;
     }
@@ -1792,30 +1902,34 @@ pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, lin
                 let p01 = Point::new(p00.x, p00.y + step_y);
                 let p11 = Point::new(p00.x + step_x, p00.y + step_y);
 
-                let mut points = [None, None, None, None];
+                let mut points = [Point::new(0.0, 0.0); 4];
+                let mut point_count = 0;
                 if (v00 > level) != (v10 > level) {
-                    points[0] = Some(contour_interpolate(p00, p10, v00, v10, level));
+                    points[point_count] = contour_interpolate(p00, p10, v00, v10, level);
+                    point_count += 1;
                 }
                 if (v10 > level) != (v11 > level) {
-                    points[1] = Some(contour_interpolate(p10, p11, v10, v11, level));
+                    points[point_count] = contour_interpolate(p10, p11, v10, v11, level);
+                    point_count += 1;
                 }
                 if (v01 > level) != (v11 > level) {
-                    points[2] = Some(contour_interpolate(p01, p11, v01, v11, level));
+                    points[point_count] = contour_interpolate(p01, p11, v01, v11, level);
+                    point_count += 1;
                 }
                 if (v00 > level) != (v01 > level) {
-                    points[3] = Some(contour_interpolate(p00, p01, v00, v01, level));
+                    points[point_count] = contour_interpolate(p00, p01, v00, v01, level);
+                    point_count += 1;
                 }
 
-                let edges: Vec<Point> = points.into_iter().flatten().collect();
-                if edges.len() == 2 {
-                    path.move_to(edges[0]);
-                    path.line_to(edges[1]);
+                if point_count == 2 {
+                    path.move_to(points[0]);
+                    path.line_to(points[1]);
                     has_segment = true;
-                } else if edges.len() == 4 {
-                    path.move_to(edges[0]);
-                    path.line_to(edges[1]);
-                    path.move_to(edges[2]);
-                    path.line_to(edges[3]);
+                } else if point_count == 4 {
+                    path.move_to(points[0]);
+                    path.line_to(points[1]);
+                    path.move_to(points[2]);
+                    path.line_to(points[3]);
                     has_segment = true;
                 }
             }
@@ -1829,16 +1943,14 @@ pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, lin
 
         if level_index == 0 {
             ctx.save();
-            ctx.set_global_alpha(0.08);
-            draw_heatmap(
+            ctx.set_global_alpha(0.08 * transition_alpha);
+            draw_heatmap_values(
                 ctx,
-                &HeatmapData {
-                    rows: data.rows,
-                    cols: data.cols,
-                    values: data.values.clone(),
-                    min_value: data.min_value,
-                    max_value: data.max_value,
-                },
+                data.rows,
+                data.cols,
+                &data.values,
+                data.min_value,
+                data.max_value,
             );
             ctx.restore();
         }
@@ -1925,6 +2037,7 @@ pub(crate) fn draw_radar(
     ring_count: u32,
     line_width: f32,
     fill_opacity: f32,
+    transition_alpha: f32,
 ) {
     if data.axis_count < 3 || data.series.is_empty() {
         return;
@@ -1993,7 +2106,7 @@ pub(crate) fn draw_radar(
         let series_alpha = alpha(series.color);
 
         ctx.save();
-        ctx.set_global_alpha((fill_opacity * series_alpha).clamp(0.0, 1.0));
+        ctx.set_global_alpha((fill_opacity * series_alpha * transition_alpha).clamp(0.0, 1.0));
         ctx.set_fill_style(color);
         ctx.fill_path(&poly);
         ctx.restore();
@@ -2127,7 +2240,12 @@ pub(crate) fn draw_choropleth(
     }
 }
 
-pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData, bounds: DataBounds) {
+pub(crate) fn draw_area(
+    ctx: &mut DrawingContext<'_>,
+    data: &AreaData,
+    bounds: DataBounds,
+    transition_alpha: f32,
+) {
     if data.x_values.is_empty() || data.series.is_empty() {
         return;
     }
@@ -2191,7 +2309,7 @@ pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData, bounds: D
         path.close();
 
         ctx.save();
-        ctx.set_global_alpha(opacity);
+        ctx.set_global_alpha(opacity * transition_alpha);
         ctx.set_fill_style(color);
         ctx.fill_path(&path);
         ctx.restore();
@@ -2223,5 +2341,51 @@ pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData, bounds: D
         ctx.set_line_width(1.5);
         ctx.set_stroke_style(color);
         ctx.stroke_path(&top_line);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use super::{ChartGeometryKey, ChartTransitionState};
+    use crate::interaction::ChartViewport;
+
+    const KEY: ChartGeometryKey = ChartGeometryKey {
+        canvas: ChartViewport::new(0.0, 0.0, 320.0, 180.0),
+        visible_bounds: None,
+    };
+
+    #[test]
+    fn render_geometry_is_built_only_when_its_inputs_change() {
+        let builds = Cell::new(0);
+        let mut state = ChartTransitionState::<Vec<u32>, usize>::new();
+        let mut build = |_: &Vec<u32>| {
+            builds.set(builds.get() + 1);
+            builds.get()
+        };
+
+        assert!(state.update(vec![1, 2], KEY, &mut build));
+        assert!(!state.update(vec![1, 2], KEY, &mut build));
+        assert_eq!(builds.get(), 1);
+    }
+
+    #[test]
+    fn data_change_keeps_previous_geometry_for_scene_transition() {
+        let mut state = ChartTransitionState::<Vec<u32>, usize>::new();
+        assert!(state.update(vec![1], KEY, |_| 10));
+        assert!(state.update(vec![2], KEY, |_| 20));
+
+        let previous = state
+            .previous
+            .as_ref()
+            .expect("data transition must retain the previous render frame");
+        let current = state
+            .current
+            .as_ref()
+            .expect("data transition must retain the current render frame");
+        assert_eq!(previous.geometry, 10);
+        assert_eq!(current.geometry, 20);
+        assert!(state.is_animating());
     }
 }

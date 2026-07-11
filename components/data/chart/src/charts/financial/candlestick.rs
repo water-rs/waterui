@@ -83,7 +83,7 @@ impl<S: Signal<Output = Vec<Candle>> + Clone + 'static> View for CandlestickChar
             self.data,
             |data: &Vec<Candle>| candlestick_bounds(data),
             move |ctx, data, bounds| candlestick_geometry(ctx, data, bounds),
-            move |ctx, data, geometry| {
+            move |ctx, data, geometry, _transition_alpha| {
                 draw_candlestick(ctx, data, geometry.bounds, bullish_color, bearish_color);
             },
             self.selection,

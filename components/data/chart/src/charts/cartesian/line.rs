@@ -112,7 +112,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
             self.data,
             |data: &Vec<DataPoint>| point_bounds(data),
             move |ctx, data, bounds| point_geometry(ctx, data, bounds, (line_width * 2.5).max(8.0)),
-            move |ctx, data, geometry| {
+            move |ctx, data, geometry, transition_alpha| {
                 draw_line(
                     ctx,
                     data,
@@ -121,6 +121,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
                     line_width,
                     show_fill,
                     fill_opacity,
+                    transition_alpha,
                 );
             },
             self.selection,

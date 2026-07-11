@@ -86,7 +86,7 @@ impl<S: Signal<Output = ChoroplethData> + Clone + 'static> View for ChoroplethCh
             env,
             self.data,
             choropleth_geometry,
-            move |ctx, data, _geometry| {
+            move |ctx, data, _geometry, _transition_alpha| {
                 draw_choropleth(ctx, data, stroke_width, stroke_color, show_stroke);
             },
             self.selection,

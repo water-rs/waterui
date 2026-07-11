@@ -91,7 +91,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for ScatterChart
             self.data,
             |data: &Vec<DataPoint>| point_bounds(data),
             move |ctx, data, bounds| point_geometry(ctx, data, bounds, radius.max(8.0)),
-            move |ctx, data, geometry| {
+            move |ctx, data, geometry, _transition_alpha| {
                 draw_scatter(ctx, data, geometry.bounds, color, radius);
             },
             self.selection,

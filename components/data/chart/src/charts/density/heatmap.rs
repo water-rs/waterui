@@ -51,7 +51,7 @@ impl<S: Signal<Output = HeatmapData> + Clone + 'static> View for HeatmapChart<S>
             env,
             self.data,
             heatmap_geometry,
-            move |ctx, data, _geometry| {
+            move |ctx, data, _geometry, _transition_alpha| {
                 draw_heatmap(ctx, data);
             },
             self.selection,

@@ -77,7 +77,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for BarChart<S> 
             self.data,
             |data: &Vec<DataPoint>| bar_bounds(data),
             move |ctx, data, bounds| bar_geometry(ctx, data, bounds),
-            move |ctx, data, geometry| {
+            move |ctx, data, geometry, _transition_alpha| {
                 draw_bar(ctx, data, geometry.bounds, color);
             },
             self.selection,
