@@ -478,12 +478,6 @@ typedef enum WuiAxis {
   WuiAxis_All,
 } WuiAxis;
 
-typedef enum WuiAspectRatio {
-  WuiAspectRatio_Fit = 0,
-  WuiAspectRatio_Fill = 1,
-  WuiAspectRatio_Stretch = 2,
-} WuiAspectRatio;
-
 /**
  * FFI representation of video events.
  */
@@ -499,6 +493,12 @@ typedef enum WuiVideoEventType {
   WuiVideoEventType_NextRequested = 8,
   WuiVideoEventType_PreviousRequested = 9,
 } WuiVideoEventType;
+
+typedef enum WuiAspectRatio {
+  WuiAspectRatio_Fit = 0,
+  WuiAspectRatio_Fill = 1,
+  WuiAspectRatio_Stretch = 2,
+} WuiAspectRatio;
 
 /**
  * The display mode for the navigation bar title (FFI-compatible).
@@ -1078,6 +1078,8 @@ typedef struct WuiOnEventHandler WuiOnEventHandler;
 typedef struct WuiSharedAction WuiSharedAction;
 
 typedef struct WuiTabContent WuiTabContent;
+
+typedef struct WuiVideoEventAction WuiVideoEventAction;
 
 /**
  * Opaque state held by the native backend after initialization.
@@ -3119,8 +3121,6 @@ typedef struct WuiTable {
   WuiComputed_Vec_TableColumn *columns;
 } WuiTable;
 
-typedef struct Binding_Volume WuiBinding_Volume;
-
 /**
  * FFI representation of a video event.
  */
@@ -3133,17 +3133,15 @@ typedef struct WuiVideoEvent {
   bool picture_in_picture_active;
 } WuiVideoEvent;
 
-/**
- * A C-compatible function wrapper that can be called multiple times.
- *
- * This structure wraps a Rust `Fn` closure to allow it to be passed across
- * the FFI boundary while maintaining proper memory management.
- */
-typedef struct WuiFn_WuiVideoEvent {
-  void *data;
-  void (*call)(const void*, struct WuiVideoEvent);
-  void (*drop)(void*);
-} WuiFn_WuiVideoEvent;
+typedef struct Binding_Volume WuiBinding_Volume;
+
+typedef struct WuiPlaybackPolicy {
+  bool realtime;
+  uint32_t vod_start_buffer_ms;
+  uint32_t vod_resume_buffer_ms;
+  uint32_t vod_stall_buffer_ms;
+  uint32_t live_max_video_late_ms;
+} WuiPlaybackPolicy;
 
 /**
  * FFI representation of the raw Video component (no native controls).
@@ -3203,9 +3201,17 @@ typedef struct WuiVideo {
    */
   bool loops;
   /**
-   * The event handler for video events.
+   * Reactive subtitle selection.
    */
-  struct WuiFn_WuiVideoEvent on_event;
+  WuiBinding_i32 *subtitle_selection;
+  /**
+   * Native buffering and realtime playback policy.
+   */
+  struct WuiPlaybackPolicy playback_policy;
+  /**
+   * Environment-aware event handler for video events.
+   */
+  struct WuiVideoEventAction *on_event;
 } WuiVideo;
 
 /**
@@ -3266,9 +3272,17 @@ typedef struct WuiVideoPlayer {
    */
   bool show_controls;
   /**
-   * The event handler for the video player.
+   * Reactive subtitle selection.
    */
-  struct WuiFn_WuiVideoEvent on_event;
+  WuiBinding_i32 *subtitle_selection;
+  /**
+   * Native buffering and realtime playback policy.
+   */
+  struct WuiPlaybackPolicy playback_policy;
+  /**
+   * Environment-aware event handler for the video player.
+   */
+  struct WuiVideoEventAction *on_event;
 } WuiVideoPlayer;
 
 /**
@@ -6745,6 +6759,24 @@ struct WuiTypeId waterui_table_id(void);
 struct WuiTableColumn waterui_force_as_table_column(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_table_column_id(void);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_video_event_action(struct WuiVideoEventAction *value);
+
+/**
+ * Invokes a video event action with the rendering environment that owns the view.
+ *
+ * # Safety
+ *
+ * `action` and `env` must be valid pointers produced by this library and remain
+ * alive for the duration of this call.
+ */
+void waterui_call_video_event_action(struct WuiVideoEventAction *action,
+                                     struct WuiVideoEvent event,
+                                     const struct WuiEnv *env);
 
 /**
  * # Safety

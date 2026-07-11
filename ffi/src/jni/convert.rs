@@ -1738,13 +1738,12 @@ impl ToJavaStruct for crate::components::video::WuiVideo {
             .expect("VideoStruct class not found");
         env.new_object(
             &class,
-            "(JJIZJ)V",
+            "(JJIZ)V",
             &[
                 JValue::Long(self.source as jlong),
                 JValue::Long(self.volume as jlong),
                 JValue::Int(self.aspect_ratio as i32),
                 JValue::Bool(if self.loops { 1 } else { 0 }),
-                JValue::Long(core::ptr::addr_of!(self.on_event) as jlong),
             ],
         )
         .expect("Failed to create VideoStruct")
@@ -1759,13 +1758,12 @@ impl ToJavaStruct for crate::components::video::WuiVideoPlayer {
             .expect("VideoPlayerStruct class not found");
         env.new_object(
             &class,
-            "(JJIZJ)V",
+            "(JJIZ)V",
             &[
                 JValue::Long(self.source as jlong),
                 JValue::Long(self.volume as jlong),
                 JValue::Int(self.aspect_ratio as i32),
                 JValue::Bool(if self.show_controls { 1 } else { 0 }),
-                JValue::Long(core::ptr::addr_of!(self.on_event) as jlong),
             ],
         )
         .expect("Failed to create VideoPlayerStruct")
