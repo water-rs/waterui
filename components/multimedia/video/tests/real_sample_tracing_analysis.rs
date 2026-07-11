@@ -399,7 +399,8 @@ fn download_sample(url: &str) -> Result<(PathBuf, f64), String> {
         }
 
         let mut body = response.into_body();
-        let mut file = File::create(&path).map_err(|error| error.to_string())?;
+        let temporary_path = path.with_extension(format!("{}.part", uuid::Uuid::new_v4()));
+        let mut file = File::create(&temporary_path).map_err(|error| error.to_string())?;
         let mut bytes_written = 0usize;
 
         while let Some(chunk) = body.next().await {
@@ -409,6 +410,12 @@ fn download_sample(url: &str) -> Result<(PathBuf, f64), String> {
         }
 
         file.flush().map_err(|error| error.to_string())?;
+        if let Err(error) = fs::rename(&temporary_path, &path) {
+            let _ = fs::remove_file(&temporary_path);
+            if !path.exists() {
+                return Err(error.to_string());
+            }
+        }
         info!(target: ANALYSIS_TARGET, bytes_written, "downloaded real sample");
         Ok::<(), String>(())
     })?;
@@ -750,6 +757,15 @@ fn trace_real_samples_performance_and_correctness() {
             decode_frame_budget: 150,
             max_first_frame_ms: 3000,
             min_decode_fps: 8.0,
+        },
+        SampleCase {
+            name: "hdr10_hevc_4k_40m",
+            url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%204K%20HEVC%20HDR10%2040M.mp4",
+            expected_codec: CodecType::H265,
+            min_decoded_frames: 120,
+            decode_frame_budget: 120,
+            max_first_frame_ms: 1000,
+            min_decode_fps: 60.0,
         },
     ];
 
