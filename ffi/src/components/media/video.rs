@@ -1,17 +1,88 @@
 use crate::WuiStr;
-use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{IntoFFI, IntoRust};
+use crate::{IntoFFI, IntoRust, WuiEnv};
 use alloc::string::String;
 use nami::SignalExt;
 use nami::signal::IntoComputed;
+use waterui_core::Binding;
 use waterui_video::{
-    AspectRatio, Url,
+    AspectRatio, PlaybackPolicy, SubtitleSelection, Url,
     video::{Event as VideoEvent, VideoConfig, VideoPlayerConfig},
 };
 
 // Type alias for URL
 pub type Volume = f32;
+
+opaque!(
+    WuiVideoEventAction,
+    waterui_core::handler::BoxedEventAction<VideoEvent>,
+    video_event_action
+);
+
+/// Invokes a video event action with the rendering environment that owns the view.
+///
+/// # Safety
+///
+/// `action` and `env` must be valid pointers produced by this library and remain
+/// alive for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_video_event_action(
+    action: *mut WuiVideoEventAction,
+    event: WuiVideoEvent,
+    env: *const WuiEnv,
+) {
+    let action =
+        unsafe { crate::expect_non_null_mut(action, "waterui_call_video_event_action", "action") };
+    let env = unsafe { crate::expect_non_null(env, "waterui_call_video_event_action", "env") };
+    let _ = crate::ffi_boundary("waterui_call_video_event_action", || {
+        (action.0)(into_video_event(event), env);
+    });
+}
+
+const SUBTITLE_SELECTION_AUTO: i32 = -1;
+const SUBTITLE_SELECTION_OFF: i32 = -2;
+
+fn subtitle_selection_into_ffi(value: SubtitleSelection) -> i32 {
+    match value {
+        SubtitleSelection::Auto => SUBTITLE_SELECTION_AUTO,
+        SubtitleSelection::Off => SUBTITLE_SELECTION_OFF,
+        SubtitleSelection::Track(index) => i32::try_from(index)
+            .unwrap_or_else(|_| panic!("subtitle track index must fit into i32")),
+    }
+}
+
+fn subtitle_selection_into_rust(value: i32) -> SubtitleSelection {
+    match value {
+        SUBTITLE_SELECTION_AUTO => SubtitleSelection::Auto,
+        SUBTITLE_SELECTION_OFF => SubtitleSelection::Off,
+        index if index >= 0 => SubtitleSelection::Track(
+            usize::try_from(index).expect("non-negative subtitle track index must fit usize"),
+        ),
+        _ => panic!("unsupported subtitle selection wire value {value}"),
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiPlaybackPolicy {
+    pub realtime: bool,
+    pub vod_start_buffer_ms: u32,
+    pub vod_resume_buffer_ms: u32,
+    pub vod_stall_buffer_ms: u32,
+    pub live_max_video_late_ms: u32,
+}
+
+impl From<PlaybackPolicy> for WuiPlaybackPolicy {
+    fn from(value: PlaybackPolicy) -> Self {
+        Self {
+            realtime: value.realtime,
+            vod_start_buffer_ms: value.vod_start_buffer_ms,
+            vod_resume_buffer_ms: value.vod_resume_buffer_ms,
+            vod_stall_buffer_ms: value.vod_stall_buffer_ms,
+            live_max_video_late_ms: value.live_max_video_late_ms,
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -173,31 +244,22 @@ pub struct WuiVideo {
     pub aspect_ratio: WuiAspectRatio,
     /// Whether the video should loop when it ends.
     pub loops: bool,
-    /// The event handler for video events.
-    pub on_event: WuiFn<WuiVideoEvent>,
+    /// Reactive subtitle selection.
+    pub subtitle_selection: *mut WuiBinding<i32>,
+    /// Native buffering and realtime playback policy.
+    pub playback_policy: WuiPlaybackPolicy,
+    /// Environment-aware event handler for video events.
+    pub on_event: *mut WuiVideoEventAction,
 }
 
 impl IntoFFI for VideoConfig {
     type FFI = WuiVideo;
     fn into_ffi(self) -> Self::FFI {
-        // The user-facing event handler is a typed `BoxedEventAction<Event>`
-        // that consumes (Event, &Environment). Native (Apple / Android)
-        // backends invoke the WuiFn closure without a rendering environment
-        // available at call time, so we supply a placeholder
-        // `Environment::default()` here. Hook-based render paths (e.g.
-        // runtime_player) wrap the handler with the live rendering
-        // environment via `bind_event_handler_to_env` before reaching FFI,
-        // so they retain real `State<T>` / extractor support.
-        // The handler is FnMut + needs an &Environment; WuiFn stores Fn(E),
-        // so wrap in RefCell for interior mutability and supply a placeholder
-        // env (see comment above).
-        let on_event_cell = core::cell::RefCell::new(self.on_event);
-        let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
-            (on_event_cell.borrow_mut())(
-                into_video_event(ffi_event),
-                &waterui_core::Environment::default(),
-            );
-        });
+        let subtitle_selection = Binding::mapping(
+            &self.subtitle_selection,
+            subtitle_selection_into_ffi,
+            |binding, value| binding.set(subtitle_selection_into_rust(value)),
+        );
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
         let source = self.source;
@@ -243,7 +305,9 @@ impl IntoFFI for VideoConfig {
             preserve_pitch: self.preserve_pitch.into_ffi(),
             aspect_ratio: self.aspect_ratio.into_ffi(),
             loops: self.loops,
-            on_event: on_event_fn,
+            subtitle_selection: subtitle_selection.into_ffi(),
+            playback_policy: self.playback_policy.into(),
+            on_event: self.on_event.into_ffi(),
         }
     }
 }
@@ -282,27 +346,22 @@ pub struct WuiVideoPlayer {
     pub aspect_ratio: WuiAspectRatio,
     /// Whether to show native playback controls.
     pub show_controls: bool,
-    /// The event handler for the video player.
-    pub on_event: WuiFn<WuiVideoEvent>,
+    /// Reactive subtitle selection.
+    pub subtitle_selection: *mut WuiBinding<i32>,
+    /// Native buffering and realtime playback policy.
+    pub playback_policy: WuiPlaybackPolicy,
+    /// Environment-aware event handler for the video player.
+    pub on_event: *mut WuiVideoEventAction,
 }
 
 impl IntoFFI for VideoPlayerConfig {
     type FFI = WuiVideoPlayer;
     fn into_ffi(self) -> Self::FFI {
-        // See `IntoFFI for VideoConfig` for why a placeholder Environment is
-        // safe here: the typed handler runs with a real env on hook-based
-        // render paths (`runtime_player::bind_event_handler_to_env`); the
-        // FFI native path supplies a fresh default so the closure signature
-        // is satisfied without claiming a rendering environment that is
-        // not actually available at native fire time.
-        // Same FnMut + placeholder-env story as `IntoFFI for VideoConfig`.
-        let on_event_cell = core::cell::RefCell::new(self.on_event);
-        let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
-            (on_event_cell.borrow_mut())(
-                into_video_event(ffi_event),
-                &waterui_core::Environment::default(),
-            );
-        });
+        let subtitle_selection = Binding::mapping(
+            &self.subtitle_selection,
+            subtitle_selection_into_ffi,
+            |binding, value| binding.set(subtitle_selection_into_rust(value)),
+        );
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
         let source = self.source;
@@ -348,7 +407,9 @@ impl IntoFFI for VideoPlayerConfig {
             preserve_pitch: self.preserve_pitch.into_ffi(),
             aspect_ratio: self.aspect_ratio.into_ffi(),
             show_controls: self.show_controls,
-            on_event: on_event_fn,
+            subtitle_selection: subtitle_selection.into_ffi(),
+            playback_policy: self.playback_policy.into(),
+            on_event: self.on_event.into_ffi(),
         }
     }
 }
@@ -424,3 +485,48 @@ impl IntoRust for WuiComputedVideo {
 
 // Generate computed FFI functions for Video type.
 crate::ffi_computed!(Video, WuiComputedVideo, video);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui_core::{Binding, Environment, State};
+
+    #[test]
+    fn subtitle_selection_wire_values_round_trip() {
+        for selection in [
+            SubtitleSelection::Auto,
+            SubtitleSelection::Off,
+            SubtitleSelection::Track(0),
+            SubtitleSelection::Track(7),
+        ] {
+            let encoded = subtitle_selection_into_ffi(selection);
+            assert_eq!(subtitle_selection_into_rust(encoded), selection);
+        }
+    }
+
+    #[test]
+    fn native_video_event_action_uses_rendering_environment() {
+        let invoked = Binding::bool(false);
+        let mut env = Environment::new();
+        env.insert(State(invoked.clone()));
+        let action = waterui_core::handler::boxed_event_handler(
+            |_event: VideoEvent, State(invoked): State<waterui_core::Binding<bool>>| {
+                invoked.set(true);
+            },
+        );
+        let action = action.into_ffi();
+        let env = env.into_ffi();
+
+        unsafe {
+            waterui_call_video_event_action(
+                action,
+                WuiVideoEvent::empty(WuiVideoEventType::ReadyToPlay),
+                env,
+            );
+            waterui_drop_video_event_action(action);
+            crate::waterui_drop_env(env);
+        }
+
+        assert!(invoked.get());
+    }
+}

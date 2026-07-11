@@ -11,6 +11,7 @@ keywords = ["video", "player", "ui", "components"]
 categories = ["gui", "multimedia::video"]
 
 [dependencies]
+async-channel.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
