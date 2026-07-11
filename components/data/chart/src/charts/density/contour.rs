@@ -65,8 +65,8 @@ impl<S: Signal<Output = ContourData> + Clone + 'static> View for ContourChart<S>
             env,
             self.data,
             contour_geometry,
-            move |ctx, data, _geometry| {
-                draw_contour(ctx, data, line_width);
+            move |ctx, data, _geometry, transition_alpha| {
+                draw_contour(ctx, data, line_width, transition_alpha);
             },
             self.selection,
             self.composition,

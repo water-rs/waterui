@@ -62,8 +62,8 @@ impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
             self.data,
             area_bounds,
             area_geometry,
-            move |ctx, data, geometry| {
-                draw_area(ctx, data, geometry.bounds);
+            move |ctx, data, geometry, transition_alpha| {
+                draw_area(ctx, data, geometry.bounds, transition_alpha);
             },
             self.selection,
             self.cartesian_selection,

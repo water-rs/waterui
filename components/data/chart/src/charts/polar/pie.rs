@@ -87,7 +87,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for PieChart<S> 
             env,
             self.data,
             move |ctx, data| pie_geometry(ctx, data, inner_radius),
-            move |ctx, data, _geometry| {
+            move |ctx, data, _geometry, _transition_alpha| {
                 let colors = colors.clone();
                 draw_pie(ctx, data, &colors, inner_radius);
             },

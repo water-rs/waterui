@@ -134,7 +134,7 @@ impl<S: Signal<Output = GaugeData> + Clone + 'static> View for GaugeChart<S> {
                     outer_radius,
                 )
             },
-            move |ctx, data, _geometry| {
+            move |ctx, data, _geometry, _transition_alpha| {
                 draw_gauge(
                     ctx,
                     data,

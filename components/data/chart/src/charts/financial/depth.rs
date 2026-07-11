@@ -91,8 +91,15 @@ impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
             self.data,
             depth_bounds,
             depth_geometry,
-            move |ctx, data, geometry| {
-                draw_depth(ctx, data, geometry.bounds, bid_color, ask_color);
+            move |ctx, data, geometry, transition_alpha| {
+                draw_depth(
+                    ctx,
+                    data,
+                    geometry.bounds,
+                    bid_color,
+                    ask_color,
+                    transition_alpha,
+                );
             },
             self.selection,
             self.cartesian_selection,
