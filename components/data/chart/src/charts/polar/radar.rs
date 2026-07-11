@@ -116,8 +116,15 @@ impl<S: Signal<Output = RadarData> + Clone + 'static> View for RadarChart<S> {
             env,
             self.data,
             radar_geometry,
-            move |ctx, data, _geometry| {
-                draw_radar(ctx, data, ring_count, line_width, fill_opacity);
+            move |ctx, data, _geometry, transition_alpha| {
+                draw_radar(
+                    ctx,
+                    data,
+                    ring_count,
+                    line_width,
+                    fill_opacity,
+                    transition_alpha,
+                );
             },
             self.selection,
             self.composition,
