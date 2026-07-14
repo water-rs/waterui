@@ -12,7 +12,7 @@ use std::{
 use futures::StreamExt;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use waterkit_codec::{CodecType, Decoder};
+use waterkit_codec::{CodecType, DecodedFrameUploader, DecodedPixelLayout, Decoder};
 use waterkit_video::VideoReader;
 use zenwave::{Client, Method, redirect::FollowRedirect};
 
@@ -25,6 +25,7 @@ struct SampleCase {
     name: &'static str,
     url: &'static str,
     expected_codec: CodecType,
+    expected_layout: DecodedPixelLayout,
     min_decoded_frames: usize,
     decode_frame_budget: usize,
     max_first_frame_ms: u64,
@@ -617,7 +618,7 @@ fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
     let mut decoder = Decoder::new(codec, Some(config), width, height)
         .map_err(|error| format!("decoder init failed: {error}"))?;
 
-    let mut nv12_buffer = vec![0_u8; (width * height * 3 / 2) as usize];
+    let mut decoded_buffer = Vec::new();
     let decode_started = Instant::now();
     let mut first_frame_latency = None::<Duration>;
     let mut decoded_frames = 0usize;
@@ -652,13 +653,24 @@ fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
                 ));
             }
 
-            let written = frame.copy_to_buffer(&mut nv12_buffer);
-            if written != nv12_buffer.len() {
+            if frame.pixel_layout() != case.expected_layout {
                 return Err(format!(
-                    "NV12 write size mismatch for {}: got {}, expected {}",
+                    "Pixel layout mismatch for {}: got {:?}, expected {:?}",
+                    case.name,
+                    frame.pixel_layout(),
+                    case.expected_layout
+                ));
+            }
+
+            let expected_len = frame.pixel_layout().packed_len(width, height);
+            decoded_buffer.resize(expected_len, 0);
+            let written = frame.copy_to_buffer(&mut decoded_buffer);
+            if written != decoded_buffer.len() {
+                return Err(format!(
+                    "decoded frame write size mismatch for {}: got {}, expected {}",
                     case.name,
                     written,
-                    nv12_buffer.len()
+                    decoded_buffer.len()
                 ));
             }
 
@@ -735,6 +747,7 @@ fn trace_real_samples_performance_and_correctness() {
             name: "sdr_avc_1080p_3m",
             url: "https://repo.jellyfin.org/test-videos/SDR/AVC/Test%20Jellyfin%201080p%20AVC%203M.mp4",
             expected_codec: CodecType::H264,
+            expected_layout: DecodedPixelLayout::Nv12,
             min_decoded_frames: 150,
             decode_frame_budget: 180,
             max_first_frame_ms: 2000,
@@ -744,6 +757,7 @@ fn trace_real_samples_performance_and_correctness() {
             name: "sdr_hevc_1080p_3m",
             url: "https://repo.jellyfin.org/test-videos/SDR/HEVC%208bit/Test%20Jellyfin%201080p%20HEVC%208bit%203M.mp4",
             expected_codec: CodecType::H265,
+            expected_layout: DecodedPixelLayout::Nv12,
             min_decoded_frames: 150,
             decode_frame_budget: 180,
             max_first_frame_ms: 2500,
@@ -753,6 +767,7 @@ fn trace_real_samples_performance_and_correctness() {
             name: "hdr10_hevc_1080p_3m",
             url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%203M.mp4",
             expected_codec: CodecType::H265,
+            expected_layout: DecodedPixelLayout::P010,
             min_decoded_frames: 120,
             decode_frame_budget: 150,
             max_first_frame_ms: 3000,
@@ -762,6 +777,7 @@ fn trace_real_samples_performance_and_correctness() {
             name: "hdr10_hevc_4k_40m",
             url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%204K%20HEVC%20HDR10%2040M.mp4",
             expected_codec: CodecType::H265,
+            expected_layout: DecodedPixelLayout::P010,
             min_decoded_frames: 120,
             decode_frame_budget: 120,
             max_first_frame_ms: 1000,
@@ -829,6 +845,84 @@ fn trace_real_samples_performance_and_correctness() {
 }
 
 #[test]
+#[ignore = "network + real 4K HDR GPU upload analysis"]
+fn trace_4k_hdr_gpu_upload() {
+    init_test_tracing();
+    let sample = SampleCase {
+        name: "hdr10_hevc_4k_40m_gpu",
+        url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%204K%20HEVC%20HDR10%2040M.mp4",
+        expected_codec: CodecType::H265,
+        expected_layout: DecodedPixelLayout::P010,
+        min_decoded_frames: 60,
+        decode_frame_budget: 60,
+        max_first_frame_ms: 1000,
+        min_decode_fps: 60.0,
+    };
+    let (path, _) = download_sample(sample.url).expect("4K HDR sample download must succeed");
+    let instance = wgpu::Instance::default();
+    let adapter = waterui_graphics::pollster::block_on(instance.request_adapter(
+        &wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        },
+    ))
+    .expect("a high-performance GPU adapter is required");
+    assert!(
+        adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
+        "4K HDR GPU upload requires normalized 16-bit texture support"
+    );
+    let (device, queue) =
+        waterui_graphics::pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
+            ..Default::default()
+        }))
+        .expect("GPU device creation must succeed");
+    let mut reader = VideoReader::open(&path).expect("4K HDR sample must open");
+    let (width, height) = reader.dimensions();
+    let config = reader.codec_config().expect("4K HDR sample needs hvcC");
+    let mut decoder = Decoder::new(CodecType::H265, Some(config), width, height)
+        .expect("VideoToolbox decoder creation must succeed");
+    let started = Instant::now();
+    let mut frame_uploader = DecodedFrameUploader::new();
+    let mut frame_count = 0_usize;
+    while frame_count < sample.decode_frame_budget {
+        let Some((bytes, _, _)) = reader.read_sample().expect("sample read must succeed") else {
+            break;
+        };
+        for decoded_result in decoder.decode(&bytes) {
+            let decoded_frame = decoded_result.expect("4K HDR frame decode must succeed");
+            assert_eq!(decoded_frame.pixel_layout(), DecodedPixelLayout::P010);
+            let gpu_frame = frame_uploader.upload(decoded_frame, &device, &queue);
+            assert_eq!(gpu_frame.pixel_layout(), DecodedPixelLayout::P010);
+            frame_count += 1;
+            if frame_count == sample.decode_frame_budget {
+                break;
+            }
+        }
+    }
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("GPU upload completion must succeed");
+    let elapsed = started.elapsed();
+    let upload_fps = usize_to_f64(frame_count) / elapsed.as_secs_f64();
+    info!(
+        target: ANALYSIS_TARGET,
+        uploaded = frame_count,
+        upload_fps,
+        elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+        "4K HDR decode and GPU upload report"
+    );
+    assert_eq!(frame_count, sample.decode_frame_budget);
+    assert!(
+        upload_fps >= sample.min_decode_fps,
+        "4K HDR decode and GPU upload too slow: {upload_fps:.2} fps"
+    );
+}
+
+#[test]
 #[ignore = "network + real sample timeline sync analysis"]
 fn trace_real_sample_network_sync_behavior() {
     init_test_tracing();
@@ -837,6 +931,7 @@ fn trace_real_sample_network_sync_behavior() {
         name: "sdr_avc_1080p_3m",
         url: "https://repo.jellyfin.org/test-videos/SDR/AVC/Test%20Jellyfin%201080p%20AVC%203M.mp4",
         expected_codec: CodecType::H264,
+        expected_layout: DecodedPixelLayout::Nv12,
         min_decoded_frames: 0,
         decode_frame_budget: 0,
         max_first_frame_ms: 0,

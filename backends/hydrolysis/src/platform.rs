@@ -547,10 +547,12 @@ impl OffscreenSurface {
             "failed to find compute-capable wgpu adapter",
         );
         let required_limits = required_device_limits(&adapter);
+        let required_features =
+            waterui_graphics::shared_context::required_media_features(adapter.features());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-offscreen-device"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -843,10 +845,12 @@ mod winit_impl {
                 "failed to find compute-capable wgpu adapter",
             );
             let required_limits = super::required_device_limits(&adapter);
+            let required_features =
+                waterui_graphics::shared_context::required_media_features(adapter.features());
             let (device, queue) = adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("hydrolysis-winit-device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features,
                     required_limits,
                     memory_hints: wgpu::MemoryHints::Performance,
                     experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -961,9 +965,7 @@ mod winit_impl {
             let surface = WinitSurface::new(window.clone()).await;
             Self {
                 #[cfg(target_os = "macos")]
-                frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(
-                    &window,
-                ),
+                frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(&window),
                 window,
                 surface,
                 pending_surface_size: None,

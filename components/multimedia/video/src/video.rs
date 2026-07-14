@@ -133,6 +133,11 @@ pub enum Event {
     ReadyToPlay,
     /// The video has finished playing.
     Ended,
+    /// Playback transitioned between playing and paused/stopped states.
+    PlaybackStateChanged {
+        /// `true` while media time is actively advancing.
+        playing: bool,
+    },
     /// Picture in picture mode changed for the current player instance.
     PictureInPictureChanged {
         /// `true` when playback is currently presented in picture in picture.

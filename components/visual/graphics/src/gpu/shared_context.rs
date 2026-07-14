@@ -588,7 +588,7 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
 
     // Determine features to request (pipeline cache if available)
     let adapter_features = adapter.features();
-    let mut required_features = wgpu::Features::empty();
+    let mut required_features = required_media_features(adapter_features);
     if cfg!(target_os = "android") {
         tracing::info!(
             "[SharedGpuContext] PIPELINE_CACHE disabled on Android to avoid driver stalls"
@@ -666,6 +666,28 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
         shader_cache: parking_lot::Mutex::new(HashMap::new()),
         offscreen_operation_lock: Arc::new(parking_lot::Mutex::new(())),
     })
+}
+
+/// Returns the adapter features required by `WaterUI`'s GPU media pipeline.
+///
+/// Every device that can host a [`GpuSurface`](super::gpu_surface::GpuSurface)
+/// must request these features so decoded HDR planes can retain their native
+/// precision.
+///
+/// # Panics
+///
+/// Panics on Apple when the adapter cannot provide normalized 16-bit textures.
+#[must_use]
+pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
+    if cfg!(target_vendor = "apple") {
+        assert!(
+            adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
+            "WaterUI's Apple GPU backend requires normalized 16-bit textures for HDR media"
+        );
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+    } else {
+        wgpu::Features::empty()
+    }
 }
 
 fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
