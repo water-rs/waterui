@@ -117,6 +117,7 @@ pub enum WuiVideoEventType {
     PictureInPictureChanged = 7,
     NextRequested = 8,
     PreviousRequested = 9,
+    PlaybackStateChanged = 10,
 }
 
 /// FFI representation of a video event.
@@ -128,6 +129,7 @@ pub struct WuiVideoEvent {
     pub av_drift_ms: f32,
     pub dropped_video_frames: u64,
     pub picture_in_picture_active: bool,
+    pub playback_active: bool,
 }
 
 impl WuiVideoEvent {
@@ -139,6 +141,7 @@ impl WuiVideoEvent {
             av_drift_ms: 0.0,
             dropped_video_frames: 0,
             picture_in_picture_active: false,
+            playback_active: false,
         }
     }
 }
@@ -154,6 +157,9 @@ fn into_video_event(ffi_event: WuiVideoEvent) -> VideoEvent {
         },
         WuiVideoEventType::NextRequested => VideoEvent::NextRequested,
         WuiVideoEventType::PreviousRequested => VideoEvent::PreviousRequested,
+        WuiVideoEventType::PlaybackStateChanged => VideoEvent::PlaybackStateChanged {
+            playing: ffi_event.playback_active,
+        },
         WuiVideoEventType::BufferLevel => VideoEvent::BufferLevel {
             buffered_ms: ffi_event.buffered_ms,
         },
@@ -206,6 +212,11 @@ impl IntoFFI for VideoEvent {
             VideoEvent::PreviousRequested => {
                 WuiVideoEvent::empty(WuiVideoEventType::PreviousRequested)
             }
+            VideoEvent::PlaybackStateChanged { playing } => WuiVideoEvent {
+                event_type: WuiVideoEventType::PlaybackStateChanged,
+                playback_active: playing,
+                ..WuiVideoEvent::empty(WuiVideoEventType::PlaybackStateChanged)
+            },
         }
     }
 }

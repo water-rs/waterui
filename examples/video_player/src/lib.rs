@@ -5,19 +5,15 @@
 //! - Buffering / playback status surfaced from `video::Event`
 //! - Source switching via selector pills
 //!
-//! ## Native vs self-rendered (Rust fallback) playback
+//! ## Native vs self-rendered playback
 //!
-//! By default the example uses the platform's native video player. Enable the
-//! `rust-fallback` feature to route playback through WaterUI's self-rendered
-//! pipeline (`GpuSurface` + `waterkit-codec`) and exercise the real HDR10 test
-//! sources:
-//!
-//! ```bash
-//! water run -p video-player-example --features rust-fallback
-//! ```
+//! The same SDR and HDR10 sources exercise either the platform-native player or
+//! WaterUI's self-rendered pipeline (`GpuSurface` + `waterkit-codec`), depending
+//! on the selected backend/runtime policy.
 
 use waterui::app::App;
 use waterui::color::Srgb;
+use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -33,7 +29,6 @@ struct Sample {
     url: &'static str,
 }
 
-#[cfg(not(feature = "rust-fallback"))]
 const SAMPLES: &[Sample] = &[
     Sample {
         title: "Big Buck Bunny 1MB",
@@ -49,20 +44,6 @@ const SAMPLES: &[Sample] = &[
         title: "Sintel",
         profile: "SDR / BT.709",
         url: "https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4",
-    },
-];
-
-#[cfg(feature = "rust-fallback")]
-const SAMPLES: &[Sample] = &[
-    Sample {
-        title: "Big Buck Bunny (SDR)",
-        profile: "SDR / BT.709",
-        url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-    },
-    Sample {
-        title: "Sintel (SDR)",
-        profile: "SDR / BT.709",
-        url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
     },
     Sample {
         title: "Jellyfin HDR10 1080p 3M",
@@ -104,7 +85,14 @@ pub fn demo() -> impl View {
                 }
                 video::Event::BufferingEnded => {
                     is_buffering.set(false);
-                    status.set(Str::from_static("Playing"));
+                    status.set(Str::from_static("Ready"));
+                }
+                video::Event::PlaybackStateChanged { playing } => {
+                    status.set(if playing {
+                        Str::from_static("Playing")
+                    } else {
+                        Str::from_static("Paused")
+                    });
                 }
                 video::Event::PictureInPictureChanged { active } => {
                     status.set(if active {
@@ -168,11 +156,21 @@ fn player_shell(
         .background(Srgb::BLACK.with_opacity(0.8))
         .visible(is_buffering.clone());
 
-    let pills = SAMPLES
-        .iter()
-        .enumerate()
-        .map(|(index, sample)| pill_button(sample.title, index, &selected))
-        .collect::<Vec<_>>();
+    let source_grid = layout_grid(
+        3,
+        [
+            grid_row((
+                pill_button(SAMPLES[0].title, 0, &selected),
+                pill_button(SAMPLES[1].title, 1, &selected),
+                pill_button(SAMPLES[2].title, 2, &selected),
+            )),
+            grid_row((
+                pill_button(SAMPLES[3].title, 3, &selected),
+                pill_button(SAMPLES[4].title, 4, &selected),
+            )),
+        ],
+    )
+    .spacing(12.0);
 
     vstack((
         text("WaterUI Video Player").headline(),
@@ -180,7 +178,7 @@ fn player_shell(
         text!("Source Profile: {profile}").footnote(),
         overlay(player, buffering_overlay).height(360.0),
         text!("Status: {status}").footnote(),
-        hstack(pills).spacing(12.0),
+        source_grid,
     ))
     .spacing(12.0)
     .padding()
@@ -203,9 +201,5 @@ fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> 
 }
 
 pub fn app(env: Environment) -> App {
-    #[cfg_attr(not(feature = "rust-fallback"), expect(unused_mut))]
-    let mut env = env;
-    #[cfg(feature = "rust-fallback")]
-    video::install_rust_player_hooks(&mut env);
     App::new(demo, env)
 }

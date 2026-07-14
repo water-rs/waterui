@@ -8,10 +8,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{
-        OnceLock,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError},
-    },
+    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError},
     thread,
     time::{Duration, Instant},
 };
@@ -23,7 +20,9 @@ use uuid::Uuid;
 use waterkit_audio::{
     AudioPlayer, MediaCommand, MediaMetadata, MediaSession, PlaybackState, QueueNavigationControls,
 };
-use waterkit_codec::{CodecType, DecodedFrame, Decoder};
+use waterkit_codec::{
+    CodecType, DecodedFrame, DecodedFrameUploader, Decoder, GpuFrame as DecodedGpuFrame,
+};
 use waterkit_video::{
     EmbeddedSubtitleTrack as EmbeddedSubtitleSourceTrack, PictureInPictureCommand,
     PictureInPictureControllerState, PictureInPictureHostId, VideoReader, embedded_subtitle_tracks,
@@ -38,6 +37,7 @@ use waterui_core::{
 };
 use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, RedrawHandle};
 use waterui_layout::{
+    frame::Frame,
     overlay,
     stack::{Alignment, hstack, vstack},
 };
@@ -231,6 +231,21 @@ fn color_uniform_bytes(uniform: VideoColorUniform) -> [u8; 32] {
     bytes[24..28].copy_from_slice(&uniform.padding1.to_ne_bytes());
     bytes[28..32].copy_from_slice(&uniform.padding2.to_ne_bytes());
     bytes
+}
+
+fn playback_clock_position(
+    audio_position: Option<Duration>,
+    anchor_pts: Duration,
+    anchor_elapsed: Option<Duration>,
+    playback_rate: f32,
+) -> Duration {
+    if let Some(position) = audio_position.filter(|position| *position > Duration::ZERO) {
+        return position;
+    }
+
+    anchor_elapsed.map_or(anchor_pts, |elapsed| {
+        anchor_pts.saturating_add(elapsed.mul_f64(f64::from(playback_rate)))
+    })
 }
 
 const fn clamp_playback_rate(rate: f32) -> f32 {
@@ -559,6 +574,7 @@ struct TransportBindings {
     muted: Binding<bool>,
     volume_level: Binding<f64>,
     subtitle_toggle: AnyView,
+    speed_controls: AnyView,
 }
 
 impl PlayerBindings {
@@ -958,11 +974,11 @@ fn subtitle_selection_label(
     selection: SubtitleSelection,
 ) -> Result<String, String> {
     match selection {
-        SubtitleSelection::Auto => Ok(String::from("Subs Auto")),
-        SubtitleSelection::Off => Ok(String::from("Subs Off")),
+        SubtitleSelection::Auto => Ok(String::from("CC Auto")),
+        SubtitleSelection::Off => Ok(String::from("CC Off")),
         SubtitleSelection::Track(index) => track_labels
             .get(index)
-            .map(|label| format!("Subs {label}"))
+            .map(|label| format!("CC {label}"))
             .ok_or_else(|| {
                 format!(
                     "subtitle track index {index} is out of range for {} tracks",
@@ -1066,17 +1082,6 @@ fn player_controls(bindings: PlayerControlBindings, on_event: OnEvent) -> impl V
         },
     );
 
-    let playback_rate_level = Binding::mapping(
-        &playback_rate,
-        |current| f64::from(clamp_playback_rate(current)),
-        |rate_binding, requested| {
-            rate_binding.set(clamp_playback_rate(f64_to_f32(
-                requested,
-                "playback rate slider level",
-            )));
-        },
-    );
-
     let subtitle_toggle = With::new(
         With::new(
             button(Text::display(
@@ -1100,6 +1105,7 @@ fn player_controls(bindings: PlayerControlBindings, on_event: OnEvent) -> impl V
         State(subtitle_track_labels),
     );
 
+    let speed_controls = speed_controls(&playback_rate, &preserve_pitch);
     let transport = transport_controls(
         TransportBindings {
             has_previous,
@@ -1111,18 +1117,17 @@ fn player_controls(bindings: PlayerControlBindings, on_event: OnEvent) -> impl V
             muted,
             volume_level,
             subtitle_toggle: AnyView::new(subtitle_toggle),
+            speed_controls: AnyView::new(speed_controls),
         },
         on_event,
     );
 
-    let speed_controls = speed_controls(&playback_rate, &playback_rate_level, &preserve_pitch);
     let timeline = timeline_view(&position_seconds, &duration_seconds, &is_buffering);
 
     vstack((
         timeline,
         slider("Playback position", &progress).hide_label(),
         transport,
-        speed_controls,
     ))
     .spacing(8.0)
 }
@@ -1138,6 +1143,7 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
         muted,
         volume_level,
         subtitle_toggle,
+        speed_controls,
     } = bindings;
     let previous_button = has_previous
         .map({
@@ -1159,23 +1165,25 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
         })
         .computed();
 
-    hstack((
+    let primary = hstack((
         previous_button,
-        seek_button(
-            "Back 10s",
-            progress.clone(),
-            duration_seconds.clone(),
-            -10.0,
-        ),
+        seek_button("Back 10", progress.clone(), duration_seconds.clone(), -10.0),
         play_pause_button(is_playing),
-        mute_button(muted),
-        slider("Volume", &volume_level).hide_label(),
-        picture_in_picture_button(&picture_in_picture_request),
-        subtitle_toggle,
-        seek_button("Forward 10s", progress, duration_seconds, 10.0),
+        seek_button("Forward 10", progress, duration_seconds, 10.0),
         next_button,
     ))
-    .spacing(8.0)
+    .spacing(8.0);
+
+    let secondary = hstack((
+        mute_button(muted),
+        Frame::new(slider("Volume", &volume_level).hide_label()).width(160.0),
+        picture_in_picture_button(&picture_in_picture_request),
+        subtitle_toggle,
+        speed_controls,
+    ))
+    .spacing(8.0);
+
+    vstack((primary, secondary)).spacing(8.0)
 }
 
 fn seek_button(
@@ -1234,42 +1242,39 @@ fn mute_button(muted: Binding<bool>) -> impl View {
 
 fn speed_controls(
     playback_rate: &Binding<f32>,
-    playback_rate_level: &Binding<f64>,
     preserve_pitch: &Binding<bool>,
 ) -> impl View + use<> {
-    let playback_rate_label =
-        Text::display(playback_rate.map(|rate| format!("Speed {:.2}x", clamp_playback_rate(rate))))
-            .footnote();
     hstack((
-        playback_rate_label,
-        playback_speed_button("0.5x", playback_rate.clone(), 0.5),
-        playback_speed_button("1.0x", playback_rate.clone(), 1.0),
-        playback_speed_button("1.5x", playback_rate.clone(), 1.5),
-        playback_speed_button("2.0x", playback_rate.clone(), 2.0),
-        slider("Playback rate", playback_rate_level)
-            .range(0.25..=2.0)
-            .hide_label(),
         With::new(
-            button(Text::display(preserve_pitch.clone().map(|enabled| {
-                if enabled {
-                    "Pitch Lock On"
-                } else {
-                    "Pitch Lock Off"
-                }
-            })))
+            button(Text::display(
+                playback_rate
+                    .clone()
+                    .map(|rate| format!("{:.1}x", clamp_playback_rate(rate))),
+            ))
+            .action(|State(rate): State<Binding<f32>>| {
+                let next = match rate.get() {
+                    current if current < 0.75 => 1.0,
+                    current if current < 1.25 => 1.5,
+                    current if current < 1.75 => 2.0,
+                    _ => 0.5,
+                };
+                rate.set(next);
+            }),
+            State(playback_rate.clone()),
+        ),
+        With::new(
+            button(Text::display(
+                preserve_pitch.clone().map(
+                    |enabled| {
+                        if enabled { "Pitch On" } else { "Pitch Off" }
+                    },
+                ),
+            ))
             .action(|State(enabled): State<Binding<bool>>| enabled.set(!enabled.get())),
             State(preserve_pitch.clone()),
         ),
     ))
     .spacing(8.0)
-}
-
-fn playback_speed_button(label: &'static str, playback_rate: Binding<f32>, rate: f32) -> impl View {
-    With::new(
-        button(label)
-            .action(move |State(rate_binding): State<Binding<f32>>| rate_binding.set(rate)),
-        State(playback_rate),
-    )
 }
 
 fn timeline_view(
@@ -1381,7 +1386,7 @@ enum DecoderControl {
 
 #[derive(Debug)]
 enum DecoderOutput {
-    Opened { duration: Duration },
+    Opened { duration: Duration, has_audio: bool },
     SeekCompleted { progress: f64, pts: Duration },
     Frame(DecodedVideoFrame),
     Ended,
@@ -1425,6 +1430,7 @@ impl DecoderWorker {
             if updates_tx
                 .send(DecoderOutput::Opened {
                     duration: decode.duration(),
+                    has_audio: decode.has_audio(),
                 })
                 .is_err()
             {
@@ -1587,8 +1593,8 @@ struct VideoRenderer {
     color_profile_source_path: Option<PathBuf>,
     color_uniform_buffer: Option<wgpu::Buffer>,
     color_flags: ColorStateFlags,
-    y_texture: Option<wgpu::Texture>,
-    uv_texture: Option<wgpu::Texture>,
+    decoded_gpu_frame: Option<DecodedGpuFrame>,
+    frame_uploader: DecodedFrameUploader,
     bind_group: Option<wgpu::BindGroup>,
     vertex_buffer: Option<wgpu::Buffer>,
     vertex_layout_key: Option<VertexLayoutKey>,
@@ -1632,7 +1638,6 @@ struct VideoRenderer {
     last_reported_buffer_level_ms: Option<u32>,
     dropped_video_frames: u64,
     last_metrics_report_at: Option<Instant>,
-    surface_prefers_hdr_cache: OnceLock<Option<bool>>,
 }
 
 struct PendingAudioOpen {
@@ -1705,8 +1710,8 @@ impl VideoRenderer {
                 profile_initialized: false,
                 uniform_dirty: true,
             },
-            y_texture: None,
-            uv_texture: None,
+            decoded_gpu_frame: None,
+            frame_uploader: DecodedFrameUploader::new(),
             bind_group: None,
             vertex_buffer: None,
             vertex_layout_key: None,
@@ -1754,7 +1759,6 @@ impl VideoRenderer {
             last_reported_buffer_level_ms: None,
             dropped_video_frames: 0,
             last_metrics_report_at: None,
-            surface_prefers_hdr_cache: OnceLock::new(),
         }
     }
 
@@ -1888,9 +1892,7 @@ impl VideoRenderer {
         self.color_profile_source_path = None;
         self.color_flags.profile_initialized = false;
         self.color_flags.uniform_dirty = true;
-        self.surface_prefers_hdr_cache = OnceLock::new();
-        self.y_texture = None;
-        self.uv_texture = None;
+        self.decoded_gpu_frame = None;
         self.bind_group = None;
         self.vertex_buffer = None;
         self.vertex_layout_key = None;
@@ -2299,9 +2301,11 @@ impl VideoRenderer {
         self.last_applied_volume = None;
         self.last_applied_playback_rate = None;
         self.last_applied_preserve_pitch = None;
-        self.emit_event(Event::Error {
-            message: format!("Audio playback unavailable: {error}"),
-        });
+        if !self.is_source_downloading() {
+            self.emit_event(Event::Error {
+                message: format!("Audio playback unavailable: {error}"),
+            });
+        }
     }
 
     fn ensure_audio_player(&mut self, source_path: &Path) {
@@ -2336,11 +2340,10 @@ impl VideoRenderer {
             return;
         }
 
-        let source_ready = match &self.source_asset {
-            FileAssetState::Ready(_) => true,
-            FileAssetState::Downloading { ready, .. } => *ready,
-            FileAssetState::Unresolved | FileAssetState::Failed(_) => false,
-        };
+        let source_ready = matches!(
+            &self.source_asset,
+            FileAssetState::Downloading { ready: true, .. }
+        );
         if !source_ready {
             return;
         }
@@ -2371,7 +2374,7 @@ impl VideoRenderer {
             .as_ref()
             .is_none_or(|path| path.as_path() != source_path);
         if source_changed {
-            let height_hint = self.y_texture.as_ref().map(wgpu::Texture::height);
+            let height_hint = self.decoded_gpu_frame.as_ref().map(DecodedGpuFrame::height);
             let color_profile = probe_video_color_profile(source_path, height_hint);
             self.update_color_profile(color_profile, source_path);
             self.color_profile_source_path = Some(source_path.to_path_buf());
@@ -2389,7 +2392,6 @@ impl VideoRenderer {
             source_path.to_path_buf(),
             start_progress,
         ));
-        self.ensure_audio_player(source_path);
         self.source_path = Some(source_path.to_path_buf());
         self.pending_frame = None;
         self.playback_flags.first_frame_presented = false;
@@ -2475,15 +2477,23 @@ impl VideoRenderer {
             self.set_audio_focus_ducked(false);
         }
 
-        self.control_flags.play_requested = ui_playing;
+        self.update_play_requested(ui_playing);
     }
 
     fn set_play_requested(&mut self, playing: bool) {
-        self.control_flags.play_requested = playing;
+        self.update_play_requested(playing);
         if self.player.is_some() {
             self.pending_play_request_sync = Some(playing);
             self.push_ui_update(UiUpdate::Playing(playing));
         }
+    }
+
+    fn update_play_requested(&mut self, playing: bool) {
+        if self.control_flags.play_requested == playing {
+            return;
+        }
+        self.control_flags.play_requested = playing;
+        self.emit_event(Event::PlaybackStateChanged { playing });
     }
 
     fn set_audio_focus_ducked(&mut self, ducked: bool) {
@@ -2758,23 +2768,19 @@ impl VideoRenderer {
     }
 
     fn playback_position(&self, now: Instant) -> Duration {
-        if self.last_playing_state {
-            let audio_position = self
-                .audio_player
-                .as_ref()
-                .map_or(Duration::ZERO, AudioPlayer::position);
-            if audio_position > Duration::ZERO || self.playback_anchor_pts == Duration::ZERO {
-                return audio_position;
-            }
-        }
-
-        self.playback_anchor_instant
-            .map_or(self.playback_anchor_pts, |anchor| {
-                self.playback_anchor_pts.saturating_add(
-                    now.saturating_duration_since(anchor)
-                        .mul_f64(f64::from(self.last_playback_rate)),
-                )
-            })
+        let audio_position = self
+            .last_playing_state
+            .then(|| self.audio_player.as_ref().map(AudioPlayer::position))
+            .flatten();
+        let anchor_elapsed = self
+            .playback_anchor_instant
+            .map(|anchor| now.saturating_duration_since(anchor));
+        playback_clock_position(
+            audio_position,
+            self.playback_anchor_pts,
+            anchor_elapsed,
+            self.last_playback_rate,
+        )
     }
 
     fn set_playback_position(&mut self, pts: Duration, should_play: bool) {
@@ -2984,7 +2990,10 @@ impl VideoRenderer {
 
     fn handle_decoder_output(&mut self, output: DecoderOutput, should_play: bool) -> DecoderDrain {
         match output {
-            DecoderOutput::Opened { duration } => self.handle_decoder_opened(duration, should_play),
+            DecoderOutput::Opened {
+                duration,
+                has_audio,
+            } => self.handle_decoder_opened(duration, has_audio, should_play),
             DecoderOutput::SeekCompleted { progress, pts } => {
                 self.handle_decoder_seek_completed(progress, pts, should_play);
                 DecoderDrain::Continue
@@ -2998,12 +3007,26 @@ impl VideoRenderer {
         }
     }
 
-    fn handle_decoder_opened(&mut self, duration: Duration, should_play: bool) -> DecoderDrain {
+    fn handle_decoder_opened(
+        &mut self,
+        duration: Duration,
+        has_audio: bool,
+        should_play: bool,
+    ) -> DecoderDrain {
         tracing::info!(
             "[VideoFallback] decoder opened duration={:.3}s",
             duration.as_secs_f64()
         );
         self.duration = duration;
+        if has_audio {
+            let source_path = self
+                .source_path
+                .clone()
+                .expect("an opened decoder must retain its source path");
+            self.ensure_audio_player(&source_path);
+        } else if let Some(player) = self.audio_player.take() {
+            player.stop();
+        }
         self.update_ui_progress();
         if self.media_session.is_none() {
             self.media_session = MediaSessionState::new(&self.source, duration);
@@ -3278,51 +3301,10 @@ impl VideoRenderer {
         ));
     }
 
-    fn ensure_texture_resources(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let uv_width = (width / 2).max(1);
-        let uv_height = (height / 2).max(1);
-
-        let need_texture =
-            self.y_texture
-                .as_ref()
-                .is_none_or(|texture| texture.width() != width || texture.height() != height)
-                || self.uv_texture.as_ref().is_none_or(|texture| {
-                    texture.width() != uv_width || texture.height() != uv_height
-                });
-        if !need_texture {
-            return;
-        }
-
-        let y_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Video Y texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let uv_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Video UV texture"),
-            size: wgpu::Extent3d {
-                width: uv_width,
-                height: uv_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rg8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
+    fn upload_frame_texture(&mut self, frame: &GpuFrame, decoded: DecodedFrame) {
+        let decoded_gpu_frame = self
+            .frame_uploader
+            .upload(decoded, frame.device, frame.queue);
         let Some(bind_group_layout) = self.bind_group_layout.as_ref() else {
             return;
         };
@@ -3333,9 +3315,13 @@ impl VideoRenderer {
             return;
         };
 
-        let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let y_view = decoded_gpu_frame
+            .y_texture()
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let uv_view = decoded_gpu_frame
+            .uv_texture()
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Video bind group"),
             layout: bind_group_layout,
             entries: &[
@@ -3358,68 +3344,10 @@ impl VideoRenderer {
             ],
         });
 
-        self.y_texture = Some(y_texture);
-        self.uv_texture = Some(uv_texture);
+        self.decoded_gpu_frame = Some(decoded_gpu_frame);
         self.bind_group = Some(bind_group);
         self.vertex_buffer = None;
         self.vertex_layout_key = None;
-    }
-
-    fn upload_frame_texture(&mut self, frame: &GpuFrame, decoded: &DecodedVideoFrame) {
-        self.ensure_texture_resources(frame.device, decoded.width, decoded.height);
-        let Some(y_texture) = self.y_texture.as_ref() else {
-            return;
-        };
-        let Some(uv_texture) = self.uv_texture.as_ref() else {
-            return;
-        };
-
-        let y_plane_len = usize::try_from(decoded.width * decoded.height)
-            .expect("Y plane length must fit into usize");
-        if decoded.nv12.len() < y_plane_len {
-            return;
-        }
-        let (y_plane, uv_plane) = decoded.nv12.split_at(y_plane_len);
-
-        frame.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: y_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            y_plane,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(decoded.width),
-                rows_per_image: Some(decoded.height),
-            },
-            wgpu::Extent3d {
-                width: decoded.width,
-                height: decoded.height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        frame.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: uv_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            uv_plane,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(decoded.width),
-                rows_per_image: Some((decoded.height / 2).max(1)),
-            },
-            wgpu::Extent3d {
-                width: (decoded.width / 2).max(1),
-                height: (decoded.height / 2).max(1),
-                depth_or_array_layers: 1,
-            },
-        );
     }
 
     fn ensure_vertex_buffer(
@@ -3428,7 +3356,7 @@ impl VideoRenderer {
         surface_width: u32,
         surface_height: u32,
     ) {
-        let Some(texture) = self.y_texture.as_ref() else {
+        let Some(texture) = self.decoded_gpu_frame.as_ref() else {
             self.vertex_buffer = None;
             self.vertex_layout_key = None;
             return;
@@ -3517,7 +3445,7 @@ impl VideoRenderer {
             return;
         }
 
-        if !should_play && self.pending_frame.is_none() && self.y_texture.is_some() {
+        if !should_play && self.pending_frame.is_none() && self.decoded_gpu_frame.is_some() {
             self.set_buffering(false);
             self.sync_media_session(false);
             return;
@@ -3537,7 +3465,7 @@ impl VideoRenderer {
         };
         let pending_pts = pending.pts;
 
-        let present_immediately = self.y_texture.is_none();
+        let present_immediately = self.decoded_gpu_frame.is_none();
         let due = should_play
             && self
                 .playback_position(now)
@@ -3552,24 +3480,30 @@ impl VideoRenderer {
             return;
         };
 
-        self.upload_frame_texture(frame, &decoded);
+        let DecodedVideoFrame {
+            frame: decoded_frame,
+            pts,
+            progress,
+            width: _,
+            height: _,
+        } = decoded;
+        self.upload_frame_texture(frame, decoded_frame);
         if !self.playback_flags.first_frame_presented {
             tracing::info!(
                 "[VideoFallback] first frame presented pts={:.3}s progress={:.3}",
-                decoded.pts.as_secs_f64(),
-                decoded.progress
+                pts.as_secs_f64(),
+                progress
             );
             self.playback_flags.first_frame_presented = true;
         }
-        self.set_playback_position(decoded.pts, should_play);
+        self.set_playback_position(pts, should_play);
         self.sync_subtitle_text(Instant::now());
         self.set_buffering(false);
         self.sync_picture_in_picture_controller(should_play);
 
         if self.player.is_some() {
-            let progress = decoded.progress;
             self.push_ui_update(UiUpdate::Progress(progress));
-            self.push_ui_update(UiUpdate::Position(decoded.pts.as_secs_f64()));
+            self.push_ui_update(UiUpdate::Position(pts.as_secs_f64()));
             self.last_reported_progress = progress;
         }
 
@@ -3630,9 +3564,9 @@ impl VideoRenderer {
             return Some((frame.width.max(1), frame.height.max(1)));
         }
 
-        self.y_texture
+        self.decoded_gpu_frame
             .as_ref()
-            .map(|texture| (texture.width().max(1), texture.height().max(1)))
+            .map(|frame| (frame.width().max(1), frame.height().max(1)))
     }
 
     fn current_video_aspect_ratio(&self) -> Option<f32> {
@@ -3644,14 +3578,9 @@ impl VideoRenderer {
 
 impl GpuView for VideoRenderer {
     fn preferred_surface_hdr(&self) -> Option<bool> {
-        *self.surface_prefers_hdr_cache.get_or_init(|| {
-            let preference = preferred_surface_hdr_for_source(&self.source);
-            tracing::info!(
-                "[VideoFallback] initial surface hdr preference source={} preference={preference:?}",
-                self.source.as_str()
-            );
-            preference
-        })
+        // The persistent renderer may switch between SDR and HDR sources. A float
+        // swapchain preserves both; the shader maps SDR into its linear target.
+        Some(true)
     }
 
     fn setup(
@@ -3845,7 +3774,7 @@ impl Drop for MediaSessionState {
 
 #[derive(Debug)]
 struct DecodedVideoFrame {
-    nv12: Vec<u8>,
+    frame: DecodedFrame,
     pts: Duration,
     progress: f64,
     width: u32,
@@ -3917,12 +3846,14 @@ struct DecodeState {
     codec_type: CodecType,
     codec_config: Option<Vec<u8>>,
     sample_metadata: Vec<VideoSampleMetadata>,
+    has_audio: bool,
 }
 
 impl DecodeState {
     fn open(source_path: &Path) -> Result<Self, String> {
         let reader = VideoReader::open(source_path).map_err(|error| error.to_string())?;
         let (width, height) = reader.dimensions();
+        let has_audio = reader.has_audio();
         let codec_config = reader.codec_config().map(<[u8]>::to_vec);
         let codec_type = detect_codec_type(codec_config.as_deref())?;
         let decoder = Decoder::new(codec_type, codec_config.as_deref(), width, height)
@@ -3964,11 +3895,16 @@ impl DecodeState {
             codec_type,
             codec_config,
             sample_metadata,
+            has_audio,
         })
     }
 
     const fn duration(&self) -> Duration {
         self.duration
+    }
+
+    const fn has_audio(&self) -> bool {
+        self.has_audio
     }
 
     fn rebuild_decoder(&mut self) -> Result<(), String> {
@@ -4026,7 +3962,7 @@ impl DecodeState {
 
     fn next_frame(&mut self) -> Result<Option<DecodedVideoFrame>, String> {
         if let Some(frame) = self.pending_decoded.pop_front() {
-            return Ok(Some(self.materialize_frame(&frame)));
+            return Ok(Some(Self::materialize_frame(frame)));
         }
 
         loop {
@@ -4072,22 +4008,20 @@ impl DecodeState {
                         progress
                     );
                 }
-                return Ok(Some(self.materialize_frame(&frame)));
+                return Ok(Some(Self::materialize_frame(frame)));
             }
         }
     }
 
-    fn materialize_frame(&self, pending: &PendingDecodedFrame) -> DecodedVideoFrame {
-        let nv12_len = usize::try_from(self.width * self.height * 3 / 2)
-            .expect("NV12 frame length must fit into usize");
-        let mut nv12 = vec![0_u8; nv12_len];
-        pending.frame.copy_to_buffer(&mut nv12);
+    fn materialize_frame(pending: PendingDecodedFrame) -> DecodedVideoFrame {
+        let width = pending.frame.width();
+        let height = pending.frame.height();
         DecodedVideoFrame {
-            nv12,
+            frame: pending.frame,
             pts: pending.pts,
             progress: pending.progress,
-            width: self.width,
-            height: self.height,
+            width,
+            height,
         }
     }
 }
@@ -4268,24 +4202,6 @@ fn cached_video_path(url: &Url) -> PathBuf {
 
 fn cached_subtitle_path(url: &Url) -> PathBuf {
     cached_remote_asset_path(url, "vtt")
-}
-
-fn preferred_surface_hdr_for_source(source: &Url) -> Option<bool> {
-    let probe_path = if is_remote_url(source) {
-        let cached = cached_video_path(source);
-        if !cached.exists() {
-            return None;
-        }
-        cached
-    } else {
-        let local = local_source_path(source);
-        if !local.exists() {
-            return None;
-        }
-        local
-    };
-
-    Some(probe_video_color_profile(&probe_path, None).hdr)
 }
 
 fn start_asset_download(url: String, destination: PathBuf) -> Receiver<DownloadUpdate> {
@@ -4488,18 +4404,13 @@ mod tests {
     use super::{
         PlaybackPolicy, ShaderTargetMode, VideoSampleMetadata, effective_audio_volume,
         estimated_video_duration, nearest_keyframe_index_at_or_before, next_subtitle_selection,
-        preferred_surface_hdr_for_source, progress_for_position, resolve_selected_subtitle_index,
+        playback_clock_position, progress_for_position, resolve_selected_subtitle_index,
         runtime_sidecar_subtitle_tracks, runtime_subtitle_track_labels,
         select_default_subtitle_track_index, shader_target_mode, should_enter_vod_stall_buffering,
         should_wait_for_vod_buffering,
     };
     use crate::{SubtitleSelection, SubtitleTrack};
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{Duration, SystemTime},
-    };
-    use waterui_url::Url;
+    use std::time::Duration;
 
     #[test]
     fn hdr_source_maps_to_sdr_on_srgb_surface() {
@@ -4519,45 +4430,26 @@ mod tests {
         assert_eq!(mode, ShaderTargetMode::LinearSdr);
     }
 
-    fn unique_temp_file(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("system clock must be after unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("waterui_video_{name}_{nanos}.mp4"))
-    }
-
-    fn write_nclx_file(path: &PathBuf, transfer: u16) {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[0, 0, 0, 4, b'f', b't', b'y', b'p']);
-        bytes.extend_from_slice(&19_u32.to_be_bytes());
-        bytes.extend_from_slice(b"colr");
-        bytes.extend_from_slice(b"nclx");
-        bytes.extend_from_slice(&1_u16.to_be_bytes());
-        bytes.extend_from_slice(&transfer.to_be_bytes());
-        bytes.extend_from_slice(&1_u16.to_be_bytes());
-        bytes.push(0);
-        fs::write(path, bytes).expect("test nclx file write must succeed");
+    #[test]
+    fn stalled_audio_does_not_freeze_video_clock_at_zero() {
+        let position = playback_clock_position(
+            Some(Duration::ZERO),
+            Duration::ZERO,
+            Some(Duration::from_millis(250)),
+            1.0,
+        );
+        assert_eq!(position, Duration::from_millis(250));
     }
 
     #[test]
-    fn preferred_surface_uses_sdr_for_sdr_source() {
-        let path = unique_temp_file("sdr_pref");
-        write_nclx_file(&path, 1);
-        let url = Url::from_file_path_str(path.to_string_lossy().to_string());
-        let preference = preferred_surface_hdr_for_source(&url);
-        assert_eq!(preference, Some(false));
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn preferred_surface_uses_hdr_for_hdr_source() {
-        let path = unique_temp_file("hdr_pref");
-        write_nclx_file(&path, 16);
-        let url = Url::from_file_path_str(path.to_string_lossy().to_string());
-        let preference = preferred_surface_hdr_for_source(&url);
-        assert_eq!(preference, Some(true));
-        let _ = fs::remove_file(path);
+    fn progressing_audio_remains_the_authoritative_clock() {
+        let position = playback_clock_position(
+            Some(Duration::from_millis(80)),
+            Duration::ZERO,
+            Some(Duration::from_millis(250)),
+            1.0,
+        );
+        assert_eq!(position, Duration::from_millis(80));
     }
 
     #[test]
