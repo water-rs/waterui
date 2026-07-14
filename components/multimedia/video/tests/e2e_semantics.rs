@@ -101,10 +101,15 @@ fn video_player_controls_are_accessible_and_reactive() {
 
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();
+    app.query().role(Role::BUTTON).label("1.0x").assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Pitch On")
+        .assert_exists();
     assert_eq!(
         app.query().role(Role::SLIDER).all().len(),
-        3,
-        "video-player-controls-are-accessible-and-reactive: expected timeline, volume, and speed sliders"
+        2,
+        "video-player-controls-are-accessible-and-reactive: expected timeline and volume sliders"
     );
     app.query()
         .role(Role::BUTTON)
@@ -142,8 +147,13 @@ fn video_player_controls_are_accessible_and_reactive() {
         app.query().role(Role::BUTTON).label("Mute").tap(),
         "video-player-controls-are-accessible-and-reactive: mute button tap should succeed"
     );
-    app.query()
-        .role(Role::BUTTON)
-        .label("Unmute")
-        .assert_exists();
+    assert_eq!(
+        app.wait_for(
+            &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Unmute"))],
+            WaitOptions::new(Duration::from_millis(200)),
+        ),
+        WaitResult::Completed,
+        "video-player-controls-are-accessible-and-reactive: mute state should update its reactive label; {}",
+        tree_debug(&mut app)
+    );
 }

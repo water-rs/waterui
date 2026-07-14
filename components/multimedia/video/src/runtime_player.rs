@@ -1186,14 +1186,14 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
     ))
     .spacing(8.0);
 
-    let secondary = hstack((
+    let volume_controls = hstack((
         mute_button(muted),
         Frame::new(slider("Volume", &volume_level).hide_label()).width(160.0),
         picture_in_picture_button(&picture_in_picture_request),
         subtitle_toggle,
-        speed_controls,
     ))
     .spacing(8.0);
+    let secondary = vstack((volume_controls, speed_controls)).spacing(8.0);
 
     vstack((primary, secondary)).spacing(8.0)
 }
