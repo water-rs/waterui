@@ -1,13 +1,18 @@
+#[cfg(any(feature = "android-jni", test))]
+use core::ptr::NonNull;
+#[cfg(not(target_vendor = "apple"))]
 use core::ptr::null_mut;
 
-use waterui::Str;
 use waterui::window::{Window, WindowBackground, WindowManager, WindowState, WindowStyle};
+use waterui::{AnyView, Str};
 use waterui_layout::{Rect, Size};
 
+#[cfg(feature = "c-api")]
+use crate::ffi_binding;
 use crate::{
     IntoFFI, IntoRust, WuiAnyView, WuiEnv,
+    closure::ForeignCallbackContext,
     color::WuiColor,
-    ffi_binding,
     reactive::{WuiBinding, WuiComputed},
 };
 
@@ -79,46 +84,10 @@ impl IntoRust for WuiWindowState {
     }
 }
 
-// Generate FFI binding functions for WindowState
+// Generate C FFI binding functions and the native watcher for WindowState.
+#[cfg(feature = "c-api")]
 ffi_binding!(WindowState, WuiWindowState, window_state);
-
-// JNI primitive support for WindowState (enum treated as jint)
-#[cfg(feature = "android-jni")]
-impl crate::jni::JniPrimitive for WindowState {
-    type Jni = jni::sys::jint;
-    fn to_jni(self) -> Self::Jni {
-        WuiWindowState::from(self) as Self::Jni
-    }
-    fn from_jni(val: Self::Jni) -> Self {
-        match val {
-            x if x == WuiWindowState::Normal as Self::Jni => WindowState::Normal,
-            x if x == WuiWindowState::Closed as Self::Jni => WindowState::Closed,
-            x if x == WuiWindowState::Minimized as Self::Jni => WindowState::Minimized,
-            x if x == WuiWindowState::Fullscreen as Self::Jni => WindowState::Fullscreen,
-            _ => panic!("invalid WindowState JNI value: {val}"),
-        }
-    }
-}
-
-// Generate JNI read/set for WindowState binding
-crate::jni_binding_primitive!(WindowState, window_state);
-
-use crate::reactive::{WuiWatcher, WuiWatcherMetadata};
-
-/// Creates a watcher for WindowState from native callbacks.
-///
-/// # Safety
-/// All function pointers must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_new_watcher_window_state(
-    data: *mut (),
-    call: unsafe extern "C" fn(*mut (), WuiWindowState, *mut WuiWatcherMetadata),
-    drop: unsafe extern "C" fn(*mut ()),
-) -> *mut WuiWatcher<WindowState> {
-    use alloc::boxed::Box;
-    let watcher = unsafe { WuiWatcher::new(data, call, drop) };
-    Box::into_raw(Box::new(watcher))
-}
+crate::ffi_watcher!(WindowState, WuiWindowState, window_state);
 
 /// FFI-compatible representation of [`WindowBackground`].
 ///
@@ -172,31 +141,124 @@ pub struct WuiWindow {
     pub max_size: *mut WuiComputed<Size>,
 }
 
+/// A uniquely owned pointer produced by [`IntoFFI`].
+///
+/// Keeping the ownership in a type lets Android discard unsupported window
+/// properties without scattering raw `Box::from_raw` calls across the app
+/// projection path.
+#[cfg(any(feature = "android-jni", test))]
+pub(crate) struct OwnedFfiHandle<T>(NonNull<T>);
+
+#[cfg(any(feature = "android-jni", test))]
+impl<T> OwnedFfiHandle<T> {
+    #[track_caller]
+    pub(crate) fn required(pointer: *mut T, field: &'static str) -> Self {
+        let pointer = NonNull::new(pointer).unwrap_or_else(|| panic!("{field} must not be null"));
+        Self(pointer)
+    }
+
+    fn optional(pointer: *mut T) -> Option<Self> {
+        NonNull::new(pointer).map(Self)
+    }
+
+    pub(crate) const fn as_ptr(&self) -> *mut T {
+        self.0.as_ptr()
+    }
+
+    pub(crate) fn into_raw(self) -> *mut T {
+        let pointer = self.as_ptr();
+        core::mem::forget(self);
+        pointer
+    }
+}
+
+#[cfg(any(feature = "android-jni", test))]
+impl<T> Drop for OwnedFfiHandle<T> {
+    fn drop(&mut self) {
+        unsafe {
+            drop(alloc::boxed::Box::from_raw(self.0.as_ptr()));
+        }
+    }
+}
+
+#[cfg(any(feature = "android-jni", test))]
+impl WuiWindowBackground {
+    fn into_android_owned_color(self) -> Option<OwnedFfiHandle<WuiColor>> {
+        match self {
+            Self::Opaque => None,
+            Self::Color { color } => Some(OwnedFfiHandle::required(
+                color,
+                "WuiWindow.background.color",
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "android-jni", test))]
+impl WuiWindow {
+    /// Retains the only window property consumed by Android's root activity and
+    /// releases every other Rust-owned FFI handle.
+    pub(crate) fn into_android_content(self) -> OwnedFfiHandle<WuiAnyView> {
+        let Self {
+            title,
+            closable: _,
+            resizable: _,
+            frame,
+            content,
+            state,
+            toolbar,
+            style: _,
+            background,
+            min_size,
+            max_size,
+        } = self;
+
+        let unused_handles = (
+            OwnedFfiHandle::required(title, "WuiWindow.title"),
+            OwnedFfiHandle::optional(frame),
+            OwnedFfiHandle::required(state, "WuiWindow.state"),
+            OwnedFfiHandle::optional(toolbar),
+            background.into_android_owned_color(),
+            OwnedFfiHandle::optional(min_size),
+            OwnedFfiHandle::optional(max_size),
+        );
+        let content = OwnedFfiHandle::required(content, "WuiWindow.content");
+        drop(unused_handles);
+        content
+    }
+
+    /// Releases a window which Android cannot represent.
+    pub(crate) fn dispose_android(self) {
+        drop(self.into_android_content());
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+fn toolbar_into_ffi(toolbar: Option<AnyView>) -> *mut WuiAnyView {
+    toolbar.into_ffi()
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn toolbar_into_ffi(_toolbar: Option<AnyView>) -> *mut WuiAnyView {
+    null_mut()
+}
+
 impl IntoFFI for Window {
     type FFI = WuiWindow;
 
     fn into_ffi(self) -> Self::FFI {
         let content = self.build_content();
-        // NOTE: Toolbars transfer ownership of an `AnyView` pointer to native.
-        // Only enable this on backends that actually consume (or drop) the pointer.
-        let toolbar = if cfg!(any(target_vendor = "apple", target_os = "android")) {
-            self.toolbar.into_ffi()
-        } else {
-            null_mut()
-        };
+        // Apple consumes the toolbar as native window chrome. Other backends,
+        // including Android, drop the Rust view without allocating an FFI handle.
+        let toolbar = toolbar_into_ffi(self.toolbar);
 
         WuiWindow {
             title: self.title.into_ffi(),
             closable: self.closable,
             resizable: self.resizable,
-            // Frame bindings are currently not consumed by native backends, and leaking
-            // them across FFI is easy to do accidentally. Until there is end-to-end support,
-            // do not transfer ownership.
-            frame: null_mut(),
+            frame: self.frame.into_ffi(),
             content: content.into_ffi(),
             state: self.state.into_ffi(),
-            // Toolbars are currently not rendered by native backends. Avoid leaking AnyView
-            // pointers across FFI by not transferring ownership.
             toolbar,
             style: self.style.into(),
             background: self.background.into(),
@@ -214,26 +276,22 @@ impl IntoFFI for Window {
 ///
 /// This function is called by Rust when a `Window` view needs to be shown.
 /// The native implementation should create and display the window.
-/// Native code should use the global environment to render the window content.
-///
 /// # Parameters
+/// - context: The native window-manager owner
 /// - `WuiWindow`: The window configuration to show
-pub type WindowShowFn = unsafe extern "C" fn(WuiWindow);
+pub type WindowShowFn = unsafe extern "C" fn(context: *mut (), window: WuiWindow);
 
 /// FFI-compatible WindowManager implementation.
 struct FFIWindowManager {
+    context: ForeignCallbackContext,
     show_fn: WindowShowFn,
 }
-
-// Safety: The function pointer is thread-safe to send as it points to static code.
-unsafe impl Send for FFIWindowManager {}
-unsafe impl Sync for FFIWindowManager {}
 
 impl FFIWindowManager {
     fn show(&self, window: Window) {
         let ffi_window = window.into_ffi();
         unsafe {
-            (self.show_fn)(ffi_window);
+            (self.show_fn)(self.context.data(), ffi_window);
         }
     }
 }
@@ -244,26 +302,30 @@ impl FFIWindowManager {
 /// management implementation. When `Window` views are rendered, the provided
 /// callback will be invoked to create and display native windows.
 ///
-/// Note: Native code should use its global environment to render window content,
-/// as the environment cannot be safely passed through the callback.
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 /// - `env` is a valid pointer to a `WuiEnv`
-/// - `show_fn` is a valid function pointer that can handle `WuiWindow` and create native windows
+/// - `context` remains valid until `drop_context` releases it
+/// - `show_fn` is valid for `context` and can create native windows
+/// - `drop_context` releases `context` exactly once
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_install_window_manager(
     env: *mut WuiEnv,
+    context: *mut (),
     show_fn: WindowShowFn,
+    drop_context: unsafe extern "C" fn(*mut ()),
 ) {
-    let env_ref = unsafe { &mut *env };
+    let env = unsafe { crate::borrow_ffi_mut(env) };
 
-    let ffi_manager = FFIWindowManager { show_fn };
+    let ffi_manager = FFIWindowManager {
+        context: unsafe { ForeignCallbackContext::new(context, drop_context) },
+        show_fn,
+    };
 
     let manager = WindowManager::new(move |window| {
         ffi_manager.show(window);
     });
 
-    env_ref.insert(manager);
+    env.insert(manager);
 }

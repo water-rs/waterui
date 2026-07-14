@@ -1,14 +1,13 @@
 use crate::components::text::WuiText;
 use crate::id::WuiId;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{WuiAnyView, WuiLabel, WuiStr};
+use crate::{AnyView, WuiAnyView, WuiLabel, WuiStr};
 use alloc::vec::Vec;
 use jiff::civil::{Date, DateTime};
 use waterui::text::styled::StyledStr;
 use waterui::{
     Color, Str,
     component::{
-        menu::ResolvedMenuItem,
         slider::SliderConfig,
         stepper::StepperConfig,
         text_field::{KeyboardType, ResolvedTextFieldConfig},
@@ -22,7 +21,7 @@ use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::picker::{PickerConfig, PickerItem, PickerStyle};
 use waterui_form::secure::{Secure, SecureFieldConfig};
 
-into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
+into_ffi! {KeyboardType, non_exhaustive, pub enum WuiKeyboardType {
     Text,
     Email,
     URL,
@@ -30,17 +29,30 @@ into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
     PhoneNumber
 }}
 
-into_ffi! {ResolvedTextFieldConfig,
-    pub struct WuiTextField {
-        label: WuiLabel,
-        value: *mut WuiBinding<StyledStr>,
-        prompt: WuiText,
-        keyboard: WuiKeyboardType,
-        selection_menu: *mut WuiComputed<Vec<ResolvedMenuItem>>,
+#[repr(C)]
+pub struct WuiTextField {
+    pub label: WuiLabel,
+    pub value: *mut WuiBinding<StyledStr>,
+    pub prompt: WuiText,
+    pub keyboard: WuiKeyboardType,
+    pub selection_menu: *mut crate::views::WuiAnyViews,
+}
+
+impl IntoFFI for ResolvedTextFieldConfig {
+    type FFI = WuiTextField;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiTextField {
+            label: self.label.into_ffi(),
+            value: self.value.into_ffi(),
+            prompt: self.prompt.into_ffi(),
+            keyboard: self.keyboard.into_ffi(),
+            selection_menu: crate::menu_items_views(self.selection_menu),
+        }
     }
 }
 
-into_ffi! {ToggleStyle, Automatic, pub enum WuiToggleStyle {
+into_ffi! {ToggleStyle, non_exhaustive, pub enum WuiToggleStyle {
     Automatic,
     Switch,
     Checkbox,
@@ -124,26 +136,61 @@ ffi_view!(PickerConfig, WuiPicker, picker);
 
 ffi_view!(SecureFieldConfig, WuiSecureField, secure_field);
 
-into_ffi! {PickerStyle, Automatic, pub enum WuiPickerStyle {
+into_ffi! {PickerStyle, non_exhaustive, pub enum WuiPickerStyle {
     Automatic,
     Menu,
     Radio,
+    Segmented,
 }}
 
-into_ffi! {PickerConfig,
-    pub struct WuiPicker {
-        items: *mut WuiComputed<Vec<PickerItem<Id>>>,
-        selection: *mut WuiBinding<Id>,
-        style: WuiPickerStyle,
+#[repr(C)]
+pub struct WuiPicker {
+    pub items: *mut crate::views::WuiAnyViews,
+    pub selection: *mut WuiBinding<Id>,
+    pub style: WuiPickerStyle,
+}
+
+impl IntoFFI for PickerConfig {
+    type FFI = WuiPicker;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiPicker {
+            items: crate::views::signal_vec_views(
+                self.items,
+                |items, index| items[index].tag,
+                |item| AnyView::new(ResolvedPickerItem(item)),
+            ),
+            selection: self.selection.into_ffi(),
+            style: self.style.into_ffi(),
+        }
     }
 }
 
-into_ffi! {PickerItem<Id>,
-    pub struct WuiPickerItem {
-        tag: WuiId,
-        content: WuiText,
+/// Raw semantic picker item stored in the framework's identity-aware collection.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ResolvedPickerItem(PickerItem<Id>);
+
+waterui_core::raw_view!(ResolvedPickerItem);
+
+#[repr(C)]
+pub struct WuiPickerItem {
+    pub tag: WuiId,
+    pub label: *mut WuiComputed<StyledStr>,
+}
+
+impl IntoFFI for ResolvedPickerItem {
+    type FFI = WuiPickerItem;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiPickerItem {
+            tag: self.0.tag.into_ffi(),
+            label: self.0.content.content().into_ffi(),
+        }
     }
 }
+
+ffi_view!(ResolvedPickerItem, WuiPickerItem, picker_item);
 
 into_ffi! {ColorPickerConfig,
     pub struct WuiColorPicker {

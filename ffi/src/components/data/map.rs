@@ -158,13 +158,16 @@ impl IntoFFI for MapConfig {
 // FFI view binding
 // =============================================================================
 
+#[cfg(feature = "c-api")]
 ffi_view!(MapConfig, WuiMap, map);
 
 // =============================================================================
 // Computed types for watchers
 // =============================================================================
 
+#[cfg(feature = "c-api")]
 crate::ffi_computed!(Region, WuiRegion, region);
+#[cfg(feature = "c-api")]
 crate::ffi_computed!(
     Vec<Annotation>,
     crate::array::WuiArray<WuiAnnotation>,

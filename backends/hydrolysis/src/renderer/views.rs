@@ -150,8 +150,8 @@ pub(crate) fn measure_shape_node(
     graphics_dimensions_from_proposal(proposal)
 }
 
-/// Renders a retained shape leaf every flush: emits a11y (unless hidden) then fills
-/// the shape path. The payload is fully resolved data (no signal), so no watch.
+/// Renders a retained shape leaf every flush: emits a11y (unless hidden), tracks
+/// the resolved fill signal, then fills the shape path.
 pub(crate) fn render_shape_node(
     ctx: &mut WidgetRenderContext<'_>,
     shape: &Rc<RefCell<ResolvedShape>>,
@@ -173,13 +173,14 @@ pub(crate) fn render_shape_parts(
     _env: &Environment,
 ) {
     let bounds = ctx.bounds;
-    let (path, fill) = {
+    let (path, fill_signal) = {
         let resolved = shape.borrow();
         (
             resolved_shape_to_path(&resolved, bounds),
-            resolved_color_to_peniko(resolved.fill),
+            resolved.fill.clone(),
         )
     };
+    let fill = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.transform;
     ctx.renderer_mut()
         .scene
@@ -235,9 +236,10 @@ pub(crate) fn render_morph_shape_parts(
         } else {
             renderer.sample_morph_progress(resolved.animation, node_id)
         };
+        let fill = renderer.read_signal(&resolved.fill);
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),
-            resolved_color_to_peniko(resolved.fill),
+            resolved_color_to_peniko(fill),
         )
     };
     renderer

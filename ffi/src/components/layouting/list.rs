@@ -68,12 +68,6 @@ pub unsafe extern "C" fn waterui_force_as_list_item(view: *mut WuiAnyView) -> Wu
     unsafe { (*any.downcast_unchecked::<ListItem>()).into_ffi() }
 }
 
-#[cfg(feature = "c-api")]
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_list_item_id() -> crate::WuiTypeId {
-    crate::WuiTypeId::of::<ListItem>()
-}
-
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_listItemId<'local>(
@@ -86,6 +80,12 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_listItemId<'local
 
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
+/// Forces an owned view handle into a list-item descriptor.
+///
+/// # Safety
+///
+/// `view_ptr` must be a valid owning `ListItem` view pointer and must not be
+/// used after this call.
 pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsListItem<'local>(
     mut env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,

@@ -33,6 +33,7 @@ import WaterUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
     private var headlessContext: WuiRootContext?
+    private var headlessTask: Task<Void, Never>?
     private let isAccessory: Bool = {{ ctx.accessory }}
 
     static func main() {
@@ -57,10 +58,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if isAccessory {
-            let context = WuiRootContext()
-            // Force view construction so Preview::body runs and TCP server starts.
-            _ = context.rootView
-            headlessContext = context
+            headlessTask = Task { @MainActor [weak self] in
+                let context = await WuiRootContext()
+                guard !Task.isCancelled else { return }
+                // Force view construction so Preview::body runs and TCP server starts.
+                _ = context.rootView
+                self?.headlessContext = context
+            }
             return
         }
 
@@ -79,6 +83,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         !isAccessory
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        headlessTask?.cancel()
+        headlessTask = nil
+        headlessContext = nil
     }
 }
 #endif

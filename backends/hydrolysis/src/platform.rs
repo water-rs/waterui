@@ -234,6 +234,7 @@ fn normalize_surface_format(
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer.
 pub trait SurfaceProvider {
+    fn adapter(&self) -> &wgpu::Adapter;
     fn device(&self) -> &wgpu::Device;
     fn queue(&self) -> &wgpu::Queue;
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
@@ -277,6 +278,7 @@ pub trait PlatformWindow {
 
 /// Headless offscreen rendering surface.
 pub struct OffscreenSurface {
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     width: u32,
@@ -562,6 +564,7 @@ impl OffscreenSurface {
             .expect("hydrolysis offscreen surface: failed to request wgpu device");
 
         Self {
+            adapter,
             device,
             queue,
             width: width.max(1),
@@ -625,6 +628,10 @@ or run on a host with a compute-capable GPU.{fallback_hint}",
 }
 
 impl SurfaceProvider for OffscreenSurface {
+    fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
+    }
+
     fn device(&self) -> &wgpu::Device {
         &self.device
     }
@@ -812,6 +819,7 @@ mod winit_impl {
     pub struct WinitSurface {
         _instance: wgpu::Instance,
         surface: wgpu::Surface<'static>,
+        adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
         config: wgpu::SurfaceConfiguration,
@@ -889,6 +897,7 @@ mod winit_impl {
             Self {
                 _instance: instance,
                 surface,
+                adapter,
                 device,
                 queue,
                 config,
@@ -897,6 +906,10 @@ mod winit_impl {
     }
 
     impl SurfaceProvider for WinitSurface {
+        fn adapter(&self) -> &wgpu::Adapter {
+            &self.adapter
+        }
+
         fn device(&self) -> &wgpu::Device {
             &self.device
         }

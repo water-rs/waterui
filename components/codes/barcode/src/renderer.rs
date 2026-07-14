@@ -2,13 +2,15 @@
 
 use bytemuck::{Pod, Zeroable};
 use core::fmt;
-use waterui_core::{Environment, Signal, layout::UnitPoint};
+use nami::signal::IntoComputed;
+use waterui_core::{Computed, Environment, layout::UnitPoint};
 use wgpu::util::DeviceExt;
 
 use crate::{BarcodeSource, view::BarcodeFill};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuView,
     color::{Color, ResolvedColor, Srgb},
+    reactive_color::ReactiveColor,
 };
 
 /// Uniforms consumed by `qr_render.wgsl`.
@@ -36,20 +38,17 @@ struct QrUniforms {
 ///
 /// The matrix is generated on CPU and packed into a bit buffer once, then
 /// rendered fully on GPU each frame by sampling that bit buffer directly in a
-/// fragment shader. Colors are kept as the unresolved [`Color`] type until
-/// `setup()` runs with an [`Environment`], at which point each color is
-/// resolved to GPU-ready linear RGB and cached in the GPU uniform buffer.
+/// fragment shader. Colors stay reactive for the renderer lifetime; changes
+/// resolve through the setup environment and wake the surface precisely.
 pub struct BarcodeRenderer {
     source: BarcodeSource,
     fill: BarcodeFill,
-    light_color: Color,
+    light_color: Computed<Color>,
     render_pipeline: Option<wgpu::RenderPipeline>,
-    bind_group_layout: Option<wgpu::BindGroupLayout>,
     uniform_buffer: Option<wgpu::Buffer>,
-    matrix_buffer: Option<wgpu::Buffer>,
-    current_matrix_dim: u32,
-    current_matrix_words: usize,
-    resolved: ResolvedColors,
+    bind_group: Option<wgpu::BindGroup>,
+    matrix_dim: u32,
+    reactive_colors: Option<ReactiveBarcodeColors>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -63,32 +62,86 @@ struct ResolvedColors {
     gradient_end_point: [f32; 2],
 }
 
-impl ResolvedColors {
-    fn default_black_on_white() -> Self {
+enum ReactiveBarcodeFill {
+    Solid(ReactiveColor),
+    LinearGradient {
+        start: ReactiveColor,
+        end: ReactiveColor,
+        start_point: UnitPoint,
+        end_point: UnitPoint,
+    },
+}
+
+struct ReactiveBarcodeColors {
+    light: ReactiveColor,
+    fill: ReactiveBarcodeFill,
+}
+
+impl ReactiveBarcodeColors {
+    fn new(fill: &BarcodeFill, light: &Computed<Color>, env: &Environment) -> Self {
+        let fill = match fill {
+            BarcodeFill::Solid(color) => ReactiveBarcodeFill::Solid(ReactiveColor::new(color, env)),
+            BarcodeFill::LinearGradient {
+                start_color,
+                end_color,
+                start_point,
+                end_point,
+            } => ReactiveBarcodeFill::LinearGradient {
+                start: ReactiveColor::new(start_color, env),
+                end: ReactiveColor::new(end_color, env),
+                start_point: *start_point,
+                end_point: *end_point,
+            },
+        };
         Self {
-            fill_mode: 0,
-            solid_dark_color: srgb_constant_to_array(Srgb::BLACK),
-            light_color: srgb_constant_to_array(Srgb::WHITE),
-            gradient_start_color: [0.0; 4],
-            gradient_end_color: [0.0; 4],
-            gradient_start_point: [0.0, 0.0],
-            gradient_end_point: [1.0, 1.0],
+            light: ReactiveColor::new(light, env),
+            fill,
+        }
+    }
+
+    fn install(&mut self, redraw: &waterui_graphics::RedrawHandle) {
+        self.light.install(redraw);
+        match &mut self.fill {
+            ReactiveBarcodeFill::Solid(color) => color.install(redraw),
+            ReactiveBarcodeFill::LinearGradient { start, end, .. } => {
+                start.install(redraw);
+                end.install(redraw);
+            }
+        }
+    }
+
+    fn resolve(&self) -> ResolvedColors {
+        let light_color = resolved_color_to_array(&self.light.get());
+        match &self.fill {
+            ReactiveBarcodeFill::Solid(color) => ResolvedColors {
+                fill_mode: 0,
+                solid_dark_color: resolved_color_to_array(&color.get()),
+                light_color,
+                gradient_start_color: [0.0; 4],
+                gradient_end_color: [0.0; 4],
+                gradient_start_point: [0.0, 0.0],
+                gradient_end_point: [1.0, 1.0],
+            },
+            ReactiveBarcodeFill::LinearGradient {
+                start,
+                end,
+                start_point,
+                end_point,
+            } => ResolvedColors {
+                fill_mode: 1,
+                solid_dark_color: [0.0; 4],
+                light_color,
+                gradient_start_color: resolved_color_to_array(&start.get()),
+                gradient_end_color: resolved_color_to_array(&end.get()),
+                gradient_start_point: unit_point_to_array(*start_point),
+                gradient_end_point: unit_point_to_array(*end_point),
+            },
         }
     }
 }
 
-fn srgb_constant_to_array(color: Srgb) -> [f32; 4] {
-    let resolved = color.resolve();
-    resolved_color_to_array(&resolved)
-}
-
 const fn resolved_color_to_array(color: &ResolvedColor) -> [f32; 4] {
     [color.red, color.green, color.blue, color.opacity]
-}
-
-fn resolve_color(color: &Color, env: &Environment) -> [f32; 4] {
-    let resolved = color.resolve(env).get();
-    resolved_color_to_array(&resolved)
 }
 
 const fn unit_point_to_array(point: UnitPoint) -> [f32; 2] {
@@ -99,7 +152,7 @@ impl fmt::Debug for BarcodeRenderer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeRenderer")
             .field("source", &self.source)
-            .field("current_matrix_dim", &self.current_matrix_dim)
+            .field("matrix_dim", &self.matrix_dim)
             .finish_non_exhaustive()
     }
 }
@@ -113,15 +166,13 @@ impl BarcodeRenderer {
     pub fn new(source: BarcodeSource) -> Self {
         Self {
             source,
-            fill: BarcodeFill::Solid(Color::from(Srgb::BLACK)),
-            light_color: Color::from(Srgb::WHITE),
+            fill: BarcodeFill::default(),
+            light_color: Computed::constant(Color::from(Srgb::WHITE)),
             render_pipeline: None,
-            bind_group_layout: None,
             uniform_buffer: None,
-            matrix_buffer: None,
-            current_matrix_dim: 0,
-            current_matrix_words: 0,
-            resolved: ResolvedColors::default_black_on_white(),
+            bind_group: None,
+            matrix_dim: 0,
+            reactive_colors: None,
         }
     }
 
@@ -134,38 +185,9 @@ impl BarcodeRenderer {
 
     /// Sets the light module/background color.
     #[must_use]
-    pub fn with_light_color(mut self, color: impl Into<Color>) -> Self {
-        self.light_color = color.into();
+    pub fn with_light_color(mut self, color: impl IntoComputed<Color>) -> Self {
+        self.light_color = color.into_computed();
         self
-    }
-
-    fn resolve_colors(&mut self, env: &Environment) {
-        let light_color = resolve_color(&self.light_color, env);
-        self.resolved = match &self.fill {
-            BarcodeFill::Solid(color) => ResolvedColors {
-                fill_mode: 0,
-                solid_dark_color: resolve_color(color, env),
-                light_color,
-                gradient_start_color: [0.0; 4],
-                gradient_end_color: [0.0; 4],
-                gradient_start_point: [0.0, 0.0],
-                gradient_end_point: [1.0, 1.0],
-            },
-            BarcodeFill::LinearGradient {
-                start_color,
-                end_color,
-                start_point,
-                end_point,
-            } => ResolvedColors {
-                fill_mode: 1,
-                solid_dark_color: [0.0; 4],
-                light_color,
-                gradient_start_color: resolve_color(start_color, env),
-                gradient_end_color: resolve_color(end_color, env),
-                gradient_start_point: unit_point_to_array(*start_point),
-                gradient_end_point: unit_point_to_array(*end_point),
-            },
-        };
     }
 
     fn create_render_pipeline(
@@ -247,93 +269,25 @@ impl BarcodeRenderer {
         (pipeline, bind_group_layout)
     }
 
-    fn ensure_matrix_buffer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn create_buffers_and_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+    ) {
         let matrix = self.source.matrix();
-        let needs_recreate = self.matrix_buffer.is_none()
-            || self.current_matrix_dim != matrix.dimension
-            || self.current_matrix_words != matrix.packed_data.len();
-
-        if needs_recreate {
-            self.matrix_buffer = Some(device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("QR matrix storage buffer"),
-                    contents: bytemuck::cast_slice(&matrix.packed_data),
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                },
-            ));
-            self.current_matrix_dim = matrix.dimension;
-            self.current_matrix_words = matrix.packed_data.len();
-        } else if let Some(buffer) = &self.matrix_buffer {
-            // Keep content fresh in case a future source updates matrix in place.
-            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&matrix.packed_data));
-        }
-    }
-
-    fn ensure_uniform_buffer(&mut self, device: &wgpu::Device) {
-        if self.uniform_buffer.is_some() {
-            return;
-        }
-        self.uniform_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+        self.matrix_dim = matrix.dimension;
+        let matrix_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("QR matrix storage buffer"),
+            contents: bytemuck::cast_slice(&matrix.packed_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("QR uniforms"),
             size: core::mem::size_of::<QrUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        }));
-    }
-}
-
-impl GpuView for BarcodeRenderer {
-    fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
-        let (pipeline, bgl) =
-            Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
-        self.render_pipeline = Some(pipeline);
-        self.bind_group_layout = Some(bgl);
-        self.ensure_uniform_buffer(ctx.device);
-        self.resolve_colors(env);
-        core::future::ready(())
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.ensure_uniform_buffer(frame.device);
-        self.ensure_matrix_buffer(frame.device, frame.queue);
-
-        let Some(pipeline) = &self.render_pipeline else {
-            return;
-        };
-        let Some(bind_group_layout) = &self.bind_group_layout else {
-            return;
-        };
-
-        let Some(uniform_buffer) = &self.uniform_buffer else {
-            return;
-        };
-        let Some(matrix_buffer) = &self.matrix_buffer else {
-            return;
-        };
-
-        let uniforms = QrUniforms {
-            matrix_dim: self.current_matrix_dim,
-            quiet_zone: self.source.quiet_zone(),
-            output_width: frame.width,
-            output_height: frame.height,
-            fill_mode: self.resolved.fill_mode,
-            _pad0: [0; 7],
-            solid_dark_color: self.resolved.solid_dark_color,
-            light_color: self.resolved.light_color,
-            gradient_start_color: self.resolved.gradient_start_color,
-            gradient_end_color: self.resolved.gradient_end_color,
-            gradient_start_point: self.resolved.gradient_start_point,
-            gradient_end_point: self.resolved.gradient_end_point,
-        };
-        frame
-            .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        let bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("QR render bind group"),
             layout: bind_group_layout,
             entries: &[
@@ -347,6 +301,63 @@ impl GpuView for BarcodeRenderer {
                 },
             ],
         });
+        self.uniform_buffer = Some(uniform_buffer);
+        self.bind_group = Some(bind_group);
+    }
+}
+
+impl GpuView for BarcodeRenderer {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
+        let (pipeline, bgl) =
+            Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
+        self.render_pipeline = Some(pipeline);
+        self.create_buffers_and_bind_group(ctx.device, &bgl);
+        let mut reactive_colors = ReactiveBarcodeColors::new(&self.fill, &self.light_color, env);
+        reactive_colors.install(&ctx.redraw_handle);
+        self.reactive_colors = Some(reactive_colors);
+        core::future::ready(())
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        let pipeline = self
+            .render_pipeline
+            .as_ref()
+            .expect("BarcodeRenderer render called before setup");
+        let bind_group = self
+            .bind_group
+            .as_ref()
+            .expect("BarcodeRenderer render called before setup");
+        let uniform_buffer = self
+            .uniform_buffer
+            .as_ref()
+            .expect("BarcodeRenderer render called before setup");
+        let resolved = self
+            .reactive_colors
+            .as_ref()
+            .expect("BarcodeRenderer render called before setup")
+            .resolve();
+
+        let uniforms = QrUniforms {
+            matrix_dim: self.matrix_dim,
+            quiet_zone: self.source.quiet_zone(),
+            output_width: frame.width,
+            output_height: frame.height,
+            fill_mode: resolved.fill_mode,
+            _pad0: [0; 7],
+            solid_dark_color: resolved.solid_dark_color,
+            light_color: resolved.light_color,
+            gradient_start_color: resolved.gradient_start_color,
+            gradient_end_color: resolved.gradient_end_color,
+            gradient_start_point: resolved.gradient_start_point,
+            gradient_end_point: resolved.gradient_end_point,
+        };
+        frame
+            .queue
+            .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         let mut encoder = frame
             .device
@@ -371,7 +382,7 @@ impl GpuView for BarcodeRenderer {
                 occlusion_query_set: None,
             });
             render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.set_bind_group(0, bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
 

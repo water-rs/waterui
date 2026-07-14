@@ -1,7 +1,10 @@
 //! Shared utilities for the GTK backend.
 
 use glib::object::ObjectExt;
-use nami::watcher::BoxWatcherGuard;
+use nami::{
+    Signal,
+    watcher::{BoxWatcherGuard, Context},
+};
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
     AccessibilityState, AccessibilityStateSignal,
@@ -24,6 +27,18 @@ use waterui_graphics::AppliedFilter;
 use waterui_graphics::color::ResolvedColor;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_shape::ClipShape;
+
+/// Installs a signal subscription before taking its initial snapshot.
+pub fn subscribe_then_get<S>(
+    signal: &S,
+    watcher: impl Fn(Context<S::Output>) + 'static,
+) -> (S::Output, S::Guard)
+where
+    S: Signal,
+{
+    let guard = signal.watch(watcher);
+    (signal.get(), guard)
+}
 
 /// Stores a watcher guard on a widget to prevent it from being dropped.
 ///

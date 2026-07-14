@@ -14,7 +14,7 @@ Build views with reactive state. When unsure, search `examples/*/src/lib.rs` for
 - Prefer `Binding`, `Computed`, and other signal inputs for dynamic behavior. Avoid reading `.get()` in view bodies when a reactive API can accept the signal directly.
 - Hydrolysis widget chrome is provided by a backend-neutral `WidgetTheme`. For Material Design 3 output, install `hydrolysis_m3::install(&mut env)` before running or previewing a Hydrolysis app.
 - Hydrolysis Material 3 colors use Material You system roles for WaterUI theme tokens. Use `hydrolysis_m3::MaterialColorSource::new(source_color)` to configure source color, variant, contrast level, spec version, and platform; call `.schemes()` to generate paired light/dark `MaterialColorSchemes`, then install one side with `install_with_source`, `install_with_color_schemes`, or `install_with_colors`.
-- For Material-specific view colors, use `hydrolysis_m3::color::*` role tokens such as `Primary`, `OnPrimary`, `PrimaryContainer`, `SurfaceContainerHighest`, and `OnSurfaceVariant`. These resolve from the installed `MaterialColorScheme`, while WaterUI's generic `theme_color::*` tokens remain mapped to the closest Material roles.
+- For Material-specific view colors, use `hydrolysis_m3::color::*` role tokens such as `Primary`, `OnPrimary`, `PrimaryContainer`, `SurfaceContainerHighest`, and `OnSurfaceVariant`. These resolve from the installed `MaterialColorScheme`, while WaterUI's portable `theme_color::*` tokens map semantic roles such as `Accent`, `AccentContainer`, `Tertiary`, and `TertiaryContainer` to the active platform theme.
 - Use `water preview --backend hydrolysis --theme material3` for Hydrolysis Material 3 visual checks. Pass `--expr` when previewing an inline Rust expression; the CLI writes the expression into generated Rust preview code and rustc compiles it normally with `waterui::prelude::*` and `waterui` in scope.
 
 ## CRITICAL: Reactive-First Pattern
@@ -218,7 +218,9 @@ Blue.size(80.0, 80.0)       // colored rectangle
 BRAND.with_opacity(0.5)
 ```
 
-Theme colors: `Foreground`, `MutedForeground`, `Accent`, `Background`, `Surface`, `Border`
+Theme colors: `Foreground`, `MutedForeground`, `Accent`, `AccentContainer`,
+`AccentForeground`, `Tertiary`, `TertiaryContainer`, `Background`, `Surface`,
+`SurfaceVariant`, `Border`
 
 ## Icons
 

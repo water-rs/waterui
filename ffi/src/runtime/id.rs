@@ -1,7 +1,7 @@
 use waterui::AnyView;
 use waterui_core::id::Id;
 
-use crate::{IntoFFI, IntoRust, WuiAnyView, ffi_reactive};
+use crate::{IntoFFI, IntoRust, WuiAnyView, ffi_binding};
 
 #[repr(C)]
 #[derive(Default)]
@@ -34,5 +34,6 @@ into_ffi! {
     }
 }
 
-// Add Id binding support
-ffi_reactive!(Id, WuiId);
+ffi_binding!(Id, WuiId, id);
+#[cfg(feature = "c-api")]
+crate::ffi_watcher!(Id, WuiId, id);

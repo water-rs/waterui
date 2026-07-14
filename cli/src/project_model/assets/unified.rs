@@ -54,14 +54,7 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
         write_generated_apple_app_icon(accent, &xcassets_dest).await?;
     }
 
-    if let Some(theme) = project.manifest().theme.as_ref() {
-        if !theme.is_empty() {
-            write_apple_theme_json(theme, dest_dir).await?;
-        }
-        write_apple_accent_color(accent, &xcassets_dest).await?;
-    } else {
-        write_apple_accent_color(None, &xcassets_dest).await?;
-    }
+    write_apple_accent_color(accent, &xcassets_dest).await?;
 
     Ok(())
 }
@@ -258,27 +251,6 @@ fn detect_font_family(path: &Path) -> eyre::Result<String> {
             )
         })?;
     Ok(family)
-}
-
-async fn write_apple_theme_json(theme: &ThemeConfig, dest_dir: &Path) -> eyre::Result<()> {
-    for value in [
-        theme.background.as_deref(),
-        theme.surface.as_deref(),
-        theme.surface_variant.as_deref(),
-        theme.border.as_deref(),
-        theme.foreground.as_deref(),
-        theme.muted_foreground.as_deref(),
-        theme.accent.as_deref(),
-        theme.accent_foreground.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        validate_hex_color(value)?;
-    }
-    let bytes = serde_json::to_vec_pretty(theme)?;
-    fs::write(dest_dir.join("WaterUITheme.json"), bytes).await?;
-    Ok(())
 }
 
 async fn write_apple_accent_color(accent: Option<&str>, xcassets_dest: &Path) -> eyre::Result<()> {

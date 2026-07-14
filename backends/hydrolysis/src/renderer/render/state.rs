@@ -7,6 +7,7 @@ pub struct HydroState {
     /// measurement via `Arc`. See [`TextMeasureService`].
     pub(crate) text: Arc<TextMeasureService>,
     pub(crate) measurement: MeasurementCaches,
+    pub(crate) frame_adapter: Option<wgpu::Adapter>,
     pub(crate) frame_device: Option<wgpu::Device>,
     pub(crate) frame_queue: Option<wgpu::Queue>,
 }
@@ -16,6 +17,7 @@ impl Default for HydroState {
         Self {
             text: Arc::new(TextMeasureService::new()),
             measurement: MeasurementCaches::default(),
+            frame_adapter: None,
             frame_device: None,
             frame_queue: None,
         }
@@ -36,12 +38,19 @@ impl HydroState {
             .fonts_mut()
     }
 
-    pub(crate) fn set_frame_resources(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub(crate) fn set_frame_resources(
+        &mut self,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        self.frame_adapter = Some(adapter.clone());
         self.frame_device = Some(device.clone());
         self.frame_queue = Some(queue.clone());
     }
 
     pub(crate) fn clear_frame_resources(&mut self) {
+        self.frame_adapter = None;
         self.frame_device = None;
         self.frame_queue = None;
     }
@@ -54,6 +63,12 @@ impl HydroState {
             panic!("hydrolysis frame queue is unavailable during AppliedFilter dispatch")
         });
         (device, queue)
+    }
+
+    pub(crate) fn frame_adapter(&self) -> &wgpu::Adapter {
+        self.frame_adapter.as_ref().unwrap_or_else(|| {
+            panic!("hydrolysis frame adapter is unavailable during GPU subtree capture")
+        })
     }
 }
 

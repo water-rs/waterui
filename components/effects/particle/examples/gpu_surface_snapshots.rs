@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use waterui_core::Environment;
-use waterui_graphics::{OffscreenRenderConfig, OffscreenRenderOutput, OffscreenSize, color::Color};
+use waterui_graphics::{
+    GpuRuntime, OffscreenRenderConfig, OffscreenRenderOutput, OffscreenSize, color::Color,
+};
 use waterui_particle::{ParticleShape, ParticleSystem};
 
 struct SnapshotSpec {
@@ -145,14 +147,19 @@ fn composite_over_opaque_background(
     }
 }
 
-fn write_snapshot(output_dir: &Path, spec: SnapshotSpec) {
+#[expect(
+    clippy::future_not_send,
+    reason = "offscreen GpuView state is intentionally main-thread local"
+)]
+async fn write_snapshot(runtime: &GpuRuntime, output_dir: &Path, spec: SnapshotSpec) {
     let size = OffscreenSize::try_from_pixels(spec.width, spec.height)
         .expect("snapshot frame size must be valid");
     let render_config = OffscreenRenderConfig::new(size);
     let mut env = Environment::new();
     let output = spec
         .system
-        .render_offscreen_frames(render_config, &mut env, spec.frames)
+        .render_offscreen_frames(runtime, render_config, &mut env, spec.frames)
+        .await
         .expect("particle snapshot render should succeed");
 
     fs::write(
@@ -173,11 +180,18 @@ fn write_snapshot(output_dir: &Path, spec: SnapshotSpec) {
     .expect("composited particle png write should succeed");
 }
 
-fn main() {
+#[expect(
+    clippy::future_not_send,
+    reason = "offscreen GpuView state is intentionally main-thread local"
+)]
+async fn run() {
     let output_dir = env::args_os().nth(1).map(PathBuf::from).expect(
         "usage: cargo run -p waterui-particle --example gpu_surface_snapshots -- <output-dir>",
     );
     fs::create_dir_all(&output_dir).expect("snapshot output directory must be creatable");
+    let runtime = GpuRuntime::new()
+        .await
+        .expect("particle snapshot export requires a working GPU runtime");
 
     let snapshots = [
         SnapshotSpec {
@@ -247,6 +261,10 @@ fn main() {
     ];
 
     for spec in snapshots {
-        write_snapshot(&output_dir, spec);
+        write_snapshot(&runtime, &output_dir, spec).await;
     }
+}
+
+fn main() {
+    pollster::block_on(run());
 }

@@ -16,7 +16,7 @@
 use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use crate::Url;
 use executor_core::spawn_local;
@@ -28,7 +28,7 @@ use waterkit_fs::WaterFs;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{AnyView, Binding, Computed, Environment, Metadata, Retain, Signal, View};
+use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
 use waterui_image::Image;
 use zenwave::{Client, Method, redirect::FollowRedirect};
 
@@ -55,8 +55,6 @@ pub struct Photo {
     content: Dynamic,
     /// Handle for publishing decoded frames into `content`.
     content_handler: DynamicHandler,
-    /// Guards one-shot loading for the current component instance.
-    load_started: Binding<bool>,
 }
 
 impl core::fmt::Debug for Photo {
@@ -66,7 +64,6 @@ impl core::fmt::Debug for Photo {
             .field("on_event", &self.on_event.is_some())
             .field("content", &self.content)
             .field("content_handler", &self.content_handler)
-            .field("load_started", &self.load_started)
             .finish()
     }
 }
@@ -95,7 +92,6 @@ impl Photo {
             on_event: None,
             content,
             content_handler,
-            load_started: Binding::bool(false),
         }
     }
 
@@ -149,54 +145,96 @@ impl View for Photo {
             on_event,
             content,
             content_handler,
-            load_started,
         } = self;
         let env_for_event = env.clone();
         let on_event = Rc::new(RefCell::new(on_event));
-        let generation = Binding::usize(0);
-
-        let guard = source.watch({
-            let on_event = Rc::clone(&on_event);
-            let content_handler = content_handler.clone();
-            let generation = generation.clone();
-            let env = env_for_event.clone();
-            move |ctx| {
-                start_load_task(
-                    ctx.into_value(),
-                    Rc::clone(&on_event),
-                    content_handler.clone(),
-                    env.clone(),
-                    generation.clone(),
-                );
-            }
-        });
+        let generation = Rc::new(Cell::new(0));
+        let start = move |url| {
+            start_load_task(
+                url,
+                Rc::clone(&on_event),
+                content_handler.clone(),
+                env_for_event.clone(),
+                generation.clone(),
+            );
+        };
+        let load_state = Rc::new(RefCell::new(PhotoLoadState::default()));
+        let guard = subscribe_photo_source(&source, &load_state, start.clone());
 
         AnyView::new(Metadata::new(
             Metadata::new(
                 content,
                 LifeCycleHook::new(LifeCycle::Appear, {
-                    let source = source.clone();
-                    let on_event = Rc::clone(&on_event);
-                    let content_handler = content_handler;
-                    let generation = generation.clone();
-                    move || {
-                        if load_started.get() {
-                            return;
-                        }
-                        load_started.set(true);
-                        start_load_task(
-                            source.get(),
-                            Rc::clone(&on_event),
-                            content_handler.clone(),
-                            env_for_event.clone(),
-                            generation.clone(),
-                        );
-                    }
+                    let load_state = Rc::clone(&load_state);
+                    move || appear_photo(&load_state, &start)
                 }),
             ),
-            Retain::new((guard, source, on_event, generation)),
+            Retain::new((guard, source)),
         ))
     }
+}
+
+#[derive(Default)]
+struct PhotoLoadState {
+    appeared: bool,
+    latest_source: Option<Url>,
+    last_started_source: Option<Url>,
+}
+
+impl PhotoLoadState {
+    fn update_source(&mut self, source: Url) -> Option<Url> {
+        self.latest_source = Some(source.clone());
+        self.start_if_ready(source)
+    }
+
+    fn appear(&mut self) -> Option<Url> {
+        self.appeared = true;
+        let source = self
+            .latest_source
+            .clone()
+            .expect("Photo source must be initialized before its Appear lifecycle event");
+        self.start_if_ready(source)
+    }
+
+    fn start_if_ready(&mut self, source: Url) -> Option<Url> {
+        if !self.appeared || self.last_started_source.as_ref() == Some(&source) {
+            return None;
+        }
+        self.last_started_source = Some(source.clone());
+        Some(source)
+    }
+}
+
+fn update_photo_source(state: &Rc<RefCell<PhotoLoadState>>, source: Url, start: &impl Fn(Url)) {
+    let source = state.borrow_mut().update_source(source);
+    if let Some(source) = source {
+        start(source);
+    }
+}
+
+fn appear_photo(state: &Rc<RefCell<PhotoLoadState>>, start: &impl Fn(Url)) {
+    let source = state.borrow_mut().appear();
+    if let Some(source) = source {
+        start(source);
+    }
+}
+
+fn subscribe_photo_source<S, F>(
+    source: &S,
+    state: &Rc<RefCell<PhotoLoadState>>,
+    start: F,
+) -> S::Guard
+where
+    S: Signal<Output = Url>,
+    F: Clone + Fn(Url) + 'static,
+{
+    let guard = source.watch({
+        let state = Rc::clone(state);
+        let start = start.clone();
+        move |context| update_photo_source(&state, context.into_value(), &start)
+    });
+    update_photo_source(state, source.get(), &start);
+    guard
 }
 
 type PhotoEventHandler = Rc<RefCell<Option<waterui_core::handler::BoxedEventAction<Event>>>>;
@@ -206,9 +244,12 @@ fn start_load_task(
     on_event: PhotoEventHandler,
     handler: DynamicHandler,
     env: Environment,
-    generation: Binding<usize>,
+    generation: Rc<Cell<usize>>,
 ) {
-    let token = generation.get().saturating_add(1);
+    let token = generation
+        .get()
+        .checked_add(1)
+        .expect("Photo load generation overflowed");
     generation.set(token);
     handler.set(());
     spawn_local(async move {
@@ -310,50 +351,65 @@ pub fn photo(source: impl IntoComputed<Url>) -> Photo {
 }
 
 #[cfg(test)]
-fn png_contains_cicp_pq(bytes: &[u8]) -> bool {
-    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if bytes.len() < 8 || &bytes[0..8] != PNG_SIG {
-        return false;
-    }
-    let mut offset = 8usize;
-    while offset + 12 <= bytes.len() {
-        let len = u32::from_be_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]) as usize;
-        let chunk_start = offset + 8;
-        let chunk_end = chunk_start.saturating_add(len);
-        if chunk_end + 4 > bytes.len() {
-            return false;
-        }
-        let chunk_type = &bytes[offset + 4..offset + 8];
-        if chunk_type == b"cICP" {
-            if len != 4 {
-                return false;
-            }
-            let data = &bytes[chunk_start..chunk_end];
-            return data[1] == 16; // PQ transfer
-        }
-        if chunk_type == b"IEND" {
-            break;
-        }
-        offset = chunk_end + 4;
-    }
-    false
-}
-
-#[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-    use std::path::PathBuf;
+    use std::{cell::RefCell, rc::Rc};
 
-    use super::{fetch_and_decode_streaming, png_contains_cicp_pq};
+    use super::{PhotoLoadState, appear_photo, fetch_and_decode_streaming, subscribe_photo_source};
     use crate::Url;
-    use image::{ImageDecoder, ImageEncoder as _};
-    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize};
+    use image::ImageEncoder as _;
+    use waterui_core::{Binding, Signal, reactive::watcher::Context};
     use waterui_image::{DecodePath, Image};
+
+    #[derive(Clone)]
+    struct EmitsDuringSubscription {
+        source: Binding<Url>,
+        replacement: Url,
+    }
+
+    impl Signal for EmitsDuringSubscription {
+        type Output = Url;
+        type Guard = <Binding<Url> as Signal>::Guard;
+
+        fn get(&self) -> Self::Output {
+            self.source.get()
+        }
+
+        fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+            self.source.set(self.replacement.clone());
+            let watcher = Rc::new(watcher);
+            watcher(Context::from(self.replacement.clone()));
+            self.source.watch(move |context| watcher(context))
+        }
+    }
+
+    #[test]
+    fn source_subscription_and_appear_start_each_url_once() {
+        let replacement = Url::from_file_path_str("/photos/replacement.png");
+        let source = Binding::container(Url::from_file_path_str("/photos/initial.png"));
+        let signal = EmitsDuringSubscription {
+            source: source.clone(),
+            replacement: replacement.clone(),
+        };
+        let load_state = Rc::new(RefCell::new(PhotoLoadState::default()));
+        let started = Rc::new(RefCell::new(Vec::new()));
+        let start = {
+            let started = Rc::clone(&started);
+            move |source| started.borrow_mut().push(source)
+        };
+
+        let _guard = subscribe_photo_source(&signal, &load_state, start.clone());
+        assert!(
+            started.borrow().is_empty(),
+            "source updates before Appear must not start offscreen loading"
+        );
+
+        appear_photo(&load_state, &start);
+        source.set(replacement.clone());
+        let next = Url::from_file_path_str("/photos/next.png");
+        source.set(next.clone());
+
+        assert_eq!(*started.borrow(), vec![replacement, next]);
+    }
 
     fn sample_png_bytes() -> Vec<u8> {
         let mut png = Vec::new();
@@ -411,26 +467,15 @@ mod tests {
                 ));
             }
 
-            let mut validated_cases = 0usize;
             for (name, raw_url) in cases {
                 let url: Url = raw_url.parse().expect("url should parse");
                 let mut frames = 0usize;
-                let result = fetch_and_decode_streaming(url, |_| {
+                fetch_and_decode_streaming(url, |_| {
                     frames += 1;
                 })
-                .await;
-                let Err(e) = result else {
-                    assert!(frames >= 1, "{name} should publish at least one frame");
-                    validated_cases += 1;
-                    continue;
-                };
-                eprintln!("[streaming_decode_real_images_smoke] skip {name}: {e}");
-            }
-
-            if validated_cases == 0 {
-                eprintln!(
-                    "[streaming_decode_real_images_smoke] no cases validated; network may be unavailable in this environment"
-                );
+                .await
+                .unwrap_or_else(|error| panic!("{name} streaming decode failed: {error}"));
+                assert!(frames >= 1, "{name} should publish at least one frame");
             }
         });
     }
@@ -452,18 +497,15 @@ mod tests {
             let mut selected = None;
             for url in candidates {
                 let mut client = FollowRedirect::new(zenwave::client());
-                let response = match client.method(Method::GET, url).await {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        eprintln!(
-                            "[hdr_avif_decode_real_image_smoke] skip candidate due to network error: {e}"
-                        );
-                        continue;
-                    }
-                };
-                if !response.status().is_success() {
-                    continue;
-                }
+                let response = client
+                    .method(Method::GET, url)
+                    .await
+                    .expect("HDR AVIF sample request should succeed");
+                assert!(
+                    response.status().is_success(),
+                    "status={}",
+                    response.status()
+                );
                 let bytes = response
                     .into_body()
                     .into_bytes()
@@ -502,19 +544,13 @@ mod tests {
             use zenwave::{Client, Method, redirect::FollowRedirect};
 
             let mut client = FollowRedirect::new(zenwave::client());
-            let response = match client
+            let response = client
                 .method(
                     Method::GET,
                     "https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic",
                 )
                 .await
-            {
-                Ok(resp) => resp,
-                Err(e) => {
-                    eprintln!("[heic_h265_decode_real_image_smoke] skip due to network error: {e}");
-                    return;
-                }
-            };
+                .expect("HEIC sample request should succeed");
             assert!(
                 response.status().is_success(),
                 "status={}",
@@ -539,19 +575,13 @@ mod tests {
             use zenwave::{Client, Method, redirect::FollowRedirect};
 
             let mut client = FollowRedirect::new(zenwave::client());
-            let response = match client
+            let response = client
                 .method(
                     Method::GET,
                     "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile0.8bpc.yuv420.avif",
                 )
                 .await
-            {
-                Ok(resp) => resp,
-                Err(e) => {
-                    eprintln!("[av1_decode_fallback_probe_smoke] skip due to network error: {e}");
-                    return;
-                }
-            };
+                .expect("AV1 sample request should succeed");
             assert!(
                 response.status().is_success(),
                 "status={}",
@@ -565,11 +595,6 @@ mod tests {
 
             let platform_probe = waterkit_codec::decode_image_platform(&bytes);
             let platform_ok = platform_probe.is_ok();
-            if let Err(err) = &platform_probe {
-                eprintln!(
-                    "[av1_decode_fallback_probe_smoke] platform AV1 decode unavailable, expecting software fallback: {err}"
-                );
-            }
 
             let final_image = Image::from_encoded(&bytes)
                 .expect("AV1 should decode via platform or software path");
@@ -599,88 +624,6 @@ mod tests {
                     .expect("AV1 software fallback should decode on platform AV1 decode miss");
                 assert!(software_probe.width() > 0 && software_probe.height() > 0);
             }
-            eprintln!(
-                "[av1_decode_fallback_probe_smoke] platform_ok={platform_ok} selected_path={path:?}"
-            );
-        });
-    }
-
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
-    #[test]
-    #[ignore = "manual: network HDR Photo decode, HDR offscreen render, and PNG HDR verification"]
-    fn photo_network_hdr_offscreen_png_is_hdr() {
-        futures::executor::block_on(async {
-            let candidates = [
-                "https://www.bandisoft.com/bandiview/help/hdr-samples/hdr_cosmos01650_cicp9-16-9_yuv420_limited_qp10.avif",
-                "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile0.10bpc.yuv420.avif",
-                "https://raw.githubusercontent.com/link-u/avif-sample-images/master/hato.profile0.10bpc.yuv420.avif",
-            ];
-
-            let export_dir = PathBuf::from("/tmp/waterui-photo-offscreen-hdr");
-            std::fs::create_dir_all(&export_dir).expect("export directory should be creatable");
-
-            for raw_url in candidates {
-                let url: Url = raw_url.parse().expect("url should parse");
-                let mut last_frame: Option<Image> = None;
-                if let Err(e) = fetch_and_decode_streaming(url, |image| {
-                    last_frame = Some(image);
-                })
-                .await
-                {
-                    eprintln!("[photo_network_hdr_offscreen_png_is_hdr] skip {raw_url}: {e}");
-                    continue;
-                }
-
-                let Some(image) = last_frame else {
-                    continue;
-                };
-                let (width, height) = image.dimensions();
-                let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
-                    .expect("offscreen size must be valid");
-                let config =
-                    OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
-                let mut env = waterui_core::Environment::new();
-                let Ok(output) = image.render_offscreen_hdr(config, &mut env) else {
-                    continue;
-                };
-
-                let max_rgb = output.max_rgb_linear();
-                let hdr_ratio = output.hdr_pixel_ratio();
-                if max_rgb <= 1.0 || hdr_ratio <= 0.0 {
-                    eprintln!(
-                        "[photo_network_hdr_offscreen_png_is_hdr] sample lacks HDR headroom: url={raw_url}, max_rgb={max_rgb:.6}, hdr_ratio={hdr_ratio:.6}"
-                    );
-                    continue;
-                }
-
-                let png_path = export_dir.join("photo_hdr_network_offscreen.png");
-                output
-                    .save_png(&png_path)
-                    .expect("HDR PNG should be writable");
-
-                let png_bytes = std::fs::read(&png_path).expect("HDR PNG should be readable");
-                let decoder = image::codecs::png::PngDecoder::new(Cursor::new(&png_bytes))
-                    .expect("exported PNG should decode");
-                assert_eq!(
-                    decoder.color_type(),
-                    image::ColorType::Rgba16,
-                    "HDR offscreen export must be 16-bit PNG"
-                );
-                let has_hdr_cicp = png_contains_cicp_pq(&png_bytes);
-                assert!(
-                    has_hdr_cicp,
-                    "HDR offscreen export must carry cICP PQ metadata"
-                );
-
-                eprintln!(
-                    "[photo_network_hdr_offscreen_png_is_hdr] exported={}, url={}, max_rgb={max_rgb:.6}, hdr_ratio={hdr_ratio:.6}",
-                    png_path.display(),
-                    raw_url
-                );
-                return;
-            }
-
-            panic!("no HDR network sample produced a valid HDR PNG export");
         });
     }
 }

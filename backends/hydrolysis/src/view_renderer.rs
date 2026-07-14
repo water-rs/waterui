@@ -79,7 +79,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 let device = surface.device();
                 let queue = surface.queue();
                 let mut renderer = HydrolysisRenderer::new(device);
-                renderer.set_frame_resources(device, queue);
+                renderer.set_frame_resources(surface.adapter(), device, queue);
                 renderer.reset_scene();
                 renderer.begin_rebuild_frame();
 
@@ -96,6 +96,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 );
                 renderer.finish_rebuild_frame();
                 renderer.render_scene_to_texture(crate::renderer::HydrolysisRenderTarget {
+                    adapter: surface.adapter(),
                     device,
                     queue,
                     texture: Some(frame.texture()),

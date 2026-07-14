@@ -8,7 +8,7 @@ use icu_locid::{LanguageIdentifier, Locale as IcuLocale};
 use icu_locid_transform::LocaleFallbacker;
 use icu_locid_transform::fallback::LocaleFallbackConfig;
 use icu_provider::DataLocale;
-use nami::impl_constant;
+use nami::{Binding, impl_constant};
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
 
@@ -226,6 +226,10 @@ fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut
 
 impl Extractor for Locale {
     fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
+        if let Some(locale) = env.get::<Binding<Self>>() {
+            return Ok(locale.get());
+        }
+
         if let Some(locale) = env.get::<Self>().cloned() {
             return Ok(locale);
         }

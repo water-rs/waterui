@@ -76,7 +76,7 @@ impl TestHost {
         );
 
         let surface = platform.surface();
-        renderer.set_frame_resources(surface.device(), surface.queue());
+        renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
         let env = self.env.clone().extending(SceneViewMergeToParent);
@@ -93,6 +93,7 @@ impl TestHost {
             .acquire()
             .expect("waterui-testing failed to acquire offscreen frame");
         renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
+            adapter: surface.adapter(),
             device: surface.device(),
             queue: surface.queue(),
             texture: Some(frame.texture()),

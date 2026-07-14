@@ -7,7 +7,7 @@ mod retained_scene;
 mod tree;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
-use waterui::{Binding, Color, SignalExt as _, ViewExt as _};
+use waterui::{Binding, Color, Computed, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::slider::slider;
@@ -32,8 +32,107 @@ fn test_renderer() -> HydrolysisRenderer {
         crate::platform::OffscreenWindow::new_for_tests(160, 160, wgpu::TextureFormat::Rgba8Unorm);
     let surface = platform.surface();
     let mut renderer = HydrolysisRenderer::new(surface.device());
-    renderer.set_frame_resources(surface.device(), surface.queue());
+    renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
     renderer
+}
+
+fn test_environment() -> Environment {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
+        native_executor::NativeExecutor::new(),
+    ));
+    let mut env = Environment::new();
+    crate::testing::install_theme(&mut env);
+    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    env
+}
+
+#[derive(Clone)]
+struct EmitsDuringSignalSubscription<T> {
+    subscribed: Rc<Cell<bool>>,
+    snapshot: T,
+    update: nami::watcher::Context<T>,
+}
+
+impl<T: Clone + 'static> Signal for EmitsDuringSignalSubscription<T> {
+    type Output = T;
+    type Guard = ();
+
+    fn get(&self) -> Self::Output {
+        assert!(
+            self.subscribed.get(),
+            "animated signal must subscribe before reading its snapshot"
+        );
+        self.snapshot.clone()
+    }
+
+    fn identity(&self) -> Option<nami::SignalIdentity> {
+        Some(nami::SignalIdentity::from_rc(&self.subscribed))
+    }
+
+    fn watch(
+        &self,
+        watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static,
+    ) -> Self::Guard {
+        self.subscribed.set(true);
+        watcher(self.update.clone());
+    }
+}
+
+fn registration_signal<T: Clone + 'static>(
+    snapshot: T,
+    update: nami::watcher::Context<T>,
+) -> EmitsDuringSignalSubscription<T> {
+    EmitsDuringSignalSubscription {
+        subscribed: Rc::new(Cell::new(false)),
+        snapshot,
+        update,
+    }
+}
+
+#[test]
+fn subscribed_snapshot_preserves_registration_animation_metadata() {
+    let signal = registration_signal(
+        0.25,
+        nami::watcher::Context::from(0.25).with(Animation::linear(Duration::from_millis(250))),
+    );
+    let metadata_replayed = Rc::new(Cell::new(false));
+
+    let (subscription, snapshot) = super::signals::SubscribedSnapshot::new(&signal);
+    subscription.activate({
+        let metadata_replayed = Rc::clone(&metadata_replayed);
+        move |update| {
+            metadata_replayed.set(update.metadata().try_get::<Animation>().is_some());
+        }
+    });
+
+    assert_eq!(snapshot, 0.25);
+    assert!(signal.subscribed.get());
+    assert!(metadata_replayed.get());
+}
+
+#[test]
+fn animated_scalar_subscribes_before_reading_its_snapshot() {
+    let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
+    let mut renderer = test_renderer();
+
+    let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, usize::MAX);
+
+    assert_eq!(resolved, 0.25);
+    assert!(signal.subscribed.get());
+}
+
+#[test]
+fn toggle_progress_subscribes_before_reading_its_snapshot() {
+    let signal = registration_signal(false, nami::watcher::Context::from(false));
+    let mut renderer = test_renderer();
+
+    let (progress, selected) =
+        renderer.resolve_toggle_progress(&signal, Animation::linear(Duration::ZERO));
+
+    assert_eq!(progress, 0.0);
+    assert!(!selected);
+    assert!(signal.subscribed.get());
 }
 
 fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
@@ -80,7 +179,7 @@ fn text_input_target(
 
 #[test]
 fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
-    let env = Environment::default();
+    let env = test_environment();
     let child = normalize_layout_view(
         AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
             HorizontalAlignment::Leading,
@@ -90,7 +189,7 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
     );
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
     let mut state = HydroState::default();
     let dimensions = measure_layout_dimensions(
@@ -109,7 +208,7 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
 
 #[test]
 fn scale_metadata_is_layout_transparent() {
-    let env = Environment::default();
+    let env = test_environment();
     let scale = Binding::f32(1.0);
     let view = normalize_layout_view(
         AnyView::new(
@@ -133,12 +232,7 @@ fn scale_metadata_is_layout_transparent() {
 
 #[test]
 fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        native_executor::NativeExecutor::new(),
-    ));
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let value = Binding::f64(0.5);
     let view = normalize_layout_view(
         AnyView::new(slider("Playback position", &value).hide_label()),
@@ -158,12 +252,7 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
 
 #[test]
 fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposal() {
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        native_executor::NativeExecutor::new(),
-    ));
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
     let mut state = HydroState::default();
     let state = RefCell::new(&mut state);
@@ -180,12 +269,7 @@ fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposa
 
 #[test]
 fn state_wrapped_button_remains_non_stretch_for_layout() {
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        native_executor::NativeExecutor::new(),
-    ));
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let expanded = Binding::bool(false);
     let view = normalize_layout_view(
         AnyView::new(
@@ -213,12 +297,7 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
 
 #[test]
 fn vstack_places_state_wrapped_button_at_intrinsic_width() {
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        native_executor::NativeExecutor::new(),
-    ));
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let expanded = Binding::bool(false);
     let view = vstack((
         hstack((
@@ -267,7 +346,7 @@ fn draggable_metadata_delivers_drag_data_to_drop_destination() {
     .spacing(20.0);
 
     let mut renderer = test_renderer();
-    let env = Environment::new();
+    let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 160.0, 80.0);
 
     capture_root_window(&mut renderer, view, &env, bounds);
@@ -339,10 +418,10 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
         let surface = platform.surface();
         HydrolysisRenderer::new(surface.device())
     };
-    let env = Environment::new();
+    let env = test_environment();
     let bounds = vello::kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
     let surface = platform.surface();
-    renderer.set_frame_resources(surface.device(), surface.queue());
+    renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
     capture_root_window(&mut renderer, view, &env, bounds);
 
     let point = vello::kurbo::Point::new(60.0, 60.0);
@@ -362,7 +441,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 
 #[test]
 fn string_views_measure_through_body_recursion() {
-    let env = Environment::default();
+    let env = test_environment();
     let mut state = HydroState::default();
     let proposal = ProposalSize::UNSPECIFIED;
 
@@ -398,8 +477,7 @@ fn string_views_measure_through_body_recursion() {
 
 #[test]
 fn fixed_scroll_content_keeps_offscreen_children_registered() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let view = scroll(vstack((
         ().size(120.0, 600.0),
@@ -465,8 +543,7 @@ fn interaction_press_origin_is_converted_to_widget_local_space() {
 #[test]
 fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
     let mut renderer = test_renderer();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
 
     renderer.begin_rebuild_frame();
     let (_, slot, _) = renderer.bind_interaction_target(Rect::new(0.0, 0.0, 80.0, 80.0), &env);
@@ -492,8 +569,7 @@ fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
 #[test]
 fn began_press_samples_a_visible_press_layer_after_fade_in() {
     let mut renderer = test_renderer();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
 
     renderer.begin_rebuild_frame();
@@ -531,8 +607,7 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
 #[test]
 fn interaction_engine_resolves_focus_state() {
     let mut renderer = test_renderer();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
 
     renderer.begin_rebuild_frame();
     let (state, _, _) =
@@ -973,8 +1048,7 @@ impl WidgetTheme for MinimalTestTheme {
 
 #[test]
 fn widget_theme_can_be_replaced_in_environment() {
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
 
     let metrics = widget_theme(&env).button_metrics(ButtonStyle::Plain);
     assert_eq!(metrics.min_width, 123.0);
@@ -1085,8 +1159,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 #[test]
 fn bare_text_at_window_root_renders_into_scene() {
     let mut renderer = test_renderer();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
 
     renderer.begin_rebuild_frame();
     renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
@@ -1107,8 +1180,7 @@ fn bare_text_at_window_root_renders_into_scene() {
 #[test]
 fn bare_str_at_window_root_renders_into_scene() {
     let mut renderer = test_renderer();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
 
     renderer.begin_rebuild_frame();
     renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
@@ -1128,7 +1200,7 @@ fn bare_str_at_window_root_renders_into_scene() {
 
 #[test]
 fn text_shaping_produces_nonzero_intrinsic_in_tests() {
-    let env = Environment::default();
+    let env = test_environment();
     let mut state = HydroState::default();
     let size = HydrolysisRenderer::measure_text_intrinsic_size(
         &mut state,
@@ -1145,7 +1217,7 @@ fn text_shaping_produces_nonzero_intrinsic_in_tests() {
 fn text_leaves_measure_off_thread_and_match_main_thread() {
     use core::cell::RefCell;
 
-    let env = Environment::default();
+    let env = test_environment();
     let proposal = ProposalSize::UNSPECIFIED;
 
     // Text is the only leaf whose measurement is heavy enough to offload: it
@@ -1212,8 +1284,7 @@ fn text_leaves_measure_off_thread_and_match_main_thread() {
 #[test]
 fn bare_str_renders_into_scene() {
     let mut renderer = test_renderer();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
 
     let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
     renderer.begin_rebuild_frame();
@@ -1234,7 +1305,7 @@ fn bare_str_renders_into_scene() {
 
 #[test]
 fn render_path_text_layout_has_lines() {
-    let env = Environment::default();
+    let env = test_environment();
     let mut state = HydroState::default();
     let layout = HydrolysisRenderer::build_text_layout(
         &mut state,

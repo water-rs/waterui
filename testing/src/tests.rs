@@ -530,7 +530,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let env = Environment::new().extending(SceneViewMergeToParent);
 
     let surface = platform.surface();
-    renderer.set_frame_resources(surface.device(), surface.queue());
+    renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -547,6 +547,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
         .acquire()
         .expect("waterui-testing failed to acquire offscreen frame");
     renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
+        adapter: surface.adapter(),
         device: surface.device(),
         queue: surface.queue(),
         texture: Some(frame.texture()),
@@ -1007,6 +1008,3 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     assert_eq!(focus.get(), None);
     assert_eq!(app.tree().focus(), submit_id);
 }
-
-
-

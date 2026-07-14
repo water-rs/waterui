@@ -6,12 +6,13 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::future::{Future, ready};
+use core::future::Future;
 
 use waterui_core::AnyView;
 use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 
 use crate::WuiEnv;
+use crate::closure::ForeignCallbackContext;
 use crate::components::layout::WuiSize;
 
 /// Callback for returning rendered RGBA data to Rust.
@@ -19,7 +20,8 @@ use crate::components::layout::WuiSize;
 pub struct ViewRenderCallback {
     /// Opaque data pointer passed to the callback.
     pub data: *mut (),
-    /// Callback function.
+    /// One-shot callback function. Native may invoke it asynchronously, but
+    /// must invoke it exactly once.
     /// - `data`: The opaque data pointer
     /// - `rgba_ptr`: Pointer to RGBA pixel data (4 bytes per pixel)
     /// - `rgba_len`: Length of the RGBA data in bytes
@@ -44,6 +46,7 @@ pub struct ViewRenderCallback {
 ///
 /// The view pointer is an `AnyView` that native should render.
 pub type ViewRenderFn = unsafe extern "C" fn(
+    context: *mut (),
     view: *mut (), // AnyView pointer (boxed)
     size: WuiSize, // Target size
     callback: ViewRenderCallback,
@@ -51,6 +54,7 @@ pub type ViewRenderFn = unsafe extern "C" fn(
 
 /// FFI-compatible `ViewRenderer` implementation.
 struct FFIViewRenderer {
+    context: ForeignCallbackContext,
     render_fn: ViewRenderFn,
 }
 
@@ -87,7 +91,7 @@ impl CustomViewRenderer for FFIViewRenderer {
             width: u32,
             height: u32,
         ) {
-            let data = unsafe { &*data.cast::<CallbackData>() };
+            let CallbackData { sender } = *unsafe { Box::from_raw(data.cast::<CallbackData>()) };
 
             // Copy the RGBA data (native owns the original buffer)
             let rgba_data = if rgba_len == 0 {
@@ -102,8 +106,9 @@ impl CustomViewRenderer for FFIViewRenderer {
                 height,
             };
 
-            // Send result (ignore error if receiver dropped)
-            let _ = data.sender.try_send(result);
+            // Dropping the returned future is legal cancellation. Native still
+            // invokes the callback once so this payload is released.
+            let _ = sender.try_send(result);
         }
 
         let callback = ViewRenderCallback {
@@ -111,24 +116,17 @@ impl CustomViewRenderer for FFIViewRenderer {
             call: render_trampoline,
         };
 
-        // Call native render function (must call callback synchronously)
+        // Native owns the view and callback payload until it invokes the
+        // callback exactly once. Rendering may complete asynchronously.
         unsafe {
-            (render_fn)(view_ptr_void, wui_size, callback);
+            (render_fn)(self.context.data(), view_ptr_void, wui_size, callback);
         }
 
-        let recv_result = rx.try_recv().unwrap_or_else(|err| {
-            panic!(
-                "Native view renderer must invoke callback synchronously before returning: \
-                 {err}"
-            );
-        });
-
-        // Free callback data after the callback completes.
-        unsafe {
-            drop(Box::from_raw(callback_data.cast::<CallbackData>()));
+        async move {
+            rx.recv()
+                .await
+                .expect("Native view renderer dropped its completion callback")
         }
-
-        ready(recv_result)
     }
 }
 
@@ -142,15 +140,21 @@ impl CustomViewRenderer for FFIViewRenderer {
 ///
 /// The caller must ensure that:
 /// - `env` is a valid pointer to a `WuiEnv`
-/// - `render_fn` is a valid function pointer to the native view renderer
+/// - `context` remains valid until `drop_context` releases it
+/// - `render_fn` is valid for `context`
+/// - `drop_context` releases `context` exactly once
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_install_view_renderer(
     env: *mut WuiEnv,
+    context: *mut (),
     render_fn: ViewRenderFn,
+    drop_context: unsafe extern "C" fn(*mut ()),
 ) {
-    let env =
-        unsafe { crate::expect_non_null_mut(env, "waterui_env_install_view_renderer", "env") };
+    let env = unsafe { crate::borrow_ffi_mut(env) };
 
-    let renderer = ViewRenderer::new(FFIViewRenderer { render_fn });
+    let renderer = ViewRenderer::new(FFIViewRenderer {
+        context: unsafe { ForeignCallbackContext::new(context, drop_context) },
+        render_fn,
+    });
     env.insert(renderer);
 }

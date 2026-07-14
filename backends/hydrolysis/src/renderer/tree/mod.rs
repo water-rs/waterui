@@ -35,6 +35,7 @@ mod subview;
 mod window;
 
 pub(crate) use collection::*;
+pub(crate) use flush::ChildTextureTarget;
 pub(crate) use nodes::*;
 use subview::*;
 

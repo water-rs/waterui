@@ -4,11 +4,11 @@ use std::ffi::OsStr;
 use std::path::{Component, Path};
 
 /// Environment variables required for the preview support app runtime profile.
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) const PREVIEW_RUNTIME_ENV_VARS: [(&str, &str); 2] = [
-    ("WATERUI_GPU_PREFER_HDR", "0"),
-    ("WATERUI_PREVIEW_MODE", "1"),
-];
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "preview, inspector, and fingerprint modules share this crate-private runtime contract"
+)]
+pub(crate) const PREVIEW_RUNTIME_ENV_VARS: [(&str, &str); 1] = [("WATERUI_PREVIEW_MODE", "1")];
 
 const PREVIEW_ROOT_INPUT_FILES: [&str; 4] = ["Cargo.toml", "Cargo.lock", "Water.toml", "build.rs"];
 
@@ -40,7 +40,10 @@ const PREVIEW_INPUT_EXTENSIONS: [&str; 19] = [
 
 /// Return a stable runtime profile tag used to version runtime compatibility.
 #[must_use]
-#[allow(clippy::redundant_pub_crate)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "preview and inspector share this crate-private compatibility tag"
+)]
 pub(crate) fn runtime_profile_tag() -> String {
     PREVIEW_RUNTIME_ENV_VARS
         .iter()
@@ -51,7 +54,10 @@ pub(crate) fn runtime_profile_tag() -> String {
 
 /// Return whether a directory should be skipped while scanning runtime inputs.
 #[must_use]
-#[allow(clippy::redundant_pub_crate)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "preview watcher and runtime fingerprinting share this crate-private rule"
+)]
 pub(crate) fn should_skip_scan_dir(name: &OsStr) -> bool {
     matches!(
         name.to_str(),
@@ -63,21 +69,30 @@ pub(crate) fn should_skip_scan_dir(name: &OsStr) -> bool {
 
 /// Return top-level files that participate in preview runtime fingerprinting.
 #[must_use]
-#[allow(clippy::redundant_pub_crate)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "runtime fingerprinting consumes this crate-private input contract"
+)]
 pub(crate) const fn runtime_fingerprint_root_files() -> &'static [&'static str] {
     &RUNTIME_FINGERPRINT_ROOT_FILES
 }
 
 /// Return top-level directories that participate in preview runtime fingerprinting.
 #[must_use]
-#[allow(clippy::redundant_pub_crate)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "runtime fingerprinting consumes this crate-private input contract"
+)]
 pub(crate) const fn runtime_fingerprint_root_dirs() -> &'static [&'static str] {
     &RUNTIME_FINGERPRINT_ROOT_DIRS
 }
 
 /// Return whether a file participates in build/runtime compatibility.
 #[must_use]
-#[allow(clippy::redundant_pub_crate)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "preview watcher and runtime fingerprinting share this crate-private rule"
+)]
 pub(crate) fn is_preview_build_input_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
         return false;

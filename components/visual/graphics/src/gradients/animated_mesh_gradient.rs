@@ -14,7 +14,7 @@ use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::include_shader;
 use waterui_core::View;
 
-static ANIMATED_MESH_SHADER: crate::prewarm::PrewarmedShader =
+const ANIMATED_MESH_SHADER: crate::prewarm::ShaderSource =
     include_shader!("shaders/animated_mesh_gradient.wgsl");
 
 /// Number of colors in the mesh palette (4x4 grid).
@@ -246,9 +246,11 @@ impl GpuView for AnimatedMeshRenderer {
         ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        let shader = crate::shared_context::create_cached_shader_module_prewarmed(
+        let shader = ctx.shader_cache.get_or_create_prehashed(
             ctx.device,
-            &ANIMATED_MESH_SHADER,
+            ANIMATED_MESH_SHADER.label,
+            ANIMATED_MESH_SHADER.source,
+            ANIMATED_MESH_SHADER.source_hash,
         );
 
         let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get();

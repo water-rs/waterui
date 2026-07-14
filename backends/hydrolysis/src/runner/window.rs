@@ -401,7 +401,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
     let root_transform = vello::kurbo::Affine::scale(scale_factor);
     runtime
         .renderer
-        .set_frame_resources(surface.device(), surface.queue());
+        .set_frame_resources(surface.adapter(), surface.device(), surface.queue());
 
     let pump_started_at = Instant::now();
     let mut phases = FramePhases::default();
@@ -493,9 +493,12 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
         let (width, height) = runtime.platform.surface().size();
         let bounds = create_bounds(width, height, scale_factor);
         let transform = vello::kurbo::Affine::scale(scale_factor);
-        let flushed = runtime
-            .renderer
-            .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY);
+        let flushed = runtime.renderer.flush_window_tree(
+            env,
+            bounds,
+            transform,
+            vello::kurbo::Affine::IDENTITY,
+        );
         assert!(
             flushed,
             "hydrolysis runner: retained render tree vanished during semantics pump"
@@ -614,6 +617,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         runtime
             .renderer
             .render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
+                adapter: surface.adapter(),
                 device: surface.device(),
                 queue: surface.queue(),
                 texture: Some(frame.texture()),

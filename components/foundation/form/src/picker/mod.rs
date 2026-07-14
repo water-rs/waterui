@@ -91,9 +91,7 @@ impl PickerConfig {
             .map(move |(items, _locale)| {
                 items
                     .into_iter()
-                    .map(|item| {
-                        TaggedView::new(item.tag, Text::from(item.content.resolve_reactive(&env)))
-                    })
+                    .map(|item| TaggedView::new(item.tag, Text::from(item.content.resolve(&env))))
                     .collect()
             })
             .computed();

@@ -13,14 +13,13 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use core::any::TypeId;
+use alloc::{boxed::Box, sync::Arc};
 use core::fmt;
 use core::future::Future;
-use core::pin::Pin;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
-/// Boxed future for filter setup.
-pub type EffectSetupFuture<'a> = Pin<Box<dyn Future<Output = EffectSetupResult> + 'a>>;
+use parking_lot::Mutex;
 
 /// Result returned by filter setup.
 pub type EffectSetupResult = Result<(), &'static str>;
@@ -28,6 +27,104 @@ pub type EffectSetupResult = Result<(), &'static str>;
 /// Result returned by one filter render pass. `Ok(true)` indicates an
 /// animation is still active and the host should request another frame.
 pub type EffectRenderResult = Result<bool, &'static str>;
+
+/// Thread-safe callback used by an effect to wake an on-demand renderer.
+pub type EffectRedrawCallback = Arc<dyn Fn() + Send + Sync>;
+
+/// Device-bound WGSL module cache shared by GPU hosts and effects.
+///
+/// A cache must only be used with the device passed to [`Self::get_or_create`].
+/// GPU hosts own and inject it explicitly through their setup context, keeping
+/// cache lifetime aligned with the device instead of relying on process-global
+/// renderer state.
+#[derive(Clone, Default)]
+pub struct ShaderCache {
+    entries: Arc<Mutex<HashMap<u64, Vec<CachedShader>>>>,
+}
+
+impl fmt::Debug for ShaderCache {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ShaderCache")
+            .finish_non_exhaustive()
+    }
+}
+
+struct CachedShader {
+    source: Box<str>,
+    module: Arc<OnceLock<Arc<wgpu::ShaderModule>>>,
+}
+
+impl ShaderCache {
+    /// Creates an empty shader cache for one GPU device.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns a cached module for `source`, compiling it exactly once when absent.
+    #[must_use]
+    pub fn get_or_create(
+        &self,
+        device: &wgpu::Device,
+        label: &str,
+        source: &str,
+    ) -> Arc<wgpu::ShaderModule> {
+        self.get_or_create_prehashed(device, label, source, shader_source_hash(source))
+    }
+
+    /// Returns a cached module using a caller-provided stable source hash.
+    ///
+    /// Hash collisions are resolved by comparing the complete WGSL source.
+    #[must_use]
+    pub fn get_or_create_prehashed(
+        &self,
+        device: &wgpu::Device,
+        label: &str,
+        source: &str,
+        source_hash: u64,
+    ) -> Arc<wgpu::ShaderModule> {
+        let module = {
+            let mut entries = self.entries.lock();
+            let bucket = entries.entry(source_hash).or_default();
+            let existing = bucket
+                .iter()
+                .find(|entry| entry.source.as_ref() == source)
+                .map(|entry| Arc::clone(&entry.module));
+            let module = existing.unwrap_or_else(|| {
+                let module = Arc::new(OnceLock::new());
+                bucket.push(CachedShader {
+                    source: source.into(),
+                    module: Arc::clone(&module),
+                });
+                module
+            });
+            drop(entries);
+            module
+        };
+
+        Arc::clone(module.get_or_init(|| {
+            Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: (!label.is_empty()).then_some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            }))
+        }))
+    }
+}
+
+/// Computes the stable FNV-1a hash used by [`ShaderCache`].
+#[must_use]
+pub const fn shader_source_hash(source: &str) -> u64 {
+    let bytes = source.as_bytes();
+    let mut hash = 0xcbf2_9ce4_8422_2325;
+    let mut index = 0;
+    while index < bytes.len() {
+        hash ^= bytes[index] as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        index += 1;
+    }
+    hash
+}
 
 /// GPU resources provided to the effect during setup.
 pub struct EffectContext<'a> {
@@ -41,6 +138,8 @@ pub struct EffectContext<'a> {
     pub output_format: wgpu::TextureFormat,
     /// Optional pipeline cache for faster pipeline creation.
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
+    /// Device-bound shader module cache owned by the GPU host.
+    pub shader_cache: &'a ShaderCache,
 }
 
 impl fmt::Debug for EffectContext<'_> {
@@ -126,6 +225,12 @@ impl fmt::Debug for EffectOutput<'_> {
 /// while animation is in progress, `Ok(false)` for a completed frame, and
 /// `Err(...)` for an explicit render failure.
 pub trait Effect: 'static {
+    /// Installs the host callback used when external effect state becomes dirty.
+    ///
+    /// Effects without externally driven state can keep the default no-op
+    /// implementation. Stateful effects install the callback before [`Self::setup`].
+    fn set_redraw_callback(&mut self, _callback: EffectRedrawCallback) {}
+
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, bind groups, samplers, and other
@@ -177,99 +282,16 @@ pub trait Effect: 'static {
         result
     }
 
-    /// Resolve the output dimensions from the current snapped effect state.
-    ///
-    /// Implementations that depend on reactive inputs must snapshot those
-    /// values in [`Effect::sync_targets`] and only read the snapped state
-    /// here.
+    /// Resolves the output dimensions from the current effect state.
     #[must_use]
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
         (input_width, input_height)
     }
-
-    /// Snapshot reactive target values before render dispatch.
-    ///
-    /// Native backends call this on the UI thread before scheduling render
-    /// on a background queue. Effects without reactive sources can keep the
-    /// default.
-    fn sync_targets(&mut self) {}
 
     /// Whether the effect has pending state that requires another render
     /// pass. Used by native backends to keep on-demand rendering responsive
     /// when reactive parameters change without layout updates.
     fn redraw_hint(&self) -> bool {
         false
-    }
-}
-
-/// Object-safe trait for type-erased GPU effects.
-///
-/// Used by host code that holds heterogeneous effects in a `Box<dyn ...>`
-/// (for example, the `Metadata<AppliedEffect>` FFI shim in `WaterUI`).
-pub trait ErasedEffect: 'static {
-    /// Drive `Effect::setup` through a boxed future.
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> EffectSetupFuture<'a>;
-    /// Drive `Effect::render`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the concrete effect cannot encode or submit its
-    /// render work for the provided input/output targets.
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult;
-    /// Drive `Effect::encode_render`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the concrete effect cannot encode render commands
-    /// into the provided command encoder.
-    fn encode_render(
-        &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult;
-    /// Drive `Effect::output_size`.
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
-    /// Drive `Effect::sync_targets`.
-    fn sync_targets(&mut self);
-    /// Drive `Effect::redraw_hint`.
-    fn redraw_hint(&self) -> bool;
-    /// Returns the [`TypeId`] of the underlying concrete effect type. Useful
-    /// for backend-side type matching.
-    fn concrete_type_id(&self) -> TypeId;
-}
-
-impl<T: Effect> ErasedEffect for T {
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> EffectSetupFuture<'a> {
-        Box::pin(Effect::setup(self, ctx))
-    }
-
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
-        Effect::render(self, input, output)
-    }
-
-    fn encode_render(
-        &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult {
-        Effect::encode_render(self, input, output, encoder)
-    }
-
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        Effect::output_size(self, input_width, input_height)
-    }
-
-    fn sync_targets(&mut self) {
-        Effect::sync_targets(self);
-    }
-
-    fn redraw_hint(&self) -> bool {
-        Effect::redraw_hint(self)
-    }
-
-    fn concrete_type_id(&self) -> TypeId {
-        TypeId::of::<T>()
     }
 }

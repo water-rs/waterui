@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use nami::Binding;
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
 
@@ -434,6 +435,10 @@ fn extract_region(locale_tag: &str) -> Option<String> {
 
 impl Extractor for RegionalContext {
     fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
+        if let Some(locale) = env.get::<Binding<Locale>>() {
+            return Ok(current_settings().with_locale(&locale.get()));
+        }
+
         if let Some(context) = env.get::<Self>().cloned() {
             return Ok(context);
         }

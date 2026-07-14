@@ -2,11 +2,16 @@
 
 use bytemuck::{Pod, Zeroable};
 use core::fmt;
+use waterui_core::{
+    Computed, Signal,
+    reactive::{signal::IntoComputed, watcher::BoxWatcherGuard},
+};
 use wgpu::util::DeviceExt;
 
 use crate::BarcodeSource;
 use waterui_graphics::{
     EffectRenderer, ViewEffectContext, ViewEffectInput, ViewEffectOutput, color::ResolvedColor,
+    view_effect::ViewEffectRedrawCallback,
 };
 
 #[repr(C)]
@@ -29,15 +34,16 @@ pub struct BarcodeMaskEffect {
     uniform_buffer: Option<wgpu::Buffer>,
     matrix_buffer: Option<wgpu::Buffer>,
     sampler: Option<wgpu::Sampler>,
-    current_matrix_dim: u32,
-    current_matrix_words: usize,
-    light_color: [f32; 4],
+    matrix_dim: u32,
+    light_color: Computed<ResolvedColor>,
+    light_color_guard: Option<BoxWatcherGuard>,
+    redraw_callback: Option<ViewEffectRedrawCallback>,
 }
 
 impl fmt::Debug for BarcodeMaskEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeMaskEffect")
-            .field("current_matrix_dim", &self.current_matrix_dim)
+            .field("matrix_dim", &self.matrix_dim)
             .finish_non_exhaustive()
     }
 }
@@ -45,12 +51,9 @@ impl fmt::Debug for BarcodeMaskEffect {
 impl BarcodeMaskEffect {
     /// Creates a new mask effect from a barcode source and light module color.
     ///
-    /// `light_color` is taken as a [`ResolvedColor`] because the
-    /// `EffectRenderer` setup phase does not have access to an environment.
-    /// Callers obtain the resolved color from `Color::resolve(env).get()` at
-    /// view-body time.
+    /// The resolved color remains reactive for the effect lifetime.
     #[must_use]
-    pub const fn new(source: BarcodeSource, light_color: ResolvedColor) -> Self {
+    pub fn new(source: BarcodeSource, light_color: impl IntoComputed<ResolvedColor>) -> Self {
         Self {
             source,
             pipeline: None,
@@ -58,14 +61,10 @@ impl BarcodeMaskEffect {
             uniform_buffer: None,
             matrix_buffer: None,
             sampler: None,
-            current_matrix_dim: 0,
-            current_matrix_words: 0,
-            light_color: [
-                light_color.red,
-                light_color.green,
-                light_color.blue,
-                light_color.opacity,
-            ],
+            matrix_dim: 0,
+            light_color: light_color.into_computed(),
+            light_color_guard: None,
+            redraw_callback: None,
         }
     }
 
@@ -179,66 +178,80 @@ impl BarcodeMaskEffect {
         }));
     }
 
-    fn ensure_matrix_buffer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn create_matrix_buffer(&mut self, device: &wgpu::Device) {
         let matrix = self.source.matrix();
-        let recreate = self.matrix_buffer.is_none()
-            || self.current_matrix_dim != matrix.dimension
-            || self.current_matrix_words != matrix.packed_data.len();
-
-        if recreate {
-            self.matrix_buffer = Some(device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("QR mask matrix buffer"),
-                    contents: bytemuck::cast_slice(&matrix.packed_data),
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                },
-            ));
-            self.current_matrix_dim = matrix.dimension;
-            self.current_matrix_words = matrix.packed_data.len();
-        } else if let Some(buffer) = &self.matrix_buffer {
-            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&matrix.packed_data));
-        }
+        self.matrix_dim = matrix.dimension;
+        self.matrix_buffer = Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("QR mask matrix buffer"),
+                contents: bytemuck::cast_slice(&matrix.packed_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            }),
+        );
     }
 }
 
 impl EffectRenderer for BarcodeMaskEffect {
+    fn set_redraw_callback(&mut self, callback: ViewEffectRedrawCallback) {
+        assert!(
+            self.redraw_callback.replace(callback).is_none(),
+            "BarcodeMaskEffect redraw callback was installed more than once"
+        );
+    }
+
     fn setup(&mut self, ctx: &ViewEffectContext) -> impl core::future::Future<Output = ()> {
+        let redraw = self
+            .redraw_callback
+            .as_ref()
+            .expect("BarcodeMaskEffect requires a redraw callback before setup")
+            .clone();
+        self.light_color_guard = Some(self.light_color.watch(move |_| redraw()));
         let (pipeline, bgl, sampler) =
             Self::create_pipeline(ctx.device, ctx.output_format, ctx.pipeline_cache);
         self.pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
         self.sampler = Some(sampler);
         self.ensure_uniform_buffer(ctx.device);
+        self.create_matrix_buffer(ctx.device);
 
         async {}
     }
 
     fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
-        self.ensure_uniform_buffer(output.device);
-        self.ensure_matrix_buffer(output.device, output.queue);
+        let pipeline = self
+            .pipeline
+            .as_ref()
+            .expect("BarcodeMaskEffect render called before setup");
+        let bind_group_layout = self
+            .bind_group_layout
+            .as_ref()
+            .expect("BarcodeMaskEffect render called before setup");
+        let sampler = self
+            .sampler
+            .as_ref()
+            .expect("BarcodeMaskEffect render called before setup");
+        let uniform_buffer = self
+            .uniform_buffer
+            .as_ref()
+            .expect("BarcodeMaskEffect render called before setup");
+        let matrix_buffer = self
+            .matrix_buffer
+            .as_ref()
+            .expect("BarcodeMaskEffect matrix buffer was not created");
 
-        let Some(pipeline) = &self.pipeline else {
-            return;
-        };
-        let Some(bind_group_layout) = &self.bind_group_layout else {
-            return;
-        };
-        let Some(sampler) = &self.sampler else {
-            return;
-        };
-        let Some(uniform_buffer) = &self.uniform_buffer else {
-            return;
-        };
-        let Some(matrix_buffer) = &self.matrix_buffer else {
-            return;
-        };
+        let light_color = self.light_color.get();
 
         let uniforms = MaskUniforms {
-            matrix_dim: self.current_matrix_dim,
+            matrix_dim: self.matrix_dim,
             quiet_zone: self.source.quiet_zone(),
             output_width: output.width,
             output_height: output.height,
-            light_color: self.light_color,
+            light_color: [
+                light_color.red,
+                light_color.green,
+                light_color.blue,
+                light_color.opacity,
+            ],
         };
         output
             .queue

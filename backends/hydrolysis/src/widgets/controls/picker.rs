@@ -525,7 +525,12 @@ pub(crate) fn render_segmented_picker(
                 index == 0,
                 index + 1 == item_count,
             );
-            theme.draw_segmented_picker_state_layer(&mut draw, segment_rect, is_selected, interaction);
+            theme.draw_segmented_picker_state_layer(
+                &mut draw,
+                segment_rect,
+                is_selected,
+                interaction,
+            );
         }
         // Render the segment label directly as styled text (no dispatch), mirroring
         // the radio/menu picker styles. The item's resolved `StyledStr` carries its

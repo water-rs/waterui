@@ -141,7 +141,9 @@ mod tests {
 
     #[test]
     fn analysis_reports_expected_luma_range() {
-        let image = CheckerboardGenerator {
+        let runtime = pollster::block_on(crate::GpuRuntime::new())
+            .expect("image analysis tests require a working GPU runtime");
+        let generator = CheckerboardGenerator {
             width: 8,
             height: 8,
             cell_size: 2,
@@ -149,8 +151,8 @@ mod tests {
             dark: Srgb::BLACK,
             offset_x: 0,
             offset_y: 0,
-        }
-        .generate();
+        };
+        let image = pollster::block_on(generator.generate(&runtime));
         let analysis = ImageAnalysis::new(&image);
         let range = analysis.min_max_luma();
         assert!(range.min.abs() < f32::EPSILON);

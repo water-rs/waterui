@@ -244,9 +244,10 @@ pub(crate) fn render_slider_parts(
         // "Dark"/"Bright") is not carried by the slider node.
         let render_ctx = ctx.render_context();
         let label_view = &mut state.label_view;
-        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_rect(renderer, render_ctx, env, label_rect);
-        });
+        ctx.renderer_mut()
+            .with_suppressed_accessibility(|renderer| {
+                label_view.flush_in_rect(renderer, render_ctx, env, label_rect);
+            });
         if disabled {
             ctx.pop_layer();
         }

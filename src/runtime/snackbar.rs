@@ -1,4 +1,3 @@
-#![allow(clippy::cast_precision_loss, reason = "intentional lossy numeric cast in rendering/layout code")]
 //! Snackbar notification system for `WaterUI`.
 //!
 //! Snackbars provide brief messages about app processes at the bottom of the screen.
@@ -20,7 +19,7 @@
 //! manager.show(
 //!     Snackbar::new("Item deleted")
 //!         .icon(mdi::delete())
-//!         .action("Undo", || println!("Undo clicked"))
+//!         .action("Undo", || {})
 //!         .duration(Duration::from_secs(5))
 //! );
 //!
@@ -38,7 +37,7 @@ use core::time::Duration;
 use executor_core::spawn_local;
 use nami::Binding;
 use nami::collection::List;
-use waterui_controls::{ButtonStyle, button};
+use waterui_controls::{ButtonStyle, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
 use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
@@ -57,7 +56,6 @@ use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;
 use crate::ViewExt;
-use crate::component::Label;
 use crate::shape::{RoundedRectangle, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
@@ -307,7 +305,7 @@ impl Snackbar {
     /// Simple action:
     /// ```rust,ignore
     /// Snackbar::new("Message sent")
-    ///     .action("Undo").handler(|| println!("Undo!"))
+    ///     .action("Undo").handler(|| {})
     /// ```
     ///
     /// With injected state:
@@ -574,7 +572,8 @@ impl SnackbarManager {
         }
 
         item.opacity.set(0.0);
-        item.entrance_offset.set(item.snackbar.position.initial_offset_y());
+        item.entrance_offset
+            .set(item.snackbar.position.initial_offset_y());
         // The dismissing row no longer occupies a slot: reflow now so the
         // survivors animate down to close the gap while it fades out.
         self.reflow();
@@ -607,6 +606,10 @@ impl SnackbarManager {
     /// occupied for the exit duration, so under rapid show/dismiss new snackbars
     /// would pile up onto ever-higher offsets instead of the survivors closing
     /// the gap.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the number of simultaneously visible snackbars is exactly representable as f32"
+    )]
     fn reflow(&self) {
         // The container is a fixed single-line height; the default theme value
         // matches the active (M3) theme, so it is a stable stacking increment
@@ -693,11 +696,11 @@ impl StackedSnackbarView {
     ) -> AnyView {
         // Message with optional icon using Label component
         let label_view = if let Some(icon) = snackbar.icon {
-            Label::new(snackbar.message)
+            label(snackbar.message)
                 .icon(icon)
                 .font(theme.supporting_text_font.clone())
         } else {
-            Label::new(snackbar.message).font(theme.supporting_text_font.clone())
+            label(snackbar.message).font(theme.supporting_text_font.clone())
         }
         .foreground(theme.supporting_text_color.clone());
 
@@ -799,7 +802,10 @@ impl View for StackedSnackbarView {
                 .opacity(item.opacity.with_animation(enter_animation.clone()))
                 // Entrance slide and reflow shift are independent animated
                 // bindings (each has a stable identity, so each animates).
-                .offset(0.0, item.entrance_offset.with_animation(enter_animation.clone()))
+                .offset(
+                    0.0,
+                    item.entrance_offset.with_animation(enter_animation.clone()),
+                )
                 .offset(0.0, item.stack_offset.with_animation(enter_animation)),
         )
         .alignment(position.to_alignment())

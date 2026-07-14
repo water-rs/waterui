@@ -53,11 +53,7 @@ impl ProgressRenderState {
     }
 
     /// Eagerly build the label sub-views (the measure path has no renderer).
-    pub(crate) fn prebuild_labels(
-        &mut self,
-        renderer: &mut HydrolysisRenderer,
-        env: &Environment,
-    ) {
+    pub(crate) fn prebuild_labels(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
         self.label.ensure_built(renderer, env);
         self.value_label.ensure_built(renderer, env);
     }
@@ -116,8 +112,9 @@ pub(crate) fn measure_progress_node(
     let size = match render_state.style {
         ProgressStyle::Linear => {
             let metrics = theme.progress_metrics(ProgressIndicatorStyle::Linear);
-            let label_height = f64::from(waterui_text::font::Font::default().resolve(env).get().size)
-                .max(metrics.label_height);
+            let label_height =
+                f64::from(waterui_text::font::Font::default().resolve(env).get().size)
+                    .max(metrics.label_height);
             let value_label_height = if render_state.value.get().is_finite() {
                 metrics.value_label_top_spacing + label_height
             } else {
@@ -200,9 +197,10 @@ pub(crate) fn render_progress_parts(
                 // `progress_accessibility`, so the sub-view flushes visual-only.
                 let render_ctx = ctx.render_context();
                 let label = &mut progress.label;
-                ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-                    label.flush_in_rect(renderer, render_ctx, env, label_rect);
-                });
+                ctx.renderer_mut()
+                    .with_suppressed_accessibility(|renderer| {
+                        label.flush_in_rect(renderer, render_ctx, env, label_rect);
+                    });
             }
 
             let bar_y = ctx.bounds.y0 + label_height + metrics.bar_top_offset;
@@ -257,9 +255,10 @@ pub(crate) fn render_progress_parts(
                     // indicator's node already carries, so it flushes visual-only.
                     let render_ctx = ctx.render_context();
                     let value_label = &mut progress.value_label;
-                    ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-                        value_label.flush_in_rect(renderer, render_ctx, env, value_label_rect);
-                    });
+                    ctx.renderer_mut()
+                        .with_suppressed_accessibility(|renderer| {
+                            value_label.flush_in_rect(renderer, render_ctx, env, value_label_rect);
+                        });
                 }
             }
         }

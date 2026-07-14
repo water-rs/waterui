@@ -3,6 +3,56 @@
 
 use super::*;
 
+type SignalUpdateHandler<T> = Rc<dyn Fn(nami::watcher::Context<T>)>;
+
+struct SubscribedSnapshotState<T> {
+    pending: Vec<nami::watcher::Context<T>>,
+    handler: Option<SignalUpdateHandler<T>>,
+}
+
+pub(super) struct SubscribedSnapshot<T, G> {
+    guard: G,
+    state: Rc<RefCell<SubscribedSnapshotState<T>>>,
+}
+
+impl<T: 'static, G> SubscribedSnapshot<T, G> {
+    pub(super) fn new<S>(signal: &S) -> (Self, T)
+    where
+        S: Signal<Output = T, Guard = G>,
+    {
+        let state = Rc::new(RefCell::new(SubscribedSnapshotState {
+            pending: Vec::new(),
+            handler: None,
+        }));
+        let guard = signal.watch({
+            let state = Rc::clone(&state);
+            move |update| {
+                let handler = state.borrow().handler.clone();
+                if let Some(handler) = handler {
+                    handler(update);
+                } else {
+                    state.borrow_mut().pending.push(update);
+                }
+            }
+        });
+        let snapshot = signal.get();
+        (Self { guard, state }, snapshot)
+    }
+
+    pub(super) fn activate(self, handler: impl Fn(nami::watcher::Context<T>) + 'static) -> G {
+        let handler: SignalUpdateHandler<T> = Rc::new(handler);
+        let pending = {
+            let mut state = self.state.borrow_mut();
+            state.handler = Some(Rc::clone(&handler));
+            core::mem::take(&mut state.pending)
+        };
+        for update in pending {
+            handler(update);
+        }
+        self.guard
+    }
+}
+
 impl HydrolysisRenderer {
     pub(super) fn watch_signal<S>(&mut self, signal: &S)
     where
@@ -72,10 +122,11 @@ impl HydrolysisRenderer {
     where
         S: Signal<Output = bool> + Clone + 'static,
     {
-        let selected = signal.get();
         let Some(identity) = signal.identity() else {
+            let selected = self.read_signal(signal);
             return (if selected { 1.0 } else { 0.0 }, selected);
         };
+        let (subscription, selected) = SubscribedSnapshot::new(signal);
         let now = self.frame_instant;
         let target = if selected { 1.0 } else { 0.0 };
         let key = AnimationKey::scalar(identity);
@@ -87,7 +138,7 @@ impl HydrolysisRenderer {
         );
         let watcher_handle = handle.clone();
         let signals = self.signals.clone();
-        let guard = signal.watch(move |update| {
+        let guard = subscription.activate(move |update| {
             let target = if *update.value() { 1.0 } else { 0.0 };
             let animation = update
                 .metadata()

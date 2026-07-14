@@ -387,9 +387,10 @@ pub(crate) fn render_button_parts(
             // merged into the button's own node by `button_accessibility`, so the
             // sub-view flushes visual-only.
             let render_ctx = ctx.render_context();
-            ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-                subview.flush_in_rect(renderer, render_ctx, env, label_target);
-            });
+            ctx.renderer_mut()
+                .with_suppressed_accessibility(|renderer| {
+                    subview.flush_in_rect(renderer, render_ctx, env, label_target);
+                });
         } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
@@ -462,9 +463,10 @@ pub(crate) fn render_menu_parts(
                 // The trigger's semantics are merged into the menu's own node by
                 // `menu_accessibility`, so the label sub-view flushes visual-only.
                 let render_ctx = ctx.render_context();
-                ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-                    subview.flush_in_rect(renderer, render_ctx, env, label_bounds);
-                });
+                ctx.renderer_mut()
+                    .with_suppressed_accessibility(|renderer| {
+                        subview.flush_in_rect(renderer, render_ctx, env, label_bounds);
+                    });
             }
         }
     }
@@ -605,14 +607,14 @@ fn styled_button_title(
     } else {
         title
     };
-    title.resolve_reactive(env).content.get()
+    title.resolve(env).content.get()
 }
 
 /// Subscribes to a label's reactive title content so a change schedules a frame
 /// (the persistent `Widget` node then re-renders it live). The returned value is
 /// ignored; the side effect is the watch registration.
 fn watch_button_title(renderer: &mut HydrolysisRenderer, label: &Label, env: &Environment) {
-    let _ = renderer.read_signal(&label.semantic_text().resolve_reactive(env).content);
+    let _ = renderer.read_signal(&label.semantic_text().resolve(env).content);
 }
 
 /// Fills `color` into chunks that have no explicit foreground: the theme's

@@ -7,11 +7,9 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::any::Any;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 use num_traits::ToPrimitive;
@@ -22,7 +20,7 @@ use crate::include_shader;
 use encase::{ShaderSize, StorageBuffer, UniformBuffer};
 use waterui_core::{AnyView, MainThreadBound, Signal, View};
 
-static MESH_GRADIENT_SHADER: crate::prewarm::PrewarmedShader =
+const MESH_GRADIENT_SHADER: crate::prewarm::ShaderSource =
     include_shader!("shaders/mesh_gradient.wgsl");
 
 /// Maximum number of color stops supported by the mesh shader buffer layout.
@@ -532,11 +530,16 @@ struct MeshGpuResources {
     pipeline_format: wgpu::TextureFormat,
 }
 
-#[allow(clippy::too_many_lines)]
-fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuResources {
-    let shader = crate::shared_context::create_cached_shader_module_prewarmed(
+#[expect(
+    clippy::too_many_lines,
+    reason = "mesh pipeline construction is one ordered graph of layouts, buffers, bindings, and validation"
+)]
+async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuResources {
+    let shader = ctx.shader_cache.get_or_create_prehashed(
         ctx.device,
-        &MESH_GRADIENT_SHADER,
+        MESH_GRADIENT_SHADER.label,
+        MESH_GRADIENT_SHADER.source,
+        MESH_GRADIENT_SHADER.source_hash,
     );
 
     let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get();
@@ -666,10 +669,7 @@ fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuRes
             cache: ctx.pipeline_cache,
         });
 
-    let pipeline_error = crate::pop_error_scope_now(
-        ctx.device,
-        "gradient_renderer::create_mesh_pipeline::validation_error_scope",
-    );
+    let pipeline_error = ctx.device.pop_error_scope().await;
     assert!(
         pipeline_error.is_none(),
         "mesh gradient pipeline creation failed: {pipeline_error:?}"
@@ -810,13 +810,12 @@ impl StaticMeshRenderer {
 }
 
 impl GpuView for StaticMeshRenderer {
-    fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
-        self.resources = Some(create_mesh_resources(ctx, "Static Mesh Gradient"));
-        core::future::ready(())
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView setup is confined to the render thread and borrows its device context"
+    )]
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+        self.resources = Some(create_mesh_resources(ctx, "Static Mesh Gradient").await);
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -882,7 +881,7 @@ impl<C> MeshGradient<C> {
     }
 }
 
-struct ReactiveMeshRenderer<C> {
+struct ReactiveMeshRenderer<C: Signal> {
     width: u32,
     height: u32,
     // `colors` (a nami signal) and the watcher guard are `!Send`. `measure` never
@@ -891,12 +890,12 @@ struct ReactiveMeshRenderer<C> {
     colors: MainThreadBound<C>,
     smooths_colors: bool,
     pending_update: Arc<AtomicBool>,
-    watcher_guard: Option<MainThreadBound<Box<dyn Any>>>,
+    watcher_guard: Option<MainThreadBound<C::Guard>>,
     resources: Option<MeshGpuResources>,
     last_colors: Option<Vec<ResolvedColor>>,
 }
 
-impl<C> ReactiveMeshRenderer<C> {
+impl<C: Signal> ReactiveMeshRenderer<C> {
     fn new(width: u32, height: u32, colors: C, smooths_colors: bool) -> Self {
         Self {
             width,
@@ -916,11 +915,11 @@ where
     C: Signal + 'static,
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
-    fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView setup is confined to the render thread and borrows main-thread signal state"
+    )]
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         if self.watcher_guard.is_none() {
             let pending_update = Arc::clone(&self.pending_update);
             let redraw_handle = ctx.redraw_handle.clone();
@@ -928,11 +927,10 @@ where
                 pending_update.store(true, Ordering::Release);
                 redraw_handle.request_redraw();
             });
-            self.watcher_guard = Some(MainThreadBound::new(Box::new(guard)));
+            self.watcher_guard = Some(MainThreadBound::new(guard));
         }
 
-        self.resources = Some(create_mesh_resources(ctx, "Reactive Mesh Gradient"));
-        core::future::ready(())
+        self.resources = Some(create_mesh_resources(ctx, "Reactive Mesh Gradient").await);
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -959,11 +957,9 @@ where
             });
 
             if colors_changed {
-                self.last_colors = Some(colors.clone());
-
                 let w = self.width as usize;
                 let h = self.height as usize;
-                let mut vertices = Vec::with_capacity(MAX_MESH_VERTICES);
+                let mut vertices = Vec::with_capacity(colors.len().min(MAX_MESH_VERTICES));
                 for (index, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
                     let x = usize_to_f32(index % w) / usize_to_f32((w - 1).max(1));
                     let y = usize_to_f32(index / w) / usize_to_f32((h - 1).max(1));
@@ -981,6 +977,7 @@ where
                     self.smooths_colors,
                     &vertices,
                 );
+                self.last_colors = Some(colors);
             }
         }
 

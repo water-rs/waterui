@@ -207,7 +207,8 @@ impl Layout for DialogSurfaceLayout {
             .width
             .max(supporting_intrinsic.width)
             .max(action_size.width);
-        let width = DIALOG_CONTENT_PADDING.mul_add(2.0, content_width)
+        let width = DIALOG_CONTENT_PADDING
+            .mul_add(2.0, content_width)
             .max(DIALOG_CONTAINER_MIN_WIDTH)
             .min(proposed_max_width);
         let text_width = DIALOG_CONTENT_PADDING.mul_add(-2.0, width).max(0.0);
@@ -236,7 +237,9 @@ impl Layout for DialogSurfaceLayout {
             return vec![];
         };
 
-        let text_width = DIALOG_CONTENT_PADDING.mul_add(-2.0, bounds.width()).max(0.0);
+        let text_width = DIALOG_CONTENT_PADDING
+            .mul_add(-2.0, bounds.width())
+            .max(0.0);
         let headline_size = headline
             .measure(ProposalSize::new(Some(text_width), None))
             .size;

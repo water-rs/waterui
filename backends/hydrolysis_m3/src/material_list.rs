@@ -1,4 +1,7 @@
-#![allow(clippy::cast_possible_truncation, reason = "intentional lossy numeric cast in rendering/layout code")]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
 //! Material Design 3 list components composed from `WaterUI` primitives.
 
 use core::fmt::{self, Debug};
