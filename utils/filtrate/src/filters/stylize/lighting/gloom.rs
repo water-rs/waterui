@@ -10,7 +10,7 @@ impl<T: FilterParam> Filter for Gloom<T> {
     const COLOR_ONLY: bool = false;
 
     type Params = [f32; 4];
-    type Fragments = &'static str;
+    type Fragments = (&'static str, &'static str);
 
     fn params(&self) -> Self::Params {
         let [radius, intensity, threshold] = &self.0;
@@ -23,31 +23,22 @@ impl<T: FilterParam> Filter for Gloom<T> {
     }
 
     fn fragments(&self) -> Self::Fragments {
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/stylize/lighting/gloom_vertical.wgsl"
-        ))
-    }
-
-    fn pass_count(&self) -> u32 {
-        2
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        c.spatial_shader(
+        (
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/stylize/lighting/gloom_horizontal.wgsl"
             )),
-            2,
-        );
-        c.spatial_shader_with_original(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/stylize/lighting/gloom_vertical.wgsl"
             )),
-            2,
-        );
+        )
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        let (horizontal, vertical) = self.fragments();
+        c.spatial_shader(horizontal, 2);
+        c.spatial_shader_with_original(vertical, 2);
     }
 
     fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {

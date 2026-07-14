@@ -8,13 +8,13 @@
     allow(dead_code, unused_imports)
 )]
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use gtk4::Widget;
 use gtk4::prelude::*;
-use waterui_core::{Environment, Str};
+use waterui_core::{Computed, Environment, Signal, Str};
 use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController, WebViewError,
     WebViewEvent, WebViewHandle,
@@ -27,7 +27,7 @@ const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgt
 
 struct SharedState {
     watchers: RefCell<Vec<Watcher>>,
-    redirects_enabled: Cell<bool>,
+    redirects_enabled: RefCell<Computed<bool>>,
     handler_callbacks: RefCell<HashMap<String, JsHandler>>,
     cookie_cache: RefCell<String>,
     last_uri: RefCell<Option<String>>,
@@ -46,7 +46,7 @@ impl Default for SharedState {
     fn default() -> Self {
         Self {
             watchers: RefCell::new(Vec::new()),
-            redirects_enabled: Cell::new(true),
+            redirects_enabled: RefCell::new(Computed::new(true)),
             handler_callbacks: RefCell::new(HashMap::new()),
             cookie_cache: RefCell::new(String::new()),
             last_uri: RefCell::new(None),
@@ -1364,8 +1364,10 @@ impl WebViewHandle for GtkWebViewHandle {
         }
     }
 
-    fn set_redirects_enabled(&self, enabled: bool) {
-        self.shared.redirects_enabled.set(enabled);
+    fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
+        self.shared
+            .redirects_enabled
+            .replace(Computed::new(enabled));
     }
 
     fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
@@ -1453,19 +1455,15 @@ impl WebViewHandle for GtkWebViewHandle {
         }
     }
 
-    fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
         self.shared
             .cookie_cache
             .borrow()
             .lines()
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    return None;
-                }
-                Cookie::parse(trimmed.to_owned())
-                    .ok()
-                    .map(Cookie::into_owned)
+            .map(|line| {
+                Cookie::parse(line.to_owned())
+                    .expect("WebKit returned an invalid cookie")
+                    .into_owned()
             })
             .collect()
     }
@@ -1800,7 +1798,7 @@ unsafe extern "C" fn on_decide_policy(
     }
 
     let data = unsafe { &*(user_data.cast::<DecidePolicyData>()) };
-    if data.shared.redirects_enabled.get() {
+    if data.shared.redirects_enabled.borrow().get() {
         return 0;
     }
 

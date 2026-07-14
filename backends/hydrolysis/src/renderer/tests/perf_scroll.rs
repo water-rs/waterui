@@ -11,17 +11,16 @@
 use core::time::Duration;
 use std::time::Instant;
 
+use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::{AnyView, Environment};
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::VStack;
 
 use waterui::ViewExt as _;
 
-use super::MinimalTestTheme;
+use super::test_environment;
 use crate::HeadlessRuntime;
-use crate::engine::WidgetTheme;
 use crate::platform::InputEvent;
 
 const WINDOW_WIDTH: u32 = 400;
@@ -39,8 +38,7 @@ fn lazy_list(rows: usize) -> AnyView {
 
 fn runtime_for(rows: usize) -> HeadlessRuntime {
     let builder = AnyViewBuilder::<AnyView>::new(move || lazy_list(rows));
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     HeadlessRuntime::new_for_tests(env, builder, WINDOW_WIDTH, WINDOW_HEIGHT)
 }
 

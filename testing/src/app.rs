@@ -58,8 +58,10 @@ impl UiBuilder<()> {
     /// Creates a default semantic UI test runtime (390x844 viewport).
     #[must_use]
     pub fn new() -> Self {
+        let mut env = Environment::new();
+        hydrolysis::testing::install_theme(&mut env);
         Self {
-            env: Environment::new(),
+            env,
             width: 390,
             height: 844,
             theme: (),

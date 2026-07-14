@@ -15,6 +15,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #[cfg(not(feature = "std"))]
 compile_error!("waterui-ffi requires the `std` feature.");
+#[cfg(all(feature = "c-api", feature = "android-jni"))]
+compile_error!("waterui-ffi features `c-api` and `android-jni` are mutually exclusive");
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
@@ -55,89 +57,25 @@ use tracing_subscriber::layer::SubscriberExt;
 #[cfg(feature = "std")]
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[cfg(feature = "std")]
-static INIT_ONCE: std::sync::Once = std::sync::Once::new();
-
-#[inline]
-#[doc(hidden)]
-pub fn ffi_boundary<T>(name: &'static str, f: impl FnOnce() -> T) -> Option<T> {
-    #[cfg(feature = "std")]
-    {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-            Ok(value) => Some(value),
-            Err(_) => {
-                tracing::error!(boundary = name, "panic crossing FFI boundary");
-                None
-            }
-        }
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        let _ = name;
-        Some(f())
-    }
-}
-
-#[inline]
-pub(crate) fn pop_error_scope_now(
-    device: &wgpu::Device,
-    scope: &'static str,
-) -> Option<wgpu::Error> {
-    use core::future::Future as _;
-    use core::pin::Pin;
-    use core::task::{Context, Poll};
-
-    let mut future = device.pop_error_scope();
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    let mut cx = Context::from_waker(core::task::Waker::noop());
-
-    if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
-        return result;
-    }
-
-    let _ = device.poll(wgpu::PollType::Poll);
-
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(result) => result,
-        Poll::Pending => {
-            panic!("{scope}: pop_error_scope remained pending after device.poll(Poll)")
-        }
-    }
-}
-
-/// Reborrows a raw pointer as a shared reference, naming the calling FFI
-/// function and parameter for diagnostics.
+/// Reborrows a raw pointer as a shared reference.
 ///
 /// # Safety
 ///
 /// `ptr` must be non-null and point to a valid, initialized `T` that stays
 /// alive and unaliased for the duration of the returned `'a` borrow.
 #[inline]
-#[track_caller]
-pub unsafe fn expect_non_null<'a, T>(
-    ptr: *const T,
-    function: &'static str,
-    parameter: &'static str,
-) -> &'a T {
-    let _ = (function, parameter);
+pub unsafe fn borrow_ffi<'a, T>(ptr: *const T) -> &'a T {
     unsafe { &*ptr }
 }
 
-/// Reborrows a raw pointer as an exclusive reference, naming the calling FFI
-/// function and parameter for diagnostics.
+/// Reborrows a raw pointer as an exclusive reference.
 ///
 /// # Safety
 ///
 /// `ptr` must be non-null and point to a valid, initialized `T` that stays
 /// alive and exclusively borrowed for the duration of the returned `'a` borrow.
 #[inline]
-#[track_caller]
-pub unsafe fn expect_non_null_mut<'a, T>(
-    ptr: *mut T,
-    function: &'static str,
-    parameter: &'static str,
-) -> &'a mut T {
-    let _ = (function, parameter);
+pub unsafe fn borrow_ffi_mut<'a, T>(ptr: *mut T) -> &'a mut T {
     unsafe { &mut *ptr }
 }
 
@@ -181,24 +119,26 @@ macro_rules! export {
                 // Take ownership of the environment
                 let env: waterui::Environment = unsafe { $crate::IntoRust::into_rust(env) };
 
-                // Call user's app(env: Environment) -> App
-                let app: waterui::app::App = match $crate::ffi_boundary("waterui_app", || app(env))
-                {
-                    Some(app) => app,
-                    None => {
-                        #[cfg(feature = "std")]
-                        {
-                            tracing::error!("waterui_app panicked; aborting process");
-                            std::process::abort();
-                        }
-                        #[cfg(not(feature = "std"))]
-                        unsafe {
-                            core::hint::unreachable_unchecked()
-                        }
-                    }
-                };
+                let app: waterui::app::App = app(env);
 
                 $crate::IntoFFI::into_ffi(app)
+            }
+
+            /// Android JNI entry point with an ABI that exposes only the two
+            /// opaque handles owned by the single-activity backend.
+            #[cfg(target_os = "android")]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn waterui_android_app(
+                env: *mut core::ffi::c_void,
+            ) -> $crate::app::WuiAndroidAppHandles {
+                unsafe { waterui_app(env.cast()) }.into_android_handles()
+            }
+
+            /// Android JNI initialization entry point using an opaque handle.
+            #[cfg(target_os = "android")]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn waterui_android_init() -> *mut core::ffi::c_void {
+                unsafe { waterui_init() }.cast()
             }
 
             #[cfg(target_os = "android")]
@@ -255,16 +195,7 @@ pub unsafe fn __jni_init(_vm: *mut core::ffi::c_void) -> i32 {
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn __init() {
-    #[cfg(feature = "std")]
-    {
-        INIT_ONCE.call_once(|| unsafe {
-            __init_impl();
-        });
-    }
-    #[cfg(not(feature = "std"))]
-    unsafe {
-        __init_impl();
-    }
+    unsafe { __init_impl() };
 }
 
 /// # Safety
@@ -323,15 +254,6 @@ unsafe fn __init_impl() {
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
                 .init();
         }
-    }
-
-    // Initialize shared GPU context (if GPU feature enabled)
-    #[cfg(feature = "gpu")]
-    {
-        waterui_graphics::shared_context::init_shared_context().unwrap_or_else(|error| {
-            panic!("ffi::__init_impl: shared GPU context initialization failed: {error}")
-        });
-        waterui_graphics::prewarm::spawn_builtin_shader_prewarm();
     }
 
     init_global_executor(native_executor::NativeExecutor::new());
@@ -484,7 +406,7 @@ ffi_safe!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool);
 
 opaque!(WuiEnv, waterui::Environment, env);
 
-opaque!(WuiAnyView, waterui::AnyView, anyview);
+opaque!(WuiAnyView, waterui::AnyView, anyview, any());
 
 /// Visual presentation mode for the label slot of every control.
 #[repr(C)]
@@ -548,13 +470,6 @@ impl crate::IntoFFI for waterui_controls::label::Label {
     }
 }
 
-/// Creates a new environment instance
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_env_new() -> *mut WuiEnv {
-    let env = waterui::Environment::new();
-    env.into_ffi()
-}
-
 /// Gets the id of the anyview type as a 128-bit value for O(1) comparison.
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_anyview_id() -> WuiTypeId {
@@ -569,7 +484,7 @@ pub extern "C" fn waterui_anyview_id() -> WuiTypeId {
 /// duration of this function call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_clone_env(env: *const WuiEnv) -> *mut WuiEnv {
-    let env = unsafe { expect_non_null(env, "waterui_clone_env", "env") };
+    let env = unsafe { borrow_ffi(env) };
     env.0.clone().into_ffi()
 }
 
@@ -584,7 +499,7 @@ pub unsafe extern "C" fn waterui_view_body(
     view: *mut WuiAnyView,
     env: *mut WuiEnv,
 ) -> *mut WuiAnyView {
-    let env = unsafe { expect_non_null_mut(env, "waterui_view_body", "env") };
+    let env = unsafe { borrow_ffi_mut(env) };
     let view = unsafe { view.into_rust() };
     let body = view.body(env);
     AnyView::new(body).into_ffi()
@@ -600,7 +515,7 @@ pub unsafe extern "C" fn waterui_view_body(
 /// duration of this function call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
-    let view = unsafe { expect_non_null(view, "waterui_view_id", "view") };
+    let view = unsafe { borrow_ffi(view) };
     WuiTypeId::from_runtime(view.type_id(), view.name())
 }
 
@@ -618,7 +533,7 @@ pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
 pub unsafe extern "C" fn waterui_view_stretch_axis(
     view: *const WuiAnyView,
 ) -> crate::components::layout::WuiStretchAxis {
-    let view = unsafe { expect_non_null(view, "waterui_view_stretch_axis", "view") };
+    let view = unsafe { borrow_ffi(view) };
     view.stretch_axis().into()
 }
 
@@ -654,6 +569,15 @@ impl WuiStr {
     }
 }
 
+/// Moves an owned string into a Rust allocation for nullable FFI payloads.
+///
+/// The returned pointer must be consumed exactly once by the API receiving it.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_str_box(value: WuiStr) -> *mut WuiStr {
+    Box::into_raw(Box::new(value))
+}
+
 impl IntoRust for WuiStr {
     type Rust = Str;
     unsafe fn into_rust(self) -> Self::Rust {
@@ -662,11 +586,6 @@ impl IntoRust for WuiStr {
         // Safety: We assume the input bytes are valid UTF-8
         unsafe { Str::from_utf8_unchecked(bytes) }
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_empty_anyview() -> *mut WuiAnyView {
-    AnyView::default().into_ffi()
 }
 
 #[repr(C)]
@@ -783,14 +702,14 @@ ffi_metadata!(GestureObserver, WuiMetadataGesture, gesture);
 // ========== Metadata<OnEvent> FFI ==========
 // Used to attach lifecycle event handlers (appear/disappear) - one-time handlers
 
-use crate::event::{WuiLifeCycleHook, WuiOnEvent};
+use crate::event::{WuiLifecycleHook, WuiOnEvent};
 use waterui_core::event::{LifeCycleHook, OnEvent};
 
-/// Type alias for Metadata<LifeCycleHook> FFI struct
-pub type WuiMetadataLifeCycleHook = WuiMetadata<WuiLifeCycleHook>;
+/// Type alias for `Metadata<LifeCycleHook>` FFI struct.
+pub type WuiMetadataLifecycleHook = WuiMetadata<WuiLifecycleHook>;
 
 // Generate waterui_metadata_lifecycle_hook_id() and waterui_force_as_metadata_lifecycle_hook()
-ffi_metadata!(LifeCycleHook, WuiMetadataLifeCycleHook, lifecycle_hook);
+ffi_metadata!(LifeCycleHook, WuiMetadataLifecycleHook, lifecycle_hook);
 
 // Used to attach interaction event handlers (hover enter/exit) - repeatable handlers
 
@@ -1158,10 +1077,7 @@ pub struct WuiRetain {
     _opaque: *mut (),
 }
 
-#[allow(
-    dead_code,
-    reason = "used by the android-jni bridge (`jni::convert` / `jni::components`); dead on non-Android builds"
-)]
+#[cfg(feature = "android-jni")]
 impl WuiRetain {
     pub(crate) fn opaque_ptr(&self) -> *mut () {
         self._opaque
@@ -1313,6 +1229,7 @@ ffi_metadata!(ClipShape, WuiMetadataClipShape, clip_shape);
 
 use crate::components::icon::WuiSystemIcon;
 use crate::components::text::WuiText;
+use crate::views::{WuiAnyViews, signal_vec_views};
 use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui_controls::menu::{ResolvedMenu, ResolvedMenuItem, Shortcut, ShortcutModifiers};
 use waterui_core::handler::SharedAction;
@@ -1331,9 +1248,9 @@ pub unsafe extern "C" fn waterui_call_shared_action(
     action: *const WuiSharedAction,
     env: *const WuiEnv,
 ) {
-    let action = unsafe { expect_non_null(action, "waterui_call_shared_action", "action") };
-    let env = unsafe { expect_non_null(env, "waterui_call_shared_action", "env") };
-    let _ = ffi_boundary("waterui_call_shared_action", || action.0.call(env));
+    let action = unsafe { borrow_ffi(action) }.0.clone();
+    let env = unsafe { borrow_ffi(env) }.0.clone();
+    action.call(&env);
 }
 
 /// FFI-safe menu item tag.
@@ -1405,7 +1322,7 @@ pub struct WuiMenuItem {
     /// The menu node kind.
     pub tag: WuiMenuItemTag,
     /// The resolved label for commands and nested menus.
-    pub label: WuiText,
+    pub label: *mut WuiText,
     /// Optional icon shown alongside the label.
     pub icon: *mut WuiSystemIcon,
     /// The action handler pointer for commands.
@@ -1417,32 +1334,47 @@ pub struct WuiMenuItem {
     /// Optional keyboard shortcut metadata for commands.
     pub shortcut: *mut WuiShortcut,
     /// Nested menu items.
-    pub items: *mut WuiComputed<MenuItems>,
+    pub items: *mut WuiAnyViews,
 }
 
-ffi_safe!(WuiMenuItem);
+/// Takes the label value from an owned menu-item label allocation.
+///
+/// # Safety
+///
+/// `label` must be consumed exactly once.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_menu_item_take_label(label: *mut WuiText) -> WuiText {
+    unsafe { *Box::from_raw(label) }
+}
 
-impl Default for WuiMenuItem {
-    fn default() -> Self {
-        Self {
-            tag: WuiMenuItemTag::Divider,
-            label: empty_menu_text(),
-            icon: null_mut(),
-            action: null_mut(),
-            disabled: null_mut(),
-            selected: null_mut(),
-            shortcut: null_mut(),
-            items: null_mut(),
-        }
-    }
+/// Takes the icon value from an owned menu-item icon allocation.
+///
+/// # Safety
+///
+/// `icon` must be consumed exactly once.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_menu_item_take_icon(icon: *mut WuiSystemIcon) -> WuiSystemIcon {
+    unsafe { *Box::from_raw(icon) }
+}
+
+/// Takes the shortcut value from an owned menu-item shortcut allocation.
+///
+/// # Safety
+///
+/// `shortcut` must be consumed exactly once.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_menu_item_take_shortcut(
+    shortcut: *mut WuiShortcut,
+) -> WuiShortcut {
+    unsafe { *Box::from_raw(shortcut) }
 }
 
 #[inline]
-fn empty_menu_text() -> WuiText {
-    WuiText {
-        content: null_mut(),
-        paragraph_alignment: null_mut(),
-    }
+fn menu_text(label: waterui_text::TextConfig) -> *mut WuiText {
+    Box::into_raw(Box::new(label.into_ffi()))
 }
 
 #[inline]
@@ -1457,14 +1389,21 @@ fn optional_shortcut(shortcut: Option<Shortcut>) -> *mut WuiShortcut {
     })
 }
 
-impl IntoFFI for ResolvedMenuItem {
+/// Raw semantic menu item stored in the framework's identity-aware collection.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ResolvedMenuItemView(ResolvedMenuItem);
+
+waterui_core::raw_view!(ResolvedMenuItemView);
+
+impl IntoFFI for ResolvedMenuItemView {
     type FFI = WuiMenuItem;
 
     fn into_ffi(self) -> Self::FFI {
-        match self {
+        match self.0 {
             ResolvedMenuItem::Command(command) => WuiMenuItem {
                 tag: WuiMenuItemTag::Command,
-                label: command.label.into_ffi(),
+                label: menu_text(command.label),
                 icon: optional_menu_icon(command.icon),
                 action: command.action.into_ffi(),
                 disabled: command.disabled.into_ffi(),
@@ -1474,7 +1413,7 @@ impl IntoFFI for ResolvedMenuItem {
             },
             ResolvedMenuItem::Divider => WuiMenuItem {
                 tag: WuiMenuItemTag::Divider,
-                label: empty_menu_text(),
+                label: null_mut(),
                 icon: null_mut(),
                 action: null_mut(),
                 disabled: null_mut(),
@@ -1484,33 +1423,59 @@ impl IntoFFI for ResolvedMenuItem {
             },
             ResolvedMenuItem::Menu(menu) => WuiMenuItem {
                 tag: WuiMenuItemTag::Menu,
-                label: menu.label.into_ffi(),
+                label: menu_text(menu.label),
                 icon: optional_menu_icon(menu.icon),
                 action: null_mut(),
                 disabled: null_mut(),
                 selected: null_mut(),
                 shortcut: null_mut(),
-                items: menu.items.into_ffi(),
+                items: menu_items_views(menu.items),
             },
         }
     }
 }
 
-/// Resolved menu item arrays shared by popup menus, context menus, and text selection menus.
-pub type MenuItems = alloc::vec::Vec<ResolvedMenuItem>;
+ffi_view!(ResolvedMenuItemView, WuiMenuItem, menu_item);
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum MenuItemIdentity {
+    Semantic(usize),
+    Divider(usize),
+}
+
+fn menu_item_identity(items: &[ResolvedMenuItem], index: usize) -> MenuItemIdentity {
+    match &items[index] {
+        ResolvedMenuItem::Command(command) => MenuItemIdentity::Semantic(command.semantic_id()),
+        ResolvedMenuItem::Menu(menu) => MenuItemIdentity::Semantic(menu.semantic_id()),
+        ResolvedMenuItem::Divider => MenuItemIdentity::Divider(
+            items[..=index]
+                .iter()
+                .filter(|item| matches!(item, ResolvedMenuItem::Divider))
+                .count(),
+        ),
+    }
+}
+
+pub(crate) fn menu_items_views(
+    items: nami::Computed<alloc::vec::Vec<ResolvedMenuItem>>,
+) -> *mut WuiAnyViews {
+    signal_vec_views(items, menu_item_identity, |item| {
+        AnyView::new(ResolvedMenuItemView(item))
+    })
+}
 
 /// FFI-safe representation of a context menu.
 #[repr(C)]
 pub struct WuiContextMenu {
-    /// The menu items as a computed array.
-    pub items: *mut WuiComputed<MenuItems>,
+    /// Identity-aware reactive menu items.
+    pub items: *mut WuiAnyViews,
 }
 
 impl IntoFFI for ResolvedContextMenu {
     type FFI = WuiContextMenu;
     fn into_ffi(self) -> Self::FFI {
         WuiContextMenu {
-            items: self.items.into_ffi(),
+            items: menu_items_views(self.items),
         }
     }
 }
@@ -1521,8 +1486,6 @@ pub type WuiMetadataContextMenu = WuiMetadata<WuiContextMenu>;
 // Generate waterui_metadata_context_menu_id() and waterui_force_as_metadata_context_menu()
 ffi_metadata!(ResolvedContextMenu, WuiMetadataContextMenu, context_menu);
 
-ffi_computed!(MenuItems, WuiArray<WuiMenuItem>, menu_items);
-
 // ========== Menu FFI ==========
 // Menu component that displays a dropdown menu when tapped
 
@@ -1531,8 +1494,8 @@ ffi_computed!(MenuItems, WuiArray<WuiMenuItem>, menu_items);
 pub struct WuiMenu {
     /// The label view displayed on the menu button.
     pub label: *mut WuiAnyView,
-    /// The fully resolved menu items as a computed array.
-    pub items: *mut WuiComputed<MenuItems>,
+    /// Identity-aware reactive menu items.
+    pub items: *mut WuiAnyViews,
     /// Semantic accessibility label for the menu trigger.
     pub accessibility_label: *mut WuiComputed<StyledStr>,
 }
@@ -1542,7 +1505,7 @@ impl IntoFFI for ResolvedMenu {
     fn into_ffi(self) -> Self::FFI {
         WuiMenu {
             label: self.label.into_ffi(),
-            items: self.items.into_ffi(),
+            items: menu_items_views(self.items),
             accessibility_label: self.accessibility_label.into_ffi(),
         }
     }
@@ -1556,18 +1519,21 @@ ffi_view!(ResolvedMenu, WuiMenu, menu);
 // Used to make views draggable or drop destinations
 
 use crate::drag_drop::{WuiDraggable, WuiDropDestination};
+#[cfg(feature = "c-api")]
 use waterui::drag_drop::{Draggable, DropDestination};
 
 /// Type alias for Metadata<Draggable> FFI struct
 pub type WuiMetadataDraggable = WuiMetadata<WuiDraggable>;
 
 // Generate waterui_metadata_draggable_id() and waterui_force_as_metadata_draggable()
+#[cfg(feature = "c-api")]
 ffi_metadata!(Draggable, WuiMetadataDraggable, draggable);
 
 /// Type alias for Metadata<DropDestination> FFI struct
 pub type WuiMetadataDropDestination = WuiMetadata<WuiDropDestination>;
 
 // Generate waterui_metadata_drop_destination_id() and waterui_force_as_metadata_drop_destination()
+#[cfg(feature = "c-api")]
 ffi_metadata!(
     DropDestination,
     WuiMetadataDropDestination,
@@ -1577,10 +1543,12 @@ ffi_metadata!(
 // ========== IgnorableMetadata<MaterialBackground> FFI ==========
 // Used to apply native blur effects on supported platforms (Apple)
 
+#[cfg(feature = "c-api")]
 use waterui::background::MaterialBackground;
 
 /// FFI-safe representation of IgnorableMetadata<MaterialBackground>
 #[repr(C)]
+#[cfg(feature = "c-api")]
 pub struct WuiIgnorableMetadataMaterialBackground {
     /// The view content wrapped by this metadata
     pub content: *mut WuiAnyView,
@@ -1588,6 +1556,7 @@ pub struct WuiIgnorableMetadataMaterialBackground {
     pub material: WuiMaterial,
 }
 
+#[cfg(feature = "c-api")]
 impl IntoFFI for waterui_core::IgnorableMetadata<MaterialBackground> {
     type FFI = WuiIgnorableMetadataMaterialBackground;
 
@@ -1601,6 +1570,7 @@ impl IntoFFI for waterui_core::IgnorableMetadata<MaterialBackground> {
 
 // Generate waterui_ignorable_metadata_material_background_id() and
 // waterui_force_as_ignorable_metadata_material_background()
+#[cfg(feature = "c-api")]
 ffi_ignorable_metadata!(
     MaterialBackground,
     WuiIgnorableMetadataMaterialBackground,
@@ -1634,25 +1604,15 @@ pub type WuiMetadataHittable = WuiMetadata<WuiHittable>;
 // Generate waterui_metadata_hittable_id() and waterui_force_as_metadata_hittable()
 ffi_metadata!(Hittable, WuiMetadataHittable, hittable);
 
-#[cfg(test)]
+#[cfg(all(test, feature = "c-api"))]
 mod tests {
+    use alloc::rc::Rc;
     use alloc::sync::Arc;
+    use core::cell::Cell;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use waterui_core::handler::SharedAction;
-
-    #[test]
-    fn ffi_boundary_returns_result_on_success() {
-        let value = ffi_boundary("ok_boundary", || 42);
-        assert_eq!(value, Some(42));
-    }
-
-    #[test]
-    fn ffi_boundary_catches_panics() {
-        let value = ffi_boundary::<()>("panic_boundary", || panic!("boom"));
-        assert!(value.is_none());
-    }
 
     #[test]
     fn shared_action_callback_executes() {
@@ -1676,21 +1636,21 @@ mod tests {
     }
 
     #[test]
-    fn shared_action_panic_does_not_unwind_across_ffi() {
-        let action_ptr = SharedAction::new(|| {
-            panic!("boom");
+    fn shared_action_survives_reentrant_native_drop_until_callback_returns() {
+        let action_ptr = Rc::new(Cell::new(core::ptr::null_mut::<WuiSharedAction>()));
+        let callback_finished = Rc::new(Cell::new(false));
+        let action_ptr_for_callback = Rc::clone(&action_ptr);
+        let callback_finished_for_callback = Rc::clone(&callback_finished);
+        let action = SharedAction::new(move || {
+            unsafe { waterui_drop_shared_action(action_ptr_for_callback.get()) };
+            callback_finished_for_callback.set(true);
         })
         .into_ffi();
-        let env_ptr = waterui::Environment::new().into_ffi();
+        action_ptr.set(action);
+        let env = WuiEnv(waterui::Environment::new());
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            waterui_call_shared_action(action_ptr, env_ptr);
-        }));
-        assert!(result.is_ok(), "panic should not cross FFI boundary");
+        unsafe { waterui_call_shared_action(action, &env) };
 
-        unsafe {
-            waterui_drop_shared_action(action_ptr);
-            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
-        }
+        assert!(callback_finished.get());
     }
 }

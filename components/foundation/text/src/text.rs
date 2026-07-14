@@ -2,26 +2,29 @@ use alloc::{
     rc::Rc,
     string::{String, ToString},
 };
-use core::cell::RefCell;
 use core::fmt;
 use core::ops::{Add, AddAssign};
 use fmt::Display;
 
 use nami::signal::{IntoComputed, IntoSignal};
-use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use nami::{Binding, Computed, Signal, SignalExt};
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, View, flatten_signal};
 use waterui_graphics::color::Color;
 use waterui_locale::{Locale, TranslationCatalog, locale_binding};
 use waterui_str::Str;
 
 use crate::font::FontWeight;
-use crate::locale::Formatter;
 use crate::{font::Font, styled::StyledStr};
 
 type ConfigResolver = dyn Fn(&Environment) -> Computed<TextConfig>;
+
+/// Formats signal values for [`Text::format`].
+pub trait Formatter<T>: Clone {
+    /// Formats one signal value.
+    fn format(&self, value: &T) -> Str;
+}
 
 /// Native text payload consumed by platform backends.
 #[derive(Debug, Clone)]
@@ -287,16 +290,10 @@ impl Text {
         }
     }
 
-    /// Resolves semantic text into a raw config using the environment's effective locale.
-    #[must_use]
-    pub fn resolve(&self, env: &Environment) -> TextConfig {
-        self.resolve_signal(env).get()
-    }
-
     /// Resolves semantic text into a raw config while preserving reactive
     /// content and alignment updates.
     #[must_use]
-    pub fn resolve_reactive(&self, env: &Environment) -> TextConfig {
+    pub fn resolve(&self, env: &Environment) -> TextConfig {
         match &self.0 {
             TextKind::Raw(config) => config.clone(),
             TextKind::Signal { resolver } => {
@@ -496,71 +493,6 @@ impl Text {
     }
 }
 
-#[derive(Clone)]
-struct FlattenSignal<S> {
-    nested: S,
-}
-
-struct FlattenSignalWatchGuard<G>
-where
-    G: WatcherGuard,
-{
-    _outer: G,
-    _inner: Rc<RefCell<Option<BoxWatcherGuard>>>,
-}
-
-impl<G> WatcherGuard for FlattenSignalWatchGuard<G> where G: WatcherGuard {}
-
-impl<S, T> Signal for FlattenSignal<S>
-where
-    S: Signal<Output = Computed<T>> + Clone + 'static,
-    T: Clone + 'static,
-{
-    type Output = T;
-    type Guard = FlattenSignalWatchGuard<S::Guard>;
-
-    fn get(&self) -> Self::Output {
-        self.nested.get().get()
-    }
-
-    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
-        let watcher = Rc::new(watcher);
-        let inner = Rc::new(RefCell::new(None));
-
-        let initial = self.nested.get();
-        *inner.borrow_mut() = Some(initial.watch({
-            let watcher = watcher.clone();
-            move |ctx| watcher(ctx)
-        }));
-
-        let outer = self.nested.watch({
-            let watcher = watcher;
-            let inner = inner.clone();
-            move |ctx: Context<Computed<T>>| {
-                let next = ctx.value().clone();
-                *inner.borrow_mut() = Some(next.watch({
-                    let watcher = watcher.clone();
-                    move |ctx| watcher(ctx)
-                }));
-                watcher(Context::new(next.get(), ctx.metadata().clone()));
-            }
-        });
-
-        FlattenSignalWatchGuard {
-            _outer: outer,
-            _inner: inner,
-        }
-    }
-}
-
-fn flatten_signal<S, T>(nested: S) -> Computed<T>
-where
-    S: Signal<Output = Computed<T>> + Clone + 'static,
-    T: Clone + 'static,
-{
-    Computed::new(FlattenSignal { nested })
-}
-
 macro_rules! impl_text_font {
     ($(($name:ident, $value:expr)),+) => {
         $(
@@ -629,6 +561,18 @@ mod tests {
     }
 
     #[test]
+    fn resolved_text_switches_with_outer_signal() {
+        let env = test_env();
+        let key = Binding::container("greeting");
+        let text: Text = key.clone().into();
+        let content = text.resolve(&env).content;
+
+        assert_eq!(content.get().to_plain(), "Hello");
+        key.set("farewell");
+        assert_eq!(content.get().to_plain(), "Goodbye");
+    }
+
+    #[test]
     fn add_supports_computed_into_text_rhs() {
         let env = test_env();
         let text = Text::verbatim("Hi ") + Computed::constant("greeting");
@@ -650,7 +594,7 @@ mod tests {
         env.insert(locales::EN);
         env.insert(
             TranslationCatalog::new()
-                .add_toml("en", "greeting = \"Hello\"")
+                .add_toml("en", "greeting = \"Hello\"\nfarewell = \"Goodbye\"")
                 .expect("test catalog must parse"),
         );
         env

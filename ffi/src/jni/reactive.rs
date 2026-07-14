@@ -7,26 +7,83 @@
 //! This module contains:
 //! - Complex type read/set (Str, Color, Date, etc.) that need custom JNI conversion
 //! - Watcher creation functions with type-specific call trampolines
-//! - Special aliases (WindowState uses i32 but has separate JNI name)
+//! - Semantic integer projections whose Rust signal types remain distinct
 
 extern crate alloc;
 extern crate std;
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::mem::take;
 
 use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
+use jni::objects::{JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jint, jlong, jobject, jobjectArray, jsize};
 
-use crate::IntoFFI;
+use crate::components::text::WuiHorizontalAlignment;
+use crate::cursor::WuiCursorStyle;
+use crate::id::WuiId;
 use crate::reactive::{WuiBinding, WuiComputed, WuiWatcherGuard};
+use crate::theme::WuiColorScheme;
+use crate::{IntoFFI, IntoRust};
 
-#[inline]
-fn require_jlong_ptr<T>(ptr: jlong, function: &str, pointer_name: &str) -> *mut T {
-    let _ = (function, pointer_name);
-    ptr as *mut T
+const WATCHER_STRUCT_CLASS: &str = "dev/waterui/android/runtime/WatcherStruct";
+const WATCHER_STRUCT_CTOR: &str = "(JJJ)V";
+const WATCHER_METADATA_CLASS: &str = "dev/waterui/android/reactive/WuiWatcherMetadata";
+const WATCHER_METADATA_CTOR: &str = "(J)V";
+const RESOLVED_COLOR_CLASS: &str = "dev/waterui/android/runtime/ResolvedColorStruct";
+const RESOLVED_COLOR_CTOR: &str = "(FFFFF)V";
+const RESOLVED_FONT_CLASS: &str = "dev/waterui/android/runtime/ResolvedFontStruct";
+const RESOLVED_FONT_CTOR: &str = "(FILjava/lang/String;)V";
+const DATE_CLASS: &str = "dev/waterui/android/runtime/DateStruct";
+const DATE_CTOR: &str = "(III)V";
+const DATE_TIME_CLASS: &str = "dev/waterui/android/runtime/DateTimeStruct";
+const DATE_TIME_CTOR: &str = "(IIIIII)V";
+const TEXT_STYLE_CLASS: &str = "dev/waterui/android/runtime/TextStyleStruct";
+const TEXT_STYLE_CTOR: &str = "(JZZZJJ)V";
+const STYLED_CHUNK_CLASS: &str = "dev/waterui/android/runtime/StyledChunkStruct";
+const STYLED_CHUNK_CTOR: &str =
+    "(Ljava/lang/String;Ldev/waterui/android/runtime/TextStyleStruct;)V";
+const STYLED_STR_CLASS: &str = "dev/waterui/android/runtime/StyledStrStruct";
+const STYLED_STR_CTOR: &str = "([Ldev/waterui/android/runtime/StyledChunkStruct;)V";
+
+trait JniIntValue {
+    fn into_jint(self) -> jint;
+}
+
+impl JniIntValue for WuiColorScheme {
+    fn into_jint(self) -> jint {
+        self as jint
+    }
+}
+
+impl JniIntValue for WuiCursorStyle {
+    fn into_jint(self) -> jint {
+        self as jint
+    }
+}
+
+impl JniIntValue for WuiHorizontalAlignment {
+    fn into_jint(self) -> jint {
+        self as jint
+    }
+}
+
+impl JniIntValue for WuiId {
+    fn into_jint(self) -> jint {
+        self.inner
+    }
+}
+
+fn read_computed_jni_int<T>(computed_ptr: jlong) -> jint
+where
+    T: IntoFFI + 'static,
+    T::FFI: JniIntValue,
+{
+    use waterui::Signal;
+
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<T>) };
+    computed.get().into_ffi().into_jint()
 }
 
 // ============================================================================
@@ -42,21 +99,18 @@ fn create_resolved_color_struct<'local>(
     opacity: f32,
     headroom: f32,
 ) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    unsafe {
-        env.new_object_unchecked(
-            &classes.resolved_color_struct_class,
-            jni::objects::JMethodID::from_raw(classes.resolved_color_struct_ctor),
-            &[
-                JValue::Float(red).as_jni(),
-                JValue::Float(green).as_jni(),
-                JValue::Float(blue).as_jni(),
-                JValue::Float(opacity).as_jni(),
-                JValue::Float(headroom).as_jni(),
-            ],
-        )
-        .expect("Failed to create ResolvedColorStruct")
-    }
+    env.new_object(
+        RESOLVED_COLOR_CLASS,
+        RESOLVED_COLOR_CTOR,
+        &[
+            JValue::Float(red),
+            JValue::Float(green),
+            JValue::Float(blue),
+            JValue::Float(opacity),
+            JValue::Float(headroom),
+        ],
+    )
+    .expect("Failed to create ResolvedColorStruct")
 }
 
 /// Create a ResolvedFontStruct Java object from Rust values.
@@ -64,92 +118,25 @@ fn create_resolved_font_struct<'local>(
     env: &mut JNIEnv<'local>,
     size: f32,
     weight: i32,
-    family: &str,
+    family: Option<&str>,
 ) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    let family = env
-        .new_string(family)
-        .expect("Failed to create font family string");
-    unsafe {
-        env.new_object_unchecked(
-            &classes.resolved_font_struct_class,
-            jni::objects::JMethodID::from_raw(classes.resolved_font_struct_ctor),
-            &[
-                JValue::Float(size).as_jni(),
-                JValue::Int(weight).as_jni(),
-                JValue::Object(&family).as_jni(),
-            ],
-        )
-        .expect("Failed to create ResolvedFontStruct")
-    }
-}
-
-/// Create a RegionStruct Java object from Rust values.
-fn create_region_struct<'local>(
-    env: &mut JNIEnv<'local>,
-    center_lat: f64,
-    center_lon: f64,
-    lat_delta: f64,
-    lon_delta: f64,
-) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    unsafe {
-        env.new_object_unchecked(
-            &classes.region_struct_class,
-            jni::objects::JMethodID::from_raw(classes.region_struct_ctor),
-            &[
-                JValue::Double(center_lat).as_jni(),
-                JValue::Double(center_lon).as_jni(),
-                JValue::Double(lat_delta).as_jni(),
-                JValue::Double(lon_delta).as_jni(),
-            ],
-        )
-        .expect("Failed to create RegionStruct")
-    }
-}
-
-/// Create an AnnotationStruct Java object from Rust values.
-fn create_annotation_struct<'local>(
-    env: &mut JNIEnv<'local>,
-    latitude: f64,
-    longitude: f64,
-    title: &str,
-    subtitle: &str,
-) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    let title_str = env
-        .new_string(title)
-        .expect("Failed to create title string");
-    let subtitle_str = env
-        .new_string(subtitle)
-        .expect("Failed to create subtitle string");
-    unsafe {
-        env.new_object_unchecked(
-            &classes.annotation_struct_class,
-            jni::objects::JMethodID::from_raw(classes.annotation_struct_ctor),
-            &[
-                JValue::Double(latitude).as_jni(),
-                JValue::Double(longitude).as_jni(),
-                JValue::Object(&title_str).as_jni(),
-                JValue::Object(&subtitle_str).as_jni(),
-            ],
-        )
-        .expect("Failed to create AnnotationStruct")
-    }
-}
-
-/// Create a VideoStruct Java object from Rust values.
-fn create_video_struct<'local>(env: &mut JNIEnv<'local>, url: &str) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    let url_str = env.new_string(url).expect("Failed to create URL string");
-    unsafe {
-        env.new_object_unchecked(
-            &classes.video_struct_class,
-            jni::objects::JMethodID::from_raw(classes.video_struct_ctor),
-            &[JValue::Object(&url_str).as_jni()],
-        )
-        .expect("Failed to create VideoStruct")
-    }
+    let family: JObject<'local> = match family {
+        Some(family) => env
+            .new_string(family)
+            .expect("Failed to create font family string")
+            .into(),
+        None => JObject::null(),
+    };
+    env.new_object(
+        RESOLVED_FONT_CLASS,
+        RESOLVED_FONT_CTOR,
+        &[
+            JValue::Float(size),
+            JValue::Int(weight),
+            JValue::Object(&family),
+        ],
+    )
+    .expect("Failed to create ResolvedFontStruct")
 }
 
 /// Create a DateStruct Java object from Rust values.
@@ -159,19 +146,12 @@ fn create_date_struct<'local>(
     month: i32,
     day: i32,
 ) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    unsafe {
-        env.new_object_unchecked(
-            &classes.date_struct_class,
-            jni::objects::JMethodID::from_raw(classes.date_struct_ctor),
-            &[
-                JValue::Int(year).as_jni(),
-                JValue::Int(month).as_jni(),
-                JValue::Int(day).as_jni(),
-            ],
-        )
-        .expect("Failed to create DateStruct")
-    }
+    env.new_object(
+        DATE_CLASS,
+        DATE_CTOR,
+        &[JValue::Int(year), JValue::Int(month), JValue::Int(day)],
+    )
+    .expect("Failed to create DateStruct")
 }
 
 fn create_date_time_struct<'local>(
@@ -183,31 +163,27 @@ fn create_date_time_struct<'local>(
     minute: i32,
     second: i32,
 ) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    unsafe {
-        env.new_object_unchecked(
-            &classes.date_time_struct_class,
-            jni::objects::JMethodID::from_raw(classes.date_time_struct_ctor),
-            &[
-                JValue::Int(year).as_jni(),
-                JValue::Int(month).as_jni(),
-                JValue::Int(day).as_jni(),
-                JValue::Int(hour).as_jni(),
-                JValue::Int(minute).as_jni(),
-                JValue::Int(second).as_jni(),
-            ],
-        )
-        .expect("Failed to create DateTimeStruct")
-    }
+    env.new_object(
+        DATE_TIME_CLASS,
+        DATE_TIME_CTOR,
+        &[
+            JValue::Int(year),
+            JValue::Int(month),
+            JValue::Int(day),
+            JValue::Int(hour),
+            JValue::Int(minute),
+            JValue::Int(second),
+        ],
+    )
+    .expect("Failed to create DateTimeStruct")
 }
 
 // ============================================================================
-// String-based Binding Macros (Str, Secure use direct Java String conversion)
+// String Binding
 // ============================================================================
 
 /// Helper for reading a Str binding as Java String.
 fn read_binding_str_to_java_string(env: &mut JNIEnv, binding_ptr: jlong) -> jobject {
-    use nami::Signal;
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
     let s: waterui::Str = binding.get();
     env.new_string(s.as_str())
@@ -216,13 +192,14 @@ fn read_binding_str_to_java_string(env: &mut JNIEnv, binding_ptr: jlong) -> jobj
 }
 
 /// Helper for setting a Str binding from Java String.
-fn set_binding_str_from_java_string(env: &mut JNIEnv, binding_ptr: jlong, value: &JString) {
+fn set_binding_str_from_java_string<'local>(
+    env: &mut JNIEnv<'local>,
+    binding_ptr: jlong,
+    value: &JString<'local>,
+) {
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
-    let text = env
-        .get_string(value)
-        .expect("set_binding_str_from_java_string: failed to read Java string");
-    let s = waterui::Str::from(text.to_string_lossy().into_owned());
-    binding.set(s);
+    let value = crate::jni::convert::string_from_java(env, value);
+    binding.set(waterui::Str::from(value));
 }
 
 /// Generates JNI read/set functions for Str-based binding types (using Java String).
@@ -251,203 +228,122 @@ macro_rules! jni_binding_str {
     };
 }
 
-// Generate Str and Secure binding functions
+// Generate Str binding functions.
 jni_binding_str!(str);
-jni_binding_str!(secure);
-
-fn styled_str_from_java(env: &mut JNIEnv, styled: &JObject) -> waterui_text::styled::StyledStr {
-    use crate::IntoRust;
-    use crate::color::WuiColor;
-    use crate::components::text::WuiFont;
-    use waterui_text::styled::{Style, StyledStr};
-
-    let chunks_obj = env
-        .get_field(
-            styled,
-            "chunks",
-            "[Ldev/waterui/android/runtime/StyledChunkStruct;",
-        )
-        .expect("StyledStrStruct.chunks field not found")
-        .l()
-        .expect("StyledStrStruct.chunks should be an object array");
-    let chunks_array = JObjectArray::from(chunks_obj);
-
-    let len = env
-        .get_array_length(&chunks_array)
-        .expect("Failed to read StyledStrStruct chunks length");
-
-    let mut styled_str = StyledStr::empty();
-
-    for index in 0..len {
-        let chunk_obj = env
-            .get_object_array_element(&chunks_array, index)
-            .expect("Failed to read StyledChunkStruct from array");
-        let text_obj = env
-            .get_field(&chunk_obj, "text", "Ljava/lang/String;")
-            .expect("StyledChunkStruct.text field not found")
-            .l()
-            .expect("StyledChunkStruct.text should be a java.lang.String");
-        let text_jstr = JString::from(text_obj);
-        let text = env
-            .get_string(&text_jstr)
-            .expect("Failed to read StyledChunkStruct.text")
-            .to_string_lossy()
-            .into_owned();
-
-        let style_obj = env
-            .get_field(
-                &chunk_obj,
-                "style",
-                "Ldev/waterui/android/runtime/TextStyleStruct;",
-            )
-            .expect("StyledChunkStruct.style field not found")
-            .l()
-            .expect("StyledChunkStruct.style should be a TextStyleStruct");
-
-        let font_ptr = env
-            .get_field(&style_obj, "fontPtr", "J")
-            .expect("TextStyleStruct.fontPtr field not found")
-            .j()
-            .expect("TextStyleStruct.fontPtr should be a long");
-        let italic = env
-            .get_field(&style_obj, "italic", "Z")
-            .expect("TextStyleStruct.italic field not found")
-            .z()
-            .expect("TextStyleStruct.italic should be a boolean");
-        let underline = env
-            .get_field(&style_obj, "underline", "Z")
-            .expect("TextStyleStruct.underline field not found")
-            .z()
-            .expect("TextStyleStruct.underline should be a boolean");
-        let strikethrough = env
-            .get_field(&style_obj, "strikethrough", "Z")
-            .expect("TextStyleStruct.strikethrough field not found")
-            .z()
-            .expect("TextStyleStruct.strikethrough should be a boolean");
-        let foreground_ptr = env
-            .get_field(&style_obj, "foregroundPtr", "J")
-            .expect("TextStyleStruct.foregroundPtr field not found")
-            .j()
-            .expect("TextStyleStruct.foregroundPtr should be a long");
-        let background_ptr = env
-            .get_field(&style_obj, "backgroundPtr", "J")
-            .expect("TextStyleStruct.backgroundPtr field not found")
-            .j()
-            .expect("TextStyleStruct.backgroundPtr should be a long");
-
-        let font = unsafe { (font_ptr as *mut WuiFont).into_rust() };
-
-        let foreground = if foreground_ptr == 0 {
-            None
-        } else {
-            Some(unsafe { (foreground_ptr as *mut WuiColor).into_rust() })
-        };
-
-        let background = if background_ptr == 0 {
-            None
-        } else if background_ptr == foreground_ptr && foreground.is_some() {
-            foreground.clone()
-        } else {
-            Some(unsafe { (background_ptr as *mut WuiColor).into_rust() })
-        };
-
-        styled_str.push(
-            waterui::Str::from(text),
-            Style {
-                font,
-                italic,
-                underline,
-                strikethrough,
-                foreground,
-                background,
-            },
-        );
-    }
-
-    styled_str
-}
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStr<'local>(
-    mut env: JNIEnv<'local>,
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingSecure<'local>(
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobject {
-    use nami::Signal;
-    use waterui_text::styled::StyledStr;
+    use waterui_form::secure::Secure;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<StyledStr>>(binding_ptr, "readBindingStyledStr", "binding")
-    };
-    let styled: StyledStr = binding.get();
-    styled_str_to_java(&mut env, styled).into_raw()
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
+    env.new_string(binding.get().expose())
+        .expect("readBindingSecure failed to create Java string")
+        .into_raw()
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingStyledStr<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingSecure<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     binding_ptr: jlong,
-    styled: JObject<'local>,
+    value: JString<'local>,
 ) {
-    use waterui_text::styled::StyledStr;
+    use waterui_form::secure::Secure;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<StyledStr>>(binding_ptr, "setBindingStyledStr", "binding")
-    };
-    let value = styled_str_from_java(&mut env, &styled);
-    binding.set(value);
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
+    let value = crate::jni::convert::string_from_java(&mut env, &value);
+    binding.set(Secure::new(value));
 }
 
-// Color read/set is generated by jni_binding_primitive! in color.rs
-
-// WindowState read/set is generated by jni_binding_primitive! in window.rs
-
-// --- Date Binding ---
-
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDate<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_watchBindingSecure<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     binding_ptr: jlong,
-) -> jobject {
-    use crate::IntoFFI;
+    watcher: JObject<'local>,
+) -> jlong {
     use nami::Signal;
-    use waterui_form::picker::date::Date;
+    use waterui_form::secure::Secure;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<Date>>(binding_ptr, "readBindingDate", "binding")
-    };
-    let date: Date = binding.get();
-    let ffi = date.into_ffi();
-
-    create_date_struct(&mut env, ffi.year, ffi.month as i32, ffi.day as i32).into_raw()
+    let (data_ptr, call_ptr, drop_ptr) = crate::jni::extract_watcher_struct(&mut env, &watcher);
+    let call_fn: unsafe extern "C" fn(
+        *mut (),
+        crate::WuiStr,
+        *mut crate::reactive::WuiWatcherMetadata,
+    ) = unsafe { core::mem::transmute(call_ptr as *const ()) };
+    let drop_fn: unsafe extern "C" fn(*mut ()) =
+        unsafe { core::mem::transmute(drop_ptr as *const ()) };
+    let watcher = unsafe {
+        crate::reactive::WuiWatcher::<Secure>::new(data_ptr as *mut (), call_fn, drop_fn)
+    }
+    .into_inner();
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
+    let guard = binding.watch(move |context| {
+        let callback = Rc::clone(&watcher);
+        callback(context);
+    });
+    Box::into_raw(Box::new(WuiWatcherGuard(Box::new(guard)))) as jlong
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingId<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     binding_ptr: jlong,
-    year: jint,
-    month: jint,
-    day: jint,
-) {
-    use crate::IntoRust;
-    use crate::components::form::WuiDate;
-    use waterui_form::picker::date::Date;
+) -> jint {
+    use waterui_core::id::Id;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<Date>>(binding_ptr, "setBindingDate", "binding")
-    };
-    let wui_date = WuiDate {
-        year,
-        month: month as u8,
-        day: day as u8,
-    };
-    let date = unsafe { wui_date.into_rust() };
-    binding.set(date);
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Id>) };
+    binding.get().into_ffi().into_jint()
 }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingId<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+    value: jint,
+) {
+    use waterui_core::id::Id;
+
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Id>) };
+    let value = unsafe { WuiId { inner: value }.into_rust() };
+    binding.set(value);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStrPlain<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+) -> jobject {
+    use waterui_text::styled::StyledStr;
+
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
+    env.new_string(binding.get().to_plain().as_str())
+        .expect("readBindingStyledStrPlain failed to create Java string")
+        .into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingStyledStrPlain<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+    value: JString<'local>,
+) {
+    use waterui_text::styled::StyledStr;
+
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
+    let value = crate::jni::convert::string_from_java(&mut env, &value);
+    binding.set(StyledStr::plain(value));
+}
+
+// Color read/set is generated by jni_binding_primitive! in color.rs
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVec<'local>(
@@ -455,20 +351,15 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVe
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobjectArray {
-    use nami::Signal;
     use waterui_form::picker::date::Date;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<Vec<Date>>>(binding_ptr, "readBindingDateVec", "binding")
-    };
+    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<Vec<Date>>) };
     let dates = binding.get();
-    let classes = crate::jni::java_classes();
+    let date_class = env
+        .find_class(DATE_CLASS)
+        .expect("DateStruct class not found");
     let array = env
-        .new_object_array(
-            dates.len() as jsize,
-            &classes.date_struct_class,
-            JObject::null(),
-        )
+        .new_object_array(dates.len() as jsize, &date_class, JObject::null())
         .expect("Failed to create date struct array");
 
     for (index, date) in dates.into_iter().enumerate() {
@@ -482,7 +373,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVe
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateVec<'local>(
+/// Replaces a date-vector binding from a Java object array.
+///
+/// # Safety
+///
+/// `binding_ptr` must point to a live `WuiBinding<Vec<Date>>`; `dates` must be
+/// a valid local JNI object-array reference for the duration of this call.
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateVec<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     binding_ptr: jlong,
@@ -492,9 +389,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateVec
     use crate::components::form::WuiDate;
     use waterui_form::picker::date::Date;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<Vec<Date>>>(binding_ptr, "setBindingDateVec", "binding")
-    };
+    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<Vec<Date>>) };
     let dates = unsafe { JObjectArray::from_raw(dates) };
     let length = env
         .get_array_length(&dates)
@@ -539,11 +434,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTi
 ) -> jobject {
     use crate::IntoFFI;
     use jiff::civil::DateTime;
-    use nami::Signal;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<DateTime>>(binding_ptr, "readBindingDateTime", "binding")
-    };
+    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<DateTime>) };
     let date_time: DateTime = binding.get();
     let ffi = date_time.into_ffi();
 
@@ -575,9 +467,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateTim
     use crate::components::form::WuiDateTime;
     use jiff::civil::DateTime;
 
-    let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<DateTime>>(binding_ptr, "setBindingDateTime", "binding")
-    };
+    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<DateTime>) };
     let wui_date_time = WuiDateTime {
         year,
         month: month as u8,
@@ -594,56 +484,46 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateTim
 // Special Drop Functions (aliases that aren't covered by macros)
 // ============================================================================
 
-// Secure uses same type as Str but has separate JNI function
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropBindingSecure<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) {
-    unsafe {
-        drop(Box::from_raw(
-            require_jlong_ptr::<WuiBinding<waterui::Str>>(
-                binding_ptr,
-                "dropBindingSecure",
-                "binding",
-            ),
-        ))
-    };
-}
+    use waterui_form::secure::Secure;
 
-// WindowState drop is generated by ffi_binding!(WindowState, WuiWindowState, window_state) in window.rs
+    unsafe { drop(Box::from_raw(binding_ptr as *mut WuiBinding<Secure>)) };
+}
 
 // ============================================================================
 // Complex Type Computed Read Functions
 // Note: Primitives (bool, i32, f32, f64) are generated by jni_computed_primitive!
 // ============================================================================
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStr<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobject {
-    use waterui::Signal;
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<waterui::Str>>(
-            computed_ptr,
-            "readComputedStr",
-            "computed",
-        )
-    };
-    let s: waterui::Str = computed.get();
-    let jstring = env.new_string(s.as_str()).expect("Failed to create string");
-    jstring.into_raw()
-}
-
 // readComputedColor is generated by jni_computed_primitive! in color.rs
-// readComputedColorScheme and readComputedCursorStyle are generated by jni_computed_primitive! in reactive.rs
 
 // ============================================================================
 // Complex Computed Read Functions (proper implementations)
 // ============================================================================
+
+macro_rules! jni_read_computed_int {
+    ($name:ident, $ty:ty) => {
+        pastey::paste! {
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_readComputed $name>]<'local>(
+                _env: JNIEnv<'local>,
+                _class: JClass<'local>,
+                computed_ptr: jlong,
+            ) -> jint {
+                read_computed_jni_int::<$ty>(computed_ptr)
+            }
+        }
+    };
+}
+
+jni_read_computed_int!(ColorScheme, waterui::theme::ColorScheme);
+jni_read_computed_int!(CursorStyle, waterui::cursor::CursorStyle);
+jni_read_computed_int!(HorizontalAlignment, waterui::layout::HorizontalAlignment);
 
 /// Read a ResolvedColor computed value and return Java ResolvedColorStruct.
 #[unsafe(no_mangle)]
@@ -657,13 +537,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResol
     use waterui::Signal;
     use waterui_graphics::color::ResolvedColor;
 
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<ResolvedColor>>(
-            computed_ptr,
-            "readComputedResolvedColor",
-            "computed",
-        )
-    };
+    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<ResolvedColor>) };
     let resolved: ResolvedColor = computed.get();
     let ffi: WuiResolvedColor = resolved.into_ffi();
 
@@ -689,19 +563,14 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResol
     use waterui::Signal;
     use waterui_text::font::ResolvedFont;
 
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<ResolvedFont>>(
-            computed_ptr,
-            "readComputedResolvedFont",
-            "computed",
-        )
-    };
+    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<ResolvedFont>) };
     let resolved: ResolvedFont = computed.get();
     let ffi = resolved.into_ffi();
 
     // Convert weight enum to int (the enum repr(C) matches Java expectations)
     let weight_int = ffi.weight as i32;
-    let family = unsafe { ffi.family.as_str() };
+    let family: waterui::Str = unsafe { crate::IntoRust::into_rust(ffi.family) };
+    let family = (!family.is_empty()).then(|| family.as_str());
     create_resolved_font_struct(&mut env, ffi.size, weight_int, family).into_raw()
 }
 
@@ -715,13 +584,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStyle
     use waterui::Signal;
     use waterui_text::styled::StyledStr;
 
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<StyledStr>>(
-            computed_ptr,
-            "readComputedStyledStr",
-            "computed",
-        )
-    };
+    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<StyledStr>) };
     let styled_str: StyledStr = computed.get();
 
     styled_str_to_java(&mut env, styled_str).into_raw()
@@ -732,384 +595,61 @@ fn styled_str_to_java<'local>(
     env: &mut JNIEnv<'local>,
     styled_str: waterui_text::styled::StyledStr,
 ) -> JObject<'local> {
-    use crate::IntoFFI;
+    use crate::{IntoFFI, IntoRust};
 
-    let ffi = styled_str.into_ffi();
-    let chunks_slice = ffi.chunks.as_slice();
-
-    let classes = crate::jni::java_classes();
-
-    // Create array of chunks
+    let mut ffi = styled_str.into_ffi();
+    let chunks = ffi.chunks.as_mut_slice();
+    let chunk_count = chunks.len();
+    let chunk_ptr = chunks.as_mut_ptr();
+    let styled_chunk_class = env
+        .find_class(STYLED_CHUNK_CLASS)
+        .expect("StyledChunkStruct class not found");
     let chunk_array = env
-        .new_object_array(
-            chunks_slice.len() as jsize,
-            &classes.styled_chunk_struct_class,
-            JObject::null(),
-        )
+        .new_object_array(chunk_count as jsize, &styled_chunk_class, JObject::null())
         .expect("Failed to create chunk array");
 
-    for (i, chunk) in chunks_slice.iter().enumerate() {
-        // Create TextStyleStruct
-        let style = &chunk.style;
-        let text_style = unsafe {
-            env.new_object_unchecked(
-                &classes.text_style_struct_class,
-                jni::objects::JMethodID::from_raw(classes.text_style_struct_ctor),
+    for index in 0..chunk_count {
+        let chunk = unsafe { core::ptr::read(chunk_ptr.add(index)) };
+        let style = chunk.style;
+        let text_style = env
+            .new_object(
+                TEXT_STYLE_CLASS,
+                TEXT_STYLE_CTOR,
                 &[
-                    JValue::Long(style.font as jlong).as_jni(),
-                    JValue::Bool(if style.italic { 1 } else { 0 }).as_jni(),
-                    JValue::Bool(if style.underline { 1 } else { 0 }).as_jni(),
-                    JValue::Bool(if style.strikethrough { 1 } else { 0 }).as_jni(),
-                    JValue::Long(style.foreground as jlong).as_jni(),
-                    JValue::Long(style.background as jlong).as_jni(),
+                    JValue::Long(style.font as jlong),
+                    JValue::Bool(if style.italic { 1 } else { 0 }),
+                    JValue::Bool(if style.underline { 1 } else { 0 }),
+                    JValue::Bool(if style.strikethrough { 1 } else { 0 }),
+                    JValue::Long(style.foreground as jlong),
+                    JValue::Long(style.background as jlong),
                 ],
             )
-            .expect("Failed to create TextStyleStruct")
-        };
+            .expect("Failed to create TextStyleStruct");
 
-        // Get text from chunk
-        let text_str = unsafe { chunk.text.as_str() };
+        let text: waterui::Str = unsafe { chunk.text.into_rust() };
         let text_jstring = env
-            .new_string(text_str)
+            .new_string(text.as_str())
             .expect("Failed to create text string");
 
-        // Create StyledChunkStruct
-        let styled_chunk = unsafe {
-            env.new_object_unchecked(
-                &classes.styled_chunk_struct_class,
-                jni::objects::JMethodID::from_raw(classes.styled_chunk_struct_ctor),
-                &[
-                    JValue::Object(&text_jstring).as_jni(),
-                    JValue::Object(&text_style).as_jni(),
-                ],
+        let styled_chunk = env
+            .new_object(
+                STYLED_CHUNK_CLASS,
+                STYLED_CHUNK_CTOR,
+                &[JValue::Object(&text_jstring), JValue::Object(&text_style)],
             )
-            .expect("Failed to create StyledChunkStruct")
-        };
+            .expect("Failed to create StyledChunkStruct");
 
-        env.set_object_array_element(&chunk_array, i as jsize, &styled_chunk)
+        env.set_object_array_element(&chunk_array, index as jsize, &styled_chunk)
             .expect("Failed to set chunk array element");
     }
-
-    // Create StyledStrStruct with the chunk array
-    unsafe {
-        env.new_object_unchecked(
-            &classes.styled_str_struct_class,
-            jni::objects::JMethodID::from_raw(classes.styled_str_struct_ctor),
-            &[JValue::Object(&chunk_array).as_jni()],
-        )
-        .expect("Failed to create StyledStrStruct")
-    }
-}
-
-/// Read PickerItems computed value and return Java array of PickerItemStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedPickerItems<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobjectArray {
-    use crate::IntoFFI;
-    use waterui::Signal;
-    use waterui_core::id::Id;
-    use waterui_form::picker::PickerItem;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Vec<PickerItem<Id>>>>(
-            computed_ptr,
-            "readComputedPickerItems",
-            "computed",
-        )
-    };
-    let items: Vec<PickerItem<Id>> = computed.get();
-
-    let picker_item_class = env
-        .find_class("dev/waterui/android/runtime/PickerItemStruct")
-        .expect("PickerItemStruct class not found");
-
-    let array = env
-        .new_object_array(items.len() as jsize, &picker_item_class, JObject::null())
-        .expect("Failed to create picker items array");
-
-    for (i, item) in items.into_iter().enumerate() {
-        let ffi = item.into_ffi();
-        let tag_id: i32 = ffi.tag.inner;
-        let content_ptr = ffi.content.content as jlong;
-
-        // PickerItemStruct(tag: Int, label: StyledStrStruct)
-        // But the Rust FFI gives us tag (WuiId = i64) and content (WuiText = Computed<StyledStr> ptr)
-        // Kotlin expects tag: Int, so we truncate
-        // Kotlin expects label: StyledStrStruct, but we have a computed ptr
-        // Let's read the computed to get the actual StyledStr
-        let styled_str = {
-            use waterui_text::styled::StyledStr;
-            let computed = unsafe {
-                &*require_jlong_ptr::<WuiComputed<StyledStr>>(
-                    content_ptr,
-                    "readComputedPickerItems",
-                    "content computed",
-                )
-            };
-            computed.get()
-        };
-        let label_obj = styled_str_to_java(&mut env, styled_str);
-
-        let item_obj = env
-            .new_object(
-                &picker_item_class,
-                "(ILdev/waterui/android/runtime/StyledStrStruct;)V",
-                &[JValue::Int(tag_id), JValue::Object(&label_obj)],
-            )
-            .expect("Failed to create PickerItemStruct");
-
-        env.set_object_array_element(&array, i as jsize, &item_obj)
-            .expect("Failed to set picker item array element");
-    }
-
-    array.into_raw()
-}
-
-fn menu_item_to_java<'local>(env: &mut JNIEnv<'local>, ffi: crate::WuiMenuItem) -> JObject<'local> {
-    let menu_item_class = env
-        .find_class("dev/waterui/android/runtime/MenuItemStruct")
-        .expect("MenuItemStruct class not found");
-
-    let label_ptr = ffi.label.content as jlong;
-    if !ffi.label.paragraph_alignment.is_null() {
-        unsafe {
-            drop(Box::from_raw(ffi.label.paragraph_alignment));
-        }
-    }
-
-    // Android currently drops semantic menu SystemIcon payloads. Cross-platform icon-pack icons are not wired
-    // into the semantic menu tree yet.
-    if !ffi.icon.is_null() {
-        unsafe {
-            drop(Box::from_raw(ffi.icon));
-        }
-    }
-
-    let (key_equivalent, command, shift, option, control) = if ffi.shortcut.is_null() {
-        (JObject::null(), false, false, false, false)
-    } else {
-        let shortcut = unsafe { Box::from_raw(ffi.shortcut) };
-        let key = env
-            .new_string(unsafe { shortcut.key.as_str() })
-            .expect("Failed to create shortcut key string");
-        (
-            JObject::from(key),
-            shortcut.modifiers.command,
-            shortcut.modifiers.shift,
-            shortcut.modifiers.option,
-            shortcut.modifiers.control,
-        )
-    };
+    ffi.chunks.consume();
 
     env.new_object(
-        &menu_item_class,
-        "(IJJJJLjava/lang/String;ZZZZJ)V",
-        &[
-            JValue::Int(ffi.tag as jint),
-            JValue::Long(label_ptr),
-            JValue::Long(ffi.action as jlong),
-            JValue::Long(ffi.disabled as jlong),
-            JValue::Long(ffi.selected as jlong),
-            JValue::Object(&key_equivalent),
-            JValue::Bool(if command { 1 } else { 0 }),
-            JValue::Bool(if shift { 1 } else { 0 }),
-            JValue::Bool(if option { 1 } else { 0 }),
-            JValue::Bool(if control { 1 } else { 0 }),
-            JValue::Long(ffi.items as jlong),
-        ],
+        STYLED_STR_CLASS,
+        STYLED_STR_CTOR,
+        &[JValue::Object(&chunk_array)],
     )
-    .expect("Failed to create MenuItemStruct")
-}
-
-/// Read MenuItems computed value and return Java array of MenuItemStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedMenuItems<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobjectArray {
-    use crate::{IntoFFI, MenuItems};
-    use waterui::Signal;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<MenuItems>>(
-            computed_ptr,
-            "readComputedMenuItems",
-            "computed",
-        )
-    };
-    let items: MenuItems = computed.get();
-
-    let menu_item_class = env
-        .find_class("dev/waterui/android/runtime/MenuItemStruct")
-        .expect("MenuItemStruct class not found");
-
-    let items_vec: Vec<_> = items.into_iter().collect();
-    let array = env
-        .new_object_array(items_vec.len() as jsize, &menu_item_class, JObject::null())
-        .expect("Failed to create menu items array");
-
-    for (i, item) in items_vec.into_iter().enumerate() {
-        let item_obj = menu_item_to_java(&mut env, item.into_ffi());
-
-        env.set_object_array_element(&array, i as jsize, &item_obj)
-            .expect("Failed to set menu item array element");
-    }
-
-    array.into_raw()
-}
-
-/// Read TableCols computed value and return Java array of TableColumnStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedTableCols<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobjectArray {
-    use crate::IntoFFI;
-    use waterui::Signal;
-    use waterui::prelude::table::TableColumn;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Vec<TableColumn>>>(
-            computed_ptr,
-            "readComputedTableColumns",
-            "computed",
-        )
-    };
-    let cols: Vec<TableColumn> = computed.get();
-
-    let table_column_class = env
-        .find_class("dev/waterui/android/runtime/TableColumnStruct")
-        .expect("TableColumnStruct class not found");
-
-    let array = env
-        .new_object_array(cols.len() as jsize, &table_column_class, JObject::null())
-        .expect("Failed to create table columns array");
-
-    for (i, col) in cols.into_iter().enumerate() {
-        let ffi = col.into_ffi();
-        // TableColumnStruct(labelContentPtr: Long, rowsPtr: Long)
-        // WuiTableColumn has label: WuiText (which contains content ptr) and rows: *mut WuiAnyViews
-        let label_ptr = ffi.label.content as jlong;
-        let rows_ptr = ffi.rows as jlong;
-
-        let col_obj = env
-            .new_object(
-                &table_column_class,
-                "(JJ)V",
-                &[JValue::Long(label_ptr), JValue::Long(rows_ptr)],
-            )
-            .expect("Failed to create TableColumnStruct");
-
-        env.set_object_array_element(&array, i as jsize, &col_obj)
-            .expect("Failed to set table column array element");
-    }
-
-    array.into_raw()
-}
-
-/// Read Region computed value and return Java RegionStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedRegion<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobject {
-    use crate::IntoFFI;
-    use waterui::Signal;
-    use waterui_map::Region;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Region>>(computed_ptr, "readComputedRegion", "computed")
-    };
-    let region: Region = computed.get();
-    let ffi = region.into_ffi();
-
-    create_region_struct(
-        &mut env,
-        ffi.center.latitude,
-        ffi.center.longitude,
-        ffi.latitude_delta,
-        ffi.longitude_delta,
-    )
-    .into_raw()
-}
-
-/// Read Annotations computed value and return Java array of AnnotationStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedAnnotations<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobjectArray {
-    use crate::IntoFFI;
-    use waterui::Signal;
-    use waterui_map::Annotation;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Vec<Annotation>>>(
-            computed_ptr,
-            "readComputedAnnotations",
-            "computed",
-        )
-    };
-    let annotations: Vec<Annotation> = computed.get();
-
-    let annotation_class = env
-        .find_class("dev/waterui/android/runtime/AnnotationStruct")
-        .expect("AnnotationStruct class not found");
-
-    let array = env
-        .new_object_array(
-            annotations.len() as jsize,
-            &annotation_class,
-            JObject::null(),
-        )
-        .expect("Failed to create annotations array");
-
-    for (i, annotation) in annotations.into_iter().enumerate() {
-        let ffi = annotation.into_ffi();
-        let title = unsafe { ffi.title.as_str() };
-        let subtitle = unsafe { ffi.subtitle.as_str() };
-
-        let annotation_obj = create_annotation_struct(
-            &mut env,
-            ffi.coordinate.latitude,
-            ffi.coordinate.longitude,
-            title,
-            subtitle,
-        );
-
-        env.set_object_array_element(&array, i as jsize, &annotation_obj)
-            .expect("Failed to set annotation array element");
-    }
-
-    array.into_raw()
-}
-
-/// Read Video computed value and return Java VideoStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedVideo<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobject {
-    use crate::IntoFFI;
-    use crate::components::video::Video;
-    use waterui::Signal;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Video>>(computed_ptr, "readComputedVideo", "computed")
-    };
-    let video: Video = computed.get();
-    let ffi = video.into_ffi();
-    let url = unsafe { ffi.url.as_str() };
-
-    create_video_struct(&mut env, url).into_raw()
+    .expect("Failed to create StyledStrStruct")
 }
 
 #[unsafe(no_mangle)]
@@ -1122,21 +662,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateV
     use nami::Signal;
     use waterui_form::picker::date::Date;
 
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Vec<Date>>>(
-            computed_ptr,
-            "readComputedDateVec",
-            "computed",
-        )
-    };
+    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<Vec<Date>>) };
     let dates = computed.get();
-    let classes = crate::jni::java_classes();
+    let date_class = env
+        .find_class(DATE_CLASS)
+        .expect("DateStruct class not found");
     let array = env
-        .new_object_array(
-            dates.len() as jsize,
-            &classes.date_struct_class,
-            JObject::null(),
-        )
+        .new_object_array(dates.len() as jsize, &date_class, JObject::null())
         .expect("Failed to create computed date array");
 
     for (index, date) in dates.into_iter().enumerate() {
@@ -1149,60 +681,6 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateV
     array.into_raw()
 }
 
-/// Read Date computed value and return Java DateStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDate<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobject {
-    use crate::IntoFFI;
-    use waterui::Signal;
-    use waterui_form::picker::date::Date;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Date>>(computed_ptr, "readComputedDate", "computed")
-    };
-    let date: Date = computed.get();
-    let ffi = date.into_ffi();
-
-    create_date_struct(&mut env, ffi.year, ffi.month as i32, ffi.day as i32).into_raw()
-}
-
-/// Read DateTime computed value and return Java DateTimeStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateTime<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobject {
-    use crate::IntoFFI;
-    use jiff::civil::DateTime;
-    use waterui::Signal;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<DateTime>>(
-            computed_ptr,
-            "readComputedDateTime",
-            "computed",
-        )
-    };
-    let date_time: DateTime = computed.get();
-    let ffi = date_time.into_ffi();
-
-    create_date_time_struct(
-        &mut env,
-        ffi.year,
-        ffi.month as i32,
-        ffi.day as i32,
-        ffi.hour as i32,
-        ffi.minute as i32,
-        ffi.second as i32,
-    )
-    .into_raw()
-}
-
-// ============================================================================
 // Watcher Guard Drop
 // ============================================================================
 
@@ -1212,13 +690,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropWatcherGuard<
     _class: JClass<'local>,
     guard_ptr: jlong,
 ) {
-    unsafe {
-        drop(Box::from_raw(require_jlong_ptr::<WuiWatcherGuard>(
-            guard_ptr,
-            "dropWatcherGuard",
-            "guard",
-        )))
-    };
+    unsafe { drop(Box::from_raw(guard_ptr as *mut WuiWatcherGuard)) };
 }
 
 // ============================================================================
@@ -1238,31 +710,94 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropWatcherGuard<
 use jni::JavaVM;
 use std::sync::Arc;
 
-/// Watcher data stored for each watcher. Holds the Java callback reference.
+struct JavaConstructor {
+    class: jni::objects::GlobalRef,
+    method: jni::sys::jmethodID,
+}
+
+impl JavaConstructor {
+    fn load(env: &mut JNIEnv, class_name: &'static str, descriptor: &'static str) -> Self {
+        let class = env
+            .find_class(class_name)
+            .unwrap_or_else(|_| panic!("watcher class not found: {class_name}"));
+        let class = env
+            .new_global_ref(class)
+            .unwrap_or_else(|_| panic!("failed to retain watcher class: {class_name}"));
+        let method = env
+            .get_method_id(&class, "<init>", descriptor)
+            .unwrap_or_else(|_| panic!("watcher constructor not found: {class_name}{descriptor}"))
+            .into_raw();
+        Self { class, method }
+    }
+
+    fn new_object<'local>(
+        &self,
+        env: &mut JNIEnv<'local>,
+        args: &[jni::sys::jvalue],
+    ) -> JObject<'local> {
+        unsafe {
+            env.new_object_unchecked(
+                &self.class,
+                jni::objects::JMethodID::from_raw(self.method),
+                args,
+            )
+            .expect("failed to invoke cached watcher constructor")
+        }
+    }
+}
+
+/// Watcher-owned JNI capabilities and the Java callback reference.
 struct WatcherData {
     callback: jni::objects::GlobalRef,
     jvm: Arc<JavaVM>,
+    metadata_constructor: JavaConstructor,
+    value_constructors: Vec<(&'static str, JavaConstructor)>,
+}
+
+impl WatcherData {
+    fn constructor(&self, class_name: &'static str) -> &JavaConstructor {
+        self.value_constructors
+            .iter()
+            .find_map(|(name, constructor)| (*name == class_name).then_some(constructor))
+            .unwrap_or_else(|| panic!("watcher does not own constructor for {class_name}"))
+    }
 }
 
 /// Drop function for watcher data - releases the GlobalRef.
 unsafe extern "C" fn watcher_drop(data: *mut ()) {
-    let _: Box<WatcherData> = unsafe { Box::from_raw(data as *mut WatcherData) };
-    // WatcherData drops here, releasing GlobalRef
+    let _: Box<Rc<WatcherData>> = unsafe { Box::from_raw(data as *mut Rc<WatcherData>) };
 }
 
-/// Helper to create WuiWatcherMetadata Java object from pointer.
+unsafe fn retain_watcher_data(data: *mut ()) -> Rc<WatcherData> {
+    unsafe { Rc::clone(&*(data as *const Rc<WatcherData>)) }
+}
+
+struct JavaWatcherMetadata<'local> {
+    object: JObject<'local>,
+    _owned: Box<crate::reactive::WuiWatcherMetadata>,
+}
+
+impl<'local> core::ops::Deref for JavaWatcherMetadata<'local> {
+    type Target = JObject<'local>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.object
+    }
+}
+
+/// Creates callback-scoped Java metadata while retaining its Rust owner.
 fn create_metadata_object<'local>(
     env: &mut JNIEnv<'local>,
-    metadata_ptr: jlong,
-) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    unsafe {
-        env.new_object_unchecked(
-            &classes.watcher_metadata_class,
-            jni::objects::JMethodID::from_raw(classes.watcher_metadata_ctor),
-            &[JValue::Long(metadata_ptr).as_jni()],
-        )
-        .expect("Failed to create WuiWatcherMetadata")
+    watcher_data: &WatcherData,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) -> JavaWatcherMetadata<'local> {
+    let owned = unsafe { Box::from_raw(metadata_ptr) };
+    let object = watcher_data
+        .metadata_constructor
+        .new_object(env, &[JValue::Long((&raw const *owned) as jlong).as_jni()]);
+    JavaWatcherMetadata {
+        object,
+        _owned: owned,
     }
 }
 
@@ -1292,7 +827,7 @@ unsafe extern "C" fn watcher_call_bool(
     value: bool,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
@@ -1313,7 +848,7 @@ unsafe extern "C" fn watcher_call_bool(
         .l()
         .expect("Expected object");
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
@@ -1323,7 +858,7 @@ unsafe extern "C" fn watcher_call_int(
     value: i32,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
@@ -1343,7 +878,7 @@ unsafe extern "C" fn watcher_call_int(
         .l()
         .expect("Expected object");
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
@@ -1353,7 +888,7 @@ unsafe extern "C" fn watcher_call_double(
     value: f64,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
@@ -1373,7 +908,7 @@ unsafe extern "C" fn watcher_call_double(
         .l()
         .expect("Expected object");
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
@@ -1383,7 +918,7 @@ unsafe extern "C" fn watcher_call_float(
     value: f32,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
@@ -1403,7 +938,7 @@ unsafe extern "C" fn watcher_call_float(
         .l()
         .expect("Expected object");
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
@@ -1413,28 +948,27 @@ unsafe extern "C" fn watcher_call_string(
     value: crate::WuiStr,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
 
-    let str_value = unsafe { value.as_str() };
+    let value: waterui::Str = unsafe { crate::IntoRust::into_rust(value) };
     let java_string = env
-        .new_string(str_value)
+        .new_string(value.as_str())
         .expect("Failed to create Java string");
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_string, &metadata);
 }
 
-/// Call function for AnyView watcher (returns Long pointer).
-unsafe extern "C" fn watcher_call_any_view(
+fn invoke_owned_pointer_callback(
     data: *mut (),
-    value: *mut crate::WuiAnyView,
+    value: *mut (),
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
@@ -1454,8 +988,26 @@ unsafe extern "C" fn watcher_call_any_view(
         .l()
         .expect("Expected object");
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
+}
+
+/// Call function for AnyView watcher (returns an owned Long pointer).
+unsafe extern "C" fn watcher_call_any_view(
+    data: *mut (),
+    value: *mut crate::WuiAnyView,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    invoke_owned_pointer_callback(data, value.cast(), metadata_ptr);
+}
+
+/// Call function for Color watcher (returns an owned Long pointer).
+unsafe extern "C" fn watcher_call_color(
+    data: *mut (),
+    value: *mut crate::color::WuiColor,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    invoke_owned_pointer_callback(data, value.cast(), metadata_ptr);
 }
 
 /// Call function for ResolvedColor watcher.
@@ -1464,22 +1016,24 @@ unsafe extern "C" fn watcher_call_resolved_color(
     value: crate::color::WuiResolvedColor,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
 
-    let java_value = create_resolved_color_struct(
+    let java_value = watcher_data.constructor(RESOLVED_COLOR_CLASS).new_object(
         &mut env,
-        value.red,
-        value.green,
-        value.blue,
-        value.opacity,
-        value.headroom,
+        &[
+            JValue::Float(value.red).as_jni(),
+            JValue::Float(value.green).as_jni(),
+            JValue::Float(value.blue).as_jni(),
+            JValue::Float(value.opacity).as_jni(),
+            JValue::Float(value.headroom).as_jni(),
+        ],
     );
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
@@ -1489,35 +1043,30 @@ unsafe extern "C" fn watcher_call_resolved_font(
     value: crate::components::text::WuiResolvedFont,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
 
-    let family = unsafe { value.family.as_str() };
-    let java_value = create_resolved_font_struct(&mut env, value.size, value.weight as i32, family);
+    let family: waterui::Str = unsafe { crate::IntoRust::into_rust(value.family) };
+    let family = if family.is_empty() {
+        JObject::null()
+    } else {
+        env.new_string(family.as_str())
+            .expect("Failed to create font family string")
+            .into()
+    };
+    let java_value = watcher_data.constructor(RESOLVED_FONT_CLASS).new_object(
+        &mut env,
+        &[
+            JValue::Float(value.size).as_jni(),
+            JValue::Int(value.weight as i32).as_jni(),
+            JValue::Object(&family).as_jni(),
+        ],
+    );
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
-}
-
-/// Call function for Video watcher.
-unsafe extern "C" fn watcher_call_video(
-    data: *mut (),
-    value: crate::components::video::WuiComputedVideo,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let url = unsafe { value.url.as_str() };
-    let java_value = create_video_struct(&mut env, url);
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
@@ -1527,125 +1076,93 @@ unsafe extern "C" fn watcher_call_styled_str(
     value: crate::components::text::WuiStyledStr,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
 
-    // Convert WuiStyledStr to Java StyledStrStruct
-    let java_value = wui_styled_str_to_java(&mut env, &value);
+    let java_value = wui_styled_str_to_java(&mut env, &watcher_data, value);
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
-/// Convert WuiStyledStr reference to Java StyledStrStruct.
+unsafe extern "C" fn watcher_call_styled_str_plain(
+    data: *mut (),
+    value: crate::components::text::WuiStyledStr,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    let watcher_data = unsafe { retain_watcher_data(data) };
+    let mut env = watcher_data
+        .jvm
+        .attach_current_thread()
+        .expect("Failed to attach JVM thread");
+    let value: waterui_text::styled::StyledStr = unsafe { crate::IntoRust::into_rust(value) };
+    let java_value = env
+        .new_string(value.to_plain().as_str())
+        .expect("Failed to create plain styled-string value");
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
+    invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
+}
+
+/// Converts and consumes an owned `WuiStyledStr`, transferring its style
+/// handles into Java owner objects.
 fn wui_styled_str_to_java<'local>(
     env: &mut JNIEnv<'local>,
-    ffi: &crate::components::text::WuiStyledStr,
+    watcher_data: &WatcherData,
+    mut ffi: crate::components::text::WuiStyledStr,
 ) -> JObject<'local> {
-    let chunks_slice = ffi.chunks.as_slice();
+    use crate::IntoRust;
 
-    let classes = crate::jni::java_classes();
-
+    let text_style_constructor = watcher_data.constructor(TEXT_STYLE_CLASS);
+    let styled_chunk_constructor = watcher_data.constructor(STYLED_CHUNK_CLASS);
+    let styled_str_constructor = watcher_data.constructor(STYLED_STR_CLASS);
+    let chunks = ffi.chunks.as_mut_slice();
+    let chunk_count = chunks.len();
+    let chunk_ptr = chunks.as_mut_ptr();
     let chunk_array = env
         .new_object_array(
-            chunks_slice.len() as jsize,
-            &classes.styled_chunk_struct_class,
+            chunk_count as jsize,
+            &styled_chunk_constructor.class,
             JObject::null(),
         )
         .expect("Failed to create chunk array");
 
-    for (i, chunk) in chunks_slice.iter().enumerate() {
-        let style = &chunk.style;
-        let text_style = unsafe {
-            env.new_object_unchecked(
-                &classes.text_style_struct_class,
-                jni::objects::JMethodID::from_raw(classes.text_style_struct_ctor),
-                &[
-                    JValue::Long(style.font as jlong).as_jni(),
-                    JValue::Bool(if style.italic { 1 } else { 0 }).as_jni(),
-                    JValue::Bool(if style.underline { 1 } else { 0 }).as_jni(),
-                    JValue::Bool(if style.strikethrough { 1 } else { 0 }).as_jni(),
-                    JValue::Long(style.foreground as jlong).as_jni(),
-                    JValue::Long(style.background as jlong).as_jni(),
-                ],
-            )
-            .expect("Failed to create TextStyleStruct")
-        };
+    for index in 0..chunk_count {
+        let chunk = unsafe { core::ptr::read(chunk_ptr.add(index)) };
+        let style = chunk.style;
+        let text_style = text_style_constructor.new_object(
+            env,
+            &[
+                JValue::Long(style.font as jlong).as_jni(),
+                JValue::Bool(if style.italic { 1 } else { 0 }).as_jni(),
+                JValue::Bool(if style.underline { 1 } else { 0 }).as_jni(),
+                JValue::Bool(if style.strikethrough { 1 } else { 0 }).as_jni(),
+                JValue::Long(style.foreground as jlong).as_jni(),
+                JValue::Long(style.background as jlong).as_jni(),
+            ],
+        );
 
-        let text_str = unsafe { chunk.text.as_str() };
+        let text: waterui::Str = unsafe { chunk.text.into_rust() };
         let text_jstring = env
-            .new_string(text_str)
+            .new_string(text.as_str())
             .expect("Failed to create text string");
 
-        let styled_chunk = unsafe {
-            env.new_object_unchecked(
-                &classes.styled_chunk_struct_class,
-                jni::objects::JMethodID::from_raw(classes.styled_chunk_struct_ctor),
-                &[
-                    JValue::Object(&text_jstring).as_jni(),
-                    JValue::Object(&text_style).as_jni(),
-                ],
-            )
-            .expect("Failed to create StyledChunkStruct")
-        };
+        let styled_chunk = styled_chunk_constructor.new_object(
+            env,
+            &[
+                JValue::Object(&text_jstring).as_jni(),
+                JValue::Object(&text_style).as_jni(),
+            ],
+        );
 
-        env.set_object_array_element(&chunk_array, i as jsize, &styled_chunk)
+        env.set_object_array_element(&chunk_array, index as jsize, &styled_chunk)
             .expect("Failed to set chunk array element");
     }
+    ffi.chunks.consume();
 
-    unsafe {
-        env.new_object_unchecked(
-            &classes.styled_str_struct_class,
-            jni::objects::JMethodID::from_raw(classes.styled_str_struct_ctor),
-            &[JValue::Object(&chunk_array).as_jni()],
-        )
-        .expect("Failed to create StyledStrStruct")
-    }
-}
-
-/// Call function for Region watcher.
-unsafe extern "C" fn watcher_call_region(
-    data: *mut (),
-    value: crate::components::map::WuiRegion,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let java_value = create_region_struct(
-        &mut env,
-        value.center.latitude,
-        value.center.longitude,
-        value.latitude_delta,
-        value.longitude_delta,
-    );
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
-}
-
-/// Call function for Date watcher.
-unsafe extern "C" fn watcher_call_date(
-    data: *mut (),
-    value: crate::components::form::WuiDate,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let java_value = create_date_struct(&mut env, value.year, value.month as i32, value.day as i32);
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
+    styled_str_constructor.new_object(env, &[JValue::Object(&chunk_array).as_jni()])
 }
 
 unsafe extern "C" fn watcher_call_date_vec(
@@ -1653,28 +1170,36 @@ unsafe extern "C" fn watcher_call_date_vec(
     value: crate::array::WuiArray<crate::components::form::WuiDate>,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
-    let classes = crate::jni::java_classes();
+    let date_constructor = watcher_data.constructor(DATE_CLASS);
     let dates_slice = value.as_slice();
     let array = env
         .new_object_array(
             dates_slice.len() as jsize,
-            &classes.date_struct_class,
+            &date_constructor.class,
             JObject::null(),
         )
         .expect("Failed to create date watcher array");
 
     for (index, date) in dates_slice.iter().enumerate() {
-        let java_date = create_date_struct(&mut env, date.year, date.month as i32, date.day as i32);
+        let java_date = date_constructor.new_object(
+            &mut env,
+            &[
+                JValue::Int(date.year).as_jni(),
+                JValue::Int(date.month as i32).as_jni(),
+                JValue::Int(date.day as i32).as_jni(),
+            ],
+        );
         env.set_object_array_element(&array, index as jsize, java_date)
             .expect("Failed to write date watcher array element");
     }
+    value.consume();
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &array, &metadata);
 }
 
@@ -1684,259 +1209,66 @@ unsafe extern "C" fn watcher_call_date_time(
     value: crate::components::form::WuiDateTime,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let watcher_data = unsafe { retain_watcher_data(data) };
     let mut env = watcher_data
         .jvm
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
 
-    let java_value = create_date_time_struct(
+    let java_value = watcher_data.constructor(DATE_TIME_CLASS).new_object(
         &mut env,
-        value.year,
-        value.month as i32,
-        value.day as i32,
-        value.hour as i32,
-        value.minute as i32,
-        value.second as i32,
+        &[
+            JValue::Int(value.year).as_jni(),
+            JValue::Int(value.month as i32).as_jni(),
+            JValue::Int(value.day as i32).as_jni(),
+            JValue::Int(value.hour as i32).as_jni(),
+            JValue::Int(value.minute as i32).as_jni(),
+            JValue::Int(value.second as i32).as_jni(),
+        ],
     );
 
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    let metadata = create_metadata_object(&mut env, &watcher_data, metadata_ptr);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
-/// Call function for WindowState watcher (uses i32).
-unsafe extern "C" fn watcher_call_window_state(
+unsafe fn call_jni_int_watcher<T: JniIntValue>(
     data: *mut (),
-    value: i32,
+    value: T,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    watcher_call_int(data, value, metadata_ptr);
+    unsafe { watcher_call_int(data, value.into_jint(), metadata_ptr) };
 }
 
-/// Call function for CursorStyle watcher (uses i32).
+unsafe extern "C" fn watcher_call_id(
+    data: *mut (),
+    value: WuiId,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
+}
+
+unsafe extern "C" fn watcher_call_color_scheme(
+    data: *mut (),
+    value: WuiColorScheme,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
+}
+
 unsafe extern "C" fn watcher_call_cursor_style(
     data: *mut (),
-    value: i32,
+    value: WuiCursorStyle,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    watcher_call_int(data, value, metadata_ptr);
+    unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
-/// Call function for HorizontalAlignment watcher (uses i32).
 unsafe extern "C" fn watcher_call_horizontal_alignment(
     data: *mut (),
-    value: i32,
+    value: WuiHorizontalAlignment,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    watcher_call_int(data, value, metadata_ptr);
-}
-
-// Array-based watchers need special handling for PickerItems, TableCols, Annotations
-
-/// Call function for PickerItems watcher.
-unsafe extern "C" fn watcher_call_picker_items(
-    data: *mut (),
-    value: crate::array::WuiArray<crate::components::form::WuiPickerItem>,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let items_slice = value.as_slice();
-    let classes = crate::jni::java_classes();
-
-    let array = env
-        .new_object_array(
-            items_slice.len() as jsize,
-            &classes.picker_item_struct_class,
-            JObject::null(),
-        )
-        .expect("Failed to create picker items array");
-
-    for (i, item) in items_slice.iter().enumerate() {
-        let tag_id = item.tag.inner;
-        let content_ptr = item.content.content as jlong;
-
-        // Read the styled str from the computed
-        use waterui::Signal;
-        use waterui_text::styled::StyledStr;
-        let computed = unsafe {
-            &*require_jlong_ptr::<crate::reactive::WuiComputed<StyledStr>>(
-                content_ptr,
-                "watchComputedPickerItems",
-                "content computed",
-            )
-        };
-        let styled_str = computed.get();
-        let label_obj = styled_str_to_java(&mut env, styled_str);
-
-        let item_obj = unsafe {
-            env.new_object_unchecked(
-                &classes.picker_item_struct_class,
-                jni::objects::JMethodID::from_raw(classes.picker_item_struct_ctor),
-                &[
-                    JValue::Int(tag_id).as_jni(),
-                    JValue::Object(&label_obj).as_jni(),
-                ],
-            )
-            .expect("Failed to create PickerItemStruct")
-        };
-
-        env.set_object_array_element(&array, i as jsize, &item_obj)
-            .expect("Failed to set picker item array element");
-    }
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(
-        &mut env,
-        &watcher_data.callback,
-        &unsafe { JObject::from_raw(array.into_raw()) },
-        &metadata,
-    );
-}
-
-unsafe extern "C" fn watcher_call_menu_items(
-    data: *mut (),
-    mut value: crate::array::WuiArray<crate::WuiMenuItem>,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let items_slice = value.as_mut_slice();
-    let menu_item_class = env
-        .find_class("dev/waterui/android/runtime/MenuItemStruct")
-        .expect("MenuItemStruct class not found");
-
-    let array = env
-        .new_object_array(
-            items_slice.len() as jsize,
-            &menu_item_class,
-            JObject::null(),
-        )
-        .expect("Failed to create menu items array");
-
-    for (i, item) in items_slice.iter_mut().enumerate() {
-        let item_obj = menu_item_to_java(&mut env, take(item));
-        env.set_object_array_element(&array, i as jsize, &item_obj)
-            .expect("Failed to set menu item array element");
-    }
-
-    value.consume();
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(
-        &mut env,
-        &watcher_data.callback,
-        &unsafe { JObject::from_raw(array.into_raw()) },
-        &metadata,
-    );
-}
-
-/// Call function for TableCols watcher.
-unsafe extern "C" fn watcher_call_table_cols(
-    data: *mut (),
-    value: crate::array::WuiArray<crate::components::table::WuiTableColumn>,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let cols_slice = value.as_slice();
-    let classes = crate::jni::java_classes();
-
-    let array = env
-        .new_object_array(
-            cols_slice.len() as jsize,
-            &classes.table_column_struct_class,
-            JObject::null(),
-        )
-        .expect("Failed to create table columns array");
-
-    for (i, col) in cols_slice.iter().enumerate() {
-        let label_ptr = col.label.content as jlong;
-        let rows_ptr = col.rows as jlong;
-
-        let col_obj = unsafe {
-            env.new_object_unchecked(
-                &classes.table_column_struct_class,
-                jni::objects::JMethodID::from_raw(classes.table_column_struct_ctor),
-                &[
-                    JValue::Long(label_ptr).as_jni(),
-                    JValue::Long(rows_ptr).as_jni(),
-                ],
-            )
-            .expect("Failed to create TableColumnStruct")
-        };
-
-        env.set_object_array_element(&array, i as jsize, &col_obj)
-            .expect("Failed to set table column array element");
-    }
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(
-        &mut env,
-        &watcher_data.callback,
-        &unsafe { JObject::from_raw(array.into_raw()) },
-        &metadata,
-    );
-}
-
-/// Call function for Annotations watcher.
-unsafe extern "C" fn watcher_call_annotations(
-    data: *mut (),
-    value: crate::array::WuiArray<crate::components::map::WuiAnnotation>,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let annotations_slice = value.as_slice();
-    let classes = crate::jni::java_classes();
-
-    let array = env
-        .new_object_array(
-            annotations_slice.len() as jsize,
-            &classes.annotation_struct_class,
-            JObject::null(),
-        )
-        .expect("Failed to create annotations array");
-
-    for (i, annotation) in annotations_slice.iter().enumerate() {
-        let title = unsafe { annotation.title.as_str() };
-        let subtitle = unsafe { annotation.subtitle.as_str() };
-
-        let annotation_obj = create_annotation_struct(
-            &mut env,
-            annotation.coordinate.latitude,
-            annotation.coordinate.longitude,
-            title,
-            subtitle,
-        );
-
-        env.set_object_array_element(&array, i as jsize, &annotation_obj)
-            .expect("Failed to set annotation array element");
-    }
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(
-        &mut env,
-        &watcher_data.callback,
-        &unsafe { JObject::from_raw(array.into_raw()) },
-        &metadata,
-    );
+    unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
 // ============================================================================
@@ -1948,6 +1280,7 @@ fn create_watcher_struct_with_call<'local, F>(
     env: &mut JNIEnv<'local>,
     callback: &JObject<'local>,
     call_fn: F,
+    constructors: &[(&'static str, &'static str)],
 ) -> JObject<'local>
 where
     F: Fn() -> *const (),
@@ -1957,35 +1290,44 @@ where
     let global_callback = env
         .new_global_ref(callback)
         .expect("Failed to create global ref for callback");
+    let metadata_constructor =
+        JavaConstructor::load(env, WATCHER_METADATA_CLASS, WATCHER_METADATA_CTOR);
+    let value_constructors = constructors
+        .iter()
+        .map(|&(class_name, descriptor)| {
+            (
+                class_name,
+                JavaConstructor::load(env, class_name, descriptor),
+            )
+        })
+        .collect();
 
-    let watcher_data = Box::new(WatcherData {
+    let watcher_data = Box::new(Rc::new(WatcherData {
         callback: global_callback,
         jvm,
-    });
+        metadata_constructor,
+        value_constructors,
+    }));
     let data_ptr = Box::into_raw(watcher_data) as jlong;
-
-    let classes = crate::jni::java_classes();
 
     let call_ptr = call_fn() as jlong;
     let drop_ptr = watcher_drop as *const () as jlong;
 
-    unsafe {
-        env.new_object_unchecked(
-            &classes.watcher_struct_class,
-            jni::objects::JMethodID::from_raw(classes.watcher_struct_ctor),
-            &[
-                JValue::Long(data_ptr).as_jni(),
-                JValue::Long(call_ptr).as_jni(),
-                JValue::Long(drop_ptr).as_jni(),
-            ],
-        )
-        .expect("Failed to create WatcherStruct")
-    }
+    env.new_object(
+        WATCHER_STRUCT_CLASS,
+        WATCHER_STRUCT_CTOR,
+        &[
+            JValue::Long(data_ptr),
+            JValue::Long(call_ptr),
+            JValue::Long(drop_ptr),
+        ],
+    )
+    .expect("Failed to create WatcherStruct")
 }
 
 /// Macro to generate watcher creation functions with proper call trampolines.
 macro_rules! jni_create_watcher_typed {
-    ($name:ident, $call_fn:ident) => {
+    ($name:ident, $call_fn:ident, $constructors:expr) => {
         pastey::paste! {
             #[unsafe(no_mangle)]
             pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_create $name Watcher>]<'local>(
@@ -1993,34 +1335,57 @@ macro_rules! jni_create_watcher_typed {
                 _class: JClass<'local>,
                 callback: JObject<'local>,
             ) -> jobject {
-                create_watcher_struct_with_call(&mut env, &callback, || $call_fn as *const ()).into_raw()
+                create_watcher_struct_with_call(
+                    &mut env,
+                    &callback,
+                    || $call_fn as *const (),
+                    $constructors,
+                )
+                .into_raw()
             }
         }
     };
 }
 
 // Generate watcher creation functions with proper type-specific call functions
-jni_create_watcher_typed!(Bool, watcher_call_bool);
-jni_create_watcher_typed!(Int, watcher_call_int);
-jni_create_watcher_typed!(Double, watcher_call_double);
-jni_create_watcher_typed!(Float, watcher_call_float);
-jni_create_watcher_typed!(String, watcher_call_string);
-jni_create_watcher_typed!(AnyView, watcher_call_any_view);
-jni_create_watcher_typed!(Video, watcher_call_video);
-jni_create_watcher_typed!(StyledStr, watcher_call_styled_str);
-jni_create_watcher_typed!(ResolvedColor, watcher_call_resolved_color);
-jni_create_watcher_typed!(ResolvedFont, watcher_call_resolved_font);
-jni_create_watcher_typed!(PickerItems, watcher_call_picker_items);
-jni_create_watcher_typed!(MenuItems, watcher_call_menu_items);
-jni_create_watcher_typed!(WindowState, watcher_call_window_state);
-jni_create_watcher_typed!(TableCols, watcher_call_table_cols);
-jni_create_watcher_typed!(Region, watcher_call_region);
-jni_create_watcher_typed!(Annotations, watcher_call_annotations);
-jni_create_watcher_typed!(CursorStyle, watcher_call_cursor_style);
-jni_create_watcher_typed!(HorizontalAlignment, watcher_call_horizontal_alignment);
-jni_create_watcher_typed!(Date, watcher_call_date);
-jni_create_watcher_typed!(DateVec, watcher_call_date_vec);
-jni_create_watcher_typed!(DateTime, watcher_call_date_time);
+jni_create_watcher_typed!(Bool, watcher_call_bool, &[]);
+jni_create_watcher_typed!(Int, watcher_call_int, &[]);
+jni_create_watcher_typed!(Double, watcher_call_double, &[]);
+jni_create_watcher_typed!(Float, watcher_call_float, &[]);
+jni_create_watcher_typed!(String, watcher_call_string, &[]);
+jni_create_watcher_typed!(Secure, watcher_call_string, &[]);
+jni_create_watcher_typed!(Id, watcher_call_id, &[]);
+jni_create_watcher_typed!(AnyView, watcher_call_any_view, &[]);
+jni_create_watcher_typed!(Color, watcher_call_color, &[]);
+jni_create_watcher_typed!(StyledStrPlain, watcher_call_styled_str_plain, &[]);
+jni_create_watcher_typed!(
+    StyledStr,
+    watcher_call_styled_str,
+    &[
+        (TEXT_STYLE_CLASS, TEXT_STYLE_CTOR),
+        (STYLED_CHUNK_CLASS, STYLED_CHUNK_CTOR),
+        (STYLED_STR_CLASS, STYLED_STR_CTOR),
+    ]
+);
+jni_create_watcher_typed!(
+    ResolvedColor,
+    watcher_call_resolved_color,
+    &[(RESOLVED_COLOR_CLASS, RESOLVED_COLOR_CTOR)]
+);
+jni_create_watcher_typed!(
+    ResolvedFont,
+    watcher_call_resolved_font,
+    &[(RESOLVED_FONT_CLASS, RESOLVED_FONT_CTOR)]
+);
+jni_create_watcher_typed!(ColorScheme, watcher_call_color_scheme, &[]);
+jni_create_watcher_typed!(CursorStyle, watcher_call_cursor_style, &[]);
+jni_create_watcher_typed!(HorizontalAlignment, watcher_call_horizontal_alignment, &[]);
+jni_create_watcher_typed!(DateVec, watcher_call_date_vec, &[(DATE_CLASS, DATE_CTOR)]);
+jni_create_watcher_typed!(
+    DateTime,
+    watcher_call_date_time,
+    &[(DATE_TIME_CLASS, DATE_TIME_CTOR)]
+);
 
 // ============================================================================
 // Dynamic Connect

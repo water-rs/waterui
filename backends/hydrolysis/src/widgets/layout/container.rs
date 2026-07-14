@@ -1,8 +1,7 @@
 use crate::renderer::lazy::{LazyStackAxisConfig, lazy_stack_axis_config};
 use crate::renderer::{
-    HydroNativeView, HydroState,
-    estimate_layout_intrinsic, measure_layout_dimensions, measure_view_intrinsic,
-    normalize_layout_view,
+    HydroNativeView, HydroState, estimate_layout_intrinsic, measure_layout_dimensions,
+    measure_view_intrinsic, normalize_layout_view,
 };
 use nami::Signal;
 use waterui::views::Views;
@@ -18,9 +17,9 @@ fn materialize_all(children: &AnyViews<AnyView>, env: &Environment) -> Vec<AnyVi
     let count = children.len().get();
     let mut views = Vec::with_capacity(count);
     for index in 0..count {
-        let view = children
-            .get_view(index)
-            .unwrap_or_else(|| panic!("LazyContainer failed to materialize child at index {index}"));
+        let view = children.get_view(index).unwrap_or_else(|| {
+            panic!("LazyContainer failed to materialize child at index {index}")
+        });
         views.push(normalize_layout_view(view, env));
     }
     views
@@ -65,11 +64,13 @@ impl HydroNativeView for Native<LazyContainer> {
         match axis {
             LazyStackAxisConfig::Vertical { spacing, .. } => {
                 let width = f64::from(sample.width);
-                let height = f64::from(sample.height) * count + spacing * (count - 1.0).max(0.0);
+                let height = f64::from(sample.height) * count
+                    + f64::from(spacing.get()) * (count - 1.0).max(0.0);
                 LayoutSize::new(width as f32, height as f32)
             }
             LazyStackAxisConfig::Horizontal { spacing, .. } => {
-                let width = f64::from(sample.width) * count + spacing * (count - 1.0).max(0.0);
+                let width = f64::from(sample.width) * count
+                    + f64::from(spacing.get()) * (count - 1.0).max(0.0);
                 let height = f64::from(sample.height);
                 LayoutSize::new(width as f32, height as f32)
             }

@@ -30,13 +30,15 @@ use num_traits::ToPrimitive;
 #[cfg(feature = "gpu")]
 use std::time::Instant;
 
-use nami::{Computed, Signal, signal::IntoComputed};
+use nami::{Computed, SignalExt as _, signal::IntoComputed};
 #[cfg(feature = "gpu")]
-use waterui_core::MainThreadBound;
+use nami::Signal as _;
+#[cfg(feature = "gpu")]
+use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, reactive_color::ReactiveColor};
 
 #[cfg(feature = "gpu")]
 const MORPH_SHADER_LABEL: &str = "shaders/morph.wgsl";
@@ -590,8 +592,8 @@ pub struct ResolvedShape {
     pub kind: ShapeKind,
     /// Path commands in unit coordinate space.
     pub commands: Vec<PathCommand>,
-    /// Resolved fill color.
-    pub fill: waterui_graphics::ResolvedColor,
+    /// Environment-resolved fill color that remains reactive to theme changes.
+    pub fill: Computed<waterui_graphics::ResolvedColor>,
 }
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
@@ -603,8 +605,8 @@ pub struct ResolvedMorphShape {
     pub from: ShapeKind,
     /// Target shape kind.
     pub to: ShapeKind,
-    /// Resolved fill color.
-    pub fill: waterui_graphics::ResolvedColor,
+    /// Environment-resolved fill color that remains reactive to theme changes.
+    pub fill: Computed<waterui_graphics::ResolvedColor>,
     /// Time-based morph animation configuration.
     pub animation: MorphAnimation,
     /// Optional explicit progress signal.
@@ -810,14 +812,14 @@ impl View for FilledShape {
         ResolvedShape {
             kind: self.kind,
             commands: self.commands,
-            fill: self.fill.resolve(env).get(),
+            fill: self.fill.resolve(env).computed(),
         }
     }
 }
 
 impl View for MorphShape {
     fn body(self, env: &Environment) -> impl View {
-        let resolved = self.fill.resolve(env).get();
+        let resolved = self.fill.resolve(env).computed();
         // The GPU fallback renderer also consumes `progress`, so clone it
         // only on that path; the lean path moves it into the native node.
         #[cfg(feature = "gpu")]
@@ -835,7 +837,7 @@ impl View for MorphShape {
                 .expect("morph source shape must be a built-in morphable shape"),
             kind_to_morph_shape(self.to)
                 .expect("morph target shape must be a built-in morphable shape"),
-            resolved,
+            ReactiveColor::new(&Computed::constant(self.fill), env),
             self.animation,
             progress_for_gpu,
         )));
@@ -919,11 +921,10 @@ struct MorphUniforms {
 struct MorphShapeRenderer {
     from: MorphSdfShape,
     to: MorphSdfShape,
-    fill_color: waterui_graphics::ResolvedColor,
+    fill_color: ReactiveColor,
     animation: MorphAnimation,
-    // `Computed` is `!Send`; only the render path reads it (on the main thread),
-    // never `measure`, so confine it to keep the renderer `Send + Sync`.
-    progress: Option<MainThreadBound<Computed<f32>>>,
+    progress: Option<Computed<f32>>,
+    progress_guard: Option<BoxWatcherGuard>,
     start_time: Instant,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
@@ -946,7 +947,7 @@ impl MorphShapeRenderer {
     fn new(
         from: MorphSdfShape,
         to: MorphSdfShape,
-        fill_color: waterui_graphics::ResolvedColor,
+        fill_color: ReactiveColor,
         animation: MorphAnimation,
         progress: Option<Computed<f32>>,
     ) -> Self {
@@ -955,7 +956,8 @@ impl MorphShapeRenderer {
             to,
             fill_color,
             animation,
-            progress: progress.map(MainThreadBound::new),
+            progress,
+            progress_guard: None,
             start_time: Instant::now(),
             pipeline: None,
             uniform_buffer: None,
@@ -972,11 +974,15 @@ impl GpuView for MorphShapeRenderer {
         ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        let shader = waterui_graphics::shared_context::create_cached_shader_module(
-            ctx.device,
-            MORPH_SHADER_LABEL,
-            MORPH_SHADER_SOURCE,
-        );
+        self.fill_color.install(&ctx.redraw_handle);
+        if let Some(progress) = &self.progress {
+            let redraw = ctx.redraw_handle.clone();
+            self.progress_guard = Some(progress.watch(move |_| redraw.request_redraw()));
+        }
+
+        let shader =
+            ctx.shader_cache
+                .get_or_create(ctx.device, MORPH_SHADER_LABEL, MORPH_SHADER_SOURCE);
 
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Morph Shape Uniforms"),
@@ -1064,36 +1070,36 @@ impl GpuView for MorphShapeRenderer {
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        if let Some(target_fmt) = self.pipeline_format
-            && target_fmt != frame.format
-        {
-            return;
-        }
-
-        let Some(pipeline) = &self.pipeline else {
-            return;
-        };
-        let Some(uniform_buffer) = &self.uniform_buffer else {
-            return;
-        };
-        let Some(bind_group) = &self.bind_group else {
-            return;
-        };
+        assert_eq!(
+            self.pipeline_format,
+            Some(frame.format),
+            "MorphShape target format changed after setup"
+        );
+        let pipeline = self
+            .pipeline
+            .as_ref()
+            .expect("MorphShape render called before setup");
+        let uniform_buffer = self
+            .uniform_buffer
+            .as_ref()
+            .expect("MorphShape render called before setup");
+        let bind_group = self
+            .bind_group
+            .as_ref()
+            .expect("MorphShape render called before setup");
 
         let progress = if let Some(signal) = &self.progress {
             let value = signal.get();
-            if value.is_finite() {
-                value.clamp(0.0, 1.0)
-            } else {
-                0.0
-            }
+            assert!(value.is_finite(), "MorphShape progress must be finite");
+            value.clamp(0.0, 1.0)
         } else {
             self.animation.sample(self.start_time.elapsed())
         };
 
-        let [r, g, b] = self.fill_color.linear_with_headroom();
+        let fill_color = self.fill_color.get();
+        let [r, g, b] = fill_color.linear_with_headroom();
         let uniforms = MorphUniforms {
-            color: [r, g, b, self.fill_color.opacity],
+            color: [r, g, b, fill_color.opacity],
             dimensions_and_progress: [
                 u32_to_f32(frame.width),
                 u32_to_f32(frame.height),
@@ -1144,9 +1150,8 @@ impl GpuView for MorphShapeRenderer {
         frame.queue.submit(core::iter::once(encoder.finish()));
 
         // Request continuous redraw while animation is active
-        let animation_active = self.progress.is_some()
-            || self.animation.repeat
-            || self.start_time.elapsed() < self.animation.duration;
+        let animation_active = self.progress.is_none()
+            && (self.animation.repeat || self.start_time.elapsed() < self.animation.duration);
         if animation_active {
             frame.request_redraw();
         }

@@ -206,8 +206,13 @@ impl HydrolysisRenderer {
         &mut self.vello_renderer
     }
 
-    pub fn set_frame_resources(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        self.state.set_frame_resources(device, queue);
+    pub fn set_frame_resources(
+        &mut self,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        self.state.set_frame_resources(adapter, device, queue);
     }
 
     pub fn clear_frame_resources(&mut self) {
@@ -307,6 +312,10 @@ impl HydrolysisRenderer {
     /// the renderer (navigation controllers, GPU-surface invalidators, …).
     pub(crate) fn frame_signals(&self) -> FrameSignals {
         self.signals.clone()
+    }
+
+    pub(crate) fn set_host_redraw_handle(&mut self, handle: RedrawHandle) {
+        self.host_redraw_handle = Some(handle);
     }
 
     pub fn request_redraw(&self) {

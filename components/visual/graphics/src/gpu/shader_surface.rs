@@ -41,10 +41,6 @@ use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
 use core::num::NonZeroU64;
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
@@ -92,24 +88,22 @@ impl ShaderSurface {
         }
     }
 
-    /// Creates a new shader surface with a label for cache lookup.
-    ///
-    /// The label should match the path used in `include_fragment_shader!`
-    /// so the pre-warmed shader can be retrieved from cache.
+    /// Macro implementation for a compile-time labeled fragment shader.
+    #[doc(hidden)]
     #[must_use]
-    pub fn with_label(label: &'static str, fragment_shader: impl Into<Cow<'static, str>>) -> Self {
+    pub fn from_labeled_fragment(
+        label: &'static str,
+        fragment_shader: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self {
-            inner: GpuSurface::new(ShaderRenderer::with_label(label, fragment_shader.into())),
+            inner: GpuSurface::new(ShaderRenderer::new_labeled(label, fragment_shader.into())),
         }
     }
 
-    /// Creates a shader surface from a pre-composed WGSL shader source.
-    ///
-    /// This path is optimized for built-in effects where full WGSL is known at compile time.
     #[must_use]
-    pub fn with_prewarmed_source(source: &'static crate::prewarm::PrewarmedShader) -> Self {
+    pub(crate) fn from_prewarmed_source(source: &'static crate::prewarm::ShaderSource) -> Self {
         Self {
-            inner: GpuSurface::new(ShaderRenderer::with_prewarmed_source(source)),
+            inner: GpuSurface::new(ShaderRenderer::new_prewarmed(source)),
         }
     }
 
@@ -149,9 +143,16 @@ impl waterui_core::View for ShaderSurface {
 #[macro_export]
 macro_rules! shader {
     ($path:literal) => {{
-        static SHADER: $crate::prewarm::PrewarmedShader = $crate::include_fragment_shader!($path);
-        $crate::shader_surface::ShaderSurface::with_label(SHADER.label, SHADER.source)
+        const SHADER: $crate::prewarm::ShaderSource = $crate::include_fragment_shader!($path);
+        $crate::shader_surface::ShaderSurface::from_labeled_fragment(SHADER.label, SHADER.source)
     }};
+}
+
+struct ShaderResources {
+    format: wgpu::TextureFormat,
+    pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 /// Internal renderer that handles all the wgpu boilerplate.
@@ -159,14 +160,10 @@ struct ShaderRenderer {
     /// Optional label for cache lookup (from `include_fragment_shader!`)
     label: Option<&'static str>,
     /// Optional full WGSL source known at compile-time.
-    prewarmed_source: Option<&'static crate::prewarm::PrewarmedShader>,
+    prewarmed_source: Option<&'static crate::prewarm::ShaderSource>,
     fragment_source: Cow<'static, str>,
-    pipeline: Option<wgpu::RenderPipeline>,
-    uniform_buffer: Option<wgpu::Buffer>,
-    bind_group: Option<wgpu::BindGroup>,
+    resources: Option<ShaderResources>,
     start_time: Instant,
-    /// The format the pipeline was created for
-    pipeline_format: Option<wgpu::TextureFormat>,
 }
 
 impl ShaderRenderer {
@@ -175,37 +172,28 @@ impl ShaderRenderer {
             label: None,
             prewarmed_source: None,
             fragment_source,
-            pipeline: None,
-            uniform_buffer: None,
-            bind_group: None,
+            resources: None,
             start_time: Instant::now(),
-            pipeline_format: None,
         }
     }
 
-    fn with_label(label: &'static str, fragment_source: Cow<'static, str>) -> Self {
+    fn new_labeled(label: &'static str, fragment_source: Cow<'static, str>) -> Self {
         Self {
             label: Some(label),
             prewarmed_source: None,
             fragment_source,
-            pipeline: None,
-            uniform_buffer: None,
-            bind_group: None,
+            resources: None,
             start_time: Instant::now(),
-            pipeline_format: None,
         }
     }
 
-    fn with_prewarmed_source(source: &'static crate::prewarm::PrewarmedShader) -> Self {
+    fn new_prewarmed(source: &'static crate::prewarm::ShaderSource) -> Self {
         Self {
             label: Some(source.label),
             prewarmed_source: Some(source),
             fragment_source: Cow::Borrowed(""),
-            pipeline: None,
-            uniform_buffer: None,
-            bind_group: None,
+            resources: None,
             start_time: Instant::now(),
-            pipeline_format: None,
         }
     }
 
@@ -224,152 +212,86 @@ impl ShaderRenderer {
 /// Includes `Uniforms`, `VertexOutput`, and the default vertex shader.
 pub const PRELUDE: &str = crate::prewarm::SHADER_SURFACE_PRELUDE;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ShaderPipelineKey {
-    device_key: usize,
-    shader_hash: u64,
-    format: wgpu::TextureFormat,
-    hdr: bool,
-}
-
-#[derive(Clone)]
-struct ShaderPipelineCacheEntry {
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
-}
-
-static SHADER_PIPELINE_CACHE: OnceLock<
-    parking_lot::Mutex<HashMap<ShaderPipelineKey, ShaderPipelineCacheEntry>>,
-> = OnceLock::new();
-
-fn shader_source_hash(source: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
-    hasher.finish()
-}
-
 impl GpuView for ShaderRenderer {
-    #[allow(clippy::too_many_lines)]
     fn setup(
         &mut self,
         ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        tracing::debug!(
-            "[ShaderSurface] setup() called with format: {:?}",
-            ctx.surface_format
-        );
-        let (shader, shader_hash) = if let Some(source) = self.prewarmed_source {
-            (
-                crate::shared_context::create_cached_shader_module_prewarmed(ctx.device, source),
+        let shader = if let Some(source) = self.prewarmed_source {
+            ctx.shader_cache.get_or_create_prehashed(
+                ctx.device,
+                source.label,
+                source.source,
                 source.source_hash,
             )
         } else {
             let full_shader = self.build_full_shader();
-            let hash = shader_source_hash(&full_shader);
             let shader_label = self.label.unwrap_or("ShaderSurface Shader");
-            (
-                crate::shared_context::create_cached_shader_module(
-                    ctx.device,
-                    shader_label,
-                    &full_shader,
-                ),
-                hash,
-            )
+            ctx.shader_cache
+                .get_or_create(ctx.device, shader_label, &full_shader)
         };
 
-        let pipeline_key = ShaderPipelineKey {
-            device_key: std::ptr::from_ref(ctx.device) as usize,
-            shader_hash,
-            format: ctx.surface_format,
-            hdr: ctx.is_hdr(),
-        };
-
-        let cached_entry = {
-            let cache =
-                SHADER_PIPELINE_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
-            let cache = cache.lock();
-            cache.get(&pipeline_key).cloned()
-        };
-
-        let (pipeline, bind_group_layout) = if let Some(entry) = cached_entry {
-            (entry.pipeline, entry.bind_group_layout)
-        } else {
-            let bind_group_layout =
-                ctx.device
-                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some("ShaderSurface Bind Group Layout"),
-                        entries: &[wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: NonZeroU64::new(24),
-                            },
-                            count: None,
-                        }],
-                    });
-
-            let pipeline_layout =
-                ctx.device
-                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("ShaderSurface Pipeline Layout"),
-                        bind_group_layouts: &[&bind_group_layout],
-                        push_constant_ranges: &[],
-                    });
-
-            let blend = if ctx.is_hdr() {
-                None
-            } else {
-                Some(wgpu::BlendState::REPLACE)
-            };
-
-            let pipeline = ctx
-                .device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("ShaderSurface Pipeline"),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: shader.as_ref(),
-                        entry_point: Some("vs_main"),
-                        buffers: &[],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: shader.as_ref(),
-                        entry_point: Some("main"),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: ctx.surface_format,
-                            blend,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        ..Default::default()
-                    },
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
-                    cache: ctx.pipeline_cache,
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("ShaderSurface Bind Group Layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(24),
+                        },
+                        count: None,
+                    }],
                 });
 
-            let cache =
-                SHADER_PIPELINE_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
-            {
-                let mut cache = cache.lock();
-                cache
-                    .entry(pipeline_key)
-                    .or_insert_with(|| ShaderPipelineCacheEntry {
-                        bind_group_layout: bind_group_layout.clone(),
-                        pipeline: pipeline.clone(),
-                    });
-            }
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ShaderSurface Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
-            (pipeline, bind_group_layout)
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::REPLACE)
         };
+
+        let pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("ShaderSurface Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: shader.as_ref(),
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader.as_ref(),
+                    entry_point: Some("main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: ctx.pipeline_cache,
+            });
 
         // Uniform buffer layout (WGSL alignment rules):
         // - time: f32 at offset 0 (4 bytes)
@@ -394,48 +316,33 @@ impl GpuView for ShaderRenderer {
             }],
         });
 
-        self.pipeline = Some(pipeline);
-        self.uniform_buffer = Some(uniform_buffer);
-        self.bind_group = Some(bind_group);
-        self.pipeline_format = Some(ctx.surface_format);
+        self.resources = Some(ShaderResources {
+            format: ctx.surface_format,
+            pipeline,
+            uniform_buffer,
+            bind_group,
+        });
         self.start_time = Instant::now();
         core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        // Check if pipeline format matches current frame format
-        if let Some(pipeline_fmt) = self.pipeline_format
-            && pipeline_fmt != frame.format
-        {
-            tracing::error!(
-                "[ShaderSurface] FORMAT MISMATCH! Pipeline: {:?}, Frame: {:?}",
-                pipeline_fmt,
-                frame.format
-            );
-            self.pipeline = None;
-            self.pipeline_format = None;
-        }
-
-        // If no pipeline, we need setup
-        if self.pipeline.is_none() {
-            tracing::warn!("[ShaderSurface] No pipeline - need setup");
-            return;
-        }
-
-        let Some(pipeline) = &self.pipeline else {
-            return;
-        };
-        let Some(uniform_buffer) = &self.uniform_buffer else {
-            return;
-        };
-        let Some(bind_group) = &self.bind_group else {
-            return;
-        };
+        let resources = self
+            .resources
+            .as_ref()
+            .expect("ShaderSurface render called before setup");
+        assert_eq!(
+            resources.format, frame.format,
+            "ShaderSurface target format changed after setup"
+        );
 
         // Update uniforms with correct WGSL alignment:
         // [time: f32, _pad: f32, resolution.x: f32, resolution.y: f32, _padding: f32, _pad: f32]
         let elapsed = self.start_time.elapsed().as_secs_f32();
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "GPU viewport dimensions are represented as f32 shader uniforms"
+        )]
         let uniforms: [f32; 6] = [
             elapsed,             // time at offset 0
             0.0,                 // padding at offset 4 (for vec2 alignment)
@@ -444,9 +351,11 @@ impl GpuView for ShaderRenderer {
             0.0,                 // _padding at offset 16
             0.0,                 // struct padding at offset 20
         ];
-        frame
-            .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
+        frame.queue.write_buffer(
+            &resources.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&uniforms),
+        );
 
         // Render directly to target
         let mut encoder = frame
@@ -463,7 +372,7 @@ impl GpuView for ShaderRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -472,8 +381,8 @@ impl GpuView for ShaderRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, bind_group, &[]);
+            render_pass.set_pipeline(&resources.pipeline);
+            render_pass.set_bind_group(0, &resources.bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
 

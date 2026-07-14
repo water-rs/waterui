@@ -21,6 +21,7 @@ bytemuck = { version = "1", features = ["derive"] }
 num-traits = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tracing.workspace = true
+parking_lot = "0.12"
 
 [dev-dependencies]
 divan = "0.1"
@@ -33,9 +34,3 @@ harness = false
 [[bench]]
 name = "gpu_runtime"
 harness = false
-
-[package.metadata.cargo-machete]
-# wgpu and bytemuck are reserved for the runtime modules introduced in
-# upcoming phases (Pipeline + Effect). They are intentionally pulled in here
-# so each phase remains a clean atomic commit.
-ignored = ["bytemuck", "wgpu"]

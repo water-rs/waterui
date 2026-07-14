@@ -170,9 +170,10 @@ pub(crate) fn render_toggle_parts(
         // `toggle_accessibility`, so the sub-view flushes visual-only.
         let render_ctx = ctx.render_context();
         let label_view = &mut state.label_view;
-        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
-        });
+        ctx.renderer_mut()
+            .with_suppressed_accessibility(|renderer| {
+                label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
+            });
         if disabled {
             ctx.pop_layer();
         }

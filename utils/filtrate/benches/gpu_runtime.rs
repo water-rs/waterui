@@ -1,7 +1,7 @@
 //! GPU runtime benchmarks for filter effects.
 //!
 //! These benches exercise real wgpu render submission and wait for GPU
-//! completion. They skip cleanly when no hardware adapter is available.
+//! completion.
 //!
 //! Run with:
 //!
@@ -11,14 +11,10 @@
 
 use divan::Bencher;
 use filtrate::multi_input::{BlendMode, FilterImage, blend_with_image_filter};
-use filtrate::{Effect, EffectContext, EffectInput, EffectOutput};
+use filtrate::{Effect, EffectContext, EffectInput, EffectOutput, ShaderCache};
 
 fn main() {
-    if GpuBench::new().is_some() {
-        divan::main();
-    } else {
-        tracing::info!("skipping gpu_runtime benchmarks: no compatible GPU adapter available");
-    }
+    divan::main();
 }
 
 struct GpuBench {
@@ -31,10 +27,11 @@ struct GpuBench {
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
+    shader_cache: ShaderCache,
 }
 
 impl GpuBench {
-    fn new() -> Option<Self> {
+    fn new() -> Self {
         let width = 64;
         let height = 64;
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -44,9 +41,10 @@ impl GpuBench {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-        .ok()?;
+        .expect("filtrate benchmark requires a high-performance GPU adapter");
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("filtrate benchmark requires a working GPU device");
 
         let input_texture = create_texture(
             &device,
@@ -85,7 +83,7 @@ impl GpuBench {
             },
         );
 
-        Some(Self {
+        Self {
             device,
             queue,
             input_view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -95,7 +93,8 @@ impl GpuBench {
             format,
             width,
             height,
-        })
+            shader_cache: ShaderCache::new(),
+        }
     }
 
     fn setup_filter<F: Effect>(&self, filter: &mut F) {
@@ -105,6 +104,7 @@ impl GpuBench {
             input_format: self.format,
             output_format: self.format,
             pipeline_cache: None,
+            shader_cache: &self.shader_cache,
         };
         pollster::block_on(filter.setup(&ctx)).expect("filter setup should succeed");
     }
@@ -138,7 +138,7 @@ impl GpuBench {
 
 #[divan::bench]
 fn blend_with_image_render_64x64(b: Bencher) {
-    let gpu = GpuBench::new().expect("gpu_runtime main must skip when no GPU adapter is available");
+    let gpu = GpuBench::new();
     let aux = FilterImage::from_rgba8(2, 2, solid_rgba(2, 2, [32, 16, 8, 255]));
     let mut filter = blend_with_image_filter(aux, 0.35, BlendMode::Overlay);
     gpu.setup_filter(&mut filter);

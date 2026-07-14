@@ -22,6 +22,7 @@ fastrand = "2.3"
 num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
+pollster.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
 

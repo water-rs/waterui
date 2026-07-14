@@ -5,9 +5,10 @@
 //! Horizontal stack layout.
 
 use alloc::{vec, vec::Vec};
-use nami::collection::Collection;
+use nami::{Computed, Signal, SignalExt, collection::Collection};
 use waterui_core::{
-    AnyView, IntoSignalF32, View, env::with, id::Identifiable, view::TupleViews, views::ForEach,
+    AnyView, IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
+    view::TupleViews, views::ForEach,
 };
 
 use crate::{
@@ -60,14 +61,14 @@ pub struct HStackLayout {
     /// The vertical alignment of children within the stack.
     pub alignment: VerticalAlignment,
     /// The spacing between children in the stack.
-    pub spacing: f32,
+    pub spacing: Computed<f32>,
 }
 
 impl Default for HStackLayout {
     fn default() -> Self {
         Self {
             alignment: VerticalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         }
     }
 }
@@ -231,8 +232,9 @@ impl Layout for HStackLayout {
             return Size::zero();
         }
 
+        let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * self.spacing
+            (children.len() - 1) as f32 * spacing
         } else {
             0.0
         };
@@ -349,8 +351,9 @@ impl Layout for HStackLayout {
             return vec![];
         }
 
+        let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * self.spacing
+            (children.len() - 1) as f32 * spacing
         } else {
             0.0
         };
@@ -429,7 +432,7 @@ impl Layout for HStackLayout {
 
         for (i, measurement) in measurements.iter().enumerate() {
             if i > 0 {
-                current_x += self.spacing;
+                current_x += spacing;
             }
 
             // Handle cross-axis (vertical) stretching and infinite height
@@ -493,14 +496,24 @@ impl Layout for HStackLayout {
 
         None
     }
+
+    fn watch_invalidation(
+        &self,
+        invalidate: LayoutInvalidationCallback,
+    ) -> Vec<nami::watcher::BoxWatcherGuard> {
+        vec![self.spacing.watch(move |_| invalidate())]
+    }
 }
 
 impl<C> HStack<(C,)> {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
-    pub const fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
+    pub fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
         Self {
-            layout: HStackLayout { alignment, spacing },
+            layout: HStackLayout {
+                alignment,
+                spacing: Computed::constant(spacing),
+            },
             contents: (contents,),
         }
     }
@@ -516,12 +529,11 @@ impl<C> HStack<C> {
 
     /// Sets the spacing between children in the stack.
     ///
-    /// Accepts any numeric literal or signal of f32; snapshotted at modifier
-    /// time per `WaterUI`'s Vue-like reactivity model.
+    /// Accepts any numeric literal or signal of f32. Signal changes invalidate
+    /// only this stack's native layout.
     #[must_use]
     pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        self.layout.spacing = spacing.into_signal_f32().get();
+        self.layout.spacing = spacing.into_signal_f32().computed();
         self
     }
 }
@@ -539,7 +551,7 @@ where
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
-pub const fn hstack<C>(contents: C) -> HStack<(C,)> {
+pub fn hstack<C>(contents: C) -> HStack<(C,)> {
     HStack::new(VerticalAlignment::Center, 10.0, contents)
 }
 
@@ -621,7 +633,7 @@ mod tests {
     fn test_hstack_size_two_children() {
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         };
 
         let mut child1 = MockSubView {
@@ -645,7 +657,7 @@ mod tests {
     fn test_hstack_with_spacer() {
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 0.0,
+            spacing: Computed::constant(0.0),
         };
 
         let mut child1 = MockSubView {
@@ -699,7 +711,7 @@ mod tests {
         // This is like a Slider/TextField rotated for use in HStack context
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         };
 
         let mut label = MockSubView {
@@ -736,7 +748,7 @@ mod tests {
         // order-dependently from the leading children.
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 8.0,
+            spacing: Computed::constant(8.0),
         };
 
         let mut columns: Vec<MockSubView> = (0..7)
@@ -776,7 +788,7 @@ mod tests {
         // intrinsic width.
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         };
 
         let mut label = MockSubView {
@@ -805,7 +817,7 @@ mod tests {
         // collapsing children to nothing.
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 0.0,
+            spacing: Computed::constant(0.0),
         };
 
         let mut first = MockSubView {
@@ -829,7 +841,7 @@ mod tests {
     fn test_hstack_measures_stretch_child_with_allocated_width_for_height() {
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 0.0,
+            spacing: Computed::constant(0.0),
         };
 
         let mut fixed = MockSubView {
@@ -857,7 +869,7 @@ mod tests {
     fn test_hstack_place_uses_stretch_child_wrapped_height() {
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 0.0,
+            spacing: Computed::constant(0.0),
         };
 
         let bounds = Rect::new(Point::zero(), Size::new(40.0, 40.0));
@@ -890,7 +902,7 @@ mod tests {
         // Previous bug: if spacer (stretch) existed, it would return 0 width for min size query.
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         };
 
         let mut label = MockSubView {

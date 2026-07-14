@@ -132,7 +132,6 @@ where
         let accessibility_label = self.accessibility_label.clone();
         let accessibility_state = self
             .selected
-
             .map(|selected| AccessibilityState::new().selected(selected));
         let selected_for_state = self.selected;
         let selected_icon = self.icon.clone();

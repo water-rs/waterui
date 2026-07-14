@@ -107,7 +107,6 @@ where
         let accessibility_label = self.accessibility_label.clone();
         let label = self
             .label
-
             .font(typography::label_large())
             .foreground(LabelColor::default());
 
@@ -271,7 +270,6 @@ where
         let selected_for_tap = self.selected.clone();
         let accessibility_state = self
             .selected
-
             .map(|selected| AccessibilityState::new().selected(selected));
         let selected_label = self.label.clone();
         let unselected_label = self.label.clone();
@@ -489,15 +487,6 @@ mod tests {
         assert_eq!(ASSIST_CHIP_OUTLINE_WIDTH, 1.0);
         assert_eq!(ASSIST_CHIP_LEADING_SPACE, 16.0);
         assert_eq!(ASSIST_CHIP_TRAILING_SPACE, 16.0);
-    }
-
-    #[test]
-    fn suggestion_chip_uses_same_outline_geometry_as_assist_chip() {
-        let _chip = crate::suggestion_chip("Suggestion");
-
-        assert_eq!(ASSIST_CHIP_CONTAINER_HEIGHT, 32.0);
-        assert_eq!(ASSIST_CHIP_CONTAINER_SHAPE, 8.0);
-        assert_eq!(ASSIST_CHIP_OUTLINE_WIDTH, 1.0);
     }
 
     #[test]

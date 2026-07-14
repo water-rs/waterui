@@ -3,11 +3,10 @@
 use core::str::FromStr;
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use nami::{Binding, Container};
 
-use crate::locale::{Locale, locales};
+use crate::locale::Locale;
 use crate::regional::{self, ListenerHandle};
 
 thread_local! {
@@ -63,7 +62,8 @@ pub fn runtime_locale_binding() -> Binding<Locale> {
 }
 
 fn locale_from_tag(tag: &str) -> Locale {
-    Locale::from_str(tag).unwrap_or(locales::EN_US)
+    Locale::from_str(tag)
+        .unwrap_or_else(|error| panic!("runtime locale tag '{tag}' is invalid: {error}"))
 }
 
 fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
@@ -72,20 +72,14 @@ fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
     }
 
     let binding = state.binding.clone();
-    let listener = catch_unwind(AssertUnwindSafe(move || {
-        let mailbox = binding.mailbox();
-        regional::register_listener(move |context| {
-            let locale = locale_from_tag(context.locale_tag());
-            mailbox.handle(move |binding| {
-                binding.set(locale);
-            });
-        })
-    }))
-    .ok();
-
-    if let Some(listener) = listener {
-        state.set_listener(listener);
-    }
+    let mailbox = binding.mailbox();
+    let listener = regional::register_listener(move |context| {
+        let locale = locale_from_tag(context.locale_tag());
+        mailbox.handle(move |binding| {
+            binding.set(locale);
+        });
+    });
+    state.set_listener(listener);
 }
 
 fn reset_runtime_locale_state() {

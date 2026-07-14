@@ -2,7 +2,7 @@
 //!
 //! These structs are used internally and built via the flat modifier API on `ParticleSystem`.
 
-use core::ops::Range;
+use waterui_core::Computed;
 use waterui_graphics::color::Color;
 
 /// Emitter shape for particle spawning.
@@ -46,17 +46,17 @@ pub enum BlendMode {
 /// Internal emitter configuration.
 #[derive(Clone, Debug)]
 pub struct EmitterConfig {
-    pub position: [f32; 2],
-    pub shape: EmitterShape,
-    pub rate: f32,
+    pub position: Computed<[f32; 2]>,
+    pub shape: Computed<EmitterShape>,
+    pub rate: Computed<f32>,
 }
 
 impl Default for EmitterConfig {
     fn default() -> Self {
         Self {
-            position: [0.5, 0.5],
-            shape: EmitterShape::Point,
-            rate: 100.0,
+            position: Computed::constant([0.5, 0.5]),
+            shape: Computed::constant(EmitterShape::Point),
+            rate: Computed::constant(100.0),
         }
     }
 }
@@ -78,34 +78,34 @@ pub enum ParticleShape {
 /// Internal particle properties configuration.
 #[derive(Clone, Debug)]
 pub struct ParticleProps {
-    pub life: Range<f32>,
-    pub speed: Range<f32>,
-    pub angle: Range<f32>,
-    pub size: Range<f32>,
-    pub spin: Range<f32>, // Rotation speed in rad/s
+    pub life: Computed<[f32; 2]>,
+    pub speed: Computed<[f32; 2]>,
+    pub angle: Computed<[f32; 2]>,
+    pub size: Computed<[f32; 2]>,
+    pub spin: Computed<[f32; 2]>,
     /// Color at start of particle life (user-provided Color, resolved later).
-    pub color_start: Color,
+    pub color_start: Computed<Color>,
     /// Color at end of particle life (user-provided Color, resolved later).
-    pub color_end: Color,
+    pub color_end: Computed<Color>,
     pub stretch_with_velocity: bool,
     /// Edge softness for SDF rendering 0.0 (hard) to 1.0 (soft).
-    pub softness: f32,
+    pub softness: Computed<f32>,
     pub shape: ParticleShape,
 }
 
 impl Default for ParticleProps {
     fn default() -> Self {
         Self {
-            life: 1.0..2.0,
-            speed: 0.5..1.0,
-            angle: 0.0..core::f32::consts::TAU,
-            size: 0.01..0.02,
-            color_start: Color::srgb(255, 255, 255),
-            color_end: Color::srgb(255, 255, 255).with_opacity(0.0),
+            life: Computed::constant([1.0, 2.0]),
+            speed: Computed::constant([0.5, 1.0]),
+            angle: Computed::constant([0.0, core::f32::consts::TAU]),
+            size: Computed::constant([0.01, 0.02]),
+            color_start: Computed::constant(Color::srgb(255, 255, 255)),
+            color_end: Computed::constant(Color::srgb(255, 255, 255).with_opacity(0.0)),
             stretch_with_velocity: false,
-            softness: 0.5,
+            softness: Computed::constant(0.5),
             shape: ParticleShape::Circle,
-            spin: 0.0..0.0,
+            spin: Computed::constant([0.0, 0.0]),
         }
     }
 }
@@ -113,19 +113,19 @@ impl Default for ParticleProps {
 /// Internal environment configuration.
 #[derive(Clone, Debug)]
 pub struct EnvironmentConfig {
-    pub gravity: [f32; 2],
-    pub wind: [f32; 2],
-    pub drag: f32,
-    pub turbulence: f32,
+    pub gravity: Computed<[f32; 2]>,
+    pub wind: Computed<[f32; 2]>,
+    pub drag: Computed<f32>,
+    pub turbulence: Computed<f32>,
 }
 
 impl Default for EnvironmentConfig {
     fn default() -> Self {
         Self {
-            gravity: [0.0, 0.0],
-            wind: [0.0, 0.0],
-            drag: 1.0,
-            turbulence: 0.0,
+            gravity: Computed::constant([0.0, 0.0]),
+            wind: Computed::constant([0.0, 0.0]),
+            drag: Computed::constant(1.0),
+            turbulence: Computed::constant(0.0),
         }
     }
 }
@@ -133,24 +133,23 @@ impl Default for EnvironmentConfig {
 /// Internal collision configuration.
 #[derive(Clone, Debug)]
 pub struct CircleObstacleConfig {
-    pub center: [f32; 2],
-    pub radius: f32,
+    pub value: Computed<[f32; 3]>,
 }
 
 /// Internal particle-particle interaction configuration.
 #[derive(Clone, Debug)]
 pub struct ParticleInteractionConfig {
     pub enabled: bool,
-    pub radius: f32,
-    pub strength: f32,
+    pub radius: Computed<f32>,
+    pub strength: Computed<f32>,
 }
 
 impl Default for ParticleInteractionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            radius: 0.0,
-            strength: 0.0,
+            radius: Computed::constant(0.0),
+            strength: Computed::constant(0.0),
         }
     }
 }
@@ -160,9 +159,9 @@ impl Default for ParticleInteractionConfig {
 pub struct CollisionConfig {
     pub enabled: bool,
     /// Bounds encoded as `min_x`, `min_y`, `max_x`, `max_y` in normalized coordinates.
-    pub bounds: [f32; 4],
-    pub restitution: f32,
-    pub surface_friction: f32,
+    pub bounds: Computed<[f32; 4]>,
+    pub restitution: Computed<f32>,
+    pub surface_friction: Computed<f32>,
     pub circle_obstacles: Vec<CircleObstacleConfig>,
 }
 
@@ -170,9 +169,9 @@ impl Default for CollisionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            bounds: [0.0, 0.0, 1.0, 1.0],
-            restitution: 1.0,
-            surface_friction: 1.0,
+            bounds: Computed::constant([0.0, 0.0, 1.0, 1.0]),
+            restitution: Computed::constant(1.0),
+            surface_friction: Computed::constant(1.0),
             circle_obstacles: Vec::new(),
         }
     }

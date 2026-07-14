@@ -28,7 +28,7 @@ impl<T: FilterParam> Filter for Blur<T> {
 
     // Separable two-pass blur uses the same radius in both passes.
     type Params = [f32; 2];
-    type Fragments = &'static str;
+    type Fragments = (&'static str, &'static str);
 
     #[inline]
     fn params(&self) -> [f32; 2] {
@@ -37,34 +37,23 @@ impl<T: FilterParam> Filter for Blur<T> {
     }
 
     #[inline]
-    fn fragments(&self) -> &'static str {
-        // The standalone shader is retained for legacy direct rendering paths;
-        // the planner uses `collect_stages` which emits the separable pair.
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/image/blur/blur.wgsl"
-        ))
-    }
-
-    fn pass_count(&self) -> u32 {
-        2
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        c.spatial_shader(
+    fn fragments(&self) -> Self::Fragments {
+        (
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/blur_horizontal.wgsl"
             )),
-            1,
-        );
-        c.spatial_shader(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/blur_vertical.wgsl"
             )),
-            1,
-        );
+        )
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        let (horizontal, vertical) = self.fragments();
+        c.spatial_shader(horizontal, 1);
+        c.spatial_shader(vertical, 1);
     }
 
     fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {

@@ -227,7 +227,10 @@ fn draw_indeterminate_bar(
     scale: f64,
     color: vello::peniko::Color,
 ) {
-    let x = track.width().mul_add((initial_inset_percent + translate_percent) / 100.0, track.x0);
+    let x = track.width().mul_add(
+        (initial_inset_percent + translate_percent) / 100.0,
+        track.x0,
+    );
     let width = (track.width() * scale).max(0.0);
     let rect = Rect::new(x, track.y0, x + width, track.y1);
     draw.fill_rect(rect, &Brush::from(color));
@@ -311,7 +314,8 @@ fn circular_indeterminate_arc(elapsed: Duration) -> (f64, f64) {
                 .progress(Duration::from_secs_f64((arc_phase - 0.5) * 2.0 / 1_000.0)),
         )
     };
-    let sweep_degrees = (CIRCULAR_MAX_SWEEP_DEGREES - CIRCULAR_MIN_SWEEP_DEGREES).mul_add(arc_ease, CIRCULAR_MIN_SWEEP_DEGREES);
+    let sweep_degrees = (CIRCULAR_MAX_SWEEP_DEGREES - CIRCULAR_MIN_SWEEP_DEGREES)
+        .mul_add(arc_ease, CIRCULAR_MIN_SWEEP_DEGREES);
     let rotate_arc_degrees = cycle_phase(elapsed, CIRCULAR_CYCLE_DURATION) * 1080.0;
     let linear_rotate_degrees = (elapsed.as_secs_f64() % CIRCULAR_LINEAR_ROTATE_DURATION_SECS)
         / CIRCULAR_LINEAR_ROTATE_DURATION_SECS

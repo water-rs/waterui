@@ -1,26 +1,20 @@
 //! Real GPU filter runtime benchmarks.
 //!
 //! These benchmarks exercise `FilterAdapter` through the same `Effect` trait
-//! used by Hydrolysis, at a 3840x2160 render target. They skip cleanly when no
-//! compatible GPU adapter is available.
+//! used by Hydrolysis, at a 3840x2160 render target.
 
 use divan::Bencher;
-use filtrate::filters;
+use filtrate::{ShaderCache, filters};
 use waterui_graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, FilterAdapter,
 };
-use waterui_graphics::pollster;
 
 const WIDTH: u32 = 3840;
 const HEIGHT: u32 = 2160;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 fn main() {
-    if GpuBench::new().is_some() {
-        divan::main();
-    } else {
-        tracing::info!("skipping filter_runtime benchmarks: no compatible GPU adapter available");
-    }
+    divan::main();
 }
 
 struct GpuBench {
@@ -30,19 +24,21 @@ struct GpuBench {
     input_view: wgpu::TextureView,
     output_texture: wgpu::Texture,
     output_view: wgpu::TextureView,
+    shader_cache: ShaderCache,
 }
 
 impl GpuBench {
-    fn new() -> Option<Self> {
+    fn new() -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-        .ok()?;
+        .expect("filter benchmark requires a high-performance GPU adapter");
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("filter benchmark requires a working GPU device");
 
         let input_texture = create_texture(
             &device,
@@ -83,14 +79,15 @@ impl GpuBench {
             },
         );
 
-        Some(Self {
+        Self {
             device,
             queue,
             input_view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             output_view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             input_texture,
             output_texture,
-        })
+            shader_cache: ShaderCache::new(),
+        }
     }
 
     fn setup_filter<F: Effect>(&self, filter: &mut F) {
@@ -100,12 +97,12 @@ impl GpuBench {
             input_format: FORMAT,
             output_format: FORMAT,
             pipeline_cache: None,
+            shader_cache: &self.shader_cache,
         };
         pollster::block_on(filter.setup(&ctx)).expect("filter setup should succeed");
     }
 
     fn render_filter<F: Effect>(&self, filter: &mut F) {
-        filter.sync_targets();
         let input = EffectInput {
             device: &self.device,
             queue: &self.queue,
@@ -133,8 +130,7 @@ impl GpuBench {
 }
 
 fn bench_filter<F: Effect>(b: Bencher, mut filter: F) {
-    let gpu =
-        GpuBench::new().expect("filter_runtime main must skip when no GPU adapter is available");
+    let gpu = GpuBench::new();
     gpu.setup_filter(&mut filter);
     b.bench_local(|| gpu.render_filter(&mut filter));
 }

@@ -7,7 +7,7 @@ license.workspace = true
 readme.workspace = true
 repository.workspace = true
 description = "Real-time audio visualization components for WaterUI"
-keywords = ["audio", "visualizer", "waveform", "spectrum", "wgpu"]
+keywords = ["audio", "visualizer", "waveform", "wgpu"]
 categories = ["multimedia", "gui", "visualization"]
 
 [lints]
@@ -19,9 +19,12 @@ waterui-graphics = { workspace = true, features = ["gpu"] }
 waterkit-audio.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
+async-channel.workspace = true
+blocking.workspace = true
 encase.workspace = true
+executor-core.workspace = true
 glam = "0.29"
-pollster.workspace = true
+num-traits = { version = "0.2", default-features = false }
 futures.workspace = true
 tracing.workspace = true
 

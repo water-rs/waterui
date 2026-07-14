@@ -1,22 +1,30 @@
-use alloc::vec::Vec;
 use waterui::{
     prelude::table::{TableColumn, TableConfig},
     views::ViewsExt,
 };
 
 use crate::{
-    IntoFFI, array::WuiArray, components::text::WuiText, ffi_computed, reactive::WuiComputed,
-    views::WuiAnyViews,
+    AnyView, IntoFFI, IntoRust, WuiAnyView, components::text::WuiText, views::WuiAnyViews,
 };
 
-into_ffi! {
-   TableConfig,
-   pub struct WuiTable {
-       columns: *mut WuiComputed<Vec<TableColumn>>,
-   }
+#[repr(C)]
+pub struct WuiTable {
+    pub columns: *mut WuiAnyViews,
 }
 
-ffi_computed!(Vec<TableColumn>, WuiArray<WuiTableColumn>, table_cols);
+impl IntoFFI for TableConfig {
+    type FFI = WuiTable;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiTable {
+            columns: crate::views::signal_vec_views(
+                self.columns,
+                |columns, index| columns[index].semantic_id(),
+                AnyView::new,
+            ),
+        }
+    }
+}
 
 #[repr(C)]
 pub struct WuiTableColumn {
@@ -39,4 +47,14 @@ impl IntoFFI for TableColumn {
 
 ffi_view!(TableConfig, WuiTable, table);
 
-ffi_view!(TableColumn, WuiTableColumn, table_column);
+/// Consumes a table-column descriptor view extracted from a table's known column collection.
+///
+/// # Safety
+///
+/// `view` must own a `Native<TableColumn>` and must not be used after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_force_as_table_column(view: *mut WuiAnyView) -> WuiTableColumn {
+    let any: AnyView = unsafe { IntoRust::into_rust(view) };
+    let column = unsafe { *any.downcast_unchecked::<waterui_core::Native<TableColumn>>() };
+    column.into_ffi()
+}

@@ -3,16 +3,16 @@
 //! `FilterParam` lets a filter accept either static `f32` values or richer
 //! reactive sources (signals from a UI framework, video pipeline timecodes,
 //! etc.) without knowing about any specific reactive system. The runtime
-//! samples each parameter every frame via [`FilterParam::snapshot`] and
-//! optionally subscribes to value changes via [`FilterParam::watch_animated`].
+//! subscribes first, takes one initial [`FilterParam::snapshot`], then receives
+//! every subsequent target through [`FilterParam::watch_animated`].
 //!
 //! # Roles
 //!
 //! - The filter library itself is reactive-system agnostic.
 //! - Reactive frontends provide [`FilterParam`] implementations for their
 //!   own signal types (or wrappers around them).
-//! - The runtime in `filtrate` consumes `FilterParam` snapshots and (when
-//!   provided) animation interpolators to produce smooth GPU updates.
+//! - The runtime in `filtrate` consumes the initial snapshot plus subscribed
+//!   targets and animation interpolators to produce smooth GPU updates.
 
 extern crate alloc;
 
@@ -20,8 +20,8 @@ use alloc::boxed::Box;
 use core::any::Any;
 use core::time::Duration;
 
-/// A scalar `f32` parameter that can be sampled at render time and
-/// optionally observed for animated changes.
+/// A scalar `f32` parameter that can be sampled during initialization and
+/// observed for animated changes.
 ///
 /// `f32` itself implements this trait as a static value. Reactive systems
 /// provide their own `FilterParam` implementations on signal wrappers.
@@ -29,23 +29,22 @@ pub trait FilterParam: 'static {
     /// Sample the current parameter value.
     fn snapshot(&self) -> f32;
 
-    /// Install a callback invoked when the underlying value changes. The
-    /// default implementation returns `None`, indicating the value is not
-    /// observable; the runtime then falls back to per-frame snapshots.
+    /// Installs a callback invoked when the underlying value changes.
     ///
-    /// Returning `Some(WatchGuard)` keeps the subscription alive until the
-    /// guard is dropped. The runtime drops the guard when the filter is
-    /// torn down.
-    fn watch_animated(&self, callback: AnimatedCallback) -> Option<WatchGuard> {
-        let _ = callback;
-        None
-    }
+    /// The returned guard keeps the subscription alive until the filter is
+    /// torn down. Static parameters return a no-op guard.
+    fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard;
 }
 
 impl FilterParam for f32 {
     #[inline]
     fn snapshot(&self) -> f32 {
         *self
+    }
+
+    fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
+        drop(callback);
+        WatchGuard::new(())
     }
 }
 
@@ -101,14 +100,18 @@ pub trait Interpolator: Send + 'static {
 /// The guard is not required to be `Send`: filter pipelines run on a single
 /// scheduler thread today, and reactive frontends commonly use non-`Send`
 /// subscription handles.
-pub struct WatchGuard(#[expect(dead_code, reason = "lifetime-only owner")] Box<dyn Any>);
+pub struct WatchGuard {
+    _inner: Box<dyn Any>,
+}
 
 impl WatchGuard {
     /// Wrap any owned value as a watch guard. The runtime drops this when
     /// it tears down the filter, which transitively drops the subscription.
     #[must_use]
     pub fn new<T: Any + 'static>(inner: T) -> Self {
-        Self(Box::new(inner))
+        Self {
+            _inner: Box::new(inner),
+        }
     }
 }
 

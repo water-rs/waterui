@@ -15,6 +15,7 @@ default = ["gpu"]
 gpu = [
     "dep:filtrate",
     "dep:filtrate-core",
+    "dep:futures",
     "dep:wgpu",
     "dep:vello",
     "dep:kurbo",
@@ -26,20 +27,16 @@ gpu = [
     "dep:image",
     "dep:png",
     "dep:parking_lot",
-    "dep:pollster",
-    "dep:inventory",
-    "dep:dirs",
     "dep:rayon",
     "dep:mp4parse",
 ]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-macros.workspace = true
-waterui-str.workspace = true
 nami.workspace = true
 filtrate = { workspace = true, optional = true }
 filtrate-core = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
@@ -52,9 +49,6 @@ tracing = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"], optional = true }
 png = { version = "0.18", optional = true }
 parking_lot = { version = "0.12", optional = true }
-pollster = { version = "0.4", optional = true }
-inventory = { version = "0.3", optional = true }
-dirs = { workspace = true, optional = true }
 rayon = { version = "1.11", optional = true }
 mp4parse = { version = "0.17", optional = true }
 num-traits = { version = "0.2", default-features = false }
@@ -63,6 +57,7 @@ num-traits = { version = "0.2", default-features = false }
 naga = { version = "27", features = ["wgsl-in"] }
 
 [dev-dependencies]
+pollster.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
 divan = "0.1"
@@ -73,5 +68,3 @@ harness = false
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["naga", "waterui-macros", "waterui-str"]

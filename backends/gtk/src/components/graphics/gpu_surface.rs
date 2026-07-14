@@ -19,17 +19,14 @@ use glow::HasContext;
 use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
+use waterui_graphics::ShaderCache;
 use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
-    preferred_msaa_samples, resolve_surface_hdr_preference, surface_hdr_preference_from_env,
+    preferred_msaa_samples,
 };
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-
-fn gpu_debug_enabled() -> bool {
-    std::env::var_os("WATERUI_GTK_GPU_DEBUG").is_some()
-}
 
 #[cfg(not(target_os = "linux"))]
 compile_error!(
@@ -57,7 +54,8 @@ impl PixelSize {
 #[derive(Debug)]
 struct GpuState {
     gpu_surface: Option<GpuSurface>,
-    msaa_max_samples: u32,
+    msaa_max_samples: NonZeroU32,
+    shader_cache: ShaderCache,
 
     wgpu_instance: Option<wgpu::Instance>,
     wgpu_adapter: Option<wgpu::Adapter>,
@@ -87,12 +85,13 @@ struct GpuState {
 
 impl GpuState {
     fn new(gpu_surface: GpuSurface, env: Environment) -> Self {
-        let msaa_max_samples = gpu_surface.get_msaa_max_samples().get();
+        let msaa_max_samples = gpu_surface.msaa_sample_limit();
         Self {
             start_time: Instant::now(),
             last_frame_time: Instant::now() - Duration::from_secs_f32(1.0 / 60.0),
             gpu_surface: Some(gpu_surface),
             msaa_max_samples,
+            shader_cache: ShaderCache::new(),
             wgpu_instance: None,
             wgpu_adapter: None,
             wgpu_device: None,
@@ -236,11 +235,9 @@ fn current_color_attachment(gl: &glow::Context) -> glow::NativeFramebuffer {
                     FRAMEBUFFER_ATTACHMENT_TEXTURE_TARGET_PNAME,
                 )
             } as u32;
-            if gpu_debug_enabled() {
-                eprintln!(
-                    "[gtk-gpu] texture-backed default FBO target=0x{target:x}; using external framebuffer path"
-                );
-            }
+            tracing::debug!(
+                "[gtk-gpu] texture-backed default FBO target=0x{target:x}; using external framebuffer path"
+            );
             current_framebuffer(gl)
         }
         other => panic!("GpuSurface(GL): unexpected color attachment type {other}"),
@@ -360,8 +357,8 @@ fn make_gl_loader(gl_ctx: &gdk4::GLContext) -> impl FnMut(&str) -> *const c_void
     let resolver = GlProcResolver::new(uses_es);
     move |name: &str| {
         let ptr = resolver.load(name);
-        if ptr.is_null() && gpu_debug_enabled() {
-            eprintln!("[gtk-gpu] unresolved GL symbol: {name}");
+        if ptr.is_null() {
+            tracing::debug!("[gtk-gpu] unresolved GL symbol: {name}");
         }
         ptr
     }
@@ -375,26 +372,22 @@ fn init_wgpu_if_needed(
     {
         let st = state.borrow();
         if st.wgpu_device.is_some() {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] init_wgpu_if_needed: device already initialized");
-            }
+            tracing::debug!("[gtk-gpu] init_wgpu_if_needed: device already initialized");
             return;
         }
         if st.device_init_in_progress {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] init_wgpu_if_needed: device request already pending");
-            }
+            tracing::debug!("[gtk-gpu] init_wgpu_if_needed: device request already pending");
             return;
         }
     }
 
-    if gpu_debug_enabled() {
-        let (major, minor) = gl_ctx.version();
-        eprintln!(
-            "[gtk-gpu] init_wgpu_if_needed: creating wgpu device (uses_es={} version={major}.{minor})",
-            gl_ctx.uses_es()
-        );
-    }
+    let (major, minor) = gl_ctx.version();
+    tracing::debug!(
+        uses_es = gl_ctx.uses_es(),
+        major,
+        minor,
+        "creating GTK GpuSurface wgpu device"
+    );
 
     let mut loader = make_gl_loader(gl_ctx);
     let glow = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
@@ -404,7 +397,7 @@ fn init_wgpu_if_needed(
         (
             st.gpu_surface
                 .as_ref()
-                .and_then(|surface| surface.get_surface_prefers_hdr()),
+                .and_then(GpuSurface::resolved_hdr_preference),
             st.msaa_max_samples,
         )
     };
@@ -412,9 +405,7 @@ fn init_wgpu_if_needed(
         format,
         wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
     );
-    let prefers_hdr_resolved = resolve_surface_hdr_preference(prefers_hdr_explicit);
-    let requested_preference = prefers_hdr_explicit.or_else(surface_hdr_preference_from_env);
-    if let Some(requested_hdr) = requested_preference {
+    if let Some(requested_hdr) = prefers_hdr_explicit {
         assert!(
             requested_hdr == format_is_hdr,
             "GpuSurface(GL): requested {} surface but GtkGLArea default framebuffer is {:?} ({}).",
@@ -423,12 +414,11 @@ fn init_wgpu_if_needed(
             if format_is_hdr { "HDR" } else { "SDR" }
         );
     }
-    if gpu_debug_enabled() {
-        eprintln!(
-            "[gtk-gpu] framebuffer format={format:?} ({}) resolved_prefers_hdr={prefers_hdr_resolved}",
-            if format_is_hdr { "HDR" } else { "SDR" }
-        );
-    }
+    tracing::debug!(
+        ?format,
+        format_is_hdr,
+        "selected GTK GpuSurface framebuffer"
+    );
 
     let exposed = unsafe {
         wgpu::hal::gles::Adapter::new_external(|s| loader(s), wgpu::GlBackendOptions::default())
@@ -480,13 +470,11 @@ fn init_wgpu_if_needed(
                     }));
                     st.wgpu_device = Some(device);
                     st.wgpu_queue = Some(queue);
-                    if gpu_debug_enabled() {
-                        let format = st.surface_format.unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
-                        let msaa = st.msaa_samples;
-                        eprintln!(
-                            "[gtk-gpu] init_wgpu_if_needed: device ready format={format:?} msaa={msaa}"
-                        );
-                    }
+                    let format = st.surface_format.unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
+                    let msaa = st.msaa_samples;
+                    tracing::debug!(
+                        "[gtk-gpu] init_wgpu_if_needed: device ready format={format:?} msaa={msaa}"
+                    );
                 }
                 Err(e) => panic!("GpuSurface(GL): failed to request device: {e}"),
             }
@@ -506,7 +494,17 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         }
     }
 
-    let (gpu_surface, device, queue, adapter, format, msaa_samples, redraw_handle, env) = {
+    let (
+        gpu_surface,
+        device,
+        queue,
+        adapter,
+        format,
+        msaa_samples,
+        shader_cache,
+        redraw_handle,
+        env,
+    ) = {
         let mut st = state.borrow_mut();
         if st.setup_done {
             return true;
@@ -515,27 +513,19 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             return false;
         }
         let Some(device) = st.wgpu_device.clone() else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] setup_if_needed: missing device");
-            }
+            tracing::debug!("[gtk-gpu] setup_if_needed: missing device");
             return false;
         };
         let Some(queue) = st.wgpu_queue.clone() else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] setup_if_needed: missing queue");
-            }
+            tracing::debug!("[gtk-gpu] setup_if_needed: missing queue");
             return false;
         };
         let Some(adapter) = st.wgpu_adapter.clone() else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] setup_if_needed: missing adapter");
-            }
+            tracing::debug!("[gtk-gpu] setup_if_needed: missing adapter");
             return false;
         };
         let Some(format) = st.surface_format else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] setup_if_needed: missing surface format");
-            }
+            tracing::debug!("[gtk-gpu] setup_if_needed: missing surface format");
             return false;
         };
         let gpu_surface = st.gpu_surface.take().unwrap_or_else(|| {
@@ -549,14 +539,13 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             adapter,
             format,
             st.msaa_samples,
+            st.shader_cache.clone(),
             st.redraw_handle.clone(),
             st.env.clone(),
         )
     };
 
-    if gpu_debug_enabled() {
-        eprintln!("[gtk-gpu] setup_if_needed: begin setup");
-    }
+    tracing::debug!("[gtk-gpu] setup_if_needed: begin setup");
 
     let state_clone = Rc::clone(state);
     let area_clone = area.clone();
@@ -567,12 +556,13 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         let mut gpu_surface = gpu_surface;
         let mut env = env;
         let ctx = GpuContext {
-            adapter: Some(&adapter),
+            adapter: &adapter,
             device: &device,
             queue: &queue,
             surface_format: format,
             msaa_samples,
             pipeline_cache: None,
+            shader_cache: &shader_cache,
             redraw_handle: redraw_handle.clone(),
         };
         gpu_surface.setup(&ctx, &mut env).await;
@@ -586,9 +576,7 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             st.env = env;
             st.setup_done = true;
             st.setup_in_progress = false;
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] setup complete");
-            }
+            tracing::debug!("[gtk-gpu] setup complete");
         }
         area_clone.queue_render();
     });
@@ -611,34 +599,24 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     ) = {
         let mut st = state.borrow_mut();
         let Some(device) = st.wgpu_device.clone() else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] render_frame: missing device");
-            }
+            tracing::debug!("[gtk-gpu] render_frame: missing device");
             return false;
         };
         let Some(queue) = st.wgpu_queue.clone() else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] render_frame: missing queue");
-            }
+            tracing::debug!("[gtk-gpu] render_frame: missing queue");
             return false;
         };
         let Some(format) = st.surface_format else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] render_frame: missing surface format");
-            }
+            tracing::debug!("[gtk-gpu] render_frame: missing surface format");
             return false;
         };
         let Some(glow) = st.glow.clone() else {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] render_frame: missing glow context");
-            }
+            tracing::debug!("[gtk-gpu] render_frame: missing glow context");
             return false;
         };
         let Some(gpu_surface) = st.gpu_surface.take() else {
             // Setup may still be running.
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] render_frame: surface not available");
-            }
+            tracing::debug!("[gtk-gpu] render_frame: surface not available");
             return false;
         };
 
@@ -665,9 +643,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     };
 
     let size = PixelSize::from_widget(area);
-    if gpu_debug_enabled() {
-        eprintln!("[gtk-gpu] render frame size={}x{}", size.width, size.height);
-    }
+    tracing::debug!("[gtk-gpu] render frame size={}x{}", size.width, size.height);
 
     // Confirm format hasn't changed (it shouldn't). If it does, crash early.
     let observed_format = query_framebuffer_format(&glow);
@@ -889,9 +865,7 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
 }
 
 fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
-    if gpu_debug_enabled() {
-        eprintln!("[gtk-gpu] create GLArea widget");
-    }
+    tracing::debug!("[gtk-gpu] create GLArea widget");
     let area = gtk4::GLArea::new();
     area.set_hexpand(true);
     area.set_vexpand(true);
@@ -906,9 +880,7 @@ fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget
 
     area.connect_realize({
         move |area| {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] GLArea realize");
-            }
+            tracing::debug!("[gtk-gpu] GLArea realize");
             area.make_current();
             let err = area.error();
             assert!(
@@ -919,13 +891,11 @@ fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget
     });
 
     area.connect_map(|area| {
-        if gpu_debug_enabled() {
-            eprintln!(
-                "[gtk-gpu] GLArea map size={}x{}",
-                area.allocated_width(),
-                area.allocated_height()
-            );
-        }
+        tracing::debug!(
+            "[gtk-gpu] GLArea map size={}x{}",
+            area.allocated_width(),
+            area.allocated_height()
+        );
         area.queue_render();
     });
 
@@ -957,9 +927,7 @@ fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget
     area.connect_render({
         let state = Rc::clone(&state);
         move |area, gl_ctx| {
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] GLArea render callback");
-            }
+            tracing::debug!("[gtk-gpu] GLArea render callback");
             area.make_current();
             let err = area.error();
             assert!(
@@ -969,17 +937,13 @@ fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget
 
             init_wgpu_if_needed(area, &state, gl_ctx);
 
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] GLArea render callback: setup_if_needed");
-            }
+            tracing::debug!("[gtk-gpu] GLArea render callback: setup_if_needed");
             if !setup_if_needed(area, &state) {
                 area.queue_render();
                 return gtk4::glib::Propagation::Stop;
             }
 
-            if gpu_debug_enabled() {
-                eprintln!("[gtk-gpu] GLArea render callback: render_frame");
-            }
+            tracing::debug!("[gtk-gpu] GLArea render callback: render_frame");
             if render_frame(area, &state) {
                 area.queue_render();
             }

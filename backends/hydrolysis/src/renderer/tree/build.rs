@@ -13,10 +13,18 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
+        let view = match view.downcast::<Native<Color>>() {
+            Ok(color) => {
+                return RenderNode::Color(ColorNode {
+                    color: (*color).into_inner().resolve(env),
+                });
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Native<ResolvedColor>>() {
             Ok(color) => {
                 return RenderNode::Color(ColorNode {
-                    color: resolved_color_to_peniko((*color).into_inner()),
+                    color: Computed::constant((*color).into_inner()),
                 });
             }
             Err(view) => view,
@@ -129,7 +137,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return RenderNode::Retain(Box::new(RetainNode {
-                    retain: value,
+                    _retain: value,
                     child: RenderNode::build(content, env, renderer),
                 }));
             }
@@ -677,8 +685,8 @@ impl RenderNode {
             placed: Vec::new(),
             transition,
             dirty,
-            dirty_key,
-            guard,
+            _dirty_key: dirty_key,
+            _guard: guard,
         }))
     }
 
@@ -706,8 +714,8 @@ impl RenderNode {
             item_extents: RefCell::new(Vec::new()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
             estimate: Cell::new(0.0),
-            dirty_key,
-            guard,
+            _dirty_key: dirty_key,
+            _guard: guard,
         }))
     }
 
@@ -750,8 +758,10 @@ impl RenderNode {
     ) -> RenderNode {
         let content = effect.take_content();
         let child = RenderNode::build(normalize_layout_view(content, env), env, renderer);
+        let runtime = Rc::new(RefCell::new(ViewEffectRuntime::new(effect)));
+        renderer.register_node_view_effect(Rc::clone(&runtime));
         RenderNode::ViewEffect(Box::new(ViewEffectNode {
-            runtime: RefCell::new(ViewEffectRuntime::new(effect)),
+            runtime,
             child: RefCell::new(child),
             laid_out: Cell::new(Size::zero()),
             env: env.clone(),

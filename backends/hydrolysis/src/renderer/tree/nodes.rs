@@ -367,7 +367,7 @@ pub(crate) struct GestureObserverEffect {
 }
 
 pub(crate) struct ColorNode {
-    pub(crate) color: vello::peniko::Color,
+    pub(crate) color: Computed<ResolvedColor>,
 }
 
 pub(crate) struct TextNode {
@@ -421,11 +421,7 @@ pub(crate) struct ScrollNode {
 }
 
 pub(crate) struct RetainNode {
-    #[allow(
-        dead_code,
-        reason = "keeps a watcher/subscription guard alive for the subtree"
-    )]
-    pub(super) retain: Retain,
+    pub(super) _retain: Retain,
     pub(super) child: RenderNode,
 }
 
@@ -464,7 +460,7 @@ pub(crate) struct GpuSurfaceNode {
 /// the dispatch path's `render_view_effect` exactly, but with no cursor-bound
 /// effect slot.
 pub(crate) struct ViewEffectNode {
-    pub(super) runtime: RefCell<ViewEffectRuntime>,
+    pub(super) runtime: Rc<RefCell<ViewEffectRuntime>>,
     /// The effect's content, built once as a persistent node (recursed into, not
     /// baked), re-rendered into the input texture each flush.
     pub(super) child: RefCell<RenderNode>,
@@ -507,25 +503,27 @@ impl ViewEffectNode {
     /// runtime and child owned by this node (no cursor-bound effect slot).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub(crate) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
-        let mut runtime = self.runtime.borrow_mut();
         let (device, queue) = {
             let (device, queue) = renderer.state().frame_resources();
             (device.clone(), queue.clone())
         };
+        if !ViewEffectRuntime::ensure_setup(
+            &self.runtime,
+            renderer.effect_setup_resources(&device, &queue),
+            renderer.frame_signals(),
+        ) {
+            return;
+        }
+        let mut runtime = self.runtime.borrow_mut();
 
         let input_width = (ctx.bounds.width().max(1.0).round()) as u32;
         let input_height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let output_size = runtime.effect.output_size();
+        let output_size = runtime.effect().output_size();
         let (output_width, output_height) = output_size.compute(input_width, input_height);
         assert!(
             !(output_width == 0 || output_height == 0),
             "hydrolysis ViewEffect requires non-zero output dimensions"
         );
-
-        // Render the persistent child node into a fresh, standalone scene in local
-        // coordinates (reactive descendants reach their own dedicated nodes and
-        // stay live), then into the input texture.
-        let subtree = renderer.render_child_node_scene(&self.child.borrow(), ctx, &self.env);
 
         let input_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("hydrolysis_view_effect_input"),
@@ -540,37 +538,23 @@ impl ViewEffectNode {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING,
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer
-            .vello_renderer
-            .render_to_texture(
-                &device,
-                &queue,
-                &subtree,
-                &input_view,
-                &vello::RenderParams {
-                    base_color: vello::peniko::Color::TRANSPARENT,
-                    width: input_width,
-                    height: input_height,
-                    antialiasing_method: vello::AaConfig::Area,
-                },
-            )
-            .expect("hydrolysis ViewEffect failed to capture child scene");
-
-        let setup_context = ViewEffectContext {
-            device: &device,
-            queue: &queue,
-            input_format: wgpu::TextureFormat::Rgba8Unorm,
-            output_format: wgpu::TextureFormat::Rgba8Unorm,
-            pipeline_cache: None,
-        };
-        if !runtime.setup_complete {
-            pollster::block_on(runtime.effect.setup(&setup_context));
-            runtime.setup_complete = true;
-        }
+        renderer.render_child_node_to_texture(
+            &self.child.borrow(),
+            ctx,
+            &self.env,
+            ChildTextureTarget {
+                texture: &input_texture,
+                view: &input_view,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                width: input_width,
+                height: input_height,
+            },
+        );
 
         let output_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("hydrolysis_view_effect_output"),
@@ -585,7 +569,8 @@ impl ViewEffectNode {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -607,11 +592,11 @@ impl ViewEffectNode {
             width: output_width,
             height: output_height,
         };
-        runtime.effect.render(&input, &output);
-        let needs_redraw = runtime.effect.needs_redraw();
+        runtime.effect_mut().render(&input, &output);
+        let needs_redraw = runtime.effect().needs_redraw();
         drop(runtime);
         if needs_redraw {
-            renderer.request_next_frame_rebuild();
+            renderer.signals.request_refresh();
         }
 
         let image = renderer.vello_renderer.register_texture(output_texture);
@@ -640,6 +625,13 @@ impl AppliedFilterNode {
             let (device, queue) = renderer.state().frame_resources();
             (device.clone(), queue.clone())
         };
+        if !AppliedFilterRuntime::ensure_setup(
+            &self.runtime,
+            renderer.effect_setup_resources(&device, &queue),
+            renderer.frame_signals(),
+        ) {
+            return;
+        }
 
         let width = (ctx.bounds.width().max(1.0).round()) as u32;
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
@@ -647,32 +639,25 @@ impl AppliedFilterNode {
             let runtime = self.runtime.borrow();
             !renderer.reuse_applied_filter_inputs || !runtime.has_input_texture(width, height)
         };
-        let input_view = {
+        let (input_texture, input_view) = {
             let mut runtime = self.runtime.borrow_mut();
-            let (_, view) = runtime.input_texture(&device, width, height);
-            view.clone()
+            let (texture, view) = runtime.input_texture(&device, width, height);
+            (texture.clone(), view.clone())
         };
         if should_capture_input {
             let capture_started_at = Instant::now();
-            // Render the persistent child node into a fresh, standalone scene in
-            // local coordinates (reactive descendants stay live), then into the
-            // runtime's reused input texture.
-            let subtree_scene = renderer.render_child_node_scene(&self.child, ctx, &self.env);
-            renderer
-                .vello_renderer
-                .render_to_texture(
-                    &device,
-                    &queue,
-                    &subtree_scene,
-                    &input_view,
-                    &vello::RenderParams {
-                        base_color: vello::peniko::Color::TRANSPARENT,
-                        width,
-                        height,
-                        antialiasing_method: vello::AaConfig::Area,
-                    },
-                )
-                .expect("hydrolysis AppliedFilter: failed to render subtree");
+            renderer.render_child_node_to_texture(
+                &self.child,
+                ctx,
+                &self.env,
+                ChildTextureTarget {
+                    texture: &input_texture,
+                    view: &input_view,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    width,
+                    height,
+                },
+            );
             renderer.frame_applied_filter_capture += capture_started_at.elapsed();
         }
 

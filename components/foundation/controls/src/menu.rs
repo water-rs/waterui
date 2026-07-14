@@ -1,6 +1,6 @@
 //! Semantic menu and command APIs shared by popup menus and future system chrome.
 
-use alloc::{vec, vec::Vec};
+use alloc::{rc::Rc, vec, vec::Vec};
 
 use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed};
 use waterui_core::Str;
@@ -119,6 +119,7 @@ pub struct Menu {
     label: Label,
     /// The menu items to display when the menu is opened.
     pub items: Computed<Vec<MenuItem>>,
+    identity: Rc<()>,
 }
 
 impl Menu {
@@ -128,6 +129,7 @@ impl Menu {
         Self {
             label: label.into_label(),
             items: items.into_menu_items(),
+            identity: Rc::new(()),
         }
     }
 
@@ -142,6 +144,7 @@ impl Menu {
             semantic_label,
             icon,
             items: resolve_menu_items(&self.items, env),
+            identity: self.identity,
         }
     }
 }
@@ -178,6 +181,7 @@ pub struct Command {
     pub shortcut: Option<Shortcut>,
     /// Local state layered onto the environment when the action runs.
     pub captured_env: Environment,
+    identity: Rc<()>,
 }
 
 impl_constant!(Command);
@@ -209,6 +213,7 @@ impl Command {
             disabled: self.disabled,
             selected: self.selected,
             shortcut: self.shortcut,
+            identity: self.identity,
         }
     }
 
@@ -275,6 +280,7 @@ impl CommandBuilder {
             selected: Computed::constant(false),
             shortcut: None,
             captured_env: Environment::new(),
+            identity: Rc::new(()),
         }
     }
 }
@@ -595,9 +601,19 @@ pub struct ResolvedCommand {
     pub selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
     pub shortcut: Option<Shortcut>,
+    identity: Rc<()>,
 }
 
 impl_constant!(ResolvedCommand);
+
+impl ResolvedCommand {
+    /// Stable semantic identity used by native collection reconciliation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn semantic_id(&self) -> usize {
+        Rc::as_ptr(&self.identity) as usize
+    }
+}
 
 /// Raw resolved nested menu payload consumed by native backends.
 #[doc(hidden)]
@@ -611,9 +627,19 @@ pub struct ResolvedNestedMenu {
     pub icon: Option<SystemIcon>,
     /// Resolved nested menu items.
     pub items: Computed<Vec<ResolvedMenuItem>>,
+    identity: Rc<()>,
 }
 
 impl_constant!(ResolvedNestedMenu);
+
+impl ResolvedNestedMenu {
+    /// Stable semantic identity used by native collection reconciliation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn semantic_id(&self) -> usize {
+        Rc::as_ptr(&self.identity) as usize
+    }
+}
 
 /// Raw menu item config resolved against the environment locale.
 #[doc(hidden)]
@@ -654,7 +680,8 @@ mod tests {
 
     #[test]
     fn menu_view_accepts_plain_buttons() {
-        let items = button(Label::new("Search").system_icon(system_icon::search()))
+        crate::init_test_executor();
+        let items = button(crate::label::label("Search").system_icon(system_icon::search()))
             .action(|| {})
             .into_menu_items()
             .get();
@@ -691,6 +718,7 @@ mod tests {
 
     #[test]
     fn resolve_menu_items_preserves_nested_labels_and_selected_state() {
+        crate::init_test_executor();
         let env = Environment::default();
         let items = vec![
             Command::builder("Refresh").action(|| {}).into(),
@@ -730,6 +758,7 @@ mod tests {
 
     #[test]
     fn resolved_command_action_uses_captured_state() {
+        crate::init_test_executor();
         let count = Rc::new(Cell::new(0));
         let command = Command::builder("Increment")
             .action(|State(count): State<Rc<Cell<i32>>>| count.set(count.get() + 1))

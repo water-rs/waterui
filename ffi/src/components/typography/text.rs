@@ -1,7 +1,7 @@
 use crate::array::WuiArray;
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
-use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive};
+use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor};
 use alloc::vec::Vec;
 use waterui::Str;
 use waterui::layout::HorizontalAlignment;
@@ -224,8 +224,6 @@ into_ffi! {
         paragraph_alignment: *mut WuiComputed<HorizontalAlignment>,
     }
 }
-
-ffi_reactive!(Font, *mut WuiFont);
 
 impl IntoFFI for Text {
     type FFI = WuiText;

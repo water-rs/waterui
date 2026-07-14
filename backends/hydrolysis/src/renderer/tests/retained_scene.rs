@@ -17,9 +17,9 @@ use std::time::Instant;
 
 use waterui::animation::Animation;
 use waterui::{Binding, SignalExt as _, ViewExt as _};
+use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::{AnyView, Environment};
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, vstack, zstack};
 
@@ -31,9 +31,8 @@ use waterui_layout::AbsoluteLayout;
 use waterui_layout::collection_transition::collection_transition;
 use waterui_layout::container::LazyContainer;
 
-use super::MinimalTestTheme;
+use super::test_environment;
 use crate::HeadlessRuntime;
-use crate::engine::WidgetTheme;
 
 /// Aggregated frame-economy metrics over a run of parametric (post-trigger) frames.
 #[derive(Debug, Clone, Copy, Default)]
@@ -112,8 +111,7 @@ fn run_scenario(
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
 
     let start = Instant::now();
@@ -156,8 +154,7 @@ fn dynamic_runtime(
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     HeadlessRuntime::new_for_tests(env, builder, 400, 640)
 }
 
@@ -212,8 +209,7 @@ fn dynamic_size_change_reflows_without_rebuild() {
         let value = truth_value.clone();
         AnyViewBuilder::<AnyView>::new(move || dynamic_changing_size_visible(&value))
     };
-    let mut truth_env = Environment::new();
-    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let truth_env = test_environment();
     let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
     let expected = truth_runtime
         .pump_at(true, Instant::now())
@@ -225,8 +221,7 @@ fn dynamic_size_change_reflows_without_rebuild() {
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || dynamic_changing_size_visible(&value))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
     let start = Instant::now();
     let _ = runtime.pump_at(true, start);
@@ -276,8 +271,7 @@ fn collection_runtime(list: &List<SelfId<u64>>) -> HeadlessRuntime {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || collection_overlay(&list))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     HeadlessRuntime::new_for_tests(env, builder, 400, 640)
 }
 
@@ -363,8 +357,7 @@ fn fixed_scroll_refreshes_window_frame_without_rebuild() {
             ().size(360.0, 200.0),
         ))))
     });
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
 
     let start = Instant::now();
@@ -476,8 +469,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     let static_builder = AnyViewBuilder::<AnyView>::new(|| {
         AnyView::new(zstack((().size(360.0, 600.0), overlay_content())))
     });
-    let mut static_env = Environment::new();
-    static_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let static_env = test_environment();
     let mut static_runtime = HeadlessRuntime::new_for_tests(static_env, static_builder, 400, 640);
     let expected = static_runtime
         .pump_at(true, Instant::now())
@@ -491,8 +483,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(zstack((().size(360.0, 600.0), dynamic.clone())))
     });
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
 
     let start = Instant::now();
@@ -552,8 +543,7 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
         let selected = truth_selected.clone();
         AnyViewBuilder::<AnyView>::new(move || reactive_bg_collection(&selected))
     };
-    let mut truth_env = Environment::new();
-    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let truth_env = test_environment();
     let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
     let expected = truth_runtime
         .pump_at(true, Instant::now())
@@ -568,8 +558,7 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
         let selected = selected.clone();
         AnyViewBuilder::<AnyView>::new(move || reactive_bg_collection(&selected))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
     let start = Instant::now();
     let _ = runtime.pump_at(true, start);
@@ -616,10 +605,8 @@ fn transition_color_stack(list: &List<SelfId<u64>>) -> AnyView {
 fn collection_membership_exit_animates_then_settles() {
     // Ground truth: built fresh with the settled membership (rows 0 and 2).
     let truth_list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
-    let truth_builder =
-        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&truth_list));
-    let mut truth_env = Environment::new();
-    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let truth_builder = AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&truth_list));
+    let truth_env = test_environment();
     let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
     let expected = truth_runtime
         .pump_at(true, Instant::now())
@@ -632,8 +619,7 @@ fn collection_membership_exit_animates_then_settles() {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
     let start = Instant::now();
     let before = runtime
@@ -678,10 +664,8 @@ fn collection_membership_enter_animates_then_settles() {
     // Ground truth: built fresh with all three rows.
     let truth_list: List<SelfId<u64>> =
         List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
-    let truth_builder =
-        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&truth_list));
-    let mut truth_env = Environment::new();
-    truth_env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let truth_builder = AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&truth_list));
+    let truth_env = test_environment();
     let mut truth_runtime = HeadlessRuntime::new_for_tests(truth_env, truth_builder, 400, 640);
     let expected = truth_runtime
         .pump_at(true, Instant::now())
@@ -694,8 +678,7 @@ fn collection_membership_enter_animates_then_settles() {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
     let start = Instant::now();
     let before = runtime

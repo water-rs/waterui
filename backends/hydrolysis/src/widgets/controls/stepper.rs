@@ -190,9 +190,10 @@ pub(crate) fn render_stepper_parts(
     if label_bounds.width() > 0.0 {
         let render_ctx = ctx.render_context();
         let label_view = &mut state.label_view;
-        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
-        });
+        ctx.renderer_mut()
+            .with_suppressed_accessibility(|renderer| {
+                label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
+            });
     }
 
     let button_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - button_size) / 2.0).max(0.0);

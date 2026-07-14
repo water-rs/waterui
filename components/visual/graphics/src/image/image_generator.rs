@@ -1,7 +1,9 @@
+use crate::GpuRuntime;
 use crate::color::Srgb;
 use crate::gpu_surface::{OffscreenRenderConfig, OffscreenSize};
 use crate::multi_input_filter::FilterImage;
 use crate::shader_surface::ShaderSurface;
+use core::future::Future;
 use std::path::Path;
 
 /// CPU-owned RGBA8 image produced by shader-based generators.
@@ -66,20 +68,21 @@ impl GeneratedImage {
     ///
     /// Returns the image encoder's filesystem or encoding error.
     ///
-    /// # Panics
-    ///
-    /// Panics when the cached RGBA buffer shape no longer matches the stored dimensions.
     pub fn save_png(&self, path: impl AsRef<Path>) -> image::ImageResult<()> {
-        let image = image::RgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
-            .expect("GeneratedImage::save_png: rgba buffer shape must match dimensions");
-        image.save(path)
+        image::save_buffer(
+            path,
+            &self.rgba8,
+            self.width,
+            self.height,
+            image::ColorType::Rgba8,
+        )
     }
 }
 
 /// Trait implemented by procedural image generators.
 pub trait ImageGenerator {
     /// Produces a fresh image from the generator's current parameters.
-    fn generate(&mut self) -> GeneratedImage;
+    fn generate(&self, runtime: &GpuRuntime) -> impl Future<Output = GeneratedImage>;
 }
 
 fn srgb_rgb_literal(color: Srgb) -> [String; 3] {
@@ -90,14 +93,24 @@ fn srgb_rgb_literal(color: Srgb) -> [String; 3] {
     ]
 }
 
-fn render_fragment(width: u32, height: u32, fragment: String) -> GeneratedImage {
+#[expect(
+    clippy::future_not_send,
+    reason = "procedural image rendering uses the UI-local offscreen GpuView environment"
+)]
+async fn render_fragment(
+    runtime: &GpuRuntime,
+    width: u32,
+    height: u32,
+    fragment: String,
+) -> GeneratedImage {
     let size = OffscreenSize::try_from_pixels(width, height)
         .expect("ImageGenerator::render_fragment: dimensions must be non-zero");
     let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
     let mut env = waterui_core::Environment::new();
     let output = ShaderSurface::new(fragment)
         .into_inner()
-        .render_offscreen(config, &mut env)
+        .render_offscreen(runtime, config, &mut env)
+        .await
         .expect("ImageGenerator::render_fragment: GPU offscreen render should succeed");
     GeneratedImage::from_rgba8(output.width, output.height, output.rgba8)
 }
@@ -122,7 +135,11 @@ pub struct CheckerboardGenerator {
 }
 
 impl ImageGenerator for CheckerboardGenerator {
-    fn generate(&mut self) -> GeneratedImage {
+    #[expect(
+        clippy::future_not_send,
+        reason = "image generators await the UI-local offscreen GpuView renderer"
+    )]
+    async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
         assert!(
             self.cell_size > 0,
             "CheckerboardGenerator: cell_size must be > 0"
@@ -143,7 +160,7 @@ impl ImageGenerator for CheckerboardGenerator {
         .replace("__CELL_H__", &self.cell_size.to_string())
         .replace("__OFFSET_X__", &self.offset_x.to_string())
         .replace("__OFFSET_Y__", &self.offset_y.to_string());
-        render_fragment(self.width, self.height, fragment)
+        render_fragment(runtime, self.width, self.height, fragment).await
     }
 }
 
@@ -167,7 +184,11 @@ pub struct StripeGenerator {
 }
 
 impl ImageGenerator for StripeGenerator {
-    fn generate(&mut self) -> GeneratedImage {
+    #[expect(
+        clippy::future_not_send,
+        reason = "image generators await the UI-local offscreen GpuView renderer"
+    )]
+    async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
         assert!(
             self.stripe_width > 0,
             "StripeGenerator: stripe_width must be > 0"
@@ -190,7 +211,7 @@ impl ImageGenerator for StripeGenerator {
             if self.horizontal { "true" } else { "false" },
         )
         .replace("__OFFSET__", &self.offset.to_string());
-        render_fragment(self.width, self.height, fragment)
+        render_fragment(runtime, self.width, self.height, fragment).await
     }
 }
 
@@ -212,7 +233,11 @@ pub struct DotGridGenerator {
 }
 
 impl ImageGenerator for DotGridGenerator {
-    fn generate(&mut self) -> GeneratedImage {
+    #[expect(
+        clippy::future_not_send,
+        reason = "image generators await the UI-local offscreen GpuView renderer"
+    )]
+    async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
         assert!(self.spacing > 0, "DotGridGenerator: spacing must be > 0");
         let [fr, fg, fb] = srgb_rgb_literal(self.foreground);
         let [br, bg, bb] = srgb_rgb_literal(self.background);
@@ -228,7 +253,7 @@ impl ImageGenerator for DotGridGenerator {
         .replace("__BG_B__", &bb)
         .replace("__SPACING__", &self.spacing.to_string())
         .replace("__RADIUS__", &self.radius.to_string());
-        render_fragment(self.width, self.height, fragment)
+        render_fragment(runtime, self.width, self.height, fragment).await
     }
 }
 
@@ -244,13 +269,17 @@ pub struct NoiseGenerator {
 }
 
 impl ImageGenerator for NoiseGenerator {
-    fn generate(&mut self) -> GeneratedImage {
+    #[expect(
+        clippy::future_not_send,
+        reason = "image generators await the UI-local offscreen GpuView renderer"
+    )]
+    async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
         let fragment = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/shaders/generators/noise.wgsl"
         ))
         .replace("__SEED__", &self.seed.to_string());
-        render_fragment(self.width, self.height, fragment)
+        render_fragment(runtime, self.width, self.height, fragment).await
     }
 }
 
@@ -272,7 +301,11 @@ pub struct LinearGradientGenerator {
 }
 
 impl ImageGenerator for LinearGradientGenerator {
-    fn generate(&mut self) -> GeneratedImage {
+    #[expect(
+        clippy::future_not_send,
+        reason = "image generators await the UI-local offscreen GpuView renderer"
+    )]
+    async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
         let [sr, sg, sb] = srgb_rgb_literal(self.start_color);
         let [er, eg, eb] = srgb_rgb_literal(self.end_color);
         let fragment = include_str!(concat!(
@@ -289,7 +322,7 @@ impl ImageGenerator for LinearGradientGenerator {
         .replace("__START_Y__", &self.start_point[1].to_string())
         .replace("__END_X__", &self.end_point[0].to_string())
         .replace("__END_Y__", &self.end_point[1].to_string());
-        render_fragment(self.width, self.height, fragment)
+        render_fragment(runtime, self.width, self.height, fragment).await
     }
 }
 
@@ -311,7 +344,11 @@ pub struct RadialGradientGenerator {
 }
 
 impl ImageGenerator for RadialGradientGenerator {
-    fn generate(&mut self) -> GeneratedImage {
+    #[expect(
+        clippy::future_not_send,
+        reason = "image generators await the UI-local offscreen GpuView renderer"
+    )]
+    async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
         let [ir, ig, ib] = srgb_rgb_literal(self.inner_color);
         let [or, og, ob] = srgb_rgb_literal(self.outer_color);
         let fragment = include_str!(concat!(
@@ -327,7 +364,7 @@ impl ImageGenerator for RadialGradientGenerator {
         .replace("__CENTER_X__", &self.center[0].to_string())
         .replace("__CENTER_Y__", &self.center[1].to_string())
         .replace("__RADIUS__", &self.radius.to_string());
-        render_fragment(self.width, self.height, fragment)
+        render_fragment(runtime, self.width, self.height, fragment).await
     }
 }
 
@@ -335,9 +372,14 @@ impl ImageGenerator for RadialGradientGenerator {
 mod tests {
     use super::*;
 
+    fn runtime() -> GpuRuntime {
+        pollster::block_on(GpuRuntime::new())
+            .expect("image generator tests require a working GPU runtime")
+    }
+
     #[test]
     fn checkerboard_generator_produces_expected_dimensions() {
-        let mut generator = CheckerboardGenerator {
+        let generator = CheckerboardGenerator {
             width: 16,
             height: 12,
             cell_size: 4,
@@ -346,7 +388,7 @@ mod tests {
             offset_x: 0,
             offset_y: 0,
         };
-        let image = generator.generate();
+        let image = pollster::block_on(generator.generate(&runtime()));
         assert_eq!(image.width(), 16);
         assert_eq!(image.height(), 12);
         assert_eq!(image.rgba8().len(), 16 * 12 * 4);
@@ -354,12 +396,12 @@ mod tests {
 
     #[test]
     fn noise_generator_is_not_flat() {
-        let mut generator = NoiseGenerator {
+        let generator = NoiseGenerator {
             width: 16,
             height: 16,
             seed: 42,
         };
-        let image = generator.generate();
+        let image = pollster::block_on(generator.generate(&runtime()));
         let first = &image.rgba8()[..4];
         assert!(image.rgba8().chunks_exact(4).any(|px| px != first));
     }

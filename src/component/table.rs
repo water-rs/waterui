@@ -129,6 +129,7 @@ impl_constant!(TableColumn);
 pub struct TableColumn {
     label: Text,
     rows: SharedAnyViews<Text>,
+    identity: Rc<()>,
 }
 
 impl_debug!(TableColumn);
@@ -145,6 +146,7 @@ impl TableColumn {
         Self {
             label: label.into_text(),
             rows: SharedAnyViews::new(contents),
+            identity: Rc::new(()),
         }
     }
 
@@ -159,9 +161,16 @@ impl TableColumn {
         self.label.clone()
     }
 
+    /// Stable semantic identity used by native collection reconciliation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn semantic_id(&self) -> usize {
+        Rc::as_ptr(&self.identity) as usize
+    }
+
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
-        self.label = Text::from(self.label.resolve_reactive(env));
+        self.label = Text::from(self.label.resolve(env));
         self
     }
 }

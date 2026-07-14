@@ -1,6 +1,6 @@
 use waterui::shape::{ResolvedShape, ShapeKind};
 
-use crate::{IntoFFI, WuiArray, WuiPathCommand, color::WuiResolvedColor};
+use crate::{IntoFFI, WuiArray, WuiPathCommand, reactive::WuiComputed};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -79,7 +79,7 @@ impl IntoFFI for ShapeKind {
 pub struct WuiResolvedShape {
     pub kind: WuiShapeKind,
     pub commands: WuiArray<WuiPathCommand>,
-    pub fill: WuiResolvedColor,
+    pub fill: *mut WuiComputed<waterui_graphics::ResolvedColor>,
 }
 
 impl IntoFFI for ResolvedShape {

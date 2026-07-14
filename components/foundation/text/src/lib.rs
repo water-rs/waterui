@@ -14,11 +14,9 @@ extern crate alloc;
 pub mod font;
 /// Syntax highlighting support.
 pub mod highlight;
-/// Localization and formatting utilities.
-pub mod locale;
 /// Styled text support for rich text formatting.
 pub mod styled;
 
 /// Core text component.
 pub mod text;
-pub use text::{IntoText, Text, TextConfig, text};
+pub use text::{Formatter, IntoText, Text, TextConfig, text};

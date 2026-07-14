@@ -144,6 +144,17 @@ macro_rules! configurable {
     // Dynamic stretch axis with closure/function
     // Internal implementation that generates NativeView with the provided function
     (@impl_dynamic $(#[$meta:meta])*; $view:ident, $config:ty, $stretch_fn:expr) => {
+        $crate::configurable!(
+            @impl_dynamic $(#[$meta])*;
+            $view,
+            $config,
+            $stretch_fn,
+            |config: $config, _env: &$crate::Environment| config
+        );
+    };
+
+    // Dynamic stretch axis with closure/function and a native payload resolver.
+    (@impl_dynamic $(#[$meta:meta])*; $view:ident, $config:ty, $stretch_fn:expr, $resolve_native:expr) => {
         $(#[$meta])*
         #[derive(Debug)]
         pub struct $view($config);
@@ -175,7 +186,7 @@ macro_rules! configurable {
                 if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
                     $crate::AnyView::new(hook.apply(env, config))
                 } else {
-                    $crate::AnyView::new($crate::Native::new(config))
+                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
                 }
             }
 
@@ -183,6 +194,17 @@ macro_rules! configurable {
                 $crate::NativeView::stretch_axis(&self.0)
             }
         }
+    };
+
+    // Dynamic stretch axis with a native payload resolver.
+    ($(#[$meta:meta])* $view:ident, $config:ty, |$param:ident| $body:expr, resolve |$config_param:ident, $env_param:ident| $resolve_body:expr) => {
+        $crate::configurable!(
+            @impl_dynamic $(#[$meta])*;
+            $view,
+            $config,
+            |$param: &$config| $body,
+            |$config_param: $config, $env_param: &$crate::Environment| $resolve_body
+        );
     };
 
     // Public variant for dynamic stretch_axis with closure: |config| -> StretchAxis

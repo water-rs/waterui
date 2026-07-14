@@ -1,6 +1,4 @@
-use crate::{
-    IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, ffi_reactive, reactive::WuiComputed,
-};
+use crate::{IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, reactive::WuiComputed};
 
 use waterui::{Color, Signal};
 use waterui_core::{Environment, resolve::Resolvable};
@@ -32,17 +30,67 @@ impl IntoRust for WuiResolvedColor {
     }
 }
 
-// Note: ffi_view! not used here because Color is a composite view (has body()) when wgpu is enabled.
-// Native backends render Color through the normal View body path, not as a NativeView.
-
 ffi_computed!(ResolvedColor, WuiResolvedColor);
 ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
 
-ffi_reactive!(Color, *mut WuiColor);
+crate::ffi_binding!(Color, *mut WuiColor, color);
+#[cfg(feature = "c-api")]
+crate::ffi_watcher!(Color, *mut WuiColor, color);
 
 // `ResolvedColor` is a raw view (native fill) on all backends to avoid creating
 // GPU surfaces for simple color blocks.
 ffi_view!(ResolvedColor, WuiResolvedColor, resolved_color);
+
+/// Consumes a semantic color view and returns its owned resolvable color handle.
+///
+/// # Safety
+///
+/// `view` must own a native `Color` view and must not be used again.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_force_as_color(view: *mut crate::WuiAnyView) -> *mut WuiColor {
+    let any: waterui::AnyView = unsafe { IntoRust::into_rust(view) };
+    let native = unsafe { *any.downcast_unchecked::<waterui_core::Native<Color>>() };
+    native.into_ffi()
+}
+
+/// Returns the native semantic color view type id.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_color_id() -> crate::WuiTypeId {
+    crate::WuiTypeId::of::<waterui_core::Native<Color>>()
+}
+
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorId<'local>(
+    mut env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+) -> crate::jni::jobject {
+    crate::jni::type_id_to_java(
+        &mut env,
+        crate::WuiTypeId::of::<waterui_core::Native<Color>>(),
+    )
+    .into_raw()
+}
+
+/// Consumes a semantic color view and returns its owned resolvable color handle.
+///
+/// # Safety
+///
+/// `view_ptr` must own a native `Color` view and must not be used again.
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsColor<'local>(
+    _env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+    view_ptr: crate::jni::jlong,
+) -> crate::jni::jlong {
+    let view = view_ptr as *mut crate::WuiAnyView;
+    let any: waterui::AnyView = unsafe { IntoRust::into_rust(view) };
+    let native = unsafe { *any.downcast_unchecked::<waterui_core::Native<Color>>() };
+    native.into_ffi() as crate::jni::jlong
+}
 
 // JNI primitive support for Color (pointer treated as jlong)
 #[cfg(feature = "android-jni")]
@@ -58,9 +106,6 @@ impl crate::jni::JniPrimitive for Color {
 
 // Generate JNI read/set for Color binding
 crate::jni_binding_primitive!(Color, color);
-
-// Generate JNI read for Color computed
-crate::jni_computed_primitive!(Color, color);
 
 #[derive(Debug, Clone)]
 struct LinearResolvedColor {

@@ -66,7 +66,11 @@ impl HydroNativeView for Native<TableConfig> {
 }
 
 /// Measures a table's intrinsic size from its (reactive) columns.
-fn measure_table_intrinsic(table: &TableConfig, state: &mut HydroState, env: &Environment) -> LayoutSize {
+fn measure_table_intrinsic(
+    table: &TableConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
     let columns = table.columns.get();
     if columns.is_empty() {
         return LayoutSize::zero();
@@ -396,7 +400,14 @@ pub(crate) fn render_table_parts(
             cell_horizontal_inset,
             layout_metrics.cell_vertical_inset,
         );
-        flush_cell_subview(ctx, state, env, TableCellKey::Header(column_index), header_view, header_rect);
+        flush_cell_subview(
+            ctx,
+            state,
+            env,
+            TableCellKey::Header(column_index),
+            header_view,
+            header_rect,
+        );
 
         let rows = column.rows();
         for row_index in row_window.start..row_window.end {

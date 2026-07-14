@@ -60,6 +60,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<GpuSurface>);
         $macro!(Native<SceneView>);
         $macro!(Native<ViewEffectErased>);
+        $macro!(Native<Color>);
         $macro!(Native<ResolvedColor>);
         $macro!(Native<ResolvedGradient>);
         $macro!(Native<ResolvedShape>);

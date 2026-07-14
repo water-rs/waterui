@@ -49,12 +49,6 @@ pub trait Filter: 'static {
     /// Get the shader fragment(s).
     fn fragments(&self) -> Self::Fragments;
 
-    /// Number of GPU passes this filter requires. Default `1`. Separable
-    /// filters (e.g. two-pass blur) override to return more.
-    fn pass_count(&self) -> u32 {
-        1
-    }
-
     /// Resolve output dimensions from input dimensions. Default returns
     /// the input unchanged. Filters that downsample / upsample override.
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
@@ -103,11 +97,6 @@ impl<A: Filter, B: Filter> Filter for Chain<A, B> {
     #[inline]
     fn fragments(&self) -> Self::Fragments {
         (self.first.fragments(), self.second.fragments())
-    }
-
-    #[inline]
-    fn pass_count(&self) -> u32 {
-        self.first.pass_count() + self.second.pass_count()
     }
 
     #[inline]
@@ -213,12 +202,6 @@ mod tests {
     #[test]
     fn deep_chain_inherits_spatial_color_only_correctly() {
         const { assert!(!<Chain<Chain<ColorFilter, ColorFilter>, SpatialFilter>>::COLOR_ONLY) };
-    }
-
-    #[test]
-    fn chain_pass_count_sums_children() {
-        let chain = ColorFilter.then(SpatialFilter);
-        assert_eq!(chain.pass_count(), 2);
     }
 
     #[test]
