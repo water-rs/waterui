@@ -860,7 +860,7 @@ fn trace_4k_hdr_gpu_upload() {
     };
     let (path, _) = download_sample(sample.url).expect("4K HDR sample download must succeed");
     let instance = wgpu::Instance::default();
-    let adapter = waterui_graphics::pollster::block_on(instance.request_adapter(
+    let adapter = pollster::block_on(instance.request_adapter(
         &wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
@@ -875,7 +875,7 @@ fn trace_4k_hdr_gpu_upload() {
         "4K HDR GPU upload requires normalized 16-bit texture support"
     );
     let (device, queue) =
-        waterui_graphics::pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
             ..Default::default()
         }))

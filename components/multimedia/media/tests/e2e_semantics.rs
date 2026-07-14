@@ -142,10 +142,15 @@ fn media_video_uses_video_player_accessibility_controls() {
 
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();
+    app.query().role(Role::BUTTON).label("1.0x").assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Pitch On")
+        .assert_exists();
     assert_eq!(
         app.query().role(Role::SLIDER).all().len(),
-        3,
-        "media-video-uses-video-player-accessibility-controls: expected timeline, volume, and speed sliders"
+        2,
+        "media-video-uses-video-player-accessibility-controls: expected timeline and volume sliders"
     );
 }
 

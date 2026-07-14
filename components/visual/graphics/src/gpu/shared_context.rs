@@ -141,7 +141,7 @@ impl SharedGpuContext {
     }
 }
 
-/// Returns the adapter features required by WaterUI's GPU media pipeline.
+/// Returns the adapter features required by `WaterUI`'s GPU media pipeline.
 ///
 /// Every device hosting a GPU surface requests these features so decoded HDR
 /// planes retain their native precision.
