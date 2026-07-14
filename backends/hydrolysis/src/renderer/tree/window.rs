@@ -127,6 +127,21 @@ impl RenderNode {
 }
 
 impl HydrolysisRenderer {
+    /// Build the retained tree before its first sized frame. Embedded GPU hosts
+    /// use this during async setup so every statically reachable `GpuSurface`
+    /// can finish its own setup before the first render target is presented.
+    pub(crate) fn prepare_window_tree(&mut self, content: AnyView, env: &Environment) {
+        assert!(
+            self.render_tree.is_none(),
+            "hydrolysis renderer: window tree prepared more than once"
+        );
+        self.begin_rebuild_frame();
+        self.render_depth = 0;
+        let tree = RenderNode::build(content, env, self);
+        self.render_tree = Some(tree);
+        self.finish_rebuild_frame();
+    }
+
     /// Build the window render tree from `content`, lay it out at `bounds`, and
     /// flush it into the scene — the render-tree analogue of
     /// [`HydrolysisRenderer::capture_window_scene`]. The built tree is retained in
@@ -187,16 +202,16 @@ impl HydrolysisRenderer {
         self.lifecycle.begin_rebuild_frame();
         // Reset the FLUSH-BOUND slot cursors that the full re-flush re-binds every
         // frame in stable walk order: interaction (press/hover/hit-test order), scroll
-        // (each `ScrollNode::layout` re-binds its handle), and lazy list/table. Because
-        // the flush re-binds each one at the same cursor index, resetting + rebinding +
-        // truncating keeps per-slot state stable (the scroll offset and hover/press
-        // state persist by index) AND bounds the cursor — without this, full layout
-        // every frame hands out a fresh slot each refresh, resetting the scroll offset
-        // and leaking slots. The animation controller (signal/node-identity keyed) and
-        // navigation transitions are cross-frame and deliberately NOT reset here.
+        // (each `ScrollNode::layout` re-binds its handle), lazy list/table, and
+        // navigation. Resetting the navigation cursor preserves each slot's entries
+        // and transition state while rebinding the same slot index; without it, every
+        // refresh allocates an empty slot and loses the active destination. The
+        // animation controller is signal/node-identity keyed and deliberately not
+        // reset here.
         self.hit_test.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
+        self.navigation.begin_rebuild_frame();
         // Apply any pending reactive Dynamic content changes incrementally
         // (rebuild only the affected child subtrees). `structural_change` is true
         // when a `Dynamic`/collection added or removed a subtree this frame — the
@@ -235,6 +250,7 @@ impl HydrolysisRenderer {
         self.hit_test.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
         self.lazy.finish_rebuild_frame();
+        self.navigation.finish_rebuild_frame();
         if structural_change {
             // Drop animation slots + `Dynamic`-dimension cache entries for subtrees
             // the patch removed: the flush above re-bound every live animation, so

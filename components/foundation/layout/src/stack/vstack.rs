@@ -1,9 +1,10 @@
 //! Vertical stack layout.
 
 use alloc::{vec, vec::Vec};
-use nami::collection::Collection;
+use nami::{Computed, Signal, SignalExt, collection::Collection};
 use waterui_core::{
-    AnyView, IntoSignalF32, View, env::with, id::Identifiable, view::TupleViews, views::ForEach,
+    AnyView, IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
+    view::TupleViews, views::ForEach,
 };
 
 use crate::{
@@ -12,12 +13,21 @@ use crate::{
 };
 
 /// Layout engine shared by the public [`VStack`] view.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct VStackLayout {
     /// The horizontal alignment of children within the stack.
     pub alignment: HorizontalAlignment,
     /// The spacing between children in the stack.
-    pub spacing: f32,
+    pub spacing: Computed<f32>,
+}
+
+impl Default for VStackLayout {
+    fn default() -> Self {
+        Self {
+            alignment: HorizontalAlignment::default(),
+            spacing: Computed::constant(10.0),
+        }
+    }
 }
 
 /// Cached measurement for a child during layout
@@ -109,8 +119,9 @@ impl Layout for VStackLayout {
             .map(|m| m.size().height)
             .sum();
 
+        let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * self.spacing
+            (children.len() - 1) as f32 * spacing
         } else {
             0.0
         };
@@ -166,8 +177,9 @@ impl Layout for VStackLayout {
             .map(|m| m.size().height)
             .sum();
 
+        let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * self.spacing
+            (children.len() - 1) as f32 * spacing
         } else {
             0.0
         };
@@ -197,7 +209,7 @@ impl Layout for VStackLayout {
 
         for (i, measurement) in measurements.iter().enumerate() {
             if i > 0 {
-                current_y += self.spacing;
+                current_y += spacing;
             }
 
             // Handle cross-axis (horizontal) stretching and infinite width
@@ -270,6 +282,13 @@ impl Layout for VStackLayout {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Horizontal
     }
+
+    fn watch_invalidation(
+        &self,
+        invalidate: LayoutInvalidationCallback,
+    ) -> Vec<nami::watcher::BoxWatcherGuard> {
+        vec![self.spacing.watch(move |_| invalidate())]
+    }
 }
 
 /// A view that arranges its children in a vertical line.
@@ -311,9 +330,12 @@ pub struct VStack<C> {
 impl<C: TupleViews> VStack<(C,)> {
     /// Creates a vertical stack with the provided alignment, spacing, and
     /// children.
-    pub const fn new(alignment: HorizontalAlignment, spacing: f32, contents: C) -> Self {
+    pub fn new(alignment: HorizontalAlignment, spacing: f32, contents: C) -> Self {
         Self {
-            layout: VStackLayout { alignment, spacing },
+            layout: VStackLayout {
+                alignment,
+                spacing: Computed::constant(spacing),
+            },
             contents: (contents,),
         }
     }
@@ -331,12 +353,11 @@ impl<C> VStack<C> {
 
     /// Sets the spacing between children in the stack.
     ///
-    /// Accepts any numeric literal or signal of f32; snapshotted at modifier
-    /// time per `WaterUI`'s Vue-like reactivity model.
+    /// Accepts any numeric literal or signal of `f32`. Signal changes invalidate
+    /// only this stack's layout.
     #[must_use]
     pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        self.layout.spacing = spacing.into_signal_f32().get();
+        self.layout.spacing = spacing.into_signal_f32().computed();
         self
     }
 }
@@ -352,7 +373,7 @@ where
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
-pub const fn vstack<C: TupleViews>(contents: C) -> VStack<(C,)> {
+pub fn vstack<C: TupleViews>(contents: C) -> VStack<(C,)> {
     VStack::new(HorizontalAlignment::Center, 10.0, contents)
 }
 
@@ -407,7 +428,7 @@ mod tests {
     fn test_vstack_size_two_children() {
         let layout = VStackLayout {
             alignment: HorizontalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         };
 
         let mut child1 = MockSubView {
@@ -431,7 +452,7 @@ mod tests {
     fn test_vstack_with_spacer() {
         let layout = VStackLayout {
             alignment: HorizontalAlignment::Center,
-            spacing: 0.0,
+            spacing: Computed::constant(0.0),
         };
 
         let mut child1 = MockSubView {
@@ -485,7 +506,7 @@ mod tests {
         // TextField-like component: stretches horizontally but has fixed height
         let layout = VStackLayout {
             alignment: HorizontalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         };
 
         let mut label = MockSubView {
@@ -519,7 +540,7 @@ mod tests {
         // should be included, even stretching ones. This is essential for window min size.
         let layout = VStackLayout {
             alignment: HorizontalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         };
 
         let mut label = MockSubView {

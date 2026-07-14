@@ -89,9 +89,6 @@ impl IntoFFI for Gesture {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_gesture(gesture: *mut WuiGesture) {
     unsafe {
-        crate::expect_non_null_mut(gesture, "waterui_drop_gesture", "gesture");
-    }
-    unsafe {
         let gesture = Box::from_raw(gesture);
         match *gesture {
             WuiGesture::Then { first, then } => {

@@ -30,7 +30,8 @@ use core::any::Any;
 use core::fmt;
 use fmt::Debug;
 
-use alloc::vec::Vec;
+use alloc::{rc::Rc, vec::Vec};
+use nami::watcher::BoxWatcherGuard;
 
 // ============================================================================
 // StretchAxis - Specifies which axis a view stretches on
@@ -619,6 +620,10 @@ pub trait SubView: Send + Sync {
 // Layout Trait - Container Layout
 // ============================================================================
 
+/// Callback used by reactive layouts to invalidate their native container.
+#[doc(hidden)]
+pub type LayoutInvalidationCallback = Rc<dyn Fn() + 'static>;
+
 /// A layout algorithm for arranging child views.
 ///
 /// Layouts receive a size proposal from their parent, query their children
@@ -700,6 +705,16 @@ pub trait Layout: Debug + Any {
     /// to fill available space on the cross axis.
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
+    }
+
+    /// Watches layout inputs whose changes require a new native layout pass.
+    ///
+    /// This is backend infrastructure. Layout implementations return guards for
+    /// their precise reactive fields; native containers retain those guards for
+    /// the layout object's lifetime.
+    #[doc(hidden)]
+    fn watch_invalidation(&self, _invalidate: LayoutInvalidationCallback) -> Vec<BoxWatcherGuard> {
+        Vec::new()
     }
 }
 

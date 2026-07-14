@@ -28,7 +28,7 @@ pub use srgb::{BLACK, Srgb, WHITE};
 use nami::{Computed, Signal, SignalExt, impl_constant};
 
 use waterui_core::{
-    Environment, View,
+    Environment, IntoSignalF32, View,
     resolve::{self, AnyResolvable, Resolvable},
 };
 
@@ -76,6 +76,14 @@ impl Default for Color {
 
 impl_constant!(ResolvedColor);
 
+impl Resolvable for ResolvedColor {
+    type Resolved = Self;
+
+    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        *self
+    }
+}
+
 impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {
     fn from(value: T) -> Self {
         Self::new(value)
@@ -105,7 +113,7 @@ impl<T> WithOpacity<T> {
     ///
     /// # Arguments
     /// * `color` - The base color
-    /// * `opacity` - Opacity value (0.0 = transparent, 1.0 = opaque)
+    /// * `opacity` - Static or reactive opacity (0.0 = transparent, 1.0 = opaque)
     #[must_use]
     pub const fn new(color: T, opacity: f32) -> Self {
         Self { color, opacity }
@@ -391,6 +399,23 @@ pub enum Colorspace {
 
 impl_constant!(Color);
 
+#[derive(Debug, Clone)]
+struct ReactiveOpacity {
+    color: Color,
+    opacity: Computed<f32>,
+}
+
+impl Resolvable for ReactiveOpacity {
+    type Resolved = ResolvedColor;
+
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        self.color
+            .resolve(env)
+            .zip(&self.opacity)
+            .map(|(color, opacity)| color.with_opacity(opacity))
+    }
+}
+
 impl Color {
     /// Creates a new color from a custom resolvable color value.
     ///
@@ -524,9 +549,11 @@ impl Color {
     /// # Arguments
     /// * `opacity` - Opacity value (0.0 = transparent, 1.0 = opaque)
     #[must_use]
-    pub fn with_opacity(self, opacity: f32) -> Self {
-        let clamped = clamp_unit(opacity);
-        self.map_resolved(move |resolved| resolved.with_opacity(clamped))
+    pub fn with_opacity(self, opacity: impl IntoSignalF32) -> Self {
+        Self::new(ReactiveOpacity {
+            color: self,
+            opacity: opacity.into_signal_f32().map(clamp_unit).computed(),
+        })
     }
 
     /// Creates a new color with extended headroom for HDR content.
@@ -611,31 +638,59 @@ impl Resolvable for Mix {
     }
 }
 
-/// Foreground color key for environment queries.
-#[derive(Debug, Clone, Copy)]
-pub struct ForegroundColor;
+macro_rules! environment_color {
+    ($name:ident, $doc:literal) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name;
 
-/// Background color key for environment queries.
-#[derive(Debug, Clone, Copy)]
-pub struct BackgroundColor;
+        impl Resolvable for $name {
+            type Resolved = ResolvedColor;
 
-impl Resolvable for ForegroundColor {
-    type Resolved = ResolvedColor;
-    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        env.query::<Self, Computed<ResolvedColor>>()
-            .cloned()
-            .expect("ForegroundColor not found in environment")
-    }
+            fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                env.query::<Self, Computed<ResolvedColor>>()
+                    .cloned()
+                    .expect(concat!(
+                        stringify!($name),
+                        " is not installed in the environment"
+                    ))
+            }
+        }
+    };
 }
 
-impl Resolvable for BackgroundColor {
-    type Resolved = ResolvedColor;
-    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        env.query::<Self, Computed<ResolvedColor>>()
-            .cloned()
-            .expect("BackgroundColor not found in environment")
-    }
-}
+environment_color!(
+    BackgroundColor,
+    "Background color key for environment queries."
+);
+environment_color!(SurfaceColor, "Surface color key for environment queries.");
+environment_color!(
+    SurfaceVariantColor,
+    "Surface-variant color key for environment queries."
+);
+environment_color!(BorderColor, "Border color key for environment queries.");
+environment_color!(
+    ForegroundColor,
+    "Foreground color key for environment queries."
+);
+environment_color!(
+    MutedForegroundColor,
+    "Muted-foreground color key for environment queries."
+);
+environment_color!(AccentColor, "Accent color key for environment queries.");
+environment_color!(
+    AccentForegroundColor,
+    "Accent-foreground color key for environment queries."
+);
+environment_color!(
+    AccentContainerColor,
+    "Accent-container color key for environment queries."
+);
+environment_color!(TertiaryColor, "Tertiary color key for environment queries.");
+environment_color!(
+    TertiaryContainerColor,
+    "Tertiary-container color key for environment queries."
+);
 
 /// Implements `View` for a color type, allowing it to be used directly as a background.
 macro_rules! impl_color_view {
@@ -714,18 +769,9 @@ color_const!(Brown, "Brown color.");
 color_const!(Grey, "Grey color.");
 color_const!(BlueGrey, "Blue grey color.");
 
-// View implementation for Color
-//
-// Color renders as a filled Rect using a GPU renderer.
-
-impl View for Color {
-    fn body(self, env: &Environment) -> impl View {
-        self.resolve(env).get()
-    }
-}
-
-// Render solid colors as lightweight native views on all backends.
-// This avoids creating swapchains for simple color blocks.
+// Colors remain semantic native views so their resolved signal can update the
+// platform fill precisely without rebuilding the view subtree.
+waterui_core::raw_view!(Color, waterui_core::layout::StretchAxis::Both);
 waterui_core::raw_view!(ResolvedColor, waterui_core::layout::StretchAxis::Both);
 
 /// Hex parsing helpers shared by color constructors.

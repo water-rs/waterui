@@ -47,6 +47,10 @@ pub fn shutdown_current_thread_runtime_locale_state() {
 /// Returns a reactive binding for the effective locale in the given environment.
 #[must_use]
 pub fn locale_binding(env: &waterui_core::Environment) -> nami::Binding<Locale> {
+    if let Some(locale) = env.get::<nami::Binding<Locale>>() {
+        return locale.clone();
+    }
+
     if let Some(context) = env.get::<regional::RegionalContext>().cloned() {
         return nami::Binding::custom(nami::Container::new(context.locale().clone()));
     }

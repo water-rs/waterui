@@ -17,7 +17,6 @@ waterui-graphics.workspace = true
 waterui-str.workspace = true
 waterui-locale.workspace = true
 nami.workspace = true
-jiff.workspace = true
 syntect = { version = "5", default-features = false, features = ["default-themes", "regex-fancy"] }
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 pulldown-cmark = "0.13"

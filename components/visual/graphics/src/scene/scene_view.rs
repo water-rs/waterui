@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-use core::any::TypeId;
 use core::fmt;
 
 use waterui_core::layout::StretchAxis;
@@ -26,12 +25,6 @@ pub trait SceneContent: 'static {
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
-
-    /// Returns the concrete runtime scene content type id behind this trait object.
-    #[must_use]
-    fn concrete_type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
 }
 
 /// A view that renders scene content either directly (backend) or via `GpuSurface`.
@@ -58,12 +51,6 @@ impl SceneView {
     #[must_use]
     pub fn content_mut(&mut self) -> &mut dyn SceneContent {
         &mut *self.content
-    }
-
-    /// Returns the concrete runtime type id of the wrapped scene content.
-    #[must_use]
-    pub fn content_type_id(&self) -> TypeId {
-        self.content.concrete_type_id()
     }
 
     /// Takes ownership of the wrapped scene content.

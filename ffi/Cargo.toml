@@ -45,7 +45,6 @@ tracing.workspace = true
 tracing-panic.workspace = true
 jiff.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-pollster = "0.4"
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -73,8 +72,6 @@ default = ["std", "c-api"]
 std = []
 # C FFI for Apple/GTK backends (default)
 c-api = []
-# Enable shared GPU context initialization in `__init()`.
-gpu = []
 # JNI for Android backend - mutually exclusive with c-api
 # Note: android-jni requires std because jni crate uses std
 android-jni = ["dep:jni", "dep:bytemuck", "std"]

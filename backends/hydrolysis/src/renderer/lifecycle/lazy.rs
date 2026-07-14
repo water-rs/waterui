@@ -70,14 +70,14 @@ pub(crate) struct VisibleColumnWindow {
     pub(crate) leading_offset: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum LazyStackAxisConfig {
     Vertical {
-        spacing: f64,
+        spacing: nami::Computed<f32>,
         alignment: HorizontalAlignment,
     },
     Horizontal {
-        spacing: f64,
+        spacing: nami::Computed<f32>,
         alignment: VerticalAlignment,
     },
 }
@@ -152,13 +152,13 @@ pub(crate) fn lazy_stack_axis_config(layout: &dyn Layout) -> Option<LazyStackAxi
     let layout_any = layout as &dyn core::any::Any;
     if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>() {
         return Some(LazyStackAxisConfig::Vertical {
-            spacing: f64::from(vstack.spacing),
+            spacing: vstack.spacing.clone(),
             alignment: vstack.alignment,
         });
     }
     if let Some(hstack) = layout_any.downcast_ref::<HStackLayout>() {
         return Some(LazyStackAxisConfig::Horizontal {
-            spacing: f64::from(hstack.spacing),
+            spacing: hstack.spacing.clone(),
             alignment: hstack.alignment,
         });
     }
@@ -171,7 +171,7 @@ pub(crate) fn lazy_stack_axis_config(layout: &dyn Layout) -> Option<LazyStackAxi
 /// render tree's `LazyStackNode` so the cross-axis sizing/alignment rules live in
 /// exactly one place.
 pub(crate) fn place_lazy_stack_item(
-    axis_config: LazyStackAxisConfig,
+    axis_config: &LazyStackAxisConfig,
     stretch_axis: StretchAxis,
     size: waterui_core::layout::Size,
     bounds: vello::kurbo::Rect,
@@ -196,9 +196,9 @@ pub(crate) fn place_lazy_stack_item(
                 f64::from(size.width).min(bounds.width())
             };
             let child_height = f64::from(size.height);
-            let x = if alignment == HorizontalAlignment::Leading {
+            let x = if *alignment == HorizontalAlignment::Leading {
                 bounds.x0
-            } else if alignment == HorizontalAlignment::Trailing {
+            } else if *alignment == HorizontalAlignment::Trailing {
                 bounds.x1 - child_width
             } else {
                 bounds.x0 + (bounds.width() - child_width) / 2.0
@@ -223,9 +223,9 @@ pub(crate) fn place_lazy_stack_item(
             } else {
                 f64::from(size.height).min(bounds.height())
             };
-            let y = if alignment == VerticalAlignment::Top {
+            let y = if *alignment == VerticalAlignment::Top {
                 bounds.y0
-            } else if alignment == VerticalAlignment::Bottom {
+            } else if *alignment == VerticalAlignment::Bottom {
                 bounds.y1 - child_height
             } else {
                 bounds.y0 + (bounds.height() - child_height) / 2.0
@@ -346,4 +346,3 @@ pub(crate) fn table_metrics_from_slot(
         table_height: metrics.header_height + metrics.row_height * slot.max_rows as f64,
     }
 }
-

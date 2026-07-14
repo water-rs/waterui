@@ -46,8 +46,7 @@ impl IntoFFI for CursorStyle {
             CursorStyle::Move => WuiCursorStyle::Move,
             CursorStyle::Wait => WuiCursorStyle::Wait,
             CursorStyle::Copy => WuiCursorStyle::Copy,
-            // Handle any future cursor style variants
-            _ => WuiCursorStyle::Arrow,
+            _ => panic!("unsupported CursorStyle variant for FFI"),
         }
     }
 }

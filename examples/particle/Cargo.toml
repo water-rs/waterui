@@ -9,6 +9,7 @@ publish = false
 dev = ["waterui/dynamic_linking"]
 
 [dependencies]
+pollster.workspace = true
 waterui.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-particle.workspace = true

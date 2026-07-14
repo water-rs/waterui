@@ -320,7 +320,7 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .title(dest.title())
     .searchable(&search, "Search reminders")
     .navigation_bar_trailing(
-        button(Label::new("").icon(mdi::plus()))
+        button(label("").icon(mdi::plus()))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
     )

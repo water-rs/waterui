@@ -1,23 +1,26 @@
 use core::ops::Deref;
 
+#[cfg(feature = "c-api")]
+use crate::WuiAnyView;
 use crate::array::WuiArray;
-use crate::components::form::WuiPickerItem;
 use crate::components::text::WuiStyledStr;
-use crate::{IntoFFI, IntoRust, OpaqueType, WuiAnyView, WuiStr};
+use crate::{IntoFFI, IntoRust, OpaqueType, WuiStr};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use nami::watcher::{Context, Watcher, WatcherGuard};
+#[cfg(feature = "c-api")]
+use nami::watcher::WatcherGuard;
+use nami::watcher::{Context, Watcher};
 use nami::{Computed, Signal, watcher};
+#[cfg(feature = "c-api")]
+use waterui::AnyView;
+use waterui::Str;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::reactive::watcher::Metadata;
-use waterui::{AnyView, Str};
-use waterui_core::id::Id;
-use waterui_form::picker::PickerItem;
 use waterui_text::styled::StyledStr;
-opaque!(WuiWatcherMetadata, Metadata, watcher_metadata);
+opaque!(WuiWatcherMetadata, Metadata, watcher_metadata, any());
 
-opaque!(WuiWatcherGuard, BoxWatcherGuard);
+opaque!(WuiWatcherGuard, BoxWatcherGuard, box_watcher_guard, any());
 
 #[repr(transparent)]
 pub struct WuiComputed<T>(pub(crate) waterui::Computed<T>);
@@ -45,10 +48,20 @@ where
 }
 
 struct FFIComputed<T: IntoFFI> {
-    data: *mut (), // we use reference counting in the watcher to manage lifetime
+    data: Rc<NativeComputedData>,
     get: unsafe extern "C" fn(*const ()) -> T::FFI,
     watch: unsafe extern "C" fn(*const (), *mut WuiWatcher<T>) -> *mut WuiWatcherGuard,
+}
+
+struct NativeComputedData {
+    ptr: *mut (),
     drop: unsafe extern "C" fn(*mut ()),
+}
+
+impl Drop for NativeComputedData {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.ptr) };
+    }
 }
 
 impl<T: IntoFFI> Signal for FFIComputed<T>
@@ -58,14 +71,7 @@ where
     type Output = T;
     type Guard = BoxWatcherGuard;
     fn get(&self) -> Self::Output {
-        unsafe {
-            // self.data is Rc<*mut ()>*, dereference to get the original native pointer
-            let rc = Rc::from_raw(self.data as *const *mut ());
-            let native_data = *rc;
-            let _ = Rc::into_raw(rc); // don't drop the Rc
-            let ffi_value = (self.get)(native_data as *const ());
-            ffi_value.into_rust()
-        }
+        unsafe { (self.get)(self.data.ptr.cast_const()).into_rust() }
     }
 
     fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
@@ -73,11 +79,7 @@ where
         let watcher = watcher.into_ffi();
 
         unsafe {
-            // self.data is Rc<*mut ()>*, dereference to get the original native pointer
-            let rc = Rc::from_raw(self.data as *const *mut ());
-            let native_data = *rc;
-            let _ = Rc::into_raw(rc); // don't drop the Rc
-            let guard_ptr = (self.watch)(native_data as *const (), watcher);
+            let guard_ptr = (self.watch)(self.data.ptr.cast_const(), watcher);
             let guard = Box::from_raw(guard_ptr);
             let WuiWatcherGuard(guard) = *guard;
             guard
@@ -92,43 +94,20 @@ impl<T: IntoFFI> FFIComputed<T> {
         watch: unsafe extern "C" fn(*const (), *mut WuiWatcher<T>) -> *mut WuiWatcherGuard,
         drop: unsafe extern "C" fn(*mut ()),
     ) -> Self {
-        // Wrap the native data pointer in an Rc for reference counting during clones
-        let data = Rc::into_raw(Rc::new(data)) as *mut ();
         Self {
-            data,
+            data: Rc::new(NativeComputedData { ptr: data, drop }),
             get,
             watch,
-            drop,
         }
     }
 }
 
 impl<T: IntoFFI> Clone for FFIComputed<T> {
     fn clone(&self) -> Self {
-        unsafe {
-            let rc = Rc::from_raw(self.data as *const *mut ());
-            let cloned_data = Rc::into_raw(rc.clone()) as *mut ();
-            let _ = Rc::into_raw(rc); // prevent dropping the original Rc
-            Self {
-                data: cloned_data,
-                get: self.get,
-                watch: self.watch,
-                drop: self.drop,
-            }
-        }
-    }
-}
-
-impl<T: IntoFFI> Drop for FFIComputed<T> {
-    fn drop(&mut self) {
-        unsafe {
-            let rc = Rc::from_raw(self.data as *const *mut ());
-            // Only call native drop when this is the last reference
-            if Rc::strong_count(&rc) == 1 {
-                let native_data = *rc;
-                (self.drop)(native_data);
-            }
-            // rc drops here, decrementing count
+        Self {
+            data: self.data.clone(),
+            get: self.get,
+            watch: self.watch,
         }
     }
 }
@@ -183,6 +162,49 @@ pub struct WuiBinding<T: 'static>(pub(crate) waterui::Binding<T>);
 
 impl<T> OpaqueType for WuiBinding<T> {}
 
+/// Generates the C constructor for a native watcher.
+///
+/// Invoke this directly for binding-only types. [`ffi_computed!`] invokes it
+/// automatically for computed types.
+#[macro_export]
+macro_rules! ffi_watcher {
+    ($ty:ty, $ffi:ty, $ident:tt) => {
+        pastey::paste! {
+            #[cfg(feature = "c-api")]
+            /// Creates a watcher from native callbacks.
+            ///
+            /// # Safety
+            ///
+            /// All function pointers must be valid and `data` must remain valid
+            /// until `drop` is called exactly once.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_new_watcher_ $ident>](
+                data: *mut (),
+                call: unsafe extern "C" fn(
+                    *mut (),
+                    $ffi,
+                    *mut $crate::reactive::WuiWatcherMetadata,
+                ),
+                drop: unsafe extern "C" fn(*mut ()),
+            ) -> *mut $crate::reactive::WuiWatcher<$ty>
+            where
+                $ty: $crate::IntoFFI + 'static,
+            {
+                let watcher = unsafe {
+                    $crate::reactive::WuiWatcher::<$ty>::new(data, call, drop)
+                };
+                alloc::boxed::Box::into_raw(alloc::boxed::Box::new(watcher))
+            }
+        }
+    };
+
+    ($ty:ty, $ffi:ty) => {
+        pastey::paste! {
+            $crate::ffi_watcher!($ty, $ffi, [<$ty:snake>]);
+        }
+    };
+}
+
 /// Generates computed FFI support for read-only reactive types.
 ///
 /// When `c-api` feature is enabled, generates C FFI functions.
@@ -192,7 +214,6 @@ impl<T> OpaqueType for WuiBinding<T> {}
 /// - `waterui_read_computed_{ident}` - read current value
 /// - `waterui_watch_computed_{ident}` - subscribe to changes
 /// - `waterui_drop_computed_{ident}` - cleanup
-/// - `waterui_clone_computed_{ident}` - clone signal
 /// - `waterui_new_watcher_{ident}` - create watcher
 ///
 /// For types that also need native-controlled signal constructors,
@@ -224,12 +245,12 @@ macro_rules! ffi_computed {
             ) -> *mut $crate::reactive::WuiWatcherGuard {
                 use waterui::Signal;
                 unsafe {
-                    // Take ownership of the watcher - it will be dropped when the guard drops
-                    let watcher = alloc::boxed::Box::from_raw(watcher);
+                    let watcher = (*alloc::boxed::Box::from_raw(watcher)).into_inner();
                     let guard = (&*computed).watch(move |ctx| {
                         let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
-                        watcher.call(value, metadata);
+                        let callback = alloc::rc::Rc::clone(&watcher);
+                        callback(nami::watcher::Context::new(value, metadata));
                     });
                     $crate::IntoFFI::into_ffi(guard)
                 }
@@ -299,11 +320,11 @@ macro_rules! ffi_computed {
 
                 // Register the watcher with the computed
                 let guard = computed.watch(move |ctx: nami::watcher::Context<$ty>| {
-                    let _ = &cleaner_clone; // Capture cleaner to ensure it lives as long as the watcher
+                    let cleaner = Rc::clone(&cleaner_clone);
                     let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                     let value: $ty = ctx.into_value();
                     unsafe {
-                        call_fn(data_ptr as *mut (), value.into_ffi(), metadata.into_ffi());
+                        call_fn(cleaner.data, value.into_ffi(), metadata.into_ffi());
                     }
                 });
 
@@ -312,41 +333,7 @@ macro_rules! ffi_computed {
                 Box::into_raw(guard_box) as $crate::jni::jlong
             }
 
-            #[cfg(feature = "c-api")]
-            /// Clones a computed
-            /// # Safety
-            /// The caller must ensure that `computed` is a valid pointer.
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn [< waterui_clone_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> *mut $crate::reactive::WuiComputed<$ty> {
-                unsafe {
-                    let cloned = core::clone::Clone::clone(core::ops::Deref::deref(&*computed));
-                    $crate::IntoFFI::into_ffi(cloned)
-                }
-            }
-
-            #[cfg(feature = "c-api")]
-            /// Creates a watcher from native callbacks.
-            /// # Safety
-            /// All function pointers must be valid.
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn [< waterui_new_watcher_ $ident >](
-                data: *mut (),
-                call: unsafe extern "C" fn(*mut (), $ffi, *mut $crate::reactive::WuiWatcherMetadata),
-                drop: unsafe extern "C" fn(*mut ()),
-            ) -> *mut $crate::reactive::WuiWatcher<$ty>
-            where
-                $ty: $crate::IntoFFI + 'static,
-            {
-                use alloc::boxed::Box;
-                #[allow(clippy::useless_transmute)]
-                let call: unsafe extern "C" fn(
-                    *mut (),
-                    <$ty as $crate::IntoFFI>::FFI,
-                    *mut $crate::reactive::WuiWatcherMetadata,
-                ) = unsafe { core::mem::transmute(call) };
-                let watcher = unsafe { $crate::reactive::WuiWatcher::new(data, call, drop) };
-                Box::into_raw(Box::new(watcher))
-            }
+            $crate::ffi_watcher!($ty, $ffi, $ident);
 
             // ========== Android JNI ==========
             // Note: JNI reactive bindings require more complex struct conversions
@@ -377,7 +364,6 @@ macro_rules! ffi_computed_ctor {
             /// # Safety
             /// All function pointers must be valid and follow the expected calling conventions.
             #[unsafe(no_mangle)]
-            #[allow(clippy::useless_transmute)]
             pub unsafe extern "C" fn [< waterui_new_computed_ $ident >](
                 data: *mut (),
                 get: unsafe extern "C" fn(*const ()) -> $ffi,
@@ -388,8 +374,6 @@ macro_rules! ffi_computed_ctor {
                 $ty: $crate::IntoFFI + 'static,
                 <$ty as $crate::IntoFFI>::FFI: $crate::IntoRust<Rust = $ty>,
             {
-                let get: unsafe extern "C" fn(*const ()) -> <$ty as $crate::IntoFFI>::FFI =
-                    unsafe { core::mem::transmute(get) };
                 let computed = unsafe { $crate::reactive::WuiComputed::new(data, get, watch, drop) };
                 alloc::boxed::Box::into_raw(alloc::boxed::Box::new(computed))
             }
@@ -449,25 +433,15 @@ macro_rules! ffi_binding {
                 watcher: *mut $crate::reactive::WuiWatcher<$ty>,
             ) -> *mut $crate::reactive::WuiWatcherGuard {
                 use waterui::Signal;
-                use core::cell::Cell;
-                use alloc::rc::Rc;
-
-                // Filter out synchronous callbacks during setup to prevent re-entrancy deadlocks
-                let is_setting_up = Rc::new(Cell::new(true));
-                let is_setting_up_clone = is_setting_up.clone();
 
                 unsafe {
-                    // Take ownership of the watcher - it will be dropped when the guard drops
-                    let watcher = alloc::boxed::Box::from_raw(watcher);
+                    let watcher = (*alloc::boxed::Box::from_raw(watcher)).into_inner();
                     let guard = (*binding).watch(move |ctx| {
-                        if is_setting_up_clone.get() {
-                            return; // Skip synchronous callback during setup
-                        }
                         let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
-                        watcher.call(value, metadata);
+                        let callback = alloc::rc::Rc::clone(&watcher);
+                        callback(nami::watcher::Context::new(value, metadata));
                     });
-                    is_setting_up.set(false);
                     guard.into_ffi()
                 }
             }
@@ -507,7 +481,6 @@ macro_rules! ffi_binding {
                 use waterui::Signal;
                 use alloc::boxed::Box;
                 use alloc::rc::Rc;
-                use core::cell::Cell;
                 use $crate::IntoFFI;
 
                 let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(&mut env, &watcher);
@@ -537,24 +510,15 @@ macro_rules! ffi_binding {
                 });
                 let cleaner_clone = cleaner.clone();
 
-                // Filter out synchronous callbacks during setup to prevent re-entrancy deadlocks
-                let is_setting_up = Rc::new(Cell::new(true));
-                let is_setting_up_clone = is_setting_up.clone();
-
                 // Register the watcher with the binding
                 let guard = binding.watch(move |ctx: nami::watcher::Context<$ty>| {
-                    let _ = &cleaner_clone; // Capture cleaner to ensure it lives as long as the watcher
-                    if is_setting_up_clone.get() {
-                        return; // Skip synchronous callback during setup
-                    }
+                    let cleaner = Rc::clone(&cleaner_clone);
                     let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                     let value: $ty = ctx.into_value();
                     unsafe {
-                        call_fn(data_ptr as *mut (), value.into_ffi(), metadata.into_ffi());
+                        call_fn(cleaner.data, value.into_ffi(), metadata.into_ffi());
                     }
                 });
-
-                is_setting_up.set(false);
 
                 // Return the guard as a pointer
                 let guard_box = Box::new($crate::reactive::WuiWatcherGuard(Box::new(guard)));
@@ -587,25 +551,10 @@ macro_rules! ffi_reactive {
     };
 }
 
-ffi_reactive!(Str, WuiStr);
-ffi_binding!(StyledStr, WuiStyledStr, styled_str);
-
+ffi_binding!(Str, WuiStr);
 #[cfg(feature = "c-api")]
-/// Sets a `Binding<StyledStr>` using plain text.
-///
-/// This helper is intended for native text input controls that only emit plain
-/// text updates while the reactive binding type remains `StyledStr`.
-///
-/// # Safety
-/// `binding` must be a valid pointer to `WuiBinding<StyledStr>`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_set_binding_styled_str_plain(
-    binding: *mut WuiBinding<StyledStr>,
-    value: WuiStr,
-) {
-    let plain: Str = unsafe { value.into_rust() };
-    unsafe { (*binding).set(StyledStr::plain(plain)) };
-}
+ffi_computed!(Str, WuiStr);
+ffi_binding!(StyledStr, WuiStyledStr, styled_str);
 
 #[cfg(feature = "c-api")]
 /// Sets a `Binding<StyledStr>` using borrowed UTF-8 bytes.
@@ -635,27 +584,27 @@ pub unsafe extern "C" fn waterui_set_binding_styled_str_utf8(
     unsafe { (*binding).set(StyledStr::plain(plain)) };
 }
 
-ffi_reactive!(AnyView, *mut WuiAnyView);
+#[cfg(feature = "c-api")]
+ffi_watcher!(AnyView, *mut WuiAnyView, any_view);
 
-// Note: Kotlin uses different naming for Binding vs Computed:
-// - Binding: Int, Double, Float (Java-style)
-// - Computed: I32, F64, F32 (Rust-style)
-// So we call ffi_binding! and ffi_computed! separately with different identifiers.
-
+#[cfg(feature = "android-jni")]
 ffi_binding!(i32, i32, int);
 ffi_computed!(i32, i32, i32);
 
 ffi_reactive!(bool, bool);
 
-ffi_binding!(f32, f32, float);
 ffi_computed!(f32, f32, f32);
 
+#[cfg(feature = "android-jni")]
 ffi_binding!(f64, f64, double);
 ffi_computed!(f64, f64, f64);
 
-// C-API compatibility aliases used by Apple backend (i32/f32/f64 naming)
+// The C ABI uses Rust primitive names consistently.
+#[cfg(feature = "c-api")]
 ffi_binding!(i32, i32, i32);
+#[cfg(feature = "c-api")]
 ffi_binding!(f32, f32, f32);
+#[cfg(feature = "c-api")]
 ffi_binding!(f64, f64, f64);
 
 // ============================================================================
@@ -679,7 +628,6 @@ macro_rules! jni_binding_primitive {
                 _class: $crate::jni::JClass<'local>,
                 binding_ptr: $crate::jni::jlong,
             ) -> <$rust_ty as $crate::jni::JniPrimitive>::Jni {
-                use waterui::Signal;
                 use $crate::jni::JniPrimitive;
                 let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$rust_ty>) };
                 binding.get().to_jni()
@@ -726,7 +674,6 @@ macro_rules! jni_computed_primitive {
 // Note: Kotlin naming convention differs - Binding uses Java names (Int, Double, Float)
 jni_binding_primitive!(bool, bool);
 jni_binding_primitive!(i32, int);
-jni_binding_primitive!(f32, float);
 jni_binding_primitive!(f64, double);
 
 // Generate JNI read for primitive computed
@@ -736,19 +683,13 @@ jni_computed_primitive!(i32, i32);
 jni_computed_primitive!(f32, f32);
 jni_computed_primitive!(f64, f64);
 
-// Generate additional computed aliases (ColorScheme and CursorStyle use i32)
-jni_computed_primitive!(i32, color_scheme);
-jni_computed_primitive!(i32, cursor_style);
-jni_computed_primitive!(i32, horizontal_alignment);
-
 // Date reactive bindings (using WuiDate FFI representation)
 use crate::components::form::{WuiDate, WuiDateTime};
 use jiff::civil::{Date, DateTime};
-ffi_reactive!(Date, WuiDate, date);
-ffi_reactive!(DateTime, WuiDateTime, date_time);
+ffi_binding!(DateTime, WuiDateTime, date_time);
+#[cfg(feature = "c-api")]
+ffi_watcher!(DateTime, WuiDateTime, date_time);
 ffi_reactive!(Vec<Date>, WuiArray<WuiDate>, date_vec);
-
-ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
 
 pub struct WuiWatcher<T: IntoFFI>(watcher::Watcher<T>);
 
@@ -774,17 +715,21 @@ impl<T: IntoFFI> WuiWatcher<T> {
         }
         let cleaner = Cleaner { data, drop };
         WuiWatcher(Rc::new(move |ctx| {
-            let _ = &cleaner; // Closure captures cleaner to ensure it lives as long as the watcher.
             let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
             let value = ctx.into_value();
             unsafe {
-                call(data, value.into_ffi(), metadata.into_ffi());
+                call(cleaner.data, value.into_ffi(), metadata.into_ffi());
             }
         }))
     }
 
-    pub fn call(&self, value: T, metadata: Metadata) {
-        (self.0)(Context::new(value, metadata));
+    pub(crate) fn into_inner(self) -> Watcher<T> {
+        self.0
+    }
+
+    pub(crate) fn call(&self, value: T, metadata: Metadata) {
+        let watcher = Rc::clone(&self.0);
+        watcher(Context::new(value, metadata));
     }
 }
 
@@ -823,6 +768,7 @@ pub extern "C" fn waterui_new_watcher_guard(
 
 // Custom Secure binding implementation
 // Secure uses WuiStr for FFI, but converts to/from Secure on the Rust side
+#[cfg(feature = "c-api")]
 use waterui_form::secure::Secure;
 
 /// Reads the current value from a Secure binding
@@ -865,26 +811,16 @@ pub unsafe extern "C" fn waterui_watch_binding_secure(
     binding: *const WuiBinding<Secure>,
     watcher: *mut WuiWatcher<Secure>,
 ) -> *mut WuiWatcherGuard {
-    use alloc::rc::Rc;
-    use core::cell::Cell;
     use waterui::Signal;
 
-    // Filter out synchronous callbacks during setup to prevent re-entrancy deadlocks
-    let is_setting_up = Rc::new(Cell::new(true));
-    let is_setting_up_clone = is_setting_up.clone();
-
     unsafe {
-        // Take ownership of the watcher - it will be dropped when the guard drops
-        let watcher = Box::from_raw(watcher);
+        let watcher = (*Box::from_raw(watcher)).into_inner();
         let guard = (*binding).watch(move |ctx| {
-            if is_setting_up_clone.get() {
-                return; // Skip synchronous callback during setup
-            }
             let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
             let value = ctx.into_value();
-            watcher.call(value, metadata);
+            let callback = Rc::clone(&watcher);
+            callback(Context::new(value, metadata));
         });
-        is_setting_up.set(false);
         guard.into_ffi()
     }
 }

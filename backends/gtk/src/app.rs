@@ -5,17 +5,16 @@ use std::future::Future;
 use executor_core::{
     LocalExecutor,
     async_task::{self, AsyncTask, Runnable},
-    try_init_global_executor, try_init_local_executor,
+    spawn_local, try_init_global_executor, try_init_local_executor,
 };
 use gtk4::Application;
 use gtk4::prelude::*;
-use nami::Signal;
 use native_executor::NativeExecutor;
 use waterui::app::App;
 use waterui_core::{Environment, View};
 
 use crate::renderer::GtkRenderer;
-use crate::util::store_watcher_guards;
+use crate::util::{store_watcher_guards, subscribe_then_get};
 use crate::webview::ensure_webview_controller;
 use crate::window::{apply_window_background, create_window};
 
@@ -79,13 +78,21 @@ impl GtkApp {
 
         self.app.connect_activate(move |app| {
             init_main_thread_executors();
-            let window = create_window(app, "WaterUI App", 800, 600);
-
-            let mut renderer = GtkRenderer::new();
-            let widget = renderer.render(view.clone(), &env);
-
-            window.set_child(Some(&widget));
-            window.present();
+            let app = app.clone();
+            let view = view.clone();
+            let mut env = env.clone();
+            spawn_local(async move {
+                let runtime = waterui_graphics::GpuRuntime::new()
+                    .await
+                    .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
+                env.insert(runtime);
+                let window = create_window(&app, "WaterUI App", 800, 600);
+                let mut renderer = GtkRenderer::new();
+                let widget = renderer.render(view, &env);
+                window.set_child(Some(&widget));
+                window.present();
+            })
+            .detach();
         });
 
         self.app.run().into()
@@ -108,29 +115,38 @@ impl GtkApp {
 
         self.app.connect_activate(move |app| {
             init_main_thread_executors();
+            let app = app.clone();
             let content = content.build();
+            let title = title.clone();
+            let background = background.clone();
+            let mut env = env.clone();
+            spawn_local(async move {
+                let runtime = waterui_graphics::GpuRuntime::new()
+                    .await
+                    .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
+                env.insert(runtime);
+                let window = create_window(&app, "", 800, 600);
+                apply_window_background(&window, &background, &env);
 
-            let initial_title: String = title.get().as_str().to_owned();
-            let window = create_window(app, &initial_title, 800, 600);
-            apply_window_background(&window, &background, &env);
-
-            let title_guard = title.watch({
-                let window = window.clone();
-                move |ctx| {
-                    let title_text = ctx.into_value().as_str().to_owned();
+                let (initial_title, title_guard) = subscribe_then_get(&title, {
                     let window = window.clone();
-                    glib::idle_add_local_once(move || {
-                        window.set_title(Some(&title_text));
-                    });
-                }
-            });
-            store_watcher_guards(&window, vec![title_guard]);
+                    move |ctx| {
+                        let title_text = ctx.into_value().as_str().to_owned();
+                        let window = window.clone();
+                        glib::idle_add_local_once(move || {
+                            window.set_title(Some(&title_text));
+                        });
+                    }
+                });
+                window.set_title(Some(initial_title.as_str()));
+                store_watcher_guards(&window, vec![title_guard]);
 
-            let mut renderer = GtkRenderer::new();
-            let widget = renderer.render_any(content, &env);
-
-            window.set_child(Some(&widget));
-            window.present();
+                let mut renderer = GtkRenderer::new();
+                let widget = renderer.render_any(content, &env);
+                window.set_child(Some(&widget));
+                window.present();
+            })
+            .detach();
         });
 
         self.app.run().into()

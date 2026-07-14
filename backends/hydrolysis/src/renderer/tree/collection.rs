@@ -26,9 +26,7 @@ impl EntryPhase {
         match self {
             Self::Stable => 1.0,
             Self::Entering(start) => animation.progress(now.saturating_duration_since(start)),
-            Self::Exiting(start) => {
-                1.0 - animation.progress(now.saturating_duration_since(start))
-            }
+            Self::Exiting(start) => 1.0 - animation.progress(now.saturating_duration_since(start)),
         }
     }
 
@@ -112,11 +110,11 @@ pub(super) fn collection_transition_runtime(
     let axis = lazy_stack_axis_config(layout).map(|config| match config {
         LazyStackAxisConfig::Vertical { spacing, .. } => TransitionAxis {
             vertical: true,
-            spacing,
+            spacing: f64::from(spacing.get()),
         },
         LazyStackAxisConfig::Horizontal { spacing, .. } => TransitionAxis {
             vertical: false,
-            spacing,
+            spacing: f64::from(spacing.get()),
         },
     });
     Some(CollectionTransitionRuntime {
@@ -162,14 +160,9 @@ pub(crate) struct CollectionNode {
     /// Set by the membership watcher; consumed by `patch` to trigger a reconcile.
     pub(super) dirty: Rc<Cell<bool>>,
     /// Stable allocation whose address is this collection's patch dirty-key.
-    #[allow(
-        dead_code,
-        reason = "pins the dirty-key address for the node's lifetime"
-    )]
-    pub(super) dirty_key: Rc<()>,
+    pub(super) _dirty_key: Rc<()>,
     /// Membership-change watcher; a change sets `dirty` and schedules a refresh.
-    #[allow(dead_code, reason = "keeps the membership watcher subscription alive")]
-    pub(super) guard: BoxWatcherGuard,
+    pub(super) _guard: BoxWatcherGuard,
 }
 
 pub(crate) struct LazyStackNode {
@@ -191,15 +184,10 @@ pub(crate) struct LazyStackNode {
     pub(super) estimate: Cell<f64>,
     /// Stable allocation whose address is this collection's patch dirty-key,
     /// owned so the key cannot be reused by another allocation while it lives.
-    #[allow(
-        dead_code,
-        reason = "pins the dirty-key address for the node's lifetime"
-    )]
-    pub(super) dirty_key: Rc<()>,
+    pub(super) _dirty_key: Rc<()>,
     /// Membership-change watcher: a change schedules a window refresh, which
     /// re-resolves the visible window (the collection `len`/items are re-read).
-    #[allow(dead_code, reason = "keeps the membership watcher subscription alive")]
-    pub(super) guard: BoxWatcherGuard,
+    pub(super) _guard: BoxWatcherGuard,
 }
 
 impl CollectionNode {
@@ -482,9 +470,8 @@ impl CollectionNode {
                 next.extend(dead.into_iter().map(begin_exit));
             }
         }
-        // Any departed entries anchored to a live id that did not reappear
-        // (defensive ordering only — the anchor was live a moment ago): keep
-        // them so their fade-out still completes rather than popping.
+        // Entries whose anchor departed in the same update continue their exit
+        // animation after the remaining live entries.
         next.extend(dead_after.into_values().flatten().map(begin_exit));
         self.entries = next;
     }
@@ -535,9 +522,9 @@ fn place_on_axis(rect: Rect, axis: TransitionAxis, main_position: f32) -> Rect {
 
 impl LazyStackNode {
     fn spacing(&self) -> f64 {
-        match self.axis {
+        match &self.axis {
             LazyStackAxisConfig::Vertical { spacing, .. }
-            | LazyStackAxisConfig::Horizontal { spacing, .. } => spacing,
+            | LazyStackAxisConfig::Horizontal { spacing, .. } => f64::from(spacing.get()),
         }
     }
 
@@ -557,7 +544,7 @@ impl LazyStackNode {
         let bound = RefCell::new(&mut *state);
         let subview = HydroSubview::from_view(&view, &bound, &self.env);
         #[allow(clippy::cast_possible_truncation)]
-        let proposal = match self.axis {
+        let proposal = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => ProposalSize::new(Some(cross as f32), None),
             LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(None, Some(cross as f32)),
         };
@@ -565,7 +552,7 @@ impl LazyStackNode {
     }
 
     fn main_extent(&self, size: Size) -> f64 {
-        match self.axis {
+        match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => f64::from(size.height),
             LazyStackAxisConfig::Horizontal { .. } => f64::from(size.width),
         }
@@ -597,13 +584,13 @@ impl LazyStackNode {
         if count == 0 {
             return ViewDimensions::new(Size::zero());
         }
-        let cross = match self.axis {
+        let cross = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => proposal.width.unwrap_or(0.0),
             LazyStackAxisConfig::Horizontal { .. } => proposal.height.unwrap_or(0.0),
         };
         self.ensure_estimate(state, f64::from(cross));
         let main = self.content_main_extent(count) as f32;
-        let size = match self.axis {
+        let size = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => Size::new(cross, main),
             LazyStackAxisConfig::Horizontal { .. } => Size::new(main, cross),
         };
@@ -623,7 +610,7 @@ impl LazyStackNode {
         if count == 0 {
             return;
         }
-        let cross = match self.axis {
+        let cross = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => ctx.bounds.width(),
             LazyStackAxisConfig::Horizontal { .. } => ctx.bounds.height(),
         };
@@ -635,7 +622,7 @@ impl LazyStackNode {
             .last()
             .copied()
             .unwrap_or(ctx.bounds);
-        let (visible_start, visible_end) = match self.axis {
+        let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => (visible.y0, visible.y1),
             LazyStackAxisConfig::Horizontal { .. } => (visible.x0, visible.x1),
         };
@@ -657,8 +644,8 @@ impl LazyStackNode {
         let mut cursor = window.leading_offset;
         for index in window.start..window.end {
             let (size, stretch) = self.measure_item(&mut renderer.state, index, cross);
-            let child_rect = place_lazy_stack_item(self.axis, stretch, size, ctx.bounds, cursor);
-            let extent = match self.axis {
+            let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds, cursor);
+            let extent = match &self.axis {
                 LazyStackAxisConfig::Vertical { .. } => child_rect.height(),
                 LazyStackAxisConfig::Horizontal { .. } => child_rect.width(),
             };

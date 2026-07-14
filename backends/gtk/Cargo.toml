@@ -30,6 +30,7 @@ waterui-webview.workspace = true
 nami.workspace = true
 tracing.workspace = true
 executor-core.workspace = true
+futures.workspace = true
 native-executor.workspace = true
 
 gtk4 = { workspace = true, features = ["v4_6"] }
@@ -44,7 +45,6 @@ serde_json = "1.0"
 wgpu.workspace = true
 glow = "0.16"
 libloading = "0.9"
-pollster.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"

@@ -97,8 +97,6 @@ text("Highlighted")
 
 ### Reactive Text with Formatting
 
-From `/Users/lexoliu/Coding/waterui/examples/form/src/lib.rs`:
-
 ```rust
 use waterui::prelude::*;
 use waterui::reactive::binding;
@@ -117,8 +115,6 @@ vstack((
 
 ### Markdown Rendering
 
-From `/Users/lexoliu/Coding/waterui/examples/markdown/src/lib.rs`:
-
 ```rust
 use waterui::prelude::*;
 
@@ -127,18 +123,17 @@ fn main() -> impl View {
 }
 ```
 
-### Custom Formatting with Locales
+### Localized Text
 
 ```rust
-use waterui_text::{Text, locale::{DateFormatter, Locale}};
-use jiff::civil::Date;
+use waterui_text::Text;
 
-// Create a date formatter respecting locale
-let formatter = DateFormatter { locale: Locale("en-US".into()) };
-let date = binding(Date::new(2025, 1, 1).unwrap());
+// Static keys resolve through the environment's translation catalog and
+// update when the native platform locale changes.
+let title = Text::localized("settings.title");
 
-// Format date with custom formatter
-let formatted = Text::format(date, formatter);
+// Runtime strings remain verbatim.
+let server_message = Text::verbatim(message);
 ```
 
 ### Styled Text Construction
@@ -216,9 +211,9 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 
 ### Localization
 
-- `Formatter<T>` - Trait for locale-aware formatting
-- `DateFormatter` - Date formatting with locale support
-- `Locale` - Locale identifier wrapper
+- `Text::localized(key)` - Resolve a static translation key reactively
+- `Text::localized_with(resolver)` - Build locale-aware text configuration
+- `Formatter<T>` and `Text::format` - Format reactive values without rebuilding a view
 
 ## Features
 

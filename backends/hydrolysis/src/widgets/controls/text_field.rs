@@ -1,11 +1,10 @@
 use crate::animation::AnimationKey;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview,
-    TextInputModel, TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext,
-    clamp_to_char_boundary, measure_secure_field_intrinsic,
-    measure_secure_field_intrinsic_with_label_size, measure_text_field_intrinsic,
-    measure_text_field_intrinsic_with_label_size, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel,
+    TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
+    measure_secure_field_intrinsic, measure_secure_field_intrinsic_with_label_size,
+    measure_text_field_intrinsic, measure_text_field_intrinsic_with_label_size, transformed_rect,
 };
 use core::num::NonZeroUsize;
 use nami::Signal;
@@ -214,12 +213,11 @@ pub(crate) fn render_text_field_parts(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _, _) =
-        ctx.renderer_mut().bind_focused_interaction_target(
-            transformed_rect(hit_transform, field_rect),
-            env,
-            is_focused,
-        );
+    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_interaction_target(
+        transformed_rect(hit_transform, field_rect),
+        env,
+        is_focused,
+    );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
         let mut draw = ctx.draw_context();
@@ -482,12 +480,11 @@ pub(crate) fn render_secure_field_parts(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _, _) =
-        ctx.renderer_mut().bind_focused_interaction_target(
-            transformed_rect(hit_transform, field_rect),
-            env,
-            is_focused,
-        );
+    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_interaction_target(
+        transformed_rect(hit_transform, field_rect),
+        env,
+        is_focused,
+    );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
         let mut draw = ctx.draw_context();
@@ -742,9 +739,10 @@ fn flush_material_label(
     let size = LayoutSize::new(width as f32, height as f32);
     // The label's semantics are merged into the field's own text-input node, so
     // the floating label sub-view flushes visual-only.
-    ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-        label_view.flush_in_ctx(renderer, child, env, size);
-    });
+    ctx.renderer_mut()
+        .with_suppressed_accessibility(|renderer| {
+            label_view.flush_in_ctx(renderer, child, env, size);
+        });
 }
 
 fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {

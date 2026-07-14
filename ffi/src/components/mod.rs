@@ -21,15 +21,18 @@ mod visual;
 pub use controls::{button, form, progress};
 pub use data::map;
 pub use data::map::{WuiAnnotation, WuiCoordinate, WuiRegion};
-pub use layouting::{layout, lazy, list, table};
+#[cfg(feature = "c-api")]
+pub use layouting::table;
+pub use layouting::{layout, lazy, list};
 pub use media::video;
 pub use nav::navigation;
 pub use platform::{dynamic, icon, webview};
 pub use typography::text;
-#[cfg(target_os = "android")]
-pub(crate) use visual::android_ahb;
-pub(crate) use visual::pixel_upload;
-pub use visual::{applied_filter, gpu_surface, view_effect, view_renderer};
+#[cfg(feature = "android-jni")]
+pub(crate) use visual::gpu_runtime;
+#[cfg(feature = "c-api")]
+pub use visual::{applied_filter, view_effect};
+pub use visual::{gpu_surface, view_renderer};
 
 /// Returns the type ID for empty views as a 128-bit value.
 #[unsafe(no_mangle)]

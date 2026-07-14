@@ -187,7 +187,7 @@ mod tests {
     use waterui::theme::{ColorScheme, current_color_scheme, installed_color_signal};
 
     use super::*;
-    use crate::{MaterialColorMode, install_with_colors};
+    use crate::{MaterialColorMode, install, install_with_colors};
 
     fn assert_resolved_color_eq(actual: ResolvedColor, expected: ResolvedColor) {
         assert_eq!(actual.red.to_bits(), expected.red.to_bits());
@@ -273,6 +273,20 @@ mod tests {
     }
 
     #[test]
+    fn defaults_install_a_light_scheme_on_an_empty_environment() {
+        let mut env = Environment::new();
+        install(&mut env);
+
+        assert_eq!(current_color_scheme(&env).get(), ColorScheme::Light);
+        assert_resolved_color_eq(
+            installed_color_signal::<theme_color::Accent>(&env)
+                .expect("default accent token should be installed")
+                .get(),
+            MaterialColorScheme::baseline_light().primary.resolved(),
+        );
+    }
+
+    #[test]
     fn custom_seed_roles_drive_waterui_theme_tokens() {
         let scheme = MaterialColorScheme::from_seed(
             Argb::from_rgb(0x00, 0x6a, 0x6a),
@@ -287,6 +301,24 @@ mod tests {
                 .expect("accent token should be installed")
                 .get(),
             scheme.primary.resolved(),
+        );
+        assert_resolved_color_eq(
+            installed_color_signal::<theme_color::AccentContainer>(&env)
+                .expect("accent-container token should be installed")
+                .get(),
+            scheme.primary_container.resolved(),
+        );
+        assert_resolved_color_eq(
+            installed_color_signal::<theme_color::Tertiary>(&env)
+                .expect("tertiary token should be installed")
+                .get(),
+            scheme.tertiary.resolved(),
+        );
+        assert_resolved_color_eq(
+            installed_color_signal::<theme_color::TertiaryContainer>(&env)
+                .expect("tertiary-container token should be installed")
+                .get(),
+            scheme.tertiary_container.resolved(),
         );
         assert_resolved_color_eq(
             installed_color_signal::<theme_color::Surface>(&env)

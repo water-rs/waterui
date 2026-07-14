@@ -1,53 +1,62 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    reason = "intentional lossy numeric cast in rendering/layout code"
-)]
-#![allow(
-    dead_code,
-    reason = "the encase `ShaderType` derive on `Uniforms` emits a compile-time `check` fn that is never called"
-)]
 use crate::audio::{AudioCapture, SAMPLES_COUNT};
 use crate::theme::WaveformTheme;
-use encase::{ShaderSize, ShaderType, UniformBuffer};
+use encase::{ShaderSize, UniformBuffer};
+use num_traits::ToPrimitive;
 use std::borrow::Cow;
 use waterui_core::{
-    Binding, IntoSignal, IntoSignalF32, Signal, binding, env::Environment, view::View,
+    Computed, IntoSignal, IntoSignalF32, Signal, SignalExt,
+    env::Environment,
+    reactive::{signal::IntoComputed, watcher::BoxWatcherGuard},
+    view::View,
 };
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, color::Color};
+use waterui_graphics::{
+    GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, gpu_surface::RedrawHandle,
+    reactive_color::ReactiveColor,
+};
 
 /// Resolved configuration for GPU rendering.
 #[derive(Debug, Clone, Copy)]
-pub struct ResolvedWaveform {
-    pub bg_color: [f32; 3],
-    pub line_color: [f32; 3],
-    pub glow_color: [f32; 3],
-    pub line_width: f32,
-    pub glow_intensity: f32,
-    pub sensitivity: f64,
+struct ResolvedWaveform {
+    bg_color: [f32; 3],
+    line_color: [f32; 3],
+    glow_color: [f32; 3],
+    line_width: f32,
+    glow_intensity: f32,
+    sensitivity: f64,
 }
 
-/// Uniform buffer struct for waveform visualizer.
-/// Uses encase for automatic WGSL-compatible alignment.
-#[derive(Copy, Clone, Debug, ShaderType)]
-struct Uniforms {
-    /// Viewport resolution [width, height].
-    resolution: glam::Vec2,
-    /// Elapsed time in seconds.
-    time: f32,
-    /// Sensitivity (amplitude multiplier).
-    sensitivity: f32,
-    /// Background color in linear RGB.
-    bg_color: glam::Vec3,
-    /// Line width in pixels.
-    line_width: f32,
-    /// Glow intensity (0.0 to 1.0).
-    glow_intensity: f32,
-    /// Line color in linear RGB.
-    line_color: glam::Vec3,
-    /// Glow color in linear RGB.
-    glow_color: glam::Vec3,
+mod shader_types {
+    #![expect(
+        dead_code,
+        reason = "encase ShaderType derive emits layout check helpers"
+    )]
+
+    use encase::ShaderType;
+
+    /// Uniform buffer struct for waveform visualizer.
+    /// Uses encase for automatic WGSL-compatible alignment.
+    #[derive(Copy, Clone, Debug, ShaderType)]
+    pub(super) struct Uniforms {
+        /// Viewport resolution [width, height].
+        pub(super) resolution: glam::Vec2,
+        /// Elapsed time in seconds.
+        pub(super) time: f32,
+        /// Sensitivity (amplitude multiplier).
+        pub(super) sensitivity: f32,
+        /// Background color in linear RGB.
+        pub(super) bg_color: glam::Vec3,
+        /// Line width in pixels.
+        pub(super) line_width: f32,
+        /// Glow intensity (0.0 to 1.0).
+        pub(super) glow_intensity: f32,
+        /// Line color in linear RGB.
+        pub(super) line_color: glam::Vec3,
+        /// Glow color in linear RGB.
+        pub(super) glow_color: glam::Vec3,
+    }
 }
+
+use shader_types::Uniforms;
 
 /// A real-time waveform oscilloscope visualizer.
 ///
@@ -68,8 +77,13 @@ struct Uniforms {
 #[derive(Clone, Debug)]
 #[must_use = "a `Waveform` does nothing unless it is rendered as part of a view"]
 pub struct Waveform {
-    theme: Binding<WaveformTheme>,
-    sensitivity: Binding<f64>,
+    theme: Computed<WaveformTheme>,
+    sensitivity: Computed<f64>,
+    bg_color: Option<Computed<Color>>,
+    line_color: Option<Computed<Color>>,
+    glow_color: Option<Computed<Color>>,
+    line_width: Option<Computed<f32>>,
+    glow_intensity: Option<Computed<f32>>,
     capture: AudioCapture,
 }
 
@@ -77,8 +91,13 @@ impl Waveform {
     /// Create a new Waveform visualizer.
     pub fn new(capture: AudioCapture) -> Self {
         Self {
-            theme: binding(WaveformTheme::default()),
-            sensitivity: binding(1.0),
+            theme: Computed::constant(WaveformTheme::default()),
+            sensitivity: Computed::constant(1.0),
+            bg_color: None,
+            line_color: None,
+            glow_color: None,
+            line_width: None,
+            glow_intensity: None,
             capture,
         }
     }
@@ -92,87 +111,71 @@ impl Waveform {
     }
 
     /// Set the visual theme.
-    pub fn theme(self, theme: impl Into<Binding<WaveformTheme>>) -> Self {
-        Self {
-            theme: theme.into(),
-            ..self
-        }
+    pub fn theme(mut self, theme: impl IntoComputed<WaveformTheme>) -> Self {
+        self.theme = theme.into_computed();
+        self
     }
 
     /// Set the sensitivity (amplitude multiplier).
-    pub fn sensitivity(self, sensitivity: impl Into<Binding<f64>>) -> Self {
-        Self {
-            sensitivity: sensitivity.into(),
-            ..self
-        }
+    pub fn sensitivity(mut self, sensitivity: impl IntoComputed<f64>) -> Self {
+        self.sensitivity = sensitivity.into_computed();
+        self
     }
 
     /// Set the background color.
-    pub fn bg_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
-        let color = color.into_signal().get();
-        let mut theme = self.theme.get();
-        theme.bg_color = color;
-        self.theme.set(theme);
+    pub fn bg_color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.bg_color = Some(color.into_signal().computed());
         self
     }
 
     /// Set the primary line color.
-    pub fn line_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
-        let color = color.into_signal().get();
-        let mut theme = self.theme.get();
-        theme.line_color = color;
-        self.theme.set(theme);
+    pub fn line_color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.line_color = Some(color.into_signal().computed());
         self
     }
 
     /// Set the glow color.
-    pub fn glow_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
-        let color = color.into_signal().get();
-        let mut theme = self.theme.get();
-        theme.glow_color = color;
-        self.theme.set(theme);
+    pub fn glow_color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.glow_color = Some(color.into_signal().computed());
         self
     }
 
     /// Set the line width.
-    pub fn line_width(self, width: impl IntoSignalF32 + 'static) -> Self {
-        let width = width.into_signal_f32().get();
-        let mut theme = self.theme.get();
-        theme.line_width = width;
-        self.theme.set(theme);
+    pub fn line_width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
+        self.line_width = Some(width.into_signal_f32().computed());
         self
     }
 
     /// Set the glow intensity (0.0 to 1.0).
-    pub fn glow(self, intensity: impl IntoSignalF32 + 'static) -> Self {
-        let intensity = intensity.into_signal_f32().get();
-        let mut theme = self.theme.get();
-        theme.glow_intensity = intensity;
-        self.theme.set(theme);
+    pub fn glow(mut self, intensity: impl IntoSignalF32 + 'static) -> Self {
+        self.glow_intensity = Some(intensity.into_signal_f32().computed());
         self
     }
 }
 
 impl View for Waveform {
     fn body(self, env: &Environment) -> impl View {
-        let theme = self.theme.get();
-        let sensitivity = self.sensitivity.get();
-
-        // Resolve colors
-        let bg_rgb = theme.bg_color.resolve(env).get().linear_with_headroom();
-        let line_rgb = theme.line_color.resolve(env).get().linear_with_headroom();
-        let glow_rgb = theme.glow_color.resolve(env).get().linear_with_headroom();
-
-        let resolved = ResolvedWaveform {
-            bg_color: bg_rgb,
-            line_color: line_rgb,
-            glow_color: glow_rgb,
-            line_width: theme.line_width,
-            glow_intensity: theme.glow_intensity,
+        let Self {
+            theme,
             sensitivity,
-        };
-
-        GpuSurface::new(WaveformRenderer::new(resolved, self.capture))
+            bg_color,
+            line_color,
+            glow_color,
+            line_width,
+            glow_intensity,
+            capture,
+        } = self;
+        let config = ReactiveWaveform::new(
+            &theme,
+            sensitivity,
+            bg_color,
+            line_color,
+            glow_color,
+            line_width,
+            glow_intensity,
+            env,
+        );
+        GpuSurface::new(WaveformRenderer::new(config, capture))
     }
 }
 
@@ -180,19 +183,93 @@ impl View for Waveform {
 // Internal Renderer
 // ----------------------------------------------------------------------------
 
+struct ReactiveWaveform {
+    bg_color: ReactiveColor,
+    line_color: ReactiveColor,
+    glow_color: ReactiveColor,
+    line_width: Computed<f32>,
+    glow_intensity: Computed<f32>,
+    sensitivity: Computed<f64>,
+    watcher_guards: Vec<BoxWatcherGuard>,
+}
+
+impl ReactiveWaveform {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the complete waveform style signal set"
+    )]
+    fn new(
+        theme: &Computed<WaveformTheme>,
+        sensitivity: Computed<f64>,
+        bg_color: Option<Computed<Color>>,
+        line_color: Option<Computed<Color>>,
+        glow_color: Option<Computed<Color>>,
+        line_width: Option<Computed<f32>>,
+        glow_intensity: Option<Computed<f32>>,
+        env: &Environment,
+    ) -> Self {
+        let bg_color = bg_color.unwrap_or_else(|| theme.map(|value| value.bg_color).computed());
+        let line_color =
+            line_color.unwrap_or_else(|| theme.map(|value| value.line_color).computed());
+        let glow_color =
+            glow_color.unwrap_or_else(|| theme.map(|value| value.glow_color).computed());
+        let line_width =
+            line_width.unwrap_or_else(|| theme.map(|value| value.line_width).computed());
+        let glow_intensity =
+            glow_intensity.unwrap_or_else(|| theme.map(|value| value.glow_intensity).computed());
+
+        Self {
+            bg_color: ReactiveColor::new(&bg_color, env),
+            line_color: ReactiveColor::new(&line_color, env),
+            glow_color: ReactiveColor::new(&glow_color, env),
+            line_width,
+            glow_intensity,
+            sensitivity,
+            watcher_guards: Vec::new(),
+        }
+    }
+
+    fn install(&mut self, redraw: &RedrawHandle) {
+        self.bg_color.install(redraw);
+        self.line_color.install(redraw);
+        self.glow_color.install(redraw);
+        self.watcher_guards = vec![
+            redraw_on_change(&self.line_width, redraw),
+            redraw_on_change(&self.glow_intensity, redraw),
+            redraw_on_change(&self.sensitivity, redraw),
+        ];
+    }
+
+    fn get(&self) -> ResolvedWaveform {
+        ResolvedWaveform {
+            bg_color: self.bg_color.get().linear_with_headroom(),
+            line_color: self.line_color.get().linear_with_headroom(),
+            glow_color: self.glow_color.get().linear_with_headroom(),
+            line_width: self.line_width.get(),
+            glow_intensity: self.glow_intensity.get(),
+            sensitivity: self.sensitivity.get(),
+        }
+    }
+}
+
+fn redraw_on_change<T: 'static>(signal: &Computed<T>, redraw: &RedrawHandle) -> BoxWatcherGuard {
+    let redraw = redraw.clone();
+    signal.watch(move |_| redraw.request_redraw())
+}
+
 struct WaveformRenderer {
-    config: ResolvedWaveform,
+    config: ReactiveWaveform,
     capture: AudioCapture,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     samples_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
-    start_time: std::time::Instant,
-    smoothed_samples: Vec<f32>,
+    smoothed_samples: Box<[f32; SAMPLES_COUNT]>,
+    uniform_data: UniformBuffer<Vec<u8>>,
 }
 
 impl WaveformRenderer {
-    fn new(config: ResolvedWaveform, capture: AudioCapture) -> Self {
+    fn new(config: ReactiveWaveform, capture: AudioCapture) -> Self {
         Self {
             config,
             capture,
@@ -200,8 +277,8 @@ impl WaveformRenderer {
             uniform_buffer: None,
             samples_buffer: None,
             bind_group: None,
-            start_time: std::time::Instant::now(),
-            smoothed_samples: vec![0.0; SAMPLES_COUNT],
+            smoothed_samples: Box::new([0.0; SAMPLES_COUNT]),
+            uniform_data: UniformBuffer::new(Vec::new()),
         }
     }
 }
@@ -211,12 +288,14 @@ impl GpuView for WaveformRenderer {
         clippy::future_not_send,
         reason = "GpuView runs on the render thread; this future borrows the non-Send `GpuContext`/`Environment`"
     )]
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "linear GPU pipeline and resource setup reads clearest as one sequence"
     )]
     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        let device = &ctx.device;
+        self.capture.activate();
+        self.config.install(&ctx.redraw_handle);
+        let device = ctx.device;
 
         // 1. Create Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -233,7 +312,8 @@ impl GpuView for WaveformRenderer {
             mapped_at_creation: false,
         });
 
-        let samples_size = (SAMPLES_COUNT * std::mem::size_of::<f32>()) as u64;
+        let samples_size = u64::try_from(SAMPLES_COUNT * std::mem::size_of::<f32>())
+            .expect("waveform sample buffer size must fit into u64");
         let samples_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Audio Samples Buffer"),
             size: samples_size,
@@ -308,7 +388,7 @@ impl GpuView for WaveformRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: ctx.pipeline_cache,
         });
 
         // 4. Create Bind Group
@@ -334,53 +414,69 @@ impl GpuView for WaveformRenderer {
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        let (Some(pipeline), Some(bind_group), Some(uniform_buffer), Some(samples_buffer)) = (
-            &self.pipeline,
-            &self.bind_group,
-            &self.uniform_buffer,
-            &self.samples_buffer,
-        ) else {
-            return;
-        };
+        let pipeline = self
+            .pipeline
+            .as_ref()
+            .expect("waveform pipeline must exist before render");
+        let bind_group = self
+            .bind_group
+            .as_ref()
+            .expect("waveform bind group must exist before render");
+        let uniform_buffer = self
+            .uniform_buffer
+            .as_ref()
+            .expect("waveform uniform buffer must exist before render");
+        let samples_buffer = self
+            .samples_buffer
+            .as_ref()
+            .expect("waveform samples buffer must exist before render");
+
+        let config = self.config.get();
 
         // 1. Update Audio Samples with Smoothing
         {
-            if let Ok(audio_samples) = self.capture.samples.lock() {
-                let smoothing_factor = 0.3;
-                for (i, &sample) in audio_samples.iter().enumerate() {
-                    if i < SAMPLES_COUNT {
-                        self.smoothed_samples[i] +=
-                            (sample - self.smoothed_samples[i]) * smoothing_factor;
-                    }
-                }
+            let audio_samples = self.capture.samples();
+            let smoothing_factor = 0.3;
+            for (smoothed, sample) in self.smoothed_samples.iter_mut().zip(audio_samples.iter()) {
+                *smoothed += (*sample - *smoothed) * smoothing_factor;
             }
-
-            frame.queue.write_buffer(
-                samples_buffer,
-                0,
-                bytemuck::cast_slice(&self.smoothed_samples),
-            );
         }
+        frame.queue.write_buffer(
+            samples_buffer,
+            0,
+            bytemuck::cast_slice(self.smoothed_samples.as_slice()),
+        );
 
         // 2. Update Uniforms using encase
-        let time = self.start_time.elapsed().as_secs_f32();
         let uniforms = Uniforms {
-            resolution: glam::Vec2::new(frame.width as f32, frame.height as f32),
-            time,
-            sensitivity: self.config.sensitivity as f32,
-            bg_color: glam::Vec3::from_array(self.config.bg_color),
-            line_width: self.config.line_width,
-            glow_intensity: self.config.glow_intensity,
-            line_color: glam::Vec3::from_array(self.config.line_color),
-            glow_color: glam::Vec3::from_array(self.config.glow_color),
+            resolution: glam::Vec2::new(
+                frame
+                    .width
+                    .to_f32()
+                    .expect("waveform width must be representable as f32"),
+                frame
+                    .height
+                    .to_f32()
+                    .expect("waveform height must be representable as f32"),
+            ),
+            time: frame.elapsed().as_secs_f32(),
+            sensitivity: config
+                .sensitivity
+                .to_f32()
+                .expect("waveform sensitivity must be representable as f32"),
+            bg_color: glam::Vec3::from_array(config.bg_color),
+            line_width: config.line_width,
+            glow_intensity: config.glow_intensity,
+            line_color: glam::Vec3::from_array(config.line_color),
+            glow_color: glam::Vec3::from_array(config.glow_color),
         };
-        let mut uniform_data = UniformBuffer::new(Vec::new());
-        uniform_data
+        self.uniform_data.as_mut().clear();
+        self.uniform_data
             .write(&uniforms)
             .expect("Failed to write uniform buffer");
         frame
             .queue
-            .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
+            .write_buffer(uniform_buffer, 0, self.uniform_data.as_ref());
 
         // 3. Render
         let mut encoder = frame
@@ -399,9 +495,9 @@ impl GpuView for WaveformRenderer {
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             // Use background color from config
-                            r: f64::from(self.config.bg_color[0]),
-                            g: f64::from(self.config.bg_color[1]),
-                            b: f64::from(self.config.bg_color[2]),
+                            r: f64::from(config.bg_color[0]),
+                            g: f64::from(config.bg_color[1]),
+                            b: f64::from(config.bg_color[2]),
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -426,4 +522,34 @@ impl GpuView for WaveformRenderer {
 /// Convenience constructor for [`Waveform`] from an [`AudioCapture`].
 pub fn waveform(capture: AudioCapture) -> Waveform {
     Waveform::new(capture)
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{Binding, Computed, Environment, SignalExt};
+    use waterui_graphics::gpu_surface::RedrawHandle;
+
+    use super::{ReactiveWaveform, WaveformTheme};
+
+    #[test]
+    fn style_signal_change_requests_redraw() {
+        let width = Binding::f32(2.0);
+        let mut config = ReactiveWaveform::new(
+            &Computed::constant(WaveformTheme::default()),
+            Computed::constant(1.0),
+            None,
+            None,
+            None,
+            Some(width.computed()),
+            None,
+            &Environment::new(),
+        );
+        let redraw = RedrawHandle::new();
+        config.install(&redraw);
+
+        width.set(4.0);
+
+        assert!(redraw.take_dirty());
+        assert!((config.get().line_width - 4.0).abs() < f32::EPSILON);
+    }
 }

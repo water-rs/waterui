@@ -19,17 +19,17 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::any::TypeId;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::fmt;
-// Re-export so callers (lib.rs `pub use`, ffi/ crate, downstream modules)
-// continue to find these runtime types under `waterui_graphics::filter_view`.
+use core::future::Future;
+use core::pin::Pin;
+// Keep the filter authoring and runtime contracts in one public module.
+pub use filtrate::effect::EffectRedrawCallback;
 pub use filtrate::{
-    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupFuture,
-    EffectSetupResult, ErasedEffect,
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
 };
 use num_traits::ToPrimitive;
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
@@ -42,7 +42,51 @@ use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::animation::Animation as WuiAnimation;
 use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Environment, IntoSignalF32, View};
+use waterui_core::{Environment, IntoSignalF32, Metadata, View};
+
+use crate::gpu_surface::RedrawHandle;
+
+type ErasedEffectSetupFuture<'a> = Pin<Box<dyn Future<Output = EffectSetupResult> + 'a>>;
+
+trait ErasedEffect: 'static {
+    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> ErasedEffectSetupFuture<'a>;
+    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult;
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult;
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
+    fn redraw_hint(&self) -> bool;
+}
+
+impl<T: Effect> ErasedEffect for T {
+    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> ErasedEffectSetupFuture<'a> {
+        Box::pin(Effect::setup(self, ctx))
+    }
+
+    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
+        Effect::render(self, input, output)
+    }
+
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
+        Effect::encode_render(self, input, output, encoder)
+    }
+
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        Effect::output_size(self, input_width, input_height)
+    }
+
+    fn redraw_hint(&self) -> bool {
+        Effect::redraw_hint(self)
+    }
+}
 
 type ReactiveParam = Reactive<Computed<f32>>;
 type ChainedFilter<V, F, Next> = Filtered<V, FilterAdapter<Chain<F, Next>>>;
@@ -62,10 +106,10 @@ const fn temperature_tint_filter(
 
 /// Type-erased filter for FFI boundary.
 ///
-/// This wraps a `Box<dyn ErasedEffect>` and implements `MetadataKey`, allowing
-/// it to be used with the `Metadata<T>` pattern.
+/// This owns the private type-erased effect shim used by native backends.
 pub struct AppliedFilter {
     filter: Box<dyn ErasedEffect>,
+    redraw_handle: RedrawHandle,
 }
 
 impl fmt::Debug for AppliedFilter {
@@ -78,14 +122,33 @@ impl MetadataKey for AppliedFilter {}
 
 impl AppliedFilter {
     /// Create a new `AppliedFilter` from a GPU filter.
-    pub fn new<F: Effect>(filter: F) -> Self {
+    pub fn new<F: Effect>(mut filter: F) -> Self {
+        let redraw_handle = RedrawHandle::new();
+        let effect_redraw_handle = redraw_handle.clone();
+        filter.set_redraw_callback(Arc::new(move || {
+            effect_redraw_handle.request_redraw();
+        }));
         Self {
             filter: Box::new(filter),
+            redraw_handle,
         }
     }
 
+    /// Returns a clone of the handle used to wake the native renderer.
+    #[must_use]
+    pub fn redraw_handle(&self) -> RedrawHandle {
+        self.redraw_handle.clone()
+    }
+
     /// Calls `setup` on the filter, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> EffectSetupFuture<'a> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "effect setup is driven by the UI-local GPU host executor and intentionally accepts non-Send effects"
+    )]
+    pub fn setup<'a>(
+        &'a mut self,
+        ctx: &'a EffectContext<'a>,
+    ) -> impl Future<Output = EffectSetupResult> + 'a {
         self.filter.setup(ctx)
     }
 
@@ -97,7 +160,10 @@ impl AppliedFilter {
     ///
     /// Propagates the wrapped filter's render failure.
     pub fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
-        self.filter.render(input, output)
+        let _ = self.redraw_handle.take_dirty();
+        let result = self.filter.render(input, output);
+        let callback_requested_redraw = self.redraw_handle.take_dirty();
+        result.map(|needs_redraw| needs_redraw || callback_requested_redraw)
     }
 
     /// Encodes `render` into an existing command encoder.
@@ -113,7 +179,10 @@ impl AppliedFilter {
         output: &EffectOutput,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
-        self.filter.encode_render(input, output, encoder)
+        let _ = self.redraw_handle.take_dirty();
+        let result = self.filter.encode_render(input, output, encoder);
+        let callback_requested_redraw = self.redraw_handle.take_dirty();
+        result.map(|needs_redraw| needs_redraw || callback_requested_redraw)
     }
 
     /// Resolve the current output dimensions from snapped filter state.
@@ -122,29 +191,17 @@ impl AppliedFilter {
         self.filter.output_size(input_width, input_height)
     }
 
-    /// Snapshot reactive target values before render dispatch.
-    pub fn sync_targets(&mut self) {
-        self.filter.sync_targets();
-    }
-
     /// Query whether this filter needs a redraw even without layout changes.
     #[must_use]
     pub fn redraw_hint(&self) -> bool {
-        self.filter.redraw_hint()
-    }
-
-    /// Returns the concrete runtime filter type id behind this erased wrapper.
-    #[must_use]
-    pub fn concrete_type_id(&self) -> TypeId {
-        self.filter.concrete_type_id()
+        self.redraw_handle.is_dirty() || self.filter.redraw_hint()
     }
 }
 
 /// Public filter wrapper returned by `ViewExt` APIs.
 ///
-/// `Filtered` preserves the concrete content type for fluent chaining. Its `body()`
-/// erases content to [`AnyView`] and yields [`FilteredView<F>`], which is the stable
-/// backend hook node.
+/// `Filtered` preserves the concrete content type for fluent chaining and lowers
+/// directly to the backend [`AppliedFilter`] metadata node.
 pub struct Filtered<V: View, F: Effect> {
     content: V,
     filter: F,
@@ -325,66 +382,7 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
 
 impl<V: View, F: Effect> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
-        FilteredView::new(AnyView::new(self.content), self.filter)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
-}
-
-/// Stable backend hook node for filter dispatch.
-///
-/// Backends can register concrete handlers such as `FilteredView<Blur>`. If a
-/// backend does not hook this node, normal view expansion continues and falls back
-/// to `Metadata<AppliedFilter>`.
-pub struct FilteredView<F: Effect> {
-    content: AnyView,
-    filter: F,
-}
-
-impl<F: Effect> fmt::Debug for FilteredView<F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FilteredView").finish_non_exhaustive()
-    }
-}
-
-impl<F: Effect> FilteredView<F> {
-    /// Create a backend hook node with type-erased content.
-    #[must_use]
-    pub const fn new(content: AnyView, filter: F) -> Self {
-        Self { content, filter }
-    }
-
-    /// Returns a reference to the wrapped content.
-    pub const fn content(&self) -> &AnyView {
-        &self.content
-    }
-
-    /// Returns a reference to the wrapped filter.
-    #[must_use]
-    pub const fn filter(&self) -> &F {
-        &self.filter
-    }
-
-    /// Takes ownership of the wrapped content.
-    pub fn into_content(self) -> AnyView {
-        self.content
-    }
-
-    /// Takes ownership of the wrapped filter.
-    #[must_use]
-    pub fn into_filter(self) -> F {
-        self.filter
-    }
-}
-
-impl<F: Effect> View for FilteredView<F> {
-    fn body(self, env: &Environment) -> impl View {
-        // Route through the cross-platform handler registry first; the
-        // helper falls back to the wgpu `AppliedFilter` metadata path when
-        // no backend has registered a handler for `F`.
-        crate::filter_registry::lower_filtered(self.content, self.filter, env)
+        Metadata::new(self.content, AppliedFilter::new(self.filter))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -495,6 +493,11 @@ struct PlannedPass {
     kind: PlannedPassKind,
     param_offset: usize,
     param_count: usize,
+}
+
+struct FilterSetupPlan {
+    passes: Vec<PlannedPass>,
+    scratch_formats: Vec<wgpu::TextureFormat>,
 }
 
 enum CompiledPassKind {
@@ -795,7 +798,7 @@ where
         self.0.get()
     }
 
-    fn watch_animated(&self, callback: AnimatedCallback) -> Option<WatchGuard> {
+    fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
         let guard = self.0.watch(move |context| {
             let interpolator = context
                 .metadata()
@@ -809,7 +812,7 @@ where
                 interpolator,
             });
         });
-        Some(WatchGuard::new(guard))
+        WatchGuard::new(guard)
     }
 }
 
@@ -858,26 +861,27 @@ fn collect_filter_stages<F: Filter>(filter: &F) -> Vec<AtomicStage> {
 
 struct WatcherInstaller<'a> {
     sender: Sender<ParamAnimationEvent>,
-    guards: &'a mut Vec<Box<dyn core::any::Any>>,
+    redraw_callback: Arc<OnceLock<EffectRedrawCallback>>,
+    guards: &'a mut Vec<WatchGuard>,
 }
 
 impl SignalVisitor for WatcherInstaller<'_> {
     fn visit<P: FilterParam + ?Sized>(&mut self, param_index: usize, param: &P) {
         let sender = self.sender.clone();
-        if let Some(guard) = param.watch_animated(Box::new(move |target| {
-            // Only animated changes flow through the channel; plain value
-            // updates are picked up by the next `params()` snapshot at render
-            // time, matching the original Signal-based pipeline behavior.
-            if target.interpolator.is_some() {
-                let _ = sender.send(ParamAnimationEvent {
+        let redraw_callback = self.redraw_callback.clone();
+        let guard = param.watch_animated(Box::new(move |target| {
+            sender
+                .send(ParamAnimationEvent {
                     param_index,
                     target_value: target.value,
                     interpolator: target.interpolator,
-                });
+                })
+                .expect("FilterAdapter parameter event receiver dropped while watcher is active");
+            if let Some(callback) = redraw_callback.get() {
+                callback();
             }
-        })) {
-            self.guards.push(Box::new(guard));
-        }
+        }));
+        self.guards.push(guard);
     }
 }
 
@@ -899,10 +903,8 @@ impl SignalVisitor for WatcherInstaller<'_> {
 /// - **Spatial filters** (`F::COLOR_ONLY = false`): Use compute shaders with intermediate texture for HDR.
 pub struct FilterAdapter<F: Filter> {
     filter: F,
-    /// Reused parameter buffer to avoid per-frame heap allocations.
+    /// Current parameter targets delivered by reactive watcher events.
     target_params: Vec<f32>,
-    /// Scratch buffer used to snapshot signal values before diffing.
-    staged_params: Vec<f32>,
     /// True when target parameters changed since the last successful render.
     target_params_dirty: bool,
     passes: Vec<CompiledPass>,
@@ -918,10 +920,12 @@ pub struct FilterAdapter<F: Filter> {
     sampler: Option<wgpu::Sampler>,
     /// Animation state owned by the render thread.
     animation_state: SharedAnimationState,
-    /// Animation events produced by signal watchers.
+    /// Parameter watcher guards dropped before their event channel and callback.
+    _watcher_guards: Vec<WatchGuard>,
+    /// Parameter-change events, each carrying optional animation metadata.
     animation_events: Receiver<ParamAnimationEvent>,
-    /// Watcher guards to keep animation watchers alive.
-    _watcher_guards: Vec<Box<dyn core::any::Any>>,
+    /// Host wake callback shared with every parameter watcher.
+    redraw_callback: Arc<OnceLock<EffectRedrawCallback>>,
     // Scratch ping-pong textures for multi-pass.
     scratch_textures: [Option<wgpu::Texture>; 2],
     scratch_views: [Option<wgpu::TextureView>; 2],
@@ -948,6 +952,15 @@ impl<F: Filter> FilterAdapter<F> {
     #[must_use]
     pub fn new(filter: F) -> Self {
         let param_count = <F::Params as ParamArray>::LEN;
+        let (animation_events_tx, animation_events) = mpsc::channel();
+        let redraw_callback = Arc::new(OnceLock::new());
+        let mut watcher_guards = Vec::with_capacity(param_count);
+        filter.visit_signals(&mut WatcherInstaller {
+            sender: animation_events_tx,
+            redraw_callback: redraw_callback.clone(),
+            guards: &mut watcher_guards,
+        });
+
         let mut target_params = alloc::vec![0.0; param_count];
         filter.params().write_to(&mut target_params);
         let animation_state = SharedAnimationState {
@@ -963,19 +976,9 @@ impl<F: Filter> FilterAdapter<F> {
             has_active_animation: false,
             last_tick: Instant::now(),
         };
-        let staged_params = target_params.clone();
-        let (animation_events_tx, animation_events) = mpsc::channel();
-
-        let mut watcher_guards: Vec<Box<dyn core::any::Any>> = Vec::new();
-        filter.visit_signals(&mut WatcherInstaller {
-            sender: animation_events_tx,
-            guards: &mut watcher_guards,
-        });
-
         Self {
             filter,
             target_params,
-            staged_params,
             target_params_dirty: true,
             passes: Vec::new(),
             requires_scratch: false,
@@ -984,8 +987,9 @@ impl<F: Filter> FilterAdapter<F> {
             setup_error: None,
             sampler: None,
             animation_state,
-            animation_events,
             _watcher_guards: watcher_guards,
+            animation_events,
+            redraw_callback,
             scratch_textures: [None, None],
             scratch_views: [None, None],
             scratch_size: (0, 0),
@@ -1005,11 +1009,15 @@ impl<F: Filter> FilterAdapter<F> {
     /// Consecutive color-only filters will be fused into a single GPU pass.
     #[must_use]
     pub fn then<F2: Filter>(self, filter: F2) -> FilterAdapter<Chain<F, F2>> {
+        let redraw_callback = self.redraw_callback.get().cloned();
         let mut next = FilterAdapter::new(Chain {
             first: self.filter,
             second: filter,
         });
         next.hdr_policy = self.hdr_policy;
+        if let Some(redraw_callback) = redraw_callback {
+            next.install_redraw_callback(redraw_callback);
+        }
         next
     }
 
@@ -1038,6 +1046,13 @@ impl<F: Filter> FilterAdapter<F> {
         self.hdr_policy(HdrPolicy::ForceLdr)
     }
 
+    fn install_redraw_callback(&self, callback: EffectRedrawCallback) {
+        assert!(
+            self.redraw_callback.set(callback).is_ok(),
+            "FilterAdapter redraw callback must be installed exactly once before setup"
+        );
+    }
+
     fn apply_target_params_to_current_values(&mut self) {
         let param_count = self.target_params.len();
         for i in 0..param_count {
@@ -1053,16 +1068,24 @@ impl<F: Filter> FilterAdapter<F> {
 
     fn consume_animation_events(&mut self) {
         while let Ok(event) = self.animation_events.try_recv() {
-            if event.param_index >= self.animation_state.current_values.len() {
-                continue;
-            }
+            assert!(
+                event.param_index < self.animation_state.current_values.len(),
+                "FilterAdapter watcher produced out-of-range parameter index {}",
+                event.param_index
+            );
+            self.target_params[event.param_index] = event.target_value;
+            self.target_params_dirty = true;
             let entry = &mut self.animation_state.tracks[event.param_index];
             entry
                 .track
                 .set_target(event.target_value, event.interpolator);
-            entry.animated_target = Some(event.target_value);
-            self.animation_state.has_active_animation = true;
+            entry.animated_target = entry.track.is_active().then_some(event.target_value);
         }
+        self.animation_state.has_active_animation = self
+            .animation_state
+            .tracks
+            .iter()
+            .any(|entry| entry.track.is_active());
     }
 
     /// Update interpolated parameters in-place; returns whether another frame is needed.
@@ -1238,14 +1261,14 @@ impl<F: Filter> FilterAdapter<F> {
         };
     }
 
-    fn take_validation_error(device: &wgpu::Device) -> Option<wgpu::Error> {
-        crate::pop_error_scope_now(device, "filter_view::take_validation_error")
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn build_compiled_passes(
+    #[expect(
+        clippy::too_many_lines,
+        clippy::future_not_send,
+        reason = "filter pass compilation keeps one ordered device-bound resource graph on the GPU host thread"
+    )]
+    async fn build_compiled_passes(
         &mut self,
-        ctx: &EffectContext,
+        ctx: &EffectContext<'_>,
         planned: &[PlannedPass],
         scratch_format: wgpu::TextureFormat,
     ) -> Result<(), &'static str> {
@@ -1272,7 +1295,7 @@ impl<F: Filter> FilterAdapter<F> {
                 view_formats: &[],
             });
             let _ = probe.create_view(&wgpu::TextureViewDescriptor::default());
-            if Self::take_validation_error(ctx.device).is_some() {
+            if ctx.device.pop_error_scope().await.is_some() {
                 return Err("selected scratch texture format is unsupported on this device");
             }
         }
@@ -1296,7 +1319,7 @@ impl<F: Filter> FilterAdapter<F> {
                     ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
                         Self::create_color_pipeline(ctx, fragments, target_format);
-                    if Self::take_validation_error(ctx.device).is_some() {
+                    if ctx.device.pop_error_scope().await.is_some() {
                         return Err("failed to create color pipeline for selected target format");
                     }
                     self.passes.push(CompiledPass {
@@ -1330,7 +1353,7 @@ impl<F: Filter> FilterAdapter<F> {
                         scratch_format,
                         *original_input,
                     )?;
-                    if let Some(err) = Self::take_validation_error(ctx.device) {
+                    if let Some(err) = ctx.device.pop_error_scope().await {
                         tracing::error!("[Filter] spatial pipeline validation error: {err:?}");
                         return Err(
                             "failed to create spatial pipeline for selected storage format",
@@ -1382,7 +1405,7 @@ impl<F: Filter> FilterAdapter<F> {
             ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
             match Self::create_spatial_pipeline(ctx, shader, ctx.output_format, false) {
                 Ok((pipeline, bind_group_layout)) => {
-                    if Self::take_validation_error(ctx.device).is_none() {
+                    if ctx.device.pop_error_scope().await.is_none() {
                         self.final_spatial_output = Some(FinalSpatialOutputPipeline {
                             pass_index,
                             pipeline,
@@ -1407,7 +1430,7 @@ impl<F: Filter> FilterAdapter<F> {
         if self.blit_source_scratch_slot.is_some() {
             ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let (blit_pipeline, blit_bind_group_layout) = Self::create_blit_pipeline(ctx);
-            if Self::take_validation_error(ctx.device).is_some() {
+            if ctx.device.pop_error_scope().await.is_some() {
                 return Err("failed to create final blit pipeline");
             }
             self.blit_pipeline = Some(blit_pipeline);
@@ -1420,19 +1443,16 @@ impl<F: Filter> FilterAdapter<F> {
 
         Ok(())
     }
-}
 
-impl<F: Filter> Effect for FilterAdapter<F> {
-    fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = EffectSetupResult> {
-        let param_count = <F::Params as ParamArray>::LEN;
-        if param_count > MAX_FILTER_PARAMS {
-            let err = "filter chain exceeds 64 params (uniform limit)";
-            self.set_setup_error(err);
-            return core::future::ready(Err(err));
+    fn plan_setup(&mut self, ctx: &EffectContext<'_>) -> Result<FilterSetupPlan, &'static str> {
+        let _ = self
+            .redraw_callback
+            .get_or_init(|| Arc::new(|| {}) as EffectRedrawCallback);
+        if <F::Params as ParamArray>::LEN > MAX_FILTER_PARAMS {
+            return Err("filter chain exceeds 64 params (uniform limit)");
         }
 
-        // Create shared sampler
-        let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+        self.sampler = Some(ctx.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("filter sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -1441,21 +1461,12 @@ impl<F: Filter> Effect for FilterAdapter<F> {
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
-        });
-        self.sampler = Some(sampler);
+        }));
 
-        let stages = collect_filter_stages(&self.filter);
-        let planned = match fuse_stages(&stages) {
-            Ok(passes) => passes,
-            Err(err) => {
-                self.set_setup_error(err);
-                return core::future::ready(Err(err));
-            }
-        };
-
+        let planned = fuse_stages(&collect_filter_stages(&self.filter))?;
         self.requires_scratch = planned.len() > 1
             || matches!(
-                planned.last().map(|p| &p.kind),
+                planned.last().map(|pass| &pass.kind),
                 Some(PlannedPassKind::Spatial { .. })
             );
         let needs_original_input_scratch = planned.iter().any(|pass| {
@@ -1467,7 +1478,6 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                 }
             )
         });
-
         let scratch_candidates = if self.requires_scratch {
             match self.hdr_policy {
                 HdrPolicy::ForceLdr => alloc::vec![wgpu::TextureFormat::Rgba8Unorm],
@@ -1487,50 +1497,86 @@ impl<F: Filter> Effect for FilterAdapter<F> {
         } else {
             alloc::vec![wgpu::TextureFormat::Rgba8Unorm]
         };
+        Ok(FilterSetupPlan {
+            passes: planned,
+            scratch_formats: scratch_candidates,
+        })
+    }
 
-        let mut build_ok = false;
-        let mut last_err: Option<&'static str> = None;
-        for (idx, candidate) in scratch_candidates.iter().enumerate() {
-            match self.build_compiled_passes(ctx, &planned, *candidate) {
+    fn clear_compiled_passes(&mut self) {
+        self.passes.clear();
+        self.blit_pipeline = None;
+        self.blit_bind_group_layout = None;
+        self.blit_bind_group = None;
+        self.blit_source_scratch_slot = None;
+        self.final_spatial_output = None;
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "filter pipeline compilation awaits device validation on the GPU host thread"
+    )]
+    async fn compile_setup_plan(
+        &mut self,
+        ctx: &EffectContext<'_>,
+        planned: &[PlannedPass],
+        scratch_candidates: &[wgpu::TextureFormat],
+    ) -> Result<(), &'static str> {
+        let mut last_error = None;
+        for (index, candidate) in scratch_candidates.iter().copied().enumerate() {
+            match self.build_compiled_passes(ctx, planned, candidate).await {
                 Ok(()) => {
-                    self.scratch_format = *candidate;
-                    build_ok = true;
-                    if idx > 0 && self.hdr_policy == HdrPolicy::PreferHdr {
+                    self.scratch_format = candidate;
+                    if index > 0 && self.hdr_policy == HdrPolicy::PreferHdr {
                         tracing::warn!(
-                            "[Filter] preferred scratch format unavailable, falling back to {:?}",
-                            candidate
+                            "[Filter] preferred scratch format unavailable, falling back to {candidate:?}"
                         );
                     }
-                    break;
+                    return Ok(());
                 }
-                Err(err) => {
-                    last_err = Some(err);
-                    self.passes.clear();
-                    self.blit_pipeline = None;
-                    self.blit_bind_group_layout = None;
-                    self.blit_bind_group = None;
-                    self.blit_source_scratch_slot = None;
-                    self.final_spatial_output = None;
+                Err(error) => {
+                    last_error = Some(error);
+                    self.clear_compiled_passes();
                 }
             }
         }
 
-        if !build_ok {
-            let err = match (self.hdr_policy, last_err) {
-                (HdrPolicy::RequireHdr, Some(_)) => {
-                    "HDR is required by policy but unavailable for this filter pipeline"
-                }
-                (_, Some(err)) => err,
-                (_, None) => "filter setup produced no executable passes",
-            };
-            self.set_setup_error(err);
-            return core::future::ready(Err(err));
+        Err(match (self.hdr_policy, last_error) {
+            (HdrPolicy::RequireHdr, Some(_)) => {
+                "HDR is required by policy but unavailable for this filter pipeline"
+            }
+            (_, Some(error)) => error,
+            (_, None) => "filter setup produced no executable passes",
+        })
+    }
+}
+
+impl<F: Filter> Effect for FilterAdapter<F> {
+    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
+        self.install_redraw_callback(callback);
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "filter setup owns device-bound pipelines and runs on the GPU host thread"
+    )]
+    async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
+        let plan = match self.plan_setup(ctx) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.set_setup_error(error);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .compile_setup_plan(ctx, &plan.passes, &plan.scratch_formats)
+            .await
+        {
+            self.set_setup_error(error);
+            return Err(error);
         }
-
-        // Initialize current values from the latest snapped targets.
         self.apply_target_params_to_current_values();
-
-        core::future::ready(Ok(()))
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1982,14 +2028,6 @@ impl<F: Filter> Effect for FilterAdapter<F> {
         self.filter.output_size(input_width, input_height)
     }
 
-    fn sync_targets(&mut self) {
-        self.filter.params().write_to(&mut self.staged_params);
-        if self.staged_params != self.target_params {
-            self.target_params.copy_from_slice(&self.staged_params);
-            self.target_params_dirty = true;
-        }
-    }
-
     fn redraw_hint(&self) -> bool {
         self.target_params_dirty || self.animation_state.has_active_animation
     }
@@ -2014,11 +2052,9 @@ impl<F: Filter> FilterAdapter<F> {
         shader_source.push_str(fragments);
         shader_source.push_str(postamble);
 
-        let shader = crate::shared_context::create_cached_shader_module(
-            ctx.device,
-            "filter color shader",
-            &shader_source,
-        );
+        let shader =
+            ctx.shader_cache
+                .get_or_create(ctx.device, "filter color shader", &shader_source);
 
         let bind_group_layout =
             ctx.device
@@ -2103,11 +2139,9 @@ impl<F: Filter> FilterAdapter<F> {
         original_input: bool,
     ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
         let shader_source = specialize_spatial_shader(shader_source, storage_format)?;
-        let shader = crate::shared_context::create_cached_shader_module(
-            ctx.device,
-            "filter spatial shader",
-            &shader_source,
-        );
+        let shader =
+            ctx.shader_cache
+                .get_or_create(ctx.device, "filter spatial shader", &shader_source);
 
         let original_entry = wgpu::BindGroupLayoutEntry {
             binding: 3,
@@ -2164,7 +2198,7 @@ impl<F: Filter> FilterAdapter<F> {
     }
 
     fn create_blit_pipeline(ctx: &EffectContext) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-        let shader = crate::shared_context::create_cached_shader_module(
+        let shader = ctx.shader_cache.get_or_create(
             ctx.device,
             "filter blit shader",
             include_str!(concat!(
@@ -2323,7 +2357,11 @@ mod tests {
     use image::RgbaImage;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::mpsc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
 
     struct TestGpu {
         device: wgpu::Device,
@@ -2331,20 +2369,20 @@ mod tests {
         adapter_info: wgpu::AdapterInfo,
         rgba8_storage: bool,
         rgba16_storage: bool,
+        shader_cache: filtrate::ShaderCache,
     }
 
-    fn create_test_device() -> Option<TestGpu> {
+    fn create_test_device() -> TestGpu {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
+            backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let adapter =
-            crate::pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            }))
-            .ok()?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("filter GPU tests require a high-performance adapter");
         let adapter_info = adapter.get_info();
         let rgba8_storage = adapter
             .get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm)
@@ -2355,15 +2393,16 @@ mod tests {
             .allowed_usages
             .contains(wgpu::TextureUsages::STORAGE_BINDING);
         let (device, queue) =
-            crate::pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .ok()?;
-        Some(TestGpu {
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("filter GPU tests require a working device");
+        TestGpu {
             device,
             queue,
             adapter_info,
             rgba8_storage,
             rgba16_storage,
-        })
+            shader_cache: filtrate::ShaderCache::new(),
+        }
     }
 
     fn assert_f32_eq(actual: f32, expected: f32) {
@@ -2371,6 +2410,95 @@ mod tests {
             (actual - expected).abs() <= f32::EPSILON,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[derive(Clone)]
+    struct EmitsWhileSubscribing {
+        subscribed: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl nami::Signal for EmitsWhileSubscribing {
+        type Output = f32;
+        type Guard = ();
+
+        fn get(&self) -> Self::Output {
+            assert!(
+                self.subscribed.get(),
+                "filter parameters must be subscribed before their initial snapshot"
+            );
+            0.75
+        }
+
+        fn watch(&self, watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static) {
+            self.subscribed.set(true);
+            watcher(nami::watcher::Context::from(0.75));
+        }
+    }
+
+    #[test]
+    fn filter_adapter_subscribes_before_initial_signal_snapshot() {
+        let subscribed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let adapter = FilterAdapter::new(filtrate::filters::Brightness(Reactive(
+            EmitsWhileSubscribing {
+                subscribed: std::rc::Rc::clone(&subscribed),
+            },
+        )));
+
+        assert!(subscribed.get());
+        assert_f32_eq(adapter.target_params[0], 0.75);
+        let event = adapter
+            .animation_events
+            .try_recv()
+            .expect("subscription-window changes must remain queued after the initial snapshot");
+        assert_eq!(event.param_index, 0);
+        assert_f32_eq(event.target_value, 0.75);
+    }
+
+    #[test]
+    fn non_animated_signal_change_enqueues_event_and_invokes_redraw_callback() {
+        let value = nami::binding(0.0_f32);
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let mut adapter =
+            FilterAdapter::new(filtrate::filters::Brightness(Reactive(value.clone())));
+        adapter.apply_target_params_to_current_values();
+        let callback_redraws = redraws.clone();
+        Effect::set_redraw_callback(
+            &mut adapter,
+            Arc::new(move || {
+                callback_redraws.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+
+        value.set(0.25);
+
+        assert_eq!(redraws.load(Ordering::Relaxed), 1);
+        let event = adapter
+            .animation_events
+            .try_recv()
+            .expect("plain signal update must reach the parameter event channel");
+        assert_eq!(event.param_index, 0);
+        assert_f32_eq(event.target_value, 0.25);
+        assert!(event.interpolator.is_none());
+
+        value.set(0.5);
+        adapter.consume_animation_events();
+        assert_eq!(redraws.load(Ordering::Relaxed), 2);
+        assert_f32_eq(adapter.target_params[0], 0.5);
+        assert_f32_eq(adapter.animation_state.tracks[0].track.value(), 0.5);
+        assert!(!adapter.animation_state.tracks[0].track.is_active());
+        assert!(adapter.target_params_dirty);
+    }
+
+    #[test]
+    fn applied_filter_connects_signal_redraw_to_its_handle() {
+        let value = nami::binding(0.0_f32);
+        let filter = FilterAdapter::new(filtrate::filters::Brightness(Reactive(value.clone())));
+        let applied = AppliedFilter::new(filter);
+        let redraw_handle = applied.redraw_handle();
+
+        assert!(!redraw_handle.is_dirty());
+        value.set(0.5);
+        assert!(redraw_handle.is_dirty());
     }
 
     fn readback_rgba8_pixel(
@@ -2591,6 +2719,7 @@ mod tests {
     fn run_filter_and_readback<G: Effect>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        shader_cache: &filtrate::ShaderCache,
         input_texture: &wgpu::Texture,
         size: FilterReadbackSize,
         mut filter: G,
@@ -2619,8 +2748,9 @@ mod tests {
             input_format: format,
             output_format: format,
             pipeline_cache: None,
+            shader_cache,
         };
-        crate::pollster::block_on(filter.setup(&ctx)).expect("test filter setup should succeed");
+        pollster::block_on(filter.setup(&ctx)).expect("test filter setup should succeed");
 
         let input = EffectInput {
             device,
@@ -2643,103 +2773,6 @@ mod tests {
 
         let _ = filter.render(&input, &output);
         readback_rgba8_image(device, queue, &output_texture, output_width, output_height)
-    }
-
-    fn count_nonblank_pixels(rgba: &[u8]) -> (usize, usize) {
-        let mut opaque = 0;
-        let mut nonzero_rgb = 0;
-        for chunk in rgba.chunks_exact(4) {
-            if chunk[3] == 255 {
-                opaque += 1;
-            }
-            if chunk[0] != 0 || chunk[1] != 0 || chunk[2] != 0 {
-                nonzero_rgb += 1;
-            }
-        }
-        (opaque, nonzero_rgb)
-    }
-
-    #[test]
-    fn gpu_workgroup_spatial_produces_real_pixels() {
-        let Some(gpu) = create_test_device() else {
-            return;
-        };
-        let device = &gpu.device;
-        let queue = &gpu.queue;
-
-        let width = 64u32;
-        let height = 64u32;
-        let total = (width * height) as usize;
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let input_rgba = create_test_input_rgba(width, height);
-
-        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("workgroup spatial smoke input"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &input_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &input_rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        let sharpen_out = run_filter_and_readback(
-            device,
-            queue,
-            &input_texture,
-            FilterReadbackSize {
-                input: (width, height),
-                output: (width, height),
-            },
-            FilterAdapter::new(filtrate::filters::Sharpen(1.0f32)),
-        );
-        let (sharpen_opaque, sharpen_nonzero) = count_nonblank_pixels(&sharpen_out);
-        assert_eq!(sharpen_opaque, total, "Sharpen alpha must be opaque");
-        assert!(
-            sharpen_nonzero >= total * 9 / 10,
-            "Sharpen output is mostly black ({sharpen_nonzero} of {total} px non-zero RGB)",
-        );
-
-        let blur_out = run_filter_and_readback(
-            device,
-            queue,
-            &input_texture,
-            FilterReadbackSize {
-                input: (width, height),
-                output: (width, height),
-            },
-            FilterAdapter::new(filtrate::filters::Blur(2.0f32)),
-        );
-        let (blur_opaque, blur_nonzero) = count_nonblank_pixels(&blur_out);
-        assert_eq!(blur_opaque, total, "Blur alpha must be opaque");
-        assert!(
-            blur_nonzero >= total * 9 / 10,
-            "Blur output is mostly black ({blur_nonzero} of {total} px non-zero RGB)",
-        );
     }
 
     #[test]
@@ -3038,21 +3071,24 @@ mod tests {
 
     #[test]
     fn spatial_shaders_use_dynamic_storage_format_and_texture_load() {
-        let blur = include_str!(concat!(
+        let blur_horizontal = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../utils/filtrate/src/shaders/image/blur/blur.wgsl"
+            "/../../../utils/filtrate/src/shaders/image/blur/blur_horizontal.wgsl"
+        ));
+        let blur_vertical = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../utils/filtrate/src/shaders/image/blur/blur_vertical.wgsl"
         ));
         let sharpen = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../utils/filtrate/src/shaders/image/convolution/sharpen.wgsl"
         ));
 
-        assert!(blur.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
-        assert!(sharpen.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
-        assert!(blur.contains("textureLoad("));
-        assert!(sharpen.contains("textureLoad("));
-        assert!(!blur.contains("input_sampler"));
-        assert!(!sharpen.contains("input_sampler"));
+        for shader in [blur_horizontal, blur_vertical, sharpen] {
+            assert!(shader.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
+            assert!(shader.contains("textureLoad("));
+            assert!(!shader.contains("input_sampler"));
+        }
     }
 
     #[test]
@@ -3076,10 +3112,7 @@ mod tests {
 
     #[test]
     fn gpu_color_filter_executes_and_writes_output() {
-        let Some(gpu) = create_test_device() else {
-            eprintln!("Skipping GPU test: no compatible adapter/device");
-            return;
-        };
+        let gpu = create_test_device();
         let device = &gpu.device;
         let queue = &gpu.queue;
 
@@ -3145,8 +3178,9 @@ mod tests {
             input_format: format,
             output_format: format,
             pipeline_cache: None,
+            shader_cache: &gpu.shader_cache,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+        pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
 
         let input = EffectInput {
@@ -3181,13 +3215,9 @@ mod tests {
         reason = "GPU integration test keeps setup, render, and readback assertions in one scenario"
     )]
     fn gpu_spatial_filter_supports_mismatched_input_output_sizes() {
-        let Some(gpu) = create_test_device() else {
-            eprintln!("Skipping GPU test: no compatible adapter/device");
-            return;
-        };
+        let gpu = create_test_device();
         let device = &gpu.device;
         let queue = &gpu.queue;
-        let adapter_info = &gpu.adapter_info;
 
         let in_width = 6;
         let in_height = 4;
@@ -3253,20 +3283,19 @@ mod tests {
             input_format: format,
             output_format: format,
             pipeline_cache: None,
+            shader_cache: &gpu.shader_cache,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+        pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
-        if adapter.has_setup_error() {
-            eprintln!(
-                "Skipping spatial GPU test on adapter {} ({:?}): unsupported capability ({:?})",
-                adapter_info.name, adapter_info.backend, adapter.setup_error,
-            );
-            eprintln!(
-                "Adapter storage support: rgba8={}, rgba16f={}",
-                gpu.rgba8_storage, gpu.rgba16_storage
-            );
-            return;
-        }
+        assert!(
+            !adapter.has_setup_error(),
+            "spatial filter setup failed on adapter {} ({:?}); rgba8_storage={}, rgba16f_storage={}, error={:?}",
+            gpu.adapter_info.name,
+            gpu.adapter_info.backend,
+            gpu.rgba8_storage,
+            gpu.rgba16_storage,
+            adapter.setup_error,
+        );
         assert!(
             !adapter.passes.is_empty(),
             "spatial passes should be compiled"
@@ -3307,10 +3336,7 @@ mod tests {
         reason = "GPU integration test keeps setup, render, and fallback assertions in one scenario"
     )]
     fn gpu_spatial_filter_uses_direct_output_when_storage_binding_is_available() {
-        let Some(gpu) = create_test_device() else {
-            eprintln!("Skipping GPU test: no compatible adapter/device");
-            return;
-        };
+        let gpu = create_test_device();
         let device = &gpu.device;
         let queue = &gpu.queue;
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -3376,16 +3402,15 @@ mod tests {
             input_format: format,
             output_format: format,
             pipeline_cache: None,
+            shader_cache: &gpu.shader_cache,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+        pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
-        if adapter.has_setup_error() {
-            eprintln!(
-                "Skipping GPU test: setup failed ({:?})",
-                adapter.setup_error
-            );
-            return;
-        }
+        assert!(
+            !adapter.has_setup_error(),
+            "spatial filter setup failed: {:?}",
+            adapter.setup_error
+        );
         let expected_direct_output = adapter.final_spatial_output.is_some();
 
         let input = EffectInput {
@@ -3429,10 +3454,7 @@ mod tests {
 
     #[test]
     fn gpu_spatial_filter_falls_back_when_output_lacks_storage_binding_usage() {
-        let Some(gpu) = create_test_device() else {
-            eprintln!("Skipping GPU test: no compatible adapter/device");
-            return;
-        };
+        let gpu = create_test_device();
         let device = &gpu.device;
         let queue = &gpu.queue;
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -3496,16 +3518,15 @@ mod tests {
             input_format: format,
             output_format: format,
             pipeline_cache: None,
+            shader_cache: &gpu.shader_cache,
         };
-        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx))
+        pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
-        if adapter.has_setup_error() {
-            eprintln!(
-                "Skipping GPU test: setup failed ({:?})",
-                adapter.setup_error
-            );
-            return;
-        }
+        assert!(
+            !adapter.has_setup_error(),
+            "spatial filter setup failed: {:?}",
+            adapter.setup_error
+        );
 
         let input = EffectInput {
             device,
@@ -3541,10 +3562,7 @@ mod tests {
         reason = "gallery export intentionally enumerates every filter case in one visual artifact generator"
     )]
     fn gpu_export_filter_gallery_images() {
-        let Some(gpu) = create_test_device() else {
-            eprintln!("Skipping GPU gallery test: no compatible adapter/device");
-            return;
-        };
+        let gpu = create_test_device();
         let device = &gpu.device;
         let queue = &gpu.queue;
 
@@ -3601,6 +3619,7 @@ mod tests {
                 let result = run_filter_and_readback(
                     device,
                     queue,
+                    &gpu.shader_cache,
                     &input_texture,
                     FilterReadbackSize {
                         input: (input_width, input_height),
@@ -3798,15 +3817,13 @@ mod tests {
             input_height,
             FilterAdapter::new(filtrate::filters::Sobel).then(filtrate::filters::PhotoEffectTonal)
         );
-
-        eprintln!("Filter gallery exported to {}", output_dir.display());
     }
 }
 
 /// Concrete filter aliases with stable type identities.
 ///
-/// These aliases intentionally normalize reactive parameters to `Reactive<Computed<f32>>`
-/// so backend hook nodes remain concrete (`FilteredView<Blur>`, etc.).
+/// These aliases normalize reactive parameters to `Reactive<Computed<f32>>` so
+/// fluent filter chains keep stable concrete types.
 /// Alias for a box-blur filter.
 pub type Blur = FilterAdapter<filtrate::filters::Blur<Reactive<Computed<f32>>>>;
 /// Alias for a brightness adjustment filter.

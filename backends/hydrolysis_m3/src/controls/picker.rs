@@ -1,4 +1,7 @@
-#![allow(clippy::cast_precision_loss, reason = "intentional lossy numeric cast in rendering/layout code")]
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
 use crate::dimensions::{
     PICKER_HORIZONTAL_INSET, PICKER_INDICATOR_SPACE, PICKER_LABEL_SPACING,
     PICKER_MENU_POPUP_CORNER_RADIUS, PICKER_MENU_POPUP_ROW_HEIGHT, PICKER_MENU_POPUP_TOP_SPACING,

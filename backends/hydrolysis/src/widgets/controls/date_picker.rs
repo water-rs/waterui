@@ -224,8 +224,7 @@ pub(crate) fn render_date_picker_parts(
     );
 
     let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();

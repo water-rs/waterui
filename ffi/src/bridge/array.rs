@@ -141,24 +141,6 @@ impl<T> DerefMut for WuiArray<T> {
 }
 
 impl<T> WuiArray<T> {
-    /// Consumes the array, running the destructor on each element, and then freeing the array buffer.
-    ///
-    /// This is necessary because `WuiArray` cannot implement `Drop` directly (see notes below),
-    /// but sometimes we own the array and its elements (e.g. passed from foreign code by value)
-    /// and need to clean them up.
-    pub fn consume_and_drop_elements(mut self) {
-        unsafe {
-            // 1. Drop each element
-            let slice = self.as_mut_slice();
-            for item in slice {
-                core::ptr::drop_in_place(item);
-            }
-
-            // 2. Free the array buffer using the vtable
-            (self.vtable.drop)(self.data.as_ptr());
-        }
-    }
-
     /// Consumes the array and frees the array buffer WITHOUT dropping elements.
     /// Use this if the elements are POD or ownership has been moved elsewhere.
     pub fn consume(self) {
@@ -192,10 +174,13 @@ where
 impl<T: Default + IntoRust> IntoRust for WuiArray<T> {
     type Rust = Vec<T::Rust>;
     unsafe fn into_rust(mut self) -> Self::Rust {
-        self.deref_mut()
+        let values = self
+            .deref_mut()
             .iter_mut()
             .map(|item| unsafe { core::mem::take(item).into_rust() })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        self.consume();
+        values
     }
 }
 

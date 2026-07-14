@@ -1,31 +1,24 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    reason = "intentional lossy numeric cast in rendering/layout code"
-)]
-#![allow(
-    clippy::too_many_lines,
-    clippy::significant_drop_tightening,
-    reason = "GPU render methods are linear sequences that hold render-state guards for their full duration"
-)]
 //! GPU renderer for particle simulation and visualization.
 
 use crate::{
     EmitterShape,
-    config::{BlendMode, ParticleShape},
+    config::{BlendMode, ParticleConfig, ParticleShape},
     gpu::{CollisionUniforms, GpuCircleObstacle, GpuParticle, InteractionUniforms, Uniforms},
     shaders::{COMPUTE_SHADER, RENDER_SHADER},
 };
 use encase::{ShaderSize, StorageBuffer};
 use num_traits::ToPrimitive;
-use std::borrow::Cow;
+use std::cell::Cell;
 use std::mem::offset_of;
+use std::rc::Rc;
+use waterui_core::{Computed, Environment, Signal, reactive::watcher::BoxWatcherGuard};
 use waterui_graphics::{
-    color::ResolvedColor,
-    gpu_surface::{GpuContext, GpuFrame, GpuView},
+    GpuContext, GpuFrame, GpuView, color::ResolvedColor, gpu_surface::RedrawHandle,
+    reactive_color::ReactiveColor,
 };
 
 /// Resolved particle configuration ready for GPU.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ResolvedParticleConfig {
     pub max_particles: u32,
     pub emitter_pos: [f32; 2],
@@ -54,6 +47,130 @@ pub struct ResolvedParticleConfig {
     pub blend_mode: BlendMode,
     pub softness: f32,
     pub shape: ParticleShape,
+}
+
+struct ReactiveParticleConfig {
+    max_particles: u32,
+    config: ParticleConfig,
+    color_start: ReactiveColor,
+    color_end: ReactiveColor,
+    watcher_guards: Vec<BoxWatcherGuard>,
+    obstacles_dirty: Rc<Cell<bool>>,
+}
+
+impl ReactiveParticleConfig {
+    fn new(max_particles: u32, config: ParticleConfig, env: &Environment) -> Self {
+        Self {
+            max_particles,
+            color_start: ReactiveColor::new(&config.particle.color_start, env),
+            color_end: ReactiveColor::new(&config.particle.color_end, env),
+            config,
+            watcher_guards: Vec::new(),
+            obstacles_dirty: Rc::new(Cell::new(true)),
+        }
+    }
+
+    fn get(&self) -> ResolvedParticleConfig {
+        let mut resolved = ResolvedParticleConfig {
+            max_particles: self.max_particles,
+            collision_circle_obstacles: Vec::with_capacity(self.obstacle_count()),
+            ..ResolvedParticleConfig::default()
+        };
+        self.update(&mut resolved);
+        resolved
+    }
+
+    fn update(&self, resolved: &mut ResolvedParticleConfig) -> bool {
+        resolved.emitter_pos = self.config.emitter.position.get();
+        resolved.emitter_shape = self.config.emitter.shape.get();
+        resolved.emit_rate = self.config.emitter.rate.get();
+        resolved.gravity = self.config.environment.gravity.get();
+        resolved.wind = self.config.environment.wind.get();
+        resolved.turbulence = self.config.environment.turbulence.get();
+        resolved.drag = self.config.environment.drag.get();
+        resolved.collision_enabled = self.config.collision.enabled;
+        resolved.collision_bounds = self.config.collision.bounds.get();
+        resolved.collision_restitution = self.config.collision.restitution.get();
+        resolved.collision_surface_friction = self.config.collision.surface_friction.get();
+        let obstacles_changed = self.obstacles_dirty.replace(false);
+        if obstacles_changed {
+            resolved.collision_circle_obstacles.clear();
+            resolved.collision_circle_obstacles.extend(
+                self.config
+                    .collision
+                    .circle_obstacles
+                    .iter()
+                    .map(|obstacle| obstacle.value.get()),
+            );
+        }
+        resolved.interaction_enabled = self.config.interaction.enabled;
+        resolved.interaction_radius = self.config.interaction.radius.get();
+        resolved.interaction_strength = self.config.interaction.strength.get();
+        resolved.life_range = self.config.particle.life.get();
+        resolved.speed_range = self.config.particle.speed.get();
+        resolved.angle_range = self.config.particle.angle.get();
+        resolved.size_range = self.config.particle.size.get();
+        resolved.spin_range = self.config.particle.spin.get();
+        resolved.color_start = self.color_start.get();
+        resolved.color_end = self.color_end.get();
+        resolved.stretch_with_velocity = self.config.particle.stretch_with_velocity;
+        resolved.blend_mode = self.config.blend_mode;
+        resolved.softness = self.config.particle.softness.get();
+        resolved.shape = self.config.particle.shape;
+        obstacles_changed
+    }
+
+    fn install(&mut self, redraw: &RedrawHandle) {
+        self.color_start.install(redraw);
+        self.color_end.install(redraw);
+        self.watcher_guards = vec![
+            redraw_on_change(&self.config.emitter.position, redraw),
+            redraw_on_change(&self.config.emitter.shape, redraw),
+            redraw_on_change(&self.config.emitter.rate, redraw),
+            redraw_on_change(&self.config.environment.gravity, redraw),
+            redraw_on_change(&self.config.environment.wind, redraw),
+            redraw_on_change(&self.config.environment.turbulence, redraw),
+            redraw_on_change(&self.config.environment.drag, redraw),
+            redraw_on_change(&self.config.collision.bounds, redraw),
+            redraw_on_change(&self.config.collision.restitution, redraw),
+            redraw_on_change(&self.config.collision.surface_friction, redraw),
+            redraw_on_change(&self.config.interaction.radius, redraw),
+            redraw_on_change(&self.config.interaction.strength, redraw),
+            redraw_on_change(&self.config.particle.life, redraw),
+            redraw_on_change(&self.config.particle.speed, redraw),
+            redraw_on_change(&self.config.particle.angle, redraw),
+            redraw_on_change(&self.config.particle.size, redraw),
+            redraw_on_change(&self.config.particle.spin, redraw),
+            redraw_on_change(&self.config.particle.softness, redraw),
+        ];
+        self.watcher_guards.extend(
+            self.config
+                .collision
+                .circle_obstacles
+                .iter()
+                .map(|obstacle| {
+                    let redraw = redraw.clone();
+                    let dirty = Rc::clone(&self.obstacles_dirty);
+                    obstacle.value.watch(move |_| {
+                        dirty.set(true);
+                        redraw.request_redraw();
+                    })
+                }),
+        );
+    }
+
+    const fn obstacle_count(&self) -> usize {
+        self.config.collision.circle_obstacles.len()
+    }
+
+    const fn blend_mode(&self) -> BlendMode {
+        self.config.blend_mode
+    }
+}
+
+fn redraw_on_change<T: 'static>(signal: &Computed<T>, redraw: &RedrawHandle) -> BoxWatcherGuard {
+    let redraw = redraw.clone();
+    signal.watch(move |_| redraw.request_redraw())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +223,12 @@ const PARTICLE_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 8] = [
     },
 ];
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the statically defined particle uniform is far smaller than usize on supported targets"
+)]
+const PARTICLE_UNIFORM_SIZE: usize = <Uniforms as ShaderSize>::SHADER_SIZE.get() as usize;
+
 const fn encode_emitter_size(shape: EmitterShape) -> glam::Vec2 {
     match shape {
         EmitterShape::Point => glam::Vec2::ZERO,
@@ -117,6 +240,24 @@ const fn encode_emitter_size(shape: EmitterShape) -> glam::Vec2 {
 fn resolved_linear_color(color: ResolvedColor) -> glam::Vec4 {
     let [red, green, blue] = color.linear_with_headroom();
     glam::Vec4::new(red, green, blue, color.opacity)
+}
+
+fn write_obstacles(queue: &wgpu::Queue, buffer: &wgpu::Buffer, obstacles: &[[f32; 3]]) {
+    let obstacle_data: Vec<_> = if obstacles.is_empty() {
+        vec![GpuCircleObstacle::default()]
+    } else {
+        obstacles
+            .iter()
+            .map(|obstacle| {
+                GpuCircleObstacle::new(glam::Vec2::new(obstacle[0], obstacle[1]), obstacle[2])
+            })
+            .collect()
+    };
+    let mut collision_data = StorageBuffer::new(Vec::new());
+    collision_data
+        .write(&obstacle_data)
+        .expect("failed to encode particle collision obstacle buffer");
+    queue.write_buffer(buffer, 0, collision_data.as_ref());
 }
 
 fn interaction_grid(config: &ResolvedParticleConfig) -> InteractionGrid {
@@ -139,6 +280,11 @@ fn interaction_grid(config: &ResolvedParticleConfig) -> InteractionGrid {
     }
 }
 
+fn max_interaction_grid_cells(max_particles: u32) -> u32 {
+    let dimension = f32_to_u32_ceil(u32_to_f32(max_particles).sqrt().max(1.0));
+    dimension * dimension
+}
+
 const fn particle_shape_code(shape: ParticleShape) -> u32 {
     match shape {
         ParticleShape::Circle => 0,
@@ -147,14 +293,16 @@ const fn particle_shape_code(shape: ParticleShape) -> u32 {
 }
 
 fn particle_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    let particle_size = u64::try_from(core::mem::size_of::<GpuParticle>())
+        .expect("GpuParticle size must fit into wgpu's u64 buffer addressing");
     assert_eq!(
-        core::mem::size_of::<GpuParticle>() as u64,
+        particle_size,
         <GpuParticle as ShaderSize>::SHADER_SIZE.get(),
         "GpuParticle Rust layout must match shader storage stride"
     );
 
     wgpu::VertexBufferLayout {
-        array_stride: core::mem::size_of::<GpuParticle>() as u64,
+        array_stride: particle_size,
         step_mode: wgpu::VertexStepMode::Instance,
         attributes: &PARTICLE_VERTEX_ATTRIBUTES,
     }
@@ -180,7 +328,8 @@ const fn blend_state(blend_mode: BlendMode) -> wgpu::BlendState {
 
 /// GPU renderer for particle systems.
 pub struct ParticleRenderer {
-    config: ResolvedParticleConfig,
+    config: ReactiveParticleConfig,
+    resolved_config: Option<ResolvedParticleConfig>,
     clear_grid_pipeline: Option<wgpu::ComputePipeline>,
     build_grid_pipeline: Option<wgpu::ComputePipeline>,
     simulate_pipeline: Option<wgpu::ComputePipeline>,
@@ -196,10 +345,57 @@ pub struct ParticleRenderer {
 }
 
 impl ParticleRenderer {
-    /// Create a new particle renderer with resolved configuration.
+    /// Creates a renderer from a resolved test fixture.
+    #[cfg(test)]
     pub fn new(config: ResolvedParticleConfig) -> Self {
+        use crate::config::CircleObstacleConfig;
+        use waterui_graphics::color::Color;
+
+        let mut reactive = ParticleConfig::default();
+        reactive.emitter.position = Computed::constant(config.emitter_pos);
+        reactive.emitter.shape = Computed::constant(config.emitter_shape);
+        reactive.emitter.rate = Computed::constant(config.emit_rate);
+        reactive.environment.gravity = Computed::constant(config.gravity);
+        reactive.environment.wind = Computed::constant(config.wind);
+        reactive.environment.turbulence = Computed::constant(config.turbulence);
+        reactive.environment.drag = Computed::constant(config.drag);
+        reactive.collision.enabled = config.collision_enabled;
+        reactive.collision.bounds = Computed::constant(config.collision_bounds);
+        reactive.collision.restitution = Computed::constant(config.collision_restitution);
+        reactive.collision.surface_friction = Computed::constant(config.collision_surface_friction);
+        reactive.collision.circle_obstacles = config
+            .collision_circle_obstacles
+            .into_iter()
+            .map(|value| CircleObstacleConfig {
+                value: Computed::constant(value),
+            })
+            .collect();
+        reactive.interaction.enabled = config.interaction_enabled;
+        reactive.interaction.radius = Computed::constant(config.interaction_radius);
+        reactive.interaction.strength = Computed::constant(config.interaction_strength);
+        reactive.particle.life = Computed::constant(config.life_range);
+        reactive.particle.speed = Computed::constant(config.speed_range);
+        reactive.particle.angle = Computed::constant(config.angle_range);
+        reactive.particle.size = Computed::constant(config.size_range);
+        reactive.particle.spin = Computed::constant(config.spin_range);
+        reactive.particle.color_start = Computed::constant(Color::new(config.color_start));
+        reactive.particle.color_end = Computed::constant(Color::new(config.color_end));
+        reactive.particle.stretch_with_velocity = config.stretch_with_velocity;
+        reactive.particle.softness = Computed::constant(config.softness);
+        reactive.particle.shape = config.shape;
+        reactive.blend_mode = config.blend_mode;
+
+        Self::reactive(config.max_particles, reactive, &Environment::new())
+    }
+
+    pub(crate) fn reactive(max_particles: u32, config: ParticleConfig, env: &Environment) -> Self {
+        Self::with_config(ReactiveParticleConfig::new(max_particles, config, env))
+    }
+
+    fn with_config(config: ReactiveParticleConfig) -> Self {
         Self {
             config,
+            resolved_config: None,
             clear_grid_pipeline: None,
             build_grid_pipeline: None,
             simulate_pipeline: None,
@@ -229,80 +425,88 @@ impl ParticleRenderer {
 
     fn update_uniforms(
         &self,
+        config: &ResolvedParticleConfig,
         queue: &wgpu::Queue,
         width: u32,
         height: u32,
         elapsed: std::time::Duration,
         delta: std::time::Duration,
     ) {
-        if let Some(buffer) = &self.uniform_buffer {
-            let time = elapsed.as_secs_f32();
-            let dt = delta.as_secs_f32().min(0.1);
-            let grid = interaction_grid(&self.config);
+        let buffer = self
+            .uniform_buffer
+            .as_ref()
+            .expect("uniform buffer must exist before render");
+        let time = elapsed.as_secs_f32();
+        let dt = delta.as_secs_f32().min(0.1);
+        let grid = interaction_grid(config);
 
-            let uniforms = Uniforms {
-                time,
-                dt,
-                seed: fastrand::u32(..),
-                max_particles: self.config.max_particles,
-                gravity: glam::Vec2::from_array(self.config.gravity),
-                wind: glam::Vec2::from_array(self.config.wind),
-                emitter_pos: glam::Vec2::from_array(self.config.emitter_pos),
-                emitter_size: encode_emitter_size(self.config.emitter_shape),
-                emit_rate: self.config.emit_rate,
-                turbulence: self.config.turbulence,
-                drag: self.config.drag,
-                stretch_factor: if self.config.stretch_with_velocity {
-                    1.0
-                } else {
-                    0.0
-                },
-                softness: self.config.softness,
-                interaction: InteractionUniforms::new(
-                    self.config.interaction_enabled,
-                    grid.width,
-                    grid.height,
-                    self.config.interaction_radius,
-                    self.config.interaction_strength,
-                ),
-                collision: CollisionUniforms::new(
-                    self.config.collision_enabled,
-                    self.config.collision_restitution,
-                    self.config.collision_surface_friction,
-                    glam::Vec4::from_array(self.config.collision_bounds),
-                    u32::try_from(self.config.collision_circle_obstacles.len())
-                        .expect("particle collision obstacle count must fit into u32"),
-                ),
-                life_range: glam::Vec2::from_array(self.config.life_range),
-                speed_range: glam::Vec2::from_array(self.config.speed_range),
-                angle_range: glam::Vec2::from_array(self.config.angle_range),
-                size_range: glam::Vec2::from_array(self.config.size_range),
-                spin_range: glam::Vec2::from_array(self.config.spin_range),
-                color_start: resolved_linear_color(self.config.color_start),
-                color_end: resolved_linear_color(self.config.color_end),
-                shape: particle_shape_code(self.config.shape),
-                viewport_width: width,
-                viewport_height: height,
-            };
+        let uniforms = Uniforms {
+            time,
+            dt,
+            seed: fastrand::u32(..),
+            max_particles: config.max_particles,
+            gravity: glam::Vec2::from_array(config.gravity),
+            wind: glam::Vec2::from_array(config.wind),
+            emitter_pos: glam::Vec2::from_array(config.emitter_pos),
+            emitter_size: encode_emitter_size(config.emitter_shape),
+            emit_rate: config.emit_rate,
+            turbulence: config.turbulence,
+            drag: config.drag,
+            stretch_factor: if config.stretch_with_velocity {
+                1.0
+            } else {
+                0.0
+            },
+            softness: config.softness,
+            interaction: InteractionUniforms::new(
+                config.interaction_enabled,
+                grid.width,
+                grid.height,
+                config.interaction_radius,
+                config.interaction_strength,
+            ),
+            collision: CollisionUniforms::new(
+                config.collision_enabled,
+                config.collision_restitution,
+                config.collision_surface_friction,
+                glam::Vec4::from_array(config.collision_bounds),
+                u32::try_from(config.collision_circle_obstacles.len())
+                    .expect("particle collision obstacle count must fit into u32"),
+            ),
+            life_range: glam::Vec2::from_array(config.life_range),
+            speed_range: glam::Vec2::from_array(config.speed_range),
+            angle_range: glam::Vec2::from_array(config.angle_range),
+            size_range: glam::Vec2::from_array(config.size_range),
+            spin_range: glam::Vec2::from_array(config.spin_range),
+            color_start: resolved_linear_color(config.color_start),
+            color_end: resolved_linear_color(config.color_end),
+            shape: particle_shape_code(config.shape),
+            viewport_width: width,
+            viewport_height: height,
+        };
 
-            let mut uniform_data = StorageBuffer::new(Vec::new());
-            uniform_data
-                .write(&uniforms)
-                .expect("failed to write particle uniform buffer");
-            queue.write_buffer(buffer, 0, uniform_data.as_ref());
-        }
+        let mut uniform_data = StorageBuffer::new([0; PARTICLE_UNIFORM_SIZE]);
+        uniform_data
+            .write(&uniforms)
+            .expect("failed to write particle uniform buffer");
+        queue.write_buffer(buffer, 0, uniform_data.as_ref());
     }
 
     fn encode_simulation_passes(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         source_index: usize,
+        config: &ResolvedParticleConfig,
     ) -> usize {
         let target_index = 1 - source_index;
-        let grid = interaction_grid(&self.config);
+        let grid = interaction_grid(config);
         let bind_group = self.compute_bind_group(source_index);
 
-        if let Some(pipeline) = &self.clear_grid_pipeline {
+        {
+            let pipeline = self
+                .clear_grid_pipeline
+                .as_ref()
+                .expect("clear-grid pipeline must exist before render");
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Particle Clear Grid Pass"),
                 timestamp_writes: None,
@@ -312,24 +516,32 @@ impl ParticleRenderer {
             cpass.dispatch_workgroups(grid.cell_count.div_ceil(64), 1, 1);
         }
 
-        if let Some(pipeline) = &self.build_grid_pipeline {
+        {
+            let pipeline = self
+                .build_grid_pipeline
+                .as_ref()
+                .expect("build-grid pipeline must exist before render");
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Particle Build Grid Pass"),
                 timestamp_writes: None,
             });
             cpass.set_pipeline(pipeline);
             cpass.set_bind_group(0, bind_group, &[]);
-            cpass.dispatch_workgroups(self.config.max_particles.div_ceil(64), 1, 1);
+            cpass.dispatch_workgroups(config.max_particles.div_ceil(64), 1, 1);
         }
 
-        if let Some(pipeline) = &self.simulate_pipeline {
+        {
+            let pipeline = self
+                .simulate_pipeline
+                .as_ref()
+                .expect("simulation pipeline must exist before render");
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Particle Simulate Pass"),
                 timestamp_writes: None,
             });
             cpass.set_pipeline(pipeline);
             cpass.set_bind_group(0, bind_group, &[]);
-            cpass.dispatch_workgroups(self.config.max_particles.div_ceil(64), 1, 1);
+            cpass.dispatch_workgroups(config.max_particles.div_ceil(64), 1, 1);
         }
 
         target_index
@@ -337,21 +549,24 @@ impl ParticleRenderer {
 }
 
 impl GpuView for ParticleRenderer {
-    #[allow(clippy::too_many_lines)]
-    fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    #[expect(
+        clippy::too_many_lines,
+        clippy::future_not_send,
+        reason = "GPU setup is one render-thread resource graph whose local handles encode dependency order"
+    )]
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+        self.config.install(&ctx.redraw_handle);
+        let config = self.config.get();
         let device = ctx.device;
-        let grid = interaction_grid(&self.config);
         let particle_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get();
-        let buffer_size = particle_size * u64::from(self.config.max_particles);
+        let buffer_size = particle_size * u64::from(config.max_particles);
         let collision_stride = <GpuCircleObstacle as ShaderSize>::SHADER_SIZE.get();
-        let collision_count = self.config.collision_circle_obstacles.len().max(1);
-        let grid_heads_size = u64::from(grid.cell_count) * core::mem::size_of::<u32>() as u64;
-        let particle_links_size =
-            u64::from(self.config.max_particles) * core::mem::size_of::<u32>() as u64;
+        let collision_count = self.config.obstacle_count().max(1);
+        let u32_size = u64::try_from(core::mem::size_of::<u32>())
+            .expect("u32 size must fit into wgpu's u64 buffer addressing");
+        let grid_heads_size =
+            u64::from(max_interaction_grid_cells(config.max_particles)) * u32_size;
+        let particle_links_size = u64::from(config.max_particles) * u32_size;
 
         let particle_buffers = std::array::from_fn(|index| {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -380,27 +595,17 @@ impl GpuView for ParticleRenderer {
         });
         let collision_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Particle Collision Obstacles"),
-            size: collision_stride * collision_count as u64,
+            size: collision_stride
+                * u64::try_from(collision_count)
+                    .expect("particle obstacle count must fit into wgpu buffer addressing"),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let obstacle_data = if self.config.collision_circle_obstacles.is_empty() {
-            vec![GpuCircleObstacle::default()]
-        } else {
-            self.config
-                .collision_circle_obstacles
-                .iter()
-                .map(|obstacle| {
-                    GpuCircleObstacle::new(glam::Vec2::new(obstacle[0], obstacle[1]), obstacle[2])
-                })
-                .collect()
-        };
-        let mut collision_data = StorageBuffer::new(Vec::new());
-        collision_data
-            .write(&obstacle_data)
-            .expect("failed to encode particle collision obstacle buffer");
-        ctx.queue
-            .write_buffer(&collision_buffer, 0, collision_data.as_ref());
+        write_obstacles(
+            ctx.queue,
+            &collision_buffer,
+            &config.collision_circle_obstacles,
+        );
         let grid_heads_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Particle Interaction Grid Heads"),
             size: grid_heads_size,
@@ -425,14 +630,10 @@ impl GpuView for ParticleRenderer {
         particle_links_buffer.unmap();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Particle Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(COMPUTE_SHADER)),
-        });
-        let compute_shader_error = waterui_graphics::pop_error_scope_now(
-            device,
-            "particle::setup::compute_shader_error_scope",
-        );
+        let compute_shader =
+            ctx.shader_cache
+                .get_or_create(device, "Particle Compute Shader", COMPUTE_SHADER);
+        let compute_shader_error = device.pop_error_scope().await;
         assert!(
             compute_shader_error.is_none(),
             "particle compute shader creation failed: {compute_shader_error:?}"
@@ -536,10 +737,7 @@ impl GpuView for ParticleRenderer {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: ctx.pipeline_cache,
         });
-        let compute_pipeline_error = waterui_graphics::pop_error_scope_now(
-            device,
-            "particle::setup::compute_pipeline_error_scope",
-        );
+        let compute_pipeline_error = device.pop_error_scope().await;
         assert!(
             compute_pipeline_error.is_none(),
             "particle compute pipeline creation failed: {compute_pipeline_error:?}"
@@ -590,14 +788,10 @@ impl GpuView for ParticleRenderer {
         });
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Particle Render Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(RENDER_SHADER)),
-        });
-        let render_shader_error = waterui_graphics::pop_error_scope_now(
-            device,
-            "particle::setup::render_shader_error_scope",
-        );
+        let render_shader =
+            ctx.shader_cache
+                .get_or_create(device, "Particle Render Shader", RENDER_SHADER);
+        let render_shader_error = device.pop_error_scope().await;
         assert!(
             render_shader_error.is_none(),
             "particle render shader creation failed: {render_shader_error:?}"
@@ -637,7 +831,7 @@ impl GpuView for ParticleRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
-                    blend: Some(blend_state(self.config.blend_mode)),
+                    blend: Some(blend_state(self.config.blend_mode())),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -651,10 +845,7 @@ impl GpuView for ParticleRenderer {
             multiview: None,
             cache: ctx.pipeline_cache,
         });
-        let render_pipeline_error = waterui_graphics::pop_error_scope_now(
-            device,
-            "particle::setup::render_pipeline_error_scope",
-        );
+        let render_pipeline_error = device.pop_error_scope().await;
         assert!(
             render_pipeline_error.is_none(),
             "particle render pipeline creation failed: {render_pipeline_error:?}"
@@ -679,11 +870,30 @@ impl GpuView for ParticleRenderer {
         self.render_pipeline = Some(render_pipeline);
         self.compute_bind_groups = compute_bind_groups;
         self.render_bind_group = Some(render_bind_group);
-        core::future::ready(())
+        self.resolved_config = Some(config);
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
+        let obstacles_changed = self.config.update(
+            self.resolved_config
+                .as_mut()
+                .expect("particle render called before setup"),
+        );
+        let config = self
+            .resolved_config
+            .as_ref()
+            .expect("particle render called before setup");
+        if obstacles_changed {
+            write_obstacles(
+                frame.queue,
+                self.collision_buffer
+                    .as_ref()
+                    .expect("collision buffer must exist before render"),
+                &config.collision_circle_obstacles,
+            );
+        }
         self.update_uniforms(
+            config,
             frame.queue,
             frame.width,
             frame.height,
@@ -697,10 +907,17 @@ impl GpuView for ParticleRenderer {
                 label: Some("Particle Encoder"),
             });
         let render_buffer_index =
-            self.encode_simulation_passes(&mut encoder, self.current_particle_buffer_index);
+            self.encode_simulation_passes(&mut encoder, self.current_particle_buffer_index, config);
 
-        if let (Some(pipeline), Some(bind_group)) = (&self.render_pipeline, &self.render_bind_group)
         {
+            let pipeline = self
+                .render_pipeline
+                .as_ref()
+                .expect("render pipeline must exist before render");
+            let bind_group = self
+                .render_bind_group
+                .as_ref()
+                .expect("render bind group must exist before render");
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Particle Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -719,7 +936,7 @@ impl GpuView for ParticleRenderer {
             rpass.set_pipeline(pipeline);
             rpass.set_bind_group(0, bind_group, &[]);
             rpass.set_vertex_buffer(0, self.particle_buffer(render_buffer_index).slice(..));
-            rpass.draw(0..6, 0..self.config.max_particles);
+            rpass.draw(0..6, 0..config.max_particles);
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));
@@ -727,7 +944,6 @@ impl GpuView for ParticleRenderer {
         frame.request_redraw();
     }
 }
-
 
 fn f32_to_u32_ceil(value: f32) -> u32 {
     value
@@ -745,17 +961,37 @@ fn u32_to_f32(value: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ParticleRenderer, ResolvedParticleConfig, blend_state, encode_emitter_size,
-        resolved_linear_color,
+        ParticleRenderer, ReactiveParticleConfig, ResolvedParticleConfig, blend_state,
+        encode_emitter_size, resolved_linear_color,
     };
     use crate::{
         EmitterShape, ParticleShape,
-        config::BlendMode,
+        config::{BlendMode, ParticleConfig},
         gpu::{CollisionUniforms, GpuParticle, InteractionUniforms, Uniforms},
-        shaders::{COMPUTE_SHADER, RENDER_SHADER},
     };
     use encase::{ShaderSize, StorageBuffer};
-    use waterui_graphics::{GpuView, color::ResolvedColor};
+    use waterui_core::{Binding, Environment, SignalExt};
+    use waterui_graphics::{
+        GpuContext, GpuRuntime, GpuView, color::ResolvedColor, gpu_surface::RedrawHandle,
+    };
+
+    fn test_gpu_runtime() -> GpuRuntime {
+        pollster::block_on(GpuRuntime::new()).expect("particle GPU tests require a working runtime")
+    }
+
+    fn test_gpu_context(runtime: &GpuRuntime) -> GpuContext<'_> {
+        let shared = runtime.context();
+        GpuContext {
+            adapter: &shared.adapter,
+            device: shared.device.as_ref(),
+            queue: shared.queue.as_ref(),
+            surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            msaa_samples: 1,
+            pipeline_cache: shared.pipeline_cache(),
+            shader_cache: shared.shader_cache(),
+            redraw_handle: RedrawHandle::new(),
+        }
+    }
 
     fn opaque_white() -> ResolvedColor {
         ResolvedColor {
@@ -799,16 +1035,60 @@ mod tests {
         }
     }
 
-    #[test]
-    fn alpha_mode_uses_premultiplied_blending() {
-        assert_eq!(
-            blend_state(BlendMode::Alpha),
-            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
+    fn simulate_and_read_particles(
+        renderer: &ParticleRenderer,
+        ctx: &GpuContext<'_>,
+        particle_count: u32,
+        label: &str,
+    ) -> Vec<u8> {
+        use std::sync::mpsc;
+
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        let config = renderer.config.get();
+        let target_index = renderer.encode_simulation_passes(
+            &mut encoder,
+            renderer.current_particle_buffer_index,
+            &config,
         );
+
+        let buffer_size =
+            <GpuParticle as ShaderSize>::SHADER_SIZE.get() * u64::from(particle_count);
+        let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(
+            renderer.particle_buffer(target_index),
+            0,
+            &readback,
+            0,
+            buffer_size,
+        );
+        ctx.queue.submit([encoder.finish()]);
+
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv()
+            .expect("particle compute readback callback dropped")
+            .expect("particle compute readback mapping failed");
+
+        let mapped = slice.get_mapped_range();
+        let bytes = mapped.to_vec();
+        drop(mapped);
+        readback.unmap();
+        bytes
     }
 
     #[test]
-    fn hdr_surfaces_keep_particle_blending() {
+    fn alpha_mode_uses_premultiplied_blending() {
         assert_eq!(
             blend_state(BlendMode::Alpha),
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
@@ -847,54 +1127,25 @@ mod tests {
     }
 
     #[test]
-    fn compute_shader_contains_frame_rate_normalized_drag() {
-        assert!(COMPUTE_SHADER.contains("pow(uniforms.drag, uniforms.dt * 60.0)"));
-    }
+    fn reactive_config_change_requests_redraw() {
+        let rate = Binding::f32(100.0);
+        let mut config = ParticleConfig::default();
+        config.emitter.rate = rate.computed();
+        let mut config = ReactiveParticleConfig::new(128, config, &Environment::new());
+        let redraw = RedrawHandle::new();
+        config.install(&redraw);
 
-    #[test]
-    fn compute_shader_contains_disk_sampling() {
-        assert!(COMPUTE_SHADER.contains("uniforms.emitter_size.y >= 0.0"));
-        assert!(COMPUTE_SHADER.contains("sqrt(rand(seed)) * uniforms.emitter_size.x"));
-    }
+        rate.set(240.0);
 
-    #[test]
-    fn compute_shader_contains_bounds_collision_response() {
-        assert!(COMPUTE_SHADER.contains("fn apply_bounds_collision"));
-        assert!(COMPUTE_SHADER.contains("uniforms.collision.enabled == 0u"));
-        assert!(COMPUTE_SHADER.contains("uniforms.collision.surface_friction"));
-    }
-
-    #[test]
-    fn compute_shader_contains_circle_obstacle_collision_response() {
-        assert!(COMPUTE_SHADER.contains("fn apply_circle_obstacle_collision"));
-        assert!(COMPUTE_SHADER.contains("fn apply_circle_obstacle_collisions"));
-        assert!(COMPUTE_SHADER.contains("uniforms.collision.circle_obstacle_count"));
-        assert!(COMPUTE_SHADER.contains("circle_obstacles[i]"));
-    }
-
-    #[test]
-    fn compute_shader_contains_neighbor_grid_interaction() {
-        assert!(COMPUTE_SHADER.contains("fn clear_grid"));
-        assert!(COMPUTE_SHADER.contains("fn build_grid"));
-        assert!(COMPUTE_SHADER.contains("fn simulate_particles"));
-        assert!(COMPUTE_SHADER.contains("cell_heads"));
-        assert!(COMPUTE_SHADER.contains("particle_links"));
-        assert!(COMPUTE_SHADER.contains("apply_particle_neighbor_interaction"));
-    }
-
-    #[test]
-    fn render_shader_contains_local_aspect_correction() {
-        assert!(RENDER_SHADER.contains("fn aspect_correct_offset"));
-        assert!(
-            RENDER_SHADER.contains("let world_pos = pos + aspect_correct_offset(local_offset);")
-        );
+        assert!(redraw.take_dirty());
+        assert!((config.get().emit_rate - 240.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn render_pass_draws_when_particle_buffer_is_prefilled() {
         use waterui_graphics::{
             GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
-            gpu_surface::GpuContext, shared_context,
+            gpu_surface::GpuContext,
         };
 
         struct PrefilledParticleRenderer {
@@ -932,7 +1183,6 @@ mod tests {
             }
         }
 
-
         let renderer = PrefilledParticleRenderer {
             inner: ParticleRenderer::new(ResolvedParticleConfig {
                 size_range: [0.25, 0.25],
@@ -954,13 +1204,14 @@ mod tests {
             }),
         };
 
-        shared_context::init_shared_context().expect("shared gpu context must initialize");
+        let runtime = test_gpu_runtime();
         let size = OffscreenSize::try_from_pixels(256, 256).expect("test size must be valid");
         let config = OffscreenRenderConfig::new(size);
         let mut env = waterui_core::Environment::new();
-        let output = GpuSurface::new(renderer)
-            .render_offscreen(config, &mut env)
-            .expect("prefilled particle offscreen render should succeed");
+        let output = pollster::block_on(
+            GpuSurface::new(renderer).render_offscreen(&runtime, config, &mut env),
+        )
+        .expect("prefilled particle offscreen render should succeed");
 
         assert_eq!(output.width, 256);
         assert_eq!(output.height, 256);
@@ -969,9 +1220,6 @@ mod tests {
 
     #[test]
     fn compute_pass_writes_live_particles_to_storage_buffer() {
-        use std::sync::mpsc;
-        use waterui_graphics::{GpuContext, gpu_surface::RedrawHandle, pollster, shared_context};
-
         let mut renderer = ParticleRenderer::new(ResolvedParticleConfig {
             emit_rate: 1_000_000.0,
             color_end: ResolvedColor {
@@ -981,21 +1229,13 @@ mod tests {
             ..particle_test_config(256)
         });
 
-        shared_context::init_shared_context().expect("shared gpu context must initialize");
-        let shared = shared_context::shared_context();
-        let guard = shared.read();
-        let ctx = GpuContext {
-            adapter: Some(&guard.adapter),
-            device: guard.device.as_ref(),
-            queue: guard.queue.as_ref(),
-            surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            msaa_samples: 1,
-            pipeline_cache: guard.pipeline_cache.as_ref(),
-            redraw_handle: RedrawHandle::new(),
-        };
+        let runtime = test_gpu_runtime();
+        let ctx = test_gpu_context(&runtime);
         let mut env = waterui_core::Environment::new();
         pollster::block_on(renderer.setup(&ctx, &mut env));
+        let config = renderer.config.get();
         renderer.update_uniforms(
+            &config,
             ctx.queue,
             256,
             256,
@@ -1003,48 +1243,19 @@ mod tests {
             std::time::Duration::from_secs_f32(1.0 / 60.0),
         );
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("particle_compute_buffer_test_encoder"),
-            });
-        let target_index =
-            renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
-
-        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get()
-            * u64::from(renderer.config.max_particles);
-        let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("particle_compute_buffer_test_readback"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_buffer_to_buffer(
-            renderer.particle_buffer(target_index),
-            0,
-            &readback,
-            0,
-            buffer_size,
+        let mapped = simulate_and_read_particles(
+            &renderer,
+            &ctx,
+            config.max_particles,
+            "particle_compute_buffer_test_readback",
         );
-        ctx.queue.submit([encoder.finish()]);
-
-        let slice = readback.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv()
-            .expect("particle compute readback callback dropped")
-            .expect("particle compute readback mapping failed");
-
-        let mapped = slice.get_mapped_range();
         assert!(
             mapped.iter().any(|byte| *byte != 0),
             "compute pass should write non-zero particle data"
         );
 
-        let stride = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as usize;
+        let stride = usize::try_from(<GpuParticle as ShaderSize>::SHADER_SIZE.get())
+            .expect("GpuParticle shader size must fit usize");
         let mut live_particles = 0usize;
         for chunk in mapped.chunks_exact(stride) {
             let life = f32::from_ne_bytes(chunk[16..20].try_into().expect("life bytes must exist"));
@@ -1067,16 +1278,10 @@ mod tests {
             live_particles > 0,
             "compute pass should spawn at least one live particle"
         );
-
-        drop(mapped);
-        readback.unmap();
     }
 
     #[test]
     fn compute_pass_applies_bounds_collision_on_gpu() {
-        use std::sync::mpsc;
-        use waterui_graphics::{GpuContext, gpu_surface::RedrawHandle, pollster, shared_context};
-
         let mut renderer = ParticleRenderer::new(ResolvedParticleConfig {
             collision_enabled: true,
             collision_bounds: [0.0, 0.0, 1.0, 1.0],
@@ -1085,18 +1290,8 @@ mod tests {
             ..particle_test_config(1)
         });
 
-        shared_context::init_shared_context().expect("shared gpu context must initialize");
-        let shared = shared_context::shared_context();
-        let guard = shared.read();
-        let ctx = GpuContext {
-            adapter: Some(&guard.adapter),
-            device: guard.device.as_ref(),
-            queue: guard.queue.as_ref(),
-            surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            msaa_samples: 1,
-            pipeline_cache: guard.pipeline_cache.as_ref(),
-            redraw_handle: RedrawHandle::new(),
-        };
+        let runtime = test_gpu_runtime();
+        let ctx = test_gpu_context(&runtime);
         let mut env = waterui_core::Environment::new();
         pollster::block_on(renderer.setup(&ctx, &mut env));
 
@@ -1145,42 +1340,16 @@ mod tests {
             uniform_data.as_ref(),
         );
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("particle_collision_buffer_test_encoder"),
-            });
-        let target_index =
-            renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
-
         let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get();
-        let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("particle_collision_buffer_test_readback"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_buffer_to_buffer(
-            renderer.particle_buffer(target_index),
-            0,
-            &readback,
-            0,
-            buffer_size,
+        let mapped = simulate_and_read_particles(
+            &renderer,
+            &ctx,
+            1,
+            "particle_collision_buffer_test_readback",
         );
-        ctx.queue.submit([encoder.finish()]);
-
-        let slice = readback.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv()
-            .expect("particle collision readback callback dropped")
-            .expect("particle collision readback mapping failed");
-
-        let mapped = slice.get_mapped_range();
-        let updated = bytemuck::pod_read_unaligned::<GpuParticle>(&mapped[..buffer_size as usize]);
+        let updated = bytemuck::pod_read_unaligned::<GpuParticle>(
+            &mapped[..usize::try_from(buffer_size).expect("particle buffer size must fit usize")],
+        );
         assert!(
             (updated.pos.x - 0.9).abs() < 0.0001,
             "particle should clamp against the right wall, got {}",
@@ -1196,16 +1365,10 @@ mod tests {
             "particle tangential velocity should be damped on collision, got {}",
             updated.vel.y
         );
-
-        drop(mapped);
-        readback.unmap();
     }
 
     #[test]
     fn compute_pass_applies_circle_obstacle_collision_on_gpu() {
-        use std::sync::mpsc;
-        use waterui_graphics::{GpuContext, gpu_surface::RedrawHandle, pollster, shared_context};
-
         let mut renderer = ParticleRenderer::new(ResolvedParticleConfig {
             collision_circle_obstacles: vec![[0.3, 0.4, 0.08], [0.8, 0.5, 0.05]],
             collision_restitution: 0.5,
@@ -1213,18 +1376,8 @@ mod tests {
             ..particle_test_config(1)
         });
 
-        shared_context::init_shared_context().expect("shared gpu context must initialize");
-        let shared = shared_context::shared_context();
-        let guard = shared.read();
-        let ctx = GpuContext {
-            adapter: Some(&guard.adapter),
-            device: guard.device.as_ref(),
-            queue: guard.queue.as_ref(),
-            surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            msaa_samples: 1,
-            pipeline_cache: guard.pipeline_cache.as_ref(),
-            redraw_handle: RedrawHandle::new(),
-        };
+        let runtime = test_gpu_runtime();
+        let ctx = test_gpu_context(&runtime);
         let mut env = waterui_core::Environment::new();
         pollster::block_on(renderer.setup(&ctx, &mut env));
 
@@ -1271,42 +1424,16 @@ mod tests {
             uniform_data.as_ref(),
         );
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("particle_circle_collision_buffer_test_encoder"),
-            });
-        let target_index =
-            renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
-
         let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get();
-        let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("particle_circle_collision_buffer_test_readback"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_buffer_to_buffer(
-            renderer.particle_buffer(target_index),
-            0,
-            &readback,
-            0,
-            buffer_size,
+        let mapped = simulate_and_read_particles(
+            &renderer,
+            &ctx,
+            1,
+            "particle_circle_collision_buffer_test_readback",
         );
-        ctx.queue.submit([encoder.finish()]);
-
-        let slice = readback.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv()
-            .expect("particle obstacle collision readback callback dropped")
-            .expect("particle obstacle collision readback mapping failed");
-
-        let mapped = slice.get_mapped_range();
-        let updated = bytemuck::pod_read_unaligned::<GpuParticle>(&mapped[..buffer_size as usize]);
+        let updated = bytemuck::pod_read_unaligned::<GpuParticle>(
+            &mapped[..usize::try_from(buffer_size).expect("particle buffer size must fit usize")],
+        );
         assert!(
             (updated.pos.x - 0.9).abs() < 0.0001,
             "particle should clamp against the second obstacle surface, got {}",
@@ -1322,16 +1449,10 @@ mod tests {
             "particle tangential velocity should be damped against the obstacle, got {}",
             updated.vel.y
         );
-
-        drop(mapped);
-        readback.unmap();
     }
 
     #[test]
     fn compute_pass_applies_particle_neighbor_interaction_on_gpu() {
-        use std::sync::mpsc;
-        use waterui_graphics::{GpuContext, gpu_surface::RedrawHandle, pollster, shared_context};
-
         let mut renderer = ParticleRenderer::new(ResolvedParticleConfig {
             interaction_enabled: true,
             interaction_radius: 0.02,
@@ -1339,18 +1460,8 @@ mod tests {
             ..particle_test_config(2)
         });
 
-        shared_context::init_shared_context().expect("shared gpu context must initialize");
-        let shared = shared_context::shared_context();
-        let guard = shared.read();
-        let ctx = GpuContext {
-            adapter: Some(&guard.adapter),
-            device: guard.device.as_ref(),
-            queue: guard.queue.as_ref(),
-            surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            msaa_samples: 1,
-            pipeline_cache: guard.pipeline_cache.as_ref(),
-            redraw_handle: RedrawHandle::new(),
-        };
+        let runtime = test_gpu_runtime();
+        let ctx = test_gpu_context(&runtime);
         let mut env = waterui_core::Environment::new();
         pollster::block_on(renderer.setup(&ctx, &mut env));
 
@@ -1397,42 +1508,14 @@ mod tests {
             uniform_data.as_ref(),
         );
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("particle_neighbor_interaction_test_encoder"),
-            });
-        let target_index =
-            renderer.encode_simulation_passes(&mut encoder, renderer.current_particle_buffer_index);
-
-        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() * 2;
-        let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("particle_neighbor_interaction_test_readback"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_buffer_to_buffer(
-            renderer.particle_buffer(target_index),
-            0,
-            &readback,
-            0,
-            buffer_size,
+        let mapped = simulate_and_read_particles(
+            &renderer,
+            &ctx,
+            2,
+            "particle_neighbor_interaction_test_readback",
         );
-        ctx.queue.submit([encoder.finish()]);
-
-        let slice = readback.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv()
-            .expect("particle neighbor interaction readback callback dropped")
-            .expect("particle neighbor interaction readback mapping failed");
-
-        let mapped = slice.get_mapped_range();
-        let stride = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as usize;
+        let stride = usize::try_from(<GpuParticle as ShaderSize>::SHADER_SIZE.get())
+            .expect("GpuParticle shader size must fit usize");
         let first_updated = bytemuck::pod_read_unaligned::<GpuParticle>(&mapped[..stride]);
         let second_updated =
             bytemuck::pod_read_unaligned::<GpuParticle>(&mapped[stride..(2 * stride)]);
@@ -1446,8 +1529,5 @@ mod tests {
             "second particle should be pushed right, got {}",
             second_updated.vel.x
         );
-
-        drop(mapped);
-        readback.unmap();
     }
 }

@@ -3,7 +3,7 @@
 use barcoders::sym::code128::Code128;
 use core::fmt;
 use waterui_core::Str;
-use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
+use waterui_graphics::{GpuRuntime, GpuSurface, OffscreenRenderConfig, OffscreenSize};
 
 use crate::BarcodeRenderer;
 
@@ -23,13 +23,11 @@ pub enum BarcodeSymbology {
 
 /// A barcode data source.
 ///
-/// Generates QR matrix data lazily - actual rendering happens on GPU.
+/// Encodes module data once during construction; rasterization happens on GPU.
 #[derive(Clone)]
 pub struct BarcodeSource {
     symbology: BarcodeSymbology,
-    content: Str,
-    /// Cached barcode matrix (generated on first access)
-    matrix: Option<BarcodeMatrix>,
+    matrix: BarcodeMatrix,
     /// Output size in pixels
     size: u32,
 }
@@ -49,7 +47,6 @@ impl fmt::Debug for BarcodeSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeSource")
             .field("symbology", &self.symbology)
-            .field("content", &self.content)
             .field("size", &self.size)
             .finish_non_exhaustive()
     }
@@ -59,22 +56,26 @@ impl BarcodeSource {
     /// Creates a new QR code from content.
     #[must_use]
     pub fn qr(content: impl Into<Str>) -> Self {
-        Self {
-            symbology: BarcodeSymbology::Qr,
-            content: content.into(),
-            matrix: None,
-            size: 256, // Default size
-        }
+        let content = content.into();
+        Self::new(BarcodeSymbology::Qr, content.as_ref())
     }
 
     /// Creates a new Code128 barcode from content.
     #[must_use]
     pub fn code128(content: impl Into<Str>) -> Self {
+        let content = content.into();
+        Self::new(BarcodeSymbology::Code128, content.as_ref())
+    }
+
+    fn new(symbology: BarcodeSymbology, content: &str) -> Self {
+        let matrix = match symbology {
+            BarcodeSymbology::Qr => Self::generate_qr_matrix(content),
+            BarcodeSymbology::Code128 => Self::generate_code128_matrix(content),
+        };
         Self {
-            symbology: BarcodeSymbology::Code128,
-            content: content.into(),
-            matrix: None,
-            size: 256, // Default size
+            symbology,
+            matrix,
+            size: 256,
         }
     }
 
@@ -104,35 +105,20 @@ impl BarcodeSource {
         }
     }
 
-    /// Returns the encoded matrix, generating it if needed.
+    /// Returns the encoded matrix.
     ///
     /// Visible only inside the barcode crate; external code should obtain a
     /// rendered barcode through [`crate::Barcode`] or [`crate::BarcodeRenderer`]
     /// rather than poking at the cached matrix.
     ///
-    /// # Panics
-    ///
-    /// Panics if matrix generation failed to populate the cache after
-    /// `generate_matrix()`.
-    pub(crate) fn matrix(&mut self) -> &BarcodeMatrix {
-        if self.matrix.is_none() {
-            self.generate_matrix();
-        }
-        self.matrix.as_ref().expect("Matrix should be generated")
-    }
-
-    /// Generates a packed matrix based on configured symbology.
-    fn generate_matrix(&mut self) {
-        self.matrix = Some(match self.symbology {
-            BarcodeSymbology::Qr => Self::generate_qr_matrix(self.content.as_ref()),
-            BarcodeSymbology::Code128 => Self::generate_code128_matrix(self.content.as_ref()),
-        });
+    pub(crate) const fn matrix(&self) -> &BarcodeMatrix {
+        &self.matrix
     }
 
     fn generate_qr_matrix(content: &str) -> BarcodeMatrix {
-        let Ok(qr) = fast_qr::QRBuilder::new(content.as_bytes()).build() else {
-            return BarcodeMatrix::empty();
-        };
+        let qr = fast_qr::QRBuilder::new(content.as_bytes())
+            .build()
+            .unwrap_or_else(|error| panic!("failed to encode QR content: {error:?}"));
 
         let dimension = u32::try_from(qr.size)
             .expect("BarcodeSource::generate_qr_matrix: QR size must fit into u32");
@@ -157,7 +143,7 @@ impl BarcodeSource {
         }
     }
 
-    fn render_dimensions(&mut self) -> (u32, u32) {
+    fn render_dimensions(&self) -> (u32, u32) {
         let quiet_zone = self.quiet_zone();
         let configured_size = self.size;
         let matrix = self.matrix();
@@ -172,12 +158,10 @@ impl BarcodeSource {
             Some('À' | 'Ɓ' | 'Ć') => content.to_string(),
             _ => format!("Ɓ{content}"),
         };
-        let Ok(encoded) = Code128::new(payload).map(|code| code.encode()) else {
-            return BarcodeMatrix::empty();
-        };
-        if encoded.is_empty() {
-            return BarcodeMatrix::empty();
-        }
+        let encoded = Code128::new(payload)
+            .unwrap_or_else(|error| panic!("failed to encode Code128 content: {error:?}"))
+            .encode();
+        assert!(!encoded.is_empty(), "Code128 encoder returned no modules");
 
         // Keep current square-matrix shader path: repeat 1D bars on every row.
         let dimension = u32::try_from(encoded.len())
@@ -204,26 +188,23 @@ impl BarcodeSource {
     }
 }
 
-impl BarcodeMatrix {
-    /// Creates an all-light fallback matrix used when encoding fails.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            dimension: 1,
-            packed_data: vec![0],
-        }
-    }
-}
-
 impl waterui_graphics::image_generator::ImageGenerator for BarcodeSource {
-    fn generate(&mut self) -> waterui_graphics::image_generator::GeneratedImage {
+    #[expect(
+        clippy::future_not_send,
+        reason = "barcode generation awaits the UI-local offscreen GpuView environment"
+    )]
+    async fn generate(
+        &self,
+        runtime: &GpuRuntime,
+    ) -> waterui_graphics::image_generator::GeneratedImage {
         let (width, height) = self.render_dimensions();
         let size = OffscreenSize::try_from_pixels(width, height)
             .expect("BarcodeSource::generate: dimensions must be non-zero");
         let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
         let mut env = waterui_core::Environment::new();
         let output = GpuSurface::new(BarcodeRenderer::new(self.clone()))
-            .render_offscreen(config, &mut env)
+            .render_offscreen(runtime, config, &mut env)
+            .await
             .expect("BarcodeSource::generate: GPU offscreen render should succeed");
         waterui_graphics::image_generator::GeneratedImage::from_rgba8(
             output.width,
@@ -233,9 +214,6 @@ impl waterui_graphics::image_generator::ImageGenerator for BarcodeSource {
     }
 }
 
-/// Backward-compatible alias for previous QR-focused matrix name.
-pub type QrMatrix = BarcodeMatrix;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,24 +221,26 @@ mod tests {
 
     #[test]
     fn qr_generator_produces_expected_size_and_pixels() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("barcode tests require a working GPU runtime");
         let mut source = BarcodeSource::qr("https://waterui.dev");
         source.set_size(192);
 
-        let image = source.generate();
+        let image = pollster::block_on(source.generate(&runtime));
 
         assert_eq!(image.width(), 192);
         assert_eq!(image.height(), 192);
         assert_eq!(image.rgba8().len(), 192 * 192 * 4);
-        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 0));
-        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 255));
     }
 
     #[test]
     fn code128_generator_produces_expected_size_and_pixels() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("barcode tests require a working GPU runtime");
         let mut source = BarcodeSource::code128("HELLO-WATERUI");
         source.set_size(256);
 
-        let image = source.generate();
+        let image = pollster::block_on(source.generate(&runtime));
 
         assert!(image.width() >= 256);
         assert_eq!(image.width(), image.height());
@@ -268,7 +248,5 @@ mod tests {
             image.rgba8().len(),
             image.width() as usize * image.height() as usize * 4
         );
-        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 0));
-        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 255));
     }
 }

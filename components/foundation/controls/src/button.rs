@@ -131,7 +131,7 @@ use alloc::boxed::Box;
 use executor_core::spawn_local;
 use nami::Computed;
 use nami::signal::IntoComputed;
-use waterui_core::handler::{BoxedAction, Handler, shared_action};
+use waterui_core::handler::{BoxedAction, Handler};
 use waterui_core::interaction::Disabled;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
@@ -550,14 +550,9 @@ where
             style: _,
             disabled,
         } = value;
-        Self {
-            label,
-            action: shared_action(move |env: Environment| action(&env)),
-            disabled,
-            selected: Computed::constant(false),
-            shortcut: None,
-            captured_env: Environment::new(),
-        }
+        Self::builder(label)
+            .action(move |env: Environment| action(&env))
+            .disabled(disabled)
     }
 }
 
@@ -601,10 +596,12 @@ mod tests {
 
     #[test]
     fn menu_command_preserves_label_through_config_render_roundtrip() {
-        let rendered = button(Label::new("Edit").icon(waterui_icon::system_icon::search()))
-            .action(|| {})
-            .config()
-            .render();
+        crate::init_test_executor();
+        let rendered =
+            button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
+                .action(|| {})
+                .config()
+                .render();
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
@@ -626,13 +623,15 @@ mod tests {
 
     #[test]
     fn accessibility_label_overrides_text_only() {
+        crate::init_test_executor();
         // Calling .accessibility_label("X") must rewrite the spoken text
         // while preserving the visible text and icon attached at construction time.
-        let rendered = button(Label::new("Edit").icon(waterui_icon::system_icon::search()))
-            .accessibility_label("Edit document")
-            .action(|| {})
-            .config()
-            .render();
+        let rendered =
+            button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
+                .accessibility_label("Edit document")
+                .action(|| {})
+                .config()
+                .render();
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command

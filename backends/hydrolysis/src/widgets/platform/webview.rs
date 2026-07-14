@@ -86,8 +86,11 @@ fn webview_render_env(env: &Environment) -> Environment {
 /// persistent `Widget` node holds it as a [`RetainedSubview`] built once and
 /// re-flushed each frame. The status/navigation reactivity is carried by the inner
 /// `Text` nodes, which become live `Dynamic`/`Text` nodes inside the sub-view — a
-/// navigation or load event updates without rebuilding the node.
+/// navigation or load event updates without rebuilding the node. The source
+/// [`WebView`] remains owned by the state because it owns the reactive URL watcher
+/// and native handle for exactly the retained node's lifetime.
 pub(crate) struct WebViewRenderState {
+    _source: WebView,
     /// The scoped environment the content was built under (webview a11y label/role
     /// removed), reused at flush so the inner render-driven a11y matches the build.
     render_env: Environment,
@@ -95,11 +98,12 @@ pub(crate) struct WebViewRenderState {
 }
 
 impl WebViewRenderState {
-    pub(crate) fn from_view(view: &WebView, env: &Environment) -> Self {
+    pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
         let render_env = webview_render_env(env);
         let surface_label = webview_surface_label(env);
-        let content = webview_content(view, &surface_label, &render_env);
+        let content = webview_content(&view, &surface_label, &render_env);
         Self {
+            _source: view,
             render_env,
             content: RetainedSubview::new(content),
         }

@@ -1,109 +1,120 @@
 //! Shared audio capture logic for visualizers.
 
 use futures::StreamExt;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    cell::{Cell, Ref, RefCell},
+    fmt,
+    rc::Rc,
 };
-use waterkit_audio::AudioRecorderBuilder;
+use waterkit_audio::{AudioBuffer, AudioRecorderBuilder};
 
 /// Number of audio samples in the buffer.
 pub const SAMPLES_COUNT: usize = 1024;
 
-/// Shared audio state between capture thread and renderer.
+/// Shared audio state between the local capture task and renderers.
 ///
-/// Creating an `AudioCapture` starts one recorder thread. Clone the handle to
-/// share that same capture session across multiple visualizers.
-#[derive(Clone, Debug)]
+/// Construction is side-effect free. The first GPU renderer using the capture
+/// starts one recorder task during its setup; clones share that task and sample
+/// buffer.
+#[derive(Clone)]
 pub struct AudioCapture {
-    /// Raw audio samples.
-    pub samples: Arc<Mutex<Vec<f32>>>,
-    /// Smoothed samples for display.
-    pub smoothed: Arc<Mutex<Vec<f32>>>,
-    /// Whether capture is active.
-    running: Arc<AtomicBool>,
+    state: Rc<AudioCaptureState>,
+}
+
+struct AudioCaptureState {
+    samples: RefCell<Box<[f32; SAMPLES_COUNT]>>,
+    active: Cell<bool>,
+}
+
+impl fmt::Debug for AudioCapture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AudioCapture")
+            .field("active", &self.state.active.get())
+            .finish_non_exhaustive()
+    }
 }
 
 impl AudioCapture {
-    /// Create a new audio capture and start the capture thread.
+    /// Create a shared audio capture session.
+    ///
+    /// Recording starts when the first visualizer using this value completes
+    /// GPU setup.
     #[must_use]
     pub fn new() -> Self {
-        let samples = Arc::new(Mutex::new(vec![0.0; SAMPLES_COUNT]));
-        let smoothed = Arc::new(Mutex::new(vec![0.0; SAMPLES_COUNT]));
-        let running = Arc::new(AtomicBool::new(true));
+        Self {
+            state: Rc::new(AudioCaptureState {
+                samples: RefCell::new(Box::new([0.0; SAMPLES_COUNT])),
+                active: Cell::new(false),
+            }),
+        }
+    }
 
-        let capture = Self {
-            samples: samples.clone(),
-            smoothed,
-            running: running.clone(),
-        };
+    pub(crate) fn activate(&self) {
+        if self.state.active.replace(true) {
+            return;
+        }
 
-        // Spawn audio capture thread
-        std::thread::spawn(move || {
-            let mut recorder = match AudioRecorderBuilder::new().build() {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("Failed to create AudioRecorder: {:?}", e);
-                    return;
+        let (sender, receiver) = async_channel::bounded(1);
+        let state = Rc::downgrade(&self.state);
+
+        executor_core::spawn_local(async move {
+            let capture = blocking::unblock(move || capture_audio(sender));
+            let consume = async move {
+                let mut write_pos = 0;
+                while let Ok(buffer) = receiver.recv().await {
+                    let Some(state) = state.upgrade() else {
+                        break;
+                    };
+                    let mut samples = state.samples.borrow_mut();
+                    for &sample in buffer.samples() {
+                        samples[write_pos] = sample;
+                        write_pos = (write_pos + 1) % SAMPLES_COUNT;
+                    }
                 }
             };
 
-            if let Err(e) = pollster::block_on(recorder.start()) {
-                tracing::error!("Failed to start recording: {:?}", e);
-                return;
-            }
-
-            tracing::info!("Audio capture started");
-
-            let mut write_pos: usize = 0;
-
-            let mut audio_stream = Box::pin(recorder.stream());
-
-            while running.load(Ordering::Relaxed) {
-                if let Some(buffer) = pollster::block_on(audio_stream.next()) {
-                    let audio_samples = buffer.samples();
-                    if let Ok(mut lock) = samples.lock() {
-                        for &s in audio_samples {
-                            lock[write_pos] = s;
-                            write_pos = (write_pos + 1) % SAMPLES_COUNT;
-                        }
-                    }
-                } else {
-                    tracing::error!("Audio stream ended");
-                    break;
-                }
-            }
-        });
-
-        capture
+            futures::future::join(capture, consume).await;
+        })
+        .detach();
     }
 
-    /// Get smoothed samples with temporal interpolation.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal sample mutex is poisoned.
-    #[must_use]
-    pub fn get_smoothed_samples(&self, smoothing: f32) -> Vec<f32> {
-        let raw = self.samples.lock().unwrap().clone();
-        let mut smoothed = self.smoothed.lock().unwrap();
+    pub(crate) fn samples(&self) -> Ref<'_, [f32; SAMPLES_COUNT]> {
+        Ref::map(self.state.samples.borrow(), |samples| samples.as_ref())
+    }
+}
 
-        for (i, &target) in raw.iter().enumerate() {
-            smoothed[i] = smoothed[i].mul_add(1.0 - smoothing, target * smoothing);
+fn capture_audio(sender: async_channel::Sender<AudioBuffer>) {
+    futures::executor::block_on(async move {
+        let mut recorder = AudioRecorderBuilder::new()
+            .build()
+            .expect("AudioCapture failed to create the platform recorder");
+        recorder
+            .start()
+            .await
+            .expect("AudioCapture failed to start the platform recorder");
+        tracing::info!("Audio capture started");
+
+        let mut audio_stream = Box::pin(recorder.stream());
+        loop {
+            let buffer = audio_stream
+                .next()
+                .await
+                .expect("AudioCapture stream ended while the capture session was active");
+            if sender.force_send(buffer).is_err() {
+                break;
+            }
         }
+        drop(audio_stream);
 
-        smoothed.clone()
-    }
+        recorder
+            .stop()
+            .await
+            .expect("AudioCapture failed to stop the platform recorder");
+    });
 }
 
 impl Default for AudioCapture {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Drop for AudioCapture {
-    fn drop(&mut self) {
-        self.running.store(false, Ordering::Relaxed);
     }
 }

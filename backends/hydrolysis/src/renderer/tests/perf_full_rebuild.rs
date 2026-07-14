@@ -25,11 +25,10 @@ use std::time::Instant;
 use waterui::reactive::binding;
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt as _};
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::{AnyView, Binding, Environment};
+use waterui_core::{AnyView, Binding, Computed};
 
-use super::MinimalTestTheme;
+use super::test_environment;
 use crate::HeadlessRuntime;
-use crate::engine::WidgetTheme;
 use crate::platform::InputEvent;
 
 use vello::kurbo::Affine;
@@ -141,8 +140,7 @@ fn measure_rebuild(cards: usize, with_text: bool) -> Stats {
     for _ in 0..SAMPLE_FRAMES {
         let builder =
             AnyViewBuilder::<AnyView>::new(move || rebuild_screen(cards, with_text, binding(0u64)));
-        let mut env = Environment::new();
-        env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+        let env = test_environment();
         let mut rt = HeadlessRuntime::new_for_tests(env, builder, WINDOW_W, WINDOW_H);
         let result = rt.pump_at(false, Instant::now());
         assert!(
@@ -160,8 +158,7 @@ fn measure_rebuild(cards: usize, with_text: bool) -> Stats {
 /// retained draw-ops — but still re-registers interaction/accessibility targets.
 fn measure_replay(cards: usize, with_text: bool) -> (Stats, u32) {
     let builder = AnyViewBuilder::<AnyView>::new(move || replay_screen(cards, with_text));
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = HeadlessRuntime::new_for_tests(env, builder, WINDOW_W, WINDOW_H);
 
     let start = Instant::now();
@@ -441,7 +438,7 @@ fn proto_row() -> ProtoNode {
     ProtoNode::Container {
         layout: Box::new(HStackLayout {
             alignment: VerticalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         }),
         children: vec![
             proto_color(36.0, 36.0, [0.23, 0.51, 0.96, 1.0]),
@@ -456,7 +453,7 @@ fn build_proto_screen(rows: usize) -> ProtoNode {
     ProtoNode::Container {
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
-            spacing: 10.0,
+            spacing: Computed::constant(10.0),
         }),
         children: (0..rows).map(|_| proto_row()).collect(),
         placed: Vec::new(),

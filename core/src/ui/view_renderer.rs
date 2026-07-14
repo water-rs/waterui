@@ -53,11 +53,8 @@ pub trait CustomViewRenderer: 'static {
     /// 2. Render the view hierarchy (native widgets + GPU surfaces)
     /// 3. Capture the final composited result to RGBA pixels
     /// 4. Return the pixel data
-    fn render_to_rgba(
-        &self,
-        view: AnyView,
-        size: RenderSize,
-    ) -> impl Future<Output = RenderResult>;
+    fn render_to_rgba(&self, view: AnyView, size: RenderSize)
+    -> impl Future<Output = RenderResult>;
 }
 
 /// Object-safe shim over [`CustomViewRenderer`] so [`ViewRenderer`] can box the

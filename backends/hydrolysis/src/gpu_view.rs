@@ -1,6 +1,6 @@
 use waterui::View;
-use waterui_core::Environment;
 use waterui_core::layout::StretchAxis;
+use waterui_core::{AnyView, Environment};
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, SceneViewMergeToParent};
 
 use crate::renderer::HydrolysisRenderer;
@@ -12,6 +12,7 @@ where
     V: View + Clone + 'static,
 {
     view: V,
+    adapter: Option<wgpu::Adapter>,
     renderer: Option<HydrolysisRenderer>,
     env: Option<Environment>,
     needs_rebuild: bool,
@@ -25,6 +26,7 @@ where
     pub fn new(view: V) -> Self {
         Self {
             view,
+            adapter: None,
             renderer: None,
             env: None,
             needs_rebuild: true,
@@ -37,12 +39,24 @@ where
     V: View + Clone + 'static,
 {
     async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut Environment) {
-        self.renderer = Some(HydrolysisRenderer::new(ctx.device));
-        self.env = Some(env.extending(SceneViewMergeToParent));
+        let scoped_env = env.extending(SceneViewMergeToParent);
+        let mut renderer = HydrolysisRenderer::new(ctx.device);
+        renderer.set_host_redraw_handle(ctx.redraw_handle.clone());
+        renderer.prepare_window_tree(AnyView::new(self.view.clone()), &scoped_env);
+        renderer.setup_embedded_gpu_surfaces(ctx).await;
+        renderer.setup_embedded_effects(ctx).await;
+
+        self.adapter = Some(ctx.adapter.clone());
+        self.renderer = Some(renderer);
+        self.env = Some(scoped_env);
     }
 
     #[allow(clippy::cast_precision_loss)]
     fn render(&mut self, frame: &mut GpuFrame) {
+        let adapter = self
+            .adapter
+            .as_ref()
+            .expect("HydrolysisGpuView adapter missing");
         let renderer = self
             .renderer
             .as_mut()
@@ -52,7 +66,8 @@ where
             .as_ref()
             .expect("HydrolysisGpuView environment missing");
 
-        renderer.set_frame_resources(frame.device, frame.queue);
+        renderer.set_frame_resources(adapter, frame.device, frame.queue);
+        renderer.poll_gpu_surface_redraw_handles();
 
         let animation_dirty = renderer.advance_animations();
         let rebuild_requested = renderer.take_rebuild_request();
@@ -80,6 +95,7 @@ where
         }
 
         renderer.render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
+            adapter,
             device: frame.device,
             queue: frame.queue,
             texture: Some(frame.texture),
@@ -92,7 +108,9 @@ where
         // Work raised during this render — a structural request or a reactive
         // patch — needs another frame. The patch bit is only peeked (not taken)
         // so the next render's `take_patch_request` still observes it.
-        let next_frame = renderer.take_rebuild_request() || renderer.has_patch_request();
+        let next_frame = renderer.take_rebuild_request()
+            || renderer.has_patch_request()
+            || renderer.take_redraw_request();
         renderer.clear_frame_resources();
 
         if animation_dirty || next_frame {

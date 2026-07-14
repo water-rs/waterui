@@ -103,7 +103,8 @@ pub(crate) fn tabs_accessibility(
     env: &Environment,
 ) {
     let metrics = widget_theme(env).tabs_metrics();
-    let (bar_rect, _content_rect) = tabs_bar_and_content_rect(ctx.bounds, position, metrics.bar_height);
+    let (bar_rect, _content_rect) =
+        tabs_bar_and_content_rect(ctx.bounds, position, metrics.bar_height);
     let mut tab_list = AccessibilityNode::new(
         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::TabList),
     );
@@ -163,7 +164,8 @@ pub(crate) fn measure_tabs_node(
         bar_width += (f64::from(label_size.width) + metrics.button_horizontal_inset * 2.0)
             .max(metrics.button_min_width);
 
-        let content = crate::renderer::normalize_layout_view(AnyView::new(tab.content.build()), env);
+        let content =
+            crate::renderer::normalize_layout_view(AnyView::new(tab.content.build()), env);
         let content_size = measure_view_intrinsic(&content, hydro, env);
         max_content_width = max_content_width.max(f64::from(content_size.width));
         max_content_height = max_content_height.max(f64::from(content_size.height));
@@ -195,13 +197,24 @@ pub(crate) fn render_tabs_node(
                     .iter()
                     .enumerate()
                     .map(|(index, tab)| {
-                        (tab.tag, tab.label.default_a11y_label(), index == selected_index)
+                        (
+                            tab.tag,
+                            tab.label.default_a11y_label(),
+                            index == selected_index,
+                        )
                     })
                     .collect();
                 (st.selection.clone(), st.position, labels)
             };
             let render_ctx = ctx.render_context();
-            tabs_accessibility(ctx.renderer_mut(), render_ctx, &selection, position, &labels, env);
+            tabs_accessibility(
+                ctx.renderer_mut(),
+                render_ctx,
+                &selection,
+                position,
+                &labels,
+                env,
+            );
         }
     }
     render_tabs_parts(ctx, state, env);
@@ -214,7 +227,10 @@ pub(crate) fn render_tabs_parts(
 ) {
     let (selection, position, tab_count) = {
         let st = state.borrow();
-        assert!(!st.tabs.is_empty(), "hydrolysis Tabs requires at least one tab");
+        assert!(
+            !st.tabs.is_empty(),
+            "hydrolysis Tabs requires at least one tab"
+        );
         (st.selection.clone(), st.position, st.tabs.len())
     };
     let selected_id = ctx.renderer_mut().read_signal(&selection);
@@ -258,7 +274,12 @@ pub(crate) fn render_tabs_parts(
                     );
                     theme.draw_tabs_highlight(&mut draw, highlight);
                 }
-                theme.draw_tabs_button_state_layer(&mut draw, button_rect, is_selected, interaction);
+                theme.draw_tabs_button_state_layer(
+                    &mut draw,
+                    button_rect,
+                    is_selected,
+                    interaction,
+                );
             }
             let selection_binding = selection.clone();
             let tab_id = state.borrow().tabs[index].tag;
@@ -281,9 +302,12 @@ pub(crate) fn render_tabs_parts(
             #[cfg(feature = "accessibility")]
             ctx.renderer_mut().push_accessibility_suppression();
             let render_ctx = ctx.render_context();
-            state.borrow_mut().tabs[index]
-                .label
-                .flush_in_rect(ctx.renderer_mut(), render_ctx, env, label_rect);
+            state.borrow_mut().tabs[index].label.flush_in_rect(
+                ctx.renderer_mut(),
+                render_ctx,
+                env,
+                label_rect,
+            );
             #[cfg(feature = "accessibility")]
             ctx.renderer_mut().pop_accessibility_suppression();
         }

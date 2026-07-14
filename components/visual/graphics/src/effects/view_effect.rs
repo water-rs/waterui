@@ -6,8 +6,7 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use core::any::TypeId;
+use alloc::{boxed::Box, sync::Arc};
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
@@ -15,8 +14,13 @@ use num_traits::ToPrimitive;
 
 use waterui_core::View;
 
-/// A boxed future for async setup operations.
-pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
+use crate::gpu_surface::RedrawHandle;
+use filtrate::ShaderCache;
+
+type ErasedSetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
+
+/// Thread-safe callback used by a view effect to wake an on-demand renderer.
+pub type ViewEffectRedrawCallback = Arc<dyn Fn() + Send + Sync>;
 
 /// GPU resources provided to the effect renderer during setup.
 ///
@@ -34,6 +38,8 @@ pub struct ViewEffectContext<'a> {
     pub output_format: wgpu::TextureFormat,
     /// Optional pipeline cache for faster pipeline creation.
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
+    /// Device-bound shader module cache owned by the GPU host.
+    pub shader_cache: &'a ShaderCache,
 }
 
 impl fmt::Debug for ViewEffectContext<'_> {
@@ -188,6 +194,12 @@ impl ViewEffectOutput<'_> {
 /// }
 /// ```
 pub trait EffectRenderer: 'static {
+    /// Installs the host callback used when external renderer state becomes dirty.
+    ///
+    /// Renderers without externally driven state can keep the default no-op
+    /// implementation. Stateful renderers install the callback before [`Self::setup`].
+    fn set_redraw_callback(&mut self, _callback: ViewEffectRedrawCallback) {}
+
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, bind groups, samplers, and other
@@ -215,14 +227,18 @@ pub trait EffectRenderer: 'static {
 
 /// Object-safe trait for type-erased effect renderers.
 pub(crate) trait EffectRendererImpl: 'static {
-    fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> SetupFuture<'a>;
+    fn set_redraw_callback(&mut self, callback: ViewEffectRedrawCallback);
+    fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> ErasedSetupFuture<'a>;
     fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput);
     fn needs_redraw(&self) -> bool;
-    fn concrete_type_id(&self) -> TypeId;
 }
 
 impl<T: EffectRenderer> EffectRendererImpl for T {
-    fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> SetupFuture<'a> {
+    fn set_redraw_callback(&mut self, callback: ViewEffectRedrawCallback) {
+        EffectRenderer::set_redraw_callback(self, callback);
+    }
+
+    fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> ErasedSetupFuture<'a> {
         Box::pin(EffectRenderer::setup(self, ctx))
     }
 
@@ -232,10 +248,6 @@ impl<T: EffectRenderer> EffectRendererImpl for T {
 
     fn needs_redraw(&self) -> bool {
         EffectRenderer::needs_redraw(self)
-    }
-
-    fn concrete_type_id(&self) -> TypeId {
-        TypeId::of::<T>()
     }
 }
 
@@ -378,6 +390,8 @@ pub struct ViewEffectErased {
     pub(crate) effect: Box<dyn EffectRendererImpl>,
     /// Output size configuration.
     pub(crate) output_size: OutputSize,
+    /// Handle shared with renderer-driven invalidation callbacks.
+    redraw_handle: RedrawHandle,
 }
 
 impl fmt::Debug for ViewEffectErased {
@@ -389,26 +403,54 @@ impl fmt::Debug for ViewEffectErased {
 }
 
 impl ViewEffectErased {
+    fn new<E: EffectRenderer>(
+        content: waterui_core::AnyView,
+        effect: E,
+        output_size: OutputSize,
+    ) -> Self {
+        let redraw_handle = RedrawHandle::new();
+        let renderer_redraw_handle = redraw_handle.clone();
+        let mut effect: Box<dyn EffectRendererImpl> = Box::new(effect);
+        effect.set_redraw_callback(Arc::new(move || {
+            renderer_redraw_handle.request_redraw();
+        }));
+        Self {
+            content,
+            effect,
+            output_size,
+            redraw_handle,
+        }
+    }
+
     /// Calls `setup` on the effect, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> SetupFuture<'a> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "view-effect setup is driven by the UI-local GPU host executor and intentionally accepts non-Send renderers"
+    )]
+    pub fn setup<'a>(
+        &'a mut self,
+        ctx: &'a ViewEffectContext<'a>,
+    ) -> impl Future<Output = ()> + 'a {
         self.effect.setup(ctx)
     }
 
     /// Calls `render` on the effect.
     pub fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
+        let _ = self.redraw_handle.take_dirty();
         self.effect.render(input, output);
     }
 
     /// Returns whether the effect requests another immediate frame.
     #[must_use]
     pub fn needs_redraw(&self) -> bool {
-        self.effect.needs_redraw()
+        let callback_requested_redraw = self.redraw_handle.take_dirty();
+        self.effect.needs_redraw() || callback_requested_redraw
     }
 
-    /// Returns the concrete runtime effect type id behind this erased wrapper.
+    /// Returns a clone of the handle used to wake the native renderer.
     #[must_use]
-    pub fn concrete_type_id(&self) -> TypeId {
-        self.effect.concrete_type_id()
+    pub fn redraw_handle(&self) -> RedrawHandle {
+        self.redraw_handle.clone()
     }
 
     /// Returns the output size configuration.
@@ -443,12 +485,11 @@ waterui_core::raw_view!(ViewEffectErased, waterui_core::layout::StretchAxis::Non
 
 impl<V: View, E: EffectRenderer> View for ViewEffect<V, E> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        // Convert to type-erased form for FFI
-        ViewEffectErased {
-            content: waterui_core::AnyView::new(self.content),
-            effect: Box::new(self.effect),
-            output_size: self.output_size,
-        }
+        ViewEffectErased::new(
+            waterui_core::AnyView::new(self.content),
+            self.effect,
+            self.output_size,
+        )
     }
 }
 
@@ -461,4 +502,66 @@ fn scaled_dimension(value: u32, factor: f32) -> u32 {
         .clamp(0.0, u32::MAX.to_f32().expect("u32::MAX must fit in f32"))
         .to_u32()
         .expect("view_effect: scaled dimension must convert to u32")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, OnceLock};
+
+    use nami::{Binding, Signal, binding};
+    use waterui_core::AnyView;
+
+    use super::*;
+
+    struct SignalRenderer {
+        callback: Arc<OnceLock<ViewEffectRedrawCallback>>,
+        _watcher_guard: Box<dyn core::any::Any>,
+    }
+
+    impl SignalRenderer {
+        fn new(value: &Binding<f32>) -> Self {
+            let callback = Arc::<OnceLock<ViewEffectRedrawCallback>>::default();
+            let watcher_callback = callback.clone();
+            let guard = value.watch(move |_| {
+                let callback = watcher_callback
+                    .get()
+                    .expect("ViewEffect redraw callback must be installed before signal changes");
+                callback();
+            });
+            Self {
+                callback,
+                _watcher_guard: Box::new(guard),
+            }
+        }
+    }
+
+    impl EffectRenderer for SignalRenderer {
+        fn set_redraw_callback(&mut self, callback: ViewEffectRedrawCallback) {
+            assert!(
+                self.callback.set(callback).is_ok(),
+                "SignalRenderer redraw callback was installed more than once"
+            );
+        }
+
+        fn setup(&mut self, _ctx: &ViewEffectContext) -> impl Future<Output = ()> {
+            core::future::ready(())
+        }
+
+        fn render(&mut self, _input: &ViewEffectInput, _output: &ViewEffectOutput) {}
+    }
+
+    #[test]
+    fn signal_change_pushes_redraw_to_erased_view_effect_handle() {
+        let value = binding(0.0_f32);
+        let erased = ViewEffectErased::new(
+            AnyView::new(()),
+            SignalRenderer::new(&value),
+            OutputSize::MatchInput,
+        );
+        let redraw_handle = erased.redraw_handle();
+
+        assert!(!redraw_handle.is_dirty());
+        value.set(1.0);
+        assert!(redraw_handle.is_dirty());
+    }
 }

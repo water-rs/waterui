@@ -13,92 +13,58 @@ use core::num::NonZeroU32;
 use core::pin::Pin;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
+use futures::channel::oneshot;
 use num_traits::ToPrimitive;
+use parking_lot::RwLock;
 use std::error::Error;
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, MainThreadBound, Native, NativeView, View};
 
-use crate::shared_context::SharedContextError;
+use crate::shared_context::GpuRuntime;
 
-/// Internal boxed future for object-safe GPU setup dispatch.
-#[doc(hidden)]
-pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
+type ErasedSetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 
 /// Picks the best surface format for a [`GpuSurface`].
 ///
 /// `WaterUI` prefers HDR surfaces when available. If the platform/surface does not support an HDR
 /// format, it falls back to a standard sRGB swapchain format (or the first supported format).
+///
+/// # Panics
+///
+/// Panics when the surface reports no supported formats.
 #[must_use]
 pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
-    preferred_surface_format_with_preference(caps, None)
+    preferred_surface_format_with_preference(caps, true)
 }
 
-/// Picks the best surface format for a [`GpuSurface`] with an optional HDR preference override.
-///
-/// - `Some(true)`: prefer HDR when supported.
-/// - `Some(false)`: prefer SDR even if HDR is supported.
-/// - `None`: follow `WATERUI_GPU_PREFER_HDR` behavior.
-#[must_use]
-pub fn surface_hdr_preference_from_env() -> Option<bool> {
-    std::env::var("WATERUI_GPU_PREFER_HDR")
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "FALSE"))
-}
-
-/// Resolves final HDR preference from optional override and environment policy.
-///
-/// Resolution order:
-/// - Explicit override from surface/renderer.
-/// - `WATERUI_GPU_PREFER_HDR` when present.
-/// - Default `true` (prefer HDR).
-#[must_use]
-pub fn resolve_surface_hdr_preference(prefer_hdr_override: Option<bool>) -> bool {
-    prefer_hdr_override
-        .or_else(surface_hdr_preference_from_env)
-        .unwrap_or(true)
-}
-
-/// Picks the best supported surface format using the resolved HDR preference.
+/// Picks the best supported surface format for the platform-resolved HDR preference.
 ///
 /// `WaterUI` prefers HDR surfaces when requested and supported, otherwise it
 /// prefers an sRGB SDR format for correct UI compositing.
+///
+/// # Panics
+///
+/// Panics when the surface reports no supported formats.
 #[must_use]
 pub fn preferred_surface_format_with_preference(
     caps: &wgpu::SurfaceCapabilities,
-    prefer_hdr_override: Option<bool>,
+    prefer_hdr: bool,
 ) -> wgpu::TextureFormat {
     let hdr = wgpu::TextureFormat::Rgba16Float;
-    let prefer_hdr = resolve_surface_hdr_preference(prefer_hdr_override);
 
-    // HDR (linear, extended range) preferred when supported by the surface.
     if prefer_hdr && caps.formats.contains(&hdr) {
         return hdr;
     }
 
-    // Otherwise, prefer sRGB for correct UI compositing on SDR displays.
-    if let Some(fmt) = caps
-        .formats
+    caps.formats
         .iter()
         .copied()
         .find(wgpu::TextureFormat::is_srgb)
-    {
-        return fmt;
-    }
-
-    // HDR as a fallback (when sRGB is unavailable).
-    if caps.formats.contains(&hdr) {
-        return hdr;
-    }
-
-    // Fallback: use the first reported format.
-    caps.formats
-        .first()
-        .copied()
-        .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb)
+        .or_else(|| caps.formats.first().copied())
+        .expect("surface must report at least one supported format")
 }
 
 /// Picks a preferred MSAA sample count for a given format, capped by `max_samples`.
@@ -109,9 +75,9 @@ pub fn preferred_surface_format_with_preference(
 pub fn preferred_msaa_samples(
     adapter: &wgpu::Adapter,
     format: wgpu::TextureFormat,
-    max_samples: u32,
+    max_samples: NonZeroU32,
 ) -> u32 {
-    let max_samples = max_samples.max(1);
+    let max_samples = max_samples.get();
     let features = adapter.get_texture_format_features(format);
     for sample_count in [16u32, 8, 4, 2, 1] {
         if sample_count <= max_samples && features.flags.sample_count_supported(sample_count) {
@@ -127,10 +93,7 @@ pub fn preferred_msaa_samples(
 /// that the renderer can use to create pipelines, buffers, and other resources.
 pub struct GpuContext<'a> {
     /// The GPU adapter used to create the device/queue.
-    ///
-    /// This is optional because some backends may not keep an adapter handle around.
-    /// When present, renderers can use it for format capability queries.
-    pub adapter: Option<&'a wgpu::Adapter>,
+    pub adapter: &'a wgpu::Adapter,
     /// The wgpu device for creating GPU resources.
     pub device: &'a wgpu::Device,
     /// The wgpu queue for submitting commands.
@@ -144,6 +107,8 @@ pub struct GpuContext<'a> {
     pub msaa_samples: u32,
     /// Optional pipeline cache for faster pipeline creation.
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
+    /// Device-bound shader module cache shared by GPU views on this runtime.
+    pub shader_cache: &'a filtrate::ShaderCache,
     /// Handle to request redraws from outside `render()`.
     ///
     /// Clone this during `setup()` and call `request_redraw()` when external
@@ -253,9 +218,27 @@ impl GestureState {
 ///
 /// Cheap to clone. Thread-safe (`Send + Sync`).
 /// Obtain from [`GpuContext::redraw_handle`] during [`GpuView::setup`].
+type RedrawWaker = dyn Fn() + Send + Sync + 'static;
+
+struct RedrawState {
+    dirty: AtomicBool,
+    waker: RwLock<Option<alloc::sync::Arc<RedrawWaker>>>,
+}
+
+impl fmt::Debug for RedrawState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedrawState")
+            .field("dirty", &self.dirty.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+/// A thread-safe handle that schedules another frame for its `GpuSurface`.
+///
+/// Clones share one coalesced dirty bit and one backend wake target.
 #[derive(Clone, Debug)]
 pub struct RedrawHandle {
-    dirty: alloc::sync::Arc<AtomicBool>,
+    state: alloc::sync::Arc<RedrawState>,
 }
 
 impl RedrawHandle {
@@ -263,19 +246,51 @@ impl RedrawHandle {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            dirty: alloc::sync::Arc::new(AtomicBool::new(false)),
+            state: alloc::sync::Arc::new(RedrawState {
+                dirty: AtomicBool::new(false),
+                waker: RwLock::new(None),
+            }),
         }
     }
 
     /// Mark the surface as needing a redraw.
     pub fn request_redraw(&self) {
-        self.dirty.store(true, Ordering::Release);
+        if self.state.dirty.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        let waker = self.state.waker.read().clone();
+        if let Some(waker) = waker {
+            waker();
+        }
+    }
+
+    /// Returns whether a redraw is pending without consuming the request.
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.state.dirty.load(Ordering::Acquire)
     }
 
     /// Check and clear the dirty flag. Returns `true` if a redraw was requested.
     #[must_use]
     pub fn take_dirty(&self) -> bool {
-        self.dirty.swap(false, Ordering::AcqRel)
+        self.state.dirty.swap(false, Ordering::AcqRel)
+    }
+
+    /// Installs the platform wake callback used to leave the idle state.
+    ///
+    /// This is backend infrastructure. Application renderers receive a clone of
+    /// this handle through [`GpuContext`] and only call [`Self::request_redraw`].
+    #[doc(hidden)]
+    pub fn set_waker(&self, waker: Option<alloc::sync::Arc<RedrawWaker>>) {
+        *self.state.waker.write() = waker;
+
+        if self.is_dirty() {
+            let waker = self.state.waker.read().clone();
+            if let Some(waker) = waker {
+                waker();
+            }
+        }
     }
 }
 
@@ -338,7 +353,10 @@ impl fmt::Debug for GpuFrame<'_> {
 impl<'a> GpuFrame<'a> {
     /// Creates a frame payload for a single render pass.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a frame payload carries the complete render target, input, and timing context"
+    )]
     pub const fn new(
         device: &'a wgpu::Device,
         queue: &'a wgpu::Queue,
@@ -460,7 +478,10 @@ pub trait GpuView: 'static {
     /// `env` provides access to the `WaterUI` environment (theme, fonts, etc.).
     ///
     /// Async setup hook for GPU resources.
-    #[allow(async_fn_in_trait)]
+    #[expect(
+        async_fn_in_trait,
+        reason = "GPU setup is deliberately a main-thread, potentially non-Send future"
+    )]
     async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut waterui_core::Environment);
 
     /// Called each frame to render.
@@ -475,7 +496,7 @@ pub trait GpuView: 'static {
     ///
     /// - `Some(true)`: prefer HDR surface formats.
     /// - `Some(false)`: prefer SDR surface formats.
-    /// - `None`: follow global `WATERUI_GPU_PREFER_HDR` behavior.
+    /// - `None`: follow the backend's surrounding platform style.
     ///
     /// This is evaluated by native backends during surface initialization.
     fn preferred_surface_hdr(&self) -> Option<bool> {
@@ -678,40 +699,6 @@ pub struct OffscreenRenderOutputHdr {
 }
 
 impl OffscreenRenderOutputHdr {
-    /// Returns the maximum linear RGB channel value in the output.
-    #[must_use]
-    pub fn max_rgb_linear(&self) -> f32 {
-        let mut max_rgb = 0.0f32;
-        for px in self.rgba16f.chunks_exact(8) {
-            let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
-            let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
-            let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
-            max_rgb = max_rgb.max(r.max(g).max(b));
-        }
-        max_rgb
-    }
-
-    /// Returns the fraction of pixels whose RGB has HDR headroom (`> 1.0`).
-    #[must_use]
-    pub fn hdr_pixel_ratio(&self) -> f32 {
-        let mut total = 0usize;
-        let mut hdr = 0usize;
-        for px in self.rgba16f.chunks_exact(8) {
-            let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
-            let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
-            let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
-            if r > 1.0 || g > 1.0 || b > 1.0 {
-                hdr += 1;
-            }
-            total += 1;
-        }
-        if total == 0 {
-            0.0
-        } else {
-            usize_to_f32(hdr) / usize_to_f32(total)
-        }
-    }
-
     /// Encodes as PNG with automatic dynamic-range handling.
     ///
     /// - If HDR headroom is detected (`RGB > 1.0`), emits a standards-based HDR PNG
@@ -810,14 +797,8 @@ pub enum OffscreenRenderError {
         /// Target texture format.
         format: wgpu::TextureFormat,
     },
-    /// No compatible GPU adapter is available.
-    NoAdapter,
-    /// Shared GPU context initialization failed.
-    SharedContextInitFailed(String),
     /// GPU readback buffer mapping failed.
     ReadbackMapFailed(String),
-    /// Mapping completion channel unexpectedly closed.
-    ReadbackChannelClosed,
     /// PNG encoding failed.
     PngEncodingFailed(String),
     /// Writing PNG to disk failed.
@@ -839,12 +820,7 @@ impl fmt::Display for OffscreenRenderError {
                     "unsupported MSAA sample count {requested} for format {format:?}"
                 )
             }
-            Self::NoAdapter => write!(f, "no compatible GPU adapter available"),
-            Self::SharedContextInitFailed(error) => {
-                write!(f, "failed to initialize GPU context: {error}")
-            }
             Self::ReadbackMapFailed(error) => write!(f, "GPU readback mapping failed: {error}"),
-            Self::ReadbackChannelClosed => write!(f, "GPU readback channel closed"),
             Self::PngEncodingFailed(error) => write!(f, "PNG encoding failed: {error}"),
             Self::PngWriteFailed(error) => write!(f, "PNG write failed: {error}"),
         }
@@ -859,7 +835,7 @@ trait GpuViewImpl: 'static {
         &'a mut self,
         ctx: &'a GpuContext<'a>,
         env: &'a mut waterui_core::Environment,
-    ) -> SetupFuture<'a>;
+    ) -> ErasedSetupFuture<'a>;
     fn render(&mut self, frame: &mut GpuFrame);
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
     fn stretch_axis(&self) -> StretchAxis;
@@ -872,7 +848,7 @@ impl<T: GpuView> GpuViewImpl for T {
         &'a mut self,
         ctx: &'a GpuContext<'a>,
         env: &'a mut waterui_core::Environment,
-    ) -> SetupFuture<'a> {
+    ) -> ErasedSetupFuture<'a> {
         Box::pin(GpuView::setup(self, ctx, env))
     }
 
@@ -936,12 +912,15 @@ pub struct GpuSurface {
     msaa_max_samples: NonZeroU32,
     /// Optional per-surface HDR preference override.
     ///
-    /// `None` follows global `WATERUI_GPU_PREFER_HDR` behavior.
+    /// `None` follows the backend's surrounding platform style.
     /// `Some(true)` prefers HDR, `Some(false)` prefers SDR.
     surface_prefers_hdr: Option<bool>,
     /// Optional picture-in-picture host id for backend registration.
     picture_in_picture_host_id: Option<u64>,
 }
+
+const DEFAULT_MSAA_MAX_SAMPLES: NonZeroU32 =
+    NonZeroU32::new(4).expect("default MSAA sample count is non-zero");
 
 impl fmt::Debug for GpuSurface {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -950,27 +929,15 @@ impl fmt::Debug for GpuSurface {
 }
 
 impl GpuSurface {
-    fn default_msaa_max_samples() -> NonZeroU32 {
-        const FALLBACK: NonZeroU32 = NonZeroU32::new(4).expect("non-zero literal");
-        let requested = std::env::var("WATERUI_GPU_MSAA")
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        let samples = match requested.unwrap_or(4) {
-            1 => 1,
-            2 => 2,
-            4 => 4,
-            8 => 8,
-            16 => 16,
-            _ => FALLBACK.get(),
-        };
-        NonZeroU32::new(samples).unwrap_or(FALLBACK)
-    }
-
     /// Creates a new GPU surface with the provided GPU view.
     ///
     /// # Arguments
     ///
     /// * `view` - An implementation of `GpuView` that handles setup and rendering.
+    ///
+    /// # Panics
+    ///
+    /// Panics when constructed outside the main UI thread.
     ///
     /// # Example
     ///
@@ -981,7 +948,7 @@ impl GpuSurface {
     pub fn new<R: GpuView>(view: R) -> Self {
         Self {
             renderer: MainThreadBound::new(Box::new(view)),
-            msaa_max_samples: Self::default_msaa_max_samples(),
+            msaa_max_samples: DEFAULT_MSAA_MAX_SAMPLES,
             surface_prefers_hdr: None,
             picture_in_picture_host_id: None,
         }
@@ -998,13 +965,13 @@ impl GpuSurface {
 
     /// Returns the preferred maximum MSAA sample count for this surface.
     #[must_use]
-    pub const fn get_msaa_max_samples(&self) -> NonZeroU32 {
+    pub const fn msaa_sample_limit(&self) -> NonZeroU32 {
         self.msaa_max_samples
     }
 
     /// Prefer HDR swapchain formats for this surface when available.
     ///
-    /// This overrides global `WATERUI_GPU_PREFER_HDR` for this surface only.
+    /// This overrides the surrounding platform style for this surface only.
     #[must_use]
     pub const fn prefer_hdr_surface(mut self) -> Self {
         self.surface_prefers_hdr = Some(true);
@@ -1013,18 +980,18 @@ impl GpuSurface {
 
     /// Prefer SDR swapchain formats for this surface even when HDR is available.
     ///
-    /// This overrides global `WATERUI_GPU_PREFER_HDR` for this surface only.
+    /// This overrides the surrounding platform style for this surface only.
     #[must_use]
     pub const fn prefer_sdr_surface(mut self) -> Self {
         self.surface_prefers_hdr = Some(false);
         self
     }
 
-    /// Returns this surface's HDR preference override.
+    /// Resolves this surface's explicit or renderer-provided HDR preference.
     ///
-    /// `None` means follow global environment preference.
+    /// `None` means follow the surrounding platform style.
     #[must_use]
-    pub fn get_surface_prefers_hdr(&self) -> Option<bool> {
+    pub fn resolved_hdr_preference(&self) -> Option<bool> {
         self.surface_prefers_hdr
             .or_else(|| self.renderer.preferred_surface_hdr())
     }
@@ -1038,134 +1005,96 @@ impl GpuSurface {
 
     /// Returns the picture-in-picture host id, if any.
     #[must_use]
-    pub const fn get_picture_in_picture_host_id(&self) -> Option<u64> {
+    pub const fn picture_in_picture_host(&self) -> Option<u64> {
         self.picture_in_picture_host_id
     }
 
-    /// Renders this surface once into an offscreen texture and reads back RGBA8 pixels.
+    /// Renders this surface once into an offscreen texture and asynchronously reads back RGBA8 pixels.
     ///
-    /// This is intended for fast visual regression checks and snapshot generation
+    /// This is intended for visual regression checks and snapshot generation
     /// without launching a full app window.
     ///
     /// # Errors
     ///
-    /// Returns context initialization, format validation, MSAA validation, or readback errors.
-    pub fn render_offscreen(
+    /// Returns format validation, MSAA validation, or readback errors.
+    #[expect(
+        clippy::future_not_send,
+        reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
+    )]
+    pub async fn render_offscreen(
         self,
+        runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
-        self.render_offscreen_frames(config, env, NonZeroU32::MIN)
+        self.render_offscreen_frames(runtime, config, env, NonZeroU32::MIN)
+            .await
     }
 
-    /// Renders this surface into an offscreen texture for `frame_count` frames and reads back RGBA8 pixels.
-    ///
-    /// This is useful for animated GPU views that need one or more warm-up frames before producing a stable snapshot.
+    /// Renders this surface into an offscreen texture for `frame_count` frames and asynchronously reads back RGBA8 pixels.
     ///
     /// # Errors
     ///
-    /// Returns context initialization, format validation, MSAA validation, or readback errors.
-    pub fn render_offscreen_frames(
+    /// Returns format validation, MSAA validation, or readback errors.
+    #[expect(
+        clippy::future_not_send,
+        reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
+    )]
+    pub async fn render_offscreen_frames(
         mut self,
+        runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
         frame_count: NonZeroU32,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
         validate_rgba_readback_format(config.format)?;
-
-        crate::shared_context::init_shared_context().map_err(|e| match e {
-            SharedContextError::NoAdapter => OffscreenRenderError::NoAdapter,
-            error => OffscreenRenderError::SharedContextInitFailed(error.to_string()),
-        })?;
-        let shared = crate::shared_context::shared_context();
-        let guard = shared.read();
-        let offscreen_operation_lock = guard.offscreen_operation_lock();
-        let _offscreen_operation_guard = offscreen_operation_lock.lock();
-
+        let shared = runtime.context();
         let width = config.size.width();
         let height = config.size.height();
-        let adapter = &guard.adapter;
-        let max_msaa = config
-            .msaa_samples
-            .map_or_else(|| self.msaa_max_samples.get(), NonZeroU32::get)
-            .max(1);
-        let supported_msaa = preferred_msaa_samples(adapter, config.format, max_msaa);
-        let msaa_samples = match config.msaa_samples {
-            Some(requested) if requested.get() != supported_msaa => {
-                return Err(OffscreenRenderError::UnsupportedMsaaSamples {
-                    requested: requested.get(),
-                    format: config.format,
-                });
-            }
-            Some(requested) => requested.get(),
-            None => supported_msaa,
+        let msaa_samples = resolve_offscreen_msaa(
+            &shared.adapter,
+            config.format,
+            config.msaa_samples,
+            self.msaa_max_samples,
+        )?;
+        let device = shared.device.as_ref();
+        let queue = shared.queue.as_ref();
+        let context = GpuContext {
+            adapter: &shared.adapter,
+            device,
+            queue,
+            surface_format: config.format,
+            msaa_samples,
+            pipeline_cache: shared.pipeline_cache(),
+            shader_cache: shared.shader_cache(),
+            redraw_handle: RedrawHandle::new(),
         };
-
-        let device = alloc::sync::Arc::clone(&guard.device);
-        let queue = alloc::sync::Arc::clone(&guard.queue);
-        {
-            let ctx = GpuContext {
-                adapter: Some(adapter),
-                device: device.as_ref(),
-                queue: queue.as_ref(),
-                surface_format: config.format,
-                msaa_samples,
-                pipeline_cache: guard.pipeline_cache.as_ref(),
-                redraw_handle: RedrawHandle::new(),
-            };
-            crate::pollster::block_on(self.setup(&ctx, env));
-        }
-        drop(guard);
-        let device = device.as_ref();
-        let queue = queue.as_ref();
+        self.setup(&context, env).await;
 
         let mut texture_usage =
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         if config.format == wgpu::TextureFormat::Rgba8Unorm {
             texture_usage |= wgpu::TextureUsages::STORAGE_BINDING;
         }
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("waterui_offscreen_surface"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: config.format,
-            usage: texture_usage,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let frame_delta = Duration::from_secs_f32(1.0 / 60.0);
-        let mut frame = GpuFrame {
+        let texture = create_offscreen_texture(
             device,
-            queue,
-            texture: &texture,
-            view,
-            format: config.format,
+            "waterui_offscreen_surface",
             width,
             height,
-            pointer: config.pointer,
-            gesture: config.gesture,
-            elapsed: frame_delta,
-            delta: frame_delta,
-            redraw_requested: false,
-        };
-        for frame_index in 0..frame_count.get() {
-            frame.elapsed = frame_delta.saturating_mul(frame_index + 1);
-            frame.delta = frame_delta;
-            self.render(&mut frame);
-        }
-
-        let rgba8 = readback_texture_rgba8(device, queue, &texture, width, height);
-        drop(frame);
-        drop(texture);
-        drop(self);
-        let rgba8 = rgba8?;
+            config.format,
+            texture_usage,
+        );
+        render_offscreen_frames_to_texture(&mut self, device, queue, &texture, config, frame_count);
+        let rgba8 = readback_texture(
+            runtime,
+            &texture,
+            width,
+            height,
+            4,
+            "waterui_offscreen_readback",
+            "waterui_offscreen_readback_encoder",
+        )
+        .await?;
         Ok(OffscreenRenderOutput {
             width,
             height,
@@ -1173,28 +1102,37 @@ impl GpuSurface {
         })
     }
 
-    /// Renders this surface into an HDR offscreen texture and reads back `RGBA16F` pixels.
-    ///
-    /// Use this when you need to preserve HDR headroom during capture/export.
+    /// Renders this surface into an HDR offscreen texture and asynchronously reads back `RGBA16F` pixels.
     ///
     /// # Errors
     ///
-    /// Returns context initialization, format validation, MSAA validation, or readback errors.
-    pub fn render_offscreen_hdr(
+    /// Returns format validation, MSAA validation, or readback errors.
+    #[expect(
+        clippy::future_not_send,
+        reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
+    )]
+    pub async fn render_offscreen_hdr(
         self,
+        runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
-        self.render_offscreen_hdr_frames(config, env, NonZeroU32::MIN)
+        self.render_offscreen_hdr_frames(runtime, config, env, NonZeroU32::MIN)
+            .await
     }
 
-    /// Renders this surface into an HDR offscreen texture for `frame_count` frames and reads back `RGBA16F` pixels.
+    /// Renders this surface into an HDR offscreen texture for `frame_count` frames and asynchronously reads back `RGBA16F` pixels.
     ///
     /// # Errors
     ///
-    /// Returns context initialization, format validation, MSAA validation, or readback errors.
-    pub fn render_offscreen_hdr_frames(
+    /// Returns format validation, MSAA validation, or readback errors.
+    #[expect(
+        clippy::future_not_send,
+        reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
+    )]
+    pub async fn render_offscreen_hdr_frames(
         mut self,
+        runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
         frame_count: NonZeroU32,
@@ -1204,94 +1142,48 @@ impl GpuSurface {
                 config.format,
             ));
         }
-
-        crate::shared_context::init_shared_context().map_err(|e| match e {
-            SharedContextError::NoAdapter => OffscreenRenderError::NoAdapter,
-            error => OffscreenRenderError::SharedContextInitFailed(error.to_string()),
-        })?;
-        let shared = crate::shared_context::shared_context();
-        let guard = shared.read();
-        let offscreen_operation_lock = guard.offscreen_operation_lock();
-        let _offscreen_operation_guard = offscreen_operation_lock.lock();
-
+        let shared = runtime.context();
         let width = config.size.width();
         let height = config.size.height();
-        let adapter = &guard.adapter;
-        let max_msaa = config
-            .msaa_samples
-            .map_or_else(|| self.msaa_max_samples.get(), NonZeroU32::get)
-            .max(1);
-        let supported_msaa = preferred_msaa_samples(adapter, config.format, max_msaa);
-        let msaa_samples = match config.msaa_samples {
-            Some(requested) if requested.get() != supported_msaa => {
-                return Err(OffscreenRenderError::UnsupportedMsaaSamples {
-                    requested: requested.get(),
-                    format: config.format,
-                });
-            }
-            Some(requested) => requested.get(),
-            None => supported_msaa,
-        };
-
-        let device = alloc::sync::Arc::clone(&guard.device);
-        let queue = alloc::sync::Arc::clone(&guard.queue);
-        {
-            let ctx = GpuContext {
-                adapter: Some(adapter),
-                device: device.as_ref(),
-                queue: queue.as_ref(),
-                surface_format: config.format,
-                msaa_samples,
-                pipeline_cache: guard.pipeline_cache.as_ref(),
-                redraw_handle: RedrawHandle::new(),
-            };
-            crate::pollster::block_on(self.setup(&ctx, env));
-        }
-        drop(guard);
-        let device = device.as_ref();
-        let queue = queue.as_ref();
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("waterui_offscreen_surface_hdr"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: config.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let frame_delta = Duration::from_secs_f32(1.0 / 60.0);
-        let mut frame = GpuFrame {
+        let msaa_samples = resolve_offscreen_msaa(
+            &shared.adapter,
+            config.format,
+            config.msaa_samples,
+            self.msaa_max_samples,
+        )?;
+        let device = shared.device.as_ref();
+        let queue = shared.queue.as_ref();
+        let context = GpuContext {
+            adapter: &shared.adapter,
             device,
             queue,
-            texture: &texture,
-            view,
-            format: config.format,
+            surface_format: config.format,
+            msaa_samples,
+            pipeline_cache: shared.pipeline_cache(),
+            shader_cache: shared.shader_cache(),
+            redraw_handle: RedrawHandle::new(),
+        };
+        self.setup(&context, env).await;
+
+        let texture = create_offscreen_texture(
+            device,
+            "waterui_offscreen_surface_hdr",
             width,
             height,
-            pointer: config.pointer,
-            gesture: config.gesture,
-            elapsed: frame_delta,
-            delta: frame_delta,
-            redraw_requested: false,
-        };
-        for frame_index in 0..frame_count.get() {
-            frame.elapsed = frame_delta.saturating_mul(frame_index + 1);
-            frame.delta = frame_delta;
-            self.render(&mut frame);
-        }
-
-        let rgba16f = readback_texture_rgba16f(device, queue, &texture, width, height);
-        drop(frame);
-        drop(texture);
-        drop(self);
-        let rgba16f = rgba16f?;
+            config.format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        render_offscreen_frames_to_texture(&mut self, device, queue, &texture, config, frame_count);
+        let rgba16f = readback_texture(
+            runtime,
+            &texture,
+            width,
+            height,
+            8,
+            "waterui_offscreen_readback_hdr",
+            "waterui_offscreen_readback_hdr_encoder",
+        )
+        .await?;
         Ok(OffscreenRenderOutputHdr {
             width,
             height,
@@ -1300,11 +1192,15 @@ impl GpuSurface {
     }
 
     /// Calls `setup` on the GPU view, returning a future that completes when ready.
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView setup is driven by the UI-local GPU host executor and intentionally accepts non-Send renderers"
+    )]
     pub fn setup<'a>(
         &'a mut self,
         ctx: &'a GpuContext<'a>,
         env: &'a mut waterui_core::Environment,
-    ) -> SetupFuture<'a> {
+    ) -> impl Future<Output = ()> + 'a {
         self.renderer.setup(ctx, env)
     }
 
@@ -1316,7 +1212,13 @@ impl GpuSurface {
     /// Returns this surface's measured size for the given proposal.
     #[must_use]
     pub fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        self.renderer.measure(proposal).size
+        self.measure(proposal).size
+    }
+
+    /// Returns this surface's complete layout dimensions for the proposal.
+    #[must_use]
+    pub fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.renderer.measure(proposal)
     }
 
     /// Returns this surface's stretch behavior.
@@ -1338,6 +1240,80 @@ impl GpuSurface {
     #[must_use]
     pub const fn require_main_thread(&self) -> bool {
         true
+    }
+}
+
+fn resolve_offscreen_msaa(
+    adapter: &wgpu::Adapter,
+    format: wgpu::TextureFormat,
+    requested: Option<NonZeroU32>,
+    default_maximum: NonZeroU32,
+) -> Result<u32, OffscreenRenderError> {
+    let supported = preferred_msaa_samples(adapter, format, requested.unwrap_or(default_maximum));
+    if let Some(requested) = requested
+        && requested.get() != supported
+    {
+        return Err(OffscreenRenderError::UnsupportedMsaaSamples {
+            requested: requested.get(),
+            format,
+        });
+    }
+    Ok(supported)
+}
+
+fn create_offscreen_texture(
+    device: &wgpu::Device,
+    label: &'static str,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    })
+}
+
+fn render_offscreen_frames_to_texture(
+    surface: &mut GpuSurface,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    config: OffscreenRenderConfig,
+    frame_count: NonZeroU32,
+) {
+    let width = config.size.width();
+    let height = config.size.height();
+    let frame_delta = Duration::from_secs_f32(1.0 / 60.0);
+    let mut frame = GpuFrame {
+        device,
+        queue,
+        texture,
+        view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        format: config.format,
+        width,
+        height,
+        pointer: config.pointer,
+        gesture: config.gesture,
+        elapsed: frame_delta,
+        delta: frame_delta,
+        redraw_requested: false,
+    };
+    for frame_index in 0..frame_count.get() {
+        frame.elapsed = frame_delta.saturating_mul(frame_index + 1);
+        frame.delta = frame_delta;
+        surface.render(&mut frame);
     }
 }
 
@@ -1388,28 +1364,32 @@ impl View for GpuSurface {
     }
 }
 
-fn readback_texture_rgba8(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+async fn readback_texture(
+    runtime: &GpuRuntime,
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
+    bytes_per_pixel: u32,
+    label: &'static str,
+    encoder_label: &'static str,
 ) -> Result<Vec<u8>, OffscreenRenderError> {
-    const BYTES_PER_PIXEL: u32 = 4;
     const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let unpadded_bpr = width * BYTES_PER_PIXEL;
+    let context = runtime.context();
+    let device = context.device.as_ref();
+    let queue = context.queue.as_ref();
+    let unpadded_bpr = width * bytes_per_pixel;
     let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
     let copy_size = u64::from(padded_bpr) * u64::from(height);
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("waterui_offscreen_readback"),
+        label: Some(label),
         size: copy_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("waterui_offscreen_readback_encoder"),
+        label: Some(encoder_label),
     });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
@@ -1432,102 +1412,33 @@ fn readback_texture_rgba8(
             depth_or_array_layers: 1,
         },
     );
-    queue.submit([encoder.finish()]);
+    let submission = queue.submit([encoder.finish()]);
 
     let slice = buffer.slice(..);
-    let (tx, rx) = mpsc::channel();
+    let (sender, receiver) = oneshot::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = tx.send(result);
+        let _ = sender.send(result);
     });
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    let map_result = rx
-        .recv()
-        .map_err(|_| OffscreenRenderError::ReadbackChannelClosed)?;
-    map_result.map_err(|e| OffscreenRenderError::ReadbackMapFailed(e.to_string()))?;
+    context
+        .submission_completion_driver()
+        .on_complete(submission, || {});
+    receiver
+        .await
+        .expect("GPU readback callback dropped before reporting its result")
+        .map_err(|error| OffscreenRenderError::ReadbackMapFailed(error.to_string()))?;
 
     let mapped = slice.get_mapped_range();
-    let mut out = vec![0u8; (width * height * BYTES_PER_PIXEL) as usize];
+    let mut output = vec![0_u8; (width * height * bytes_per_pixel) as usize];
     for row in 0..height as usize {
         let src_start = row * padded_bpr as usize;
         let src_end = src_start + unpadded_bpr as usize;
         let dst_start = row * unpadded_bpr as usize;
         let dst_end = dst_start + unpadded_bpr as usize;
-        out[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+        output[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
     }
     drop(mapped);
     buffer.unmap();
-    Ok(out)
-}
-
-fn readback_texture_rgba16f(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, OffscreenRenderError> {
-    const BYTES_PER_PIXEL: u32 = 8;
-    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let unpadded_bpr = width * BYTES_PER_PIXEL;
-    let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
-    let copy_size = u64::from(padded_bpr) * u64::from(height);
-
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("waterui_offscreen_readback_hdr"),
-        size: copy_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("waterui_offscreen_readback_hdr_encoder"),
-    });
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bpr),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-
-    let slice = buffer.slice(..);
-    let (tx, rx) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = tx.send(result);
-    });
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    let map_result = rx
-        .recv()
-        .map_err(|_| OffscreenRenderError::ReadbackChannelClosed)?;
-    map_result.map_err(|e| OffscreenRenderError::ReadbackMapFailed(e.to_string()))?;
-
-    let mapped = slice.get_mapped_range();
-    let mut out = vec![0u8; (width * height * BYTES_PER_PIXEL) as usize];
-    for row in 0..height as usize {
-        let src_start = row * padded_bpr as usize;
-        let src_end = src_start + unpadded_bpr as usize;
-        let dst_start = row * unpadded_bpr as usize;
-        let dst_end = dst_start + unpadded_bpr as usize;
-        out[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
-    }
-    drop(mapped);
-    buffer.unmap();
-    Ok(out)
+    Ok(output)
 }
 
 fn encode_png(
@@ -1867,7 +1778,16 @@ fn unit_f32_to_u8(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::RefCell, num::NonZeroU32, rc::Rc, time::Duration};
+    use std::{
+        cell::RefCell,
+        num::NonZeroU32,
+        rc::Rc,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     fn rgba16f_pixel_le(r: u16, g: u16, b: u16, a: u16) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(8);
@@ -1876,6 +1796,39 @@ mod tests {
         bytes.extend_from_slice(&b.to_le_bytes());
         bytes.extend_from_slice(&a.to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn redraw_handle_coalesces_wakes_until_consumed() {
+        let handle = RedrawHandle::new();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let callback_wakes = Arc::clone(&wakes);
+        handle.set_waker(Some(Arc::new(move || {
+            callback_wakes.fetch_add(1, Ordering::Relaxed);
+        })));
+
+        handle.request_redraw();
+        handle.request_redraw();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert!(handle.take_dirty());
+
+        handle.request_redraw();
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn redraw_handle_wakes_when_callback_is_installed_after_request() {
+        let handle = RedrawHandle::new();
+        handle.request_redraw();
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let callback_wakes = Arc::clone(&wakes);
+        handle.set_waker(Some(Arc::new(move || {
+            callback_wakes.fetch_add(1, Ordering::Relaxed);
+        })));
+
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert!(handle.take_dirty());
     }
 
     #[test]
@@ -1941,14 +1894,19 @@ mod tests {
         let records = Rc::new(RefCell::new(Vec::new()));
         let size = OffscreenSize::try_from_pixels(4, 4).expect("probe size must be valid");
         let config = OffscreenRenderConfig::new(size);
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("offscreen frame test requires a working GPU runtime");
         let mut env = waterui_core::Environment::new();
-        GpuSurface::new(FrameProbe {
-            records: Rc::clone(&records),
-        })
-        .render_offscreen_frames(
-            config,
-            &mut env,
-            NonZeroU32::new(3).expect("non-zero literal"),
+        pollster::block_on(
+            GpuSurface::new(FrameProbe {
+                records: Rc::clone(&records),
+            })
+            .render_offscreen_frames(
+                &runtime,
+                config,
+                &mut env,
+                NonZeroU32::new(3).expect("non-zero literal"),
+            ),
         )
         .expect("offscreen frame probe should render");
 

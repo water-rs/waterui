@@ -247,7 +247,10 @@ pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
                 .foreground(colors.on_surface.resolved())
                 .muted_foreground(colors.on_surface_variant.resolved())
                 .accent(colors.primary.resolved())
-                .accent_foreground(colors.on_primary.resolved()),
+                .accent_foreground(colors.on_primary.resolved())
+                .accent_container(colors.primary_container.resolved())
+                .tertiary(colors.tertiary.resolved())
+                .tertiary_container(colors.tertiary_container.resolved()),
         )
         .fonts(theme::typography::settings())
         .install(env);
@@ -262,7 +265,11 @@ fn install_dynamic_defaults(
     light: MaterialColorScheme,
     dark: MaterialColorScheme,
 ) {
-    let scheme = waterui_theme::current_color_scheme(env);
+    let scheme = waterui_theme::installed_color_scheme(env).unwrap_or_else(|| {
+        let scheme = Computed::constant(ColorScheme::Light);
+        Theme::new().color_scheme(scheme.clone()).install(env);
+        scheme
+    });
     install_dynamic_color_signal::<waterui_theme::color::Background>(
         env,
         &scheme,
@@ -318,6 +325,27 @@ fn install_dynamic_defaults(
         light,
         dark,
         |colors| colors.on_primary,
+    );
+    install_dynamic_color_signal::<waterui_theme::color::AccentContainer>(
+        env,
+        &scheme,
+        light,
+        dark,
+        |colors| colors.primary_container,
+    );
+    install_dynamic_color_signal::<waterui_theme::color::Tertiary>(
+        env,
+        &scheme,
+        light,
+        dark,
+        |colors| colors.tertiary,
+    );
+    install_dynamic_color_signal::<waterui_theme::color::TertiaryContainer>(
+        env,
+        &scheme,
+        light,
+        dark,
+        |colors| colors.tertiary_container,
     );
     Theme::new()
         .fonts(theme::typography::settings())

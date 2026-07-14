@@ -2,6 +2,7 @@
 //! tree. These re-sample animated transform/opacity/morph signals every flush so
 //! the node tree's transform/opacity/morph nodes stay live without re-dispatching.
 
+use super::signals::SubscribedSnapshot;
 use super::*;
 
 pub(crate) fn affine_near(left: vello::kurbo::Affine, right: vello::kurbo::Affine) -> bool {
@@ -33,16 +34,17 @@ impl HydrolysisRenderer {
         S: Signal<Output = f32> + Clone + 'static,
     {
         let Some(identity) = signal.identity() else {
-            return signal.get();
+            return self.read_signal(signal);
         };
         let now = self.frame_instant;
         let key = AnimationKey::scalar_with_discriminator(identity, discriminator);
+        let (subscription, observed_value) = SubscribedSnapshot::new(signal);
         let handle = self
             .animation_controller
-            .bind_scalar(key, signal.get(), now);
+            .bind_scalar(key, observed_value, now);
         let watcher_handle = handle.clone();
         let signals = self.signals.clone();
-        let guard = signal.watch(move |update| {
+        let guard = subscription.activate(move |update| {
             watcher_handle.apply_update_from_context(update, signals.frame_clock());
             signals.request_redraw();
         });

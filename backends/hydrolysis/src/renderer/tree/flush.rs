@@ -3,6 +3,14 @@
 
 use super::*;
 
+pub(crate) struct ChildTextureTarget<'a> {
+    pub(crate) texture: &'a wgpu::Texture,
+    pub(crate) view: &'a wgpu::TextureView,
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
 impl RenderNode {
     /// Re-encode this subtree into the renderer's scene using the cached
     /// placements. Runs every frame.
@@ -14,10 +22,11 @@ impl RenderNode {
     ) {
         match self {
             RenderNode::Color(color) => {
+                let color = resolved_color_to_peniko(renderer.read_signal(&color.color));
                 renderer.scene_mut().fill(
                     vello::peniko::Fill::NonZero,
                     ctx.transform,
-                    color.color,
+                    color,
                     None,
                     &ctx.bounds,
                 );
@@ -302,28 +311,61 @@ impl RenderNode {
 }
 
 impl HydrolysisRenderer {
-    /// Flush an already-laid-out child [`RenderNode`] into a fresh, standalone
-    /// [`vello::Scene`] in local (identity) coordinates — the node analogue of
-    /// [`HydrolysisRenderer::render_subtree_scene`], for a GPU/effect node that
-    /// captures its child into a texture each flush. The renderer's scene is
-    /// swapped out, the child flushes into the temporary scene, then it is swapped
-    /// back, so the returned scene can be rendered to the effect's input texture.
-    pub(crate) fn render_child_node_scene(
+    /// Render an already-laid-out child into an effect input texture in local
+    /// coordinates. The complete painter stream is isolated, including embedded
+    /// GPU surfaces, rather than capturing only the Vello scene.
+    pub(crate) fn render_child_node_to_texture(
         &mut self,
         child: &RenderNode,
         ctx: RenderContext,
         env: &Environment,
-    ) -> vello::Scene {
-        let mut scene = vello::Scene::new();
+        target: ChildTextureTarget<'_>,
+    ) {
+        let adapter = self.state().frame_adapter().clone();
+        let (device, queue) = {
+            let (device, queue) = self.state().frame_resources();
+            (device.clone(), queue.clone())
+        };
+        let parent_scene = core::mem::take(&mut self.scene);
+        let parent_render_layers = core::mem::take(&mut self.compositor.render_layers);
+        let parent_active_layers = core::mem::take(&mut self.compositor.active_scene_layers);
+        let parent_transient_scene = self.transient_scene.take();
+        let parent_window_bounds = core::mem::replace(
+            &mut self.window_bounds,
+            vello::kurbo::Rect::new(0.0, 0.0, f64::from(target.width), f64::from(target.height)),
+        );
+
         let local_ctx = ctx.with_identity_transforms(vello::kurbo::Rect::new(
             0.0,
             0.0,
-            ctx.bounds.width(),
-            ctx.bounds.height(),
+            f64::from(target.width),
+            f64::from(target.height),
         ));
-        core::mem::swap(&mut self.scene, &mut scene);
         child.flush(self, local_ctx, env);
-        core::mem::swap(&mut self.scene, &mut scene);
-        scene
+        assert!(
+            self.compositor.active_scene_layers.is_empty(),
+            "hydrolysis GPU subtree capture left an unclosed scene layer"
+        );
+        self.render_scene_to_texture(HydrolysisRenderTarget {
+            adapter: &adapter,
+            device: &device,
+            queue: &queue,
+            texture: Some(target.texture),
+            view: target.view,
+            format: target.format,
+            width: target.width,
+            height: target.height,
+            base_color: vello::peniko::Color::TRANSPARENT,
+        });
+        assert!(
+            self.compositor.active_scene_layers.is_empty(),
+            "hydrolysis GPU subtree compositor restored an active scene layer"
+        );
+
+        self.scene = parent_scene;
+        self.compositor.render_layers = parent_render_layers;
+        self.compositor.active_scene_layers = parent_active_layers;
+        self.transient_scene = parent_transient_scene;
+        self.window_bounds = parent_window_bounds;
     }
 }

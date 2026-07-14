@@ -1,23 +1,15 @@
 //! Phase 1 unit tests for the persistent retained render tree.
 
-use super::{MinimalTestTheme, test_renderer};
-use crate::engine::WidgetTheme;
+use super::{test_environment, test_renderer};
 use crate::renderer::{ContainerNode, RenderContext, RenderNode, TextNode};
 use nami::Computed;
 use vello::kurbo::{Affine, Rect};
 use waterui::ViewExt as _;
 use waterui_controls::button::button;
+use waterui_core::AnyView;
 use waterui_core::layout::{HorizontalAlignment, Size};
-use waterui_core::{AnyView, Environment};
 use waterui_layout::stack::{VStackLayout, vstack};
 use waterui_text::styled::StyledStr;
-
-fn init_executors() {
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        native_executor::NativeExecutor::new(),
-    ));
-}
 
 fn text_node(content: &'static str) -> RenderNode {
     RenderNode::Text(Box::new(TextNode {
@@ -28,15 +20,13 @@ fn text_node(content: &'static str) -> RenderNode {
 
 #[test]
 fn render_node_container_lays_out_and_flushes_text() {
-    init_executors();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
 
     let mut node = RenderNode::Container(Box::new(ContainerNode {
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
-            spacing: 8.0,
+            spacing: Computed::constant(8.0),
         }),
         children: vec![text_node("Hello"), text_node("World")],
         placed: Vec::new(),
@@ -78,15 +68,13 @@ fn render_node_container_lays_out_and_flushes_text() {
 
 #[test]
 fn geometry_static_flush_reuses_cached_placement() {
-    init_executors();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
 
     let mut node = RenderNode::Container(Box::new(ContainerNode {
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
-            spacing: 8.0,
+            spacing: Computed::constant(8.0),
         }),
         children: vec![text_node("Cached")],
         placed: Vec::new(),
@@ -124,9 +112,7 @@ fn geometry_static_flush_reuses_cached_placement() {
 
 #[test]
 fn opacity_wrapper_builds_and_flushes_via_dsl() {
-    init_executors();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
 
     // `.opacity(..)` lowers to `Metadata<Opacity>` wrapping the text; the build
@@ -154,9 +140,7 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
 
 #[test]
 fn capture_window_tree_renders_mixed_widgets() {
-    init_executors();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
 
     // text -> Text node; button -> Captured leaf (Native<ButtonConfig> the
@@ -179,9 +163,7 @@ fn capture_window_tree_renders_mixed_widgets() {
 
 #[test]
 fn flush_window_tree_reuses_retained_tree() {
-    init_executors();
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let bounds = Rect::new(0.0, 0.0, 220.0, 200.0);
 
@@ -226,8 +208,7 @@ fn widget_reactive_label_stays_live() {
             AnyView::new(button(text!("N={n}", n = n.clone())).action(|| {}))
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 200, 120);
     let start = Instant::now();
     let before = rt
@@ -274,8 +255,7 @@ fn reactive_size_change_reflows_via_refresh_not_rebuild() {
             )))
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 320, 80);
     let start = Instant::now();
     let before = rt
@@ -324,8 +304,7 @@ fn widget_reactive_value_stays_live() {
             AnyView::new(progress(value))
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 240, 120);
     let start = Instant::now();
     let before = rt
@@ -371,8 +350,7 @@ fn text_field_value_display_stays_live() {
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || AnyView::new(TextField::new(&value)))
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 240, 120);
     let start = Instant::now();
     let before = rt
@@ -422,8 +400,7 @@ fn render_tree_live_path_processes_watch_switch() {
             }))
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 200, 120);
 
     let start = Instant::now();
@@ -480,8 +457,7 @@ fn body_dispatched_once_then_every_frame_refreshes() {
             )))
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 200, 160);
     let start = Instant::now();
 
@@ -539,8 +515,7 @@ fn render_tree_chart_switch_snapshot() {
             }))
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
 
     let start = Instant::now();
@@ -616,8 +591,7 @@ fn render_tree_scene_view_switch_snapshot() {
             }))
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
 
     let start = Instant::now();
@@ -681,8 +655,7 @@ fn render_tree_scroll_snapshot() {
     }
 
     let builder = AnyViewBuilder::<AnyView>::new(screen);
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
 
     let start = Instant::now();
@@ -746,8 +719,7 @@ fn scroll_offset_persists_across_refresh() {
     }
 
     let builder = AnyViewBuilder::<AnyView>::new(screen);
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
     let start = Instant::now();
 
@@ -806,8 +778,7 @@ fn render_tree_collection_snapshot() {
     }
 
     let builder = AnyViewBuilder::<AnyView>::new(screen);
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
 
     let snapshot = rt
@@ -859,8 +830,7 @@ fn wrapper_keeps_reactive_descendant_live() {
             )
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
 
     let start = Instant::now();
@@ -925,8 +895,7 @@ fn gesture_wrapper_keeps_reactive_descendant_live() {
             )
         })
     };
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 160, 160);
 
     let start = Instant::now();
@@ -990,8 +959,7 @@ fn render_tree_grid_snapshot() {
     }
 
     let builder = AnyViewBuilder::<AnyView>::new(screen);
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 440, 920);
 
     let snapshot = rt
@@ -1017,7 +985,6 @@ fn lifecycle_hooks_fire_on_build_and_drop() {
     use core::cell::Cell;
     use std::rc::Rc;
 
-    init_executors();
     let appeared = Rc::new(Cell::new(false));
     let disappeared = Rc::new(Cell::new(false));
     let view = {
@@ -1030,8 +997,7 @@ fn lifecycle_hooks_fire_on_build_and_drop() {
         )
     };
 
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let bounds = Rect::new(0.0, 0.0, 200.0, 120.0);
 
@@ -1066,8 +1032,6 @@ fn lifecycle_hooks_fire_on_build_and_drop() {
 /// filter survives across frames without a cursor-bound effect slot.
 #[test]
 fn applied_filter_renders_through_retained_tree() {
-    init_executors();
-
     fn blurred_box() -> AnyView {
         use waterui::prelude::*;
         AnyView::new(
@@ -1077,8 +1041,7 @@ fn applied_filter_renders_through_retained_tree() {
         )
     }
 
-    let mut env = Environment::new();
-    env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let bounds = Rect::new(0.0, 0.0, 120.0, 120.0);
 

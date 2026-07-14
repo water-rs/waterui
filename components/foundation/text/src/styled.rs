@@ -10,7 +10,7 @@ use core::ops::AddAssign;
 use nami::impl_constant;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use waterui_core::{Str, View};
-use waterui_graphics::color::{Color, Srgb};
+use waterui_graphics::color::{Color, SurfaceVariantColor};
 
 /// A set of text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
@@ -567,7 +567,7 @@ pub fn heading_style(level: HeadingLevel) -> Style {
 
 fn inline_code_style(mut style: Style) -> Style {
     style.font = style.font.clone().family("monospace");
-    style.background = Some(Color::from(Srgb::new_u8(236, 239, 241)));
+    style.background = Some(Color::new(SurfaceVariantColor));
     style
 }
 

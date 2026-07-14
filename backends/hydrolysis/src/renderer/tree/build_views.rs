@@ -84,7 +84,7 @@ impl RenderNode {
             NavigationViewRenderState, measure_navigation_view_node, render_navigation_view_node,
         };
         let stretch = waterui_core::NativeView::stretch_axis(&navigation);
-        let mut state = NavigationViewRenderState::from_view(navigation);
+        let mut state = NavigationViewRenderState::from_view(navigation, env);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
         let render = {
@@ -284,10 +284,10 @@ impl RenderNode {
         Self::build_widget(render, measure, stretch, env)
     }
 
-    /// Build a persistent shape node: retain the fully-resolved shape payload and
-    /// re-fill its bounds-aware path every flush. The payload carries no signal, so
-    /// nothing is watched; the shape stretches to fill the proposal
-    /// (`StretchAxis::Both`, read from the payload).
+    /// Build a persistent shape node: retain the resolved shape payload and re-fill
+    /// its bounds-aware path every flush. The fill signal is observed by the render
+    /// path so theme and binding changes patch this node precisely. The shape
+    /// stretches to fill the proposal (`StretchAxis::Both`, read from the payload).
     pub(super) fn build_shape(shape: ResolvedShape, env: &Environment) -> RenderNode {
         use crate::renderer::{measure_shape_node, render_shape_node};
         let stretch = waterui_core::NativeView::stretch_axis(&shape);
@@ -399,7 +399,7 @@ impl RenderNode {
             WebViewRenderState, measure_webview_node, render_webview_node,
         };
         let stretch = waterui_core::View::stretch_axis(&webview);
-        let mut state = WebViewRenderState::from_view(&webview, env);
+        let mut state = WebViewRenderState::from_view(webview, env);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
         let render = {

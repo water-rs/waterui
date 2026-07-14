@@ -1,4 +1,6 @@
 use alloc::boxed::Box;
+use alloc::rc::Rc;
+use nami::watcher::Context;
 use waterui::{AnyView, component::Dynamic};
 
 use crate::reactive::WuiWatcher;
@@ -17,8 +19,7 @@ pub unsafe extern "C" fn waterui_dynamic_connect(
     watcher: *mut WuiWatcher<AnyView>,
 ) {
     unsafe {
-        // Take ownership of the watcher - it will be dropped when Dynamic's callback drops
-        let watcher = Box::from_raw(watcher);
+        let watcher = (*Box::from_raw(watcher)).into_inner();
         // IMPORTANT: do NOT consume/free `dynamic` here. The native side still owns the
         // opaque pointer and will call `waterui_drop_dynamic` when the view is disposed.
         //
@@ -28,7 +29,8 @@ pub unsafe extern "C" fn waterui_dynamic_connect(
         dynamic.0.clone().connect(move |ctx| {
             let metadata = ctx.metadata().clone();
             let value = ctx.into_value();
-            watcher.call(value, metadata);
+            let callback = Rc::clone(&watcher);
+            callback(Context::new(value, metadata));
         });
     }
 }

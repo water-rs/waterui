@@ -28,8 +28,8 @@ use crate::codec::{self, DecodedRgba};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, View};
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
-    OffscreenRenderOutput, OffscreenRenderOutputHdr,
+    GpuContext, GpuFrame, GpuRuntime, GpuSurface, GpuView, OffscreenRenderConfig,
+    OffscreenRenderError, OffscreenRenderOutput, OffscreenRenderOutputHdr,
 };
 use waterui_layout::frame::Frame;
 
@@ -227,16 +227,6 @@ impl Image {
         codec::decode_to_rgba8(data).map(Self::from_decoded)
     }
 
-    /// Decode owned encoded image bytes and construct a GPU-backed `Image`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the encoded image cannot be decoded into GPU-uploadable pixels.
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn from_encoded_bytes(data: Vec<u8>) -> Result<Self, String> {
-        Self::from_encoded(&data)
-    }
-
     /// Decode encoded image bytes and report which decode path was selected.
     ///
     /// # Errors
@@ -258,12 +248,19 @@ impl Image {
     /// # Errors
     ///
     /// Returns an error when the underlying GPU offscreen render fails.
-    pub fn render_offscreen(
+    #[expect(
+        clippy::future_not_send,
+        reason = "image rendering awaits the UI-local offscreen GpuView environment"
+    )]
+    pub async fn render_offscreen(
         self,
+        runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
-        GpuSurface::new(self.renderer).render_offscreen(config, env)
+        GpuSurface::new(self.renderer)
+            .render_offscreen(runtime, config, env)
+            .await
     }
 
     /// Renders this image into an HDR offscreen target and reads back `RGBA16F`.
@@ -271,12 +268,19 @@ impl Image {
     /// # Errors
     ///
     /// Returns an error when the underlying GPU offscreen render fails.
-    pub fn render_offscreen_hdr(
+    #[expect(
+        clippy::future_not_send,
+        reason = "image rendering awaits the UI-local offscreen GpuView environment"
+    )]
+    pub async fn render_offscreen_hdr(
         self,
+        runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
-        GpuSurface::new(self.renderer).render_offscreen_hdr(config, env)
+        GpuSurface::new(self.renderer)
+            .render_offscreen_hdr(runtime, config, env)
+            .await
     }
 
     fn from_decoded(decoded: DecodedRgba) -> Self {
@@ -798,10 +802,7 @@ fn u32_to_f32(value: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize};
+    use super::{SourcePixelFormat, should_tonemap_hdr_to_sdr};
 
     #[test]
     fn tonemap_only_for_hdr_float_source_into_sdr_target() {
@@ -825,248 +826,5 @@ mod tests {
             true,
             wgpu::TextureFormat::Rgba8Unorm
         ));
-    }
-
-    fn render_image_offscreen(image: Image) -> waterui_graphics::OffscreenRenderOutput {
-        let (width, height) = image.dimensions();
-        let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
-            .expect("offscreen size must be valid");
-        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
-        let mut env = waterui_core::Environment::new();
-        image
-            .render_offscreen(config, &mut env)
-            .expect("offscreen image render should succeed")
-    }
-
-    fn render_image_offscreen_hdr(image: Image) -> waterui_graphics::OffscreenRenderOutputHdr {
-        let (width, height) = image.dimensions();
-        let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
-            .expect("offscreen size must be valid");
-        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
-        let mut env = waterui_core::Environment::new();
-        image
-            .render_offscreen_hdr(config, &mut env)
-            .expect("offscreen HDR image render should succeed")
-    }
-
-    async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-        use zenwave::{Client, Method, redirect::FollowRedirect};
-
-        let mut client = FollowRedirect::new(zenwave::client());
-        let response = client
-            .method(Method::GET, url)
-            .await
-            .map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            return Err(alloc::format!("status={}", response.status()));
-        }
-        response
-            .into_body()
-            .into_bytes()
-            .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(|e| e.to_string())
-    }
-
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
-    async fn fetch_hdr_avif_sample() -> Option<(Vec<u8>, &'static str)> {
-        let candidates = [
-            "https://www.bandisoft.com/bandiview/help/hdr-samples/hdr_cosmos01650_cicp9-16-9_yuv420_limited_qp10.avif",
-            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile0.10bpc.yuv420.avif",
-            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/hato.profile0.10bpc.yuv420.avif",
-            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile1.10bpc.yuv444.avif",
-            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile2.10bpc.yuv422.avif",
-        ];
-        for url in candidates {
-            let Ok(bytes) = fetch_bytes(url).await else {
-                continue;
-            };
-            let Ok(decoded) = waterkit_codec::decode_image(&bytes) else {
-                continue;
-            };
-            if decoded.pixel_format() != waterkit_codec::DecodedPixelFormat::Rgba16Float
-                || !decoded.hdr()
-            {
-                continue;
-            }
-            return Some((bytes, url));
-        }
-        None
-    }
-
-    fn export_dir() -> PathBuf {
-        PathBuf::from("/tmp/waterui-image-offscreen")
-    }
-
-    fn f16_to_f32(bits: u16) -> f32 {
-        let sign = u32::from((bits >> 15) & 0x1);
-        let exp = u32::from((bits >> 10) & 0x1f);
-        let frac = u32::from(bits & 0x03ff);
-
-        let f32_bits = if exp == 0 {
-            if frac == 0 {
-                sign << 31
-            } else {
-                let mut frac_norm = frac;
-                let mut e = -14i32;
-                while (frac_norm & 0x0400) == 0 {
-                    frac_norm <<= 1;
-                    e -= 1;
-                }
-                frac_norm &= 0x03ff;
-                let exp32 = (e + 127) as u32;
-                (sign << 31) | (exp32 << 23) | (frac_norm << 13)
-            }
-        } else if exp == 0x1f {
-            (sign << 31) | 0x7f80_0000 | (frac << 13)
-        } else {
-            let exp32 = (exp as i32 - 15 + 127) as u32;
-            (sign << 31) | (exp32 << 23) | (frac << 13)
-        };
-        f32::from_bits(f32_bits)
-    }
-
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
-    #[test]
-    #[ignore = "manual probe: inspect decoded HDR headroom from network AVIF sample"]
-    fn probe_hdr_decoded_headroom() {
-        waterui_testing::block_on(async {
-            let (bytes, sample_url) = fetch_hdr_avif_sample()
-                .await
-                .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
-            let decoded =
-                waterkit_codec::decode_image(&bytes).expect("platform decode should work");
-            assert_eq!(
-                decoded.pixel_format(),
-                waterkit_codec::DecodedPixelFormat::Rgba16Float
-            );
-            assert!(decoded.hdr());
-
-            let mut max_rgb = 0.0f32;
-            let mut gt_one = 0usize;
-            let mut total = 0usize;
-            for px in decoded.pixels().chunks_exact(8) {
-                let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
-                let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
-                let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
-                max_rgb = max_rgb.max(r.max(g).max(b));
-                if r > 1.0 || g > 1.0 || b > 1.0 {
-                    gt_one += 1;
-                }
-                total += 1;
-            }
-            let ratio = (gt_one as f64) / (total as f64);
-            eprintln!(
-                "[probe_hdr_decoded_headroom] sample={sample_url} pixels={total} gt_one={gt_one} ratio={ratio:.6} max_rgb={max_rgb:.6}"
-            );
-        });
-    }
-
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
-    #[test]
-    #[ignore = "manual probe: verify Image renderer preserves HDR headroom in Rgba16Float target"]
-    fn probe_hdr_render_headroom() {
-        waterui_testing::block_on(async {
-            let (bytes, sample_url) = fetch_hdr_avif_sample()
-                .await
-                .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
-            let image = Image::from_encoded(&bytes).expect("hdr image decode should succeed");
-            let output = render_image_offscreen_hdr(image);
-
-            let mut max_rgb = 0.0f32;
-            let mut gt_one = 0usize;
-            let mut total = 0usize;
-            for px in output.rgba16f.chunks_exact(8) {
-                let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
-                let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
-                let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
-                max_rgb = max_rgb.max(r.max(g).max(b));
-                if r > 1.0 || g > 1.0 || b > 1.0 {
-                    gt_one += 1;
-                }
-                total += 1;
-            }
-            let ratio = (gt_one as f64) / (total as f64);
-            eprintln!(
-                "[probe_hdr_render_headroom] sample={sample_url} pixels={total} gt_one={gt_one} ratio={ratio:.6} max_rgb={max_rgb:.6}"
-            );
-            assert!(
-                gt_one > 0,
-                "renderer output lost HDR headroom (no RGB > 1.0)"
-            );
-        });
-    }
-
-    #[test]
-    #[ignore = "manual export: writes offscreen PNG renders to /tmp for visual inspection"]
-    fn export_offscreen_real_images_to_tmp() {
-        waterui_testing::block_on(async {
-            use core::fmt::Write as _;
-
-            let dir = export_dir();
-            std::fs::create_dir_all(&dir).expect("export directory should be creatable");
-            let mut manifest = String::new();
-
-            let png_url = "https://raw.githubusercontent.com/libpng/libpng/master/contrib/pngsuite/basn6a16.png";
-            let png_bytes = fetch_bytes(png_url).await.expect("should fetch png bytes");
-            let (png_image, png_path) =
-                Image::from_encoded_with_path(&png_bytes).expect("png should decode successfully");
-            let png_output = render_image_offscreen(png_image);
-            png_output
-                .save_png(dir.join("01_png_sdr.png"))
-                .expect("png output should be writable");
-            let _ = writeln!(
-                manifest,
-                "01_png_sdr.png source={png_url} decode_path={png_path:?}"
-            );
-
-            #[cfg(any(target_vendor = "apple", target_os = "android"))]
-            {
-                let (hdr_bytes, hdr_url) = fetch_hdr_avif_sample()
-                    .await
-                    .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
-                let (hdr_image, hdr_path) = Image::from_encoded_with_path(&hdr_bytes)
-                    .expect("hdr avif should decode successfully");
-                let hdr_output = render_image_offscreen_hdr(hdr_image);
-                assert!(hdr_output.max_rgb_linear() > 1.0);
-                assert!(hdr_output.hdr_pixel_ratio() > 0.0);
-                hdr_output
-                    .save_png(dir.join("02_hdr_avif_offscreen_hdr16.png"))
-                    .expect("hdr avif output should be writable");
-                let _ = writeln!(
-                    manifest,
-                    "02_hdr_avif_offscreen_hdr16.png source={hdr_url} decode_path={hdr_path:?} max_rgb={:.6} hdr_ratio={:.6}",
-                    hdr_output.max_rgb_linear(),
-                    hdr_output.hdr_pixel_ratio()
-                );
-            }
-
-            #[cfg(target_vendor = "apple")]
-            {
-                let heic_url = "https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic";
-                let heic_bytes = fetch_bytes(heic_url)
-                    .await
-                    .expect("should fetch heic bytes");
-                let (heic_image, heic_path) = Image::from_encoded_with_path(&heic_bytes)
-                    .expect("heic/h265 should decode on Apple");
-                let heic_output = render_image_offscreen_hdr(heic_image);
-                heic_output
-                    .save_png(dir.join("03_heic_h265_offscreen_hdr16.png"))
-                    .expect("heic output should be writable");
-                let _ = writeln!(
-                    manifest,
-                    "03_heic_h265_offscreen_hdr16.png source={heic_url} decode_path={heic_path:?} max_rgb={:.6} hdr_ratio={:.6}",
-                    heic_output.max_rgb_linear(),
-                    heic_output.hdr_pixel_ratio()
-                );
-            }
-
-            std::fs::write(dir.join("manifest.txt"), manifest)
-                .expect("manifest should be writable");
-            eprintln!(
-                "[export_offscreen_real_images_to_tmp] exported to {}",
-                dir.display()
-            );
-        });
     }
 }

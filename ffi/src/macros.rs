@@ -54,6 +54,10 @@ macro_rules! ffi_safe {
 #[macro_export]
 macro_rules! ffi_view {
     ($view:ty, $ffi:ty, $ident:tt) => {
+        $crate::ffi_view!($view, $ffi, $ident, all());
+    };
+
+    ($view:ty, $ffi:ty, $ident:tt, $jni:meta) => {
         pastey::paste! {
             // ========== C-API (for Apple/GTK backends) ==========
             /// # Safety
@@ -80,7 +84,7 @@ macro_rules! ffi_view {
             // ========== Android JNI ==========
             // :lower_camel → buttonId, colorPickerId (first letter lowercase)
             // :camel → Button, ColorPicker (first letter uppercase, for forceAs prefix)
-            #[cfg(feature = "android-jni")]
+            #[cfg(all(feature = "android-jni", $jni))]
             #[unsafe(no_mangle)]
             pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ $ident:lower_camel Id>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
@@ -95,7 +99,7 @@ macro_rules! ffi_view {
             /// `view_ptr` must be a valid, owning `WuiAnyView` handle (as a `jlong`) whose
             /// erased value is a `Native<_>` of the expected view type; it is consumed by
             /// this call and must not be used afterwards.
-            #[cfg(feature = "android-jni")]
+            #[cfg(all(feature = "android-jni", $jni))]
             #[unsafe(no_mangle)]
             pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAs $ident:camel>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
@@ -284,7 +288,7 @@ macro_rules! ffi_ignorable_metadata {
 /// When `android-jni` feature is enabled, generates JNI drop function.
 #[macro_export]
 macro_rules! opaque {
-    ($name:ident,$ty:ty,$ident:tt) => {
+    ($name:ident,$ty:ty,$ident:tt,$jni_drop:meta) => {
         #[allow(nonstandard_style)]
         pub struct $name(pub(crate) $ty);
 
@@ -328,7 +332,7 @@ macro_rules! opaque {
             }
 
             // ========== Android JNI ==========
-            #[cfg(feature = "android-jni")]
+            #[cfg(all(feature = "android-jni", $jni_drop))]
             /// JNI: Drops the opaque pointer, freeing its memory.
             ///
             /// # Safety
@@ -346,6 +350,10 @@ macro_rules! opaque {
                 }
             }
         }
+    };
+
+    ($name:ident,$ty:ty,$ident:tt) => {
+        $crate::opaque!($name, $ty, $ident, all());
     };
 
     ($name:ident,$ty:ty) => {
@@ -411,8 +419,8 @@ macro_rules! into_ffi {
         }
     };
 
-    // enum which have default variant
-    ($ty:ty, $default:ident, $(#[$meta:meta])* pub enum $ffi:ident { $($variant:ident),* $(,)? }) => {
+    // Non-exhaustive Rust enum. Unknown variants are unsupported by this ABI.
+    ($ty:ty, non_exhaustive, $(#[$meta:meta])* pub enum $ffi:ident { $($variant:ident),* $(,)? }) => {
         $(#[$meta])*
         #[derive(Clone, Copy)]
         #[repr(C)]
@@ -425,7 +433,7 @@ macro_rules! into_ffi {
             fn into_ffi(self) -> Self::FFI {
                 match self {
                     $(<$ty>::$variant => $ffi::$variant),*,
-                    _ => $ffi::$default,
+                    _ => panic!(concat!("unsupported ", stringify!($ty), " variant")),
                 }
             }
         }

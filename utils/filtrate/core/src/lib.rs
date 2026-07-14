@@ -1,6 +1,9 @@
 #![cfg_attr(
     test,
-    allow(clippy::float_cmp, reason = "tests assert exact filter parameter values")
+    allow(
+        clippy::float_cmp,
+        reason = "tests assert exact filter parameter values"
+    )
 )]
 //! Long-term stable abstractions for GPU filter pipelines.
 //!
@@ -24,7 +27,7 @@
 //!   fixed-size arrays.
 //! - [`FragmentList`]: zero-allocation shader fragment composition.
 //! - [`FilterParam`] / [`Interpolator`]: reactive-system-agnostic parameter
-//!   abstraction with optional animation observation.
+//!   abstraction with mandatory change observation.
 //! - [`StageCollector`] / [`SignalVisitor`]: visitors used by the runtime
 //!   to walk a filter's GPU stages and reactive parameters.
 //!

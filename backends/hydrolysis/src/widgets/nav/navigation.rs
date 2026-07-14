@@ -22,11 +22,12 @@ use waterui::navigation::{
     Bar, NavigationSearch, NavigationSplitLayout, NavigationStack, NavigationTitleDisplayMode,
     NavigationTransition, NavigationView,
 };
+use waterui::theme::color::Surface;
 use waterui_controls::text_field::TextField;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
-use waterui_graphics::color::Color;
+use waterui_graphics::color::{Color, ResolvedColor};
 
 use crate::widgets::widget_theme;
 
@@ -60,7 +61,7 @@ pub(crate) struct NavigationViewRenderState {
     /// binding stays live through the node's own re-flush). `Some` exactly when
     /// `search` is present.
     search_field: Option<RetainedSubview>,
-    color: Computed<Color>,
+    color: Computed<ResolvedColor>,
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
     /// Whether `leading`/`trailing` were the empty `()` placeholder at build time:
@@ -70,7 +71,7 @@ pub(crate) struct NavigationViewRenderState {
 }
 
 impl NavigationViewRenderState {
-    pub(crate) fn from_view(navigation: NavigationView) -> Self {
+    pub(crate) fn from_view(navigation: NavigationView, env: &Environment) -> Self {
         let NavigationView { bar, content } = navigation;
         let Bar {
             title,
@@ -78,9 +79,17 @@ impl NavigationViewRenderState {
             trailing,
             search,
             color,
+            resolved_color,
             hidden,
             display_mode,
         } = bar;
+        let color = color.map_or_else(
+            || Color::new(Surface).resolve(env),
+            |_| {
+                resolved_color
+                    .expect("NavigationView explicit bar color was not resolved before rendering")
+            },
+        );
         let leading_present = !leading.is::<()>();
         let trailing_present = !trailing.is::<()>();
         let search_field = search.as_ref().map(|search| {
@@ -299,10 +308,9 @@ pub(crate) fn render_navigation_view_node(
         .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        let (color, hidden_signal, display_mode, default_title_label) = {
+        let (hidden_signal, display_mode, default_title_label) = {
             let state = state.borrow();
             (
-                state.color.clone(),
                 state.hidden.clone(),
                 state.display_mode,
                 state.title.default_a11y_label(),
@@ -313,7 +321,8 @@ pub(crate) fn render_navigation_view_node(
             leading: AnyView::default(),
             trailing: AnyView::default(),
             search: None,
-            color,
+            color: None,
+            resolved_color: None,
             hidden: hidden_signal,
             display_mode,
         };
@@ -366,10 +375,7 @@ pub(crate) fn render_navigation_view_parts(
             ctx.bounds.x1,
             (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
         );
-        let bar_color = {
-            let color = ctx.renderer_mut().read_signal(&color_signal);
-            resolved_color_to_peniko(color.resolve(env).get())
-        };
+        let bar_color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
         {
             let theme = widget_theme(env);
             let mut draw = ctx.draw_context();
@@ -419,17 +425,21 @@ pub(crate) fn render_navigation_view_parts(
         );
         if leading_present && leading_rect.width() > 0.0 && leading_rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
-            state
-                .borrow_mut()
-                .leading
-                .flush_in_rect(ctx.renderer_mut(), render_ctx, env, leading_rect);
+            state.borrow_mut().leading.flush_in_rect(
+                ctx.renderer_mut(),
+                render_ctx,
+                env,
+                leading_rect,
+            );
         }
         if trailing_present && trailing_rect.width() > 0.0 && trailing_rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
-            state
-                .borrow_mut()
-                .trailing
-                .flush_in_rect(ctx.renderer_mut(), render_ctx, env, trailing_rect);
+            state.borrow_mut().trailing.flush_in_rect(
+                ctx.renderer_mut(),
+                render_ctx,
+                env,
+                trailing_rect,
+            );
         }
 
         let title_height = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
@@ -636,7 +646,10 @@ pub(crate) fn render_navigation_split_parts(
     let bounds = ctx.bounds;
     let (selection, sidebar_width_raw) = {
         let st = state.borrow();
-        (st.split.selection().clone(), f64::from(st.split.sidebar_width()))
+        (
+            st.split.selection().clone(),
+            f64::from(st.split.sidebar_width()),
+        )
     };
     let compact = bounds.width() < split_compact_threshold(sidebar_width_raw);
     let selected = ctx.renderer_mut().read_signal(&selection);

@@ -24,4 +24,5 @@ impl IntoFFI for SystemIcon {
     }
 }
 
+#[cfg(feature = "c-api")]
 ffi_view!(SystemIcon, WuiSystemIcon, system_icon);

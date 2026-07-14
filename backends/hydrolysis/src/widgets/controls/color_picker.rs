@@ -199,9 +199,10 @@ pub(crate) fn render_color_picker_parts(
         // `color_picker_accessibility`, so the sub-view flushes visual-only.
         let render_ctx = ctx.render_context();
         let label_view = &mut state.label_view;
-        ctx.renderer_mut().with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
-        });
+        ctx.renderer_mut()
+            .with_suppressed_accessibility(|renderer| {
+                label_view.flush_in_rect(renderer, render_ctx, env, label_bounds);
+            });
     }
 
     let field_bounds = Rect::new(
@@ -215,8 +216,7 @@ pub(crate) fn render_color_picker_parts(
     }
 
     let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();

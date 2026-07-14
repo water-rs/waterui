@@ -4,6 +4,7 @@
 //! edge cases and ensure consistency across all layout containers.
 
 use alloc::{format, vec, vec::Vec};
+use nami::Computed;
 
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
 use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions};
@@ -241,7 +242,7 @@ fn test_hstack_children_exceed_bounds() {
 
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     // Two texts that together (60 + 60 + 10 spacing = 130) exceed 100
@@ -276,7 +277,7 @@ fn test_hstack_single_child_exceeds_bounds() {
     // A single child wider than bounds should be clamped
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut wide_child = FixedSizeView {
@@ -302,7 +303,7 @@ fn test_hstack_multiple_children_total_exceeds_bounds() {
     // Multiple children whose total width exceeds bounds
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -344,7 +345,7 @@ fn test_hstack_with_flexible_text() {
     // When children exceed bounds, they are compressed proportionally
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -393,7 +394,7 @@ fn test_hstack_empty() {
 fn test_hstack_single_child() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut child = FixedSizeView {
@@ -411,7 +412,7 @@ fn test_hstack_multiple_spacers() {
     // Multiple spacers should divide remaining space equally
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -457,7 +458,7 @@ fn test_hstack_multiple_spacers() {
 fn test_hstack_alignment_top() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Top,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut short = FixedSizeView {
@@ -481,7 +482,7 @@ fn test_hstack_alignment_top() {
 fn test_hstack_alignment_bottom() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Bottom,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut short = FixedSizeView {
@@ -505,7 +506,7 @@ fn test_hstack_alignment_bottom() {
 fn test_hstack_alignment_center() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut short = FixedSizeView {
@@ -534,7 +535,7 @@ fn test_hstack_alignment_center() {
 fn test_vstack_children_exceed_bounds() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     // Three children that together exceed bounds height
@@ -563,7 +564,7 @@ fn test_vstack_child_width_exceeds_bounds() {
     // A child wider than bounds should be clamped to bounds width
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut wide_child = FixedSizeView {
@@ -589,7 +590,7 @@ fn test_vstack_text_wrapping() {
     // Text in VStack should wrap to container width
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     // Long text (200pt intrinsic width) in 100pt wide container
@@ -621,7 +622,7 @@ fn test_vstack_with_axis_expanding_child() {
     // Axis-expanding views (TextField) should expand to container width
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -660,7 +661,7 @@ fn test_vstack_empty() {
 fn test_vstack_alignment_leading() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut narrow = FixedSizeView {
@@ -684,7 +685,7 @@ fn test_vstack_alignment_leading() {
 fn test_vstack_alignment_trailing() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Trailing,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut narrow = FixedSizeView {
@@ -708,7 +709,7 @@ fn test_vstack_alignment_trailing() {
 fn test_vstack_alignment_center() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut narrow = FixedSizeView {
@@ -733,7 +734,7 @@ fn test_vstack_alignment_center() {
 fn test_vstack_multiple_spacers() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -788,7 +789,7 @@ fn test_hstack_in_vstack_respects_width() {
     // HStack respects the bounds it receives in place()
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -827,7 +828,7 @@ fn test_hstack_in_vstack_respects_width() {
 fn test_hstack_size_respects_proposal() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -851,7 +852,7 @@ fn test_hstack_size_respects_proposal() {
 fn test_vstack_size_respects_proposal() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -904,7 +905,7 @@ fn test_negative_remaining_space_with_spacer() {
     // When children exceed bounds, spacer should get zero width, not negative
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -939,7 +940,7 @@ fn test_bounds_with_offset() {
     // Bounds starting at non-zero origin
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -973,7 +974,7 @@ fn test_vstack_horizontal_expanding_child_height() {
     // This is the core bug fix: TextField should keep its intrinsic height
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1019,7 +1020,7 @@ fn test_vstack_with_both_spacer_and_horizontal_expanding() {
     // Only Spacer should stretch vertically
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1050,7 +1051,7 @@ fn test_hstack_vertical_expanding_child_width() {
     // StretchAxis::Vertical child in HStack should NOT stretch horizontally
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1074,7 +1075,7 @@ fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
     // VStack intrinsic width should NOT include horizontally-stretching children
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1098,7 +1099,7 @@ fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
     // HStack intrinsic height should NOT include vertically-stretching children
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1122,7 +1123,7 @@ fn test_vstack_multiple_vertical_stretch_children() {
     // Multiple StretchAxis::Vertical children should share remaining height equally
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -1171,7 +1172,7 @@ fn test_hstack_multiple_horizontal_stretch_children() {
     // Multiple StretchAxis::Horizontal children should share remaining width equally
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -1221,7 +1222,7 @@ fn test_vstack_form_layout() {
     // VStack { Text("Name") TextField() Text("Email") TextField() Button() }
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 8.0,
+        spacing: Computed::constant(8.0),
     };
 
     let mut name_label = FixedSizeView {
@@ -1267,7 +1268,7 @@ fn test_vstack_form_layout() {
 fn test_hstack_first_baseline_uses_text_baselines() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::FirstBaseline,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let left = BaselineTextView {
@@ -1295,7 +1296,7 @@ fn test_hstack_first_baseline_uses_text_baselines() {
 fn test_vstack_explicit_horizontal_alignment_uses_guides() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 8.0,
+        spacing: Computed::constant(8.0),
     };
 
     let top = GuidedBoxView {
@@ -1322,7 +1323,7 @@ fn test_vstack_form_with_spacer() {
     // Form with spacer pushing button to bottom
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 8.0,
+        spacing: Computed::constant(8.0),
     };
 
     let mut name_label = FixedSizeView {
@@ -1402,7 +1403,7 @@ fn test_vstack_main_axis_spacer() {
     // MainAxis spacer in VStack should expand vertically (the main axis of VStack)
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -1434,7 +1435,7 @@ fn test_hstack_main_axis_spacer() {
     // MainAxis spacer in HStack should expand horizontally (the main axis of HStack)
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 0.0,
+        spacing: Computed::constant(0.0),
     };
 
     let mut child1 = FixedSizeView {
@@ -1466,7 +1467,7 @@ fn test_vstack_cross_axis_divider() {
     // CrossAxis divider in VStack should expand horizontally (the cross axis of VStack)
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1501,7 +1502,7 @@ fn test_hstack_cross_axis_divider() {
     // CrossAxis divider in HStack should expand vertically (the cross axis of HStack)
     let layout = HStackLayout {
         alignment: VerticalAlignment::Top,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1560,7 +1561,7 @@ fn test_vstack_horizontal_stretch_textfield() {
     // This tests TextField/Slider behavior
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1597,7 +1598,7 @@ fn test_hstack_horizontal_stretch_textfield() {
     // But since HStack's main axis is horizontal, this behaves like MainAxis
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 10.0,
+        spacing: Computed::constant(10.0),
     };
 
     let mut label = FixedSizeView {
@@ -1631,7 +1632,7 @@ fn test_hstack_horizontal_stretch_textfield() {
 fn test_hstack_preserves_horizontal_stretch_min_width_when_fixed_content_overflows() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
-        spacing: 8.0,
+        spacing: Computed::constant(8.0),
     };
 
     let mut leading = FixedSizeView {

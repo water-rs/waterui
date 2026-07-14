@@ -17,9 +17,9 @@ mod scene;
 
 pub use color::{Color, Colorspace, ResolvedColor};
 #[cfg(feature = "gpu")]
-pub use effects::{filter_parity, filter_registry, filter_view, view_effect};
+pub use effects::{filter_view, view_effect};
 #[cfg(feature = "gpu")]
-pub use gpu::{gpu_surface, prewarm, shader_surface, shared_context};
+pub use gpu::{gpu_surface, prewarm, reactive_color, shader_surface, shared_context};
 #[cfg(feature = "gpu")]
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
@@ -43,7 +43,11 @@ pub use gpu_surface::{
 };
 
 #[cfg(feature = "gpu")]
+pub use filtrate::ShaderCache;
+#[cfg(feature = "gpu")]
 pub use shader_surface::ShaderSurface;
+#[cfg(feature = "gpu")]
+pub use shared_context::{GpuRuntime, SharedContextError, SharedGpuContext};
 
 #[cfg(feature = "gpu")]
 pub use animated_mesh_gradient::{
@@ -62,11 +66,11 @@ pub use view_effect::{
 #[cfg(feature = "gpu")]
 pub use filter_view::{
     AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
-    DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterViewExt, Filtered, FilteredView, Gamma,
-    GaussianBlur, Gloom, Grayscale, HdrPolicy, HighlightsShadows, HueRotation, Invert,
-    Kaleidoscope, LineHalftone, MirrorTile, MotionBlur, PerspectiveCorrection,
-    PerspectiveTransform, PinchDistortion, Pixellate, Saturation, Sepia, Sharpen, TemperatureTint,
-    TwirlDistortion, UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
+    DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterViewExt, Filtered, Gamma, GaussianBlur,
+    Gloom, Grayscale, HdrPolicy, HighlightsShadows, HueRotation, Invert, Kaleidoscope,
+    LineHalftone, MirrorTile, MotionBlur, PerspectiveCorrection, PerspectiveTransform,
+    PinchDistortion, Pixellate, Saturation, Sepia, Sharpen, TemperatureTint, TwirlDistortion,
+    UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
 };
 #[cfg(feature = "gpu")]
 pub use multi_input_filter::{
@@ -101,46 +105,8 @@ pub use scene2d_vello::VelloScene2D;
 
 // Re-export dependencies used by macros
 #[cfg(feature = "gpu")]
-pub use inventory;
-#[cfg(feature = "gpu")]
 pub use rayon;
 
 /// Re-export bytemuck for safe byte conversions in GPU programming.
 #[cfg(feature = "gpu")]
 pub use bytemuck;
-
-#[cfg(feature = "gpu")]
-pub use pollster;
-
-/// Synchronously resolves the current top `wgpu` error scope by polling the device once.
-///
-/// This is intended for setup-time validation paths where `WaterUI` needs the scope result
-/// immediately and can safely force a device poll.
-///
-/// # Panics
-///
-/// Panics if the error-scope future is still pending after `device.poll(Poll)`.
-#[cfg(feature = "gpu")]
-#[inline]
-#[must_use]
-pub fn pop_error_scope_now(device: &wgpu::Device, scope: &'static str) -> Option<wgpu::Error> {
-    use core::future::Future as _;
-    use core::pin::Pin;
-    use core::task::{Context, Poll};
-
-    let mut future = device.pop_error_scope();
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    let mut cx = Context::from_waker(core::task::Waker::noop());
-
-    if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
-        return result;
-    }
-
-    let _ = device.poll(wgpu::PollType::Poll);
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(result) => result,
-        Poll::Pending => {
-            panic!("{scope}: pop_error_scope remained pending after device.poll(Poll)")
-        }
-    }
-}

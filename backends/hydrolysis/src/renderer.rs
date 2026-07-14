@@ -20,13 +20,13 @@
 #[cfg(feature = "accessibility")]
 mod accessibility;
 mod bindings;
-mod native_measure;
 mod effects;
 mod frame;
 mod input;
 mod interaction_layers;
 mod lifecycle;
 mod metadata;
+mod native_measure;
 mod navigation;
 mod render;
 mod retained;
@@ -36,9 +36,9 @@ mod tests;
 mod tree;
 mod views;
 
-pub(crate) use native_measure::*;
 pub(crate) use effects::*;
 pub(crate) use frame::*;
+pub(crate) use native_measure::*;
 pub(crate) use retained::*;
 pub(crate) use tree::*;
 pub(crate) use views::*;
@@ -66,7 +66,7 @@ pub(crate) use render::{
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -141,7 +141,7 @@ use waterui_graphics::view_effect::{
 };
 use waterui_graphics::{
     AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
-    ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
+    ResolvedGradient, ResolvedGradientStop, SceneView, ShaderCache, VelloScene2D,
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -203,6 +203,11 @@ pub struct HydrolysisRenderer {
     window_bounds: vello::kurbo::Rect,
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
+    /// Wake target supplied when this renderer itself is hosted by a
+    /// `GpuSurface`. Async setup and renderer-owned redraws from nested surfaces
+    /// use it to wake the parent host without polling frames.
+    host_redraw_handle: Option<RedrawHandle>,
+    shader_cache: ShaderCache,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
@@ -219,6 +224,9 @@ pub struct HydrolysisRenderer {
     /// redraw requests; dead entries (node dropped on a Dynamic swap) are pruned
     /// by strong count.
     node_gpu_surfaces: Vec<Rc<RefCell<EmbeddedGpuSurfaceRuntime>>>,
+    /// Retained render-tree view effects, registered for exact async setup when
+    /// Hydrolysis itself is hosted inside a `GpuSurface`.
+    node_view_effects: Vec<Weak<RefCell<ViewEffectRuntime>>>,
     /// Retained render-tree applied filters (`AppliedFilterNode`-owned runtimes),
     /// registered at node build time. Refreshed by
     /// [`HydrolysisRenderer::refresh_active_applied_filters`] on redraw-only
@@ -258,10 +266,7 @@ impl HydrolysisRenderer {
     /// visual-only, so the control stays a single accessibility node instead of
     /// double-exposing its label as a separate node. Compiles to a plain call
     /// without the `accessibility` feature, so call sites need no gating.
-    pub(crate) fn with_suppressed_accessibility<R>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
+    pub(crate) fn with_suppressed_accessibility<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         #[cfg(feature = "accessibility")]
         self.push_accessibility_suppression();
         let result = f(self);
@@ -320,6 +325,8 @@ impl HydrolysisRenderer {
             render_depth: 0,
             window_bounds: vello::kurbo::Rect::ZERO,
             signals: FrameSignals::new(frame_instant),
+            host_redraw_handle: None,
+            shader_cache: ShaderCache::new(),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,
@@ -331,6 +338,7 @@ impl HydrolysisRenderer {
             frame_applied_filter_effect: Duration::ZERO,
             reuse_applied_filter_inputs: false,
             node_gpu_surfaces: Vec::new(),
+            node_view_effects: Vec::new(),
             node_applied_filters: Vec::new(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),

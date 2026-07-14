@@ -1,6 +1,9 @@
 #![cfg_attr(
     test,
-    allow(clippy::float_cmp, reason = "tests assert exact filter parameter values")
+    allow(
+        clippy::float_cmp,
+        reason = "tests assert exact filter parameter values"
+    )
 )]
 //! GPU filter library built on top of `filtrate-core` abstractions.
 //!
@@ -33,8 +36,8 @@ pub mod filters;
 pub mod multi_input;
 
 pub use effect::{
-    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupFuture,
-    EffectSetupResult, ErasedEffect,
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    ShaderCache, shader_source_hash,
 };
 pub use filtrate_core::{
     AnimatedCallback, AnimatedTarget, AnimationTrack, Chain, Filter, FilterExt, FilterParam,

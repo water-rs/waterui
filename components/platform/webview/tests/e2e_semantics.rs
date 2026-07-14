@@ -10,7 +10,8 @@ use hydrolysis_m3::install as install_m3;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::{button, vstack};
-use waterui::{Environment, SignalExt, View};
+use waterui::{Computed, Environment, Signal, SignalExt, View};
+use waterui_core::binding;
 use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
 use waterui_webview::{
     CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent,
@@ -20,11 +21,16 @@ const DOCS_URL: &str = "https://waterui.dev/docs";
 const API_URL: &str = "https://waterui.dev/api";
 
 #[derive(Default, Clone)]
-struct FakeWebViewController;
+struct FakeWebViewController {
+    state: Rc<RefCell<FakeWebViewState>>,
+}
 
 impl CustomWebViewController for FakeWebViewController {
     fn open(&self) -> impl WebViewHandle {
-        FakeWebViewHandle::default()
+        self.state.borrow_mut().open_count += 1;
+        FakeWebViewHandle {
+            state: self.state.clone(),
+        }
     }
 }
 
@@ -37,17 +43,18 @@ type MessageHandlers = BTreeMap<String, Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>>
 
 #[derive(Default)]
 struct FakeWebViewState {
+    open_count: usize,
     history: Vec<Url>,
     index: Option<usize>,
     user_agent: Option<String>,
-    redirects_enabled: bool,
+    redirects_enabled: Option<Computed<bool>>,
     cookies: Vec<Cookie<'static>>,
     watchers: Vec<Box<dyn Fn(WebViewEvent) + 'static>>,
     handlers: MessageHandlers,
 }
 
 impl FakeWebViewHandle {
-    #[allow(
+    #[expect(
         clippy::needless_pass_by_value,
         reason = "test double; takes the event by value to mirror the real handle's API"
     )]
@@ -139,14 +146,12 @@ impl WebViewHandle for FakeWebViewHandle {
     fn stop(&self) {}
 
     fn refresh(&self) {
-        let Some(url) = self
-            .state
-            .borrow()
-            .index
-            .and_then(|index| self.state.borrow().history.get(index).cloned())
-        else {
+        let state = self.state.borrow();
+        let Some(index) = state.index else {
             return;
         };
+        let url = state.history[index].clone();
+        drop(state);
         self.emit(WebViewEvent::WillNavigate { url });
         self.emit(WebViewEvent::Loaded);
     }
@@ -155,8 +160,8 @@ impl WebViewHandle for FakeWebViewHandle {
         self.state.borrow_mut().user_agent = Some(user_agent.to_owned());
     }
 
-    fn set_redirects_enabled(&self, enabled: bool) {
-        self.state.borrow_mut().redirects_enabled = enabled;
+    fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
+        self.state.borrow_mut().redirects_enabled = Some(Computed::new(enabled));
     }
 
     fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
@@ -178,7 +183,11 @@ impl WebViewHandle for FakeWebViewHandle {
         self.state.borrow_mut().cookies.push(cookie);
     }
 
-    fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "test double for a main-thread `WebViewController`; its `RefCell` state is `!Send` by design"
+    )]
+    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
         self.state.borrow().cookies.clone()
     }
 
@@ -189,6 +198,56 @@ impl WebViewHandle for FakeWebViewHandle {
     async fn run_javascript(&self, script: &str) -> Result<waterui::Str, waterui::Str> {
         Ok(waterui::Str::from(script.to_owned()))
     }
+}
+
+#[test]
+fn redirect_policy_retains_the_reactive_signal() {
+    let backend = FakeWebViewController::default();
+    let controller = WebViewController::new(backend.clone());
+    let redirects = binding(false);
+    let webview = controller.open().redirects_enabled(redirects.clone());
+    let configured = backend
+        .state
+        .borrow()
+        .redirects_enabled
+        .clone()
+        .expect("WebView backend did not take ownership of the redirect signal");
+
+    assert!(!configured.get());
+    redirects.set(true);
+    assert!(configured.get());
+
+    drop(webview);
+}
+
+#[test]
+fn open_tracks_url_binding_without_recreating_the_webview() {
+    let backend = FakeWebViewController::default();
+    let controller = WebViewController::new(backend.clone());
+    let url = binding(String::from(DOCS_URL));
+    let url_for_view = url.clone();
+
+    let mut env = Environment::new();
+    install_m3(&mut env);
+    env.insert(controller);
+    let _app = ui()
+        .environment(env)
+        .viewport(420, 420)
+        .mount(move || WebView::open(url_for_view.clone()).size(320.0, 260.0));
+
+    {
+        let state = backend.state.borrow();
+        assert_eq!(state.open_count, 1);
+        assert_eq!(state.history.len(), 1);
+        assert_eq!(state.history[0].as_str(), DOCS_URL);
+    }
+
+    url.set(String::from(API_URL));
+
+    let state = backend.state.borrow();
+    assert_eq!(state.open_count, 1);
+    assert_eq!(state.history.len(), 2);
+    assert_eq!(state.history[1].as_str(), API_URL);
 }
 
 fn webview_test_view(webview: WebView) -> impl View {
@@ -213,7 +272,7 @@ fn webview_test_view(webview: WebView) -> impl View {
 
 #[test]
 fn webview_exposes_accessibility_surface_and_navigation_state() {
-    let controller = WebViewController::new(FakeWebViewController);
+    let controller = WebViewController::new(FakeWebViewController::default());
     let webview = controller.open();
     webview.go_to(DOCS_URL);
 

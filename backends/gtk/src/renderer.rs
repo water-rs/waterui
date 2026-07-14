@@ -1,6 +1,6 @@
 //! View renderer that dispatches `WaterUI` views to GTK widgets.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use glib::object::ObjectExt;
@@ -44,7 +44,10 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::secure::SecureFieldConfig;
 use waterui_graphics::gpu_surface::GpuSurface;
-use waterui_graphics::{AppliedFilter, ResolvedGradient, color::ResolvedColor};
+use waterui_graphics::{
+    AppliedFilter, ResolvedGradient,
+    color::{Color, ResolvedColor},
+};
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -58,7 +61,7 @@ use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
 use crate::components::menu::rebuild_menu_popover;
-use crate::util::store_watcher_guard;
+use crate::util::{store_watcher_guard, subscribe_then_get};
 
 const FOCUS_ANCHOR_DATA_KEY: &str = "waterui_focus_anchor";
 const FOCUS_METADATA_GUARDS_DATA_KEY: &str = "waterui_focus_metadata_guards";
@@ -73,6 +76,26 @@ struct PendingFocusRequest;
 
 #[derive(Debug)]
 struct FocusMapHandlerInstalled;
+
+#[derive(Debug, Default)]
+struct ReactiveAxisPair {
+    x: Cell<Option<f32>>,
+    y: Cell<Option<f32>>,
+}
+
+impl ReactiveAxisPair {
+    fn update_x(&self, value: f32) {
+        self.x.set(Some(value));
+    }
+
+    fn update_y(&self, value: f32) {
+        self.y.set(Some(value));
+    }
+
+    fn values(&self) -> Option<(f32, f32)> {
+        Some((self.x.get()?, self.y.get()?))
+    }
+}
 
 pub(crate) fn mark_focus_anchor(widget: &impl IsA<Widget>) {
     unsafe {
@@ -95,11 +118,7 @@ fn attach_focus_metadata(widget: Widget, binding: Binding<bool>) -> Widget {
         }
     });
 
-    if binding.get() {
-        request_focus(&anchor);
-    }
-
-    let guard = binding.watch({
+    let (focused, guard) = subscribe_then_get(&binding, {
         let anchor = anchor.clone();
         move |ctx| {
             if ctx.into_value() {
@@ -109,6 +128,9 @@ fn attach_focus_metadata(widget: Widget, binding: Binding<bool>) -> Widget {
             }
         }
     });
+    if focused {
+        request_focus(&anchor);
+    }
     store_focus_metadata_guard(&widget, guard);
 
     widget
@@ -802,6 +824,7 @@ impl GtkRenderer {
         Self::register_native::<ResolvedMenu>(dispatcher);
         Self::register_native::<SystemIcon>(dispatcher);
         Self::register_native::<WebView>(dispatcher);
+        Self::register_native::<Color>(dispatcher);
         Self::register_native::<ResolvedColor>(dispatcher);
         Self::register_native::<ResolvedGradient>(dispatcher);
         Self::register_native::<ResolvedShape>(dispatcher);
@@ -901,8 +924,7 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
             let alpha = metadata.value.value;
-            widget.set_opacity(f64::from(alpha.get()));
-            let guard = alpha.watch({
+            let (initial, guard) = subscribe_then_get(&alpha, {
                 let widget = widget.clone();
                 move |ctx| {
                     let alpha = ctx.into_value();
@@ -912,6 +934,7 @@ impl GtkRenderer {
                     });
                 }
             });
+            widget.set_opacity(f64::from(initial));
             store_watcher_guard(&widget, Box::new(guard));
             widget
         });
@@ -924,14 +947,7 @@ impl GtkRenderer {
             let provider = attach_css_provider(&wrapper, CSS_CLASS_SHADOW);
             let shadow = metadata.value;
             let color_signal = shadow.color.resolve(env);
-            apply_shadow_css(
-                &provider,
-                color_signal.get(),
-                shadow.offset.x,
-                shadow.offset.y,
-                shadow.radius,
-            );
-            let guard = color_signal.watch({
+            let (initial, guard) = subscribe_then_get(&color_signal, {
                 let provider = provider.clone();
                 move |ctx| {
                     let resolved = ctx.into_value();
@@ -947,6 +963,13 @@ impl GtkRenderer {
                     });
                 }
             });
+            apply_shadow_css(
+                &provider,
+                initial,
+                shadow.offset.x,
+                shadow.offset.y,
+                shadow.radius,
+            );
             store_watcher_guard(&wrapper, Box::new(guard));
             wrapper.upcast()
         });
@@ -964,37 +987,16 @@ impl GtkRenderer {
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
             let style_signal = metadata.value.style;
-            let hovered = Rc::new(RefCell::new(false));
-            let style_state = Rc::new(RefCell::new(style_signal.get()));
-            let motion = gtk4::EventControllerMotion::new();
-            {
-                let hovered = hovered.clone();
-                let style_state = style_state.clone();
-                let widget = widget.clone();
-                motion.connect_enter(move |_, _, _| {
-                    *hovered.borrow_mut() = true;
-                    widget.set_cursor_from_name(Some(cursor_style_to_gtk_name(
-                        *style_state.borrow(),
-                    )));
-                });
-            }
-            {
-                let hovered = hovered.clone();
-                let widget = widget.clone();
-                motion.connect_leave(move |_| {
-                    *hovered.borrow_mut() = false;
-                    widget.set_cursor_from_name(None);
-                });
-            }
-            widget.add_controller(motion);
-            let guard = style_signal.watch({
+            let hovered = Rc::new(Cell::new(false));
+            let style_state = Rc::new(Cell::new(None));
+            let (initial_style, guard) = subscribe_then_get(&style_signal, {
                 let style_state = style_state.clone();
                 let hovered = hovered.clone();
                 let widget = widget.clone();
                 move |ctx| {
                     let style = ctx.into_value();
-                    *style_state.borrow_mut() = style;
-                    if *hovered.borrow() {
+                    style_state.set(Some(style));
+                    if hovered.get() {
                         let widget = widget.clone();
                         glib::idle_add_local_once(move || {
                             widget.set_cursor_from_name(Some(cursor_style_to_gtk_name(style)));
@@ -1002,6 +1004,29 @@ impl GtkRenderer {
                     }
                 }
             });
+            style_state.set(Some(initial_style));
+            let motion = gtk4::EventControllerMotion::new();
+            {
+                let hovered = hovered.clone();
+                let style_state = style_state.clone();
+                let widget = widget.clone();
+                motion.connect_enter(move |_, _, _| {
+                    hovered.set(true);
+                    let style = style_state
+                        .get()
+                        .expect("GTK cursor signal must be initialized before pointer entry");
+                    widget.set_cursor_from_name(Some(cursor_style_to_gtk_name(style)));
+                });
+            }
+            {
+                let hovered = hovered.clone();
+                let widget = widget.clone();
+                motion.connect_leave(move |_| {
+                    hovered.set(false);
+                    widget.set_cursor_from_name(None);
+                });
+            }
+            widget.add_controller(motion);
             store_watcher_guard(&widget, Box::new(guard));
             widget
         });
@@ -1014,14 +1039,7 @@ impl GtkRenderer {
             let provider = attach_css_provider(&wrapper, CSS_CLASS_BORDER);
             let border = metadata.value;
             let color_signal = border.color.resolve(env);
-            apply_border_css(
-                &provider,
-                color_signal.get(),
-                border.width,
-                border.corner_radius,
-                border.edges,
-            );
-            let guard = color_signal.watch({
+            let (initial, guard) = subscribe_then_get(&color_signal, {
                 let provider = provider.clone();
                 move |ctx| {
                     let resolved = ctx.into_value();
@@ -1037,6 +1055,13 @@ impl GtkRenderer {
                     });
                 }
             });
+            apply_border_css(
+                &provider,
+                initial,
+                border.width,
+                border.corner_radius,
+                border.edges,
+            );
             store_watcher_guard(&wrapper, Box::new(guard));
             wrapper.upcast()
         });
@@ -1048,37 +1073,39 @@ impl GtkRenderer {
             let wrapper = wrap_for_metadata(content);
             let provider = attach_css_provider(&wrapper, CSS_CLASS_SCALE);
             let scale = metadata.value;
-            let values = Rc::new(RefCell::new((scale.x.get(), scale.y.get())));
-            apply_scale_css(
-                &provider,
-                values.borrow().0,
-                values.borrow().1,
-                scale.anchor,
-            );
-            let x_guard = scale.x.watch({
+            let values = Rc::new(ReactiveAxisPair::default());
+            let (initial_x, x_guard) = subscribe_then_get(&scale.x, {
                 let provider = provider.clone();
                 let values = values.clone();
                 move |ctx| {
-                    values.borrow_mut().0 = ctx.into_value();
-                    let (x, y) = *values.borrow();
-                    let provider = provider.clone();
-                    glib::idle_add_local_once(move || {
-                        apply_scale_css(&provider, x, y, scale.anchor);
-                    });
+                    values.update_x(ctx.into_value());
+                    if let Some((x, y)) = values.values() {
+                        let provider = provider.clone();
+                        glib::idle_add_local_once(move || {
+                            apply_scale_css(&provider, x, y, scale.anchor);
+                        });
+                    }
                 }
             });
-            let y_guard = scale.y.watch({
+            values.update_x(initial_x);
+            let (initial_y, y_guard) = subscribe_then_get(&scale.y, {
                 let provider = provider.clone();
                 let values = values.clone();
                 move |ctx| {
-                    values.borrow_mut().1 = ctx.into_value();
-                    let (x, y) = *values.borrow();
-                    let provider = provider.clone();
-                    glib::idle_add_local_once(move || {
-                        apply_scale_css(&provider, x, y, scale.anchor);
-                    });
+                    values.update_y(ctx.into_value());
+                    if let Some((x, y)) = values.values() {
+                        let provider = provider.clone();
+                        glib::idle_add_local_once(move || {
+                            apply_scale_css(&provider, x, y, scale.anchor);
+                        });
+                    }
                 }
             });
+            values.update_y(initial_y);
+            let (x, y) = values
+                .values()
+                .expect("GTK scale signals must be initialized after subscription");
+            apply_scale_css(&provider, x, y, scale.anchor);
             crate::util::store_watcher_guards(&wrapper, vec![Box::new(x_guard), Box::new(y_guard)]);
             wrapper.upcast()
         });
@@ -1090,8 +1117,7 @@ impl GtkRenderer {
             let wrapper = wrap_for_metadata(content);
             let provider = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
             let rotation = metadata.value;
-            apply_rotation_css(&provider, rotation.angle.get(), rotation.anchor);
-            let guard = rotation.angle.watch({
+            let (initial, guard) = subscribe_then_get(&rotation.angle, {
                 let provider = provider.clone();
                 move |ctx| {
                     let angle = ctx.into_value();
@@ -1101,6 +1127,7 @@ impl GtkRenderer {
                     });
                 }
             });
+            apply_rotation_css(&provider, initial, rotation.anchor);
             store_watcher_guard(&wrapper, Box::new(guard));
             wrapper.upcast()
         });
@@ -1112,32 +1139,39 @@ impl GtkRenderer {
             let wrapper = wrap_for_metadata(content);
             let provider = attach_css_provider(&wrapper, CSS_CLASS_OFFSET);
             let offset = metadata.value;
-            let values = Rc::new(RefCell::new((offset.x.get(), offset.y.get())));
-            apply_offset_css(&provider, values.borrow().0, values.borrow().1);
-            let x_guard = offset.x.watch({
+            let values = Rc::new(ReactiveAxisPair::default());
+            let (initial_x, x_guard) = subscribe_then_get(&offset.x, {
                 let provider = provider.clone();
                 let values = values.clone();
                 move |ctx| {
-                    values.borrow_mut().0 = ctx.into_value();
-                    let (x, y) = *values.borrow();
-                    let provider = provider.clone();
-                    glib::idle_add_local_once(move || {
-                        apply_offset_css(&provider, x, y);
-                    });
+                    values.update_x(ctx.into_value());
+                    if let Some((x, y)) = values.values() {
+                        let provider = provider.clone();
+                        glib::idle_add_local_once(move || {
+                            apply_offset_css(&provider, x, y);
+                        });
+                    }
                 }
             });
-            let y_guard = offset.y.watch({
+            values.update_x(initial_x);
+            let (initial_y, y_guard) = subscribe_then_get(&offset.y, {
                 let provider = provider.clone();
                 let values = values.clone();
                 move |ctx| {
-                    values.borrow_mut().1 = ctx.into_value();
-                    let (x, y) = *values.borrow();
-                    let provider = provider.clone();
-                    glib::idle_add_local_once(move || {
-                        apply_offset_css(&provider, x, y);
-                    });
+                    values.update_y(ctx.into_value());
+                    if let Some((x, y)) = values.values() {
+                        let provider = provider.clone();
+                        glib::idle_add_local_once(move || {
+                            apply_offset_css(&provider, x, y);
+                        });
+                    }
                 }
             });
+            values.update_y(initial_y);
+            let (x, y) = values
+                .values()
+                .expect("GTK offset signals must be initialized after subscription");
+            apply_offset_css(&provider, x, y);
             crate::util::store_watcher_guards(&wrapper, vec![Box::new(x_guard), Box::new(y_guard)]);
             wrapper.upcast()
         });
@@ -1345,10 +1379,7 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
             let enabled = metadata.value.enabled;
-            let initial = enabled.get();
-            widget.set_can_target(initial);
-            widget.set_sensitive(initial);
-            let guard = enabled.watch({
+            let (initial, guard) = subscribe_then_get(&enabled, {
                 let widget = widget.clone();
                 move |ctx| {
                     let enabled = ctx.into_value();
@@ -1359,6 +1390,8 @@ impl GtkRenderer {
                     });
                 }
             });
+            widget.set_can_target(initial);
+            widget.set_sensitive(initial);
             store_watcher_guard(&widget, Box::new(guard));
             widget
         });
@@ -1379,7 +1412,11 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<AppliedFilter>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
-            crate::applied_filter::wrap_filtered_content(content, metadata.value)
+            let runtime = env
+                .get::<waterui_graphics::GpuRuntime>()
+                .expect("GTK renderer requires a GpuRuntime in the environment")
+                .clone();
+            crate::applied_filter::wrap_filtered_content(content, metadata.value, runtime)
         });
 
         // IgnorableMetadata handlers - these can safely just render the content

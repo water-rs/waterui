@@ -1,5 +1,7 @@
 use crate::components::text::WuiHorizontalAlignment;
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
+use core::ffi::c_void;
+use nami::Signal;
 use waterui_layout::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
     VerticalAlignment, ViewDimensions,
@@ -80,7 +82,7 @@ fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
     if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>() {
         return Some(LazyStackDescriptor {
             axis: WuiLazyStackAxis::Vertical,
-            spacing: vstack.spacing,
+            spacing: vstack.spacing.get(),
             horizontal_alignment: vstack.alignment.into_ffi(),
             vertical_alignment: VerticalAlignment::Center.into_ffi(),
         });
@@ -88,7 +90,7 @@ fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
     if let Some(hstack) = layout_any.downcast_ref::<HStackLayout>() {
         return Some(LazyStackDescriptor {
             axis: WuiLazyStackAxis::Horizontal,
-            spacing: hstack.spacing,
+            spacing: hstack.spacing.get(),
             horizontal_alignment: HorizontalAlignment::Center.into_ffi(),
             vertical_alignment: hstack.alignment.into_ffi(),
         });
@@ -99,6 +101,75 @@ fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
 fn required_lazy_stack_descriptor(layout: &dyn Layout) -> LazyStackDescriptor {
     lazy_stack_descriptor(layout)
         .unwrap_or_else(|| panic!("waterui_layout_lazy_stack_* called for unsupported layout"))
+}
+
+/// Native callback invoked when a reactive layout input changes.
+pub type WuiLayoutInvalidationCallback = unsafe extern "C" fn(context: *mut c_void);
+
+struct ForeignLayoutInvalidation {
+    context: *mut c_void,
+    invalidate: WuiLayoutInvalidationCallback,
+    drop: WuiLayoutInvalidationCallback,
+}
+
+impl ForeignLayoutInvalidation {
+    fn invalidate(&self) {
+        unsafe { (self.invalidate)(self.context) };
+    }
+}
+
+impl Drop for ForeignLayoutInvalidation {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.context) };
+    }
+}
+
+/// Retained native invalidation target and its precise signal subscriptions.
+pub struct WuiLayoutWatcher {
+    _guards: Vec<nami::watcher::BoxWatcherGuard>,
+    _target: Rc<ForeignLayoutInvalidation>,
+}
+
+/// Watches the reactive fields used by a layout.
+///
+/// # Safety
+///
+/// `layout` and `context` must remain valid until the returned watcher is
+/// dropped. Both callbacks must run on the layout's owning UI thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_watch_invalidation(
+    layout: *const WuiLayout,
+    context: *mut c_void,
+    invalidate: WuiLayoutInvalidationCallback,
+    drop_callback: WuiLayoutInvalidationCallback,
+) -> *mut WuiLayoutWatcher {
+    let layout = unsafe { crate::borrow_ffi(layout) };
+
+    let target = Rc::new(ForeignLayoutInvalidation {
+        context,
+        invalidate,
+        drop: drop_callback,
+    });
+    let callback_target = Rc::clone(&target);
+    let guards = layout.0.watch_invalidation(Rc::new(move || {
+        let target = Rc::clone(&callback_target);
+        target.invalidate();
+    }));
+    Box::into_raw(Box::new(WuiLayoutWatcher {
+        _guards: guards,
+        _target: target,
+    }))
+}
+
+/// Drops a layout invalidation watcher.
+///
+/// # Safety
+///
+/// `watcher` must be returned by [`waterui_layout_watch_invalidation`] and not
+/// previously dropped.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_watcher_drop(watcher: *mut WuiLayoutWatcher) {
+    unsafe { drop(Box::from_raw(watcher)) };
 }
 
 // ============================================================================
@@ -304,6 +375,7 @@ impl IntoRust for WuiSize {
     }
 }
 
+#[cfg(feature = "c-api")]
 crate::ffi_computed!(Size, WuiSize, size);
 
 #[repr(C)]
@@ -428,18 +500,6 @@ impl IntoRust for WuiViewDimensions {
     }
 }
 
-/// Releases the alignment-guide arrays owned by a `WuiViewDimensions`.
-///
-/// # Safety
-///
-/// `dimensions` must be a value previously produced by waterui and not already consumed;
-/// it must not be used again after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_view_dimensions(dimensions: WuiViewDimensions) {
-    dimensions.horizontal_guides.consume();
-    dimensions.vertical_guides.consume();
-}
-
 #[repr(C)]
 pub struct WuiRect {
     origin: WuiPoint,
@@ -462,6 +522,10 @@ impl IntoFFI for Rect {
         }
     }
 }
+
+#[cfg(feature = "c-api")]
+crate::ffi_binding!(Rect, WuiRect, rect);
+crate::ffi_watcher!(Rect, WuiRect, rect);
 
 // ============================================================================
 // Layout API Functions
@@ -490,37 +554,8 @@ pub unsafe extern "C" fn waterui_layout_measure(
     let subview_refs: Vec<&dyn SubView> =
         children_slice.iter().map(|s| s as &dyn SubView).collect();
     let dimensions = measure_layout(layout, proposal, &subview_refs);
-    children.consume_and_drop_elements();
+    children.consume();
     dimensions.into_ffi()
-}
-
-/// Returns the size the layout reports as fitting the given proposal.
-///
-/// # Safety
-///
-/// - The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
-/// - The `children` array must contain valid `WuiSubView` entries; it is consumed and dropped after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_layout_size_that_fits(
-    layout: *mut WuiLayout,
-    proposal: WuiProposalSize,
-    mut children: WuiArray<WuiSubView>,
-) -> WuiSize {
-    let layout: &dyn Layout = unsafe { &*(*layout).0 };
-    let proposal = unsafe { proposal.into_rust() };
-
-    // Get slice of WuiSubView and create trait object references
-    let children_slice = children.as_mut_slice();
-    let subview_refs: Vec<&dyn SubView> =
-        children_slice.iter().map(|s| s as &dyn SubView).collect();
-
-    let size = layout.size_that_fits(proposal, &subview_refs);
-
-    // Explicitly drop the children array and its elements (WuiSubViews)
-    // This releases the strong reference to the Swift SubViewProxy held by WuiSubView
-    children.consume_and_drop_elements();
-
-    size.into_ffi()
 }
 
 /// Places child views within the specified bounds.
@@ -549,9 +584,7 @@ pub unsafe extern "C" fn waterui_layout_place(
 
     let rects = layout.place(bounds, &subview_refs);
 
-    // Explicitly drop the children array and its elements (WuiSubViews)
-    // This releases the strong reference to the Swift SubViewProxy held by WuiSubView
-    children.consume_and_drop_elements();
+    children.consume();
 
     rects.into_ffi()
 }
@@ -612,7 +645,7 @@ pub unsafe extern "C" fn waterui_layout_lazy_stack_vertical_alignment(
 // ScrollView
 // ============================================================================
 
-into_ffi! {Axis,All,
+into_ffi! {Axis, non_exhaustive,
     pub enum WuiAxis {
         Horizontal,
         Vertical,
@@ -642,6 +675,8 @@ ffi_view!(ScrollView, WuiScrollView, scroll_view);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cell::Cell;
+    use nami::{Computed, SignalExt, binding};
     use waterui_layout::stack::{HStackLayout, VStackLayout};
 
     fn with_layout(layout: impl Layout + 'static, f: impl FnOnce(*mut WuiLayout)) {
@@ -654,7 +689,7 @@ mod tests {
         with_layout(
             VStackLayout {
                 alignment: HorizontalAlignment::Trailing,
-                spacing: 12.0,
+                spacing: Computed::constant(12.0),
             },
             |layout| unsafe {
                 assert_eq!(
@@ -675,7 +710,7 @@ mod tests {
         with_layout(
             HStackLayout {
                 alignment: VerticalAlignment::Bottom,
-                spacing: 7.0,
+                spacing: Computed::constant(7.0),
             },
             |layout| unsafe {
                 assert_eq!(
@@ -689,5 +724,38 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn layout_watcher_forwards_precise_signal_invalidation() {
+        struct Target(Rc<Cell<usize>>);
+
+        unsafe extern "C" fn invalidate(context: *mut c_void) {
+            let target = unsafe { &*(context as *const Target) };
+            target.0.set(target.0.get() + 1);
+        }
+
+        unsafe extern "C" fn drop_target(context: *mut c_void) {
+            unsafe { drop(Box::from_raw(context as *mut Target)) };
+        }
+
+        let spacing = binding(4.0_f32);
+        let mut layout = WuiLayout(Box::new(VStackLayout {
+            alignment: HorizontalAlignment::Center,
+            spacing: spacing.computed(),
+        }));
+        let invalidations = Rc::new(Cell::new(0));
+        let context = Box::into_raw(Box::new(Target(Rc::clone(&invalidations)))).cast();
+        let watcher =
+            unsafe { waterui_layout_watch_invalidation(&layout, context, invalidate, drop_target) };
+
+        spacing.set(12.0);
+        assert_eq!(invalidations.get(), 1);
+        assert_eq!(
+            unsafe { waterui_layout_lazy_stack_spacing(&mut layout) },
+            12.0
+        );
+
+        unsafe { waterui_layout_watcher_drop(watcher) };
     }
 }

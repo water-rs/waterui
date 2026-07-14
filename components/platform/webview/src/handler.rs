@@ -1,7 +1,8 @@
 use std::{any::Any, pin::Pin, rc::Rc};
 
 use cookie::Cookie;
-use waterui_core::impl_debug;
+use waterui_core::reactive::signal::IntoComputed;
+use waterui_core::{Computed, Signal, impl_debug};
 use waterui_str::Str;
 
 use crate::WebViewEvent;
@@ -85,9 +86,7 @@ pub trait WebViewHandle: 'static {
     fn set_user_agent(&self, user_agent: &str);
 
     /// Enables or disables following redirects.
-    ///
-    /// Redirect handling is backend-specific; unsupported backends may ignore this.
-    fn set_redirects_enabled(&self, _enabled: bool) {}
+    fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>);
     /// Watches for web view events.
     ///
     /// Multiple watchers can be active at the same time.
@@ -106,7 +105,7 @@ pub trait WebViewHandle: 'static {
     fn set_cookie(&self, cookie: Cookie<'static>);
 
     /// Retrieves all cookies for the current web view.
-    fn get_cookies(&self) -> Vec<Cookie<'static>>;
+    fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>>;
 
     /// Runs JavaScript code in the context of the currently loaded page.
     ///
@@ -127,13 +126,13 @@ trait WebViewHandleImpl: Any {
     fn inject_script(&self, script: &str, time: ScriptInjectionTime);
     fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>);
     fn set_user_agent(&self, user_agent: &str);
-    fn set_redirects_enabled(&self, enabled: bool);
+    fn set_redirects_enabled(&self, enabled: Computed<bool>);
     fn can_go_back(&self) -> bool;
     fn can_go_forward(&self) -> bool;
     fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>);
     fn remove_handler(&self, name: &str);
     fn set_cookie(&self, cookie: Cookie<'static>);
-    fn get_cookies(&self) -> Vec<Cookie<'static>>;
+    fn get_cookies<'a>(&'a self) -> Pin<Box<dyn 'a + Future<Output = Vec<Cookie<'static>>>>>;
     fn run_javascript<'a>(
         &'a self,
         script: &'a str,
@@ -179,7 +178,7 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
         WebViewHandle::set_user_agent(self, user_agent);
     }
 
-    fn set_redirects_enabled(&self, enabled: bool) {
+    fn set_redirects_enabled(&self, enabled: Computed<bool>) {
         WebViewHandle::set_redirects_enabled(self, enabled);
     }
 
@@ -203,8 +202,8 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
         WebViewHandle::set_cookie(self, cookie);
     }
 
-    fn get_cookies(&self) -> Vec<Cookie<'static>> {
-        WebViewHandle::get_cookies(self)
+    fn get_cookies<'a>(&'a self) -> Pin<Box<dyn 'a + Future<Output = Vec<Cookie<'static>>>>> {
+        Box::pin(WebViewHandle::get_cookies(self))
     }
 
     fn run_javascript<'a>(
@@ -252,8 +251,8 @@ impl AnyWebViewHandle {
     }
 
     /// Enables or disables following redirects.
-    pub fn set_redirects_enabled(&self, enabled: bool) {
-        self.inner.set_redirects_enabled(enabled);
+    pub fn set_redirects_enabled(&self, enabled: impl IntoComputed<bool>) {
+        self.inner.set_redirects_enabled(enabled.into_computed());
     }
 
     /// Stops the current loading operation.
@@ -301,8 +300,11 @@ impl AnyWebViewHandle {
     }
 
     /// Retrieves all cookies for the current web view.
-    #[must_use]
-    pub fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "native web views and cookie stores are main-thread-affine"
+    )]
+    pub fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> + '_ {
         self.inner.get_cookies()
     }
 
@@ -310,7 +312,10 @@ impl AnyWebViewHandle {
     ///
     /// The returned future is intentionally thread-local because native web views and
     /// their handles are main-thread-affine.
-    #[allow(clippy::future_not_send)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "native web views and JavaScript execution are main-thread-affine"
+    )]
     pub fn run_javascript<'a>(
         &'a self,
         script: &'a str,

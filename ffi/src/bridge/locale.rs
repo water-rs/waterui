@@ -11,7 +11,7 @@
 //! const char* locale_id = get_system_locale();
 //!
 //! // Install it into the environment
-//! waterui_env_install_locale_string(env, locale_id);
+//! waterui_env_install_locale_tag(env, locale_id);
 //! ```
 //!
 //! ## Supported Locales
@@ -30,62 +30,10 @@
 use core::ffi::c_char;
 use core::str::FromStr;
 
-use waterui::Str;
+use nami::{Binding, Container};
 use waterui_locale::{Locale, regional};
 
-use crate::{IntoFFI, WuiEnv};
-
-/// Locale enum for common locales (for convenience).
-///
-/// For locales not in this enum, use `waterui_env_install_locale_string()`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WuiLocale {
-    /// English (US)
-    EnUs = 0,
-    /// English (UK)
-    EnGb = 1,
-    /// Chinese (Simplified, China)
-    ZhCn = 2,
-    /// Chinese (Traditional, Taiwan)
-    ZhTw = 3,
-    /// Chinese (Traditional, Hong Kong)
-    ZhHk = 4,
-    /// Japanese
-    Ja = 5,
-    /// Korean
-    Ko = 6,
-    /// German
-    De = 7,
-    /// French
-    Fr = 8,
-    /// Spanish
-    Es = 9,
-    /// Russian
-    Ru = 10,
-    /// Arabic
-    Ar = 11,
-}
-
-impl From<WuiLocale> for Locale {
-    fn from(value: WuiLocale) -> Self {
-        use waterui_locale::locales;
-        match value {
-            WuiLocale::EnUs => locales::EN_US,
-            WuiLocale::EnGb => locales::EN_GB,
-            WuiLocale::ZhCn => locales::ZH_CN,
-            WuiLocale::ZhTw => locales::ZH_TW,
-            WuiLocale::ZhHk => locales::ZH_HK,
-            WuiLocale::Ja => locales::JA,
-            WuiLocale::Ko => locales::KO,
-            WuiLocale::De => locales::DE,
-            WuiLocale::Fr => locales::FR,
-            WuiLocale::Es => locales::ES,
-            WuiLocale::Ru => locales::RU,
-            WuiLocale::Ar => locales::AR,
-        }
-    }
-}
+use crate::WuiEnv;
 
 fn parse_locale(locale_id: &str) -> Locale {
     Locale::from_str(locale_id).unwrap_or_else(|error| {
@@ -94,225 +42,101 @@ fn parse_locale(locale_id: &str) -> Locale {
 }
 
 fn install_locale_value(env: &mut WuiEnv, locale: Locale) {
-    env.0.insert(locale.clone());
+    let binding = env.0.get::<Binding<Locale>>().cloned();
     regional::set_locale_tag(locale.canonical_tag())
-        .expect("locale inserted into environment must be valid");
-    env.0
-        .insert(regional::current_settings().with_locale(&locale));
+        .expect("parsed locale tag must remain valid when published");
+    let context = regional::current_settings().with_locale(&locale);
+    env.0.insert(locale.clone());
+    env.0.insert(context);
+    if let Some(binding) = binding {
+        binding.set(locale);
+    } else {
+        env.0.insert(Binding::custom(Container::new(locale)));
+    }
 }
 
-fn current_locale(env: &WuiEnv) -> Locale {
-    if let Some(locale) = env.0.get::<Locale>().cloned() {
-        return locale;
-    }
-    if let Some(context) = env.0.get::<regional::RegionalContext>() {
-        return context.locale().clone();
-    }
-    parse_locale(regional::current_settings().locale_tag())
-}
-
-/// Installs a locale into the environment using a predefined locale enum.
-///
-/// This installs a `Locale` snapshot into the environment and publishes it
-/// to the shared regional runtime context.
-///
-/// # Safety
-/// - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_env_install_locale(env: *mut WuiEnv, locale: WuiLocale) {
-    let env = unsafe { crate::expect_non_null_mut(env, "waterui_env_install_locale", "env") };
-    let rust_locale: Locale = locale.into();
-    install_locale_value(env, rust_locale.clone());
-    tracing::debug!("Installed locale {:?}", rust_locale);
+pub(crate) fn install_locale_tag(env: &mut WuiEnv, locale_tag: &str) {
+    install_locale_value(env, parse_locale(locale_tag));
 }
 
 /// Installs a locale into the environment using a BCP 47 locale string.
 ///
-/// This is more flexible than `waterui_env_install_locale()` as it accepts
-/// any valid BCP 47 locale identifier (e.g., "en-US", "zh-Hans-CN", "ja-JP").
-///
-/// If the locale string is invalid, falls back to English ("en").
-///
-/// This installs a `Locale` snapshot into the environment and publishes it
-/// to the shared regional runtime context.
+/// This installs a reactive locale binding into the environment and publishes
+/// the same value to the shared regional runtime. Invalid tags fail immediately.
 ///
 /// # Safety
-/// - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
-/// - `locale_str` must be a valid null-terminated C string.
+/// - `env` must be a valid pointer returned by `waterui_init()`.
+/// - `locale_str` must be a valid null-terminated UTF-8 string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_env_install_locale_string(
+pub unsafe extern "C" fn waterui_env_install_locale_tag(
     env: *mut WuiEnv,
-    locale_str: *const c_char,
+    locale_tag: *const c_char,
 ) {
-    let env =
-        unsafe { crate::expect_non_null_mut(env, "waterui_env_install_locale_string", "env") };
-    let locale_str = unsafe {
-        crate::expect_non_null(
-            locale_str,
-            "waterui_env_install_locale_string",
-            "locale_str",
-        )
-    };
-
-    // Convert C string to Rust &str
-    let c_str = unsafe { core::ffi::CStr::from_ptr(locale_str) };
+    let env = unsafe { crate::borrow_ffi_mut(env) };
+    let c_str = unsafe { core::ffi::CStr::from_ptr(locale_tag) };
     let locale_id = unsafe { core::str::from_utf8_unchecked(c_str.to_bytes()) };
-    let rust_locale = parse_locale(locale_id);
-    install_locale_value(env, rust_locale.clone());
-    tracing::debug!("Installed locale from string {:?}", rust_locale);
+    install_locale_tag(env, locale_id);
 }
 
-/// Gets the current locale from the environment.
-///
-/// Returns the locale as a WuiLocale enum. If the locale doesn't match
-/// any predefined enum value, returns `WuiLocale::EnUs` as default.
-///
-/// # Safety
-/// - `env` must be a valid pointer.
+#[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_env_get_locale(env: *const WuiEnv) -> WuiLocale {
-    let env = unsafe { crate::expect_non_null(env, "waterui_env_get_locale", "env") };
-    let locale = current_locale(env);
-    let lang = locale.language.as_str();
-
-    match lang {
-        "en" => match locale.region.as_ref().map(|r| r.as_str()) {
-            Some("GB") => WuiLocale::EnGb,
-            _ => WuiLocale::EnUs,
-        },
-        "zh" => {
-            // Check for region/script
-            if let Some(region) = locale.region {
-                match region.as_str() {
-                    "TW" => WuiLocale::ZhTw,
-                    "HK" => WuiLocale::ZhHk,
-                    _ => WuiLocale::ZhCn,
-                }
-            } else if let Some(script) = locale.script {
-                match script.as_str() {
-                    "Hant" => WuiLocale::ZhTw,
-                    _ => WuiLocale::ZhCn,
-                }
-            } else {
-                WuiLocale::ZhCn
-            }
-        }
-        "ja" => WuiLocale::Ja,
-        "ko" => WuiLocale::Ko,
-        "de" => WuiLocale::De,
-        "fr" => WuiLocale::Fr,
-        "es" => WuiLocale::Es,
-        "ru" => WuiLocale::Ru,
-        "ar" => WuiLocale::Ar,
-        _ => panic!(
-            "waterui_env_get_locale: unsupported language '{}' for WuiLocale; use waterui_env_get_locale_tag for lossless locale",
-            lang
-        ),
-    }
-}
-
-/// Gets the current locale from the environment as a canonical BCP 47 string.
-///
-/// This is a lossless alternative to `waterui_env_get_locale()`.
-///
-/// # Safety
-/// - `env` must be a valid pointer or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_env_get_locale_tag(env: *const WuiEnv) -> crate::WuiStr {
-    let env = unsafe { crate::expect_non_null(env, "waterui_env_get_locale_tag", "env") };
-    let locale = current_locale(env);
-    Str::from(locale.canonical_tag()).into_ffi()
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallLocaleTag<'local>(
+    mut jni_env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+    env_ptr: crate::jni::jlong,
+    locale_tag: crate::jni::jni::objects::JString<'local>,
+) {
+    let locale_tag = crate::jni::convert::string_from_java(&mut jni_env, &locale_tag);
+    let env = unsafe { crate::borrow_ffi_mut(env_ptr as *mut WuiEnv) };
+    install_locale_tag(env, &locale_tag);
 }
 
 #[cfg(test)]
 mod tests {
     use std::boxed::Box;
+    use std::cell::RefCell;
     use std::ffi::CString;
+    use std::rc::Rc;
+
+    use nami::Signal;
 
     use super::*;
 
     #[test]
-    fn install_locale_writes_environment_snapshot() {
-        let env_ptr = crate::waterui_env_new();
+    fn install_locale_reuses_reactive_environment_binding() {
+        let env_ptr = Box::into_raw(Box::new(WuiEnv(waterui::Environment::new())));
         unsafe {
-            waterui_env_install_locale(env_ptr, WuiLocale::EnGb);
-            let env = &*env_ptr;
-
-            let locale = env.0.get::<Locale>().expect("Locale should be installed");
-            assert_eq!(locale.language.as_str(), "en");
-            assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("GB"));
-            let settings = env
-                .0
-                .get::<regional::RegionalContext>()
-                .expect("RegionalContext should be installed");
-            assert_eq!(settings.locale_tag(), "en-GB");
-            assert!(!settings.timezone().is_empty());
-
-            drop(Box::from_raw(env_ptr));
-        }
-    }
-
-    #[test]
-    fn install_locale_updates_runtime_context() {
-        let env_ptr = crate::waterui_env_new();
-        unsafe {
-            waterui_env_install_locale(env_ptr, WuiLocale::EnUs);
-            waterui_env_install_locale(env_ptr, WuiLocale::EnGb);
-            let settings = regional::current_settings();
-            let locale = settings.locale();
-            assert_eq!(locale.language.as_str(), "en");
-            assert_eq!(
-                locale.region.as_ref().map(|region| region.as_str()),
-                Some("GB")
-            );
-
-            drop(Box::from_raw(env_ptr));
-        }
-    }
-
-    #[test]
-    fn get_locale_preserves_english_region() {
-        let env_ptr = crate::waterui_env_new();
-        unsafe {
-            waterui_env_install_locale(env_ptr, WuiLocale::EnGb);
-            assert_eq!(waterui_env_get_locale(env_ptr), WuiLocale::EnGb);
-            drop(Box::from_raw(env_ptr));
-        }
-    }
-
-    #[test]
-    fn install_locale_string_updates_environment_snapshot() {
-        let env_ptr = crate::waterui_env_new();
-        unsafe {
-            let locale = CString::new("en-GB").expect("valid c string");
-            waterui_env_install_locale_string(env_ptr, locale.as_ptr());
+            let initial = CString::new("en-GB").expect("valid locale C string");
+            waterui_env_install_locale_tag(env_ptr, initial.as_ptr());
 
             let env = &*env_ptr;
-            let locale_value = env.0.get::<Locale>().expect("Locale should be installed");
-            assert_eq!(locale_value.language.as_str(), "en");
-            assert_eq!(locale_value.region.as_ref().map(|r| r.as_str()), Some("GB"));
-            let settings = env
+            let binding = env
                 .0
-                .get::<regional::RegionalContext>()
-                .expect("RegionalContext should be installed");
-            assert_eq!(settings.locale_tag(), "en-GB");
-            assert_eq!(waterui_env_get_locale(env_ptr), WuiLocale::EnGb);
+                .get::<Binding<Locale>>()
+                .expect("locale binding should be installed")
+                .clone();
+            assert_eq!(binding.get().canonical_tag(), "en-GB");
+
+            let observed = Rc::new(RefCell::new(None));
+            let callback_observed = Rc::clone(&observed);
+            let _guard = binding.watch(move |ctx| {
+                callback_observed
+                    .borrow_mut()
+                    .replace(ctx.into_value().canonical_tag());
+            });
+
+            let updated = CString::new("ja-JP").expect("valid locale C string");
+            waterui_env_install_locale_tag(env_ptr, updated.as_ptr());
+            assert_eq!(binding.get().canonical_tag(), "ja-JP");
+            assert_eq!(observed.borrow().as_deref(), Some("ja-JP"));
 
             drop(Box::from_raw(env_ptr));
         }
     }
 
     #[test]
-    fn get_locale_tag_returns_lossless_bcp47() {
-        let env_ptr = crate::waterui_env_new();
-        unsafe {
-            let locale = CString::new("en-GB-u-hc-h23").expect("valid c string");
-            waterui_env_install_locale_string(env_ptr, locale.as_ptr());
-
-            let tag = waterui_env_get_locale_tag(env_ptr);
-            assert_eq!(tag.as_str(), "en-GB-u-hc-h23");
-
-            drop(Box::from_raw(env_ptr));
-        }
+    #[should_panic(expected = "Invalid locale")]
+    fn invalid_locale_tag_fails_during_parsing() {
+        let _ = parse_locale("en--US");
     }
 }

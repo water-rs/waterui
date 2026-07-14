@@ -5,6 +5,11 @@
 #![no_std]
 extern crate alloc;
 
+#[cfg(test)]
+pub(crate) fn init_test_executor() {
+    let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+}
+
 pub mod label;
 pub use label::{IconPosition, IntoLabel, Label, LabelDisplayMode, label};
 pub mod menu;

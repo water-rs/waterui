@@ -12,6 +12,8 @@ mod platform;
 mod readback;
 mod renderer;
 mod runner;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 mod view_renderer;
 mod widgets;
 

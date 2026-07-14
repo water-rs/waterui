@@ -47,7 +47,8 @@ use crate::Url;
 use crate::source::{MediaItem, SubtitleTrack};
 use crate::subtitles::{SubtitleCue, active_subtitle_text, parse_subtitles_from_path};
 use crate::video::{
-    AspectRatio, Event, PlaybackPolicy, SubtitleSelection, VideoConfig, VideoPlayerConfig, Volume,
+    AspectRatio, Event, PlaybackPolicy, SubtitleSelection, VideoConfig, VideoEventHandler,
+    VideoPlayerConfig, Volume,
 };
 
 const SEEK_EPSILON: f64 = 0.005;
@@ -65,11 +66,11 @@ const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 const BUFFER_LEVEL_REPORT_STEP_MS: u32 = 50;
 const MEDIA_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-type OnEvent = Rc<dyn Fn(Event) + 'static>;
+type OnEvent = Option<Rc<dyn Fn(Event) + 'static>>;
 
-/// Bridges a typed [`BoxedEventAction<Event>`] to the runtime player's
-/// `Rc<dyn Fn(Event)>` slot by capturing the rendering [`Environment`] at
-/// hook time.
+/// Bridges an optional typed [`BoxedEventAction<Event>`] to the runtime player's
+/// optional shared callback by capturing the rendering [`Environment`] at hook
+/// time.
 ///
 /// The runtime player and its many sub-tasks share the callback via `Rc`
 /// clones, which requires the inner closure to be `Fn(Event)`. The
@@ -77,14 +78,18 @@ type OnEvent = Rc<dyn Fn(Event) + 'static>;
 /// &Environment)`) so that handlers can extract `State<T>` / environment
 /// values; the captured `env` here is what makes that extraction work
 /// even though the runtime invocation surface is itself `Fn(Event)`.
-fn bind_event_handler_to_env(
-    handler: waterui_core::handler::BoxedEventAction<Event>,
-    env: Environment,
-) -> OnEvent {
-    let handler = core::cell::RefCell::new(handler);
-    Rc::new(move |event: Event| {
+fn bind_event_handler_to_env(handler: Option<VideoEventHandler>, env: Environment) -> OnEvent {
+    let handler = handler?;
+    let handler = core::cell::RefCell::new(handler.into_inner());
+    Some(Rc::new(move |event: Event| {
         (handler.borrow_mut())(event, &env);
-    })
+    }))
+}
+
+fn emit_event(handler: &OnEvent, event: Event) {
+    if let Some(handler) = handler {
+        handler(event);
+    }
 }
 
 fn u32_to_f32(value: u32, name: &str) -> f32 {
@@ -636,7 +641,7 @@ fn apply_ui_update(
     update: UiUpdate,
 ) {
     match update {
-        UiUpdate::Event(event) => (on_event)(event),
+        UiUpdate::Event(event) => emit_event(on_event, event),
         UiUpdate::Progress(value) => {
             if let Some(player) = player {
                 player.progress_display.set(value);
@@ -736,12 +741,14 @@ pub fn install_platform_hooks(env: &mut Environment) {
 }
 
 fn video_hook(env: &Environment, config: VideoConfig) -> AnyView {
+    let config = config.resolve_muted_volume();
     let VideoConfig {
         source,
         subtitle_selection,
         has_next,
         has_previous,
         volume,
+        muted: _,
         playback_rate,
         preserve_pitch,
         aspect_ratio,
@@ -777,12 +784,14 @@ fn video_hook(env: &Environment, config: VideoConfig) -> AnyView {
 }
 
 fn video_player_hook(env: &Environment, config: VideoPlayerConfig) -> AnyView {
+    let config = config.resolve_muted_volume();
     let VideoPlayerConfig {
         source,
         subtitle_selection,
         has_next,
         has_previous,
         volume,
+        muted: _,
         playback_rate,
         preserve_pitch,
         aspect_ratio,
@@ -1151,7 +1160,10 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
             move |enabled| {
                 enabled.then({
                     let on_event = on_event.clone();
-                    move || button("Previous").action(move || (on_event)(Event::PreviousRequested))
+                    move || {
+                        button("Previous")
+                            .action(move || emit_event(&on_event, Event::PreviousRequested))
+                    }
                 })
             }
         })
@@ -1160,7 +1172,7 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
         .map(move |enabled| {
             enabled.then({
                 let on_event = on_event.clone();
-                move || button("Next").action(move || (on_event)(Event::NextRequested))
+                move || button("Next").action(move || emit_event(&on_event, Event::NextRequested))
             })
         })
         .computed();

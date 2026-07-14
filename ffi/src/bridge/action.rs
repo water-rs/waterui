@@ -3,9 +3,18 @@ use waterui::component::list::Move;
 use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
 
+use crate::bridge::closure::RetainedCallback;
 use crate::{IntoFFI, WuiEnv};
 
-opaque!(WuiAction, BoxedAction<()>, action);
+opaque!(WuiAction, RetainedCallback<BoxedAction<()>>, action);
+
+impl IntoFFI for BoxedAction<()> {
+    type FFI = *mut WuiAction;
+
+    fn into_ffi(self) -> Self::FFI {
+        RetainedCallback::new(self).into_ffi()
+    }
+}
 
 /// Calls an action with the given environment.
 ///
@@ -14,12 +23,10 @@ opaque!(WuiAction, BoxedAction<()>, action);
 /// * `action` must be a valid pointer to a `waterui_action` struct.
 /// * `env` must be a valid pointer to a `waterui_env` struct.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_call_action(action: *mut WuiAction, env: *const WuiEnv) {
-    let action = unsafe { crate::expect_non_null_mut(action, "waterui_call_action", "action") };
-    let env = unsafe { crate::expect_non_null(env, "waterui_call_action", "env") };
-    let _ = crate::ffi_boundary("waterui_call_action", || {
-        (action.0)(env);
-    });
+pub unsafe extern "C" fn waterui_call_action(action: *const WuiAction, env: *const WuiEnv) {
+    let action = unsafe { crate::borrow_ffi(action) }.0.clone();
+    let env = unsafe { crate::borrow_ffi(env) }.0.clone();
+    action.call(|action| action(&env));
 }
 
 // ============================================================================
@@ -31,13 +38,13 @@ type IndexCallback = Box<dyn Fn(&Environment, usize)>;
 /// Handler that takes an index parameter (used for delete callbacks).
 pub struct IndexHandler(pub IndexCallback);
 
-opaque!(WuiIndexAction, IndexHandler, index_action);
+opaque!(WuiIndexAction, RetainedCallback<IndexHandler>, index_action);
 
 impl crate::IntoNullableFFI for waterui::component::list::OnDelete {
     type FFI = *mut WuiIndexAction;
 
     fn into_ffi(self) -> Self::FFI {
-        IndexHandler(self).into_ffi()
+        RetainedCallback::new(IndexHandler(self)).into_ffi()
     }
 
     fn null() -> Self::FFI {
@@ -53,16 +60,13 @@ impl crate::IntoNullableFFI for waterui::component::list::OnDelete {
 /// * `env` must be a valid pointer to a `WuiEnv` struct.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_index_action(
-    action: *mut WuiIndexAction,
+    action: *const WuiIndexAction,
     env: *const WuiEnv,
     index: usize,
 ) {
-    let action =
-        unsafe { crate::expect_non_null_mut(action, "waterui_call_index_action", "action") };
-    let env = unsafe { crate::expect_non_null(env, "waterui_call_index_action", "env") };
-    let _ = crate::ffi_boundary("waterui_call_index_action", || {
-        (action.0.0)(env, index);
-    });
+    let action = unsafe { crate::borrow_ffi(action) }.0.clone();
+    let env = unsafe { crate::borrow_ffi(env) }.0.clone();
+    action.call(|action| (action.0)(&env, index));
 }
 
 // ============================================================================
@@ -74,13 +78,13 @@ type MoveCallback = Box<dyn Fn(&Environment, Move)>;
 /// Handler that takes a list move operation (used for move callbacks).
 pub struct MoveHandler(pub MoveCallback);
 
-opaque!(WuiMoveAction, MoveHandler, move_action);
+opaque!(WuiMoveAction, RetainedCallback<MoveHandler>, move_action);
 
 impl crate::IntoNullableFFI for waterui::component::list::OnMove {
     type FFI = *mut WuiMoveAction;
 
     fn into_ffi(self) -> Self::FFI {
-        MoveHandler(self).into_ffi()
+        RetainedCallback::new(MoveHandler(self)).into_ffi()
     }
 
     fn null() -> Self::FFI {
@@ -96,22 +100,21 @@ impl crate::IntoNullableFFI for waterui::component::list::OnMove {
 /// * `env` must be a valid pointer to a `WuiEnv` struct.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_move_action(
-    action: *mut WuiMoveAction,
+    action: *const WuiMoveAction,
     env: *const WuiEnv,
     from_index: usize,
     to_index: usize,
 ) {
-    let action =
-        unsafe { crate::expect_non_null_mut(action, "waterui_call_move_action", "action") };
-    let env = unsafe { crate::expect_non_null(env, "waterui_call_move_action", "env") };
-    let _ = crate::ffi_boundary("waterui_call_move_action", || {
-        (action.0.0)(env, Move::new(from_index, to_index));
-    });
+    let action = unsafe { crate::borrow_ffi(action) }.0.clone();
+    let env = unsafe { crate::borrow_ffi(env) }.0.clone();
+    action.call(|action| (action.0)(&env, Move::new(from_index, to_index)));
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "c-api"))]
 mod tests {
+    use alloc::rc::Rc;
     use alloc::sync::Arc;
+    use core::cell::Cell;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -141,6 +144,28 @@ mod tests {
         unsafe {
             waterui_drop_action(action_ptr);
             let _ = Box::from_raw(env_ptr as *mut waterui::Environment);
+        }
+    }
+
+    #[test]
+    fn action_survives_reentrant_native_drop_until_callback_returns() {
+        let action_ptr = Rc::new(Cell::new(core::ptr::null_mut::<WuiAction>()));
+        let callback_finished = Rc::new(Cell::new(false));
+        let action_ptr_for_callback = Rc::clone(&action_ptr);
+        let callback_finished_for_callback = Rc::clone(&callback_finished);
+        let action: BoxedAction<()> = Box::new(move |_| {
+            unsafe { waterui_drop_action(action_ptr_for_callback.get()) };
+            callback_finished_for_callback.set(true);
+        });
+        let action = action.into_ffi();
+        action_ptr.set(action);
+        let env = test_env();
+
+        unsafe { waterui_call_action(action, env) };
+
+        assert!(callback_finished.get());
+        unsafe {
+            let _ = Box::from_raw(env as *mut waterui::Environment);
         }
     }
 }

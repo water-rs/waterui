@@ -67,7 +67,8 @@ pub fn draw_button_state_layer(
             .map_or(0.0, |wave| wave.progress)
             .clamp(0.0, 1.0),
     );
-    let radius = (STEPPER_PRESSED_CONTAINER_RADIUS - STEPPER_CONTAINER_RADIUS).mul_add(progress, STEPPER_CONTAINER_RADIUS);
+    let radius = (STEPPER_PRESSED_CONTAINER_RADIUS - STEPPER_CONTAINER_RADIUS)
+        .mul_add(progress, STEPPER_CONTAINER_RADIUS);
     state_layer::draw_bounded(
         draw,
         bounds,

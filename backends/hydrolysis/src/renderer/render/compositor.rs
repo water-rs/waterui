@@ -1,6 +1,8 @@
 use super::*;
+use core::num::NonZeroU32;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -116,16 +118,27 @@ pub(crate) struct GpuSurfaceCompositorState {
 }
 
 pub(crate) struct EmbeddedGpuSurfaceRuntime {
-    pub(crate) surface: GpuSurface,
-    pub(crate) env: Environment,
-    pub(crate) setup_complete: bool,
-    pub(crate) output_format: wgpu::TextureFormat,
-    pub(crate) output_size: (u32, u32),
-    pub(crate) output_texture: Option<wgpu::Texture>,
-    pub(crate) output_view: Option<wgpu::TextureView>,
-    pub(crate) redraw_handle: RedrawHandle,
-    pub(crate) start_time: Instant,
-    pub(crate) last_frame_time: Instant,
+    surface: Option<GpuSurface>,
+    env: Option<Environment>,
+    setup_complete: bool,
+    msaa_samples: NonZeroU32,
+    prefers_hdr: Option<bool>,
+    output_format: wgpu::TextureFormat,
+    output_size: (u32, u32),
+    output_texture: Option<wgpu::Texture>,
+    output_view: Option<wgpu::TextureView>,
+    redraw_handle: RedrawHandle,
+    start_time: Instant,
+    last_frame_time: Instant,
+}
+
+#[derive(Clone)]
+struct EmbeddedGpuSurfaceSetup {
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    shader_cache: ShaderCache,
+    host_redraw_handle: Option<RedrawHandle>,
 }
 
 #[derive(Clone)]
@@ -171,6 +184,7 @@ pub(crate) struct PreparedGpuSurfaceLayer {
 }
 
 pub struct HydrolysisRenderTarget<'a> {
+    pub adapter: &'a wgpu::Adapter,
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub texture: Option<&'a wgpu::Texture>,
@@ -192,7 +206,6 @@ pub(crate) struct DirectGpuSurfaceTarget<'a> {
 }
 
 pub(crate) struct EmbeddedLayerTarget {
-    pub(crate) format: wgpu::TextureFormat,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) transform: vello::kurbo::Affine,
@@ -400,10 +413,14 @@ impl GpuSurfaceCompositorState {
 impl EmbeddedGpuSurfaceRuntime {
     pub(crate) fn new(surface: GpuSurface, env: &Environment) -> Self {
         let now = Instant::now();
+        let msaa_samples = surface.msaa_sample_limit();
+        let prefers_hdr = surface.resolved_hdr_preference();
         Self {
-            surface,
-            env: env.clone(),
+            surface: Some(surface),
+            env: Some(env.clone()),
             setup_complete: false,
+            msaa_samples,
+            prefers_hdr,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
             output_size: (1, 1),
             output_texture: None,
@@ -437,9 +454,7 @@ impl EmbeddedGpuSurfaceRuntime {
             edge_length_in_pixels(top_left, top_right, target.width, target.height).max(1);
         let layer_height =
             edge_length_in_pixels(top_left, bottom_left, target.width, target.height).max(1);
-        let output_format =
-            select_embedded_surface_format(target.format, self.surface.get_surface_prefers_hdr());
-        self.ensure_setup(device, queue, output_format);
+        let output_format = self.output_format;
         self.ensure_output_target(device, layer_width, layer_height, output_format);
 
         let texture = self
@@ -470,7 +485,14 @@ impl EmbeddedGpuSurfaceRuntime {
             elapsed,
             delta,
         );
-        self.surface.render(&mut frame);
+        assert!(
+            self.setup_complete,
+            "hydrolysis embedded GpuSurface used before setup"
+        );
+        self.surface
+            .as_mut()
+            .expect("hydrolysis embedded GpuSurface missing after setup")
+            .render(&mut frame);
         let needs_redraw = frame.was_redraw_requested() || self.redraw_handle.take_dirty();
         let corners = [
             point_to_clip(top_left, target.width, target.height),
@@ -487,8 +509,6 @@ impl EmbeddedGpuSurfaceRuntime {
     }
 
     pub(crate) fn render_direct_to_target(&mut self, target: DirectGpuSurfaceTarget<'_>) -> bool {
-        self.ensure_setup(target.device, target.queue, target.format);
-
         let now = Instant::now();
         let elapsed = now.duration_since(self.start_time);
         let delta = now
@@ -508,31 +528,107 @@ impl EmbeddedGpuSurfaceRuntime {
             elapsed,
             delta,
         );
-        self.surface.render(&mut frame);
+        assert!(
+            self.setup_complete,
+            "hydrolysis embedded GpuSurface used before setup"
+        );
+        self.surface
+            .as_mut()
+            .expect("hydrolysis embedded GpuSurface missing after setup")
+            .render(&mut frame);
         frame.was_redraw_requested() || self.redraw_handle.take_dirty()
     }
 
-    fn ensure_setup(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+    async fn setup(
+        runtime: Rc<RefCell<Self>>,
+        resources: EmbeddedGpuSurfaceSetup,
         surface_format: wgpu::TextureFormat,
     ) {
-        if self.setup_complete && self.output_format == surface_format {
-            return;
+        let (surface, env, msaa_samples, redraw_handle) = {
+            let mut runtime = runtime.borrow_mut();
+            if runtime.setup_complete && runtime.output_format == surface_format {
+                return;
+            }
+            let surface = runtime
+                .surface
+                .take()
+                .expect("hydrolysis embedded GpuSurface setup started concurrently");
+            let env = runtime
+                .env
+                .take()
+                .expect("hydrolysis embedded GpuSurface environment missing before setup");
+            runtime.setup_complete = false;
+            (
+                surface,
+                env,
+                runtime.msaa_samples,
+                runtime.redraw_handle.clone(),
+            )
+        };
+
+        let wake_parent: Option<Arc<dyn Fn() + Send + Sync>> =
+            resources.host_redraw_handle.as_ref().map(|handle| {
+                let handle = handle.clone();
+                Arc::new(move || handle.request_redraw()) as Arc<dyn Fn() + Send + Sync>
+            });
+        redraw_handle.set_waker(wake_parent);
+
+        let mut surface = surface;
+        let mut env = env;
+        {
+            let context = GpuContext {
+                adapter: &resources.adapter,
+                device: &resources.device,
+                queue: &resources.queue,
+                surface_format,
+                msaa_samples: msaa_samples.get(),
+                pipeline_cache: None,
+                shader_cache: &resources.shader_cache,
+                redraw_handle,
+            };
+            surface.setup(&context, &mut env).await;
+        }
+        let mut runtime = runtime.borrow_mut();
+        runtime.surface = Some(surface);
+        runtime.env = Some(env);
+        runtime.output_format = surface_format;
+        runtime.setup_complete = true;
+    }
+
+    fn ensure_setup(
+        runtime: &Rc<RefCell<Self>>,
+        resources: EmbeddedGpuSurfaceSetup,
+        signals: FrameSignals,
+        surface_format: wgpu::TextureFormat,
+    ) -> bool {
+        {
+            let runtime = runtime.borrow();
+            if runtime.setup_complete && runtime.output_format == surface_format {
+                return true;
+            }
+            if runtime.surface.is_none() {
+                return false;
+            }
         }
 
-        let ctx = GpuContext {
-            adapter: None,
-            device,
-            queue,
-            surface_format,
-            msaa_samples: self.surface.get_msaa_max_samples().get(),
-            pipeline_cache: None,
-            redraw_handle: self.redraw_handle.clone(),
-        };
-        pollster::block_on(self.surface.setup(&ctx, &mut self.env));
-        self.setup_complete = true;
+        let wake_host = resources.host_redraw_handle.clone();
+        let runtime = Rc::clone(runtime);
+        spawn_local(async move {
+            Self::setup(runtime, resources, surface_format).await;
+            signals.request_redraw();
+            if let Some(handle) = wake_host {
+                handle.request_redraw();
+            }
+        })
+        .detach();
+        false
+    }
+
+    pub(crate) fn output_format_for(
+        &self,
+        target_format: wgpu::TextureFormat,
+    ) -> wgpu::TextureFormat {
+        select_embedded_surface_format(target_format, self.prefers_hdr)
     }
 
     fn ensure_output_target(
@@ -580,8 +676,7 @@ fn select_embedded_surface_format(
         target_format,
         wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
     );
-    let prefers_hdr =
-        waterui_graphics::gpu_surface::resolve_surface_hdr_preference(prefers_hdr_override);
+    let prefers_hdr = prefers_hdr_override.unwrap_or(true);
     if target_hdr && prefers_hdr {
         return wgpu::TextureFormat::Rgba16Float;
     }
@@ -633,6 +728,37 @@ fn write_f32(bytes: &mut [u8], offset: usize, value: f32) {
 }
 
 impl HydrolysisRenderer {
+    fn embedded_gpu_surface_setup(
+        &self,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> EmbeddedGpuSurfaceSetup {
+        EmbeddedGpuSurfaceSetup {
+            adapter: adapter.clone(),
+            device: device.clone(),
+            queue: queue.clone(),
+            shader_cache: self.shader_cache.clone(),
+            host_redraw_handle: self.host_redraw_handle.clone(),
+        }
+    }
+
+    /// Await setup for every GPU surface reachable from the statically built
+    /// retained tree. A `HydrolysisGpuView` calls this from its own async setup,
+    /// making its first sized frame fully ready without polling or fixed retries.
+    pub(crate) async fn setup_embedded_gpu_surfaces(&self, context: &GpuContext<'_>) {
+        let runtimes = self.node_gpu_surfaces.clone();
+        for runtime in runtimes {
+            let surface_format = runtime.borrow().output_format_for(context.surface_format);
+            EmbeddedGpuSurfaceRuntime::setup(
+                runtime,
+                self.embedded_gpu_surface_setup(context.adapter, context.device, context.queue),
+                surface_format,
+            )
+            .await;
+        }
+    }
+
     pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
         self.render_scene_to_surface(target);
     }
@@ -900,6 +1026,21 @@ impl HydrolysisRenderer {
                 height: target.height,
             };
             let GpuSurfaceSource::Owned(runtime) = &layer.source;
+            if !EmbeddedGpuSurfaceRuntime::ensure_setup(
+                runtime,
+                self.embedded_gpu_surface_setup(target.adapter, target.device, target.queue),
+                self.frame_signals(),
+                target.format,
+            ) {
+                self.clear_target_surface(
+                    target.device,
+                    target.queue,
+                    target.view,
+                    target.base_color,
+                );
+                self.compositor.render_layers = render_layers;
+                return;
+            }
             let needs_redraw = runtime.borrow_mut().render_direct_to_target(direct_target);
             self.compositor.render_layers = render_layers;
             if needs_redraw {
@@ -948,7 +1089,6 @@ impl HydrolysisRenderer {
             } else {
                 wgpu::LoadOp::Load
             };
-            is_first_layer = false;
             match layer {
                 RenderLayer::Vello(scene) => {
                     let view = match encoded_vello[layer_index].take() {
@@ -975,6 +1115,7 @@ impl HydrolysisRenderer {
                             load_op,
                         },
                     );
+                    is_first_layer = false;
                 }
                 // Embedded GPU surfaces render serially by design: `GpuView` is a
                 // user-facing, main-thread contract (`!Send` setup/render futures,
@@ -983,13 +1124,26 @@ impl HydrolysisRenderer {
                 // parallelism in `encode_vello_layers_parallel` instead.
                 RenderLayer::GpuSurface(layer) => {
                     let embedded_target = EmbeddedLayerTarget {
-                        format: target.format,
                         width: target.width,
                         height: target.height,
                         transform: layer.transform,
                         bounds: layer.bounds,
                     };
                     let GpuSurfaceSource::Owned(runtime) = &layer.source;
+                    let output_format = runtime.borrow().output_format_for(target.format);
+                    if !EmbeddedGpuSurfaceRuntime::ensure_setup(
+                        runtime,
+                        self.embedded_gpu_surface_setup(
+                            target.adapter,
+                            target.device,
+                            target.queue,
+                        ),
+                        self.frame_signals(),
+                        output_format,
+                    ) {
+                        needs_redraw = true;
+                        continue;
+                    }
                     let prepared = runtime.borrow_mut().prepare_layer(
                         target.device,
                         target.queue,
@@ -1022,8 +1176,12 @@ impl HydrolysisRenderer {
                             load_op,
                         },
                     );
+                    is_first_layer = false;
                 }
             }
+        }
+        if is_first_layer {
+            self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
         }
         for _ in 0..transient_layer_count {
             render_layers.pop();

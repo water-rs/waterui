@@ -1,11 +1,8 @@
-//! Placeholder for fixed-size frame layouts.
-//!
-//! A future iteration will add a public `Frame` view capable of overriding a
-//! child's incoming proposal. The struct below documents the intent so that
-//! renderers and component authors have a reference point.
+//! Reactive frame constraints for overriding a child's incoming proposal.
 
-use alloc::{vec, vec::Vec};
-use waterui_core::{AnyView, IntoSignalF32, View};
+use alloc::{collections::BTreeSet, vec, vec::Vec};
+use nami::{Computed, Signal, SignalExt};
+use waterui_core::{AnyView, IntoSignalF32, View, layout::LayoutInvalidationCallback};
 
 use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
@@ -13,35 +10,59 @@ use crate::{
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
-/// Planned layout that clamps a single child's proposal.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// Layout that clamps a single child's proposal to reactive frame constraints.
+#[derive(Debug, Clone, Default)]
 pub struct FrameLayout {
+    min_width: Option<Computed<f32>>,
+    ideal_width: Option<Computed<f32>>,
+    max_width: Option<Computed<f32>>,
+    min_height: Option<Computed<f32>>,
+    ideal_height: Option<Computed<f32>>,
+    max_height: Option<Computed<f32>>,
+    alignment: Alignment,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedFrameLayout {
     min_width: Option<f32>,
     ideal_width: Option<f32>,
     max_width: Option<f32>,
     min_height: Option<f32>,
     ideal_height: Option<f32>,
     max_height: Option<f32>,
-    alignment: Alignment,
+}
+
+impl FrameLayout {
+    fn resolved(&self) -> ResolvedFrameLayout {
+        ResolvedFrameLayout {
+            min_width: self.min_width.as_ref().map(Signal::get),
+            ideal_width: self.ideal_width.as_ref().map(Signal::get),
+            max_width: self.max_width.as_ref().map(Signal::get),
+            min_height: self.min_height.as_ref().map(Signal::get),
+            ideal_height: self.ideal_height.as_ref().map(Signal::get),
+            max_height: self.max_height.as_ref().map(Signal::get),
+        }
+    }
 }
 
 impl Layout for FrameLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        let resolved = self.resolved();
         // A Frame proposes a modified size to its single child.
         // It uses its own ideal dimensions if they exist, otherwise parent's proposal,
         // then clamps that proposal by the frame's min/max constraints.
         let child_proposal = ProposalSize {
             width: frame_child_proposal_axis(
                 proposal.width,
-                self.min_width,
-                self.ideal_width,
-                self.max_width,
+                resolved.min_width,
+                resolved.ideal_width,
+                resolved.max_width,
             ),
             height: frame_child_proposal_axis(
                 proposal.height,
-                self.min_height,
-                self.ideal_height,
-                self.max_height,
+                resolved.min_height,
+                resolved.ideal_height,
+                resolved.max_height,
             ),
         };
 
@@ -60,16 +81,16 @@ impl Layout for FrameLayout {
         let final_width = frame_resolved_axis(
             proposal.width,
             child_size.width,
-            self.min_width,
-            self.ideal_width,
-            self.max_width,
+            resolved.min_width,
+            resolved.ideal_width,
+            resolved.max_width,
         );
         let final_height = frame_resolved_axis(
             proposal.height,
             child_size.height,
-            self.min_height,
-            self.ideal_height,
-            self.max_height,
+            resolved.min_height,
+            resolved.ideal_height,
+            resolved.max_height,
         );
 
         Size::new(final_width, final_height)
@@ -80,20 +101,20 @@ impl Layout for FrameLayout {
             return vec![];
         }
 
-        // Create constrained proposal for child
-        let proposed_width = self.ideal_width.unwrap_or_else(|| bounds.width());
-        let proposed_height = self.ideal_height.unwrap_or_else(|| bounds.height());
+        let resolved = self.resolved();
+        let proposed_width = resolved.ideal_width.unwrap_or_else(|| bounds.width());
+        let proposed_height = resolved.ideal_height.unwrap_or_else(|| bounds.height());
 
         let child_proposal = ProposalSize {
             width: Some(clamp_frame_axis(
                 proposed_width.min(bounds.width()),
-                self.min_width,
-                self.max_width,
+                resolved.min_width,
+                resolved.max_width,
             )),
             height: Some(clamp_frame_axis(
                 proposed_height.min(bounds.height()),
-                self.min_height,
-                self.max_height,
+                resolved.min_height,
+                resolved.max_height,
             )),
         };
 
@@ -180,6 +201,33 @@ impl Layout for FrameLayout {
             .first()
             .and_then(|child| child.explicit_vertical(alignment))
     }
+
+    fn watch_invalidation(
+        &self,
+        invalidate: LayoutInvalidationCallback,
+    ) -> Vec<nami::watcher::BoxWatcherGuard> {
+        let signals = [
+            self.min_width.as_ref(),
+            self.ideal_width.as_ref(),
+            self.max_width.as_ref(),
+            self.min_height.as_ref(),
+            self.ideal_height.as_ref(),
+            self.max_height.as_ref(),
+        ];
+        let mut identities = BTreeSet::new();
+        let mut guards = Vec::new();
+        for signal in signals.into_iter().flatten() {
+            if signal
+                .identity()
+                .is_some_and(|identity| !identities.insert(identity))
+            {
+                continue;
+            }
+            let invalidate = invalidate.clone();
+            guards.push(signal.watch(move |_| invalidate()));
+        }
+        guards
+    }
 }
 
 #[inline]
@@ -252,15 +300,13 @@ impl Frame {
     /// Sets the ideal width of the frame.
     ///
     /// Accepts any numeric literal or signal of f32 (`f32`, `f64`, `i32`,
-    /// `Computed<f32>`, `Binding<f32>`, …). The value is snapshotted at
-    /// modifier time; live layout updates depend on parent reconstruction
-    /// per `WaterUI`'s Vue-like reactivity model.
+    /// `Computed<f32>`, `Binding<f32>`, …). Signal changes invalidate only this
+    /// frame's native layout.
     #[must_use]
     pub fn width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        let width = width.into_signal_f32().get();
-        self.layout.min_width = Some(width);
-        self.layout.ideal_width = Some(width);
+        let width = width.into_signal_f32().computed();
+        self.layout.min_width = Some(width.clone());
+        self.layout.ideal_width = Some(width.clone());
         self.layout.max_width = Some(width);
         self
     }
@@ -268,10 +314,9 @@ impl Frame {
     /// Sets the ideal height of the frame.
     #[must_use]
     pub fn height(mut self, height: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        let height = height.into_signal_f32().get();
-        self.layout.min_height = Some(height);
-        self.layout.ideal_height = Some(height);
+        let height = height.into_signal_f32().computed();
+        self.layout.min_height = Some(height.clone());
+        self.layout.ideal_height = Some(height.clone());
         self.layout.max_height = Some(height);
         self
     }
@@ -279,32 +324,28 @@ impl Frame {
     /// Sets the minimum width of the frame.
     #[must_use]
     pub fn min_width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        self.layout.min_width = Some(width.into_signal_f32().get());
+        self.layout.min_width = Some(width.into_signal_f32().computed());
         self
     }
 
     /// Sets the maximum width of the frame.
     #[must_use]
     pub fn max_width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        self.layout.max_width = Some(width.into_signal_f32().get());
+        self.layout.max_width = Some(width.into_signal_f32().computed());
         self
     }
 
     /// Sets the minimum height of the frame.
     #[must_use]
     pub fn min_height(mut self, height: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        self.layout.min_height = Some(height.into_signal_f32().get());
+        self.layout.min_height = Some(height.into_signal_f32().computed());
         self
     }
 
     /// Sets the maximum height of the frame.
     #[must_use]
     pub fn max_height(mut self, height: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        self.layout.max_height = Some(height.into_signal_f32().get());
+        self.layout.max_height = Some(height.into_signal_f32().computed());
         self
     }
 }
@@ -320,6 +361,9 @@ impl View for Frame {
 mod tests {
     use super::*;
     use crate::StretchAxis;
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+    use nami::{SignalExt, binding};
 
     struct MockSubView {
         size: Size,
@@ -340,8 +384,8 @@ mod tests {
     #[test]
     fn test_frame_with_ideal_size() {
         let layout = FrameLayout {
-            ideal_width: Some(100.0),
-            ideal_height: Some(50.0),
+            ideal_width: Some(Computed::constant(100.0)),
+            ideal_height: Some(Computed::constant(50.0)),
             ..Default::default()
         };
 
@@ -380,9 +424,9 @@ mod tests {
     #[test]
     fn test_fixed_width_resists_zero_min_query() {
         let layout = FrameLayout {
-            min_width: Some(120.0),
-            ideal_width: Some(120.0),
-            max_width: Some(120.0),
+            min_width: Some(Computed::constant(120.0)),
+            ideal_width: Some(Computed::constant(120.0)),
+            max_width: Some(Computed::constant(120.0)),
             ..Default::default()
         };
 
@@ -398,7 +442,7 @@ mod tests {
     #[test]
     fn test_min_width_clamps_zero_min_query() {
         let layout = FrameLayout {
-            min_width: Some(64.0),
+            min_width: Some(Computed::constant(64.0)),
             ..Default::default()
         };
 
@@ -409,5 +453,31 @@ mod tests {
 
         let size = layout.size_that_fits(ProposalSize::ZERO, &children);
         assert!((size.width - 64.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reactive_width_invalidates_and_updates_measurement() {
+        let width = binding(80.0_f32);
+        let signal = width.computed();
+        let layout = FrameLayout {
+            min_width: Some(signal.clone()),
+            ideal_width: Some(signal.clone()),
+            max_width: Some(signal),
+            ..Default::default()
+        };
+        let invalidations = Rc::new(Cell::new(0));
+        let callback_invalidations = Rc::clone(&invalidations);
+        let _guards = layout.watch_invalidation(Rc::new(move || {
+            callback_invalidations.set(callback_invalidations.get() + 1);
+        }));
+
+        width.set(120.0);
+        assert_eq!(invalidations.get(), 1);
+
+        let child = MockSubView {
+            size: Size::new(10.0, 10.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
+        assert_eq!(size.width, 120.0);
     }
 }

@@ -1,7 +1,7 @@
-#[cfg(target_os = "android")]
-pub(crate) mod android_ahb;
+#[cfg(feature = "c-api")]
 pub mod applied_filter;
+pub mod gpu_runtime;
 pub mod gpu_surface;
-pub(crate) mod pixel_upload;
+#[cfg(feature = "c-api")]
 pub mod view_effect;
 pub mod view_renderer;

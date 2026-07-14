@@ -3,7 +3,7 @@ use crate::action::WuiAction;
 use crate::reactive::WuiComputed;
 use waterui::component::button::{ButtonConfig, ButtonStyle};
 
-into_ffi! {ButtonStyle, Automatic,
+into_ffi! {ButtonStyle, non_exhaustive,
     pub enum WuiButtonStyle {
         Automatic,
         Plain,

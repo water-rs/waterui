@@ -125,12 +125,6 @@ fn brightness_then_blur_collect_stages(b: Bencher) {
     });
 }
 
-#[divan::bench]
-fn brightness_then_blur_pass_count(b: Bencher) {
-    let chain = Brightness(0.1_f32).then(Blur(5.0_f32));
-    b.bench_local(|| divan::black_box(chain.pass_count()));
-}
-
 // ----------------------------------------------------------------------------
 // Array-style filter (ColorMatrix, 12 elements)
 // ----------------------------------------------------------------------------

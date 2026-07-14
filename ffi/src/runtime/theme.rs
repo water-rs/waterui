@@ -15,8 +15,9 @@
 //! Native backends should track system appearance and update the color scheme:
 //!
 //! ```c
-//! // Create a color scheme signal
-//! WuiComputed_ColorScheme* scheme = waterui_computed_color_scheme_constant(WuiColorScheme_Dark);
+//! // Create a native-owned reactive color scheme signal
+//! WuiComputed_ColorScheme* scheme =
+//!     waterui_new_computed_color_scheme(data, get, watch, drop);
 //!
 //! // Install it
 //! waterui_theme_install_color_scheme(env, scheme);
@@ -112,15 +113,6 @@ impl IntoRust for WuiColorScheme {
 ffi_computed!(theme::ColorScheme, WuiColorScheme, color_scheme);
 ffi_computed_ctor!(theme::ColorScheme, WuiColorScheme, color_scheme);
 
-/// Creates a constant color scheme signal.
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_computed_color_scheme_constant(
-    scheme: WuiColorScheme,
-) -> *mut WuiComputed<theme::ColorScheme> {
-    let computed = waterui::Computed::constant(scheme.into());
-    computed.into_ffi()
-}
-
 /// Installs a color scheme signal into the environment.
 ///
 /// # Safety
@@ -130,11 +122,7 @@ pub unsafe extern "C" fn waterui_theme_install_color_scheme(
     env: *mut WuiEnv,
     signal: *mut WuiComputed<theme::ColorScheme>,
 ) {
-    let env =
-        unsafe { crate::expect_non_null_mut(env, "waterui_theme_install_color_scheme", "env") };
-    unsafe {
-        crate::expect_non_null_mut(signal, "waterui_theme_install_color_scheme", "signal");
-    }
+    let env = unsafe { crate::borrow_ffi_mut(env) };
     let computed = unsafe { Box::from_raw(signal) }.0;
     install_color_scheme(env, computed);
 }
@@ -147,7 +135,7 @@ pub unsafe extern "C" fn waterui_theme_install_color_scheme(
 pub unsafe extern "C" fn waterui_theme_color_scheme(
     env: *const WuiEnv,
 ) -> *mut WuiComputed<theme::ColorScheme> {
-    let env = unsafe { crate::expect_non_null(env, "waterui_theme_color_scheme", "env") };
+    let env = unsafe { crate::borrow_ffi(env) };
     let computed = theme::current_color_scheme(env);
     computed.into_ffi()
 }
@@ -178,6 +166,12 @@ pub enum WuiColorSlot {
     Accent = 6,
     /// Foreground color on accent backgrounds.
     AccentForeground = 7,
+    /// Container color associated with the accent.
+    AccentContainer = 8,
+    /// Contrasting accent color for complementary emphasis.
+    Tertiary = 9,
+    /// Container color associated with the tertiary accent.
+    TertiaryContainer = 10,
 }
 
 /// Installs a color signal for a specific slot.
@@ -192,10 +186,7 @@ pub unsafe extern "C" fn waterui_theme_install_color(
     slot: WuiColorSlot,
     signal: *mut WuiComputed<ResolvedColor>,
 ) {
-    let env = unsafe { crate::expect_non_null_mut(env, "waterui_theme_install_color", "env") };
-    unsafe {
-        crate::expect_non_null_mut(signal, "waterui_theme_install_color", "signal");
-    }
+    let env = unsafe { crate::borrow_ffi_mut(env) };
     let computed = unsafe { Box::from_raw(signal) }.0;
 
     match slot {
@@ -213,6 +204,13 @@ pub unsafe extern "C" fn waterui_theme_install_color(
         WuiColorSlot::AccentForeground => {
             install_color_signal::<color::AccentForeground>(env, computed)
         }
+        WuiColorSlot::AccentContainer => {
+            install_color_signal::<color::AccentContainer>(env, computed)
+        }
+        WuiColorSlot::Tertiary => install_color_signal::<color::Tertiary>(env, computed),
+        WuiColorSlot::TertiaryContainer => {
+            install_color_signal::<color::TertiaryContainer>(env, computed)
+        }
     }
 }
 
@@ -227,7 +225,7 @@ pub unsafe extern "C" fn waterui_theme_color(
     env: *const WuiEnv,
     slot: WuiColorSlot,
 ) -> *mut WuiComputed<ResolvedColor> {
-    let env = unsafe { crate::expect_non_null(env, "waterui_theme_color", "env") };
+    let env = unsafe { crate::borrow_ffi(env) };
 
     let computed = match slot {
         WuiColorSlot::Background => color::Background.resolve(env).computed(),
@@ -238,6 +236,9 @@ pub unsafe extern "C" fn waterui_theme_color(
         WuiColorSlot::MutedForeground => color::MutedForeground.resolve(env).computed(),
         WuiColorSlot::Accent => color::Accent.resolve(env).computed(),
         WuiColorSlot::AccentForeground => color::AccentForeground.resolve(env).computed(),
+        WuiColorSlot::AccentContainer => color::AccentContainer.resolve(env).computed(),
+        WuiColorSlot::Tertiary => color::Tertiary.resolve(env).computed(),
+        WuiColorSlot::TertiaryContainer => color::TertiaryContainer.resolve(env).computed(),
     };
 
     computed.into_ffi()
@@ -279,10 +280,7 @@ pub unsafe extern "C" fn waterui_theme_install_font(
     slot: WuiFontSlot,
     signal: *mut WuiComputed<ResolvedFont>,
 ) {
-    let env = unsafe { crate::expect_non_null_mut(env, "waterui_theme_install_font", "env") };
-    unsafe {
-        crate::expect_non_null_mut(signal, "waterui_theme_install_font", "signal");
-    }
+    let env = unsafe { crate::borrow_ffi_mut(env) };
     let computed = unsafe { Box::from_raw(signal) }.0;
 
     match slot {
@@ -306,7 +304,7 @@ pub unsafe extern "C" fn waterui_theme_font(
     env: *const WuiEnv,
     slot: WuiFontSlot,
 ) -> *mut WuiComputed<ResolvedFont> {
-    let env = unsafe { crate::expect_non_null(env, "waterui_theme_font", "env") };
+    let env = unsafe { crate::borrow_ffi(env) };
 
     let computed = match slot {
         WuiFontSlot::Body => Body.resolve(env).computed(),
@@ -336,8 +334,7 @@ pub unsafe extern "C" fn waterui_call_watcher_color_scheme(
     value: WuiColorScheme,
 ) {
     unsafe {
-        let watcher =
-            crate::expect_non_null(watcher, "waterui_call_watcher_color_scheme", "watcher");
+        let watcher = crate::borrow_ffi(watcher);
         let rust_value: theme::ColorScheme = value.into();
         let metadata = waterui::reactive::watcher::Metadata::default();
         watcher.call(rust_value, metadata);
@@ -352,7 +349,6 @@ pub unsafe extern "C" fn waterui_drop_watcher_color_scheme(
     watcher: *mut WuiWatcher<theme::ColorScheme>,
 ) {
     unsafe {
-        crate::expect_non_null_mut(watcher, "waterui_drop_watcher_color_scheme", "watcher");
         drop(Box::from_raw(watcher));
     }
 }
@@ -367,8 +363,7 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_color(
     value: WuiResolvedColor,
 ) {
     unsafe {
-        let watcher =
-            crate::expect_non_null(watcher, "waterui_call_watcher_resolved_color", "watcher");
+        let watcher = crate::borrow_ffi(watcher);
         let rust_value = value.into_rust();
         let metadata = waterui::reactive::watcher::Metadata::default();
         watcher.call(rust_value, metadata);
@@ -383,7 +378,6 @@ pub unsafe extern "C" fn waterui_drop_watcher_resolved_color(
     watcher: *mut WuiWatcher<ResolvedColor>,
 ) {
     unsafe {
-        crate::expect_non_null_mut(watcher, "waterui_drop_watcher_resolved_color", "watcher");
         drop(Box::from_raw(watcher));
     }
 }
@@ -398,8 +392,7 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_font(
     value: WuiResolvedFont,
 ) {
     unsafe {
-        let watcher =
-            crate::expect_non_null(watcher, "waterui_call_watcher_resolved_font", "watcher");
+        let watcher = crate::borrow_ffi(watcher);
         let rust_value = value.into_rust();
         let metadata = waterui::reactive::watcher::Metadata::default();
         watcher.call(rust_value, metadata);
@@ -414,31 +407,18 @@ pub unsafe extern "C" fn waterui_drop_watcher_resolved_font(
     watcher: *mut WuiWatcher<ResolvedFont>,
 ) {
     unsafe {
-        crate::expect_non_null_mut(watcher, "waterui_drop_watcher_resolved_font", "watcher");
         drop(Box::from_raw(watcher));
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "c-api"))]
 mod tests {
     use super::*;
     use crate::WuiEnv;
 
     #[test]
-    fn background_color_computed_is_readable() {
-        let env = WuiEnv(waterui::Environment::new());
-        let ptr = unsafe { waterui_theme_color(&env, WuiColorSlot::Background) };
-        assert!(!ptr.is_null());
-        let value = unsafe { crate::color::waterui_read_computed_resolved_color(ptr) };
-        assert!(value.opacity >= 0.0);
-        unsafe {
-            crate::color::waterui_drop_computed_resolved_color(ptr);
-        }
-    }
-
-    #[test]
     fn color_scheme_roundtrip() {
-        let ptr = waterui_computed_color_scheme_constant(WuiColorScheme::Dark);
+        let ptr = waterui::Computed::constant(theme::ColorScheme::Dark).into_ffi();
         assert!(!ptr.is_null());
         let value = unsafe { waterui_read_computed_color_scheme(ptr) };
         assert_eq!(value, WuiColorScheme::Dark);

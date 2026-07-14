@@ -2,7 +2,6 @@
 
 use alloc::{
     collections::BTreeSet,
-    rc::Rc,
     string::{String, ToString},
     vec::Vec,
 };
@@ -12,11 +11,11 @@ use jiff::{
     Timestamp, ToSpan,
     civil::{Date, Weekday},
 };
-use nami::{Binding, Computed, Signal, SignalExt, signal::IntoComputed};
+use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{IntoLabel, button};
-use waterui_core::{AnyView, Dynamic, Environment, Metadata, Retain, View};
-use waterui_graphics::color::Color;
+use waterui_core::{AnyView, Dynamic, Environment, View};
+use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
 use waterui_layout::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
@@ -27,7 +26,6 @@ use waterui_shape::{Circle, ShapeExt};
 use waterui_text::{
     Text,
     styled::{Style, StyledStr},
-    text,
 };
 
 const CALENDAR_DAY_SIZE: f32 = 40.0;
@@ -106,31 +104,27 @@ impl View for Calendar {
         let range = self.range;
         let decorated = self.decorated;
         let visible_month = self.visible_month;
-        let locale = resolve_locale(env);
+        let locale = locale_binding(env).computed();
 
-        let calendar_state = visible_month.zip(&selection.zip(&decorated)).computed();
-        let calendar = signal_driven_view(
-            calendar_state,
-            move |(month, (selected_date, decorated_dates))| {
-                let cell_range = range.clone();
-                let cell_selection = selection.clone();
-                CalendarBody::new(
-                    locale.clone(),
-                    month,
-                    range.clone(),
-                    visible_month.clone(),
-                    calendar_rows(month, move |cell| {
-                        single_day_cell_content(
-                            cell,
-                            selected_date,
-                            &cell_range,
-                            cell_selection.clone(),
-                            &decorated_dates,
-                        )
-                    }),
-                )
-            },
-        );
+        let calendar = Dynamic::watch(visible_month.clone(), move |month| {
+            let cell_range = range.clone();
+            let cell_selection = selection.clone();
+            let cell_decorated = decorated.clone();
+            CalendarBody::new(
+                locale.clone(),
+                month,
+                range.clone(),
+                visible_month.clone(),
+                calendar_rows(month, move |cell| {
+                    single_day_cell_content(
+                        cell,
+                        &cell_range,
+                        cell_selection.clone(),
+                        &cell_decorated,
+                    )
+                }),
+            )
+        });
 
         vstack((label, calendar)).spacing(10.0)
     }
@@ -195,7 +189,7 @@ pub(crate) struct DayCell {
 }
 
 pub(crate) struct CalendarBody<Content> {
-    locale: Locale,
+    locale: Computed<Locale>,
     month: VisibleMonth,
     range: RangeInclusive<Date>,
     visible_month: Binding<VisibleMonth>,
@@ -204,7 +198,7 @@ pub(crate) struct CalendarBody<Content> {
 
 impl<Content> CalendarBody<Content> {
     pub(crate) const fn new(
-        locale: Locale,
+        locale: Computed<Locale>,
         month: VisibleMonth,
         range: RangeInclusive<Date>,
         visible_month: Binding<VisibleMonth>,
@@ -235,7 +229,7 @@ impl<Content: View> View for CalendarBody<Content> {
                     can_go_previous,
                     can_go_next,
                 ),
-                weekday_header(&self.locale),
+                weekday_header(self.locale),
                 self.content,
             ))
             .spacing(8.0),
@@ -302,42 +296,17 @@ pub(crate) fn map_visible_month_binding(month: &Binding<Date>) -> Binding<Visibl
     )
 }
 
-pub(crate) fn resolve_locale(env: &Environment) -> Locale {
-    locale_binding(env).get()
-}
-
-pub(crate) fn signal_driven_view<T, S, V>(
-    source: S,
-    build: impl Fn(T) -> V + 'static,
-) -> Metadata<Retain>
-where
-    S: Signal<Output = T> + Clone + 'static,
-    T: 'static,
-    V: View,
-{
-    let (handler, dynamic) = Dynamic::new();
-    let build = Rc::new(build);
-    handler.set(build(source.get()));
-
-    let guard = source.watch({
-        let build = Rc::clone(&build);
-        move |ctx| {
-            let metadata = ctx.metadata().clone();
-            handler.set_with_metadata(build(ctx.into_value()), metadata);
-        }
-    });
-
-    Metadata::new(dynamic, Retain::new((guard, source, build)))
-}
-
 fn build_month_header(
-    locale: &Locale,
+    locale: &Computed<Locale>,
     month: VisibleMonth,
     visible_month: Binding<VisibleMonth>,
     can_go_previous: bool,
     can_go_next: bool,
 ) -> impl View {
-    let title = text(format_calendar_month_year(locale, &month.first_day())).headline();
+    let title = Text::computed(locale.map(move |locale| {
+        StyledStr::plain(format_calendar_month_year(&locale, &month.first_day()))
+    }))
+    .headline();
 
     hstack((
         Frame::new(month_navigation_button(
@@ -384,7 +353,7 @@ fn day_grid_cell(content: impl View, height: f32) -> Frame {
         .height(height)
 }
 
-fn weekday_header(locale: &Locale) -> impl View {
+fn weekday_header(locale: Computed<Locale>) -> impl View {
     [
         Weekday::Monday,
         Weekday::Tuesday,
@@ -395,9 +364,14 @@ fn weekday_header(locale: &Locale) -> impl View {
         Weekday::Sunday,
     ]
     .into_iter()
-    .map(|weekday| {
+    .map(move |weekday| {
         day_grid_cell(
-            Text::new(format_calendar_weekday(locale, weekday)).caption(),
+            Text::computed(
+                locale
+                    .clone()
+                    .map(move |locale| StyledStr::plain(format_calendar_weekday(&locale, weekday))),
+            )
+            .caption(),
             CALENDAR_WEEKDAY_HEIGHT,
         )
     })
@@ -407,23 +381,26 @@ fn weekday_header(locale: &Locale) -> impl View {
 
 fn single_day_cell_content(
     cell: DayCell,
-    selected_date: Date,
     range: &RangeInclusive<Date>,
     selection: Binding<Date>,
-    decorated_dates: &BTreeSet<Date>,
+    decorated_dates: &Computed<BTreeSet<Date>>,
 ) -> AnyView {
-    let is_selected = selected_date == cell.date;
     let is_in_range = range.contains(&cell.date);
     let is_selectable = cell.in_current_month && is_in_range;
-    let decorated = decorated_dates.contains(&cell.date);
+    let selected = selection
+        .map(move |selected_date| selected_date == cell.date)
+        .computed();
+    let decorated = decorated_dates
+        .map(move |dates| dates.contains(&cell.date))
+        .computed();
 
     if is_selectable {
-        selectable_day_cell(cell.date, decorated, is_selected, move || {
+        selectable_day_cell(cell.date, &decorated, &selected, move || {
             selection.set(cell.date);
         })
     } else {
         AnyView::new(day_grid_cell(
-            day_cell_placeholder(cell, decorated),
+            day_cell_placeholder(cell, &decorated),
             CALENDAR_DAY_SIZE,
         ))
     }
@@ -431,18 +408,21 @@ fn single_day_cell_content(
 
 pub(crate) fn multi_day_cell_content(
     cell: DayCell,
-    selected_dates: &BTreeSet<Date>,
     range: &RangeInclusive<Date>,
     selection: Binding<BTreeSet<Date>>,
-    decorated_dates: &BTreeSet<Date>,
+    decorated_dates: &Computed<BTreeSet<Date>>,
 ) -> AnyView {
-    let is_selected = selected_dates.contains(&cell.date);
     let is_in_range = range.contains(&cell.date);
     let is_selectable = cell.in_current_month && is_in_range;
-    let decorated = decorated_dates.contains(&cell.date);
+    let selected = selection
+        .map(move |dates| dates.contains(&cell.date))
+        .computed();
+    let decorated = decorated_dates
+        .map(move |dates| dates.contains(&cell.date))
+        .computed();
 
     if is_selectable {
-        selectable_day_cell(cell.date, decorated, is_selected, move || {
+        selectable_day_cell(cell.date, &decorated, &selected, move || {
             let mut dates = selection.get();
             if !dates.insert(cell.date) {
                 dates.remove(&cell.date);
@@ -451,7 +431,7 @@ pub(crate) fn multi_day_cell_content(
         })
     } else {
         AnyView::new(day_grid_cell(
-            day_cell_placeholder(cell, decorated),
+            day_cell_placeholder(cell, &decorated),
             CALENDAR_DAY_SIZE,
         ))
     }
@@ -459,57 +439,54 @@ pub(crate) fn multi_day_cell_content(
 
 fn selectable_day_cell(
     date: Date,
-    decorated: bool,
-    is_selected: bool,
+    decorated: &Computed<bool>,
+    selected: &Computed<bool>,
     action: impl FnMut() + 'static,
 ) -> AnyView {
-    let button = button(day_cell_visual_label(date, decorated, is_selected))
+    let foreground = selected.map(|selected| {
+        if selected {
+            Color::new(AccentForegroundColor)
+        } else {
+            Color::new(ForegroundColor)
+        }
+    });
+    let button = button(day_cell_label(date, decorated).color(foreground))
         .plain()
         .accessibility_label(day_cell_accessibility_label(date))
         .action(action);
     let content = day_grid_cell(button, CALENDAR_DAY_SIZE);
 
-    if is_selected {
-        AnyView::new(BackgroundView::new(
-            content,
-            Frame::new(Circle.fill(Color::srgb(103, 80, 164)))
-                .width(CALENDAR_SELECTED_DAY_SIZE)
-                .height(CALENDAR_SELECTED_DAY_SIZE),
-        ))
-    } else {
-        AnyView::new(content)
-    }
+    AnyView::new(BackgroundView::new(
+        content,
+        Frame::new(
+            Circle.fill(
+                Color::new(AccentColor)
+                    .with_opacity(selected.map(|selected| if selected { 1.0 } else { 0.0 })),
+            ),
+        )
+        .width(CALENDAR_SELECTED_DAY_SIZE)
+        .height(CALENDAR_SELECTED_DAY_SIZE),
+    ))
 }
 
-fn day_cell_visual_label(date: Date, decorated: bool, is_selected: bool) -> Text {
-    let label = day_cell_label(date, decorated);
-    if is_selected {
-        label.color(Color::srgb(255, 255, 255))
-    } else {
+fn day_cell_label(date: Date, decorated: &Computed<bool>) -> Text {
+    Text::computed(decorated.map(move |decorated| {
+        let mut label = StyledStr::plain(date.day().to_string());
+        if decorated {
+            label.push("•", Style::new());
+        }
         label
-    }
-}
-
-fn day_cell_label(date: Date, decorated: bool) -> Text {
-    let mut label = StyledStr::plain(date.day().to_string());
-    if decorated {
-        label.push("•", Style::new());
-    }
-    Text::new(label).text_align(HorizontalAlignment::Center)
+    }))
+    .text_align(HorizontalAlignment::Center)
 }
 
 fn day_cell_accessibility_label(date: Date) -> String {
     date.day().to_string()
 }
 
-fn day_cell_placeholder(cell: DayCell, decorated: bool) -> impl View {
+fn day_cell_placeholder(cell: DayCell, decorated: &Computed<bool>) -> impl View {
     if cell.in_current_month {
-        let day = Text::new(cell.date.day().to_string()).caption();
-        if decorated {
-            AnyView::new(vstack((day, Text::new("•").caption())).spacing(0.0))
-        } else {
-            AnyView::new(day)
-        }
+        AnyView::new(day_cell_label(cell.date, decorated).caption())
     } else {
         AnyView::new(Text::new(String::new()).caption())
     }

@@ -2,9 +2,35 @@
 //! effects, scene views, and embedded `GpuSurface` slots/layers.
 
 use super::*;
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub(crate) struct EffectSetupResources {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    shader_cache: ShaderCache,
+    host_redraw_handle: Option<RedrawHandle>,
+}
+
+impl EffectSetupResources {
+    fn connect_redraw(&self, handle: &RedrawHandle) {
+        let wake_host: Option<Arc<dyn Fn() + Send + Sync>> =
+            self.host_redraw_handle.as_ref().map(|host| {
+                let host = host.clone();
+                Arc::new(move || host.request_redraw()) as Arc<dyn Fn() + Send + Sync>
+            });
+        handle.set_waker(wake_host);
+    }
+
+    fn wake_host(&self) {
+        if let Some(handle) = &self.host_redraw_handle {
+            handle.request_redraw();
+        }
+    }
+}
 
 pub(crate) struct AppliedFilterRuntime {
-    filter: AppliedFilter,
+    filter: Option<AppliedFilter>,
     setup_complete: bool,
     input_texture: Option<AppliedFilterInputTexture>,
     output_texture: Option<AppliedFilterOutputTexture>,
@@ -14,12 +40,80 @@ pub(crate) struct AppliedFilterRuntime {
 impl AppliedFilterRuntime {
     pub(super) fn new(filter: AppliedFilter) -> Self {
         Self {
-            filter,
+            filter: Some(filter),
             setup_complete: false,
             input_texture: None,
             output_texture: None,
             output_image: None,
         }
+    }
+
+    pub(super) fn ensure_setup(
+        runtime: &Rc<RefCell<Self>>,
+        resources: EffectSetupResources,
+        signals: FrameSignals,
+    ) -> bool {
+        {
+            let runtime = runtime.borrow();
+            if runtime.setup_complete {
+                return true;
+            }
+            if runtime.filter.is_none() {
+                return false;
+            }
+        }
+
+        let runtime = Rc::clone(runtime);
+        spawn_local(async move {
+            Self::setup(runtime, resources.clone()).await;
+            signals.request_refresh();
+            resources.wake_host();
+        })
+        .detach();
+        false
+    }
+
+    async fn setup(runtime: Rc<RefCell<Self>>, resources: EffectSetupResources) {
+        let mut filter = {
+            let mut runtime = runtime.borrow_mut();
+            if runtime.setup_complete {
+                return;
+            }
+            runtime
+                .filter
+                .take()
+                .expect("hydrolysis AppliedFilter setup started concurrently")
+        };
+        resources.connect_redraw(&filter.redraw_handle());
+        let context = EffectContext {
+            device: &resources.device,
+            queue: &resources.queue,
+            input_format: wgpu::TextureFormat::Rgba8Unorm,
+            output_format: wgpu::TextureFormat::Rgba8Unorm,
+            pipeline_cache: None,
+            shader_cache: &resources.shader_cache,
+        };
+        filter
+            .setup(&context)
+            .await
+            .unwrap_or_else(|error| panic!("hydrolysis filter setup failed: {error}"));
+        let mut runtime = runtime.borrow_mut();
+        runtime.filter = Some(filter);
+        runtime.setup_complete = true;
+    }
+
+    fn filter(&self) -> &AppliedFilter {
+        assert!(self.setup_complete, "hydrolysis filter used before setup");
+        self.filter
+            .as_ref()
+            .expect("hydrolysis filter missing after setup")
+    }
+
+    fn filter_mut(&mut self) -> &mut AppliedFilter {
+        assert!(self.setup_complete, "hydrolysis filter used before setup");
+        self.filter
+            .as_mut()
+            .expect("hydrolysis filter missing after setup")
     }
 
     pub(super) fn input_texture(
@@ -114,8 +208,10 @@ impl AppliedFilterRuntime {
     }
 
     pub(super) fn needs_redraw_refresh(&mut self) -> bool {
-        self.filter.sync_targets();
-        self.filter.redraw_hint()
+        if !self.setup_complete {
+            return false;
+        }
+        self.filter().redraw_hint()
     }
 
     /// The input dimensions the runtime last allocated its capture texture at.
@@ -153,24 +249,7 @@ impl AppliedFilterRuntime {
         height: u32,
         encoder: &mut wgpu::CommandEncoder,
     ) -> (vello::peniko::ImageData, bool) {
-        let filter_context = EffectContext {
-            device,
-            queue,
-            input_format: wgpu::TextureFormat::Rgba8Unorm,
-            output_format: wgpu::TextureFormat::Rgba8Unorm,
-            pipeline_cache: None,
-        };
-        if !self.setup_complete {
-            match pollster::block_on(self.filter.setup(&filter_context)) {
-                Ok(()) => {}
-                Err(err) => {
-                    panic!("hydrolysis filter setup failed: {err}");
-                }
-            }
-            self.setup_complete = true;
-        }
-        self.filter.sync_targets();
-        let (output_width, output_height) = self.filter.output_size(width, height);
+        let (output_width, output_height) = self.filter().output_size(width, height);
         let (input_texture, input_view) = {
             let Some(input_texture) = self.input_texture.as_ref() else {
                 panic!("hydrolysis AppliedFilter input texture missing before render");
@@ -199,8 +278,8 @@ impl AppliedFilterRuntime {
             width: output_width,
             height: output_height,
         };
-        let needs_redraw = match self.filter.encode_render(&input, &output, encoder) {
-            Ok(needs_redraw) => needs_redraw || self.filter.redraw_hint(),
+        let needs_redraw = match self.filter_mut().encode_render(&input, &output, encoder) {
+            Ok(needs_redraw) => needs_redraw || self.filter().redraw_hint(),
             Err(err) => {
                 panic!("hydrolysis filter render failed: {err}");
             }
@@ -243,20 +322,116 @@ pub(crate) struct AppliedFilterOutputTexture {
 }
 
 pub(crate) struct ViewEffectRuntime {
-    pub(crate) effect: ViewEffectErased,
-    pub(crate) setup_complete: bool,
+    effect: Option<ViewEffectErased>,
+    setup_complete: bool,
 }
 
 impl ViewEffectRuntime {
     pub(super) fn new(effect: ViewEffectErased) -> Self {
         Self {
-            effect,
+            effect: Some(effect),
             setup_complete: false,
         }
+    }
+
+    pub(super) fn ensure_setup(
+        runtime: &Rc<RefCell<Self>>,
+        resources: EffectSetupResources,
+        signals: FrameSignals,
+    ) -> bool {
+        {
+            let runtime = runtime.borrow();
+            if runtime.setup_complete {
+                return true;
+            }
+            if runtime.effect.is_none() {
+                return false;
+            }
+        }
+
+        let runtime = Rc::clone(runtime);
+        spawn_local(async move {
+            Self::setup(runtime, resources.clone()).await;
+            signals.request_refresh();
+            resources.wake_host();
+        })
+        .detach();
+        false
+    }
+
+    async fn setup(runtime: Rc<RefCell<Self>>, resources: EffectSetupResources) {
+        let mut effect = {
+            let mut runtime = runtime.borrow_mut();
+            if runtime.setup_complete {
+                return;
+            }
+            runtime
+                .effect
+                .take()
+                .expect("hydrolysis ViewEffect setup started concurrently")
+        };
+        resources.connect_redraw(&effect.redraw_handle());
+        let context = ViewEffectContext {
+            device: &resources.device,
+            queue: &resources.queue,
+            input_format: wgpu::TextureFormat::Rgba8Unorm,
+            output_format: wgpu::TextureFormat::Rgba8Unorm,
+            pipeline_cache: None,
+            shader_cache: &resources.shader_cache,
+        };
+        effect.setup(&context).await;
+        let mut runtime = runtime.borrow_mut();
+        runtime.effect = Some(effect);
+        runtime.setup_complete = true;
+    }
+
+    pub(super) fn effect(&self) -> &ViewEffectErased {
+        assert!(
+            self.setup_complete,
+            "hydrolysis ViewEffect used before setup"
+        );
+        self.effect
+            .as_ref()
+            .expect("hydrolysis ViewEffect missing after setup")
+    }
+
+    pub(super) fn effect_mut(&mut self) -> &mut ViewEffectErased {
+        assert!(
+            self.setup_complete,
+            "hydrolysis ViewEffect used before setup"
+        );
+        self.effect
+            .as_mut()
+            .expect("hydrolysis ViewEffect missing after setup")
     }
 }
 
 impl HydrolysisRenderer {
+    pub(crate) fn effect_setup_resources(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> EffectSetupResources {
+        EffectSetupResources {
+            device: device.clone(),
+            queue: queue.clone(),
+            shader_cache: self.shader_cache.clone(),
+            host_redraw_handle: self.host_redraw_handle.clone(),
+        }
+    }
+
+    /// Await setup for all effects reachable from a statically prepared
+    /// embedded Hydrolysis tree.
+    pub(crate) async fn setup_embedded_effects(&self, context: &GpuContext<'_>) {
+        let resources = self.effect_setup_resources(context.device, context.queue);
+        for runtime in self.node_view_effects.iter().filter_map(Weak::upgrade) {
+            ViewEffectRuntime::setup(runtime, resources.clone()).await;
+        }
+        for runtime in self.node_applied_filters.clone() {
+            AppliedFilterRuntime::setup(runtime, resources.clone()).await;
+        }
+    }
+
     pub(crate) fn refresh_active_applied_filters(
         &mut self,
         device: &wgpu::Device,
@@ -376,6 +551,10 @@ impl HydrolysisRenderer {
         runtime: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
     ) {
         self.node_gpu_surfaces.push(runtime);
+    }
+
+    pub(crate) fn register_node_view_effect(&mut self, runtime: Rc<RefCell<ViewEffectRuntime>>) {
+        self.node_view_effects.push(Rc::downgrade(&runtime));
     }
 
     /// Register a retained render-tree applied-filter runtime (owned by an

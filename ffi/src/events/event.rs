@@ -1,90 +1,84 @@
 //! FFI bindings for event and lifecycle types.
 
 use crate::IntoFFI;
+use crate::bridge::closure::RetainedCallback;
 use waterui_core::{
     event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent},
     layout::Point,
 };
 
 // ============================================================================
-// LifeCycle (one-time handlers for appear/disappear)
+// Lifecycle (one-time handlers for appear/disappear)
 // ============================================================================
 
 /// FFI lifecycle enum for one-time lifecycle events.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub enum WuiLifeCycle {
+pub enum WuiLifecycle {
     Appear,
     Disappear,
 }
 
 impl IntoFFI for LifeCycle {
-    type FFI = WuiLifeCycle;
+    type FFI = WuiLifecycle;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            LifeCycle::Appear => WuiLifeCycle::Appear,
-            LifeCycle::Disappear => WuiLifeCycle::Disappear,
+            LifeCycle::Appear => WuiLifecycle::Appear,
+            LifeCycle::Disappear => WuiLifecycle::Disappear,
             _ => panic!("unsupported LifeCycle variant for FFI"),
         }
     }
 }
 
-/// Wrapper for LifeCycleHook to avoid orphan rule issues.
-pub struct WuiLifeCycleHookHandler(pub LifeCycleHook);
+/// Wrapper for `LifeCycleHook` to avoid orphan rule issues.
+pub struct WuiLifecycleHookHandler(pub LifeCycleHook);
 
 /// FFI-safe representation of a lifecycle hook.
 #[repr(C)]
-pub struct WuiLifeCycleHook {
+pub struct WuiLifecycleHook {
     /// The lifecycle event to listen for.
-    pub lifecycle: WuiLifeCycle,
-    /// Opaque pointer to the LifeCycleHook (owns the handler).
-    pub handler: *mut WuiLifeCycleHookHandler,
+    pub lifecycle: WuiLifecycle,
+    /// Opaque pointer to the lifecycle hook (owns the handler).
+    pub handler: *mut WuiLifecycleHookHandler,
 }
 
 impl IntoFFI for LifeCycleHook {
-    type FFI = WuiLifeCycleHook;
+    type FFI = WuiLifecycleHook;
     fn into_ffi(self) -> Self::FFI {
         let lifecycle = self.lifecycle().into_ffi();
-        WuiLifeCycleHook {
+        WuiLifecycleHook {
             lifecycle,
-            handler: alloc::boxed::Box::into_raw(alloc::boxed::Box::new(WuiLifeCycleHookHandler(
+            handler: alloc::boxed::Box::into_raw(alloc::boxed::Box::new(WuiLifecycleHookHandler(
                 self,
             ))),
         }
     }
 }
 
-/// Calls a LifeCycleHook handler with the given environment.
+/// Calls a lifecycle hook handler with the given environment.
 ///
 /// # Safety
 ///
-/// * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+/// * `handler` must be a valid pointer to a `WuiLifecycleHookHandler`.
 /// * `env` must be a valid pointer to a WuiEnv.
 /// * This consumes the handler - it can only be called once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_lifecycle_hook(
-    handler: *mut WuiLifeCycleHookHandler,
+    handler: *mut WuiLifecycleHookHandler,
     env: *const crate::WuiEnv,
 ) {
-    let handler =
-        unsafe { crate::expect_non_null_mut(handler, "waterui_call_lifecycle_hook", "handler") };
-    let env = unsafe { crate::expect_non_null(env, "waterui_call_lifecycle_hook", "env") };
-    let _ = crate::ffi_boundary("waterui_call_lifecycle_hook", || unsafe {
-        let hook = alloc::boxed::Box::from_raw(handler);
-        hook.0.handle(env);
-    });
+    let hook = unsafe { alloc::boxed::Box::from_raw(handler) };
+    let env = unsafe { crate::borrow_ffi(env) }.0.clone();
+    hook.0.handle(&env);
 }
 
-/// Drops a LifeCycleHook handler without calling it.
+/// Drops a lifecycle hook handler without calling it.
 ///
 /// # Safety
 ///
-/// * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+/// * `handler` must be a valid pointer to a `WuiLifecycleHookHandler`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifeCycleHookHandler) {
-    unsafe {
-        crate::expect_non_null_mut(handler, "waterui_drop_lifecycle_hook", "handler");
-    }
+pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifecycleHookHandler) {
     unsafe {
         drop(alloc::boxed::Box::from_raw(handler));
     }
@@ -116,7 +110,7 @@ impl IntoFFI for Event {
 }
 
 /// Wrapper for OnEvent to avoid orphan rule issues.
-pub struct WuiOnEventHandler(pub OnEvent);
+pub struct WuiOnEventHandler(RetainedCallback<OnEvent>);
 
 /// FFI-safe representation of an event handler.
 #[repr(C)]
@@ -133,7 +127,9 @@ impl IntoFFI for OnEvent {
         let event = self.event().into_ffi();
         WuiOnEvent {
             event,
-            handler: alloc::boxed::Box::into_raw(alloc::boxed::Box::new(WuiOnEventHandler(self))),
+            handler: alloc::boxed::Box::into_raw(alloc::boxed::Box::new(WuiOnEventHandler(
+                RetainedCallback::new(self),
+            ))),
         }
     }
 }
@@ -147,15 +143,12 @@ impl IntoFFI for OnEvent {
 /// * `env` must be a valid pointer to a WuiEnv.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_on_event(
-    handler: *mut WuiOnEventHandler,
+    handler: *const WuiOnEventHandler,
     env: *const crate::WuiEnv,
 ) {
-    let handler =
-        unsafe { crate::expect_non_null_mut(handler, "waterui_call_on_event", "handler") };
-    let env = unsafe { crate::expect_non_null(env, "waterui_call_on_event", "env") };
-    let _ = crate::ffi_boundary("waterui_call_on_event", || {
-        handler.0.handle(env);
-    });
+    let handler = unsafe { crate::borrow_ffi(handler) }.0.clone();
+    let env = unsafe { crate::borrow_ffi(env) }.0.clone();
+    handler.call(|handler| handler.handle(&env));
 }
 
 /// Calls an OnEvent hover-move handler with the given local pointer position.
@@ -166,18 +159,15 @@ pub unsafe extern "C" fn waterui_call_on_event(
 /// * `env` must be a valid pointer to a WuiEnv.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_on_hover_event(
-    handler: *mut WuiOnEventHandler,
+    handler: *const WuiOnEventHandler,
     env: *const crate::WuiEnv,
     x: f32,
     y: f32,
 ) {
-    let handler =
-        unsafe { crate::expect_non_null_mut(handler, "waterui_call_on_hover_event", "handler") };
-    let env = unsafe { crate::expect_non_null(env, "waterui_call_on_hover_event", "env") };
-    let _ = crate::ffi_boundary("waterui_call_on_hover_event", || {
-        let env_with_hover = env.0.extending(HoverEvent::new(Point::new(x, y)));
-        handler.0.handle(&env_with_hover);
-    });
+    let handler = unsafe { crate::borrow_ffi(handler) }.0.clone();
+    let env = unsafe { crate::borrow_ffi(env) }.0.clone();
+    let env_with_hover = env.extending(HoverEvent::new(Point::new(x, y)));
+    handler.call(|handler| handler.handle(&env_with_hover));
 }
 
 /// Drops an OnEvent handler.
@@ -188,9 +178,33 @@ pub unsafe extern "C" fn waterui_call_on_hover_event(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_on_event(handler: *mut WuiOnEventHandler) {
     unsafe {
-        crate::expect_non_null_mut(handler, "waterui_drop_on_event", "handler");
-    }
-    unsafe {
         drop(alloc::boxed::Box::from_raw(handler));
+    }
+}
+
+#[cfg(all(test, feature = "c-api"))]
+mod tests {
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn on_event_survives_reentrant_native_drop_until_callback_returns() {
+        let handler_ptr = Rc::new(Cell::new(core::ptr::null_mut::<WuiOnEventHandler>()));
+        let callback_finished = Rc::new(Cell::new(false));
+        let handler_ptr_for_callback = Rc::clone(&handler_ptr);
+        let callback_finished_for_callback = Rc::clone(&callback_finished);
+        let event = OnEvent::new(Event::HoverEnter, move || {
+            unsafe { waterui_drop_on_event(handler_ptr_for_callback.get()) };
+            callback_finished_for_callback.set(true);
+        })
+        .into_ffi();
+        handler_ptr.set(event.handler);
+        let env = crate::WuiEnv(waterui::Environment::new());
+
+        unsafe { waterui_call_on_event(event.handler, &env) };
+
+        assert!(callback_finished.get());
     }
 }

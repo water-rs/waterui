@@ -13,7 +13,7 @@
 //! let list = Lazy::vstack((0..1000).map(|i| text(format!("Item {}", i))));
 //! ```
 
-use nami::collection::Collection;
+use nami::{Computed, collection::Collection};
 use waterui_core::{View, id::Identifiable};
 use waterui_layout::{
     LazyContainer,
@@ -52,7 +52,7 @@ impl Lazy {
     ) -> impl View {
         scroll(LazyContainer::new(
             VStackLayout {
-                spacing,
+                spacing: Computed::constant(spacing),
                 ..Default::default()
             },
             contents,
@@ -74,7 +74,7 @@ impl Lazy {
     ) -> impl View {
         scroll(LazyContainer::new(
             HStackLayout {
-                spacing,
+                spacing: Computed::constant(spacing),
                 ..Default::default()
             },
             contents,

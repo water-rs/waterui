@@ -17,16 +17,17 @@ use alloc::{rc::Rc, vec::Vec};
 use core::{cell::RefCell, fmt::Debug};
 
 use nami::{
-    Binding, Computed,
+    Binding, Computed, SignalExt as _,
     collection::{Collection, List},
 };
 use waterui_controls::{IntoLabel, button};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{
-    AnyView, Environment, Error, Metadata, Retain, Str, View, env::use_env, extract::Extractor,
-    extract::Use, handler::ViewBuilder, impl_extractor, layout::StretchAxis, raw_view,
+    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, Str, View,
+    env::use_env, extract::Extractor, extract::Use, flatten_signal, handler::ViewBuilder,
+    impl_extractor, layout::StretchAxis, raw_view,
 };
-use waterui_graphics::color::Color;
+use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_text::IntoText;
 
 pub use search::NavigationSearch;
@@ -161,6 +162,7 @@ fn navigation_view_with_environment(
     mut content: NavigationView,
     env: &Environment,
 ) -> NavigationView {
+    content.resolve_native_fields(env);
     content.bar.title = navigation_slot_with_environment(content.bar.title, env);
     content.bar.leading = navigation_slot_with_environment(content.bar.leading, env);
     content.bar.trailing = navigation_slot_with_environment(content.bar.trailing, env);
@@ -206,7 +208,22 @@ impl<T: 'static + Clone> Extractor for NavigationPathController<T> {
     }
 }
 
-raw_view!(NavigationView, StretchAxis::Both);
+impl NativeView for NavigationView {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+impl View for NavigationView {
+    fn body(mut self, env: &Environment) -> impl View {
+        self.resolve_native_fields(env);
+        Native::new(self)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
 
 /// The display mode for the navigation bar title.
 ///
@@ -252,7 +269,10 @@ pub struct Bar {
     /// Optional search field configuration displayed in navigation chrome.
     pub search: Option<NavigationSearch>,
     /// The background color of the navigation bar
-    pub color: Computed<Color>,
+    pub color: Option<Computed<Color>>,
+    /// Bar color resolved against the effective environment for native backends.
+    #[doc(hidden)]
+    pub resolved_color: Option<Computed<ResolvedColor>>,
     /// Whether the navigation bar is hidden
     pub hidden: Computed<bool>,
     /// The display mode for the title (automatic, inline, or large)
@@ -266,9 +286,8 @@ impl Default for Bar {
             leading: AnyView::default(),
             trailing: AnyView::default(),
             search: None,
-            // Sentinel: treat fully-transparent as "use platform default".
-            // Backends can still choose to render this as transparent if they prefer.
-            color: Computed::constant(Color::transparent()),
+            color: None,
+            resolved_color: None,
             hidden: Computed::constant(false),
             display_mode: NavigationTitleDisplayMode::Automatic,
         }
@@ -403,6 +422,94 @@ impl<T> NavigationStack<NavigationPath<T>, ()> {
 
 raw_view!(NavigationStack<(),()>, StretchAxis::Both);
 
+struct NavigationPathSubscriptionState<T> {
+    current: Option<Vec<T>>,
+    pending: Vec<Vec<T>>,
+}
+
+fn reconcile_navigation_path<T, F>(
+    receiver: &NavigationController,
+    destination: &Rc<F>,
+    current_path: &mut Vec<T>,
+    next_path: Vec<T>,
+) where
+    T: 'static + Clone + PartialEq,
+    F: 'static + Fn(T) -> NavigationView,
+{
+    let shared_prefix = shared_prefix_len(current_path, &next_path);
+
+    for _ in shared_prefix..current_path.len() {
+        receiver.pop();
+    }
+
+    for item in next_path.iter().skip(shared_prefix) {
+        receiver.push_builder(path_destination_builder(
+            Rc::clone(destination),
+            item.clone(),
+        ));
+    }
+
+    *current_path = next_path;
+}
+
+fn navigation_path_snapshot<C>(path: &C) -> Vec<C::Item>
+where
+    C: Collection,
+{
+    (0..path.len())
+        .map(|index| {
+            path.get(index)
+                .expect("navigation path must contain every item within its reported length")
+        })
+        .collect()
+}
+
+fn subscribe_navigation_path<C, T, F>(
+    path: &C,
+    receiver: &NavigationController,
+    destination: &Rc<F>,
+) -> C::Guard
+where
+    C: Collection<Item = T>,
+    T: 'static + Clone + PartialEq,
+    F: 'static + Fn(T) -> NavigationView,
+{
+    let state = Rc::new(RefCell::new(NavigationPathSubscriptionState {
+        current: None,
+        pending: Vec::new(),
+    }));
+    let guard = path.watch(.., {
+        let state = Rc::clone(&state);
+        let receiver = receiver.clone();
+        let destination = Rc::clone(destination);
+        move |slice| {
+            let next_path = slice.into_value().to_vec();
+            let mut state = state.borrow_mut();
+            if let Some(current_path) = state.current.as_mut() {
+                reconcile_navigation_path(&receiver, &destination, current_path, next_path);
+            } else {
+                state.pending.push(next_path);
+            }
+        }
+    });
+
+    let snapshot = navigation_path_snapshot(path);
+    let pending = core::mem::take(&mut state.borrow_mut().pending);
+    let mut pending = pending.into_iter();
+    let mut current_path = pending.next().unwrap_or_else(|| snapshot.clone());
+
+    for component in current_path.iter().cloned() {
+        receiver.push_builder(path_destination_builder(Rc::clone(destination), component));
+    }
+    for next_path in pending {
+        reconcile_navigation_path(receiver, destination, &mut current_path, next_path);
+    }
+    reconcile_navigation_path(receiver, destination, &mut current_path, snapshot);
+    state.borrow_mut().current = Some(current_path);
+
+    guard
+}
+
 impl<T, F> View for NavigationStack<NavigationPath<T>, F>
 where
     T: 'static + Clone + PartialEq,
@@ -419,32 +526,7 @@ where
                 let path = path.inner;
                 local_env.insert(path_controller.clone());
                 receiver.retain_environment(local_env.clone());
-                let current_path = RefCell::new(path.snapshot());
-                for component in current_path.borrow().iter().cloned() {
-                    receiver
-                        .push_builder(path_destination_builder(Rc::clone(&destination), component));
-                }
-
-                let destination = Rc::clone(&destination);
-                let watch_receiver = receiver.clone();
-                let guard = path.watch(.., move |slice| {
-                    let next_path = slice.into_value().to_vec();
-                    let mut current_path = current_path.borrow_mut();
-                    let shared_prefix = shared_prefix_len(&current_path, &next_path);
-
-                    for _ in shared_prefix..current_path.len() {
-                        watch_receiver.pop();
-                    }
-
-                    for item in next_path.iter().skip(shared_prefix) {
-                        watch_receiver.push_builder(path_destination_builder(
-                            Rc::clone(&destination),
-                            item.clone(),
-                        ));
-                    }
-
-                    *current_path = next_path;
-                });
+                let guard = subscribe_navigation_path(&path, &receiver, &destination);
 
                 receiver.retain(Retain::new(guard));
                 Metadata::new(root, local_env)
@@ -582,6 +664,19 @@ where
 }
 
 impl NavigationView {
+    /// Resolves environment-dependent native fields without snapshotting signals.
+    #[doc(hidden)]
+    pub fn resolve_native_fields(&mut self, env: &Environment) {
+        if let Some(search) = &mut self.bar.search {
+            search.prompt = waterui_text::Text::computed(search.prompt.resolve(env).content);
+        }
+
+        self.bar.resolved_color = self.bar.color.as_ref().map(|color| {
+            let env = env.clone();
+            flatten_signal(color.clone().map(move |color| color.resolve(&env)))
+        });
+    }
+
     /// Creates a new navigation view.
     ///
     /// # Arguments
@@ -648,6 +743,15 @@ impl NavigationView {
         self.bar.search = Some(NavigationSearch::new(text, prompt));
         self
     }
+
+    /// Overrides the platform navigation bar surface color.
+    ///
+    /// Without this modifier, each backend uses the surrounding `Surface`
+    /// theme token and its native material treatment.
+    pub fn navigation_bar_color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.bar.color = Some(color.into_signal().computed());
+        self
+    }
 }
 
 /// Convenience function to create a navigation view.
@@ -671,11 +775,17 @@ fn shared_prefix_len<T: PartialEq>(left: &[T], right: &[T]) -> usize {
 mod tests {
     use alloc::rc::Rc;
     use alloc::vec;
-    use core::cell::RefCell;
+    use alloc::vec::Vec;
+    use core::{
+        cell::{Cell, RefCell},
+        ops::RangeBounds,
+    };
+
+    use nami::{collection::Collection, watcher::Context};
 
     use super::{
         CustomNavigationController, NavigationController, NavigationLink, NavigationPath,
-        NavigationPathController, NavigationView, shared_prefix_len,
+        NavigationPathController, NavigationView, shared_prefix_len, subscribe_navigation_path,
     };
     use waterui_core::{Environment, Metadata, handler::AnyViewBuilder};
 
@@ -698,6 +808,82 @@ mod tests {
         let left = vec![1, 2, 3];
         let right = vec![1, 2, 3];
         assert_eq!(shared_prefix_len(&left, &right), 3);
+    }
+
+    struct EmitsDuringSubscription {
+        subscribed: Rc<Cell<bool>>,
+        snapshot: Vec<u8>,
+        updates: Vec<Vec<u8>>,
+    }
+
+    impl Collection for EmitsDuringSubscription {
+        type Item = u8;
+        type Guard = ();
+
+        fn get(&self, index: usize) -> Option<Self::Item> {
+            assert!(
+                self.subscribed.get(),
+                "navigation path must subscribe before reading its snapshot"
+            );
+            self.snapshot.as_slice().get(index).copied()
+        }
+
+        fn len(&self) -> usize {
+            assert!(
+                self.subscribed.get(),
+                "navigation path must subscribe before reading its snapshot"
+            );
+            self.snapshot.len()
+        }
+
+        fn watch(
+            &self,
+            _range: impl RangeBounds<usize>,
+            watcher: impl for<'a> Fn(Context<&'a [Self::Item]>) + 'static,
+        ) -> Self::Guard {
+            self.subscribed.set(true);
+            for update in &self.updates {
+                watcher(Context::from(update.as_slice()));
+            }
+        }
+    }
+
+    struct CountingNavigationController {
+        pushes: Rc<Cell<usize>>,
+        pops: Rc<Cell<usize>>,
+    }
+
+    impl CustomNavigationController for CountingNavigationController {
+        fn push(&mut self, _content: NavigationView) {
+            self.pushes.set(self.pushes.get() + 1);
+        }
+
+        fn pop(&mut self) {
+            self.pops.set(self.pops.get() + 1);
+        }
+    }
+
+    #[test]
+    fn path_subscribes_before_snapshot_and_replays_registration_updates() {
+        let subscribed = Rc::new(Cell::new(false));
+        let path = EmitsDuringSubscription {
+            subscribed: Rc::clone(&subscribed),
+            snapshot: vec![1, 2],
+            updates: vec![vec![1], vec![1, 2]],
+        };
+        let pushes = Rc::new(Cell::new(0));
+        let pops = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::clone(&pushes),
+            pops: Rc::clone(&pops),
+        });
+        let destination = Rc::new(|_: u8| NavigationView::new("Route", ()));
+
+        subscribe_navigation_path(&path, &controller, &destination);
+
+        assert!(subscribed.get());
+        assert_eq!(pushes.get(), 2);
+        assert_eq!(pops.get(), 0);
     }
 
     #[derive(Clone, PartialEq, Eq)]

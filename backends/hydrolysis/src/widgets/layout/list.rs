@@ -6,8 +6,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, VisibleSubviewCache,
     WidgetRenderContext, local_interaction_state, materialize_list_item, materialize_list_row,
-    measure_list_intrinsic, measure_list_item_row_height, measure_view_intrinsic,
-    transformed_rect,
+    measure_list_intrinsic, measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -129,7 +128,8 @@ pub(crate) fn list_accessibility(
                 if let Some(extent) = cached_extent {
                     extent
                 } else {
-                    let extent = measure_list_item_row_height(&item, renderer.state_mut(), &row_env);
+                    let extent =
+                        measure_list_item_row_height(&item, renderer.state_mut(), &row_env);
                     renderer.lazy.lazy_list_controller.slots[slot_index].row_extents[index] =
                         Some(extent);
                     extent
@@ -404,7 +404,11 @@ pub(crate) fn render_list_parts(
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_delete_control(&mut draw, delete_rect);
-                theme.draw_list_delete_control_state_layer(&mut draw, delete_rect, delete_interaction);
+                theme.draw_list_delete_control_state_layer(
+                    &mut draw,
+                    delete_rect,
+                    delete_interaction,
+                );
             }
             let state = Rc::clone(state);
             ctx.renderer_mut().register_interactive_pointer_target(

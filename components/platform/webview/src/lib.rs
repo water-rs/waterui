@@ -16,7 +16,7 @@
 //!
 //! // Get controller from environment and create a web view
 //! let webview = controller.open();
-//! webview.go_to("https://example.com");
+//! webview.go_to("https://waterui.dev");
 //!
 //! // Use reactive state for UI
 //! let can_go_back = webview.can_go_back();  // Computed<bool>
@@ -26,7 +26,7 @@ mod controller;
 
 pub use controller::*;
 pub use cookie::Cookie;
-use std::fmt;
+use std::{cell::Cell, fmt, rc::Rc};
 mod handler;
 pub use handler::*;
 mod proxy;
@@ -36,7 +36,7 @@ pub use proxy::WebViewProxy;
 pub use waterui_url::Url;
 
 use waterui_core::{
-    Binding, Computed, Signal, View, binding,
+    Binding, Computed, Environment, Signal, View, binding,
     env::use_env,
     layout::StretchAxis,
     raw_view,
@@ -114,7 +114,7 @@ pub struct WebView {
     handle: AnyWebViewHandle,
     can_go_back: Binding<bool>,
     can_go_forward: Binding<bool>,
-    redirects_watcher: Option<std::rc::Rc<BoxWatcherGuard>>,
+    navigation: Option<Rc<(Computed<Str>, BoxWatcherGuard)>>,
 }
 
 impl Clone for WebView {
@@ -124,7 +124,7 @@ impl Clone for WebView {
             handle: self.handle.clone(),
             can_go_back: self.can_go_back.clone(),
             can_go_forward: self.can_go_forward.clone(),
-            redirects_watcher: self.redirects_watcher.clone(),
+            navigation: self.navigation.clone(),
         }
     }
 }
@@ -136,6 +136,7 @@ impl fmt::Debug for WebView {
             .field("handle", &self.handle)
             .field("can_go_back", &self.can_go_back)
             .field("can_go_forward", &self.can_go_forward)
+            .field("has_reactive_navigation", &self.navigation.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -174,7 +175,7 @@ impl WebView {
             event,
             can_go_back,
             can_go_forward,
-            redirects_watcher: None,
+            navigation: None,
         }
     }
 
@@ -190,36 +191,34 @@ impl WebView {
     /// let webview = controller.open().redirects_enabled(allow_redirects.clone());
     /// ```
     #[must_use]
-    pub fn redirects_enabled(mut self, enabled: impl IntoComputed<bool>) -> Self {
-        let enabled = enabled.into_computed();
-
-        // Initial sync
-        self.handle.set_redirects_enabled(enabled.get());
-
-        // Watch for changes
-        let handle = self.handle.clone();
-        let guard = enabled.watch(move |ctx| {
-            handle.set_redirects_enabled(ctx.into_value());
-        });
-
-        self.redirects_watcher = Some(std::rc::Rc::new(guard));
+    pub fn redirects_enabled(self, enabled: impl IntoComputed<bool>) -> Self {
+        self.handle.set_redirects_enabled(enabled);
         self
     }
 
     /// Opens a new `WebView` and navigates to the specified URL.
     ///
-    /// This is the L1 fire-and-forget entry point. The web view's URL is
-    /// captured into an internal binding the caller never sees; use
-    /// [`WebView::with_proxy`] to attach an imperative
+    /// This is the L1 fire-and-forget entry point. Native creation and the
+    /// initial navigation are deferred until the view is rendered in an
+    /// environment containing a [`WebViewController`]. Use
+    /// [`WebViewOpen::with_proxy`] to attach an imperative
     /// [`WebViewProxy`] when you need refresh / history navigation /
     /// `run_javascript` from a child handler.
-    pub fn open(url: impl AsRef<str>) -> impl View {
-        let url = url.as_ref().to_string();
-        use_env(move |controller: WebViewController| {
-            let webview = controller.open();
-            webview.go_to(&url);
-            webview
-        })
+    ///
+    /// `url` is reactive: changing a `Binding<String>`, `Binding<Str>`, or
+    /// compatible computed URL navigates the existing native web view without
+    /// rebuilding it.
+    ///
+    /// ```ignore
+    /// let url = binding(String::from("https://waterui.dev"));
+    /// let webview = WebView::open(url.clone());
+    /// url.set(String::from("https://waterui.dev/docs"));
+    /// ```
+    pub fn open(url: impl IntoComputed<Str>) -> WebViewOpen {
+        WebViewOpen {
+            url: url.into_computed(),
+            redirects_enabled: None,
+        }
     }
 
     /// Wraps the [`WebView`] together with `content` and injects a
@@ -272,6 +271,13 @@ impl WebView {
         self.handle.go_to(url);
     }
 
+    fn bind_navigation(mut self, url: Computed<Str>) -> Self {
+        let handle = self.handle.clone();
+        let guard = subscribe_navigation(&url, move |url| handle.go_to(url.as_str()));
+        self.navigation = Some(Rc::new((url, guard)));
+        self
+    }
+
     /// Refreshes the current page.
     pub fn refresh(&self) {
         self.handle.refresh();
@@ -312,12 +318,29 @@ impl WebView {
     ///
     /// The returned future is intentionally thread-local because `WebView` state is
     /// bound to the native UI thread.
-    #[allow(clippy::future_not_send)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "native web views and JavaScript execution are main-thread-affine"
+    )]
     pub fn run_javascript<'a>(
         &'a self,
         script: &'a str,
     ) -> impl core::future::Future<Output = Result<Str, Str>> + 'a {
         self.handle.run_javascript(script)
+    }
+
+    /// Sets a cookie in this web view's native cookie store.
+    pub fn set_cookie(&self, cookie: Cookie<'static>) {
+        self.handle.set_cookie(cookie);
+    }
+
+    /// Retrieves the current cookies without blocking the UI thread.
+    #[expect(
+        clippy::future_not_send,
+        reason = "native web views and cookie stores are main-thread-affine"
+    )]
+    pub fn get_cookies(&self) -> impl core::future::Future<Output = Vec<Cookie<'static>>> + '_ {
+        self.handle.get_cookies()
     }
 
     /// Sets the user agent string for the web view.
@@ -332,8 +355,7 @@ impl WebView {
 
     /// Enables or disables following redirects.
     ///
-    /// Unsupported backends may ignore this setting.
-    pub fn set_redirects_enabled(&self, enabled: bool) {
+    pub fn set_redirects_enabled(&self, enabled: impl IntoComputed<bool>) {
         self.handle.set_redirects_enabled(enabled);
     }
 
@@ -346,5 +368,140 @@ impl WebView {
     }
 }
 
+fn subscribe_navigation<S, F>(url: &S, navigate: F) -> S::Guard
+where
+    S: Signal<Output = Str>,
+    F: Clone + Fn(Str) + 'static,
+{
+    let emitted_during_subscription = Rc::new(Cell::new(false));
+    let guard = url.watch({
+        let emitted_during_subscription = Rc::clone(&emitted_during_subscription);
+        let navigate = navigate.clone();
+        move |context| {
+            emitted_during_subscription.set(true);
+            navigate(context.into_value());
+        }
+    });
+    if !emitted_during_subscription.get() {
+        navigate(url.get());
+    }
+    guard
+}
+
+/// A deferred web view created by [`WebView::open`].
+///
+/// The native handle is created when this view is rendered, after its
+/// [`WebViewController`] can be extracted from the live environment. Keeping
+/// the builder concrete makes configuration and [`WebViewOpen::with_proxy`]
+/// chainable without creating a web view ahead of rendering. Its URL signal is
+/// retained for the native view's lifetime and drives navigation precisely.
+#[must_use = "a WebViewOpen must be rendered to create its native web view"]
+pub struct WebViewOpen {
+    url: Computed<Str>,
+    redirects_enabled: Option<Computed<bool>>,
+}
+
+impl fmt::Debug for WebViewOpen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebViewOpen")
+            .field("url", &self.url)
+            .field("redirects_enabled", &self.redirects_enabled)
+            .finish()
+    }
+}
+
+impl WebViewOpen {
+    /// Sets the reactive redirect policy applied when the web view is created.
+    pub fn redirects_enabled(mut self, enabled: impl IntoComputed<bool>) -> Self {
+        self.redirects_enabled = Some(enabled.into_computed());
+        self
+    }
+
+    /// Injects a proxy for the same deferred web view into `content`.
+    ///
+    /// The content and web view are created together at render time, so every
+    /// extracted [`WebViewProxy`] targets the handle displayed by this view.
+    pub fn with_proxy<V, F>(self, content: F) -> impl View
+    where
+        V: View,
+        F: FnOnce() -> V + 'static,
+    {
+        use_env(move |controller: WebViewController| self.create(&controller).with_proxy(content))
+    }
+
+    fn create(self, controller: &WebViewController) -> WebView {
+        let Self {
+            url,
+            redirects_enabled,
+        } = self;
+        let webview = controller.open();
+        if let Some(enabled) = redirects_enabled {
+            webview.set_redirects_enabled(enabled);
+        }
+        webview.bind_navigation(url)
+    }
+}
+
+impl View for WebViewOpen {
+    fn body(self, _env: &Environment) -> impl View {
+        use_env(move |controller: WebViewController| self.create(&controller))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
 // WebView is a raw view - native backends render it directly
 raw_view!(WebView, StretchAxis::Both);
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use super::subscribe_navigation;
+    use waterui_core::{Binding, Signal, reactive::watcher::Context};
+    use waterui_str::Str;
+
+    #[derive(Clone)]
+    struct EmitsDuringSubscription {
+        source: Binding<Str>,
+        replacement: Str,
+    }
+
+    impl Signal for EmitsDuringSubscription {
+        type Output = Str;
+        type Guard = <Binding<Str> as Signal>::Guard;
+
+        fn get(&self) -> Self::Output {
+            self.source.get()
+        }
+
+        fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+            self.source.set(self.replacement.clone());
+            let watcher = Rc::new(watcher);
+            watcher(Context::from(self.replacement.clone()));
+            self.source.watch(move |context| watcher(context))
+        }
+    }
+
+    #[test]
+    fn navigation_subscription_does_not_repeat_synchronous_emission() {
+        let replacement = Str::from("https://waterui.dev/docs");
+        let source = Binding::container(Str::from("https://waterui.dev"));
+        let signal = EmitsDuringSubscription {
+            source: source.clone(),
+            replacement: replacement.clone(),
+        };
+        let navigations = Rc::new(RefCell::new(Vec::new()));
+
+        let _guard = subscribe_navigation(&signal, {
+            let navigations = Rc::clone(&navigations);
+            move |url| navigations.borrow_mut().push(url)
+        });
+        let next = Str::from("https://waterui.dev/components");
+        source.set(next.clone());
+
+        assert_eq!(*navigations.borrow(), vec![replacement, next]);
+    }
+}

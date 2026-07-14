@@ -26,6 +26,7 @@ struct PendingResize {
 pub struct BrowserSurface {
     _instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -80,6 +81,7 @@ impl BrowserSurface {
         Self {
             _instance: instance,
             surface,
+            adapter,
             device,
             queue,
             config,
@@ -88,6 +90,10 @@ impl BrowserSurface {
 }
 
 impl SurfaceProvider for BrowserSurface {
+    fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
+    }
+
     fn device(&self) -> &wgpu::Device {
         &self.device
     }

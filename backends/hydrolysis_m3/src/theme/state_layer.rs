@@ -59,7 +59,10 @@ const RIPPLE_INITIAL_SCALE: f64 = 0.4;
 /// from the initial fraction up to full size while its center drifts from its
 /// press point to the surface center.
 pub fn ripple_diameter(bounds: Rect) -> f64 {
-    bounds.width().hypot(bounds.height()).max(RIPPLE_MINIMUM_DIAMETER)
+    bounds
+        .width()
+        .hypot(bounds.height())
+        .max(RIPPLE_MINIMUM_DIAMETER)
 }
 
 /// Material ripple kinematics for one frame: given the target's `bounds` and
@@ -123,7 +126,13 @@ pub fn draw_bounded(
     color: Color,
     state: WidgetInteractionState,
 ) {
-    draw_state_tint_rounded(draw, bounds, radii, color, resolved_state_layer_opacity(state));
+    draw_state_tint_rounded(
+        draw,
+        bounds,
+        radii,
+        color,
+        resolved_state_layer_opacity(state),
+    );
 
     let waves = resolved_press_waves(state);
     if waves.is_empty() {
@@ -166,13 +175,14 @@ pub fn draw_unbounded_circle(
 #[cfg(test)]
 mod tests {
     use super::{RIPPLE_MINIMUM_DIAMETER, ripple_diameter};
-    use crate::{Brush, DrawContext, PressWave, PressWaves, WidgetInteractionState, theme::state_layer};
+    use crate::{
+        Brush, DrawContext, PressWave, PressWaves, WidgetInteractionState, theme::state_layer,
+    };
     use std::path::Path;
     use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, RoundedRectRadii};
     use vello::peniko::Color;
     use waterui_graphics::{
-        GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
-        OffscreenRenderOutput, OffscreenSize,
+        GpuContext, GpuFrame, GpuRuntime, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
     };
 
     #[test]
@@ -604,33 +614,23 @@ mod tests {
                 .expect("ripple visual vello render failed");
         }
     }
-
-
-    fn skip_without_gpu(
-        result: Result<OffscreenRenderOutput, OffscreenRenderError>,
-    ) -> Option<OffscreenRenderOutput> {
-        match result {
-            Ok(output) => Some(output),
-            Err(OffscreenRenderError::NoAdapter) => None,
-            Err(error) => panic!("ripple visual offscreen render failed: {error}"),
-        }
-    }
-
     #[test]
     #[ignore = "writes a visual acceptance PNG for direct image review"]
     fn material_ripple_visual_snapshot() {
         let mut env = waterui_core::Environment::new();
-        let Some(output) = skip_without_gpu(
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("ripple visual test requires a high-performance GPU");
+        let output = pollster::block_on(
             GpuSurface::new(RippleVisualRenderer::new()).render_offscreen(
+                &runtime,
                 OffscreenRenderConfig::new(
                     OffscreenSize::try_from_pixels(240, 120).expect("static size must be valid"),
                 )
                 .format(vello::wgpu::TextureFormat::Rgba8Unorm),
                 &mut env,
             ),
-        ) else {
-            return;
-        };
+        )
+        .expect("ripple visual offscreen render failed");
         let output_path = Path::new("target/hydrolysis-m3-visual/material-ripple-solid.png");
         std::fs::create_dir_all(
             output_path

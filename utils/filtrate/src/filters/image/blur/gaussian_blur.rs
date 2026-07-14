@@ -10,7 +10,7 @@ impl<T: FilterParam> Filter for GaussianBlur<T> {
     const COLOR_ONLY: bool = false;
 
     type Params = [f32; 2];
-    type Fragments = &'static str;
+    type Fragments = (&'static str, &'static str);
 
     #[inline]
     fn params(&self) -> [f32; 2] {
@@ -19,32 +19,23 @@ impl<T: FilterParam> Filter for GaussianBlur<T> {
     }
 
     #[inline]
-    fn fragments(&self) -> &'static str {
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/image/blur/gaussian_blur_horizontal.wgsl"
-        ))
-    }
-
-    fn pass_count(&self) -> u32 {
-        2
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        c.spatial_shader(
+    fn fragments(&self) -> Self::Fragments {
+        (
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/gaussian_blur_horizontal.wgsl"
             )),
-            1,
-        );
-        c.spatial_shader(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/gaussian_blur_vertical.wgsl"
             )),
-            1,
-        );
+        )
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        let (horizontal, vertical) = self.fragments();
+        c.spatial_shader(horizontal, 1);
+        c.spatial_shader(vertical, 1);
     }
 
     fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {

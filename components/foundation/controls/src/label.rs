@@ -39,8 +39,10 @@
 //! - [`Label::hide_label`] / [`Label::display_mode`] for per-label control
 
 use core::any::Any;
-use nami::{Binding, Computed};
-use waterui_core::{AnyView, Environment, View, handler::AnyViewBuilder, plugin::Plugin};
+use nami::{Binding, Computed, SignalExt};
+use waterui_core::{
+    AnyView, Environment, IntoSignalF32, View, handler::AnyViewBuilder, plugin::Plugin,
+};
 use waterui_icon::SystemIcon;
 use waterui_layout::stack::hstack;
 use waterui_text::{IntoText, Text, font::Font, styled::StyledStr};
@@ -101,7 +103,7 @@ impl Plugin for LabelDisplayMode {}
 
 impl Default for Label {
     fn default() -> Self {
-        Self::new(Text::default())
+        Self::semantic(Text::default())
     }
 }
 
@@ -189,7 +191,8 @@ enum LabelContent {
         text: Text,
         icon: Option<LabelIcon>,
         icon_position: IconPosition,
-        spacing: f32,
+        spacing: Computed<f32>,
+        font: Option<Font>,
     },
     Custom {
         semantic_text: Text,
@@ -199,19 +202,22 @@ enum LabelContent {
 
 /// Semantic label for controls, commands, and chrome.
 #[derive(Debug, Clone)]
-#[allow(
+#[expect(
     clippy::struct_field_names,
     reason = "the `accessibility_` prefix groups the accessibility-override fields"
 )]
 pub struct Label {
     content: LabelContent,
     display_mode: LabelDisplayMode,
-    font: Option<Font>,
     accessibility_text: Option<Text>,
     accessibility_label: Option<Computed<StyledStr>>,
 }
 
-/// Conversion trait for semantic labels.
+/// Converts semantic text inputs into a [`Label`].
+///
+/// String, [`Text`], [`StyledStr`], [`Binding`], and [`Computed`] inputs use
+/// `WaterUI`'s i18n-aware semantic text pipeline. Use [`Label::new`] only when
+/// the visible label is an arbitrary view that differs from its spoken text.
 pub trait IntoLabel {
     /// Converts a value into a semantic label.
     fn into_label(self) -> Label;
@@ -225,31 +231,31 @@ impl IntoLabel for Label {
 
 impl IntoLabel for Text {
     fn into_label(self) -> Label {
-        Label::new(self)
+        Label::semantic(self)
     }
 }
 
 impl IntoLabel for &'static str {
     fn into_label(self) -> Label {
-        Label::new(self)
+        Label::semantic(self)
     }
 }
 
 impl IntoLabel for alloc::string::String {
     fn into_label(self) -> Label {
-        Label::new(self)
+        Label::semantic(self)
     }
 }
 
 impl IntoLabel for waterui_core::Str {
     fn into_label(self) -> Label {
-        Label::new(self)
+        Label::semantic(self)
     }
 }
 
 impl IntoLabel for StyledStr {
     fn into_label(self) -> Label {
-        Label::new(self)
+        Label::semantic(self)
     }
 }
 
@@ -258,7 +264,7 @@ where
     T: IntoText + Clone + 'static,
 {
     fn into_label(self) -> Label {
-        Label::new(self)
+        Label::semantic(self)
     }
 }
 
@@ -267,38 +273,46 @@ where
     T: IntoText + Clone + 'static,
 {
     fn into_label(self) -> Label {
-        Label::new(self)
+        Label::semantic(self)
     }
 }
 
 impl Label {
-    /// Creates a new label with the specified text.
-    #[must_use]
-    pub fn new(text: impl IntoText) -> Self {
-        Self {
-            content: LabelContent::Semantic {
-                text: text.into_text(),
-                icon: None,
-                icon_position: IconPosition::Leading,
-                spacing: 6.0,
-            },
-            display_mode: LabelDisplayMode::Automatic,
-            font: None,
-            accessibility_text: None,
-            accessibility_label: None,
-        }
-    }
-
     /// Creates a label with arbitrary visual content and separate semantic text.
+    ///
+    /// `semantic_text` is exposed to controls and assistive technology, while
+    /// `content` is the view rendered on screen. For ordinary text labels, use
+    /// [`label`] or pass an [`IntoLabel`] value directly to the control.
+    ///
+    /// ```rust,ignore
+    /// let verified = Label::new(
+    ///     "Verified account",
+    ///     hstack((text("Account"), verification_badge)),
+    /// );
+    /// ```
     #[must_use]
-    pub fn custom(semantic_text: impl IntoText, content: impl View + Clone) -> Self {
+    pub fn new(semantic_text: impl IntoText, content: impl View + Clone) -> Self {
         Self {
             content: LabelContent::Custom {
                 semantic_text: semantic_text.into_text(),
                 view: AnyViewBuilder::new(move || AnyView::new(content.clone())),
             },
             display_mode: LabelDisplayMode::Automatic,
-            font: None,
+            accessibility_text: None,
+            accessibility_label: None,
+        }
+    }
+
+    fn semantic(text: impl IntoText) -> Self {
+        Self {
+            content: LabelContent::Semantic {
+                text: text.into_text(),
+                icon: None,
+                icon_position: IconPosition::Leading,
+                spacing: Computed::constant(6.0),
+                font: None,
+            },
+            display_mode: LabelDisplayMode::Automatic,
             accessibility_text: None,
             accessibility_label: None,
         }
@@ -338,7 +352,7 @@ impl Label {
     ///
     /// # Panics
     ///
-    /// Panics if the label was created with custom content rather than a semantic text label.
+    /// Panics for [`Label::new`] labels with arbitrary visual content.
     #[must_use]
     pub fn icon(mut self, icon: impl View + Clone) -> Self {
         let system_icon = (&icon as &dyn Any).downcast_ref::<SystemIcon>().cloned();
@@ -350,7 +364,7 @@ impl Label {
             } => *semantic_icon = Some(icon),
             LabelContent::Custom { .. } => {
                 panic!(
-                    "Label::icon requires a semantic text label; attach icons inside Label::custom content"
+                    "Label::icon requires a semantic text label; compose icons inside Label::new content"
                 )
             }
         }
@@ -369,7 +383,7 @@ impl Label {
     ///
     /// # Panics
     ///
-    /// Panics if the label was created with custom content rather than a semantic text label.
+    /// Panics for [`Label::new`] labels with arbitrary visual content.
     #[must_use]
     pub fn system_icon(mut self, icon: SystemIcon) -> Self {
         match &mut self.content {
@@ -379,7 +393,7 @@ impl Label {
             } => *semantic_icon = Some(LabelIcon::system(icon)),
             LabelContent::Custom { .. } => {
                 panic!(
-                    "Label::system_icon requires a semantic text label; attach icons inside Label::custom content"
+                    "Label::system_icon requires a semantic text label; compose icons inside Label::new content"
                 )
             }
         }
@@ -390,14 +404,14 @@ impl Label {
     ///
     /// # Panics
     ///
-    /// Panics if the label was created with custom content rather than a semantic text label.
+    /// Panics for [`Label::new`] labels with arbitrary visual content.
     #[must_use]
     pub fn trailing(mut self) -> Self {
         match &mut self.content {
             LabelContent::Semantic { icon_position, .. } => *icon_position = IconPosition::Trailing,
             LabelContent::Custom { .. } => {
                 panic!(
-                    "Label::trailing requires a semantic text label; arrange custom label content directly"
+                    "Label::trailing requires a semantic text label; arrange Label::new content directly"
                 )
             }
         }
@@ -408,14 +422,14 @@ impl Label {
     ///
     /// # Panics
     ///
-    /// Panics if the label was created with custom content rather than a semantic text label.
+    /// Panics for [`Label::new`] labels with arbitrary visual content.
     #[must_use]
     pub fn leading(mut self) -> Self {
         match &mut self.content {
             LabelContent::Semantic { icon_position, .. } => *icon_position = IconPosition::Leading,
             LabelContent::Custom { .. } => {
                 panic!(
-                    "Label::leading requires a semantic text label; arrange custom label content directly"
+                    "Label::leading requires a semantic text label; arrange Label::new content directly"
                 )
             }
         }
@@ -424,19 +438,21 @@ impl Label {
 
     /// Sets the spacing between icon and text.
     ///
+    /// Signal changes invalidate only the label stack's layout.
+    ///
     /// # Panics
     ///
-    /// Panics if the label was created with custom content rather than a semantic text label.
+    /// Panics for [`Label::new`] labels with arbitrary visual content.
     #[must_use]
-    pub fn spacing(mut self, spacing: f32) -> Self {
+    pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
         match &mut self.content {
             LabelContent::Semantic {
                 spacing: label_spacing,
                 ..
-            } => *label_spacing = spacing,
+            } => *label_spacing = spacing.into_signal_f32().computed(),
             LabelContent::Custom { .. } => {
                 panic!(
-                    "Label::spacing requires a semantic text label; space custom label content directly"
+                    "Label::spacing requires a semantic text label; space Label::new content directly"
                 )
             }
         }
@@ -447,9 +463,23 @@ impl Label {
     ///
     /// This affects only the on-screen label text. The semantic text exposed to
     /// controls and assistive technology remains unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics for [`Label::new`] labels because arbitrary content owns its own
+    /// visual styling.
     #[must_use]
     pub fn font(mut self, font: impl Into<Font>) -> Self {
-        self.font = Some(font.into());
+        match &mut self.content {
+            LabelContent::Semantic {
+                font: label_font, ..
+            } => *label_font = Some(font.into()),
+            LabelContent::Custom { .. } => {
+                panic!(
+                    "Label::font requires a semantic text label; style Label::new content directly"
+                )
+            }
+        }
         self
     }
 
@@ -560,7 +590,7 @@ impl Label {
             .accessibility_text
             .as_ref()
             .unwrap_or_else(|| self.semantic_text());
-        self.accessibility_label = Some(accessibility_text.resolve_reactive(env).content);
+        self.accessibility_label = Some(accessibility_text.resolve(env).content);
         self
     }
 }
@@ -574,7 +604,6 @@ impl View for Label {
 
         let Self {
             content,
-            font,
             accessibility_text: _,
             accessibility_label: _,
             ..
@@ -585,6 +614,7 @@ impl View for Label {
                 icon,
                 icon_position,
                 spacing,
+                font,
             } => {
                 let text = if let Some(font) = font {
                     text.font(font)
@@ -632,10 +662,13 @@ impl View for Label {
     }
 }
 
-/// Convenience function to create a label.
+/// Creates an i18n-aware semantic text label.
+///
+/// This is the ergonomic counterpart to [`Label::new`], which accepts
+/// arbitrary visual content plus separate semantic text.
 #[must_use]
 pub fn label(text: impl IntoText) -> Label {
-    Label::new(text)
+    Label::semantic(text)
 }
 
 #[cfg(test)]
@@ -652,9 +685,7 @@ mod tests {
     fn computed_string_value_converts_into_label_text() {
         let env = test_env();
         let label = Computed::constant(String::from("Ready")).into_label();
-        let content = label.semantic_text().resolve(&env).content.get();
-
-        assert_eq!(content.to_plain(), "Ready");
+        assert_eq!(semantic_plain(&label, &env), "Ready");
     }
 
     #[test]
@@ -662,34 +693,25 @@ mod tests {
         let env = test_env();
         let label = Computed::constant("greeting").into_label();
 
-        assert_eq!(
-            label.semantic_text().resolve(&env).content.get().to_plain(),
-            "Hello"
-        );
+        assert_eq!(semantic_plain(&label, &env), "Hello");
     }
 
     #[test]
     fn hide_label_keeps_semantic_text_for_accessibility() {
         let env = test_env();
-        let label = super::Label::new("greeting").hide_label();
+        let label = super::label("greeting").hide_label();
 
         // The semantic text remains intact for assistive technology even when
         // the label is configured to render no visible chrome.
-        assert_eq!(
-            label.semantic_text().resolve(&env).content.get().to_plain(),
-            "Hello"
-        );
+        assert_eq!(semantic_plain(&label, &env), "Hello");
     }
 
     #[test]
-    fn custom_label_keeps_separate_semantic_text() {
+    fn arbitrary_content_label_keeps_separate_semantic_text() {
         let env = test_env();
-        let label = super::Label::custom("greeting", waterui_text::text("Visual"));
+        let label = super::Label::new("greeting", waterui_text::text("Visual"));
 
-        assert_eq!(
-            label.semantic_text().resolve(&env).content.get().to_plain(),
-            "Hello"
-        );
+        assert_eq!(semantic_plain(&label, &env), "Hello");
     }
 
     #[test]
@@ -697,7 +719,7 @@ mod tests {
         // Without an icon, Automatic / TitleAndIcon would fall back to TitleOnly.
         // Hidden must take precedence over those defaults.
         let env = test_env();
-        let label = super::Label::new("greeting").hide_label();
+        let label = super::label("greeting").hide_label();
 
         let mode = label.effective_display_mode(&env);
         assert!(matches!(mode, super::LabelDisplayMode::Hidden));
@@ -714,14 +736,21 @@ mod tests {
         env
     }
 
+    fn semantic_plain(label: &super::Label, env: &Environment) -> String {
+        label
+            .semantic_text()
+            .resolve(env)
+            .content
+            .get()
+            .to_plain()
+            .into_string()
+    }
+
     #[test]
     fn font_keeps_semantic_text_unchanged() {
         let env = test_env();
-        let label = super::Label::new("greeting").font(waterui_text::font::Body);
+        let label = super::label("greeting").font(waterui_text::font::Body);
 
-        assert_eq!(
-            label.semantic_text().resolve(&env).content.get().to_plain(),
-            "Hello"
-        );
+        assert_eq!(semantic_plain(&label, &env), "Hello");
     }
 }

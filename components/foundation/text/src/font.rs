@@ -172,7 +172,7 @@ impl Font {
 }
 
 macro_rules! impl_font {
-    ($name:ident,$default_size:expr,$default_weight:expr, $doc:expr) => {
+    ($name:ident, $doc:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
         pub struct $name;
@@ -182,13 +182,10 @@ macro_rules! impl_font {
             fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
                 env.query::<Self, Computed<Self::Resolved>>()
                     .cloned()
-                    .unwrap_or_else(|| {
-                        Computed::constant(ResolvedFont {
-                            size: $default_size,
-                            weight: $default_weight,
-                            family: None,
-                        })
-                    })
+                    .expect(concat!(
+                        stringify!($name),
+                        " font token is not installed in the environment"
+                    ))
             }
         }
 
@@ -201,14 +198,9 @@ macro_rules! impl_font {
         impl_constant!($name);
     };
 }
-impl_font!(Body, 16.0, FontWeight::Normal, "Body font style.");
-impl_font!(Title, 24.0, FontWeight::SemiBold, "Title font style.");
-impl_font!(Headline, 32.0, FontWeight::Bold, "Headline font style.");
-impl_font!(
-    Subheadline,
-    20.0,
-    FontWeight::SemiBold,
-    "Subheadline font style."
-);
-impl_font!(Caption, 12.0, FontWeight::Normal, "Caption font style.");
-impl_font!(Footnote, 10.0, FontWeight::Light, "Footnote font style.");
+impl_font!(Body, "Body font style.");
+impl_font!(Title, "Title font style.");
+impl_font!(Headline, "Headline font style.");
+impl_font!(Subheadline, "Subheadline font style.");
+impl_font!(Caption, "Caption font style.");
+impl_font!(Footnote, "Footnote font style.");

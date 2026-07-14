@@ -2,8 +2,11 @@
 
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
+use nami::{Computed, SignalExt};
 use num_traits::ToPrimitive;
-use waterui_core::{AnyView, Environment, IntoSignalF32, View, view::TupleViews};
+use waterui_core::{
+    AnyView, Environment, IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
+};
 
 use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
@@ -25,20 +28,20 @@ struct GridMeasurement {
 }
 
 /// The core layout engine for a `Grid`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct GridLayout {
     columns: NonZeroUsize,
-    spacing: Size, // (horizontal, vertical)
+    spacing: Computed<Size>,
     alignment: Alignment,
 }
 
 impl GridLayout {
     /// Creates a new `GridLayout` with the specified columns, spacing, and alignment.
     #[must_use]
-    pub const fn new(columns: NonZeroUsize, spacing: Size, alignment: Alignment) -> Self {
+    pub fn new(columns: NonZeroUsize, spacing: Size, alignment: Alignment) -> Self {
         Self {
             columns,
-            spacing,
+            spacing: Computed::constant(spacing),
             alignment,
         }
     }
@@ -50,6 +53,7 @@ impl GridLayout {
     ) -> GridMeasurement {
         let num_columns = self.columns.get();
         let num_rows = children.len().div_ceil(num_columns);
+        let spacing = nami::Signal::get(&self.spacing);
 
         let constrained_width = proposed_width
             .filter(|width| width.is_finite())
@@ -58,8 +62,7 @@ impl GridLayout {
         let mut column_widths = constrained_width.map_or_else(
             || vec![0.0; num_columns],
             |width| {
-                let total_spacing =
-                    self.spacing.width * usize_to_f32(num_columns.saturating_sub(1));
+                let total_spacing = spacing.width * usize_to_f32(num_columns.saturating_sub(1));
                 let width_per_column =
                     ((width - total_spacing) / usize_to_f32(num_columns)).max(0.0);
                 vec![width_per_column; num_columns]
@@ -101,13 +104,12 @@ impl GridLayout {
             .collect();
 
         let total_height = row_heights.iter().sum::<f32>()
-            + self.spacing.height * usize_to_f32(num_rows.saturating_sub(1));
+            + spacing.height * usize_to_f32(num_rows.saturating_sub(1));
 
         let total_width = constrained_width.map_or_else(
             || {
                 let used_columns = children.len().min(num_columns);
-                let total_spacing =
-                    self.spacing.width * usize_to_f32(used_columns.saturating_sub(1));
+                let total_spacing = spacing.width * usize_to_f32(used_columns.saturating_sub(1));
                 column_widths.iter().take(used_columns).sum::<f32>() + total_spacing
             },
             |width| width.max(0.0),
@@ -140,6 +142,7 @@ impl Layout for GridLayout {
         }
 
         let num_columns = self.columns.get();
+        let spacing = nami::Signal::get(&self.spacing);
         let measurement = self.measure_grid(Some(bounds.width()), children);
 
         let mut placements = Vec::with_capacity(children.len());
@@ -220,10 +223,10 @@ impl Layout for GridLayout {
 
                 placements.push(Rect::new(Point::new(child_x, child_y), child_size));
 
-                cursor_x += column_width + self.spacing.width;
+                cursor_x += column_width + spacing.width;
             }
 
-            cursor_y += row_height + self.spacing.height;
+            cursor_y += row_height + spacing.height;
         }
 
         placements
@@ -263,6 +266,13 @@ impl Layout for GridLayout {
                 .min_by(f32::total_cmp);
         }
         None
+    }
+
+    fn watch_invalidation(
+        &self,
+        invalidate: LayoutInvalidationCallback,
+    ) -> Vec<nami::watcher::BoxWatcherGuard> {
+        vec![nami::Signal::watch(&self.spacing, move |_| invalidate())]
     }
 }
 
@@ -344,13 +354,14 @@ impl Grid {
 
     /// Sets the horizontal and vertical spacing for the grid.
     ///
-    /// Accepts any numeric literal or signal of f32; snapshotted at modifier
-    /// time per `WaterUI`'s Vue-like reactivity model.
+    /// Accepts any numeric literal or signal of f32. Signal changes invalidate
+    /// only this grid's native layout.
     #[must_use]
     pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
-        use waterui_core::Signal;
-        let spacing = spacing.into_signal_f32().get();
-        self.layout.spacing = Size::new(spacing, spacing);
+        self.layout.spacing = spacing
+            .into_signal_f32()
+            .map(|spacing| Size::new(spacing, spacing))
+            .computed();
         self
     }
 

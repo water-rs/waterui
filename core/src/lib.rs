@@ -56,19 +56,19 @@
 //! State management integrates seamlessly with the view system:
 //!
 //! ```rust
-//! use waterui_core::{Dynamic, binding, Binding};
+//! use waterui_core::{Binding, Signal, SignalExt};
 //!
 //! // Create a reactive state container
-//! let counter: Binding<i32> = binding(0);
+//! let counter = Binding::container(0);
 //!
-//! // Create a view that responds to state changes using Dynamic
-//! let view = Dynamic::watch(counter, |count: i32| {
-//!      format!("Current value: {}", count)
-//! });
+//! // Derive the exact value consumed by a signal-aware component.
+//! let label = counter.map(|count| format!("Current value: {count}"));
+//! assert_eq!(label.get(), "Current value: 0");
 //! ```
 //!
-//! The UI automatically updates when state changes, with efficient rendering that only
-//! updates affected components.
+//! Signal-aware component inputs subscribe to derived values and update only the
+//! affected native property. Structural subtree replacement is reserved for cases
+//! where the view identity itself changes.
 //!
 //! ## Extensibility
 //!
@@ -106,6 +106,7 @@ pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
 pub use extract::State;
 pub use foundation::main_thread::MainThreadBound;
+pub use foundation::signal::flatten_signal;
 pub use foundation::{env, extract, handler, id, main_thread, plugin, resolve};
 pub use nami as reactive;
 pub use nami::signal::IntoSignal;
