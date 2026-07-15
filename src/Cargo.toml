@@ -116,6 +116,7 @@ chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
 map = ["dep:waterui-map"]
 particle = ["dep:waterui-particle"]
+navigation-restoration = ["waterui-navigation/serde"]
 flow-markdown = [
     "dep:tree-sitter",
     "dep:tree-sitter-md",
@@ -142,6 +143,7 @@ all = [
     "barcode",
     "map",
     "particle",
+    "navigation-restoration",
 ]
 
 [lints]

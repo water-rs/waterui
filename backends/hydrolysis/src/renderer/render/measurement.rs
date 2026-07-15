@@ -53,7 +53,17 @@ fn navigation_bar_height(view: &NavigationView, env: &Environment) -> f64 {
         } else {
             0.0
         };
-        base + search_extra
+        let bottom_extra = if view.bar.toolbar.items.iter().any(|item| {
+            matches!(
+                item.placement,
+                NavigationToolbarPlacement::BottomBar | NavigationToolbarPlacement::Status
+            )
+        }) {
+            metrics.inline_bar_height
+        } else {
+            0.0
+        };
+        base + search_extra + bottom_extra
     }
 }
 
@@ -504,21 +514,57 @@ pub(crate) fn measure_navigation_view_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let bar_height = navigation_bar_height(navigation, env);
-    let title_size = if bar_height > 0.0 {
-        measure_view_intrinsic(&navigation.bar.title, state, env)
+    let mut principal_width = 0.0_f64;
+    let mut principal_height = 0.0_f64;
+    let mut leading_width = 0.0_f64;
+    let mut leading_height = 0.0_f64;
+    let mut trailing_width = 0.0_f64;
+    let mut trailing_height = 0.0_f64;
+    let mut bottom_width = 0.0_f64;
+    let mut bottom_height = 0.0_f64;
+    let metrics = widget_theme(env).navigation_metrics();
+    for item in &navigation.bar.toolbar.items {
+        let size = measure_view_intrinsic(&item.content, state, env);
+        let (width, height) = match item.placement {
+            NavigationToolbarPlacement::Principal => (&mut principal_width, &mut principal_height),
+            NavigationToolbarPlacement::Cancellation
+            | NavigationToolbarPlacement::TopBarLeading => {
+                (&mut leading_width, &mut leading_height)
+            }
+            NavigationToolbarPlacement::BottomBar | NavigationToolbarPlacement::Status => {
+                (&mut bottom_width, &mut bottom_height)
+            }
+            NavigationToolbarPlacement::PrimaryAction
+            | NavigationToolbarPlacement::SecondaryAction
+            | NavigationToolbarPlacement::Confirmation
+            | NavigationToolbarPlacement::TopBarTrailing => {
+                (&mut trailing_width, &mut trailing_height)
+            }
+        };
+        if *width > 0.0 {
+            *width += metrics.item_spacing;
+        }
+        *width += f64::from(size.width);
+        *height = (*height).max(f64::from(size.height));
+    }
+    let title_size = if bar_height > 0.0 && principal_width == 0.0 {
+        let title = measure_view_intrinsic(&navigation.bar.title, state, env);
+        let subtitle = if navigation.bar.subtitle.is::<()>() {
+            LayoutSize::zero()
+        } else {
+            measure_view_intrinsic(&navigation.bar.subtitle, state, env)
+        };
+        LayoutSize::new(
+            title.width.max(subtitle.width),
+            title.height + subtitle.height,
+        )
+    } else if bar_height > 0.0 {
+        LayoutSize::new(principal_width as f32, principal_height as f32)
     } else {
         LayoutSize::zero()
     };
-    let leading_size = if !navigation.bar.leading.is::<()>() {
-        measure_view_intrinsic(&navigation.bar.leading, state, env)
-    } else {
-        LayoutSize::zero()
-    };
-    let trailing_size = if !navigation.bar.trailing.is::<()>() {
-        measure_view_intrinsic(&navigation.bar.trailing, state, env)
-    } else {
-        LayoutSize::zero()
-    };
+    let leading_size = LayoutSize::new(leading_width as f32, leading_height as f32);
+    let trailing_size = LayoutSize::new(trailing_width as f32, trailing_height as f32);
     let search_size = if let Some(search) = navigation.bar.search.as_ref() {
         let body_env = env.clone();
         let search_field = TextField::new(&search.text).prompt(search.prompt.clone());
@@ -529,7 +575,6 @@ pub(crate) fn measure_navigation_view_intrinsic(
         LayoutSize::zero()
     };
     let content_size = measure_view_intrinsic(&navigation.content, state, env);
-    let metrics = widget_theme(env).navigation_metrics();
     let width = f64::from(content_size.width)
         .max(
             f64::from(leading_size.width)
@@ -538,7 +583,8 @@ pub(crate) fn measure_navigation_view_intrinsic(
                 + metrics.horizontal_inset * 2.0
                 + metrics.item_spacing * 2.0,
         )
-        .max(f64::from(search_size.width) + metrics.horizontal_inset * 2.0);
+        .max(f64::from(search_size.width) + metrics.horizontal_inset * 2.0)
+        .max(bottom_width + metrics.horizontal_inset * 2.0);
     let height = f64::from(content_size.height) + bar_height;
     LayoutSize::new(width as f32, height as f32)
 }
@@ -550,8 +596,10 @@ pub(crate) fn measure_owned_navigation_view_intrinsic(
 ) -> LayoutSize {
     let mut navigation = navigation;
     navigation.bar.title = normalize_layout_view(navigation.bar.title, env);
-    navigation.bar.leading = normalize_layout_view(navigation.bar.leading, env);
-    navigation.bar.trailing = normalize_layout_view(navigation.bar.trailing, env);
+    navigation.bar.subtitle = normalize_layout_view(navigation.bar.subtitle, env);
+    for item in &mut navigation.bar.toolbar.items {
+        item.content = normalize_layout_view(core::mem::take(&mut item.content), env);
+    }
     navigation.content = normalize_layout_view(navigation.content, env);
     measure_navigation_view_intrinsic(&navigation, state, env)
 }
@@ -571,7 +619,7 @@ pub(crate) fn measure_tabs_intrinsic(
     let mut bar_width = 0.0;
     let metrics = widget_theme(env).tabs_metrics();
     for tab in &tabs.tabs {
-        let label_size = measure_view_intrinsic(&tab.label.content, state, env);
+        let label_size = measure_view_intrinsic(&tab.label, state, env);
         bar_width += (f64::from(label_size.width) + metrics.button_horizontal_inset * 2.0)
             .max(metrics.button_min_width);
 
@@ -581,46 +629,49 @@ pub(crate) fn measure_tabs_intrinsic(
         max_content_height = max_content_height.max(f64::from(content_size.height));
     }
 
-    let width = max_content_width.max(bar_width);
-    let height = max_content_height + metrics.bar_height;
+    let (width, height) = match tabs.style {
+        NativeTabStyle::Automatic | NativeTabStyle::TabBar => (
+            max_content_width.max(bar_width),
+            max_content_height + metrics.bar_height,
+        ),
+        NativeTabStyle::Sidebar => (
+            max_content_width + metrics.bar_height,
+            max_content_height.max(metrics.button_min_width * tabs.tabs.len() as f64),
+        ),
+    };
     LayoutSize::new(width as f32, height as f32)
 }
 
 pub(crate) fn tabs_bar_and_content_rect(
     bounds: vello::kurbo::Rect,
-    position: TabPosition,
-    bar_height: f64,
+    style: NativeTabStyle,
+    bar_extent: f64,
 ) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
-    let bar_height = bar_height.min(bounds.height());
-    match position {
-        TabPosition::Top => (
-            vello::kurbo::Rect::new(
-                bounds.x0,
-                bounds.y0,
-                bounds.x1,
-                (bounds.y0 + bar_height).min(bounds.y1),
-            ),
-            vello::kurbo::Rect::new(
-                bounds.x0,
-                (bounds.y0 + bar_height).min(bounds.y1),
-                bounds.x1,
-                bounds.y1,
-            ),
-        ),
-        TabPosition::Bottom => (
-            vello::kurbo::Rect::new(
-                bounds.x0,
-                (bounds.y1 - bar_height).max(bounds.y0),
-                bounds.x1,
-                bounds.y1,
-            ),
-            vello::kurbo::Rect::new(
-                bounds.x0,
-                bounds.y0,
-                bounds.x1,
-                (bounds.y1 - bar_height).max(bounds.y0),
-            ),
-        ),
+    match style {
+        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
+            let bar_height = bar_extent.min(bounds.height());
+            (
+                vello::kurbo::Rect::new(
+                    bounds.x0,
+                    (bounds.y1 - bar_height).max(bounds.y0),
+                    bounds.x1,
+                    bounds.y1,
+                ),
+                vello::kurbo::Rect::new(
+                    bounds.x0,
+                    bounds.y0,
+                    bounds.x1,
+                    (bounds.y1 - bar_height).max(bounds.y0),
+                ),
+            )
+        }
+        NativeTabStyle::Sidebar => {
+            let bar_width = bar_extent.min(bounds.width());
+            (
+                vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + bar_width, bounds.y1),
+                vello::kurbo::Rect::new(bounds.x0 + bar_width, bounds.y0, bounds.x1, bounds.y1),
+            )
+        }
     }
 }
 
@@ -628,10 +679,20 @@ pub(crate) fn tabs_button_rect(
     bar_rect: vello::kurbo::Rect,
     tab_count: usize,
     index: usize,
+    style: NativeTabStyle,
 ) -> vello::kurbo::Rect {
-    let button_width = bar_rect.width() / tab_count as f64;
-    let x0 = bar_rect.x0 + button_width * index as f64;
-    vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
+    match style {
+        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
+            let button_width = bar_rect.width() / tab_count as f64;
+            let x0 = bar_rect.x0 + button_width * index as f64;
+            vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
+        }
+        NativeTabStyle::Sidebar => {
+            let button_height = bar_rect.height() / tab_count as f64;
+            let y0 = bar_rect.y0 + button_height * index as f64;
+            vello::kurbo::Rect::new(bar_rect.x0, y0, bar_rect.x1, y0 + button_height)
+        }
+    }
 }
 
 pub(crate) fn navigation_back_button_rect(

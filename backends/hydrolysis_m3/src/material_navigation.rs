@@ -31,7 +31,7 @@ pub fn material_navigation_view(
 pub fn material_small_top_app_bar(mut view: MaterialNavigationView) -> MaterialNavigationView {
     view.view = view
         .view
-        .navigation_bar_title_display_mode(NavigationTitleDisplayMode::Inline);
+        .navigation_title_display_mode(NavigationTitleDisplayMode::Inline);
     view
 }
 
@@ -40,7 +40,7 @@ pub fn material_small_top_app_bar(mut view: MaterialNavigationView) -> MaterialN
 pub fn material_large_top_app_bar(mut view: MaterialNavigationView) -> MaterialNavigationView {
     view.view = view
         .view
-        .navigation_bar_title_display_mode(NavigationTitleDisplayMode::Large);
+        .navigation_title_display_mode(NavigationTitleDisplayMode::Large);
     view
 }
 

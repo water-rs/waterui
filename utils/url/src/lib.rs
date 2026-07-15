@@ -1351,6 +1351,9 @@ mod tests {
         assert_eq!(Url::new("http://example.com").scheme(), Some("http"));
         assert_eq!(Url::new("ftp://example.com").scheme(), Some("ftp"));
         assert_eq!(Url::new("ws://example.com").scheme(), Some("ws"));
+        assert_eq!(Url::new("waterui://app/settings").scheme(), Some("waterui"));
+        assert_eq!(Url::new("waterui://app/settings").host(), Some("app"));
+        assert_eq!(Url::new("waterui://app/settings").path(), "/settings");
         assert_eq!(Url::new("data:text/plain,hello").scheme(), Some("data"));
         assert_eq!(
             Url::new("blob:https://example.com/uuid").scheme(),

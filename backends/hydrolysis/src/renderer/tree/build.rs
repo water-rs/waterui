@@ -216,6 +216,30 @@ impl RenderNode {
             Ok(meta) => return RenderNode::build(meta.content, env, renderer),
             Err(view) => view,
         };
+        let view = match view.downcast::<Metadata<NavigationTransitionSource>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                return RenderNode::build_wrapper(
+                    WrapperEffect::NavigationTransitionSource(value.id()),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        let view = match view.downcast::<Metadata<NavigationTransitionDestination>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                return RenderNode::build_wrapper(
+                    WrapperEffect::NavigationTransitionDestination(value.id()),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<IgnorableMetadata<MaterialBackground>>() {
             Ok(meta) => return RenderNode::build(meta.content, env, renderer),
             Err(view) => view,

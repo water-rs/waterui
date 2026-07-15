@@ -2,19 +2,12 @@
 
 use core::fmt::{self, Debug};
 
-use waterui::id::{Id, TaggedView};
+use waterui::id::Id;
 use waterui::navigation::NavigationView;
-use waterui::navigation::tab::{Tab as WaterTab, TabPosition, Tabs as WaterTabs};
-use waterui::reactive::SignalExt as _;
-use waterui::text::Text;
-use waterui::{AnyView, Binding, Environment, View};
+use waterui::navigation::tab::{Tab as WaterTab, Tabs as WaterTabs, tab_style};
+use waterui::{Binding, Environment, View};
 use waterui_controls::label::{IntoLabel, Label};
-use waterui_core::Native;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-
-use crate::color::{OnSurfaceVariant, Primary};
-use crate::semantics::label_plain_text;
-use crate::theme::typography;
 
 /// A Material Design 3 tab item.
 pub struct MaterialTab {
@@ -52,34 +45,24 @@ impl MaterialTab {
 pub struct MaterialTabs {
     selection: Binding<Id>,
     tabs: Vec<MaterialTab>,
-    position: TabPosition,
 }
 
 impl Debug for MaterialTabs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MaterialTabs")
             .field("tabs", &self.tabs)
-            .field("position", &self.position)
             .finish_non_exhaustive()
     }
 }
 
 impl MaterialTabs {
-    /// Creates a top-positioned Material tabs container.
+    /// Creates an adaptive Material tabs container.
     #[must_use]
     pub fn new(selection: &Binding<Id>, tabs: Vec<MaterialTab>) -> Self {
         Self {
             selection: selection.clone(),
             tabs,
-            position: TabPosition::Top,
         }
-    }
-
-    /// Places the tab bar at the bottom edge.
-    #[must_use]
-    pub const fn bottom(mut self) -> Self {
-        self.position = TabPosition::Bottom;
-        self
     }
 }
 
@@ -90,25 +73,11 @@ impl View for MaterialTabs {
             .tabs
             .into_iter()
             .map(|tab| {
-                let selected = selection.clone().map(move |selection| -> waterui::Color {
-                    if selection == tab.id {
-                        Primary.into()
-                    } else {
-                        OnSurfaceVariant.into()
-                    }
-                });
                 let content = tab.content;
-                let label = Text::verbatim(label_plain_text(&tab.label))
-                    .font(typography::title_small())
-                    .color(selected)
-                    .into_config_without_env();
-                WaterTab::new(
-                    TaggedView::new(tab.id, AnyView::new(Native::new(label))),
-                    move || content.build(),
-                )
+                WaterTab::new(tab.id, tab.label, move || content.build())
             })
             .collect();
-        WaterTabs::new(selection, tabs).position(self.position)
+        WaterTabs::new(selection, tabs).style(tab_style::tab_bar())
     }
 }
 

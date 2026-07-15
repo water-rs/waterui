@@ -27,9 +27,10 @@ chart = ["waterui-internal/chart"]
 barcode = ["waterui-internal/barcode"]
 map = ["waterui-internal/map"]
 particle = ["waterui-internal/particle"]
+navigation-restoration = ["waterui-internal/navigation-restoration"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 std = ["waterui-internal/std"]
-all = ["waterui-internal/all"]
+all = ["waterui-internal/all", "navigation-restoration"]
 
 [lints]
 workspace = true

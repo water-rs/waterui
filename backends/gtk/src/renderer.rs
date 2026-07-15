@@ -54,7 +54,10 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_navigation::tab::Tabs;
-use waterui_navigation::{NavigationSplitLayout, NavigationStack, NavigationView};
+use waterui_navigation::{
+    NavigationSplitLayout, NavigationStack, NavigationTransitionDestination,
+    NavigationTransitionSource, NavigationView,
+};
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::TextConfig;
 use waterui_webview::WebView;
@@ -1407,6 +1410,19 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, env)
         });
+
+        dispatcher.register::<Metadata<NavigationTransitionSource>>(
+            |_state, ctx, metadata, env| {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.render_any(metadata.content, env)
+            },
+        );
+        dispatcher.register::<Metadata<NavigationTransitionDestination>>(
+            |_state, ctx, metadata, env| {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.render_any(metadata.content, env)
+            },
+        );
 
         // Metadata<AppliedFilter> - snapshot the child subtree and run the GPU filter pipeline.
         dispatcher.register::<Metadata<AppliedFilter>>(|_state, ctx, metadata, env| {
