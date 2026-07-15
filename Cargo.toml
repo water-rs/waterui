@@ -153,6 +153,7 @@ hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis_m3" }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
+erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 wgpu = "27"
 encase = { version = "0.10", features = ["glam"] }
 vello = "0.7"
@@ -213,6 +214,10 @@ chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
 barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
 map = ["waterui-internal/map", "waterui-dylib?/map"]
 particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
+navigation-restoration = [
+    "waterui-internal/navigation-restoration",
+    "waterui-dylib?/navigation-restoration",
+]
 flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown"]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
@@ -227,6 +232,7 @@ all = [
     "barcode",
     "map",
     "particle",
+    "navigation-restoration",
 ]
 
 

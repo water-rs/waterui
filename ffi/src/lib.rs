@@ -614,6 +614,44 @@ pub type WuiMetadataEnv = WuiMetadata<*mut WuiEnv>;
 // Generate waterui_metadata_env_id() and waterui_force_as_metadata_env()
 ffi_metadata!(waterui::Environment, WuiMetadataEnv, env);
 
+// ========== Navigation transition metadata FFI ==========
+
+use crate::id::WuiId;
+use waterui_navigation::{NavigationTransitionDestination, NavigationTransitionSource};
+
+impl IntoFFI for NavigationTransitionSource {
+    type FFI = WuiId;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.id().into_ffi()
+    }
+}
+
+impl IntoFFI for NavigationTransitionDestination {
+    type FFI = WuiId;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.id().into_ffi()
+    }
+}
+
+/// Source geometry metadata for native navigation transitions.
+pub type WuiMetadataNavigationTransitionSource = WuiMetadata<WuiId>;
+
+/// Destination geometry metadata for native navigation transitions.
+pub type WuiMetadataNavigationTransitionDestination = WuiMetadata<WuiId>;
+
+ffi_metadata!(
+    NavigationTransitionSource,
+    WuiMetadataNavigationTransitionSource,
+    navigation_transition_source
+);
+ffi_metadata!(
+    NavigationTransitionDestination,
+    WuiMetadataNavigationTransitionDestination,
+    navigation_transition_destination
+);
+
 // ========== Metadata<Secure> FFI ==========
 // Used to mark views as secure (prevent screenshots)
 

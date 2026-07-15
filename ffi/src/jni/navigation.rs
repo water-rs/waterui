@@ -29,31 +29,52 @@ impl JniNavigationCallbackData {
     }
 }
 
-/// C-compatible push callback that calls into Java.
-unsafe extern "C" fn jni_navigation_push(
+/// C-compatible transaction callback that calls into Java.
+unsafe extern "C" fn jni_navigation_apply(
     data: *mut (),
-    nav_view: crate::components::navigation::WuiNavigationView,
+    transaction: crate::components::navigation::WuiNavigationTransaction,
 ) {
     let data = unsafe { &*(data as *const JniNavigationCallbackData) };
     data.with_env(|env| {
-        // Convert WuiNavigationView to Java object
-        let java_nav_view = crate::jni::convert::struct_to_java(env, &nav_view);
+        let view_class = env
+            .find_class("dev/waterui/android/runtime/NavigationViewStruct")
+            .expect("NavigationViewStruct class not found");
+        let inserted = env
+            .new_object_array(
+                i32::try_from(transaction.inserted.len())
+                    .expect("navigation insertion count must fit Java Int"),
+                view_class,
+                JObject::null(),
+            )
+            .expect("failed to allocate navigation transaction destination array");
+        for (index, view) in transaction.inserted.iter().enumerate() {
+            let view = crate::jni::convert::struct_to_java(env, view);
+            env.set_object_array_element(
+                &inserted,
+                i32::try_from(index).expect("navigation destination index must fit Java Int"),
+                view,
+            )
+            .expect("failed to insert navigation transaction destination");
+        }
         env.call_method(
             data.callback.as_obj(),
-            "onPush",
-            "(Ldev/waterui/android/runtime/NavigationViewStruct;)V",
-            &[JValue::Object(&java_nav_view)],
+            "onApply",
+            "(JII[Ldev/waterui/android/runtime/NavigationViewStruct;)V",
+            &[
+                JValue::Long(transaction.id as jlong),
+                JValue::Int(
+                    i32::try_from(transaction.retained_prefix)
+                        .expect("navigation retained prefix must fit Java Int"),
+                ),
+                JValue::Int(
+                    i32::try_from(transaction.removed)
+                        .expect("navigation removal count must fit Java Int"),
+                ),
+                JValue::Object(&inserted),
+            ],
         )
-        .expect("jni_navigation_push: failed to call callback.onPush(NavigationViewStruct)");
-    });
-}
-
-/// C-compatible pop callback.
-unsafe extern "C" fn jni_navigation_pop(data: *mut ()) {
-    let data = unsafe { &*(data as *const JniNavigationCallbackData) };
-    data.with_env(|env| {
-        env.call_method(data.callback.as_obj(), "onPop", "()V", &[])
-            .expect("jni_navigation_pop: failed to call callback.onPop()");
+        .expect("jni_navigation_apply: failed to call callback.onApply(...)");
+        transaction.inserted.consume();
     });
 }
 
@@ -93,8 +114,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigat
         crate::components::navigation::waterui_env_install_navigation_controller(
             env_ptr as *mut crate::WuiEnv,
             data_ptr,
-            jni_navigation_push,
-            jni_navigation_pop,
+            jni_navigation_apply,
             jni_navigation_drop,
         )
     }
@@ -111,6 +131,86 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envHasNavigationC
 ) -> jboolean {
     let wui_env = env_ptr as *const crate::WuiEnv;
     if unsafe { crate::components::navigation::waterui_env_has_navigation_controller(wui_env) } {
+        1
+    } else {
+        0
+    }
+}
+
+/// Requests a user/system pop before Android begins a non-interactive transition.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationRequestPop<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+    count: jint,
+) {
+    let count = usize::try_from(count).expect("Android navigation pop count must be positive");
+    assert!(count != 0, "Android navigation pop count must be non-zero");
+    let env = unsafe { crate::borrow_ffi(env_ptr as *const crate::WuiEnv) };
+    let controller = env
+        .get::<waterui_navigation::NavigationController>()
+        .expect("Android requested navigation pop without an installed controller");
+    controller.request_pop(count);
+}
+
+/// Commits an Android predictive pop already completed by the native stack.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationCompleteNativePop<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+    count: jint,
+) {
+    let count = usize::try_from(count).expect("Android navigation pop count must be positive");
+    assert!(count != 0, "Android navigation pop count must be non-zero");
+    let env = unsafe { crate::borrow_ffi(env_ptr as *const crate::WuiEnv) };
+    let controller = env
+        .get::<waterui_navigation::NavigationController>()
+        .expect("Android completed navigation pop without an installed controller");
+    controller.complete_native_pop(count);
+}
+
+/// Acknowledges successful completion of the current Android transaction.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCompleted<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+    id: jlong,
+) -> jboolean {
+    let id = u64::try_from(id).expect("Android navigation transaction id must be positive");
+    let env = unsafe { crate::borrow_ffi(env_ptr as *const crate::WuiEnv) };
+    let controller = env
+        .get::<waterui_navigation::NavigationController>()
+        .expect("Android completed navigation transaction without an installed controller");
+    if controller.transition_completed(id) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Acknowledges cancellation of the current Android transaction.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCancelled<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+    id: jlong,
+) -> jboolean {
+    let id = u64::try_from(id).expect("Android navigation transaction id must be positive");
+    let env = unsafe { crate::borrow_ffi(env_ptr as *const crate::WuiEnv) };
+    let controller = env
+        .get::<waterui_navigation::NavigationController>()
+        .expect("Android cancelled navigation transaction without an installed controller");
+    if controller.transition_cancelled(id) {
         1
     } else {
         0

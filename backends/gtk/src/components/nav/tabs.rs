@@ -5,7 +5,7 @@ use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui_core::id::Id;
 use waterui_core::{Environment, Native};
-use waterui_navigation::tab::{TabPosition, Tabs};
+use waterui_navigation::tab::{NativeTabStyle, Tabs};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -20,10 +20,9 @@ impl GtkComponent for Native<Tabs> {
         notebook.set_hexpand(true);
         notebook.set_vexpand(true);
 
-        // Set tab position
-        let position = match tabs.position {
-            TabPosition::Top => gtk4::PositionType::Top,
-            TabPosition::Bottom => gtk4::PositionType::Bottom,
+        let position = match tabs.style {
+            NativeTabStyle::Automatic | NativeTabStyle::TabBar => gtk4::PositionType::Bottom,
+            NativeTabStyle::Sidebar => gtk4::PositionType::Left,
         };
         notebook.set_tab_pos(position);
 
@@ -32,11 +31,11 @@ impl GtkComponent for Native<Tabs> {
 
         // Add each tab
         for tab in tabs.tabs {
-            let id = tab.label.tag;
+            let id = tab.id;
             tab_ids.push(id);
 
             // Render the label
-            let label_widget = renderer.render_any(tab.label.content, env);
+            let label_widget = renderer.render_any(tab.label, env);
 
             // Build and render the content (NavigationView)
             let navigation_view = tab.content.build();

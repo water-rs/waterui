@@ -194,11 +194,11 @@ impl RetainedSubview {
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
         size: Size,
-    ) -> vello::Scene {
+    ) -> NavigationCapturedScene {
         self.ensure_built(renderer, env);
         let mut scene = vello::Scene::new();
         let Some(node) = &mut self.node else {
-            return scene;
+            return NavigationCapturedScene::default();
         };
         let structural = Self::patch_built(node, renderer);
         if structural || size != self.laid_out {
@@ -210,9 +210,30 @@ impl RetainedSubview {
             vello::kurbo::Affine::IDENTITY,
             vello::kurbo::Affine::IDENTITY,
         );
+        renderer.begin_navigation_scene_capture();
         core::mem::swap(renderer.scene_mut(), &mut scene);
         node.flush(renderer, local_ctx, env);
         core::mem::swap(renderer.scene_mut(), &mut scene);
+        renderer.finish_navigation_scene_capture(scene)
+    }
+
+    /// Renders a retained navigation page that is not currently interactive.
+    /// This is used to prepare the immediately preceding page for an edge-swipe
+    /// pop without registering hidden hit-test or accessibility targets.
+    pub(crate) fn render_built_navigation_scene_inactive(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        size: Size,
+    ) -> NavigationCapturedScene {
+        let previous_hit_test_opacity = renderer.hit_test.hit_test_opacity;
+        renderer.hit_test.hit_test_opacity = 0.0;
+        #[cfg(feature = "accessibility")]
+        renderer.push_accessibility_suppression();
+        let scene = self.render_built_scene(renderer, env, size);
+        #[cfg(feature = "accessibility")]
+        renderer.pop_accessibility_suppression();
+        renderer.hit_test.hit_test_opacity = previous_hit_test_opacity;
         scene
     }
 }
@@ -298,6 +319,8 @@ pub(crate) struct WidgetNode {
 /// variant defers to the matching `apply_*` helper in `metadata.rs`, so the
 /// effect logic is shared byte-for-byte with the dispatch path.
 pub(super) enum WrapperEffect {
+    NavigationTransitionSource(RawId),
+    NavigationTransitionDestination(RawId),
     Clip(ClipShape),
     Border(Border),
     Shadow(Shadow),

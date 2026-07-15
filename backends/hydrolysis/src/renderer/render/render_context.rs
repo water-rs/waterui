@@ -2,9 +2,9 @@ use super::HydrolysisRenderer;
 use crate::engine::vello_backend::VelloDrawContext;
 use crate::renderer::HydroState;
 use crate::renderer::navigation::{
-    NavigationTransitionDirection, NavigationTransitionFrame, draw_navigation_transition,
+    NavigationCapturedScene, NavigationTransitionFrame, draw_navigation_transition,
 };
-use waterui::navigation::NavigationTransition;
+use waterui::navigation::{AnyNavigationTransition, NavigationTransitionDirection};
 use waterui_core::Environment;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
@@ -164,12 +164,12 @@ impl<'a> WidgetRenderContext<'a> {
 
     pub(crate) fn draw_navigation_transition(
         &mut self,
-        style: NavigationTransition,
+        style: AnyNavigationTransition,
         direction: NavigationTransitionDirection,
         progress: f64,
-        pushpop_parallax_factor: f64,
-        from_scene: &vello::Scene,
-        to_scene: &vello::Scene,
+        _pushpop_parallax_factor: f64,
+        from_scene: &NavigationCapturedScene,
+        to_scene: &NavigationCapturedScene,
     ) {
         draw_navigation_transition(NavigationTransitionFrame {
             scene: self.renderer.scene_mut(),
@@ -178,7 +178,6 @@ impl<'a> WidgetRenderContext<'a> {
             style,
             direction,
             progress,
-            pushpop_parallax_factor,
             from_scene,
             to_scene,
         });

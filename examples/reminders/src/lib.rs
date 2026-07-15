@@ -247,7 +247,7 @@ pub fn demo() -> impl View {
             move |dest| detail_view(dest, search.clone())
         },
     )
-    .sidebar_width(300.0)
+    .sidebar_width(ColumnWidth::new(240.0, 300.0, 420.0))
     .placeholder(placeholder_view)
 }
 
@@ -319,11 +319,12 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .background(Material::Regular)
     .title(dest.title())
     .searchable(&search, "Search reminders")
-    .navigation_bar_trailing(
+    .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::new(
+        NavigationToolbarPlacement::PrimaryAction,
         button(label("").icon(mdi::plus()))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
-    )
+    )]))
 }
 
 fn placeholder_view() -> impl View {
