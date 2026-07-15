@@ -1,13 +1,11 @@
-//! Tabs module provides UI elements for building tabbed interfaces.
-//!
-//! This module includes the components needed to create and manage tabs,
-//! with support for selection binding and navigation views.
+//! Native adaptive tab navigation.
 
 use alloc::vec::Vec;
 
-use nami::Binding;
+use nami::{Binding, Computed, SignalExt as _};
+use waterui_controls::IntoLabel;
 use waterui_core::{
-    AnyView,
+    AnyView, IntoSignal,
     handler::{AnyViewBuilder, ViewBuilder},
     id::Id,
     impl_debug,
@@ -16,91 +14,156 @@ use waterui_core::{
 };
 
 use super::NavigationView;
-use waterui_core::id::TaggedView;
 
-/// Position of the tab bar within the tab container.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Native tab presentation selected by a public style.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum TabPosition {
-    /// Tab bar is positioned at the top of the container.
-    Top,
-    /// Tab bar is positioned at the bottom of the container (default).
-    #[default]
-    Bottom,
+pub enum NativeTabStyle {
+    /// Platform- and window-adaptive default.
+    Automatic = 0,
+    /// Always request the platform tab bar presentation.
+    TabBar = 1,
+    /// Always request the platform sidebar or navigation-rail presentation.
+    Sidebar = 2,
 }
 
-/// Represents a single tab with a label and content.
-///
-/// The generic parameter `T` is used for tag identification.
-///
-pub struct Tab<T> {
-    /// The visual label for the tab, wrapped in a tagged view.
-    pub label: TaggedView<T, AnyView>,
+/// Extensible public tab style contract.
+pub trait TabStyle: 'static {
+    /// Resolves the native presentation capability.
+    #[doc(hidden)]
+    fn into_native(self) -> NativeTabStyle;
+}
 
-    /// The content to display when this tab is selected.
-    /// Returns a [`NavigationView`] when given an Environment.
+/// Built-in tab styles.
+pub mod tab_style {
+    use super::{NativeTabStyle, TabStyle};
+
+    /// Platform- and window-adaptive tab style.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Automatic;
+
+    impl TabStyle for Automatic {
+        fn into_native(self) -> NativeTabStyle {
+            NativeTabStyle::Automatic
+        }
+    }
+
+    /// Native tab-bar style.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct TabBar;
+
+    impl TabStyle for TabBar {
+        fn into_native(self) -> NativeTabStyle {
+            NativeTabStyle::TabBar
+        }
+    }
+
+    /// Native sidebar or navigation-rail style.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Sidebar;
+
+    impl TabStyle for Sidebar {
+        fn into_native(self) -> NativeTabStyle {
+            NativeTabStyle::Sidebar
+        }
+    }
+
+    /// Returns the platform-adaptive tab style.
+    #[must_use]
+    pub const fn automatic() -> Automatic {
+        Automatic
+    }
+
+    /// Returns the native tab-bar style.
+    #[must_use]
+    pub const fn tab_bar() -> TabBar {
+        TabBar
+    }
+
+    /// Returns the native sidebar or navigation-rail style.
+    #[must_use]
+    pub const fn sidebar() -> Sidebar {
+        Sidebar
+    }
+}
+
+/// One stable native tab.
+pub struct Tab<T> {
+    /// Stable tab identifier.
+    pub id: T,
+    /// Semantic tab label.
+    pub label: AnyView,
+    /// Stable lazily built tab root.
     pub content: AnyViewBuilder<NavigationView>,
+    /// Optional reactive badge count.
+    pub badge: Option<Computed<i32>>,
+    /// Whether the native tab item is enabled.
+    pub enabled: Computed<bool>,
 }
 
 impl_debug!(Tab<Id>);
 
 impl<T> Tab<T> {
-    /// Creates a new tab with the given label and content.
-    ///
-    /// # Arguments
-    ///
-    /// * `label` - The visual representation of the tab
-    /// * `content` - A function that returns the tab's content as a [`NavigationView`]
+    /// Creates a stable tab with a semantic label and navigation root.
     pub fn new(
-        label: TaggedView<T, AnyView>,
+        id: T,
+        label: impl IntoLabel,
         content: impl ViewBuilder<Output = NavigationView>,
     ) -> Self {
         Self {
-            label,
+            id,
+            label: AnyView::new(label.into_label()),
             content: AnyViewBuilder::new(content),
+            badge: None,
+            enabled: Computed::constant(true),
         }
+    }
+
+    /// Sets a reactive badge count.
+    #[must_use]
+    pub fn badge(mut self, count: impl IntoSignal<i32> + 'static) -> Self {
+        self.badge = Some(count.into_signal().computed());
+        self
+    }
+
+    /// Controls whether this tab can be selected.
+    #[must_use]
+    pub fn enabled(mut self, enabled: impl IntoSignal<bool> + 'static) -> Self {
+        self.enabled = enabled.into_signal().computed();
+        self
     }
 }
 
-/// Configuration for the Tabs component.
-///
-/// This struct holds the current tab selection and the collection of tabs.
+/// Stable native tab container.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Tabs {
-    /// The currently selected tab identifier.
+    /// Currently selected tab identifier.
     pub selection: Binding<Id>,
-
-    /// The collection of tabs to display.
+    /// Stable tabs.
     pub tabs: Vec<Tab<Id>>,
-
-    /// Position of the tab bar (top or bottom).
-    pub position: TabPosition,
+    /// Native adaptive style.
+    pub style: NativeTabStyle,
 }
 
 impl Tabs {
-    /// Creates a new Tabs component with the given selection binding and tabs.
-    ///
-    /// # Arguments
-    ///
-    /// * `selection` - Binding to the currently selected tab identifier
-    /// * `tabs` - Collection of tabs to display
+    /// Creates a tab container.
     #[must_use]
     pub const fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
         Self {
             selection,
             tabs,
-            position: TabPosition::Bottom,
+            style: NativeTabStyle::Automatic,
         }
     }
 
-    /// Sets the position of the tab bar.
+    /// Sets native adaptive tab presentation.
     #[must_use]
-    pub const fn position(mut self, position: TabPosition) -> Self {
-        self.position = position;
+    pub fn style(mut self, style: impl TabStyle) -> Self {
+        self.style = style.into_native();
         self
     }
 }
 
-// Make Tabs a raw view that stretches to fill available space
 raw_view!(Tabs, StretchAxis::Both);

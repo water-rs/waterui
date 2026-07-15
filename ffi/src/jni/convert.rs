@@ -165,6 +165,24 @@ impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
     }
 }
 
+/// MetadataNavigationTransitionStruct(contentPtr: Long, id: Int)
+impl ToJavaStruct for WuiMetadata<crate::id::WuiId> {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class("dev/waterui/android/runtime/MetadataNavigationTransitionStruct")
+            .expect("MetadataNavigationTransitionStruct class not found");
+        env.new_object(
+            &class,
+            "(JI)V",
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Int(self.value.inner),
+            ],
+        )
+        .expect("Failed to create MetadataNavigationTransitionStruct")
+    }
+}
+
 /// MetadataSecureStruct(contentPtr: Long)
 /// Note: WuiSecureMarker is just a marker type, no additional data needed
 impl ToJavaStruct for crate::WuiMetadataSecure {
@@ -1257,17 +1275,42 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
         } else {
             JObject::null()
         };
+        let toolbar_items = self.bar.toolbar.as_slice();
+        let toolbar_item_class = env
+            .find_class("dev/waterui/android/runtime/NavigationToolbarItemStruct")
+            .expect("NavigationToolbarItemStruct class not found");
+        let toolbar = env
+            .new_object_array(
+                toolbar_items.len() as i32,
+                &toolbar_item_class,
+                JObject::null(),
+            )
+            .expect("Failed to create NavigationToolbarItemStruct array");
+        for (index, item) in toolbar_items.iter().enumerate() {
+            let item = env
+                .new_object(
+                    &toolbar_item_class,
+                    "(IJ)V",
+                    &[
+                        JValue::Int(item.placement as i32),
+                        JValue::Long(item.content as jlong),
+                    ],
+                )
+                .expect("Failed to create NavigationToolbarItemStruct");
+            env.set_object_array_element(&toolbar, index as i32, item)
+                .expect("Failed to set navigation toolbar item");
+        }
         let bar_class = env
             .find_class("dev/waterui/android/runtime/BarStruct")
             .expect("BarStruct class not found");
         let bar = env
             .new_object(
                 &bar_class,
-                "(JJJLdev/waterui/android/runtime/NavigationSearchStruct;JJI)V",
+                "(JJ[Ldev/waterui/android/runtime/NavigationToolbarItemStruct;Ldev/waterui/android/runtime/NavigationSearchStruct;JJI)V",
                 &[
                     JValue::Long(self.bar.title as jlong),
-                    JValue::Long(self.bar.leading as jlong),
-                    JValue::Long(self.bar.trailing as jlong),
+                    JValue::Long(self.bar.subtitle as jlong),
+                    JValue::Object(&toolbar),
                     JValue::Object(&search),
                     JValue::Long(self.bar.color as jlong),
                     JValue::Long(self.bar.hidden as jlong),
@@ -1275,14 +1318,23 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
                 ],
             )
             .expect("Failed to create BarStruct");
+        unsafe { consume_ffi_array(&self.bar.toolbar) };
 
         let class = env
             .find_class("dev/waterui/android/runtime/NavigationViewStruct")
             .expect("NavigationViewStruct class not found");
         env.new_object(
             &class,
-            "(Ldev/waterui/android/runtime/BarStruct;J)V",
-            &[JValue::Object(&bar), JValue::Long(self.content as jlong)],
+            "(Ldev/waterui/android/runtime/BarStruct;JJJJJJ)V",
+            &[
+                JValue::Object(&bar),
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.state.pop_enabled as jlong),
+                JValue::Long(self.state.pop_attempted as jlong),
+                JValue::Long(self.state.appear as jlong),
+                JValue::Long(self.state.disappear as jlong),
+                JValue::Long(self.state.pop as jlong),
+            ],
         )
         .expect("Failed to create NavigationViewStruct")
     }
@@ -1306,7 +1358,7 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationSearch {
     }
 }
 
-/// WuiNavigationStack -> NavigationStackStruct(rootPtr, transition)
+/// WuiNavigationStack -> NavigationStackStruct(rootPtr, transition, transitionSourceId)
 impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1314,10 +1366,11 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
             .expect("NavigationStackStruct class not found");
         env.new_object(
             &class,
-            "(JI)V",
+            "(JII)V",
             &[
                 JValue::Long(self.root as jlong),
-                JValue::Int(self.transition as i32),
+                JValue::Int(self.transition.kind as i32),
+                JValue::Int(self.transition.source_id),
             ],
         )
         .expect("Failed to create NavigationStackStruct")
@@ -1332,13 +1385,19 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationSplitLayout {
             .expect("SplitNavigationContainerStruct class not found");
         env.new_object(
             &class,
-            "(JJJJF)V",
+            "(JJJJJJJFFFI)V",
             &[
                 JValue::Long(self.sidebar as jlong),
                 JValue::Long(self.placeholder as jlong),
-                JValue::Long(self.selection as jlong),
+                JValue::Long(self.primary_selection as jlong),
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.secondary_selection as jlong),
                 JValue::Long(self.detail as jlong),
-                JValue::Float(self.sidebar_width),
+                JValue::Long(self.column_visibility as jlong),
+                JValue::Float(self.sidebar_width.min),
+                JValue::Float(self.sidebar_width.ideal),
+                JValue::Float(self.sidebar_width.max),
+                JValue::Int(self.style as i32),
             ],
         )
         .expect("Failed to create SplitNavigationContainerStruct")
@@ -1362,11 +1421,13 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
             let tab_obj = env
                 .new_object(
                     &tab_class,
-                    "(JJJ)V",
+                    "(JJJJJ)V",
                     &[
                         JValue::Long(tab.id as jlong),
                         JValue::Long(tab.label as jlong),
                         JValue::Long(tab.content as jlong),
+                        JValue::Long(tab.badge as jlong),
+                        JValue::Long(tab.enabled as jlong),
                     ],
                 )
                 .expect("Failed to create TabStruct");
@@ -1384,7 +1445,7 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
                 &[
                     JValue::Long(self.selection as jlong),
                     JValue::Object(&java_array),
-                    JValue::Int(self.position as i32),
+                    JValue::Int(self.style as i32),
                 ],
             )
             .expect("Failed to create TabsStruct");

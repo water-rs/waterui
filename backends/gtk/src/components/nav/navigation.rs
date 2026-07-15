@@ -7,11 +7,12 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui_controls::text_field::TextField;
-use waterui_core::Environment;
 use waterui_core::id::Id;
+use waterui_core::{AnyView, Environment};
 use waterui_navigation::{
-    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
-    NavigationTransition, NavigationView,
+    Bar, CustomNavigationController, NativeNavigationTransition, NavigationController,
+    NavigationSplitLayout, NavigationStack, NavigationToolbarPlacement, NavigationTransaction,
+    NavigationView, resolve_navigation_root,
 };
 
 use crate::component::GtkComponent;
@@ -47,6 +48,67 @@ fn render_search_widget(
     })
 }
 
+struct RenderedNavigationBar {
+    title: gtk4::Widget,
+    leading: Option<gtk4::Widget>,
+    trailing: Option<gtk4::Widget>,
+    bottom: Option<gtk4::Widget>,
+    search: Option<gtk4::Widget>,
+    color: Option<nami::Computed<waterui_graphics::color::Color>>,
+    hidden: nami::Computed<bool>,
+}
+
+fn optional_box_widget(container: gtk4::Box) -> Option<gtk4::Widget> {
+    container.first_child().map(|_| container.upcast())
+}
+
+fn render_navigation_bar(
+    bar: Bar,
+    env: &Environment,
+    renderer: &mut GtkRenderer,
+) -> RenderedNavigationBar {
+    let title_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    title_box.append(&renderer.render_any(bar.title, env));
+    if !bar.subtitle.is::<()>() {
+        title_box.append(&renderer.render_any(bar.subtitle, env));
+    }
+
+    let principal = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    let leading = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    let trailing = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    let bottom = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    bottom.set_halign(gtk4::Align::Center);
+    for item in bar.toolbar.items {
+        let widget = renderer.render_any(item.content, env);
+        match item.placement {
+            NavigationToolbarPlacement::Principal => principal.append(&widget),
+            NavigationToolbarPlacement::Cancellation
+            | NavigationToolbarPlacement::TopBarLeading => leading.append(&widget),
+            NavigationToolbarPlacement::BottomBar | NavigationToolbarPlacement::Status => {
+                bottom.append(&widget);
+            }
+            NavigationToolbarPlacement::PrimaryAction
+            | NavigationToolbarPlacement::SecondaryAction
+            | NavigationToolbarPlacement::Confirmation
+            | NavigationToolbarPlacement::TopBarTrailing => trailing.append(&widget),
+        }
+    }
+    let title = if principal.first_child().is_some() {
+        principal.upcast()
+    } else {
+        title_box.upcast()
+    };
+    RenderedNavigationBar {
+        title,
+        leading: optional_box_widget(leading),
+        trailing: optional_box_widget(trailing),
+        bottom: optional_box_widget(bottom),
+        search: render_search_widget(renderer, env, bar.search.as_ref()),
+        color: bar.color,
+        hidden: bar.hidden,
+    }
+}
+
 impl GtkComponent for NavigationView {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         if env.get::<NavigationController>().is_some() {
@@ -74,20 +136,16 @@ impl GtkComponent for NavigationView {
         header_bar.pack_start(&leading_box);
         header_bar.pack_end(&trailing_box);
 
-        let title_widget = renderer.render_any(self.bar.title, env);
-        header_bar.set_title_widget(Some(&title_widget));
-
-        if !self.bar.leading.is::<()>() {
-            let leading_widget = renderer.render_any(self.bar.leading, env);
-            leading_box.append(&leading_widget);
+        let bar = render_navigation_bar(self.bar, env, renderer);
+        header_bar.set_title_widget(Some(&bar.title));
+        if let Some(leading) = &bar.leading {
+            leading_box.append(leading);
+        }
+        if let Some(trailing) = &bar.trailing {
+            trailing_box.append(trailing);
         }
 
-        if !self.bar.trailing.is::<()>() {
-            let trailing_widget = renderer.render_any(self.bar.trailing, env);
-            trailing_box.append(&trailing_widget);
-        }
-
-        let hidden_guard = self.bar.hidden.watch({
+        let hidden_guard = bar.hidden.watch({
             let header_bar = header_bar.clone();
             move |ctx: nami::watcher::Context<bool>| {
                 let hidden = ctx.into_value();
@@ -100,25 +158,28 @@ impl GtkComponent for NavigationView {
 
         let env_for_color = env.clone();
         let provider_for_color = provider.clone();
-        let color_guard = self.bar.color.watch(
-            move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
-                let color = ctx.into_value();
-                let css = css_for_header_bar_color(color, &env_for_color);
-                let provider = provider_for_color.clone();
-                glib::idle_add_local_once(move || {
-                    provider.load_from_data(&css);
-                });
-            },
-        );
+        let color_guard = bar.color.as_ref().map(|color| {
+            color.watch(
+                move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
+                    let color = ctx.into_value();
+                    let css = css_for_header_bar_color(color, &env_for_color);
+                    let provider = provider_for_color.clone();
+                    glib::idle_add_local_once(move || {
+                        provider.load_from_data(&css);
+                    });
+                },
+            )
+        });
 
-        if self.bar.hidden.get() {
+        if bar.hidden.get() {
             header_bar.set_visible(false);
         }
-
-        provider.load_from_data(&css_for_header_bar_color(self.bar.color.get(), env));
+        if let Some(color) = &bar.color {
+            provider.load_from_data(&css_for_header_bar_color(color.get(), env));
+        }
 
         container.append(&header_bar);
-        if let Some(search_widget) = render_search_widget(renderer, env, self.bar.search.as_ref()) {
+        if let Some(search_widget) = bar.search {
             search_widget.set_margin_top(6);
             search_widget.set_margin_bottom(6);
             search_widget.set_margin_start(12);
@@ -128,15 +189,20 @@ impl GtkComponent for NavigationView {
 
         let content_widget = renderer.render_any(self.content, env);
         container.append(&content_widget);
+        if let Some(bottom) = bar.bottom {
+            container.append(&bottom);
+        }
 
-        store_watcher_guards(&container, vec![hidden_guard, color_guard]);
+        let mut guards = vec![hidden_guard];
+        guards.extend(color_guard);
+        store_watcher_guards(&container, guards);
         container.upcast()
     }
 }
 
 impl GtkComponent for NavigationStack<(), ()> {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
-        let transition = self.transition_style();
+        let transition = self.transition_style().native();
         let root = self.into_inner();
 
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -168,20 +234,22 @@ impl GtkComponent for NavigationStack<(), ()> {
         gtk_stack.set_hexpand(true);
         gtk_stack.set_vexpand(true);
         match transition {
-            NavigationTransition::PushPop => {
+            NativeNavigationTransition::Automatic | NativeNavigationTransition::Zoom(_) => {
                 gtk_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
                 gtk_stack.set_transition_duration(250);
             }
-            NavigationTransition::Fade => {
+            NativeNavigationTransition::Fade => {
                 gtk_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
                 gtk_stack.set_transition_duration(250);
             }
-            NavigationTransition::None => {
+            NativeNavigationTransition::None | NativeNavigationTransition::Custom => {
                 gtk_stack.set_transition_type(gtk4::StackTransitionType::None);
                 gtk_stack.set_transition_duration(0);
             }
         }
         container.append(&gtk_stack);
+        let bottom_holder = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        container.append(&bottom_holder);
 
         let mut child_env = env.clone();
         let controller = GtkNavigationController::new(
@@ -191,6 +259,7 @@ impl GtkComponent for NavigationStack<(), ()> {
             leading_slot.clone(),
             trailing_slot.clone(),
             search_holder.clone(),
+            bottom_holder.clone(),
             back_button.clone(),
             provider.clone(),
             &child_env,
@@ -200,40 +269,26 @@ impl GtkComponent for NavigationStack<(), ()> {
         controller.set_env(child_env.clone());
 
         back_button.connect_clicked({
-            let controller = controller.clone();
+            let navigation_controller = navigation_controller.clone();
             move |_| {
-                let mut ctrl = controller.clone();
-                ctrl.pop();
+                navigation_controller.request_pop(1);
             }
         });
 
-        match root.downcast::<NavigationView>() {
-            Ok(nav_view) => {
-                let NavigationView { bar, content } = *nav_view;
-                let title_widget = renderer.render_any(bar.title, &child_env);
-                let leading_widget =
-                    (!bar.leading.is::<()>()).then(|| renderer.render_any(bar.leading, &child_env));
-                let trailing_widget = (!bar.trailing.is::<()>())
-                    .then(|| renderer.render_any(bar.trailing, &child_env));
-                let search_widget = render_search_widget(renderer, &child_env, bar.search.as_ref());
-                controller.set_root_bar_state(
-                    title_widget,
-                    leading_widget,
-                    trailing_widget,
-                    search_widget,
-                    bar.color,
-                    bar.hidden,
-                );
-                let root_widget = renderer.render_any(content, &child_env);
-                gtk_stack.add_named(&root_widget, Some("root"));
-                gtk_stack.set_visible_child_name("root");
-            }
-            Err(root) => {
-                let root_widget = renderer.render_any(root, &child_env);
-                gtk_stack.add_named(&root_widget, Some("root"));
-                gtk_stack.set_visible_child_name("root");
-            }
-        }
+        let NavigationView { bar, content, .. } = resolve_navigation_root(root, &child_env);
+        let bar = render_navigation_bar(bar, &child_env, renderer);
+        controller.set_root_bar_state(
+            bar.title,
+            bar.leading,
+            bar.trailing,
+            bar.bottom,
+            bar.search,
+            bar.color,
+            bar.hidden,
+        );
+        let root_widget = renderer.render_any(content, &child_env);
+        gtk_stack.add_named(&root_widget, Some("root"));
+        gtk_stack.set_visible_child_name("root");
 
         container.upcast()
     }
@@ -251,6 +306,7 @@ struct GtkNavigationControllerInner {
     leading_slot: gtk4::Box,
     trailing_slot: gtk4::Box,
     search_holder: gtk4::Box,
+    bottom_holder: gtk4::Box,
     back_button: gtk4::Button,
     color_provider: gtk4::CssProvider,
     view_stack: Vec<NavigationViewState>,
@@ -264,6 +320,7 @@ struct NavigationViewState {
     title_widget: Option<gtk4::Widget>,
     leading_widget: Option<gtk4::Widget>,
     trailing_widget: Option<gtk4::Widget>,
+    bottom_widget: Option<gtk4::Widget>,
     search_widget: Option<gtk4::Widget>,
     bar_color: Option<nami::Computed<waterui_graphics::color::Color>>,
     bar_hidden: Option<nami::Computed<bool>>,
@@ -278,6 +335,7 @@ impl GtkNavigationController {
         leading_slot: gtk4::Box,
         trailing_slot: gtk4::Box,
         search_holder: gtk4::Box,
+        bottom_holder: gtk4::Box,
         back_button: gtk4::Button,
         color_provider: gtk4::CssProvider,
         env: &Environment,
@@ -290,6 +348,7 @@ impl GtkNavigationController {
                 leading_slot,
                 trailing_slot,
                 search_holder,
+                bottom_holder,
                 back_button,
                 color_provider,
                 view_stack: vec![NavigationViewState {
@@ -297,6 +356,7 @@ impl GtkNavigationController {
                     title_widget: None,
                     leading_widget: None,
                     trailing_widget: None,
+                    bottom_widget: None,
                     search_widget: None,
                     bar_color: None,
                     bar_hidden: None,
@@ -318,63 +378,69 @@ impl GtkNavigationController {
         title_widget: gtk4::Widget,
         leading_widget: Option<gtk4::Widget>,
         trailing_widget: Option<gtk4::Widget>,
+        bottom_widget: Option<gtk4::Widget>,
         search_widget: Option<gtk4::Widget>,
-        bar_color: nami::Computed<waterui_graphics::color::Color>,
+        bar_color: Option<nami::Computed<waterui_graphics::color::Color>>,
         bar_hidden: nami::Computed<bool>,
     ) {
         let mut inner = self.inner.borrow_mut();
         inner.view_stack[0].title_widget = Some(title_widget);
         inner.view_stack[0].leading_widget = leading_widget;
         inner.view_stack[0].trailing_widget = trailing_widget;
+        inner.view_stack[0].bottom_widget = bottom_widget;
         inner.view_stack[0].search_widget = search_widget;
-        inner.view_stack[0].bar_color = Some(bar_color);
+        inner.view_stack[0].bar_color = bar_color;
         inner.view_stack[0].bar_hidden = Some(bar_hidden);
         inner.apply_active_bar_for_top();
     }
 }
 
 impl CustomNavigationController for GtkNavigationController {
-    fn push(&mut self, content: NavigationView) {
+    fn apply(&mut self, transaction: NavigationTransaction) {
+        let (_, retained_prefix, removed, inserted) = transaction.into_parts();
         let mut inner = self.inner.borrow_mut();
-        let id = format!("view_{}", inner.next_id);
-        inner.next_id += 1;
-
-        let mut renderer = GtkRenderer::new();
-        let content_widget = renderer.render_any(content.content, &inner.env);
-        let view_container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        view_container.set_hexpand(true);
-        view_container.set_vexpand(true);
-        view_container.append(&content_widget);
-        inner.stack.add_named(&view_container, Some(&id));
-        inner.stack.set_visible_child_name(&id);
-
-        let title_widget = renderer.render_any(content.bar.title, &inner.env);
-        let leading_widget = (!content.bar.leading.is::<()>())
-            .then(|| renderer.render_any(content.bar.leading, &inner.env));
-        let trailing_widget = (!content.bar.trailing.is::<()>())
-            .then(|| renderer.render_any(content.bar.trailing, &inner.env));
-        let search_widget =
-            render_search_widget(&mut renderer, &inner.env, content.bar.search.as_ref());
-
-        inner.view_stack.push(NavigationViewState {
-            id,
-            title_widget: Some(title_widget),
-            leading_widget,
-            trailing_widget,
-            search_widget,
-            bar_color: Some(content.bar.color),
-            bar_hidden: Some(content.bar.hidden),
-        });
-        inner.apply_active_bar_for_top();
-    }
-
-    fn pop(&mut self) {
-        let mut inner = self.inner.borrow_mut();
-        inner.pop_internal();
+        assert_eq!(
+            retained_prefix + removed + 1,
+            inner.view_stack.len(),
+            "GTK navigation transaction must replace the current suffix"
+        );
+        for _ in 0..removed {
+            inner.pop_internal();
+        }
+        for content in inserted {
+            inner.push(content.build());
+        }
     }
 }
 
 impl GtkNavigationControllerInner {
+    fn push(&mut self, content: NavigationView) {
+        let id = format!("view_{}", self.next_id);
+        self.next_id += 1;
+
+        let mut renderer = GtkRenderer::new();
+        let content_widget = renderer.render_any(content.content, &self.env);
+        let view_container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        view_container.set_hexpand(true);
+        view_container.set_vexpand(true);
+        view_container.append(&content_widget);
+        self.stack.add_named(&view_container, Some(&id));
+        self.stack.set_visible_child_name(&id);
+
+        let bar = render_navigation_bar(content.bar, &self.env, &mut renderer);
+
+        self.view_stack.push(NavigationViewState {
+            id,
+            title_widget: Some(bar.title),
+            leading_widget: bar.leading,
+            trailing_widget: bar.trailing,
+            bottom_widget: bar.bottom,
+            search_widget: bar.search,
+            bar_color: bar.color,
+            bar_hidden: Some(bar.hidden),
+        });
+        self.apply_active_bar_for_top();
+    }
     fn pop_internal(&mut self) {
         if self.view_stack.len() <= 1 {
             return;
@@ -406,6 +472,7 @@ impl GtkNavigationControllerInner {
         clear_box_children(&self.leading_slot);
         clear_box_children(&self.trailing_slot);
         clear_box_children(&self.search_holder);
+        clear_box_children(&self.bottom_holder);
         self.leading_slot.append(&self.back_button);
 
         if let Some(title) = &top.title_widget {
@@ -426,25 +493,33 @@ impl GtkNavigationControllerInner {
             search.set_margin_end(12);
             self.search_holder.append(search);
         }
+        if let Some(bottom) = &top.bottom_widget {
+            self.bottom_holder.append(bottom);
+        }
 
         if let Some(hidden) = &top.bar_hidden {
             let header_bar = self.header_bar.clone();
             let bar_container = self.bar_container.clone();
+            let bottom_holder = self.bottom_holder.clone();
             let hidden_guard = hidden.watch(move |ctx: nami::watcher::Context<bool>| {
                 let hidden = ctx.into_value();
                 let header_bar = header_bar.clone();
                 let bar_container = bar_container.clone();
+                let bottom_holder = bottom_holder.clone();
                 glib::idle_add_local_once(move || {
                     header_bar.set_visible(!hidden);
                     bar_container.set_visible(!hidden);
+                    bottom_holder.set_visible(!hidden);
                 });
             });
             self.header_bar.set_visible(!hidden.get());
             self.bar_container.set_visible(!hidden.get());
+            self.bottom_holder.set_visible(!hidden.get());
             self.active_bar_guards.push(hidden_guard);
         } else {
             self.header_bar.set_visible(true);
             self.bar_container.set_visible(true);
+            self.bottom_holder.set_visible(true);
         }
 
         if let Some(color) = &top.bar_color {
@@ -463,61 +538,147 @@ impl GtkNavigationControllerInner {
                 },
             );
             self.active_bar_guards.push(color_guard);
+        } else {
+            self.color_provider.load_from_data("");
         }
     }
 }
 
+fn replace_split_host(host: gtk4::Box, env: Environment, view: AnyView) {
+    glib::idle_add_local_once(move || {
+        clear_box_children(&host);
+        let mut renderer = GtkRenderer::new();
+        let widget = renderer.render_any(view, &env);
+        widget.set_hexpand(true);
+        widget.set_vexpand(true);
+        host.append(&widget);
+    });
+}
+
 impl GtkComponent for NavigationSplitLayout {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "validated logical column widths are converted to GTK coordinates"
+    )]
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
-        let (sidebar, placeholder, selection, detail, sidebar_width) = self.into_parts();
-        let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
-        paned.set_position(sidebar_width as i32);
-        let sidebar = renderer.render_any(sidebar.build(), env);
-        sidebar.set_hexpand(true);
-        sidebar.set_vexpand(true);
-        paned.set_start_child(Some(&sidebar));
+        let (
+            primary,
+            placeholder,
+            primary_selection,
+            content,
+            secondary_selection,
+            detail,
+            visibility,
+            column_width,
+            style,
+        ) = self.into_parts();
+        let outer = gtk4::Paned::new(gtk4::Orientation::Horizontal);
+        let preferred_width = match style {
+            waterui_navigation::NativeNavigationSplitStyle::Automatic
+            | waterui_navigation::NativeNavigationSplitStyle::Balanced => column_width.ideal(),
+            waterui_navigation::NativeNavigationSplitStyle::ProminentDetail => column_width.min(),
+        };
+        outer.set_position(preferred_width.round() as i32);
+        let primary_widget = renderer.render_any(primary.build(), env);
+        primary_widget.set_hexpand(true);
+        primary_widget.set_vexpand(true);
+        outer.set_start_child(Some(&primary_widget));
+
+        let content_host = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        content_host.set_hexpand(true);
+        content_host.set_vexpand(true);
         let detail_host = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         detail_host.set_hexpand(true);
         detail_host.set_vexpand(true);
-        paned.set_end_child(Some(&detail_host));
+        let is_three_column = content.is_some();
+        if is_three_column {
+            let inner = gtk4::Paned::new(gtk4::Orientation::Horizontal);
+            inner.set_position(preferred_width.round() as i32);
+            inner.set_start_child(Some(&content_host));
+            inner.set_end_child(Some(&detail_host));
+            outer.set_end_child(Some(&inner));
+        } else {
+            outer.set_end_child(Some(&detail_host));
+        }
 
         let env = env.clone();
-
-        let rebuild_detail = {
-            let detail_host = detail_host.clone();
-            let env = env.clone();
-            move |selected: Option<Id>| {
-                let detail_host = detail_host.clone();
+        let mut guards: Vec<nami::watcher::BoxWatcherGuard> = Vec::new();
+        if let Some(content) = content {
+            let rebuild_content = {
+                let host = content_host.clone();
                 let env = env.clone();
                 let placeholder = placeholder.clone();
-                let detail = detail.clone();
-                glib::idle_add_local_once(move || {
-                    while let Some(child) = detail_host.first_child() {
-                        detail_host.remove(&child);
-                    }
+                move |selected: Option<Id>| {
+                    let view = selected.map_or_else(
+                        || placeholder.build(),
+                        |selected| AnyView::new(content.build(selected)),
+                    );
+                    replace_split_host(host.clone(), env.clone(), view);
+                }
+            };
+            rebuild_content(primary_selection.get());
+            guards.push(primary_selection.clone().computed().watch(
+                move |ctx: nami::watcher::Context<Option<Id>>| {
+                    rebuild_content(ctx.into_value());
+                },
+            ));
+        }
 
-                    let mut fresh_renderer = GtkRenderer::new();
-                    let widget = if let Some(selected) = selected {
-                        fresh_renderer.render(detail.build(selected), &env)
-                    } else {
-                        fresh_renderer.render_any(placeholder.build(), &env)
-                    };
-                    widget.set_hexpand(true);
-                    widget.set_vexpand(true);
-                    detail_host.append(&widget);
-                });
+        let detail_selection = secondary_selection.unwrap_or_else(|| primary_selection.clone());
+        let rebuild_detail = {
+            let host = detail_host.clone();
+            let env = env.clone();
+            let placeholder = placeholder.clone();
+            move |selected: Option<Id>| {
+                let view = selected.map_or_else(
+                    || placeholder.build(),
+                    |selected| AnyView::new(detail.build(selected)),
+                );
+                replace_split_host(host.clone(), env.clone(), view);
             }
         };
+        rebuild_detail(detail_selection.get());
+        guards.push(detail_selection.clone().computed().watch(
+            move |ctx: nami::watcher::Context<Option<Id>>| {
+                rebuild_detail(ctx.into_value());
+            },
+        ));
 
-        rebuild_detail(selection.get());
-        let selection_guard =
-            selection
-                .clone()
-                .computed()
-                .watch(move |ctx: nami::watcher::Context<Option<Id>>| {
-                    rebuild_detail(ctx.into_value());
+        let apply_visibility = {
+            let primary = primary_widget.clone();
+            let content = content_host.clone();
+            let detail = detail_host.clone();
+            move |value: waterui_navigation::NavigationSplitColumnVisibility| {
+                let (show_primary, show_content) = match value {
+                    waterui_navigation::NavigationSplitColumnVisibility::Automatic
+                    | waterui_navigation::NavigationSplitColumnVisibility::All => {
+                        (true, is_three_column)
+                    }
+                    waterui_navigation::NavigationSplitColumnVisibility::DoubleColumn => {
+                        (!is_three_column, is_three_column)
+                    }
+                    waterui_navigation::NavigationSplitColumnVisibility::DetailOnly => {
+                        (false, false)
+                    }
+                };
+                primary.set_visible(show_primary);
+                content.set_visible(show_content);
+                detail.set_visible(true);
+            }
+        };
+        apply_visibility(visibility.get());
+        guards.push(visibility.watch(
+            move |ctx: nami::watcher::Context<
+                waterui_navigation::NavigationSplitColumnVisibility,
+            >| {
+                let value = ctx.into_value();
+                glib::idle_add_local_once({
+                    let apply_visibility = apply_visibility.clone();
+                    move || apply_visibility(value)
                 });
-        crate::util::store_watcher_guard(&paned, Box::new(selection_guard));
-        paned.upcast()
+            },
+        ));
+        store_watcher_guards(&outer, guards);
+        outer.upcast()
     }
 }

@@ -99,10 +99,11 @@ use waterui::gesture::{Gesture, GestureObserver};
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
-use waterui::navigation::tab::{TabPosition, Tabs};
+use waterui::navigation::tab::{NativeTabStyle, Tabs};
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
-    NavigationTransition, NavigationView,
+    NavigationToolbarPlacement, NavigationTransaction, NavigationTransitionDestination,
+    NavigationTransitionSource, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
@@ -118,7 +119,7 @@ use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
+use waterui_core::handler::{BoxedAction, SharedAction};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
     Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
@@ -234,6 +235,7 @@ pub struct HydrolysisRenderer {
     node_applied_filters: Vec<Rc<RefCell<AppliedFilterRuntime>>>,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
+    navigation_captures: Vec<NavigationSceneCapture>,
     #[cfg(feature = "accessibility")]
     accessibility: AccessibilityBuilder,
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
@@ -342,6 +344,7 @@ impl HydrolysisRenderer {
             node_applied_filters: Vec::new(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
+            navigation_captures: Vec::new(),
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,

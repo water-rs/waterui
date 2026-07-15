@@ -129,7 +129,9 @@ pub(crate) fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         ResolvedContextMenu,
         Draggable,
         DropDestination,
-        Background
+        Background,
+        NavigationTransitionSource,
+        NavigationTransitionDestination
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
@@ -251,7 +253,9 @@ fn normalize_layout_view_with_budget(
         ResolvedContextMenu,
         Draggable,
         DropDestination,
-        Background
+        Background,
+        NavigationTransitionSource,
+        NavigationTransitionDestination
     );
     // Label/role/children stay plain passthrough here: they are
     // nearest-consumer metadata — the leaf that emits the semantic node reads
@@ -335,10 +339,15 @@ fn normalize_layout_view_with_budget(
         let mut navigation = native.into_inner();
         navigation.bar.title =
             normalize_layout_view_with_budget(navigation.bar.title, env, next_remaining);
-        navigation.bar.leading =
-            normalize_layout_view_with_budget(navigation.bar.leading, env, next_remaining);
-        navigation.bar.trailing =
-            normalize_layout_view_with_budget(navigation.bar.trailing, env, next_remaining);
+        navigation.bar.subtitle =
+            normalize_layout_view_with_budget(navigation.bar.subtitle, env, next_remaining);
+        for item in &mut navigation.bar.toolbar.items {
+            item.content = normalize_layout_view_with_budget(
+                core::mem::take(&mut item.content),
+                env,
+                next_remaining,
+            );
+        }
         navigation.content =
             normalize_layout_view_with_budget(navigation.content, env, next_remaining);
         return AnyView::new(Native::new(navigation));

@@ -121,6 +121,26 @@ impl RenderNode {
                 // keep updating, instead of being frozen by a one-shot capture.
                 let child_env = &node.env;
                 match &node.effect {
+                    WrapperEffect::NavigationTransitionSource(id) => {
+                        flush_navigation_transition_element(
+                            renderer,
+                            ctx,
+                            child_env,
+                            &node.child,
+                            true,
+                            *id,
+                        );
+                    }
+                    WrapperEffect::NavigationTransitionDestination(id) => {
+                        flush_navigation_transition_element(
+                            renderer,
+                            ctx,
+                            child_env,
+                            &node.child,
+                            false,
+                            *id,
+                        );
+                    }
                     WrapperEffect::Clip(value) => {
                         HydrolysisRenderer::apply_clip_shape(renderer, ctx, value, |r| {
                             node.child.flush(r, ctx, child_env);
@@ -308,6 +328,30 @@ impl RenderNode {
             }
         }
     }
+}
+
+fn flush_navigation_transition_element(
+    renderer: &mut HydrolysisRenderer,
+    ctx: RenderContext,
+    env: &Environment,
+    child: &RenderNode,
+    source: bool,
+    id: RawId,
+) {
+    if !renderer.begin_navigation_element_capture() {
+        child.flush(renderer, ctx, env);
+        return;
+    }
+    let mut scene = vello::Scene::new();
+    core::mem::swap(renderer.scene_mut(), &mut scene);
+    child.flush(renderer, ctx, env);
+    core::mem::swap(renderer.scene_mut(), &mut scene);
+    renderer.finish_navigation_element_capture(
+        source,
+        id,
+        transformed_rect(ctx.transform, ctx.bounds),
+        scene,
+    );
 }
 
 impl HydrolysisRenderer {

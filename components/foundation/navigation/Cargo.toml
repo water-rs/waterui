@@ -10,19 +10,27 @@ description = "Navigation components for WaterUI"
 keywords = ["navigation", "ui", "components", "menu"]
 categories = ["gui"]
 
+[features]
+default = []
+serde = ["dep:erased-serde", "dep:serde"]
+
 
 [dependencies]
 waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-controls.workspace = true
+waterui-url.workspace = true
 
 nami.workspace = true
+serde = { workspace = true, optional = true }
+erased-serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
+serde_json = "1.0"
 
 
 [lints]

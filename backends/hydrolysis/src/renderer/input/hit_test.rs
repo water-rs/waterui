@@ -618,6 +618,7 @@ impl HydrolysisRenderer {
             self.request_rebuild();
         }
         changed |= drop_changed;
+        changed |= self.finish_interactive_navigation_pop(false);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
@@ -711,7 +712,7 @@ impl HydrolysisRenderer {
 
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
         let at = self.frame_instant();
-        let mut rebuild_requested = false;
+        let mut rebuild_requested = self.finish_interactive_navigation_pop(true);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
@@ -772,6 +773,19 @@ impl HydrolysisRenderer {
         self.register_pointer_target_action(
             bounds,
             false,
+            None,
+            Rc::new(RefCell::new(action)),
+            self.render_depth,
+        );
+    }
+
+    pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
+    {
+        self.register_pointer_target_action(
+            bounds,
+            true,
             None,
             Rc::new(RefCell::new(action)),
             self.render_depth,

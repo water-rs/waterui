@@ -1,9 +1,7 @@
-//! Navigation example demonstrating typed paths, bar slots, and split-ready APIs.
+//! Navigation example demonstrating typed paths, semantic toolbars, and split-ready APIs.
 
 use waterui::app::App;
-use waterui::navigation::{
-    NavigationLink, NavigationPath, NavigationPathController, NavigationStack,
-};
+use waterui::navigation::{NavigationLink, NavigationPath, NavigationStack, Navigator};
 use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
@@ -47,15 +45,17 @@ pub fn demo() -> impl View {
     let counter = binding(0);
     let notifications = binding(true);
     let dark_mode = binding(false);
-    let path = NavigationPath::new();
+    let path = NavigationPath::<Route>::new();
 
-    NavigationStack::with(
+    NavigationStack::with_path(
         path.clone(),
         home_view(counter.clone(), notifications.clone(), dark_mode.clone())
             .title("Navigation Demo")
-            .navigation_bar_trailing(
-                button("Reset").action(|path: NavigationPathController<Route>| path.clear()),
-            ),
+            .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::action(
+                NavigationToolbarPlacement::PrimaryAction,
+                "Reset",
+                |navigator: Navigator<Route>| navigator.clear(),
+            )])),
     )
     .destination(move |route| match route {
         Route::Topic(topic) => detail_view(topic, counter.clone()),
@@ -230,7 +230,10 @@ fn settings_view(notifications: Binding<bool>, dark_mode: Binding<bool>) -> Navi
         .padding_with(EdgeInsets::all(16.0)),
     )
     .title("Settings")
-    .navigation_bar_leading(text("Routes").caption().foreground(MutedForeground))
+    .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::new(
+        NavigationToolbarPlacement::TopBarLeading,
+        text("Routes").caption().foreground(MutedForeground),
+    )]))
 }
 
 fn toggle_row(title: &'static str, subtitle: &'static str, value: &Binding<bool>) -> impl View {
@@ -270,8 +273,8 @@ fn about_view() -> NavigationView {
             text("Features showcased:").foreground(Foreground),
             "- Path-backed NavigationStack",
             "- NavigationLink::value",
-            "- NavigationPathController",
-            "- Navigation bar leading/trailing slots",
+            "- Navigator",
+            "- Semantic navigation toolbar placements",
         )),
     ))
     .padding_with(EdgeInsets::all(16.0))

@@ -28,9 +28,9 @@ use waterui::prelude::stepper::stepper;
 use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::reactive::Computed;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List as ReactiveList;
-use waterui::reactive::Computed;
 use waterui::shape::RoundedRectangle;
 use waterui_icons_material_icon as mdi;
 
@@ -254,7 +254,7 @@ fn catalog(
         move || sidebar(sidebar_selected.clone(), groups_open.clone(), rows.clone()),
         move |index| control_detail(index, &state),
     )
-    .sidebar_width(320.0)
+    .sidebar_width(ColumnWidth::new(240.0, 320.0, 480.0))
     .placeholder(placeholder)
 }
 
@@ -266,7 +266,12 @@ fn catalog(
 /// `active` drives the pill's reactive fill (`SurfaceVariant` when selected, else
 /// transparent) on `.background` itself — initial-correct and selection-tracking —
 /// and `.clip` rounds it to the MD3 pill shape.
-fn drawer_row(leading: impl View, trailing: impl View, active: Computed<bool>, indent: f32) -> impl View {
+fn drawer_row(
+    leading: impl View,
+    trailing: impl View,
+    active: Computed<bool>,
+    indent: f32,
+) -> impl View {
     let selected: Color = SurfaceVariant.into();
     let clear: Color = waterui::color::Srgb::WHITE.with_opacity(0.0).into();
     let pill = active.select(selected, clear).computed();
@@ -360,7 +365,10 @@ fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
     let control = &controls()[index];
     let title = control.title;
     let icon = control.icon;
-    let is_selected = selected.clone().map(move |current| current == Some(index)).computed();
+    let is_selected = selected
+        .clone()
+        .map(move |current| current == Some(index))
+        .computed();
     let activate = selected.clone();
     let item = button(label(title).icon(icon()).leading())
         .borderless()
@@ -554,7 +562,14 @@ pub fn app(env: Environment) -> App {
     // Own all mutable state at the window scope so it persists across rebuilds.
     let (selected, groups_open, rows, state) = new_state();
     App::new(
-        move || catalog(selected.clone(), groups_open.clone(), rows.clone(), state.clone()),
+        move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        },
         env,
     )
 }
@@ -584,7 +599,14 @@ mod tests {
         hydrolysis_m3::install(&mut env);
         ui().environment(env)
             .viewport(width, height)
-            .mount(move || catalog(selected.clone(), groups_open.clone(), rows.clone(), state.clone()))
+            .mount(move || {
+                catalog(
+                    selected.clone(),
+                    groups_open.clone(),
+                    rows.clone(),
+                    state.clone(),
+                )
+            })
     }
 
     /// Selecting each control in turn shows its demo — a smoke test that every

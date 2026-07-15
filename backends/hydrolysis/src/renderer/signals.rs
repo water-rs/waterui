@@ -193,6 +193,10 @@ impl HydrolysisRenderer {
                 slot.transition
                     .as_ref()
                     .is_some_and(|state| state.is_active(now))
+                    || slot
+                        .interactive_pop
+                        .as_ref()
+                        .is_some_and(NavigationInteractivePop::is_animating)
             })
     }
 
@@ -204,6 +208,10 @@ impl HydrolysisRenderer {
                 slot.transition
                     .as_ref()
                     .is_some_and(|state| state.is_active(now))
+                    || slot
+                        .interactive_pop
+                        .as_ref()
+                        .is_some_and(NavigationInteractivePop::is_animating)
             })
     }
 }

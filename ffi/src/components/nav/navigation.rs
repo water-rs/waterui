@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
+use nami::SignalExt as _;
 
+use crate::action::WuiAction;
 use crate::array::WuiArray;
 use crate::closure::{ForeignCallbackContext, WuiFn};
 use crate::reactive::{WuiBinding, WuiComputed};
@@ -8,11 +10,13 @@ use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_graphics::color::ResolvedColor;
-use waterui_navigation::tab::{Tab, TabPosition, Tabs};
+use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
 use waterui_navigation::{
-    Bar, CustomNavigationController, NavigationController, NavigationSearch, NavigationSplitLayout,
-    NavigationStack, NavigationTitleDisplayMode, NavigationTransition, NavigationView,
-    split::NavigationSplitDetailBuilder,
+    Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
+    NativeNavigationTransition, NavigationController, NavigationDestinationState, NavigationSearch,
+    NavigationSplitColumnVisibility, NavigationSplitLayout, NavigationStack,
+    NavigationTitleDisplayMode, NavigationToolbarItem, NavigationToolbarPlacement,
+    NavigationTransaction, NavigationView, split::NavigationSplitDetailBuilder,
 };
 use waterui_text::styled::StyledStr;
 
@@ -21,6 +25,34 @@ into_ffi! {
     pub struct WuiNavigationView {
         bar: WuiBar,
         content: *mut WuiAnyView,
+        state: WuiNavigationDestinationState,
+    }
+}
+
+#[repr(C)]
+pub struct WuiNavigationDestinationState {
+    pub pop_enabled: *mut WuiComputed<bool>,
+    pub pop_attempted: *mut WuiAction,
+    pub appear: *mut WuiAction,
+    pub disappear: *mut WuiAction,
+    pub pop: *mut WuiAction,
+}
+
+impl IntoFFI for NavigationDestinationState {
+    type FFI = WuiNavigationDestinationState;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiNavigationDestinationState {
+            pop_enabled: self.pop_enabled.into_ffi(),
+            pop_attempted: self
+                .pop_attempted
+                .map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
+            appear: self.appear.map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
+            disappear: self
+                .disappear
+                .map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
+            pop: self.pop.map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
+        }
     }
 }
 
@@ -98,8 +130,8 @@ impl IntoFFI for NavigationTitleDisplayMode {
 #[repr(C)]
 pub struct WuiBar {
     pub title: *mut WuiAnyView,
-    pub leading: *mut WuiAnyView,
-    pub trailing: *mut WuiAnyView,
+    pub subtitle: *mut WuiAnyView,
+    pub toolbar: WuiArray<WuiNavigationToolbarItem>,
     pub search: WuiOptionalNavigationSearch,
     pub color: *mut WuiComputed<ResolvedColor>,
     pub hidden: *mut WuiComputed<bool>,
@@ -119,12 +151,60 @@ impl IntoFFI for Bar {
         };
         WuiBar {
             title: self.title.into_ffi(),
-            leading: self.leading.into_ffi(),
-            trailing: self.trailing.into_ffi(),
+            subtitle: self.subtitle.into_ffi(),
+            toolbar: self.toolbar.items.into_ffi(),
             search: self.search.into_ffi(),
             color,
             hidden: self.hidden.into_ffi(),
             display_mode: self.display_mode.into_ffi(),
+        }
+    }
+}
+
+/// Semantic native toolbar placement.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiNavigationToolbarPlacement {
+    Principal = 0,
+    PrimaryAction = 1,
+    SecondaryAction = 2,
+    Confirmation = 3,
+    Cancellation = 4,
+    BottomBar = 5,
+    Status = 6,
+    TopBarLeading = 7,
+    TopBarTrailing = 8,
+}
+
+impl From<NavigationToolbarPlacement> for WuiNavigationToolbarPlacement {
+    fn from(value: NavigationToolbarPlacement) -> Self {
+        match value {
+            NavigationToolbarPlacement::Principal => Self::Principal,
+            NavigationToolbarPlacement::PrimaryAction => Self::PrimaryAction,
+            NavigationToolbarPlacement::SecondaryAction => Self::SecondaryAction,
+            NavigationToolbarPlacement::Confirmation => Self::Confirmation,
+            NavigationToolbarPlacement::Cancellation => Self::Cancellation,
+            NavigationToolbarPlacement::BottomBar => Self::BottomBar,
+            NavigationToolbarPlacement::Status => Self::Status,
+            NavigationToolbarPlacement::TopBarLeading => Self::TopBarLeading,
+            NavigationToolbarPlacement::TopBarTrailing => Self::TopBarTrailing,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct WuiNavigationToolbarItem {
+    pub placement: WuiNavigationToolbarPlacement,
+    pub content: *mut WuiAnyView,
+}
+
+impl IntoFFI for NavigationToolbarItem {
+    type FFI = WuiNavigationToolbarItem;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiNavigationToolbarItem {
+            placement: self.placement.into(),
+            content: self.content.into_ffi(),
         }
     }
 }
@@ -135,20 +215,45 @@ ffi_view!(NavigationView, WuiNavigationView, navigation_view);
 /// FFI struct for NavigationStack<(),()>
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WuiNavigationTransition {
-    PushPop = 0,
+pub enum WuiNavigationTransitionKind {
+    Automatic = 0,
     Fade = 1,
-    None = 2,
+    Zoom = 2,
+    None = 3,
+    Custom = 4,
 }
 
-impl IntoFFI for NavigationTransition {
+#[repr(C)]
+pub struct WuiNavigationTransition {
+    pub kind: WuiNavigationTransitionKind,
+    pub source_id: i32,
+}
+
+impl IntoFFI for NativeNavigationTransition {
     type FFI = WuiNavigationTransition;
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            NavigationTransition::PushPop => WuiNavigationTransition::PushPop,
-            NavigationTransition::Fade => WuiNavigationTransition::Fade,
-            NavigationTransition::None => WuiNavigationTransition::None,
+            NativeNavigationTransition::Automatic => WuiNavigationTransition {
+                kind: WuiNavigationTransitionKind::Automatic,
+                source_id: 0,
+            },
+            NativeNavigationTransition::Fade => WuiNavigationTransition {
+                kind: WuiNavigationTransitionKind::Fade,
+                source_id: 0,
+            },
+            NativeNavigationTransition::Zoom(source) => WuiNavigationTransition {
+                kind: WuiNavigationTransitionKind::Zoom,
+                source_id: i32::from(source),
+            },
+            NativeNavigationTransition::None => WuiNavigationTransition {
+                kind: WuiNavigationTransitionKind::None,
+                source_id: 0,
+            },
+            NativeNavigationTransition::Custom => WuiNavigationTransition {
+                kind: WuiNavigationTransitionKind::Custom,
+                source_id: 0,
+            },
         }
     }
 }
@@ -165,7 +270,7 @@ pub struct WuiNavigationStack {
 impl IntoFFI for NavigationStack<(), ()> {
     type FFI = WuiNavigationStack;
     fn into_ffi(self) -> Self::FFI {
-        let transition = self.transition_style().into_ffi();
+        let transition = self.transition_style().native().into_ffi();
         WuiNavigationStack {
             root: self.into_inner().into_ffi(),
             transition,
@@ -175,18 +280,111 @@ impl IntoFFI for NavigationStack<(), ()> {
 
 ffi_view!(NavigationStack<(),()>, WuiNavigationStack, navigation_stack);
 
+unsafe fn resolve_navigation_stack_root(
+    root: *mut WuiAnyView,
+    env: *const WuiEnv,
+) -> *mut WuiAnyView {
+    let root: waterui::AnyView = unsafe { crate::IntoRust::into_rust(root) };
+    let env = unsafe { crate::borrow_ffi(env) };
+    let root = waterui_navigation::resolve_navigation_root(root, &env.0);
+    waterui::AnyView::new(waterui_core::Native::new(root)).into_ffi()
+}
+
+/// Resolves a stack root after the native backend installs its controller.
+///
+/// # Safety
+///
+/// - `root` must be the owning root pointer returned by
+///   `waterui_force_as_navigation_stack` and is consumed exactly once.
+/// - `env` must be the live controller-scoped environment for this stack.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_navigation_stack_root(
+    root: *mut WuiAnyView,
+    env: *const WuiEnv,
+) -> *mut WuiAnyView {
+    unsafe { resolve_navigation_stack_root(root, env) }
+}
+
+/// Resolves an Android stack root after the backend controller is installed.
+///
+/// # Safety
+///
+/// `root_ptr` must own an unresolved stack root and `env_ptr` must point to its
+/// live controller-scoped environment.
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationStackRoot<
+    'local,
+>(
+    _env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+    root_ptr: crate::jni::jlong,
+    env_ptr: crate::jni::jlong,
+) -> crate::jni::jlong {
+    use crate::jni::convert::{jlong_to_ptr, jlong_to_ptr_mut};
+
+    let root = unsafe { jlong_to_ptr_mut(root_ptr) };
+    let env = unsafe { jlong_to_ptr(env_ptr) };
+    let resolved = unsafe { resolve_navigation_stack_root(root, env) };
+    resolved as crate::jni::jlong
+}
+
 #[repr(C)]
 pub struct WuiNavigationSplitLayout {
     /// Sidebar content.
     pub sidebar: *mut WuiAnyView,
     /// Placeholder content for empty regular-width selection.
     pub placeholder: *mut WuiAnyView,
-    /// The currently selected detail identifier encoded as i32 (0 means no selection).
-    pub selection: *mut WuiBinding<i32>,
+    /// Primary selection encoded as i32 (0 means no selection).
+    pub primary_selection: *mut WuiBinding<i32>,
+    /// Optional resolver for the middle column in a three-column split.
+    pub content: *mut WuiNavigationSplitDetail,
+    /// Optional secondary selection encoded as i32 (0 means no selection).
+    pub secondary_selection: *mut WuiBinding<i32>,
     /// Resolver handle for building detail content from a selected id.
     pub detail: *mut WuiNavigationSplitDetail,
-    /// Preferred sidebar width in logical points.
-    pub sidebar_width: f32,
+    /// Reactive requested column visibility.
+    pub column_visibility: *mut WuiComputed<i32>,
+    /// Native resizable sidebar width constraints.
+    pub sidebar_width: WuiNavigationColumnWidth,
+    /// Native split style.
+    pub style: WuiNavigationSplitStyle,
+}
+
+#[repr(C)]
+pub struct WuiNavigationColumnWidth {
+    pub min: f32,
+    pub ideal: f32,
+    pub max: f32,
+}
+
+impl From<ColumnWidth> for WuiNavigationColumnWidth {
+    fn from(value: ColumnWidth) -> Self {
+        Self {
+            min: value.min(),
+            ideal: value.ideal(),
+            max: value.max(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiNavigationSplitStyle {
+    Automatic = 0,
+    Balanced = 1,
+    ProminentDetail = 2,
+}
+
+impl From<NativeNavigationSplitStyle> for WuiNavigationSplitStyle {
+    fn from(value: NativeNavigationSplitStyle) -> Self {
+        match value {
+            NativeNavigationSplitStyle::Automatic => Self::Automatic,
+            NativeNavigationSplitStyle::Balanced => Self::Balanced,
+            NativeNavigationSplitStyle::ProminentDetail => Self::ProminentDetail,
+        }
+    }
 }
 
 #[repr(C)]
@@ -268,24 +466,55 @@ impl IntoFFI for NavigationSplitLayout {
     type FFI = WuiNavigationSplitLayout;
 
     fn into_ffi(self) -> Self::FFI {
-        let (sidebar, placeholder, selection, detail, sidebar_width) = self.into_parts();
-        let selection = WuiBinding(nami::Binding::mapping(
-            &selection,
-            |value| value.map(i32::from).unwrap_or(0),
-            |binding, value| {
-                binding.set(core::num::NonZeroI32::new(value).map(waterui_core::id::Id::from));
-            },
-        ))
-        .into_ffi();
+        let (
+            sidebar,
+            placeholder,
+            primary_selection,
+            content,
+            secondary_selection,
+            detail,
+            column_visibility,
+            sidebar_width,
+            style,
+        ) = self.into_parts();
+        let primary_selection = optional_id_binding(&primary_selection).into_ffi();
+        let secondary_selection = secondary_selection
+            .as_ref()
+            .map_or(core::ptr::null_mut(), |selection| {
+                optional_id_binding(selection).into_ffi()
+            });
+        let column_visibility = column_visibility
+            .map(|visibility| match visibility {
+                NavigationSplitColumnVisibility::Automatic => 0,
+                NavigationSplitColumnVisibility::All => 1,
+                NavigationSplitColumnVisibility::DoubleColumn => 2,
+                NavigationSplitColumnVisibility::DetailOnly => 3,
+            })
+            .computed()
+            .into_ffi();
 
         WuiNavigationSplitLayout {
             sidebar: sidebar.build().into_ffi(),
             placeholder: placeholder.build().into_ffi(),
-            selection,
+            primary_selection,
+            content: content.map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
+            secondary_selection,
             detail: detail.into_ffi(),
-            sidebar_width,
+            column_visibility,
+            sidebar_width: sidebar_width.into(),
+            style: style.into(),
         }
     }
+}
+
+fn optional_id_binding(selection: &nami::Binding<Option<Id>>) -> WuiBinding<i32> {
+    WuiBinding(nami::Binding::mapping(
+        selection,
+        |value| value.map(i32::from).unwrap_or(0),
+        |binding, value| {
+            binding.set(core::num::NonZeroI32::new(value).map(waterui_core::id::Id::from));
+        },
+    ))
 }
 
 ffi_view!(
@@ -294,21 +523,21 @@ ffi_view!(
     split_navigation_container
 );
 
-/// Position of the tab bar within the tab container.
+/// Native adaptive tab style.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WuiTabPosition {
-    /// Tab bar is positioned at the top of the container.
-    Top = 0,
-    /// Tab bar is positioned at the bottom of the container.
-    Bottom = 1,
+pub enum WuiTabStyle {
+    Automatic = 0,
+    TabBar = 1,
+    Sidebar = 2,
 }
 
-impl From<TabPosition> for WuiTabPosition {
-    fn from(pos: TabPosition) -> Self {
-        match pos {
-            TabPosition::Top => WuiTabPosition::Top,
-            TabPosition::Bottom => WuiTabPosition::Bottom,
+impl From<NativeTabStyle> for WuiTabStyle {
+    fn from(style: NativeTabStyle) -> Self {
+        match style {
+            NativeTabStyle::Automatic => Self::Automatic,
+            NativeTabStyle::TabBar => Self::TabBar,
+            NativeTabStyle::Sidebar => Self::Sidebar,
         }
     }
 }
@@ -321,8 +550,8 @@ pub struct WuiTabs {
     /// The collection of tabs to display.
     pub tabs: WuiArray<WuiTab>,
 
-    /// Position of the tab bar (top or bottom).
-    pub position: WuiTabPosition,
+    /// Native adaptive tab style.
+    pub style: WuiTabStyle,
 }
 
 opaque!(WuiTabContent, AnyViewBuilder<NavigationView>, tab_content);
@@ -337,6 +566,12 @@ pub struct WuiTab {
 
     /// Pointer to the tab's content view.
     pub content: *mut WuiTabContent,
+
+    /// Optional reactive badge count.
+    pub badge: *mut WuiComputed<i32>,
+
+    /// Reactive enabled state.
+    pub enabled: *mut WuiComputed<bool>,
 }
 
 /// Creates a navigation view from tab content.
@@ -364,13 +599,15 @@ pub unsafe extern "C" fn waterui_tab_content(
 impl IntoFFI for Tab<Id> {
     type FFI = WuiTab;
     fn into_ffi(self) -> Self::FFI {
-        let id_i32 = i32::from(self.label.tag);
+        let id_i32 = i32::from(self.id);
         let id = u64::try_from(id_i32)
             .expect("tab id must be positive when converting to FFI u64 identifier");
         WuiTab {
             id,
-            label: self.label.content.into_ffi(),
+            label: self.label.into_ffi(),
             content: self.content.into_ffi(),
+            badge: self.badge.map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
+            enabled: self.enabled.into_ffi(),
         }
     }
 }
@@ -381,7 +618,7 @@ impl IntoFFI for Tabs {
         WuiTabs {
             selection: self.selection.into_ffi(),
             tabs: self.tabs.into_ffi(),
-            position: self.position.into(),
+            style: self.style.into(),
         }
     }
 }
@@ -395,21 +632,40 @@ ffi_view!(Tabs, WuiTabs, tabs);
 
 struct ForeignNavigationController {
     context: ForeignCallbackContext,
-    push: unsafe extern "C" fn(*mut (), WuiNavigationView),
-    pop: unsafe extern "C" fn(*mut ()),
+    apply: unsafe extern "C" fn(*mut (), WuiNavigationTransaction),
+}
+
+/// One atomic navigation stack mutation passed to a native backend.
+#[repr(C)]
+pub struct WuiNavigationTransaction {
+    pub id: u64,
+    pub retained_prefix: usize,
+    pub removed: usize,
+    pub inserted: WuiArray<WuiNavigationView>,
 }
 
 // SAFETY: ForeignNavigationController is only accessed from the UI thread.
 unsafe impl Send for ForeignNavigationController {}
 
 impl CustomNavigationController for ForeignNavigationController {
-    fn push(&mut self, content: NavigationView) {
-        let ffi_view = content.into_ffi();
-        unsafe { (self.push)(self.context.data(), ffi_view) }
-    }
-
-    fn pop(&mut self) {
-        unsafe { (self.pop)(self.context.data()) }
+    fn apply(&mut self, transaction: NavigationTransaction) {
+        let (id, retained_prefix, removed, inserted) = transaction.into_parts();
+        let inserted = inserted
+            .into_iter()
+            .map(|builder| builder.build())
+            .map(IntoFFI::into_ffi)
+            .collect::<alloc::vec::Vec<_>>();
+        unsafe {
+            (self.apply)(
+                self.context.data(),
+                WuiNavigationTransaction {
+                    id,
+                    retained_prefix,
+                    removed,
+                    inserted: WuiArray::new(inserted),
+                },
+            )
+        }
     }
 }
 
@@ -425,15 +681,13 @@ impl CustomNavigationController for ForeignNavigationController {
 pub unsafe extern "C" fn waterui_env_install_navigation_controller(
     env: *mut WuiEnv,
     context: *mut (),
-    push: unsafe extern "C" fn(*mut (), WuiNavigationView),
-    pop: unsafe extern "C" fn(*mut ()),
+    apply: unsafe extern "C" fn(*mut (), WuiNavigationTransaction),
     drop_context: unsafe extern "C" fn(*mut ()),
 ) {
     let env = unsafe { crate::borrow_ffi_mut(env) };
     let controller = ForeignNavigationController {
         context: unsafe { ForeignCallbackContext::new(context, drop_context) },
-        push,
-        pop,
+        apply,
     };
     env.insert(NavigationController::new(controller));
 }
@@ -455,7 +709,7 @@ pub unsafe extern "C" fn waterui_env_has_navigation_controller(env: *const WuiEn
     }
 }
 
-/// Pops the top view from the navigation stack.
+/// Requests a user-initiated pop from the Rust navigation state.
 ///
 /// If no NavigationController is installed in the environment, this function does nothing.
 ///
@@ -468,7 +722,59 @@ pub unsafe extern "C" fn waterui_navigation_pop(env: *const WuiEnv) {
     unsafe {
         let env = crate::borrow_ffi(env);
         if let Some(controller) = env.get::<NavigationController>() {
-            controller.pop();
+            controller.request_pop(1);
         }
     }
+}
+
+/// Commits a pop already completed interactively by the native container.
+///
+/// # Safety
+///
+/// `env` must point to a live environment containing the controller for the
+/// native stack that completed the pop.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_navigation_complete_native_pop(env: *const WuiEnv, count: usize) {
+    let env = unsafe { crate::borrow_ffi(env) };
+    let controller = env
+        .get::<NavigationController>()
+        .expect("native navigation pop completed without an installed controller");
+    controller.complete_native_pop(count);
+}
+
+/// Acknowledges successful completion of a native navigation transaction.
+///
+/// Stale acknowledgements are ignored because a newer transaction owns the
+/// native stack projection.
+///
+/// # Safety
+///
+/// `env` must point to the live environment for the reporting stack.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_navigation_transition_completed(
+    env: *const WuiEnv,
+    id: u64,
+) -> bool {
+    let env = unsafe { crate::borrow_ffi(env) };
+    let controller = env
+        .get::<NavigationController>()
+        .expect("navigation transition completed without an installed controller");
+    controller.transition_completed(id)
+}
+
+/// Acknowledges cancellation of a native navigation transaction.
+///
+/// # Safety
+///
+/// `env` must point to the live environment for the reporting stack.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_navigation_transition_cancelled(
+    env: *const WuiEnv,
+    id: u64,
+) -> bool {
+    let env = unsafe { crate::borrow_ffi(env) };
+    let controller = env
+        .get::<NavigationController>()
+        .expect("navigation transition cancelled without an installed controller");
+    controller.transition_cancelled(id)
 }

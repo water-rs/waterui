@@ -56,7 +56,7 @@ pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
 
     // Check for web URLs (http://, https://, etc.)
     if let Some(scheme_end) = find_scheme_end(bytes)
-        && is_web_scheme(bytes, scheme_end)
+        && is_hierarchical_scheme(bytes, scheme_end)
     {
         let web = parse_web_url(bytes, scheme_end);
         validate_web_url(&web, bytes);
@@ -352,51 +352,29 @@ const fn find_scheme_end(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// Check if scheme is a web scheme (requires "://")
-const fn is_web_scheme(bytes: &[u8], scheme_end: usize) -> bool {
+/// Checks for an RFC 3986 hierarchical scheme followed by `://`.
+const fn is_hierarchical_scheme(bytes: &[u8], scheme_end: usize) -> bool {
     let len = bytes.len();
 
-    // Must have "://" after scheme
-    if len < scheme_end + 3 {
+    if scheme_end == 0 || len < scheme_end + 3 {
         return false;
     }
     if bytes[scheme_end] != b':' || bytes[scheme_end + 1] != b'/' || bytes[scheme_end + 2] != b'/' {
         return false;
     }
 
-    // Check for known web schemes case-insensitively without allocating.
-    scheme_equals_ignore_ascii_case(bytes, scheme_end, b"http")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"https")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ftp")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ftps")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ws")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"wss")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"rtsp")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"rtmp")
-}
-
-const fn scheme_equals_ignore_ascii_case(bytes: &[u8], scheme_end: usize, expected: &[u8]) -> bool {
-    if scheme_end != expected.len() {
+    if !bytes[0].is_ascii_alphabetic() {
         return false;
     }
-
-    let mut i = 0;
+    let mut i = 1;
     while i < scheme_end {
-        if ascii_lower(bytes[i]) != expected[i] {
+        let byte = bytes[i];
+        if !(byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'-' || byte == b'.') {
             return false;
         }
         i += 1;
     }
-
     true
-}
-
-const fn ascii_lower(byte: u8) -> u8 {
-    if byte >= b'A' && byte <= b'Z' {
-        byte + (b'a' - b'A')
-    } else {
-        byte
-    }
 }
 
 /// Find first occurrence of any character in set, or end of string

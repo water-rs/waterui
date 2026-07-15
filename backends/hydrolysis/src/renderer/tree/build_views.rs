@@ -140,7 +140,7 @@ impl RenderNode {
             let state = Rc::clone(&state);
             Box::new(
                 move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_navigation_split_node(&state.borrow().split, proposal, hydro, env)
+                    measure_navigation_split_node(&state.borrow(), proposal, hydro, env)
                 },
             )
                 as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>

@@ -468,6 +468,21 @@ typedef enum WuiAspectRatio {
 } WuiAspectRatio;
 
 /**
+ * Semantic native toolbar placement.
+ */
+typedef enum WuiNavigationToolbarPlacement {
+  WuiNavigationToolbarPlacement_Principal = 0,
+  WuiNavigationToolbarPlacement_PrimaryAction = 1,
+  WuiNavigationToolbarPlacement_SecondaryAction = 2,
+  WuiNavigationToolbarPlacement_Confirmation = 3,
+  WuiNavigationToolbarPlacement_Cancellation = 4,
+  WuiNavigationToolbarPlacement_BottomBar = 5,
+  WuiNavigationToolbarPlacement_Status = 6,
+  WuiNavigationToolbarPlacement_TopBarLeading = 7,
+  WuiNavigationToolbarPlacement_TopBarTrailing = 8,
+} WuiNavigationToolbarPlacement;
+
+/**
  * The display mode for the navigation bar title (FFI-compatible).
  */
 typedef enum WuiNavigationTitleDisplayMode {
@@ -488,25 +503,28 @@ typedef enum WuiNavigationTitleDisplayMode {
 /**
  * FFI struct for NavigationStack<(),()>
  */
-typedef enum WuiNavigationTransition {
-  WuiNavigationTransition_PushPop = 0,
-  WuiNavigationTransition_Fade = 1,
-  WuiNavigationTransition_None = 2,
-} WuiNavigationTransition;
+typedef enum WuiNavigationTransitionKind {
+  WuiNavigationTransitionKind_Automatic = 0,
+  WuiNavigationTransitionKind_Fade = 1,
+  WuiNavigationTransitionKind_Zoom = 2,
+  WuiNavigationTransitionKind_None = 3,
+  WuiNavigationTransitionKind_Custom = 4,
+} WuiNavigationTransitionKind;
+
+typedef enum WuiNavigationSplitStyle {
+  WuiNavigationSplitStyle_Automatic = 0,
+  WuiNavigationSplitStyle_Balanced = 1,
+  WuiNavigationSplitStyle_ProminentDetail = 2,
+} WuiNavigationSplitStyle;
 
 /**
- * Position of the tab bar within the tab container.
+ * Native adaptive tab style.
  */
-typedef enum WuiTabPosition {
-  /**
-   * Tab bar is positioned at the top of the container.
-   */
-  WuiTabPosition_Top = 0,
-  /**
-   * Tab bar is positioned at the bottom of the container.
-   */
-  WuiTabPosition_Bottom = 1,
-} WuiTabPosition;
+typedef enum WuiTabStyle {
+  WuiTabStyle_Automatic = 0,
+  WuiTabStyle_TabBar = 1,
+  WuiTabStyle_Sidebar = 2,
+} WuiTabStyle;
 
 /**
  * FFI representation of script injection timing.
@@ -1033,6 +1051,28 @@ typedef struct WuiMetadata_____WuiEnv {
  * Layout: { content: *mut WuiAnyView, value: *mut WuiEnv }
  */
 typedef struct WuiMetadata_____WuiEnv WuiMetadataEnv;
+
+typedef struct WuiId {
+  /**
+   * The inner integer value of the ID.
+   */
+  int32_t inner;
+} WuiId;
+
+typedef struct WuiMetadata_WuiId {
+  struct WuiAnyView *content;
+  struct WuiId value;
+} WuiMetadata_WuiId;
+
+/**
+ * Source geometry metadata for native navigation transitions.
+ */
+typedef struct WuiMetadata_WuiId WuiMetadataNavigationTransitionSource;
+
+/**
+ * Destination geometry metadata for native navigation transitions.
+ */
+typedef struct WuiMetadata_WuiId WuiMetadataNavigationTransitionDestination;
 
 /**
  * C-compatible empty marker struct for Secure metadata.
@@ -2158,13 +2198,6 @@ typedef struct Computed_Vec_Date WuiComputed_Vec_Date;
 
 typedef struct Binding_Secure WuiBinding_Secure;
 
-typedef struct WuiId {
-  /**
-   * The inner integer value of the ID.
-   */
-  int32_t inner;
-} WuiId;
-
 typedef struct Binding_Id WuiBinding_Id;
 
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
@@ -3014,6 +3047,33 @@ typedef struct WuiVideoPlayer {
   bool show_controls;
 } WuiVideoPlayer;
 
+typedef struct WuiNavigationToolbarItem {
+  enum WuiNavigationToolbarPlacement placement;
+  struct WuiAnyView *content;
+} WuiNavigationToolbarItem;
+
+typedef struct WuiArraySlice_WuiNavigationToolbarItem {
+  struct WuiNavigationToolbarItem *head;
+  uintptr_t len;
+} WuiArraySlice_WuiNavigationToolbarItem;
+
+typedef struct WuiArrayVTable_WuiNavigationToolbarItem {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiNavigationToolbarItem (*slice)(const void*);
+} WuiArrayVTable_WuiNavigationToolbarItem;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiNavigationToolbarItem {
+  NonNull data;
+  struct WuiArrayVTable_WuiNavigationToolbarItem vtable;
+} WuiArray_WuiNavigationToolbarItem;
+
 typedef struct WuiNavigationSearch {
   WuiBinding_Str *text;
   WuiComputed_StyledStr *prompt;
@@ -3026,18 +3086,32 @@ typedef struct WuiOptionalNavigationSearch {
 
 typedef struct WuiBar {
   struct WuiAnyView *title;
-  struct WuiAnyView *leading;
-  struct WuiAnyView *trailing;
+  struct WuiAnyView *subtitle;
+  struct WuiArray_WuiNavigationToolbarItem toolbar;
   struct WuiOptionalNavigationSearch search;
   WuiComputed_ResolvedColor *color;
   WuiComputed_bool *hidden;
   enum WuiNavigationTitleDisplayMode display_mode;
 } WuiBar;
 
+typedef struct WuiNavigationDestinationState {
+  WuiComputed_bool *pop_enabled;
+  struct WuiAction *pop_attempted;
+  struct WuiAction *appear;
+  struct WuiAction *disappear;
+  struct WuiAction *pop;
+} WuiNavigationDestinationState;
+
 typedef struct WuiNavigationView {
   struct WuiBar bar;
   struct WuiAnyView *content;
+  struct WuiNavigationDestinationState state;
 } WuiNavigationView;
+
+typedef struct WuiNavigationTransition {
+  enum WuiNavigationTransitionKind kind;
+  int32_t source_id;
+} WuiNavigationTransition;
 
 /**
  * FFI struct for NavigationStack<(),()>
@@ -3050,12 +3124,18 @@ typedef struct WuiNavigationStack {
   /**
    * Transition style used for push/pop operations.
    */
-  enum WuiNavigationTransition transition;
+  struct WuiNavigationTransition transition;
 } WuiNavigationStack;
 
 typedef struct WuiNavigationSplitDetail {
   uint8_t _private[0];
 } WuiNavigationSplitDetail;
+
+typedef struct WuiNavigationColumnWidth {
+  float min;
+  float ideal;
+  float max;
+} WuiNavigationColumnWidth;
 
 typedef struct WuiNavigationSplitLayout {
   /**
@@ -3067,17 +3147,33 @@ typedef struct WuiNavigationSplitLayout {
    */
   struct WuiAnyView *placeholder;
   /**
-   * The currently selected detail identifier encoded as i32 (0 means no selection).
+   * Primary selection encoded as i32 (0 means no selection).
    */
-  WuiBinding_i32 *selection;
+  WuiBinding_i32 *primary_selection;
+  /**
+   * Optional resolver for the middle column in a three-column split.
+   */
+  struct WuiNavigationSplitDetail *content;
+  /**
+   * Optional secondary selection encoded as i32 (0 means no selection).
+   */
+  WuiBinding_i32 *secondary_selection;
   /**
    * Resolver handle for building detail content from a selected id.
    */
   struct WuiNavigationSplitDetail *detail;
   /**
-   * Preferred sidebar width in logical points.
+   * Reactive requested column visibility.
    */
-  float sidebar_width;
+  WuiComputed_i32 *column_visibility;
+  /**
+   * Native resizable sidebar width constraints.
+   */
+  struct WuiNavigationColumnWidth sidebar_width;
+  /**
+   * Native split style.
+   */
+  enum WuiNavigationSplitStyle style;
 } WuiNavigationSplitLayout;
 
 typedef struct WuiTab {
@@ -3093,6 +3189,14 @@ typedef struct WuiTab {
    * Pointer to the tab's content view.
    */
   struct WuiTabContent *content;
+  /**
+   * Optional reactive badge count.
+   */
+  WuiComputed_i32 *badge;
+  /**
+   * Reactive enabled state.
+   */
+  WuiComputed_bool *enabled;
 } WuiTab;
 
 typedef struct WuiArraySlice_WuiTab {
@@ -3127,10 +3231,42 @@ typedef struct WuiTabs {
    */
   struct WuiArray_WuiTab tabs;
   /**
-   * Position of the tab bar (top or bottom).
+   * Native adaptive tab style.
    */
-  enum WuiTabPosition position;
+  enum WuiTabStyle style;
 } WuiTabs;
+
+typedef struct WuiArraySlice_WuiNavigationView {
+  struct WuiNavigationView *head;
+  uintptr_t len;
+} WuiArraySlice_WuiNavigationView;
+
+typedef struct WuiArrayVTable_WuiNavigationView {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiNavigationView (*slice)(const void*);
+} WuiArrayVTable_WuiNavigationView;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiNavigationView {
+  NonNull data;
+  struct WuiArrayVTable_WuiNavigationView vtable;
+} WuiArray_WuiNavigationView;
+
+/**
+ * One atomic navigation stack mutation passed to a native backend.
+ */
+typedef struct WuiNavigationTransaction {
+  uint64_t id;
+  uintptr_t retained_prefix;
+  uintptr_t removed;
+  struct WuiArray_WuiNavigationView inserted;
+} WuiNavigationTransaction;
 
 /**
  * FFI representation of a WebView event.
@@ -3782,6 +3918,36 @@ struct WuiTypeId waterui_metadata_env_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataEnv waterui_force_as_metadata_env(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_metadata_navigation_transition_source_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataNavigationTransitionSource waterui_force_as_metadata_navigation_transition_source(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_metadata_navigation_transition_destination_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataNavigationTransitionDestination waterui_force_as_metadata_navigation_transition_destination(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
@@ -6080,6 +6246,17 @@ struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *v
 struct WuiTypeId waterui_navigation_stack_id(void);
 
 /**
+ * Resolves a stack root after the native backend installs its controller.
+ *
+ * # Safety
+ *
+ * - `root` must be the owning root pointer returned by
+ *   `waterui_force_as_navigation_stack` and is consumed exactly once.
+ * - `env` must be the live controller-scoped environment for this stack.
+ */
+struct WuiAnyView *waterui_navigation_stack_root(struct WuiAnyView *root, const struct WuiEnv *env);
+
+/**
  * Releases a navigation split-detail handle.
  *
  * # Safety
@@ -6154,8 +6331,7 @@ struct WuiTypeId waterui_tabs_id(void);
  */
 void waterui_env_install_navigation_controller(struct WuiEnv *env,
                                                void *context,
-                                               void (*push)(void*, struct WuiNavigationView),
-                                               void (*pop)(void*),
+                                               void (*apply)(void*, struct WuiNavigationTransaction),
                                                void (*drop_context)(void*));
 
 /**
@@ -6171,7 +6347,7 @@ void waterui_env_install_navigation_controller(struct WuiEnv *env,
 bool waterui_env_has_navigation_controller(const struct WuiEnv *env);
 
 /**
- * Pops the top view from the navigation stack.
+ * Requests a user-initiated pop from the Rust navigation state.
  *
  * If no NavigationController is installed in the environment, this function does nothing.
  *
@@ -6180,6 +6356,37 @@ bool waterui_env_has_navigation_controller(const struct WuiEnv *env);
  * - `env` must be a valid pointer to a `WuiEnv`
  */
 void waterui_navigation_pop(const struct WuiEnv *env);
+
+/**
+ * Commits a pop already completed interactively by the native container.
+ *
+ * # Safety
+ *
+ * `env` must point to a live environment containing the controller for the
+ * native stack that completed the pop.
+ */
+void waterui_navigation_complete_native_pop(const struct WuiEnv *env, uintptr_t count);
+
+/**
+ * Acknowledges successful completion of a native navigation transaction.
+ *
+ * Stale acknowledgements are ignored because a newer transaction owns the
+ * native stack projection.
+ *
+ * # Safety
+ *
+ * `env` must point to the live environment for the reporting stack.
+ */
+bool waterui_navigation_transition_completed(const struct WuiEnv *env, uint64_t id);
+
+/**
+ * Acknowledges cancellation of a native navigation transaction.
+ *
+ * # Safety
+ *
+ * `env` must point to the live environment for the reporting stack.
+ */
+bool waterui_navigation_transition_cancelled(const struct WuiEnv *env, uint64_t id);
 
 /**
  * # Safety

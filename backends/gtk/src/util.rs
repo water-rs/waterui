@@ -19,6 +19,7 @@ use waterui::gesture::GestureObserver;
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
+use waterui::navigation::{NavigationTransitionDestination, NavigationTransitionSource};
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui_core::event::{LifeCycleHook, OnEvent};
 use waterui_core::layout::StretchAxis;
@@ -156,7 +157,9 @@ fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         ResolvedContextMenu,
         Draggable,
         DropDestination,
-        Background
+        Background,
+        NavigationTransitionSource,
+        NavigationTransitionDestination
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
