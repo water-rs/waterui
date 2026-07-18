@@ -142,7 +142,7 @@ use waterui_graphics::view_effect::{
 };
 use waterui_graphics::{
     AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
-    ResolvedGradient, ResolvedGradientStop, SceneView, ShaderCache, VelloScene2D,
+    ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -208,7 +208,6 @@ pub struct HydrolysisRenderer {
     /// `GpuSurface`. Async setup and renderer-owned redraws from nested surfaces
     /// use it to wake the parent host without polling frames.
     host_redraw_handle: Option<RedrawHandle>,
-    shader_cache: ShaderCache,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
@@ -328,7 +327,6 @@ impl HydrolysisRenderer {
             window_bounds: vello::kurbo::Rect::ZERO,
             signals: FrameSignals::new(frame_instant),
             host_redraw_handle: None,
-            shader_cache: ShaderCache::new(),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,

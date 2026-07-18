@@ -16,12 +16,9 @@ use num_traits::ToPrimitive;
 
 use crate::color::ResolvedColor;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
-use crate::include_shader;
+use crate::shaders::MESH_GRADIENT;
 use encase::{ShaderSize, StorageBuffer, UniformBuffer};
 use waterui_core::{AnyView, MainThreadBound, Signal, View};
-
-const MESH_GRADIENT_SHADER: crate::prewarm::ShaderSource =
-    include_shader!("shaders/mesh_gradient.wgsl");
 
 /// Maximum number of color stops supported by the mesh shader buffer layout.
 pub const MAX_COLOR_STOPS: usize = 16;
@@ -535,12 +532,8 @@ struct MeshGpuResources {
     reason = "mesh pipeline construction is one ordered graph of layouts, buffers, bindings, and validation"
 )]
 async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuResources {
-    let shader = ctx.shader_cache.get_or_create_prehashed(
-        ctx.device,
-        MESH_GRADIENT_SHADER.label,
-        MESH_GRADIENT_SHADER.source,
-        MESH_GRADIENT_SHADER.source_hash,
-    );
+    let (vertex_shader, fragment_shader) =
+        MESH_GRADIENT.create_render_stages(ctx.device, "vs_main", "fs_main");
 
     let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get();
     let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -566,43 +559,15 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
         mapped_at_creation: false,
     });
 
-    let bind_group_layout = ctx
-        .device
-        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some(&format!("{label_prefix} Bind Group Layout")),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+    let mut bind_group_layouts = MESH_GRADIENT.create_bind_group_layouts(ctx.device);
+    assert_eq!(
+        bind_group_layouts.len(),
+        1,
+        "mesh gradient must use exactly one bind group"
+    );
+    let bind_group_layout = bind_group_layouts
+        .pop()
+        .expect("one mesh gradient bind group was asserted");
 
     let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(&format!("{label_prefix} Bind Group")),
@@ -627,8 +592,8 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(&format!("{label_prefix} Pipeline Layout")),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
     let blend = if ctx.is_hdr() {
@@ -637,21 +602,21 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
         Some(wgpu::BlendState::ALPHA_BLENDING)
     };
 
-    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let pipeline_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = ctx
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&format!("{label_prefix} Pipeline")),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: shader.as_ref(),
-                entry_point: Some("vs_main"),
+                module: vertex_shader.module(),
+                entry_point: Some(vertex_shader.entry_point()),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: shader.as_ref(),
-                entry_point: Some("fs_main"),
+                module: fragment_shader.module(),
+                entry_point: Some(fragment_shader.entry_point()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
                     blend,
@@ -665,11 +630,11 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: ctx.pipeline_cache,
+            multiview_mask: None,
+            cache: None,
         });
 
-    let pipeline_error = ctx.device.pop_error_scope().await;
+    let pipeline_error = pipeline_scope.pop().await;
     assert!(
         pipeline_error.is_none(),
         "mesh gradient pipeline creation failed: {pipeline_error:?}"
@@ -759,6 +724,7 @@ fn draw_mesh(frame: &mut GpuFrame, resources: &MeshGpuResources, label_prefix: &
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         render_pass.set_pipeline(&resources.pipeline);

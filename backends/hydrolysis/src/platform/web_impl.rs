@@ -42,7 +42,7 @@ impl core::fmt::Debug for BrowserSurface {
 
 impl BrowserSurface {
     pub async fn new(canvas: HtmlCanvasElement, width: u32, height: u32) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
             .expect("hydrolysis web surface: failed to create canvas surface");
@@ -103,7 +103,7 @@ impl SurfaceProvider for BrowserSurface {
     }
 
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        let output = self.surface.get_current_texture()?;
+        let output = super::acquire_surface_texture(&self.surface)?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());

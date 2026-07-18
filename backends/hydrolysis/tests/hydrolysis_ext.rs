@@ -51,6 +51,7 @@ impl GpuView for SolidClearRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
         frame.queue.submit([encoder.finish()]);
@@ -93,6 +94,7 @@ impl GpuView for CountingClearRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
         frame.queue.submit([encoder.finish()]);

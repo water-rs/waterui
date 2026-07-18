@@ -18,13 +18,16 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec;
 use executor_core::spawn_local;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-use {metal::MTLTextureType, wgpu_hal::api::Metal as MetalApi};
+use {
+    objc2::{rc::Retained, runtime::ProtocolObject},
+    objc2_metal::{MTLPixelFormat, MTLTexture, MTLTextureType},
+    wgpu_hal::api::Metal as MetalApi,
+};
 
 use waterui_graphics::RedrawHandle;
 use waterui_graphics::shared_context::GpuRuntime;
@@ -161,9 +164,6 @@ pub struct WuiViewEffectState {
     imported_texture: Option<wgpu::Texture>,
     /// Format of the imported texture.
     imported_format: Option<wgpu::TextureFormat>,
-    /// Retained Metal texture when using the Metal import path (keeps it alive for wgpu)
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    imported_metal_texture: Option<metal::Texture>,
     /// The effect renderer. Setup temporarily moves it into its local future.
     effect_wrapper: Rc<RefCell<Option<ViewEffectRendererWrapper>>>,
     /// Handle shared with renderer-driven redraw callbacks.
@@ -215,8 +215,6 @@ pub unsafe extern "C" fn waterui_view_effect_create(
         output_config: None,
         imported_texture: None,
         imported_format: None,
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        imported_metal_texture: None,
         effect_wrapper: Rc::new(RefCell::new(Some(effect_wrapper))),
         redraw_handle,
         setup_formats: Cell::new(None),
@@ -337,10 +335,6 @@ pub unsafe extern "C" fn waterui_view_effect_detach(state: *mut WuiViewEffectSta
     state.output_config = None;
     state.imported_texture = None;
     state.imported_format = None;
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        state.imported_metal_texture = None;
-    }
     state.input_width = 0;
     state.input_height = 0;
     state.output_width = 0;
@@ -489,24 +483,12 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         .expect("waterui_view_effect_render: output configuration is detached");
 
     // Get output texture
-    let output = match output_surface.get_current_texture() {
-        Ok(o) => o,
-        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-            output_surface.configure(&state.runtime.context().device, output_config);
-            match output_surface.get_current_texture() {
-                Ok(o) => o,
-                Err(e) => {
-                    panic!("waterui_view_effect_render: acquire after reconfigure failed: {e}");
-                }
-            }
-        }
-        Err(wgpu::SurfaceError::Timeout) => {
-            panic!("waterui_view_effect_render: surface timeout");
-        }
-        Err(e) => {
-            panic!("waterui_view_effect_render: get_current_texture failed: {e}");
-        }
-    };
+    let output = super::acquire_surface_texture(
+        output_surface,
+        &state.runtime.context().device,
+        output_config,
+        "waterui_view_effect_render",
+    );
 
     let input_texture = state
         .imported_texture
@@ -594,8 +576,6 @@ fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::Textu
             queue: &gpu.queue,
             input_format,
             output_format,
-            pipeline_cache: gpu.pipeline_cache(),
-            shader_cache: gpu.shader_cache(),
         };
         effect_wrapper.erased.setup(&ctx).await;
         effect_slot.replace(Some(effect_wrapper));
@@ -645,26 +625,24 @@ fn import_metal_texture(
     width: u32,
     height: u32,
 ) {
-    use metal::foreign_types::ForeignTypeRef;
     use wgpu_hal::Api;
 
-    // Create a metal::Texture from the raw MTLTexture pointer
-    // The native side passes us an MTLTexture (id<MTLTexture>)
-    // which is a raw pointer in Objective-C
-    let metal_texture_ref = unsafe { metal::TextureRef::from_ptr(mtl_texture_ptr.cast()) };
-    let metal_texture = metal_texture_ref.to_owned();
+    let metal_texture = unsafe {
+        Retained::<ProtocolObject<dyn MTLTexture>>::retain(mtl_texture_ptr.cast())
+            .expect("view_effect::import_metal_texture received a null texture")
+    };
 
     tracing::debug!(
         "[ViewEffect] Importing Metal texture: {}x{} {:?}",
         width,
         height,
-        metal_texture.pixel_format()
+        metal_texture.pixelFormat()
     );
 
-    let wgpu_format = match metal_texture.pixel_format() {
-        metal::MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-        metal::MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
-        metal::MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
+    let wgpu_format = match metal_texture.pixelFormat() {
+        MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
+        MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
         other => {
             panic!(
                 "view_effect::import_metal_texture: unsupported Metal format {:?}",
@@ -677,9 +655,9 @@ fn import_metal_texture(
     // Create HAL texture from the Metal texture
     let hal_texture = unsafe {
         <MetalApi as Api>::Device::texture_from_raw(
-            metal_texture.clone(),
+            metal_texture,
             wgpu_format,
-            MTLTextureType::D2,
+            MTLTextureType::Type2D,
             1, // array_layers
             1, // mip_levels
             wgpu_hal::CopyExtent {
@@ -718,5 +696,4 @@ fn import_metal_texture(
     // Store the imported texture
     state.imported_texture = Some(wgpu_texture);
     state.imported_format = Some(wgpu_format);
-    state.imported_metal_texture = Some(metal_texture);
 }

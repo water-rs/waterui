@@ -1,6 +1,7 @@
 //! Shared build-script helpers for `WaterUI` code generation.
 
 pub mod icons;
+pub use shaderloom::build as shader;
 
 use std::{fs, path::Path};
 

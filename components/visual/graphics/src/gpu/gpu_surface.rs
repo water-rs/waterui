@@ -105,10 +105,6 @@ pub struct GpuContext<'a> {
     /// Backends should set this based on `adapter.get_texture_format_features(surface_format)`.
     /// Renderers that want MSAA should use this value for pipeline and attachments.
     pub msaa_samples: u32,
-    /// Optional pipeline cache for faster pipeline creation.
-    pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
-    /// Device-bound shader module cache shared by GPU views on this runtime.
-    pub shader_cache: &'a filtrate::ShaderCache,
     /// Handle to request redraws from outside `render()`.
     ///
     /// Clone this during `setup()` and call `request_redraw()` when external
@@ -1065,8 +1061,6 @@ impl GpuSurface {
             queue,
             surface_format: config.format,
             msaa_samples,
-            pipeline_cache: shared.pipeline_cache(),
-            shader_cache: shared.shader_cache(),
             redraw_handle: RedrawHandle::new(),
         };
         self.setup(&context, env).await;
@@ -1159,8 +1153,6 @@ impl GpuSurface {
             queue,
             surface_format: config.format,
             msaa_samples,
-            pipeline_cache: shared.pipeline_cache(),
-            shader_cache: shared.shader_cache(),
             redraw_handle: RedrawHandle::new(),
         };
         self.setup(&context, env).await;

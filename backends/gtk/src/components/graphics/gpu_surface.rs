@@ -19,7 +19,6 @@ use glow::HasContext;
 use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
-use waterui_graphics::ShaderCache;
 use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
     preferred_msaa_samples,
@@ -55,8 +54,6 @@ impl PixelSize {
 struct GpuState {
     gpu_surface: Option<GpuSurface>,
     msaa_max_samples: NonZeroU32,
-    shader_cache: ShaderCache,
-
     wgpu_instance: Option<wgpu::Instance>,
     wgpu_adapter: Option<wgpu::Adapter>,
     wgpu_device: Option<wgpu::Device>,
@@ -91,7 +88,6 @@ impl GpuState {
             last_frame_time: Instant::now() - Duration::from_secs_f32(1.0 / 60.0),
             gpu_surface: Some(gpu_surface),
             msaa_max_samples,
-            shader_cache: ShaderCache::new(),
             wgpu_instance: None,
             wgpu_adapter: None,
             wgpu_device: None,
@@ -425,10 +421,9 @@ fn init_wgpu_if_needed(
     }
     .unwrap_or_else(|| panic!("GpuSurface(GL): wgpu-hal failed to create external adapter"));
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::GL,
-        ..Default::default()
-    });
+    let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    instance_descriptor.backends = wgpu::Backends::GL;
+    let instance = wgpu::Instance::new(instance_descriptor);
     let adapter = unsafe { instance.create_adapter_from_hal::<wgpu::hal::api::Gles>(exposed) };
 
     let adapter_limits = adapter.limits();
@@ -494,17 +489,7 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         }
     }
 
-    let (
-        gpu_surface,
-        device,
-        queue,
-        adapter,
-        format,
-        msaa_samples,
-        shader_cache,
-        redraw_handle,
-        env,
-    ) = {
+    let (gpu_surface, device, queue, adapter, format, msaa_samples, redraw_handle, env) = {
         let mut st = state.borrow_mut();
         if st.setup_done {
             return true;
@@ -539,7 +524,6 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             adapter,
             format,
             st.msaa_samples,
-            st.shader_cache.clone(),
             st.redraw_handle.clone(),
             st.env.clone(),
         )
@@ -561,8 +545,6 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             queue: &queue,
             surface_format: format,
             msaa_samples,
-            pipeline_cache: None,
-            shader_cache: &shader_cache,
             redraw_handle: redraw_handle.clone(),
         };
         gpu_surface.setup(&ctx, &mut env).await;

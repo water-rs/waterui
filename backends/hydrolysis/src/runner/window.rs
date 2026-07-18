@@ -555,12 +555,12 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         let acquire_started_at = Instant::now();
         let frame = match surface.acquire() {
             Ok(frame) => frame,
-            Err(crate::platform::SurfaceError::Surface(
-                wgpu::SurfaceError::Lost
-                | wgpu::SurfaceError::Outdated
-                | wgpu::SurfaceError::Timeout
-                | wgpu::SurfaceError::Other,
-            )) => {
+            Err(
+                crate::platform::SurfaceError::Lost
+                | crate::platform::SurfaceError::Outdated
+                | crate::platform::SurfaceError::Timeout
+                | crate::platform::SurfaceError::Occluded,
+            ) => {
                 runtime.request_refresh();
                 runtime.platform.request_redraw();
                 let (measurement_cache_hits, measurement_cache_misses) =
@@ -601,7 +601,9 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                     },
                 };
             }
-            Err(error) => panic!("hydrolysis runner: failed to acquire frame: {error}"),
+            Err(crate::platform::SurfaceError::Validation) => {
+                panic!("hydrolysis surface acquisition failed validation")
+            }
         };
         let acquire_duration = acquire_started_at.elapsed();
         let render_started_at = Instant::now();

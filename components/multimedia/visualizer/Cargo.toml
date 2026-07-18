@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
 waterkit-audio.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
@@ -27,6 +28,9 @@ glam = "0.29"
 num-traits = { version = "0.2", default-features = false }
 futures.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+waterui-build-support.workspace = true
 
 [dev-dependencies]
 waterui.workspace = true

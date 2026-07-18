@@ -136,12 +136,8 @@ impl GpuView for SceneSurfaceRenderer {
             .expect("failed to create SceneView vello renderer"),
         ));
 
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(crate::shaders::BLIT.label),
-                source: wgpu::ShaderSource::Wgsl(crate::shaders::BLIT.source.into()),
-            });
+        let (vertex_shader, fragment_shader) =
+            crate::shaders::BLIT.create_render_stages(ctx.device, "vs_main", "fs_main");
 
         let bind_group_layout =
             ctx.device
@@ -171,8 +167,8 @@ impl GpuView for SceneSurfaceRenderer {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("SceneView blit pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -186,14 +182,14 @@ impl GpuView for SceneSurfaceRenderer {
                 label: Some("SceneView blit pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
                         blend,
@@ -204,8 +200,8 @@ impl GpuView for SceneSurfaceRenderer {
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             },
         ));
 
@@ -324,6 +320,7 @@ impl GpuView for SceneSurfaceRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);

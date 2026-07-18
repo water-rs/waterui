@@ -20,9 +20,7 @@ impl FlowingGradient {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: ShaderSurface::from_prewarmed_source(
-                crate::prewarm::flowing_gradient_shader_surface_source(),
-            ),
+            inner: ShaderSurface::from_compiled_shader(&crate::shaders::FLOWING_GRADIENT),
         }
     }
 }
