@@ -5,7 +5,7 @@ use waterui_core::{
 };
 
 use crate::{
-    Url,
+    PlaybackSession, Playlist, Url,
     photo::Photo,
     video::{Event as VideoEvent, Video},
 };
@@ -92,13 +92,11 @@ fn live_photo_still(
 
 fn live_photo_video(source: LivePhotoSource, is_playing: &Binding<bool>) -> Video {
     let is_playing = is_playing.clone();
-    let muted = Binding::bool(true);
-    Video::new(source.video)
-        .loops(false)
-        .muted(&muted)
-        .on_event(move |event| {
-            if matches!(event, VideoEvent::Ended | VideoEvent::Error { .. }) {
-                is_playing.set(false);
-            }
-        })
+    let session = PlaybackSession::new(Playlist::single(source.video)).autoplay();
+    session.controller().muted().set(true);
+    Video::new(session).loops(false).on_event(move |event| {
+        if matches!(event, VideoEvent::Ended | VideoEvent::Error { .. }) {
+            is_playing.set(false);
+        }
+    })
 }

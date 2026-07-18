@@ -34,6 +34,12 @@ pub struct WuiArraySlice<T> {
     len: usize,
 }
 
+impl<T> Default for WuiArray<T> {
+    fn default() -> Self {
+        Self::new(Vec::<T>::new())
+    }
+}
+
 impl<T> WuiArrayVTable<T> {
     pub const fn from_raw(
         drop: unsafe extern "C" fn(*mut ()),

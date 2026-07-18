@@ -3,6 +3,7 @@
 
 use super::*;
 use std::sync::Arc;
+use waterui_graphics::filter_view::EffectFrameClock;
 
 #[derive(Clone)]
 pub(crate) struct EffectSetupResources {
@@ -35,6 +36,7 @@ pub(crate) struct AppliedFilterRuntime {
     input_texture: Option<AppliedFilterInputTexture>,
     output_texture: Option<AppliedFilterOutputTexture>,
     output_image: Option<vello::peniko::ImageData>,
+    frame_clock: EffectFrameClock,
 }
 
 impl AppliedFilterRuntime {
@@ -45,6 +47,7 @@ impl AppliedFilterRuntime {
             input_texture: None,
             output_texture: None,
             output_image: None,
+            frame_clock: EffectFrameClock::new(),
         }
     }
 
@@ -260,6 +263,7 @@ impl AppliedFilterRuntime {
             let (texture, view) = self.output_texture(device, output_width, output_height);
             (texture.clone(), view.clone())
         };
+        let timing = self.frame_clock.tick();
         let input = EffectInput {
             device,
             queue,
@@ -268,6 +272,7 @@ impl AppliedFilterRuntime {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width,
             height,
+            timing,
         };
         let output = EffectOutput {
             device,

@@ -1,0 +1,44 @@
+[package]
+name = "waterui-video-gpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Self-drawn GPU realization for WaterUI Video and VideoPlayer"
+keywords = ["video", "player", "gpu", "wgpu", "waterui"]
+categories = ["gui", "multimedia::video", "rendering"]
+
+[dependencies]
+async-channel.workspace = true
+async-io = "2.6"
+waterui-video.workspace = true
+waterui-core.workspace = true
+waterui-layout.workspace = true
+waterui-controls.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-text.workspace = true
+waterkit-video.workspace = true
+waterkit-codec.workspace = true
+waterkit-audio = { workspace = true, features = ["he-aac"] }
+futures.workspace = true
+executor-core.workspace = true
+nami.workspace = true
+num-traits = { version = "0.2", default-features = false }
+dirs.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+wgpu.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+
+[dev-dependencies]
+hydrolysis-m3.workspace = true
+pollster.workspace = true
+waterui.workspace = true
+waterui-testing.workspace = true
+
+[lints]
+workspace = true

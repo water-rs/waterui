@@ -662,6 +662,24 @@ impl ToJavaStruct for crate::WuiMetadata<crate::WuiDynamicRangeMarker> {
     }
 }
 
+#[cfg(target_os = "android")]
+impl ToJavaStruct for crate::components::media::video::WuiAndroidVideoSurfaceHost {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class("dev/waterui/android/runtime/AndroidVideoSurfaceHostStruct")
+            .expect("AndroidVideoSurfaceHostStruct class not found");
+        env.new_object(
+            &class,
+            "(JJ)V",
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.bridge as jlong),
+            ],
+        )
+        .expect("Failed to create AndroidVideoSurfaceHostStruct")
+    }
+}
+
 /// Helper to create a PathCommandStruct Java object from a WuiPathCommand
 fn create_path_command_struct<'local>(
     env: &mut JNIEnv<'local>,

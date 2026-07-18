@@ -28,7 +28,7 @@
 //! // The Spacer is non-interactive, so tapping the video area behind it
 //! // still triggers the VideoPlayer's native controls.
 //! zstack((
-//!     VideoPlayer::new(url).show_controls(true),
+//!     video_player(url).show_controls(true),
 //!     vstack((
 //!         spacer(),  // Non-interactive: touches pass through to VideoPlayer
 //!         button("Play").action(|| { /* ... */ }),  // Interactive: captures touches

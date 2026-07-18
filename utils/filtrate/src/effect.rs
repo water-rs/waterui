@@ -7,7 +7,7 @@
 //! reads input textures, and writes output textures.
 //!
 //! Most callers do not implement `Effect` directly; they implement [`Filter`](crate::Filter)
-//! and use a `Pipeline`-like adapter (currently `waterui_graphics::FilterAdapter`).
+//! and use [`FilterAdapter`](crate::FilterAdapter).
 //! `Effect` is the seam used by GPU host code to dispatch a runtime-typed
 //! filter without knowing its concrete shape.
 
@@ -18,6 +18,7 @@ use core::fmt;
 use core::future::Future;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -30,6 +31,104 @@ pub type EffectRenderResult = Result<bool, &'static str>;
 
 /// Thread-safe callback used by an effect to wake an on-demand renderer.
 pub type EffectRedrawCallback = Arc<dyn Fn() + Send + Sync>;
+
+/// Deterministic timeline information for one effect input frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EffectFrameTiming {
+    presentation_time: Duration,
+    delta: Duration,
+    sequence: u64,
+    discontinuity: bool,
+}
+
+impl EffectFrameTiming {
+    /// Creates timing for one input frame.
+    #[must_use]
+    pub const fn new(presentation_time: Duration, delta: Duration, sequence: u64) -> Self {
+        Self {
+            presentation_time,
+            delta,
+            sequence,
+            discontinuity: false,
+        }
+    }
+
+    /// Marks whether this frame begins a discontinuous timeline segment.
+    #[must_use]
+    pub const fn with_discontinuity(mut self, discontinuity: bool) -> Self {
+        self.discontinuity = discontinuity;
+        self
+    }
+
+    /// Returns the timestamp on the host-selected timeline.
+    #[must_use]
+    pub const fn presentation_time(self) -> Duration {
+        self.presentation_time
+    }
+
+    /// Returns elapsed timeline time since the preceding frame.
+    #[must_use]
+    pub const fn delta(self) -> Duration {
+        self.delta
+    }
+
+    /// Returns the monotonically increasing frame sequence number.
+    #[must_use]
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns whether this frame begins a discontinuous segment.
+    #[must_use]
+    pub const fn is_discontinuity(self) -> bool {
+        self.discontinuity
+    }
+}
+
+/// Per-host wall-clock adapter for ordinary interactive view effects.
+///
+/// Media pipelines should supply their own presentation timestamps through
+/// [`EffectFrameTiming`] instead. This clock exists so UI hosts own wall-clock
+/// policy explicitly rather than effects reading `Instant::now()` internally.
+#[derive(Debug)]
+pub struct EffectFrameClock {
+    origin: Instant,
+    previous: Instant,
+    sequence: u64,
+}
+
+impl EffectFrameClock {
+    /// Starts a host-owned frame clock.
+    #[must_use]
+    pub fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            origin: now,
+            previous: now,
+            sequence: 0,
+        }
+    }
+
+    /// Samples the next frame timing.
+    #[must_use]
+    pub fn tick(&mut self) -> EffectFrameTiming {
+        let now = Instant::now();
+        let timing = EffectFrameTiming::new(
+            now.saturating_duration_since(self.origin),
+            now.saturating_duration_since(self.previous),
+            self.sequence,
+        );
+        self.previous = now;
+        self.sequence = self.sequence.saturating_add(1);
+        timing
+    }
+}
+
+impl Default for EffectFrameClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Device-bound WGSL module cache shared by GPU hosts and effects.
 ///
@@ -167,6 +266,8 @@ pub struct EffectInput<'a> {
     pub width: u32,
     /// Height of the input texture in pixels.
     pub height: u32,
+    /// Deterministic host-selected timing for this frame.
+    pub timing: EffectFrameTiming,
 }
 
 impl fmt::Debug for EffectInput<'_> {
@@ -175,6 +276,7 @@ impl fmt::Debug for EffectInput<'_> {
             .field("format", &self.format)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("timing", &self.timing)
             .finish_non_exhaustive()
     }
 }

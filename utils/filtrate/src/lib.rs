@@ -34,16 +34,18 @@
 pub mod effect;
 pub mod filters;
 pub mod multi_input;
+pub mod runtime;
 
 pub use effect::{
-    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
-    ShaderCache, shader_source_hash,
+    Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
+    EffectRedrawCallback, EffectRenderResult, EffectSetupResult, ShaderCache, shader_source_hash,
 };
 pub use filtrate_core::{
     AnimatedCallback, AnimatedTarget, AnimationTrack, Chain, Filter, FilterExt, FilterParam,
     FragmentList, Interpolator, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray,
     SignalVisitor, StageCollector, WatchGuard,
 };
+pub use runtime::{FilterAdapter, HdrPolicy};
 
 /// Procedural derive that generates a [`Filter`] implementation for a tuple
 /// struct. See `filtrate-derive` for the supported `#[filter(...)]` shapes.

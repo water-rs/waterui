@@ -183,7 +183,7 @@ fn image_view(url: Url) -> impl View {
 fn video_view(url: Url) -> impl View {
     tracing::debug!("Displaying video from: {}", url);
     vstack((
-        VideoPlayer::new(url)
+        video_player(url)
             .show_controls(true)
             .aspect_ratio(AspectRatio::Fit),
         text("Video")

@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec;
