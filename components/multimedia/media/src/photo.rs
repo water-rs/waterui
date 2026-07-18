@@ -309,9 +309,10 @@ async fn fetch_and_decode_streaming(
         return Ok(());
     }
 
-    let mut client = FollowRedirect::new(zenwave::client());
+    let mut client = FollowRedirect::new(zenwave::raw_client());
     let response = client
         .method(Method::GET, &url)
+        .map_err(|e| e.to_string())?
         .await
         .map_err(|e| e.to_string())?;
 
@@ -496,9 +497,10 @@ mod tests {
 
             let mut selected = None;
             for url in candidates {
-                let mut client = FollowRedirect::new(zenwave::client());
+                let mut client = FollowRedirect::new(zenwave::raw_client());
                 let response = client
                     .method(Method::GET, url)
+                    .expect("HDR AVIF sample request should build")
                     .await
                     .expect("HDR AVIF sample request should succeed");
                 assert!(
@@ -543,12 +545,13 @@ mod tests {
         futures::executor::block_on(async {
             use zenwave::{Client, Method, redirect::FollowRedirect};
 
-            let mut client = FollowRedirect::new(zenwave::client());
+            let mut client = FollowRedirect::new(zenwave::raw_client());
             let response = client
                 .method(
                     Method::GET,
                     "https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic",
                 )
+                .expect("HEIC sample request should build")
                 .await
                 .expect("HEIC sample request should succeed");
             assert!(
@@ -574,12 +577,13 @@ mod tests {
         futures::executor::block_on(async {
             use zenwave::{Client, Method, redirect::FollowRedirect};
 
-            let mut client = FollowRedirect::new(zenwave::client());
+            let mut client = FollowRedirect::new(zenwave::raw_client());
             let response = client
                 .method(
                     Method::GET,
                     "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile0.8bpc.yuv420.avif",
                 )
+                .expect("AVIF sample request should build")
                 .await
                 .expect("AV1 sample request should succeed");
             assert!(

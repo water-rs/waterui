@@ -27,7 +27,9 @@ use executor_core::spawn_local;
 use {metal::foreign_types::ForeignType, wgpu_hal::api::Metal as MetalApi};
 
 use waterui_graphics::RedrawHandle;
-use waterui_graphics::filter_view::{AppliedFilter, EffectContext, EffectInput, EffectOutput};
+use waterui_graphics::filter_view::{
+    AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput,
+};
 use waterui_graphics::shared_context::GpuRuntime;
 
 use crate::{IntoFFI, WuiAnyView};
@@ -123,6 +125,8 @@ pub struct WuiAppliedFilterState {
     /// Latest output dimensions resolved from snapped filter state.
     resolved_output_width: u32,
     resolved_output_height: u32,
+    /// Host-owned effect clock; media effects may bypass this API with explicit timing.
+    frame_clock: EffectFrameClock,
 }
 
 /// Resolved output size returned to native before render scheduling.
@@ -292,6 +296,7 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
         output_height: 0,
         resolved_output_width: 0,
         resolved_output_height: 0,
+        frame_clock: EffectFrameClock::new(),
     }))
 }
 
@@ -579,6 +584,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     });
 
     // Create input/output structs
+    let timing = state.frame_clock.tick();
     let input = EffectInput {
         device: &state.runtime.context().device,
         queue: &state.runtime.context().queue,
@@ -587,6 +593,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         format: input_format,
         width: state.input_width,
         height: state.input_height,
+        timing,
     };
 
     let filter_output = EffectOutput {

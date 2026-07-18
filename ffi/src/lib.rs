@@ -48,6 +48,8 @@ use executor_core::{init_global_executor, init_local_executor};
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
 pub use waterui_video;
+#[cfg(not(target_vendor = "apple"))]
+pub use waterui_video_gpu;
 
 use waterui_core::metadata::MetadataKey;
 
@@ -98,7 +100,8 @@ macro_rules! export {
                     $crate::__init();
                 }
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
-                $crate::waterui_video::install_platform_hooks(&mut env);
+                #[cfg(not(target_vendor = "apple"))]
+                $crate::waterui_video_gpu::install(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
 
@@ -543,6 +546,7 @@ pub unsafe extern "C" fn waterui_view_stretch_axis(
 
 // UTF-8 string represented as a byte array
 #[repr(C)]
+#[derive(Default)]
 pub struct WuiStr(WuiArray<u8>);
 
 impl IntoFFI for Str {

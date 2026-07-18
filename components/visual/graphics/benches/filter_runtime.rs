@@ -111,6 +111,11 @@ impl GpuBench {
             format: FORMAT,
             width: WIDTH,
             height: HEIGHT,
+            timing: filtrate::EffectFrameTiming::new(
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+                0,
+            ),
         };
         let output = EffectOutput {
             device: &self.device,

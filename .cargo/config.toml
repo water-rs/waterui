@@ -1,3 +1,8 @@
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
 rustflags = ["-Clinker-flavor=lld-link"]
+
+# Keep the independently publishable WaterKit workspace on the registry contract while
+# resolving the co-developed Filtrate package from this superproject during local work.
+[patch.crates-io]
+filtrate = { path = "utils/filtrate" }

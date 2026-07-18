@@ -278,9 +278,9 @@ pub fn asset(input: TokenStream) -> TokenStream {
         }
         AssetKind::Video => {
             if is_remote {
-                quote! { ::waterui::Video::new(#path_lit) }
+                quote! { ::waterui::video::video(#path_lit) }
             } else {
-                quote! { ::waterui::Video::new(::waterui::Url::from_file_path_str(#path_lit)) }
+                quote! { ::waterui::video::video(::waterui::Url::from_file_path_str(#path_lit)) }
             }
         }
         AssetKind::Audio => {

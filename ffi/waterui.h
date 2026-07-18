@@ -436,6 +436,15 @@ typedef enum WuiAxis {
 } WuiAxis;
 
 /**
+ * FFI representation of a media delivery strategy.
+ */
+typedef enum WuiVideoDelivery {
+  WuiVideoDelivery_Progressive = 0,
+  WuiVideoDelivery_Hls = 1,
+  WuiVideoDelivery_Dash = 2,
+} WuiVideoDelivery;
+
+/**
  * Tagged subtitle selection used by the native player.
  */
 typedef enum WuiSubtitleSelectionType {
@@ -443,6 +452,32 @@ typedef enum WuiSubtitleSelectionType {
   WuiSubtitleSelectionType_Off = 1,
   WuiSubtitleSelectionType_Track = 2,
 } WuiSubtitleSelectionType;
+
+/**
+ * Tagged audio track selection used by the native player.
+ */
+typedef enum WuiAudioTrackSelectionType {
+  WuiAudioTrackSelectionType_Auto = 0,
+  WuiAudioTrackSelectionType_Track = 1,
+} WuiAudioTrackSelectionType;
+
+/**
+ * Tagged video-quality track selection used by the native player.
+ */
+typedef enum WuiVideoTrackSelectionType {
+  WuiVideoTrackSelectionType_Auto = 0,
+  WuiVideoTrackSelectionType_Track = 1,
+} WuiVideoTrackSelectionType;
+
+/**
+ * Native subtitle-track origin.
+ */
+typedef enum WuiVideoSubtitleTrackOrigin {
+  WuiVideoSubtitleTrackOrigin_Sidecar = 0,
+  WuiVideoSubtitleTrackOrigin_Embedded = 1,
+  WuiVideoSubtitleTrackOrigin_Manifest = 2,
+  WuiVideoSubtitleTrackOrigin_Native = 3,
+} WuiVideoSubtitleTrackOrigin;
 
 /**
  * FFI representation of video events.
@@ -459,13 +494,42 @@ typedef enum WuiVideoEventType {
   WuiVideoEventType_NextRequested = 8,
   WuiVideoEventType_PreviousRequested = 9,
   WuiVideoEventType_PlaybackStateChanged = 10,
+  WuiVideoEventType_ExternalPlaybackChanged = 11,
+  WuiVideoEventType_PlaybackOutputPathChanged = 12,
 } WuiVideoEventType;
+
+/**
+ * Native representation of the active playback output architecture.
+ */
+typedef enum WuiVideoPlaybackOutputPath {
+  WuiVideoPlaybackOutputPath_PlatformManaged = 0,
+  WuiVideoPlaybackOutputPath_DecodedPcmGpu = 1,
+  WuiVideoPlaybackOutputPath_AudioOffload = 2,
+  WuiVideoPlaybackOutputPath_AudioVideoTunneling = 3,
+} WuiVideoPlaybackOutputPath;
+
+/**
+ * Native projection of a required playback power path.
+ */
+typedef enum WuiVideoPlaybackPowerPolicy {
+  WuiVideoPlaybackPowerPolicy_PlatformManaged = 0,
+  WuiVideoPlaybackPowerPolicy_RequireAudioOffload = 1,
+  WuiVideoPlaybackPowerPolicy_RequireAudioVideoTunneling = 2,
+} WuiVideoPlaybackPowerPolicy;
 
 typedef enum WuiAspectRatio {
   WuiAspectRatio_Fit = 0,
   WuiAspectRatio_Fill = 1,
   WuiAspectRatio_Stretch = 2,
 } WuiAspectRatio;
+
+/**
+ * Native projection support discriminator.
+ */
+typedef enum WuiVideoProjection {
+  WuiVideoProjection_Rectilinear = 0,
+  WuiVideoProjection_Equirectangular = 1,
+} WuiVideoProjection;
 
 /**
  * Semantic native toolbar placement.
@@ -600,6 +664,14 @@ typedef struct Affine2 Affine2;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
+typedef struct Binding_AudioTrackSelection Binding_AudioTrackSelection;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
 typedef struct Binding_Color Binding_Color;
 
 /**
@@ -617,6 +689,14 @@ typedef struct Binding_DateTime Binding_DateTime;
  * changes, it can notify watchers that have registered interest in the value.
  */
 typedef struct Binding_Id Binding_Id;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
+typedef struct Binding_Option_LiveWindow Binding_Option_LiveWindow;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -664,6 +744,14 @@ typedef struct Binding_SubtitleSelection Binding_SubtitleSelection;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
+typedef struct Binding_TrackCatalog Binding_TrackCatalog;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
 typedef struct Binding_Vec_Date Binding_Vec_Date;
 
 /**
@@ -672,7 +760,7 @@ typedef struct Binding_Vec_Date Binding_Vec_Date;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
-typedef struct Binding_Volume Binding_Volume;
+typedef struct Binding_VideoTrackSelection Binding_VideoTrackSelection;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -729,6 +817,14 @@ typedef struct Computed_ColorScheme Computed_ColorScheme;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_CursorStyle Computed_CursorStyle;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_Delivery Computed_Delivery;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -945,6 +1041,8 @@ typedef struct WuiSharedAction WuiSharedAction;
 
 typedef struct WuiTabContent WuiTabContent;
 
+typedef struct WuiVideoController WuiVideoController;
+
 typedef struct WuiVideoEventHandler WuiVideoEventHandler;
 
 /**
@@ -958,6 +1056,8 @@ typedef struct WuiWatcherMetadata WuiWatcherMetadata;
 
 typedef struct WuiWatcher_AnyView WuiWatcher_AnyView;
 
+typedef struct WuiWatcher_AudioTrackSelection WuiWatcher_AudioTrackSelection;
+
 typedef struct WuiWatcher_Color WuiWatcher_Color;
 
 typedef struct WuiWatcher_ColorScheme WuiWatcher_ColorScheme;
@@ -965,6 +1065,8 @@ typedef struct WuiWatcher_ColorScheme WuiWatcher_ColorScheme;
 typedef struct WuiWatcher_CursorStyle WuiWatcher_CursorStyle;
 
 typedef struct WuiWatcher_DateTime WuiWatcher_DateTime;
+
+typedef struct WuiWatcher_Delivery WuiWatcher_Delivery;
 
 typedef struct WuiWatcher_HorizontalAlignment WuiWatcher_HorizontalAlignment;
 
@@ -991,6 +1093,8 @@ typedef struct WuiWatcher_SubtitleSelection WuiWatcher_SubtitleSelection;
 typedef struct WuiWatcher_Vec_Annotation WuiWatcher_Vec_Annotation;
 
 typedef struct WuiWatcher_Vec_Date WuiWatcher_Vec_Date;
+
+typedef struct WuiWatcher_VideoTrackSelection WuiWatcher_VideoTrackSelection;
 
 typedef struct WuiWatcher_WindowState WuiWatcher_WindowState;
 
@@ -2907,6 +3011,8 @@ typedef struct WuiTableColumn {
   struct WuiAnyViews *rows;
 } WuiTableColumn;
 
+typedef struct Computed_Delivery WuiComputed_Delivery;
+
 /**
  * FFI representation of [`SubtitleSelection`].
  */
@@ -2921,6 +3027,183 @@ typedef struct WuiSubtitleSelection {
 typedef struct Binding_SubtitleSelection WuiBinding_SubtitleSelection;
 
 /**
+ * FFI representation of [`AudioTrackSelection`].
+ */
+typedef struct WuiAudioTrackSelection {
+  enum WuiAudioTrackSelectionType selection_type;
+  /**
+   * Track index. Read only when `selection_type` is `Track`.
+   */
+  uintptr_t track_index;
+} WuiAudioTrackSelection;
+
+typedef struct Binding_AudioTrackSelection WuiBinding_AudioTrackSelection;
+
+/**
+ * FFI representation of [`VideoTrackSelection`].
+ */
+typedef struct WuiVideoTrackSelection {
+  enum WuiVideoTrackSelectionType selection_type;
+  /**
+   * Track index. Read only when `selection_type` is `Track`.
+   */
+  uintptr_t track_index;
+} WuiVideoTrackSelection;
+
+typedef struct Binding_VideoTrackSelection WuiBinding_VideoTrackSelection;
+
+typedef struct Binding_TrackCatalog WuiBinding_TrackCatalog;
+
+typedef struct WuiArraySlice_WuiStr {
+  struct WuiStr *head;
+  uintptr_t len;
+} WuiArraySlice_WuiStr;
+
+typedef struct WuiArrayVTable_WuiStr {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiStr (*slice)(const void*);
+} WuiArrayVTable_WuiStr;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiStr {
+  NonNull data;
+  struct WuiArrayVTable_WuiStr vtable;
+} WuiArray_WuiStr;
+
+/**
+ * Native representation of one selectable audio track.
+ */
+typedef struct WuiVideoAudioTrackInfo {
+  struct WuiStr label;
+  struct WuiStr language;
+  struct WuiArray_WuiStr roles;
+} WuiVideoAudioTrackInfo;
+
+typedef struct WuiArraySlice_WuiVideoAudioTrackInfo {
+  struct WuiVideoAudioTrackInfo *head;
+  uintptr_t len;
+} WuiArraySlice_WuiVideoAudioTrackInfo;
+
+typedef struct WuiArrayVTable_WuiVideoAudioTrackInfo {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiVideoAudioTrackInfo (*slice)(const void*);
+} WuiArrayVTable_WuiVideoAudioTrackInfo;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiVideoAudioTrackInfo {
+  NonNull data;
+  struct WuiArrayVTable_WuiVideoAudioTrackInfo vtable;
+} WuiArray_WuiVideoAudioTrackInfo;
+
+/**
+ * Native representation of one selectable video representation.
+ */
+typedef struct WuiVideoTrackInfo {
+  struct WuiStr id;
+  struct WuiStr label;
+  uint64_t bandwidth;
+  uint32_t width;
+  uint32_t height;
+  struct WuiArray_WuiStr codecs;
+  bool hdr;
+} WuiVideoTrackInfo;
+
+typedef struct WuiArraySlice_WuiVideoTrackInfo {
+  struct WuiVideoTrackInfo *head;
+  uintptr_t len;
+} WuiArraySlice_WuiVideoTrackInfo;
+
+typedef struct WuiArrayVTable_WuiVideoTrackInfo {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiVideoTrackInfo (*slice)(const void*);
+} WuiArrayVTable_WuiVideoTrackInfo;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiVideoTrackInfo {
+  NonNull data;
+  struct WuiArrayVTable_WuiVideoTrackInfo vtable;
+} WuiArray_WuiVideoTrackInfo;
+
+/**
+ * Native representation of one selectable subtitle track.
+ */
+typedef struct WuiVideoSubtitleTrackInfo {
+  struct WuiStr label;
+  struct WuiStr language;
+  struct WuiArray_WuiStr roles;
+  bool forced;
+  enum WuiVideoSubtitleTrackOrigin origin;
+} WuiVideoSubtitleTrackInfo;
+
+typedef struct WuiArraySlice_WuiVideoSubtitleTrackInfo {
+  struct WuiVideoSubtitleTrackInfo *head;
+  uintptr_t len;
+} WuiArraySlice_WuiVideoSubtitleTrackInfo;
+
+typedef struct WuiArrayVTable_WuiVideoSubtitleTrackInfo {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiVideoSubtitleTrackInfo (*slice)(const void*);
+} WuiArrayVTable_WuiVideoSubtitleTrackInfo;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiVideoSubtitleTrackInfo {
+  NonNull data;
+  struct WuiArrayVTable_WuiVideoSubtitleTrackInfo vtable;
+} WuiArray_WuiVideoSubtitleTrackInfo;
+
+typedef struct Binding_Option_LiveWindow WuiBinding_Option_LiveWindow;
+
+/**
+ * Atomic native snapshot of a live presentation timeline.
+ */
+typedef struct WuiVideoLiveWindow {
+  /**
+   * Whether the remaining fields contain a live timeline.
+   */
+  bool present;
+  /**
+   * Earliest seekable presentation position in seconds.
+   */
+  double seekable_start_seconds;
+  /**
+   * Latest seekable presentation position in seconds.
+   */
+  double seekable_end_seconds;
+  /**
+   * Current live edge in presentation seconds.
+   */
+  double live_edge_seconds;
+  /**
+   * Backend-recommended playback position in presentation seconds.
+   */
+  double target_position_seconds;
+} WuiVideoLiveWindow;
+
+/**
  * FFI representation of a video event.
  */
 typedef struct WuiVideoEvent {
@@ -2929,14 +3212,20 @@ typedef struct WuiVideoEvent {
    * Rust-owned error string. Non-null exactly when `event_type` is `Error`.
    */
   struct WuiStr *error_message;
+  uint64_t position_ms;
   uint32_t buffered_ms;
+  uint64_t startup_time_ms;
+  bool av_drift_available;
   float av_drift_ms;
   uint64_t dropped_video_frames;
+  uint64_t rebuffer_count;
+  uint64_t rebuffer_duration_ms;
+  uint64_t observed_network_throughput_bps;
   bool picture_in_picture_active;
+  bool external_playback_active;
   bool playback_active;
+  enum WuiVideoPlaybackOutputPath playback_output_path;
 } WuiVideoEvent;
-
-typedef struct Binding_Volume WuiBinding_Volume;
 
 /**
  * Immutable buffering and realtime strategy for native playback.
@@ -2947,6 +3236,7 @@ typedef struct WuiVideoPlaybackPolicy {
   uint32_t vod_resume_buffer_ms;
   uint32_t vod_stall_buffer_ms;
   uint32_t live_max_video_late_ms;
+  enum WuiVideoPlaybackPowerPolicy power;
 } WuiVideoPlaybackPolicy;
 
 /**
@@ -2954,9 +3244,17 @@ typedef struct WuiVideoPlaybackPolicy {
  */
 typedef struct WuiVideoPlaybackDescriptor {
   /**
+   * Retained playlist and transport controller.
+   */
+  struct WuiVideoController *controller;
+  /**
    * The video source URL as a string (reactive).
    */
   WuiComputed_Str *source;
+  /**
+   * The source delivery strategy (reactive).
+   */
+  WuiComputed_Delivery *delivery;
   /**
    * The media title shown in system media controls.
    */
@@ -2974,9 +3272,41 @@ typedef struct WuiVideoPlaybackDescriptor {
    */
   WuiComputed_Str *artwork_url;
   /**
-   * Preferred playback duration in seconds, or `-1.0` when unknown.
+   * Current playback duration in seconds, or `0.0` when unknown.
    */
-  WuiComputed_f64 *duration_seconds;
+  WuiBinding_f64 *duration_seconds;
+  /**
+   * Current presentation position in seconds.
+   */
+  WuiBinding_f64 *position_seconds;
+  /**
+   * Requested playing state.
+   */
+  WuiBinding_bool *desired_playing;
+  /**
+   * Requested absolute seek position in presentation seconds.
+   */
+  WuiBinding_f64 *seek_target_seconds;
+  /**
+   * Monotonic seek-request generation encoded as a wrapping `i32` token.
+   */
+  WuiBinding_i32 *seek_generation;
+  /**
+   * Monotonic forward frame-step generation encoded as a wrapping `i32` token.
+   */
+  WuiBinding_i32 *step_forward_generation;
+  /**
+   * Monotonic backward frame-step generation encoded as a wrapping `i32` token.
+   */
+  WuiBinding_i32 *step_backward_generation;
+  /**
+   * High-level playback phase encoded by `playback_phase_code`.
+   */
+  WuiBinding_i32 *phase;
+  /**
+   * Playlist repeat mode encoded by `repeat_mode_code`.
+   */
+  WuiBinding_i32 *repeat_mode;
   /**
    * Whether the active queue has a next item.
    */
@@ -2986,13 +3316,33 @@ typedef struct WuiVideoPlaybackDescriptor {
    */
   WuiBinding_bool *has_previous;
   /**
-   * Playback volume. A negative value is muted while preserving its absolute level.
+   * Validated playback volume in the inclusive `0.0..=1.0` range.
    */
-  WuiBinding_Volume *volume;
+  WuiBinding_f32 *volume;
+  /**
+   * Whether playback audio is muted.
+   */
+  WuiBinding_bool *muted;
   /**
    * Subtitle selection for the current runtime track list.
    */
   WuiBinding_SubtitleSelection *subtitle_selection;
+  /**
+   * Audio track selection for the current runtime track list.
+   */
+  WuiBinding_AudioTrackSelection *audio_track_selection;
+  /**
+   * Video-quality selection for the current runtime track list.
+   */
+  WuiBinding_VideoTrackSelection *video_track_selection;
+  /**
+   * Native write handle for the shared selectable-track catalog.
+   */
+  WuiBinding_TrackCatalog *track_catalog;
+  /**
+   * Native write handle for the current atomic live-window snapshot.
+   */
+  WuiBinding_Option_LiveWindow *live_window;
   /**
    * Playback speed (1.0 = normal speed).
    */
@@ -3024,13 +3374,17 @@ typedef struct WuiVideo {
    */
   enum WuiAspectRatio aspect_ratio;
   /**
+   * Projection requested by the semantic component.
+   */
+  enum WuiVideoProjection projection;
+  /**
    * Whether the video should loop when it ends.
    */
   bool loops;
 } WuiVideo;
 
 /**
- * FFI representation of the VideoPlayer component (with native controls).
+ * FFI representation of the interactive VideoPlayer component.
  */
 typedef struct WuiVideoPlayer {
   /**
@@ -3042,7 +3396,11 @@ typedef struct WuiVideoPlayer {
    */
   enum WuiAspectRatio aspect_ratio;
   /**
-   * Whether to show native playback controls.
+   * Projection requested by the semantic component.
+   */
+  enum WuiVideoProjection projection;
+  /**
+   * Whether to show interactive playback controls.
    */
   bool show_controls;
 } WuiVideoPlayer;
@@ -6140,6 +6498,43 @@ struct WuiTypeId waterui_table_id(void);
 struct WuiTableColumn waterui_force_as_table_column(struct WuiAnyView *view);
 
 /**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiVideoDelivery waterui_read_computed_video_delivery(const WuiComputed_Delivery *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_video_delivery(const WuiComputed_Delivery *computed,
+                                                              struct WuiWatcher_Delivery *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_video_delivery(WuiComputed_Delivery *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_Delivery *waterui_new_watcher_video_delivery(void *data,
+                                                               void (*call)(void*,
+                                                                            enum WuiVideoDelivery,
+                                                                            struct WuiWatcherMetadata*),
+                                                               void (*drop)(void*));
+
+/**
  * Reads the current value from a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
@@ -6185,10 +6580,187 @@ struct WuiWatcher_SubtitleSelection *waterui_new_watcher_subtitle_selection(void
                                                                             void (*drop)(void*));
 
 /**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiAudioTrackSelection waterui_read_binding_audio_track_selection(const WuiBinding_AudioTrackSelection *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_audio_track_selection(WuiBinding_AudioTrackSelection *binding,
+                                               struct WuiAudioTrackSelection value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_audio_track_selection(const WuiBinding_AudioTrackSelection *binding,
+                                                                    struct WuiWatcher_AudioTrackSelection *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_audio_track_selection(WuiBinding_AudioTrackSelection *binding);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_AudioTrackSelection *waterui_new_watcher_audio_track_selection(void *data,
+                                                                                 void (*call)(void*,
+                                                                                              struct WuiAudioTrackSelection,
+                                                                                              struct WuiWatcherMetadata*),
+                                                                                 void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiVideoTrackSelection waterui_read_binding_video_track_selection(const WuiBinding_VideoTrackSelection *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_video_track_selection(WuiBinding_VideoTrackSelection *binding,
+                                               struct WuiVideoTrackSelection value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_video_track_selection(const WuiBinding_VideoTrackSelection *binding,
+                                                                    struct WuiWatcher_VideoTrackSelection *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_video_track_selection(WuiBinding_VideoTrackSelection *binding);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_VideoTrackSelection *waterui_new_watcher_video_track_selection(void *data,
+                                                                                 void (*call)(void*,
+                                                                                              struct WuiVideoTrackSelection,
+                                                                                              struct WuiWatcherMetadata*),
+                                                                                 void (*drop)(void*));
+
+/**
+ * Replaces the audio portion of a native player's shared track catalog.
+ *
+ * # Safety
+ *
+ * `binding` must be a live pointer from a video descriptor. `tracks` transfers
+ * ownership of its outer array and every nested string to Rust.
+ */
+void waterui_video_track_catalog_replace_audio(const WuiBinding_TrackCatalog *binding,
+                                               struct WuiArray_WuiVideoAudioTrackInfo tracks);
+
+/**
+ * Replaces the video portion of a native player's shared track catalog.
+ *
+ * # Safety
+ *
+ * `binding` must be a live pointer from a video descriptor. `tracks` transfers
+ * ownership of its outer array and every nested string to Rust.
+ */
+void waterui_video_track_catalog_replace_video(const WuiBinding_TrackCatalog *binding,
+                                               struct WuiArray_WuiVideoTrackInfo tracks);
+
+/**
+ * Replaces the subtitle portion of a native player's shared track catalog.
+ *
+ * # Safety
+ *
+ * `binding` must be a live pointer from a video descriptor. `tracks` transfers
+ * ownership of its outer array and every nested string to Rust.
+ */
+void waterui_video_track_catalog_replace_subtitles(const WuiBinding_TrackCatalog *binding,
+                                                   struct WuiArray_WuiVideoSubtitleTrackInfo tracks);
+
+/**
+ * Drops the native write handle for a shared selectable-track catalog.
+ *
+ * # Safety
+ *
+ * `binding` must be a live pointer from a video descriptor and must be
+ * consumed exactly once.
+ */
+void waterui_drop_video_track_catalog_binding(WuiBinding_TrackCatalog *binding);
+
+/**
+ * Replaces the current live-window snapshot atomically.
+ *
+ * # Safety
+ *
+ * `binding` must be a live pointer from a video descriptor.
+ */
+void waterui_video_live_window_replace(const WuiBinding_Option_LiveWindow *binding,
+                                       struct WuiVideoLiveWindow window);
+
+/**
+ * Drops the native write handle for a live-window binding.
+ *
+ * # Safety
+ *
+ * `binding` must be a live pointer from a video descriptor and must be
+ * consumed exactly once.
+ */
+void waterui_drop_video_live_window_binding(WuiBinding_Option_LiveWindow *binding);
+
+/**
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_video_event_handler(struct WuiVideoEventHandler *value);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_video_controller(struct WuiVideoController *value);
+
+/**
+ * Selects the next item through the session controller retained by a native player.
+ *
+ * # Safety
+ *
+ * `controller` must be a live pointer from a video playback descriptor.
+ */
+void waterui_video_controller_next(const struct WuiVideoController *controller);
+
+/**
+ * Selects the previous item through the session controller retained by a native player.
+ *
+ * # Safety
+ *
+ * `controller` must be a live pointer from a video playback descriptor.
+ */
+void waterui_video_controller_previous(const struct WuiVideoController *controller);
 
 /**
  * Delivers one native playback event to an installed Rust handler.

@@ -879,9 +879,10 @@ pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, RemoteDownloadE
 async fn download_remote_bytes_with_content_type(
     url: &str,
 ) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
-    let mut client = FollowRedirect::new(zenwave::client());
+    let mut client = FollowRedirect::new(zenwave::raw_client());
     let response = client
         .method(Method::GET, url)
+        .map_err(|error| RemoteDownloadError::Http(Box::new(error)))?
         .await
         .map_err(|error| RemoteDownloadError::Http(Box::new(error.into())))?;
 

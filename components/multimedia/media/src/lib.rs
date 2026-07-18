@@ -24,30 +24,28 @@
 //! ```rust,ignore
 //! use waterui_media::{Photo, url::Url};
 //!
-//! let url = Url::parse("https://example.com/image.jpg").unwrap();
+//! let url = Url::parse("https://waterui.dev/favicon.ico").unwrap();
 //! let _photo = Photo::new(url);
 //! ```
 //!
 //! ### Video with Controls
 //! ```rust,ignore
-//! use waterui_core::binding;
-//! use waterui_media::{Video, VideoPlayer, url::Url};
+//! use waterui_media::{video, video_player, url::Url};
 //!
-//! let url = Url::parse("https://example.com/video.mp4").unwrap();
-//! let muted = binding(false);
-//! let _video = Video::new(url.clone());
-//! let _player = VideoPlayer::new(url).muted(&muted);
+//! let url = Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap();
+//! let _video = video::video(url.clone());
+//! let _player = video_player(url);
 //! ```
 //!
 //! ### Unified Media Type
 //! ```rust,ignore
 //! use waterui_media::{Media, live::LivePhotoSource, url::Url};
 //!
-//! let image = Media::Image(Url::parse("https://example.com/photo.jpg").unwrap());
-//! let video = Media::Video(Url::parse("https://example.com/video.mp4").unwrap());
+//! let image = Media::Image(Url::parse("https://waterui.dev/favicon.ico").unwrap());
+//! let video = Media::Video(Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap());
 //! let live_photo = Media::LivePhoto(LivePhotoSource::new(
-//!     Url::parse("https://example.com/photo.jpg").unwrap(),
-//!     Url::parse("https://example.com/video.mov").unwrap(),
+//!     Url::parse("https://waterui.dev/favicon.ico").unwrap(),
+//!     Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap(),
 //! ));
 //! assert!(matches!(image, Media::Image(_)));
 //! assert!(matches!(video, Media::Video(_)));
@@ -81,7 +79,10 @@ pub use {
         Volume,
     },
     waterui_image::Image,
-    waterui_video::{Delivery, MediaItem, SubtitleTrack},
+    waterui_video::{
+        Delivery, MediaItem, MediaItemId, PlaybackError, PlaybackPhase, PlaybackSession,
+        PlayerController, Playlist, RepeatMode, SubtitleTrack, video_player,
+    },
 };
 
 /// Re-export the stable [`Filter`] trait from `filtrate-core` for
@@ -108,11 +109,11 @@ use crate::live::LivePhotoSource;
 /// ```text
 /// use waterui_media::{Media, live::LivePhotoSource, url::Url};
 ///
-/// let image = Media::Image(Url::parse("https://example.com/photo.jpg").unwrap());
-/// let video = Media::Video(Url::parse("https://example.com/video.mp4").unwrap());
+/// let image = Media::Image(Url::parse("https://waterui.dev/favicon.ico").unwrap());
+/// let video = Media::Video(Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap());
 /// let live_photo = Media::LivePhoto(LivePhotoSource::new(
-///     Url::parse("https://example.com/photo.jpg").unwrap(),
-///     Url::parse("https://example.com/video.mov").unwrap(),
+///     Url::parse("https://waterui.dev/favicon.ico").unwrap(),
+///     Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap(),
 /// ));
 /// assert!(matches!(image, Media::Image(_)));
 /// assert!(matches!(video, Media::Video(_)));
@@ -135,7 +136,7 @@ impl View for Media {
         match self {
             Self::Image(url) => AnyView::new(Photo::new(url)),
             Self::LivePhoto(live) => AnyView::new(LivePhoto::new(live)),
-            Self::Video(url) => AnyView::new(VideoPlayer::new(url)),
+            Self::Video(url) => AnyView::new(waterui_video::video_player(url)),
         }
     }
 }

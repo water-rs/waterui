@@ -7,6 +7,7 @@ use glib::Bytes;
 use gtk4::prelude::*;
 use gtk4::{Picture, Widget};
 use waterui_graphics::GpuRuntime;
+use waterui_graphics::filter_view::EffectFrameClock;
 use waterui_graphics::filter_view::{AppliedFilter, EffectContext, EffectInput, EffectOutput};
 
 struct AppliedFilterState {
@@ -23,6 +24,7 @@ struct AppliedFilterState {
     render_in_flight: bool,
     filtered_output_revealed: bool,
     last_size: Option<(i32, i32)>,
+    frame_clock: EffectFrameClock,
 }
 
 struct RenderedFilterOutput {
@@ -83,6 +85,7 @@ pub fn wrap_filtered_content(
         render_in_flight: false,
         filtered_output_revealed: false,
         last_size: None,
+        frame_clock: EffectFrameClock::new(),
     }));
 
     state.borrow().paintable.connect_invalidate_contents({
@@ -285,6 +288,7 @@ async fn render_filter_output(
 
     let (output_width, output_height, output_texture, needs_redraw) = {
         let mut state = state.borrow_mut();
+        let timing = state.frame_clock.tick();
         let filter = state
             .filter
             .as_mut()
@@ -348,6 +352,7 @@ async fn render_filter_output(
             format: wgpu::TextureFormat::Rgba8Unorm,
             width,
             height,
+            timing,
         };
         let output = EffectOutput {
             device,
