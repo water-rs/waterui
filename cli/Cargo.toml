@@ -34,7 +34,6 @@ image = "0.25"  # For PNG reading/writing and pixel manipulation (diff feature)
 cargo_toml = "0.22.3"
 color-eyre = { version = "0.6.5", features = ["issue-url"]}
 include_dir = "0.7.4"
-skyzen = { workspace = true, default-features = false, features = ["json", "ws", "hyper"] }
 futures.workspace = true
 futures-lite = "2.6"
 async-channel.workspace = true
@@ -100,4 +99,4 @@ toml = "0.9.12"
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["roxmltree", "skyzen", "waterui-inspector-protocol"]
+ignored = ["roxmltree", "waterui-inspector-protocol"]
