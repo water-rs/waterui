@@ -30,9 +30,11 @@ use num_traits::ToPrimitive;
 #[cfg(feature = "gpu")]
 use std::time::Instant;
 
-use nami::{Computed, SignalExt as _, signal::IntoComputed};
 #[cfg(feature = "gpu")]
 use nami::Signal as _;
+use nami::{Computed, SignalExt as _, signal::IntoComputed};
+#[cfg(feature = "gpu")]
+use shaderloom::CompiledShader;
 #[cfg(feature = "gpu")]
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
@@ -41,9 +43,7 @@ use waterui_graphics::color::Color;
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, reactive_color::ReactiveColor};
 
 #[cfg(feature = "gpu")]
-const MORPH_SHADER_LABEL: &str = "shaders/morph.wgsl";
-#[cfg(feature = "gpu")]
-const MORPH_SHADER_SOURCE: &str = include_str!("shaders/morph.wgsl");
+const MORPH_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/morph.rs"));
 
 // ============================================================================
 // PathCommand - The primitive operations for drawing paths
@@ -980,9 +980,8 @@ impl GpuView for MorphShapeRenderer {
             self.progress_guard = Some(progress.watch(move |_| redraw.request_redraw()));
         }
 
-        let shader =
-            ctx.shader_cache
-                .get_or_create(ctx.device, MORPH_SHADER_LABEL, MORPH_SHADER_SOURCE);
+        let (vertex_shader, fragment_shader) =
+            MORPH_SHADER.create_render_stages(ctx.device, "vs_main", "fs_main");
 
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Morph Shape Uniforms"),
@@ -991,21 +990,15 @@ impl GpuView for MorphShapeRenderer {
             mapped_at_creation: false,
         });
 
-        let bind_group_layout =
-            ctx.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("Morph Shape Bind Group Layout"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                });
+        let mut bind_group_layouts = MORPH_SHADER.create_bind_group_layouts(ctx.device);
+        assert_eq!(
+            bind_group_layouts.len(),
+            1,
+            "morph shader must use exactly one bind group"
+        );
+        let bind_group_layout = bind_group_layouts
+            .pop()
+            .expect("one morph shader bind group was asserted");
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Morph Shape Bind Group"),
@@ -1020,8 +1013,8 @@ impl GpuView for MorphShapeRenderer {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Morph Shape Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -1036,14 +1029,14 @@ impl GpuView for MorphShapeRenderer {
                 label: Some("Morph Shape Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: shader.as_ref(),
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: shader.as_ref(),
-                    entry_point: Some("fs_main"),
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
                         blend,
@@ -1057,8 +1050,8 @@ impl GpuView for MorphShapeRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         self.pipeline = Some(pipeline);
@@ -1140,6 +1133,7 @@ impl GpuView for MorphShapeRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

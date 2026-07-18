@@ -24,7 +24,7 @@ use alloc::vec;
 use executor_core::spawn_local;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-use {metal::foreign_types::ForeignType, wgpu_hal::api::Metal as MetalApi};
+use wgpu_hal::api::Metal as MetalApi;
 
 use waterui_graphics::RedrawHandle;
 use waterui_graphics::filter_view::{
@@ -547,24 +547,12 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         .expect("waterui_applied_filter_render: output configuration is detached");
 
     // Get output texture
-    let output = match output_surface.get_current_texture() {
-        Ok(o) => o,
-        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-            output_surface.configure(&state.runtime.context().device, output_config);
-            match output_surface.get_current_texture() {
-                Ok(o) => o,
-                Err(e) => {
-                    panic!("waterui_applied_filter_render: acquire after reconfigure failed: {e}");
-                }
-            }
-        }
-        Err(wgpu::SurfaceError::Timeout) => {
-            panic!("waterui_applied_filter_render: surface timeout");
-        }
-        Err(e) => {
-            panic!("waterui_applied_filter_render: get_current_texture failed: {e}");
-        }
-    };
+    let output = super::acquire_surface_texture(
+        output_surface,
+        &state.runtime.context().device,
+        output_config,
+        "waterui_applied_filter_render",
+    );
 
     // Get input texture after setup so mutable borrows of `state` are finished.
     let input_texture = state
@@ -670,8 +658,6 @@ fn start_applied_filter_setup(state: &WuiAppliedFilterState, input_format: wgpu:
             queue: &gpu.queue,
             input_format,
             output_format,
-            pipeline_cache: gpu.pipeline_cache(),
-            shader_cache: gpu.shader_cache(),
         };
         filter
             .setup(&ctx)
@@ -740,8 +726,8 @@ pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
     );
     let hal_texture = unsafe { texture.as_hal::<MetalApi>().unwrap_unchecked() };
 
-    let raw = unsafe { hal_texture.raw_handle() };
-    raw.as_ptr().cast::<c_void>()
+    let raw = hal_texture.raw_handle();
+    core::ptr::from_ref(raw).cast_mut().cast::<c_void>()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]

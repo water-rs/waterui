@@ -25,6 +25,7 @@
 mod effect;
 mod qr;
 mod renderer;
+mod shaders;
 mod view;
 
 pub use effect::BarcodeMaskEffect;

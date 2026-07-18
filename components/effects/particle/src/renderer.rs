@@ -11,6 +11,7 @@ use num_traits::ToPrimitive;
 use std::cell::Cell;
 use std::mem::offset_of;
 use std::rc::Rc;
+use shaderloom::ShaderStage;
 use waterui_core::{Computed, Environment, Signal, reactive::watcher::BoxWatcherGuard};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuView, color::ResolvedColor, gpu_surface::RedrawHandle,
@@ -548,6 +549,13 @@ impl ParticleRenderer {
     }
 }
 
+fn fill_mapped_buffer(buffer: &wgpu::Buffer, value: u8) {
+    let mut mapped = buffer.slice(..).get_mapped_range_mut();
+    mapped.slice(..).fill(value);
+    drop(mapped);
+    buffer.unmap();
+}
+
 impl GpuView for ParticleRenderer {
     #[expect(
         clippy::too_many_lines,
@@ -581,8 +589,7 @@ impl GpuView for ParticleRenderer {
                     | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: true,
             });
-            buffer.slice(..).get_mapped_range_mut().fill(0);
-            buffer.unmap();
+            fill_mapped_buffer(&buffer, 0);
             Some(buffer)
         });
 
@@ -612,132 +619,64 @@ impl GpuView for ParticleRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
-        grid_heads_buffer
-            .slice(..)
-            .get_mapped_range_mut()
-            .fill(0xff);
-        grid_heads_buffer.unmap();
+        fill_mapped_buffer(&grid_heads_buffer, 0xff);
         let particle_links_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Particle Interaction Links"),
             size: particle_links_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
-        particle_links_buffer
-            .slice(..)
-            .get_mapped_range_mut()
-            .fill(0xff);
-        particle_links_buffer.unmap();
+        fill_mapped_buffer(&particle_links_buffer, 0xff);
 
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let compute_shader =
-            ctx.shader_cache
-                .get_or_create(device, "Particle Compute Shader", COMPUTE_SHADER);
-        let compute_shader_error = device.pop_error_scope().await;
-        assert!(
-            compute_shader_error.is_none(),
-            "particle compute shader creation failed: {compute_shader_error:?}"
+        let clear_grid_shader =
+            COMPUTE_SHADER.create_entry_point(device, ShaderStage::Compute, "clear_grid");
+        let build_grid_shader =
+            COMPUTE_SHADER.create_entry_point(device, ShaderStage::Compute, "build_grid");
+        let simulate_shader =
+            COMPUTE_SHADER.create_entry_point(device, ShaderStage::Compute, "simulate_particles");
+        let mut compute_bind_group_layouts = COMPUTE_SHADER.create_bind_group_layouts(device);
+        assert_eq!(
+            compute_bind_group_layouts.len(),
+            1,
+            "particle compute shader must use exactly one bind group"
         );
-        let compute_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Particle Compute BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+        let compute_bind_group_layout = compute_bind_group_layouts
+            .pop()
+            .expect("one particle compute bind group was asserted");
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Compute PL"),
-                bind_group_layouts: &[&compute_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&compute_bind_group_layout)],
+                immediate_size: 0,
             });
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let compute_pipeline_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let clear_grid_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Particle Clear Grid Pipeline"),
                 layout: Some(&compute_pipeline_layout),
-                module: &compute_shader,
-                entry_point: Some("clear_grid"),
+                module: clear_grid_shader.module(),
+                entry_point: Some(clear_grid_shader.entry_point()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: ctx.pipeline_cache,
+                cache: None,
             });
         let build_grid_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Particle Build Grid Pipeline"),
                 layout: Some(&compute_pipeline_layout),
-                module: &compute_shader,
-                entry_point: Some("build_grid"),
+                module: build_grid_shader.module(),
+                entry_point: Some(build_grid_shader.entry_point()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: ctx.pipeline_cache,
+                cache: None,
             });
         let simulate_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Particle Simulate Pipeline"),
             layout: Some(&compute_pipeline_layout),
-            module: &compute_shader,
-            entry_point: Some("simulate_particles"),
+            module: simulate_shader.module(),
+            entry_point: Some(simulate_shader.entry_point()),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: ctx.pipeline_cache,
+            cache: None,
         });
-        let compute_pipeline_error = device.pop_error_scope().await;
+        let compute_pipeline_error = compute_pipeline_scope.pop().await;
         assert!(
             compute_pipeline_error.is_none(),
             "particle compute pipeline creation failed: {compute_pipeline_error:?}"
@@ -787,48 +726,36 @@ impl GpuView for ParticleRenderer {
             )
         });
 
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let render_shader =
-            ctx.shader_cache
-                .get_or_create(device, "Particle Render Shader", RENDER_SHADER);
-        let render_shader_error = device.pop_error_scope().await;
-        assert!(
-            render_shader_error.is_none(),
-            "particle render shader creation failed: {render_shader_error:?}"
+        let (vertex_shader, fragment_shader) =
+            RENDER_SHADER.create_render_stages(device, "vs_main", "fs_main");
+        let mut render_bind_group_layouts = RENDER_SHADER.create_bind_group_layouts(device);
+        assert_eq!(
+            render_bind_group_layouts.len(),
+            1,
+            "particle render shader must use exactly one bind group"
         );
-        let render_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Particle Render BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let render_bind_group_layout = render_bind_group_layouts
+            .pop()
+            .expect("one particle render bind group was asserted");
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Render PL"),
-                bind_group_layouts: &[&render_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&render_bind_group_layout)],
+                immediate_size: 0,
             });
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let render_pipeline_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Particle Render Pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &render_shader,
-                entry_point: Some("vs_main"),
+                module: vertex_shader.module(),
+                entry_point: Some(vertex_shader.entry_point()),
                 buffers: &[particle_vertex_layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &render_shader,
-                entry_point: Some("fs_main"),
+                module: fragment_shader.module(),
+                entry_point: Some(fragment_shader.entry_point()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
                     blend: Some(blend_state(self.config.blend_mode())),
@@ -842,10 +769,10 @@ impl GpuView for ParticleRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: ctx.pipeline_cache,
+            multiview_mask: None,
+            cache: None,
         });
-        let render_pipeline_error = device.pop_error_scope().await;
+        let render_pipeline_error = render_pipeline_scope.pop().await;
         assert!(
             render_pipeline_error.is_none(),
             "particle render pipeline creation failed: {render_pipeline_error:?}"
@@ -932,6 +859,7 @@ impl GpuView for ParticleRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             rpass.set_pipeline(pipeline);
             rpass.set_bind_group(0, bind_group, &[]);
@@ -987,8 +915,6 @@ mod tests {
             queue: shared.queue.as_ref(),
             surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
             msaa_samples: 1,
-            pipeline_cache: shared.pipeline_cache(),
-            shader_cache: shared.shader_cache(),
             redraw_handle: RedrawHandle::new(),
         }
     }

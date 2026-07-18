@@ -8,7 +8,7 @@ use waterui_core::{
 };
 use wgpu::util::DeviceExt;
 
-use crate::BarcodeSource;
+use crate::{BarcodeSource, shaders::QR_MASK_EFFECT};
 use waterui_graphics::{
     EffectRenderer, ViewEffectContext, ViewEffectInput, ViewEffectOutput, color::ResolvedColor,
     view_effect::ViewEffectRedrawCallback,
@@ -71,12 +71,9 @@ impl BarcodeMaskEffect {
     fn create_pipeline(
         device: &wgpu::Device,
         output_format: wgpu::TextureFormat,
-        pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("QR mask effect shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/qr_mask_effect.wgsl").into()),
-        });
+        let (vertex_shader, fragment_shader) =
+            QR_MASK_EFFECT.create_render_stages(device, "vs_main", "fs_main");
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("QR mask effect bind group layout"),
@@ -122,22 +119,22 @@ impl BarcodeMaskEffect {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("QR mask effect pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("QR mask effect pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
+                module: vertex_shader.module(),
+                entry_point: Some(vertex_shader.entry_point()),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
+                module: fragment_shader.module(),
+                entry_point: Some(fragment_shader.entry_point()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: output_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -151,15 +148,15 @@ impl BarcodeMaskEffect {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: pipeline_cache,
+            multiview_mask: None,
+            cache: None,
         });
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("QR mask effect sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -206,8 +203,7 @@ impl EffectRenderer for BarcodeMaskEffect {
             .expect("BarcodeMaskEffect requires a redraw callback before setup")
             .clone();
         self.light_color_guard = Some(self.light_color.watch(move |_| redraw()));
-        let (pipeline, bgl, sampler) =
-            Self::create_pipeline(ctx.device, ctx.output_format, ctx.pipeline_cache);
+        let (pipeline, bgl, sampler) = Self::create_pipeline(ctx.device, ctx.output_format);
         self.pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
         self.sampler = Some(sampler);
@@ -301,6 +297,7 @@ impl EffectRenderer for BarcodeMaskEffect {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);

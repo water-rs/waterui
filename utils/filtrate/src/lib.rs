@@ -31,6 +31,7 @@
 //! let chain = Blur(5.0).then(Brightness(0.1));
 //! ```
 
+mod compiled_shaders;
 pub mod effect;
 pub mod filters;
 pub mod multi_input;
@@ -38,7 +39,7 @@ pub mod runtime;
 
 pub use effect::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRedrawCallback, EffectRenderResult, EffectSetupResult, ShaderCache, shader_source_hash,
+    EffectRedrawCallback, EffectRenderResult, EffectSetupResult,
 };
 pub use filtrate_core::{
     AnimatedCallback, AnimatedTarget, AnimationTrack, Chain, Filter, FilterExt, FilterParam,

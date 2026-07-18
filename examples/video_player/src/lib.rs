@@ -17,7 +17,6 @@ use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::task::spawn_local;
 
 /// A selectable video source.
 #[derive(Clone, Copy)]
@@ -103,6 +102,22 @@ pub fn demo() -> impl View {
                     } else {
                         Str::from_static("Inline Playback")
                     });
+                }
+                video::Event::ExternalPlaybackChanged { active } => {
+                    status.set(if active {
+                        Str::from_static("External Playback")
+                    } else {
+                        Str::from_static("Local Playback")
+                    });
+                }
+                video::Event::PlaybackOutputPathChanged { path } => {
+                    status.set(format!("Output: {path:?}").into());
+                }
+                video::Event::TimedMetadata { .. } => {
+                    status.set(Str::from_static("Timed Metadata"));
+                }
+                video::Event::OfflineDrmKeySetChanged { .. } => {
+                    status.set(Str::from_static("Offline DRM Key Updated"));
                 }
                 video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
                 video::Event::NextRequested | video::Event::PreviousRequested => {}
@@ -208,14 +223,9 @@ fn pill_button(
         Srgb::WHITE.with_opacity(0.15).opacity(idle_bg_opacity),
         Srgb::WHITE.with_opacity(0.35).opacity(selected_bg_opacity),
         button(label).action(move || {
-            let controller = controller.clone();
-            spawn_local(async move {
-                controller
-                    .seek_to_item(item_id)
-                    .await
-                    .expect("sample item must remain in the player playlist");
-            })
-            .detach();
+            controller
+                .seek_to_item(item_id)
+                .expect("sample item must remain in the player playlist");
         }),
     ))
 }

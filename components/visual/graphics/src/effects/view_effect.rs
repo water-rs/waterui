@@ -15,8 +15,6 @@ use num_traits::ToPrimitive;
 use waterui_core::View;
 
 use crate::gpu_surface::RedrawHandle;
-use filtrate::ShaderCache;
-
 type ErasedSetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 
 /// Thread-safe callback used by a view effect to wake an on-demand renderer.
@@ -36,10 +34,6 @@ pub struct ViewEffectContext<'a> {
     pub input_format: wgpu::TextureFormat,
     /// The texture format of the effect output.
     pub output_format: wgpu::TextureFormat,
-    /// Optional pipeline cache for faster pipeline creation.
-    pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
-    /// Device-bound shader module cache owned by the GPU host.
-    pub shader_cache: &'a ShaderCache,
 }
 
 impl fmt::Debug for ViewEffectContext<'_> {

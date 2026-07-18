@@ -1,4 +1,7 @@
-//! WGSL shader sources for the particle system.
+//! Build-time compiled shaders for the particle system.
 
-pub const COMPUTE_SHADER: &str = include_str!("particle_compute.wgsl");
-pub const RENDER_SHADER: &str = include_str!("particle_render.wgsl");
+use shaderloom::CompiledShader;
+
+pub const COMPUTE_SHADER: CompiledShader =
+    include!(concat!(env!("OUT_DIR"), "/particle_compute.rs"));
+pub const RENDER_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/particle_render.rs"));

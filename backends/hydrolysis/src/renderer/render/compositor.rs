@@ -3,11 +3,10 @@ use core::num::NonZeroU32;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use shaderloom::CompiledShader;
 
-const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/shaders/gpu_surface_compositor.wgsl"
-));
+const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
+    include!(concat!(env!("OUT_DIR"), "/gpu_surface_compositor.rs"));
 
 /// Builds a fresh `vello::Renderer` for the parallel-encode pool, matching the main
 /// renderer's options (GPU-only, area AA, multi-core init).
@@ -137,7 +136,6 @@ struct EmbeddedGpuSurfaceSetup {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    shader_cache: ShaderCache,
     host_redraw_handle: Option<RedrawHandle>,
 }
 
@@ -260,7 +258,7 @@ impl GpuSurfaceCompositorState {
             label: Some("hydrolysis_gpu_surface_compositor_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -314,25 +312,23 @@ impl GpuSurfaceCompositorState {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hydrolysis_gpu_surface_compositor_pipeline_layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(GPU_SURFACE_COMPOSITOR_SHADER)),
-        });
+        let (vertex_shader, fragment_shader) =
+            GPU_SURFACE_COMPOSITOR_SHADER.create_render_stages(device, "vs_main", "fs_main");
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("hydrolysis_gpu_surface_compositor_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
+                module: vertex_shader.module(),
+                entry_point: Some(vertex_shader.entry_point()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
+                module: fragment_shader.module(),
+                entry_point: Some(fragment_shader.entry_point()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
@@ -351,7 +347,7 @@ impl GpuSurfaceCompositorState {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -582,8 +578,6 @@ impl EmbeddedGpuSurfaceRuntime {
                 queue: &resources.queue,
                 surface_format,
                 msaa_samples: msaa_samples.get(),
-                pipeline_cache: None,
-                shader_cache: &resources.shader_cache,
                 redraw_handle,
             };
             surface.setup(&context, &mut env).await;
@@ -738,7 +732,6 @@ impl HydrolysisRenderer {
             adapter: adapter.clone(),
             device: device.clone(),
             queue: queue.clone(),
-            shader_cache: self.shader_cache.clone(),
             host_redraw_handle: self.host_redraw_handle.clone(),
         }
     }
@@ -912,6 +905,7 @@ impl HydrolysisRenderer {
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes: None,
+            multiview_mask: None,
         });
         drop(_pass);
         queue.submit(std::iter::once(encoder.finish()));
@@ -974,6 +968,7 @@ impl HydrolysisRenderer {
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes: None,
+            multiview_mask: None,
         });
         pass.set_pipeline(&compositor.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);

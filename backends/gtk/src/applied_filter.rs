@@ -129,8 +129,6 @@ fn start_filter_setup(state: &Rc<RefCell<AppliedFilterState>>) {
             queue: context.queue.as_ref(),
             input_format: wgpu::TextureFormat::Rgba8Unorm,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
-            pipeline_cache: context.pipeline_cache(),
-            shader_cache: context.shader_cache(),
         };
         let result = filter.setup(&setup_context).await;
         let mut state = state.borrow_mut();

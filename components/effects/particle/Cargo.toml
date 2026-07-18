@@ -13,6 +13,7 @@ categories = ["gui", "graphics"]
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 encase.workspace = true
@@ -20,6 +21,9 @@ glam = { version = "0.29", features = ["bytemuck"] }
 tracing.workspace = true
 fastrand = "2.3"
 num-traits = { version = "0.2", default-features = false }
+
+[build-dependencies]
+waterui-build-support.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true

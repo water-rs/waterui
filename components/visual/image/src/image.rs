@@ -101,6 +101,13 @@ impl Interpolation {
             Self::Nearest => wgpu::FilterMode::Nearest,
         }
     }
+
+    const fn to_wgpu_mipmap_filter(self) -> wgpu::MipmapFilterMode {
+        match self {
+            Self::Linear => wgpu::MipmapFilterMode::Linear,
+            Self::Nearest => wgpu::MipmapFilterMode::Nearest,
+        }
+    }
 }
 
 impl Image {
@@ -414,19 +421,12 @@ impl ImageRenderer {
     fn create_render_pipeline(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        pipeline_cache: Option<&wgpu::PipelineCache>,
         hdr_to_sdr_tonemap: bool,
         interpolation: Interpolation,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
         // Keep alpha blending enabled for both SDR and HDR targets so transparent
         // image assets composite consistently regardless of surface format.
         let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
-        // Simple shader to render a texture to the screen
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Image render shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/image_render.wgsl").into()),
-        });
-
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Image bind group layout"),
             entries: &[
@@ -451,8 +451,8 @@ impl ImageRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Image pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let fragment_entry_point = if hdr_to_sdr_tonemap {
@@ -460,18 +460,23 @@ impl ImageRenderer {
         } else {
             "fs_main"
         };
+        let (vertex_shader, fragment_shader) = crate::IMAGE_RENDER_SHADER.create_render_stages(
+            device,
+            "vs_main",
+            fragment_entry_point,
+        );
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Image render pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
+                module: vertex_shader.module(),
+                entry_point: Some(vertex_shader.entry_point()),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some(fragment_entry_point),
+                module: fragment_shader.module(),
+                entry_point: Some(fragment_shader.entry_point()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend,
@@ -490,8 +495,8 @@ impl ImageRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: pipeline_cache,
+            multiview_mask: None,
+            cache: None,
         });
 
         let filter = interpolation.to_wgpu_filter();
@@ -502,7 +507,7 @@ impl ImageRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: filter,
             min_filter: filter,
-            mipmap_filter: filter,
+            mipmap_filter: interpolation.to_wgpu_mipmap_filter(),
             ..Default::default()
         });
 
@@ -614,7 +619,6 @@ impl GpuView for ImageRenderer {
         let (render_pipeline, bind_group_layout, sampler) = Self::create_render_pipeline(
             ctx.device,
             ctx.surface_format,
-            ctx.pipeline_cache,
             hdr_to_sdr_tonemap,
             self.interpolation,
         );
@@ -681,6 +685,7 @@ impl GpuView for ImageRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(render_pipeline);

@@ -9,7 +9,6 @@ use waterui_graphics::filter_view::EffectFrameClock;
 pub(crate) struct EffectSetupResources {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    shader_cache: ShaderCache,
     host_redraw_handle: Option<RedrawHandle>,
 }
 
@@ -93,8 +92,6 @@ impl AppliedFilterRuntime {
             queue: &resources.queue,
             input_format: wgpu::TextureFormat::Rgba8Unorm,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
-            pipeline_cache: None,
-            shader_cache: &resources.shader_cache,
         };
         filter
             .setup(&context)
@@ -381,8 +378,6 @@ impl ViewEffectRuntime {
             queue: &resources.queue,
             input_format: wgpu::TextureFormat::Rgba8Unorm,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
-            pipeline_cache: None,
-            shader_cache: &resources.shader_cache,
         };
         effect.setup(&context).await;
         let mut runtime = runtime.borrow_mut();
@@ -420,7 +415,6 @@ impl HydrolysisRenderer {
         EffectSetupResources {
             device: device.clone(),
             queue: queue.clone(),
-            shader_cache: self.shader_cache.clone(),
             host_redraw_handle: self.host_redraw_handle.clone(),
         }
     }

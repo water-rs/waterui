@@ -13,6 +13,7 @@ categories = ["gui", "multimedia"]
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
 waterui-layout.workspace = true
 waterkit-codec = { workspace = true, features = ["software-fallback"] }
 tracing.workspace = true
@@ -20,6 +21,9 @@ wgpu.workspace = true
 num-traits = { version = "0.2", default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "avif", "tiff"] }
 mp4-atom = "0.10.1"
+
+[build-dependencies]
+waterui-build-support.workspace = true
 
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }

@@ -15,4 +15,8 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
+shaderloom.workspace = true
 wgpu.workspace = true
+
+[build-dependencies]
+waterui-build-support.workspace = true

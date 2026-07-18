@@ -17,10 +17,14 @@ workspace = true
 nami.workspace = true
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 fast_qr = "0.12"
 barcoders = { version = "2.0.0", default-features = false }
+
+[build-dependencies]
+waterui-build-support.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true

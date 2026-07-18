@@ -17,5 +17,9 @@ dev = ["waterui/dynamic_linking"]
 waterui.workspace = true
 waterkit-camera.workspace = true
 waterkit-permission.workspace = true
+shaderloom.workspace = true
 futures.workspace = true
 wgpu.workspace = true
+
+[build-dependencies]
+waterui-build-support.workspace = true

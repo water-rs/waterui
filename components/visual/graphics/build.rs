@@ -123,6 +123,30 @@ fn main() {
         env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set for build script"),
     );
     validate_wgsl_shaders(&manifest_dir);
+    if env::var_os("CARGO_FEATURE_GPU").is_some() {
+        let shader_root = manifest_dir.join("src/shaders");
+        waterui_build_support::shader::compile_wgsl_shader(
+            shader_root.join("animated_mesh_gradient.wgsl"),
+            "animated_mesh_gradient",
+        );
+        waterui_build_support::shader::compile_wgsl_shader(
+            shader_root.join("mesh_gradient.wgsl"),
+            "mesh_gradient",
+        );
+        waterui_build_support::shader::compile_wgsl_shader(shader_root.join("blit.wgsl"), "blit");
+        let flowing_gradient_source = format!(
+            "{}{}",
+            fs::read_to_string(shader_root.join("prelude.wgsl"))
+                .expect("failed to read ShaderSurface prelude"),
+            fs::read_to_string(shader_root.join("flowing_gradient.wgsl"))
+                .expect("failed to read flowing gradient fragment")
+        );
+        waterui_build_support::shader::compile_wgsl_source(
+            "shaders/flowing_gradient.wgsl#shader_surface",
+            &flowing_gradient_source,
+            "flowing_gradient",
+        );
+    }
 
     if let Ok(commit) = env::var("WATERUI_GRAPHICS_COMMIT")
         && !commit.trim().is_empty()

@@ -4,7 +4,7 @@ use executor_core::spawn_local;
 use waterui_graphics::shared_context::GpuRuntime;
 
 #[cfg(all(feature = "c-api", any(target_os = "macos", target_os = "ios")))]
-use {metal::foreign_types::ForeignType, wgpu_hal::api::Metal as MetalApi};
+use {objc2::rc::Retained, wgpu_hal::api::Metal as MetalApi};
 
 #[cfg(feature = "c-api")]
 use crate::bridge::closure::ForeignCallbackContext;
@@ -96,5 +96,5 @@ pub unsafe extern "C" fn waterui_gpu_runtime_metal_device(
     let runtime = gpu_runtime(&env.0);
     let device = unsafe { runtime.context().device.as_hal::<MetalApi>() }
         .expect("WaterUI GPU runtime did not create a Metal device");
-    device.raw_device().lock().as_ptr().cast()
+    Retained::as_ptr(device.raw_device()).cast_mut().cast()
 }

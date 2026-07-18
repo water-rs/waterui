@@ -13,14 +13,10 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 use core::fmt;
 use core::future::Future;
-use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-
-use parking_lot::Mutex;
 
 /// Result returned by filter setup.
 pub type EffectSetupResult = Result<(), &'static str>;
@@ -130,101 +126,6 @@ impl Default for EffectFrameClock {
     }
 }
 
-/// Device-bound WGSL module cache shared by GPU hosts and effects.
-///
-/// A cache must only be used with the device passed to [`Self::get_or_create`].
-/// GPU hosts own and inject it explicitly through their setup context, keeping
-/// cache lifetime aligned with the device instead of relying on process-global
-/// renderer state.
-#[derive(Clone, Default)]
-pub struct ShaderCache {
-    entries: Arc<Mutex<HashMap<u64, Vec<CachedShader>>>>,
-}
-
-impl fmt::Debug for ShaderCache {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ShaderCache")
-            .finish_non_exhaustive()
-    }
-}
-
-struct CachedShader {
-    source: Box<str>,
-    module: Arc<OnceLock<Arc<wgpu::ShaderModule>>>,
-}
-
-impl ShaderCache {
-    /// Creates an empty shader cache for one GPU device.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Returns a cached module for `source`, compiling it exactly once when absent.
-    #[must_use]
-    pub fn get_or_create(
-        &self,
-        device: &wgpu::Device,
-        label: &str,
-        source: &str,
-    ) -> Arc<wgpu::ShaderModule> {
-        self.get_or_create_prehashed(device, label, source, shader_source_hash(source))
-    }
-
-    /// Returns a cached module using a caller-provided stable source hash.
-    ///
-    /// Hash collisions are resolved by comparing the complete WGSL source.
-    #[must_use]
-    pub fn get_or_create_prehashed(
-        &self,
-        device: &wgpu::Device,
-        label: &str,
-        source: &str,
-        source_hash: u64,
-    ) -> Arc<wgpu::ShaderModule> {
-        let module = {
-            let mut entries = self.entries.lock();
-            let bucket = entries.entry(source_hash).or_default();
-            let existing = bucket
-                .iter()
-                .find(|entry| entry.source.as_ref() == source)
-                .map(|entry| Arc::clone(&entry.module));
-            let module = existing.unwrap_or_else(|| {
-                let module = Arc::new(OnceLock::new());
-                bucket.push(CachedShader {
-                    source: source.into(),
-                    module: Arc::clone(&module),
-                });
-                module
-            });
-            drop(entries);
-            module
-        };
-
-        Arc::clone(module.get_or_init(|| {
-            Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: (!label.is_empty()).then_some(label),
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            }))
-        }))
-    }
-}
-
-/// Computes the stable FNV-1a hash used by [`ShaderCache`].
-#[must_use]
-pub const fn shader_source_hash(source: &str) -> u64 {
-    let bytes = source.as_bytes();
-    let mut hash = 0xcbf2_9ce4_8422_2325;
-    let mut index = 0;
-    while index < bytes.len() {
-        hash ^= bytes[index] as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        index += 1;
-    }
-    hash
-}
-
 /// GPU resources provided to the effect during setup.
 pub struct EffectContext<'a> {
     /// The wgpu device for creating GPU resources.
@@ -235,10 +136,6 @@ pub struct EffectContext<'a> {
     pub input_format: wgpu::TextureFormat,
     /// The texture format of the output.
     pub output_format: wgpu::TextureFormat,
-    /// Optional pipeline cache for faster pipeline creation.
-    pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
-    /// Device-bound shader module cache owned by the GPU host.
-    pub shader_cache: &'a ShaderCache,
 }
 
 impl fmt::Debug for EffectContext<'_> {

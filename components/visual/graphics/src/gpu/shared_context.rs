@@ -1,7 +1,7 @@
 //! Explicit GPU runtime ownership for shared-device rendering.
 //!
 //! [`GpuRuntime`] owns one adapter/device/queue context and its device-bound
-//! shader and pipeline caches. Applications create it asynchronously and clone
+//! shader-module cache. Applications create it asynchronously and clone
 //! the lightweight owner wherever GPU-backed views share that device.
 
 use std::error::Error;
@@ -11,8 +11,6 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
 
-use filtrate::ShaderCache;
-
 /// Error type for GPU runtime creation.
 #[derive(Debug, Clone)]
 pub enum SharedContextError {
@@ -20,8 +18,6 @@ pub enum SharedContextError {
     NoAdapter,
     /// GPU device creation failed.
     DeviceCreationFailed(String),
-    /// Pipeline-cache creation failed validation on the selected device.
-    PipelineCacheCreationFailed(String),
 }
 
 impl fmt::Display for SharedContextError {
@@ -30,9 +26,6 @@ impl fmt::Display for SharedContextError {
             Self::NoAdapter => formatter.write_str("no suitable GPU adapter found"),
             Self::DeviceCreationFailed(error) => {
                 write!(formatter, "failed to create GPU device: {error}")
-            }
-            Self::PipelineCacheCreationFailed(error) => {
-                write!(formatter, "GPU pipeline cache creation failed: {error}")
             }
         }
     }
@@ -50,8 +43,6 @@ pub struct SharedGpuContext {
     pub device: Arc<wgpu::Device>,
     /// The shared GPU queue.
     pub queue: Arc<wgpu::Queue>,
-    pipeline_cache: Option<wgpu::PipelineCache>,
-    shader_cache: ShaderCache,
     submission_completion_driver: GpuSubmissionCompletionDriver,
 }
 
@@ -60,17 +51,15 @@ impl fmt::Debug for SharedGpuContext {
         formatter
             .debug_struct("SharedGpuContext")
             .field("adapter", &self.adapter.get_info().name)
-            .field("has_pipeline_cache", &self.pipeline_cache.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl SharedGpuContext {
     async fn new() -> Result<Self, SharedContextError> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_descriptor.backends = wgpu::Backends::all();
+        let instance = wgpu::Instance::new(instance_descriptor);
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -81,12 +70,7 @@ impl SharedGpuContext {
             .map_err(|_| SharedContextError::NoAdapter)?;
 
         let adapter_features = adapter.features();
-        let pipeline_cache_features = if cfg!(target_os = "android") {
-            wgpu::Features::empty()
-        } else {
-            adapter_features & wgpu::Features::PIPELINE_CACHE
-        };
-        let required_features = required_media_features(adapter_features) | pipeline_cache_features;
+        let required_features = required_media_features(adapter_features);
         let required_limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -100,11 +84,6 @@ impl SharedGpuContext {
             .await
             .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))?;
 
-        let pipeline_cache = if pipeline_cache_features.contains(wgpu::Features::PIPELINE_CACHE) {
-            Some(create_pipeline_cache(&device).await?)
-        } else {
-            None
-        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
         let submission_completion_driver =
@@ -115,22 +94,8 @@ impl SharedGpuContext {
             adapter,
             device,
             queue,
-            pipeline_cache,
-            shader_cache: ShaderCache::new(),
             submission_completion_driver,
         })
-    }
-
-    /// Returns the device-local pipeline cache when supported by this runtime.
-    #[must_use]
-    pub const fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
-        self.pipeline_cache.as_ref()
-    }
-
-    /// Returns the shader-module cache bound to this runtime's device.
-    #[must_use]
-    pub const fn shader_cache(&self) -> &ShaderCache {
-        &self.shader_cache
     }
 
     /// Returns the driver that resolves exact GPU-submission completion fences.
@@ -151,15 +116,21 @@ impl SharedGpuContext {
 /// Panics on Apple when the adapter cannot provide normalized 16-bit textures.
 #[must_use]
 pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
+    let mut required = shaderloom::required_features(adapter_features);
+
     if cfg!(target_vendor = "apple") {
         assert!(
             adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
             "WaterUI's Apple GPU backend requires normalized 16-bit textures for HDR media"
         );
-        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-    } else {
-        wgpu::Features::empty()
+        assert!(
+            adapter_features.contains(wgpu::Features::PASSTHROUGH_SHADERS),
+            "WaterUI's Apple GPU backend requires native shader passthrough for embedded MetalLib artifacts"
+        );
+        required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }
+
+    required
 }
 
 /// Cloneable owner for one explicitly-created shared GPU context.
@@ -178,17 +149,15 @@ impl fmt::Debug for GpuRuntime {
 }
 
 impl GpuRuntime {
-    /// Creates an independent GPU runtime and prewarms built-in shader modules.
+    /// Creates an independent GPU runtime.
     ///
     /// # Errors
     ///
-    /// Returns the adapter, device, or pipeline-cache initialization error.
+    /// Returns the adapter or device initialization error.
     pub async fn new() -> Result<Self, SharedContextError> {
-        let runtime = Self {
+        Ok(Self {
             context: Arc::new(SharedGpuContext::new().await?),
-        };
-        crate::prewarm::prewarm_builtin_shaders(&runtime);
-        Ok(runtime)
+        })
     }
 
     /// Returns this runtime's shared GPU resources.
@@ -273,26 +242,4 @@ impl GpuSubmissionCompletionDriver {
     ) {
         self.queue.on_submitted_work_done(completion);
     }
-}
-
-async fn create_pipeline_cache(
-    device: &wgpu::Device,
-) -> Result<wgpu::PipelineCache, SharedContextError> {
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
-    // SAFETY: no external cache data is supplied, and validation is awaited
-    // before the device-local cache is exposed to callers.
-    let cache = unsafe {
-        device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
-            label: Some("WaterUI pipeline cache"),
-            data: None,
-            fallback: false,
-        })
-    };
-    if let Some(error) = device.pop_error_scope().await {
-        return Err(SharedContextError::PipelineCacheCreationFailed(
-            error.to_string(),
-        ));
-    }
-
-    Ok(cache)
 }

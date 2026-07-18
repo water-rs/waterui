@@ -2,7 +2,6 @@ use crate::audio::{AudioCapture, SAMPLES_COUNT};
 use crate::theme::WaveformTheme;
 use encase::{ShaderSize, UniformBuffer};
 use num_traits::ToPrimitive;
-use std::borrow::Cow;
 use waterui_core::{
     Computed, IntoSignal, IntoSignalF32, Signal, SignalExt,
     env::Environment,
@@ -297,11 +296,8 @@ impl GpuView for WaveformRenderer {
         self.config.install(&ctx.redraw_handle);
         let device = ctx.device;
 
-        // 1. Create Shader
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Waveform Visualizer Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader_waveform.wgsl"))),
-        });
+        let (vertex_shader, fragment_shader) =
+            crate::WAVEFORM_SHADER.create_render_stages(device, "vs_main", "fs_main");
 
         // 2. Create Buffers using encase size calculation
         let uniform_size = <Uniforms as ShaderSize>::SHADER_SIZE.get();
@@ -352,8 +348,8 @@ impl GpuView for WaveformRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Waveform Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let blend = if ctx.is_hdr() {
@@ -366,14 +362,14 @@ impl GpuView for WaveformRenderer {
             label: Some("Waveform Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"), // Standard VS in shader
+                module: vertex_shader.module(),
+                entry_point: Some(vertex_shader.entry_point()),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
+                module: fragment_shader.module(),
+                entry_point: Some(fragment_shader.entry_point()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
                     blend,
@@ -387,8 +383,8 @@ impl GpuView for WaveformRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: ctx.pipeline_cache,
+            multiview_mask: None,
+            cache: None,
         });
 
         // 4. Create Bind Group
@@ -506,6 +502,7 @@ impl GpuView for WaveformRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             rpass.set_pipeline(pipeline);

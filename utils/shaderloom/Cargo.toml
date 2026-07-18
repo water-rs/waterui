@@ -1,0 +1,25 @@
+[package]
+name = "shaderloom"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Build-time WGSL compilation and embedded native shader artifacts for wgpu"
+keywords = ["wgpu", "shader", "wgsl", "metallib", "spirv"]
+categories = ["graphics", "development-tools::build-utils"]
+
+[dependencies]
+wgpu.workspace = true
+naga = { version = "29.0.4", optional = true, features = ["hlsl-out", "msl-out", "spv-out", "wgsl-in"] }
+
+[features]
+default = []
+build = ["dep:naga"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

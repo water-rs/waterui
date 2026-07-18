@@ -29,6 +29,7 @@ gpu = [
     "dep:parking_lot",
     "dep:rayon",
     "dep:mp4parse",
+    "dep:shaderloom",
 ]
 
 [dependencies]
@@ -51,10 +52,12 @@ png = { version = "0.18", optional = true }
 parking_lot = { version = "0.12", optional = true }
 rayon = { version = "1.11", optional = true }
 mp4parse = { version = "0.17", optional = true }
+shaderloom = { workspace = true, optional = true }
 num-traits = { version = "0.2", default-features = false }
 
 [build-dependencies]
-naga = { version = "27", features = ["wgsl-in"] }
+naga = { version = "29.0.1", features = ["wgsl-in"] }
+waterui-build-support.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true

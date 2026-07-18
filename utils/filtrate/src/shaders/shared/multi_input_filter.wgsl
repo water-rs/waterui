@@ -41,8 +41,7 @@ struct Uniforms {
 @group(0) @binding(1) var input_sampler: sampler;
 @group(0) @binding(2) var aux_texture_0: texture_2d<f32>;
 @group(0) @binding(3) var aux_texture_1: texture_2d<f32>;
-@group(0) @binding(4) var aux_texture_2: texture_2d<f32>;
-@group(0) @binding(5) var<uniform> uniforms: Uniforms;
+@group(0) @binding(4) var<uniform> uniforms: Uniforms;
 
 fn param(index: u32) -> f32 {
     switch index {
@@ -87,10 +86,6 @@ fn sample_aux0(uv: vec2<f32>) -> vec4<f32> {
 
 fn sample_aux1(uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(aux_texture_1, input_sampler, uv, 0.0);
-}
-
-fn sample_aux2(uv: vec2<f32>) -> vec4<f32> {
-    return textureSampleLevel(aux_texture_2, input_sampler, uv, 0.0);
 }
 
 fn blend_overlay(base: vec3<f32>, top: vec3<f32>) -> vec3<f32> {

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 use waterkit_camera::Camera;
 use waterkit_permission::{Permission, PermissionStatus, check, request};
+use shaderloom::CompiledShader;
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::prelude::slider::slider;
@@ -250,6 +251,7 @@ impl GpuView for SyntheticCameraPreviewRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
         frame.queue.submit([encoder.finish()]);
@@ -304,12 +306,8 @@ impl CameraFilterRenderer {
             return;
         }
 
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Camera Filter Shader"),
-                source: wgpu::ShaderSource::Wgsl(CAMERA_FILTER_SHADER.into()),
-            });
+        let (vertex_shader, fragment_shader) =
+            CAMERA_FILTER_SHADER.create_render_stages(ctx.device, "vs_main", "fs_main");
 
         let bind_group_layout =
             ctx.device
@@ -349,8 +347,8 @@ impl CameraFilterRenderer {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Camera Filter Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let pipeline = ctx
@@ -359,14 +357,14 @@ impl CameraFilterRenderer {
                 label: Some("Camera Filter Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
                         blend: Some(wgpu::BlendState::REPLACE),
@@ -380,8 +378,8 @@ impl CameraFilterRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -398,7 +396,7 @@ impl CameraFilterRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -559,6 +557,7 @@ impl GpuView for CameraFilterRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             if let (Some(pipeline), Some(bind_group)) = (&self.pipeline, &self.latest_bind_group) {
@@ -728,7 +727,8 @@ fn filter_name(index: usize) -> &'static str {
     }
 }
 
-const CAMERA_FILTER_SHADER: &str = include_str!("camera_filter.wgsl");
+const CAMERA_FILTER_SHADER: CompiledShader =
+    include!(concat!(env!("OUT_DIR"), "/camera_filter.rs"));
 
 pub fn app(env: Environment) -> App {
     App::new(demo, env)

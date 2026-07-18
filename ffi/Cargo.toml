@@ -59,7 +59,8 @@ wgpu-hal = { workspace = true, features = ["vulkan"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
-metal = "0.32"
+objc2 = "0.6"
+objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"] }
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 [target.'cfg(all(not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]

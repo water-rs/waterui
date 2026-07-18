@@ -857,7 +857,7 @@ impl<F: Filter> FilterAdapter<F> {
         self.blit_source_scratch_slot = blit_source_scratch_slot;
 
         if self.requires_scratch {
-            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let probe = ctx.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("filter scratch format probe"),
                 size: wgpu::Extent3d {
@@ -873,7 +873,7 @@ impl<F: Filter> FilterAdapter<F> {
                 view_formats: &[],
             });
             let _ = probe.create_view(&wgpu::TextureViewDescriptor::default());
-            if ctx.device.pop_error_scope().await.is_some() {
+            if error_scope.pop().await.is_some() {
                 return Err("selected scratch texture format is unsupported on this device");
             }
         }
@@ -894,10 +894,10 @@ impl<F: Filter> FilterAdapter<F> {
                             return Err("runtime planner produced invalid color binding plan");
                         }
                     };
-                    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
                         Self::create_color_pipeline(ctx, fragments, target_format);
-                    if ctx.device.pop_error_scope().await.is_some() {
+                    if error_scope.pop().await.is_some() {
                         return Err("failed to create color pipeline for selected target format");
                     }
                     self.passes.push(CompiledPass {
@@ -924,14 +924,14 @@ impl<F: Filter> FilterAdapter<F> {
                     if !matches!(binding_plan, PassBindingPlan::Spatial { .. }) {
                         return Err("runtime planner produced invalid spatial binding plan");
                     }
-                    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) = Self::create_spatial_pipeline(
                         ctx,
                         shader,
                         scratch_format,
                         *original_input,
                     )?;
-                    if let Some(err) = ctx.device.pop_error_scope().await {
+                    if let Some(err) = error_scope.pop().await {
                         tracing::error!("[Filter] spatial pipeline validation error: {err:?}");
                         return Err(
                             "failed to create spatial pipeline for selected storage format",
@@ -980,10 +980,13 @@ impl<F: Filter> FilterAdapter<F> {
                 })
             && storage_format_to_wgsl(ctx.output_format).is_ok()
         {
-            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            match Self::create_spatial_pipeline(ctx, shader, ctx.output_format, false) {
+            let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let direct_output =
+                Self::create_spatial_pipeline(ctx, shader, ctx.output_format, false);
+            let validation_error = error_scope.pop().await;
+            match direct_output {
                 Ok((pipeline, bind_group_layout)) => {
-                    if ctx.device.pop_error_scope().await.is_none() {
+                    if validation_error.is_none() {
                         self.final_spatial_output = Some(FinalSpatialOutputPipeline {
                             pass_index,
                             pipeline,
@@ -1006,9 +1009,9 @@ impl<F: Filter> FilterAdapter<F> {
         }
 
         if self.blit_source_scratch_slot.is_some() {
-            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let (blit_pipeline, blit_bind_group_layout) = Self::create_blit_pipeline(ctx);
-            if ctx.device.pop_error_scope().await.is_some() {
+            if error_scope.pop().await.is_some() {
                 return Err("failed to create final blit pipeline");
             }
             self.blit_pipeline = Some(blit_pipeline);
@@ -1037,7 +1040,7 @@ impl<F: Filter> FilterAdapter<F> {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         }));
 
@@ -1351,6 +1354,7 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                                 depth_stencil_attachment: None,
                                 timestamp_writes: None,
                                 occlusion_query_set: None,
+                                multiview_mask: None,
                             });
                         render_pass.set_pipeline(pipeline);
                         render_pass.set_bind_group(0, bind_group, &[]);
@@ -1587,6 +1591,7 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 render_pass.set_pipeline(blit_pipeline);
                 render_pass.set_bind_group(0, blit_bind_group, &[]);
@@ -1630,9 +1635,11 @@ impl<F: Filter> FilterAdapter<F> {
         shader_source.push_str(fragments);
         shader_source.push_str(postamble);
 
-        let shader =
-            ctx.shader_cache
-                .get_or_create(ctx.device, "filter color shader", &shader_source);
+        let shader = shaderloom::create_dynamic_wgsl_module(
+            ctx.device,
+            Some("filter color shader"),
+            &shader_source,
+        );
 
         let bind_group_layout =
             ctx.device
@@ -1672,8 +1679,8 @@ impl<F: Filter> FilterAdapter<F> {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("filter color pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let pipeline = ctx
@@ -1682,13 +1689,13 @@ impl<F: Filter> FilterAdapter<F> {
                 label: Some("filter color pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: shader.as_ref(),
+                    module: &shader,
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: shader.as_ref(),
+                    module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: target_format,
@@ -1703,8 +1710,8 @@ impl<F: Filter> FilterAdapter<F> {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         (pipeline, bind_group_layout)
@@ -1717,9 +1724,11 @@ impl<F: Filter> FilterAdapter<F> {
         original_input: bool,
     ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
         let shader_source = specialize_spatial_shader(shader_source, storage_format)?;
-        let shader =
-            ctx.shader_cache
-                .get_or_create(ctx.device, "filter spatial shader", &shader_source);
+        let shader = shaderloom::create_dynamic_wgsl_module(
+            ctx.device,
+            Some("filter spatial shader"),
+            &shader_source,
+        );
 
         let original_entry = wgpu::BindGroupLayoutEntry {
             binding: 3,
@@ -1757,8 +1766,8 @@ impl<F: Filter> FilterAdapter<F> {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("filter spatial pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let pipeline = ctx
@@ -1766,24 +1775,18 @@ impl<F: Filter> FilterAdapter<F> {
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("filter spatial pipeline"),
                 layout: Some(&pipeline_layout),
-                module: shader.as_ref(),
+                module: &shader,
                 entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: ctx.pipeline_cache,
+                cache: None,
             });
 
         Ok((pipeline, bind_group_layout))
     }
 
     fn create_blit_pipeline(ctx: &EffectContext) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-        let shader = ctx.shader_cache.get_or_create(
-            ctx.device,
-            "filter blit shader",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/src/shaders/shared/blit.wgsl"
-            )),
-        );
+        let (vertex_shader, fragment_shader) =
+            crate::compiled_shaders::BLIT.create_render_stages(ctx.device, "vs_main", "fs_main");
 
         let bind_group_layout =
             ctx.device
@@ -1813,8 +1816,8 @@ impl<F: Filter> FilterAdapter<F> {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("filter blit pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let pipeline = ctx
@@ -1823,14 +1826,14 @@ impl<F: Filter> FilterAdapter<F> {
                 label: Some("filter blit pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: shader.as_ref(),
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: shader.as_ref(),
-                    entry_point: Some("fs_main"),
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.output_format,
                         blend: None,
@@ -1844,8 +1847,8 @@ impl<F: Filter> FilterAdapter<F> {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         (pipeline, bind_group_layout)
@@ -1945,14 +1948,12 @@ mod tests {
         adapter_info: wgpu::AdapterInfo,
         rgba8_storage: bool,
         rgba16_storage: bool,
-        shader_cache: crate::ShaderCache,
     }
 
     fn create_test_device() -> TestGpu {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_descriptor.backends = wgpu::Backends::all();
+        let instance = wgpu::Instance::new(instance_descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
@@ -1968,16 +1969,17 @@ mod tests {
             .get_texture_format_features(wgpu::TextureFormat::Rgba16Float)
             .allowed_usages
             .contains(wgpu::TextureUsages::STORAGE_BINDING);
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("filter GPU tests require a working device");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: shaderloom::required_features(adapter.features()),
+            ..Default::default()
+        }))
+        .expect("filter GPU tests require a working device");
         TestGpu {
             device,
             queue,
             adapter_info,
             rgba8_storage,
             rgba16_storage,
-            shader_cache: crate::ShaderCache::new(),
         }
     }
 
@@ -2206,7 +2208,6 @@ mod tests {
     fn run_filter_and_readback<G: Effect>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        shader_cache: &crate::ShaderCache,
         input_texture: &wgpu::Texture,
         size: FilterReadbackSize,
         mut filter: G,
@@ -2234,8 +2235,6 @@ mod tests {
             queue,
             input_format: format,
             output_format: format,
-            pipeline_cache: None,
-            shader_cache,
         };
         pollster::block_on(filter.setup(&ctx)).expect("test filter setup should succeed");
 
@@ -2663,8 +2662,6 @@ mod tests {
             queue,
             input_format: format,
             output_format: format,
-            pipeline_cache: None,
-            shader_cache: &gpu.shader_cache,
         };
         pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
@@ -2769,8 +2766,6 @@ mod tests {
             queue,
             input_format: format,
             output_format: format,
-            pipeline_cache: None,
-            shader_cache: &gpu.shader_cache,
         };
         pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
@@ -2889,8 +2884,6 @@ mod tests {
             queue,
             input_format: format,
             output_format: format,
-            pipeline_cache: None,
-            shader_cache: &gpu.shader_cache,
         };
         pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
@@ -3006,8 +2999,6 @@ mod tests {
             queue,
             input_format: format,
             output_format: format,
-            pipeline_cache: None,
-            shader_cache: &gpu.shader_cache,
         };
         pollster::block_on(Effect::setup(&mut adapter, &ctx))
             .expect("test filter setup should succeed");
@@ -3109,7 +3100,6 @@ mod tests {
                 let result = run_filter_and_readback(
                     device,
                     queue,
-                    &gpu.shader_cache,
                     &input_texture,
                     FilterReadbackSize {
                         input: (input_width, input_height),

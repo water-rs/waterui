@@ -11,7 +11,7 @@
 
 use divan::Bencher;
 use filtrate::multi_input::{BlendMode, FilterImage, blend_with_image_filter};
-use filtrate::{Effect, EffectContext, EffectInput, EffectOutput, ShaderCache};
+use filtrate::{Effect, EffectContext, EffectInput, EffectOutput};
 
 fn main() {
     divan::main();
@@ -27,7 +27,6 @@ struct GpuBench {
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
-    shader_cache: ShaderCache,
 }
 
 impl GpuBench {
@@ -35,16 +34,18 @@ impl GpuBench {
         let width = 64;
         let height = 64;
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
         .expect("filtrate benchmark requires a high-performance GPU adapter");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("filtrate benchmark requires a working GPU device");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: shaderloom::required_features(adapter.features()),
+            ..Default::default()
+        }))
+        .expect("filtrate benchmark requires a working GPU device");
 
         let input_texture = create_texture(
             &device,
@@ -93,7 +94,6 @@ impl GpuBench {
             format,
             width,
             height,
-            shader_cache: ShaderCache::new(),
         }
     }
 
@@ -103,8 +103,6 @@ impl GpuBench {
             queue: &self.queue,
             input_format: self.format,
             output_format: self.format,
-            pipeline_cache: None,
-            shader_cache: &self.shader_cache,
         };
         pollster::block_on(filter.setup(&ctx)).expect("filter setup should succeed");
     }
