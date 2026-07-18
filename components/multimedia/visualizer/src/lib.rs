@@ -21,6 +21,10 @@ mod audio;
 mod theme;
 mod waveform;
 
+use shaderloom::CompiledShader;
+
+const WAVEFORM_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/waveform.rs"));
+
 pub use audio::AudioCapture;
 pub use theme::WaveformTheme;
 pub use waveform::{Waveform, waveform};

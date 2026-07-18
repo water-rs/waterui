@@ -6,6 +6,12 @@ mod decoder_worker;
 mod latest_channel;
 mod runtime_player;
 
+use shaderloom::CompiledShader;
+
+const VIDEO_YUV_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/video_yuv.rs"));
+const VIDEO_YUV_SPHERICAL_SHADER: CompiledShader =
+    include!(concat!(env!("OUT_DIR"), "/video_yuv_spherical.rs"));
+
 #[cfg(target_os = "android")]
 #[doc(hidden)]
 pub use android_video_surface::{AndroidVideoSurfaceBridge, AndroidVideoSurfaceHost};

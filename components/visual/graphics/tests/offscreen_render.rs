@@ -39,6 +39,7 @@ impl GpuView for SolidClearRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
         frame.queue.submit([encoder.finish()]);
@@ -61,12 +62,9 @@ fn render_offscreen_returns_expected_rgba_and_png() {
         .expect("offscreen regression test requires a working GPU runtime");
     let mut env = waterui_core::Environment::new();
 
-    let output = pollster::block_on(GpuSurface::new(renderer).render_offscreen(
-        &runtime,
-        config,
-        &mut env,
-    ))
-    .expect("offscreen render should succeed");
+    let output =
+        pollster::block_on(GpuSurface::new(renderer).render_offscreen(&runtime, config, &mut env))
+            .expect("offscreen render should succeed");
 
     assert_eq!(output.width, 16);
     assert_eq!(output.height, 12);

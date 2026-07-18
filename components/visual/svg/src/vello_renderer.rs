@@ -227,7 +227,7 @@ impl GpuView for VelloSvgRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         }));
 
@@ -256,19 +256,15 @@ impl GpuView for VelloSvgRenderer {
                 });
         self.bind_group_layout = Some(bind_group_layout.clone());
 
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(waterui_graphics::shaders::BLIT.label),
-                source: wgpu::ShaderSource::Wgsl(waterui_graphics::shaders::BLIT.source.into()),
-            });
+        let (vertex_shader, fragment_shader) =
+            waterui_graphics::shaders::BLIT.create_render_stages(ctx.device, "vs_main", "fs_main");
 
         let pipeline_layout = ctx
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("vello_svg_pipeline_layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -282,14 +278,14 @@ impl GpuView for VelloSvgRenderer {
                 label: Some("vello_svg_blit_pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
                         blend,
@@ -308,8 +304,8 @@ impl GpuView for VelloSvgRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             },
         ));
         core::future::ready(())
@@ -348,6 +344,7 @@ impl GpuView for VelloSvgRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);

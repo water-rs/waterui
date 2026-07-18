@@ -122,26 +122,28 @@ pub enum InputEvent {
 }
 
 /// Errors raised by surface acquisition/presentation.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceError {
-    Surface(wgpu::SurfaceError),
+    Timeout,
+    Occluded,
+    Outdated,
+    Lost,
+    Validation,
 }
 
 impl core::fmt::Display for SurfaceError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Surface(error) => write!(f, "{error}"),
-        }
+        f.write_str(match self {
+            Self::Timeout => "surface acquisition timed out",
+            Self::Occluded => "surface is occluded",
+            Self::Outdated => "surface configuration is outdated",
+            Self::Lost => "surface was lost",
+            Self::Validation => "surface acquisition failed validation",
+        })
     }
 }
 
 impl std::error::Error for SurfaceError {}
-
-impl From<wgpu::SurfaceError> for SurfaceError {
-    fn from(value: wgpu::SurfaceError) -> Self {
-        Self::Surface(value)
-    }
-}
 
 /// A frame acquired from a `SurfaceProvider`.
 pub enum SurfaceFrame {
@@ -230,6 +232,21 @@ fn normalize_surface_format(
         }
     }
     format
+}
+
+#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+fn acquire_surface_texture(
+    surface: &wgpu::Surface<'_>,
+) -> Result<wgpu::SurfaceTexture, SurfaceError> {
+    match surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(output)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(output) => Ok(output),
+        wgpu::CurrentSurfaceTexture::Timeout => Err(SurfaceError::Timeout),
+        wgpu::CurrentSurfaceTexture::Occluded => Err(SurfaceError::Occluded),
+        wgpu::CurrentSurfaceTexture::Outdated => Err(SurfaceError::Outdated),
+        wgpu::CurrentSurfaceTexture::Lost => Err(SurfaceError::Lost),
+        wgpu::CurrentSurfaceTexture::Validation => Err(SurfaceError::Validation),
+    }
 }
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer.
@@ -419,7 +436,7 @@ async fn request_hydrolysis_adapter(
         let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
         let mut inspected_adapters: Vec<String> = Vec::new();
 
-        for adapter in instance.enumerate_adapters(backends) {
+        for adapter in instance.enumerate_adapters(backends).await {
             let info = adapter.get_info();
             let surface_supported = compatible_surface
                 .as_ref()
@@ -538,7 +555,7 @@ impl OffscreenSurface {
         format: wgpu::TextureFormat,
         selection: AdapterSelection,
     ) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             request_hydrolysis_adapter(&instance, None, "hydrolysis offscreen surface", selection)
                 .await;
@@ -835,7 +852,8 @@ mod winit_impl {
 
     impl WinitSurface {
         pub async fn new(window: Arc<NativeWindow>) -> Self {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
             let surface = instance
                 .create_surface(window.clone())
                 .expect("hydrolysis winit surface: failed to create surface");
@@ -919,7 +937,7 @@ mod winit_impl {
         }
 
         fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-            let output = self.surface.get_current_texture()?;
+            let output = super::acquire_surface_texture(&self.surface)?;
             let view = output
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());

@@ -4,7 +4,7 @@
 //! used by Hydrolysis, at a 3840x2160 render target.
 
 use divan::Bencher;
-use filtrate::{ShaderCache, filters};
+use filtrate::filters;
 use waterui_graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, FilterAdapter,
 };
@@ -24,21 +24,22 @@ struct GpuBench {
     input_view: wgpu::TextureView,
     output_texture: wgpu::Texture,
     output_view: wgpu::TextureView,
-    shader_cache: ShaderCache,
 }
 
 impl GpuBench {
     fn new() -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
         .expect("filter benchmark requires a high-performance GPU adapter");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("filter benchmark requires a working GPU device");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: shaderloom::required_features(adapter.features()),
+            ..Default::default()
+        }))
+        .expect("filter benchmark requires a working GPU device");
 
         let input_texture = create_texture(
             &device,
@@ -86,7 +87,6 @@ impl GpuBench {
             output_view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             input_texture,
             output_texture,
-            shader_cache: ShaderCache::new(),
         }
     }
 
@@ -96,8 +96,6 @@ impl GpuBench {
             queue: &self.queue,
             input_format: FORMAT,
             output_format: FORMAT,
-            pipeline_cache: None,
-            shader_cache: &self.shader_cache,
         };
         pollster::block_on(filter.setup(&ctx)).expect("filter setup should succeed");
     }

@@ -13,7 +13,7 @@ use num_traits::ToPrimitive;
 
 use crate::{Effect, EffectContext, EffectInput, EffectOutput};
 
-const MAX_AUX_IMAGES: usize = 3;
+const MAX_AUX_IMAGES: usize = 2;
 const MAX_PARAMS: usize = 8;
 
 #[repr(C)]
@@ -403,16 +403,6 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -432,25 +422,16 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
         wgpu::Sampler,
         wgpu::Buffer,
     ) {
-        // Multi-input filters compile their pipeline once per setup and
-        // reuse it for every render pass, so the shared graphics-side
-        // shader cache buys little — use direct module creation here.
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("multi-input filter shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("shaders/shared/multi_input_filter.wgsl").into(),
-                ),
-            });
+        let (vertex_shader, fragment_shader) = crate::compiled_shaders::MULTI_INPUT
+            .create_render_stages(ctx.device, "vs_main", "fs_main");
         let bind_group_layout = Self::create_bind_group_layout(ctx);
 
         let pipeline_layout = ctx
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("multi-input filter pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let pipeline = ctx
@@ -459,14 +440,14 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
                 label: Some("multi-input filter pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.output_format,
                         blend: None,
@@ -480,8 +461,8 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -491,7 +472,7 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -630,10 +611,6 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
-                        resource: wgpu::BindingResource::TextureView(aux_views[2]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
                         resource: uniform_buffer.as_entire_binding(),
                     },
                 ],
@@ -663,6 +640,7 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, bind_group, &[]);

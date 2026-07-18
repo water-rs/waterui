@@ -16,16 +16,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec;
 use executor_core::spawn_local;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use {
-    metal::MTLTextureType, metal::foreign_types::ForeignTypeRef, wgpu_hal::Api,
-    wgpu_hal::api::Metal as MetalApi,
+    objc2::{rc::Retained, runtime::ProtocolObject},
+    objc2_metal::{MTLPixelFormat, MTLTexture, MTLTextureType},
+    wgpu_hal::{Api, api::Metal as MetalApi},
 };
 
 use waterui_graphics::gpu_surface::{
@@ -329,8 +328,6 @@ fn start_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat)
             queue: &gpu.queue,
             surface_format: format,
             msaa_samples,
-            pipeline_cache: gpu.pipeline_cache(),
-            shader_cache: gpu.shader_cache(),
             redraw_handle: redraw_handle.clone(),
         };
         let GpuSurfaceSemantic { gpu_surface, env } = &mut semantic;
@@ -624,31 +621,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         "waterui_gpu_surface_render called before asynchronous setup completed"
     );
 
-    let output = match attached_surface(state, "waterui_gpu_surface_render").get_current_texture() {
-        Ok(output) => output,
-        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-            tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
-            attached_surface(state, "waterui_gpu_surface_render").configure(
-                &state.runtime.context().device,
-                attached_config(state, "waterui_gpu_surface_render"),
-            );
-            match attached_surface(state, "waterui_gpu_surface_render").get_current_texture() {
-                Ok(o) => o,
-                Err(wgpu::SurfaceError::Timeout) => {
-                    panic!("waterui_gpu_surface_render: surface timeout after reconfigure");
-                }
-                Err(e) => {
-                    panic!("waterui_gpu_surface_render: acquire after reconfigure failed: {e}");
-                }
-            }
-        }
-        Err(wgpu::SurfaceError::Timeout) => {
-            panic!("waterui_gpu_surface_render: surface timeout");
-        }
-        Err(e) => {
-            panic!("waterui_gpu_surface_render: get_current_texture failed: {e}");
-        }
-    };
+    let output = super::acquire_surface_texture(
+        attached_surface(state, "waterui_gpu_surface_render"),
+        &state.runtime.context().device,
+        attached_config(state, "waterui_gpu_surface_render"),
+        "waterui_gpu_surface_render",
+    );
     let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("GpuSurface Frame View"),
         format: Some(format),
@@ -686,11 +664,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn metal_texture_format(texture: &metal::TextureRef) -> wgpu::TextureFormat {
-    match texture.pixel_format() {
-        metal::MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-        metal::MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
-        metal::MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
+fn metal_texture_format(texture: &ProtocolObject<dyn MTLTexture>) -> wgpu::TextureFormat {
+    match texture.pixelFormat() {
+        MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
+        MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
         other => panic!("GpuSurface external Metal texture has unsupported format {other:?}"),
     }
 }
@@ -710,7 +688,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_prepare_metal_texture(
     texture: *mut c_void,
 ) {
     let state = unsafe { crate::borrow_ffi_mut(state) };
-    let texture = unsafe { metal::TextureRef::from_ptr(texture.cast()) };
+    let texture = unsafe { &*texture.cast::<ProtocolObject<dyn MTLTexture>>() };
     start_renderer_setup(state, metal_texture_format(texture));
 }
 
@@ -727,10 +705,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
     height: u32,
 ) -> *mut WuiGpuCaptureFence {
     let state = unsafe { &mut *state };
-    let metal_texture_ref = unsafe { metal::TextureRef::from_ptr(texture.cast()) };
-    let metal_texture = metal_texture_ref.to_owned();
+    let metal_texture = unsafe {
+        Retained::<ProtocolObject<dyn MTLTexture>>::retain(texture.cast())
+            .expect("waterui_gpu_surface_render_to_metal_texture received a null texture")
+    };
 
-    let target_format = metal_texture_format(metal_texture_ref);
+    let target_format = metal_texture_format(&metal_texture);
     assert_eq!(
         state.renderer_format.get(),
         Some(target_format),
@@ -743,9 +723,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
 
     let hal_texture = unsafe {
         <MetalApi as Api>::Device::texture_from_raw(
-            metal_texture.clone(),
+            metal_texture,
             target_format,
-            MTLTextureType::D2,
+            MTLTextureType::Type2D,
             1,
             1,
             wgpu_hal::CopyExtent {

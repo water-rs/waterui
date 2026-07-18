@@ -19,7 +19,7 @@ pub use color::{Color, Colorspace, ResolvedColor};
 #[cfg(feature = "gpu")]
 pub use effects::{filter_view, view_effect};
 #[cfg(feature = "gpu")]
-pub use gpu::{gpu_surface, prewarm, reactive_color, shader_surface, shared_context};
+pub use gpu::{gpu_surface, reactive_color, shader_source, shader_surface, shared_context};
 #[cfg(feature = "gpu")]
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
@@ -42,8 +42,6 @@ pub use gpu_surface::{
     OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState, RedrawHandle,
 };
 
-#[cfg(feature = "gpu")]
-pub use filtrate::ShaderCache;
 #[cfg(feature = "gpu")]
 pub use shader_surface::ShaderSurface;
 #[cfg(feature = "gpu")]

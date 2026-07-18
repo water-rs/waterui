@@ -151,21 +151,22 @@ waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui-testing = { path = "testing" }
 waterui = { version = "0.2.1", path = "." }
 waterui-build-support = { version = "0.1.0", path = "utils/build_support" }
+shaderloom = { version = "0.1.0", path = "utils/shaderloom" }
 hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis_m3" }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
-wgpu = "27"
+wgpu = "29.0.4"
 encase = { version = "0.10", features = ["glam"] }
-vello = "0.7"
+vello = "0.9"
 parley = { version = "0.7", default-features = false }
-vello_svg = "0.9.0"
+vello_svg = { git = "https://github.com/linebender/vello_svg.git", rev = "2db0427e4dc9879bd636caf69e60dee026d83699" }
 kurbo = "0.13"
 peniko = "0.6"
 vello_cpu = "0.0.9"
 lyon = "1.0"
-wgpu-hal = { version = "27", features = ["gles", "metal"] }
+wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
 glow = "0.16"
 tiny-skia = "0.11"
 zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend", "ws"] }

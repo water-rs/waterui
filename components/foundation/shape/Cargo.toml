@@ -15,7 +15,13 @@ default = ["gpu"]
 # GPU-backed morphing-shape renderer (wgpu). When disabled, morph shapes still
 # emit their `ResolvedMorphShape` native semantic object for backends to render,
 # but no in-crate GPU fallback is compiled, so wgpu/vello are not pulled in.
-gpu = ["waterui-graphics/gpu", "dep:wgpu", "dep:bytemuck", "dep:num-traits"]
+gpu = [
+    "waterui-graphics/gpu",
+    "dep:wgpu",
+    "dep:bytemuck",
+    "dep:num-traits",
+    "dep:shaderloom",
+]
 
 [dependencies]
 waterui-core.workspace = true
@@ -25,6 +31,10 @@ tracing.workspace = true
 nami.workspace = true
 bytemuck = { version = "1.25", features = ["derive"], optional = true }
 num-traits = { version = "0.2", default-features = false, optional = true }
+shaderloom = { workspace = true, optional = true }
+
+[build-dependencies]
+waterui-build-support.workspace = true
 
 [dev-dependencies]
 waterui.workspace = true

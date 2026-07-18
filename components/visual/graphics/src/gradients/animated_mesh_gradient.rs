@@ -11,11 +11,8 @@ use encase::{ShaderSize, UniformBuffer};
 
 use crate::color::ResolvedColor;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
-use crate::include_shader;
+use crate::shaders::ANIMATED_MESH_GRADIENT;
 use waterui_core::View;
-
-const ANIMATED_MESH_SHADER: crate::prewarm::ShaderSource =
-    include_shader!("shaders/animated_mesh_gradient.wgsl");
 
 /// Number of colors in the mesh palette (4x4 grid).
 pub const ANIMATED_MESH_PALETTE_LEN: usize = 16;
@@ -246,12 +243,8 @@ impl GpuView for AnimatedMeshRenderer {
         ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        let shader = ctx.shader_cache.get_or_create_prehashed(
-            ctx.device,
-            ANIMATED_MESH_SHADER.label,
-            ANIMATED_MESH_SHADER.source,
-            ANIMATED_MESH_SHADER.source_hash,
-        );
+        let (vertex_shader, fragment_shader) =
+            ANIMATED_MESH_GRADIENT.create_render_stages(ctx.device, "vs_main", "fs_main");
 
         let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get();
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -261,21 +254,15 @@ impl GpuView for AnimatedMeshRenderer {
             mapped_at_creation: false,
         });
 
-        let bind_group_layout =
-            ctx.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("Animated Mesh Gradient Bind Group Layout"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                });
+        let mut bind_group_layouts = ANIMATED_MESH_GRADIENT.create_bind_group_layouts(ctx.device);
+        assert_eq!(
+            bind_group_layouts.len(),
+            1,
+            "animated mesh gradient must use exactly one bind group"
+        );
+        let bind_group_layout = bind_group_layouts
+            .pop()
+            .expect("one animated mesh gradient bind group was asserted");
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Animated Mesh Gradient Bind Group"),
@@ -290,8 +277,8 @@ impl GpuView for AnimatedMeshRenderer {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Animated Mesh Gradient Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -306,14 +293,14 @@ impl GpuView for AnimatedMeshRenderer {
                 label: Some("Animated Mesh Gradient Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: shader.as_ref(),
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: shader.as_ref(),
-                    entry_point: Some("fs_main"),
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
                         blend,
@@ -327,8 +314,8 @@ impl GpuView for AnimatedMeshRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         self.pipeline = Some(pipeline);
@@ -397,6 +384,7 @@ impl GpuView for AnimatedMeshRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

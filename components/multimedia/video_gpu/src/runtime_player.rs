@@ -2,7 +2,6 @@ use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use core::fmt;
 use futures::FutureExt as _;
 use std::{
-    borrow::Cow,
     collections::VecDeque,
     fs,
     num::{NonZeroU64, NonZeroUsize},
@@ -23,7 +22,7 @@ use waterkit_audio::{
 };
 use waterkit_codec::{
     ColorOutputTarget, DecodedFrame, DecodedFrameUploader, DecodedPixelLayout,
-    GpuFrame as DecodedGpuFrame, VideoColorUniform, YUV_COLOR_SHADER_WGSL, video_color_uniform,
+    GpuFrame as DecodedGpuFrame, VideoColorUniform, video_color_uniform,
 };
 #[cfg(target_os = "android")]
 use waterkit_video::AndroidOffloadAudioController;
@@ -105,9 +104,6 @@ const AUDIO_FOCUS_DUCK_FACTOR: f32 = 0.2;
 const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 const BUFFER_LEVEL_REPORT_STEP_MS: u32 = 50;
 const SPHERICAL_GESTURE_DEGREES_PER_POINT: f32 = 0.2;
-const SPHERICAL_VIDEO_RENDER_SHADER_WGSL: &str =
-    include_str!("shaders/spherical_video_render.wgsl");
-
 type OnEvent = Option<Rc<dyn Fn(Event) + 'static>>;
 
 /// Bridges an optional typed [`BoxedEventAction<Event>`] to the runtime player's
@@ -5336,6 +5332,7 @@ impl VideoRenderer {
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
@@ -5669,27 +5666,26 @@ fn create_video_render_pipeline(
     format: wgpu::TextureFormat,
     spherical: bool,
 ) -> wgpu::RenderPipeline {
-    let shader_source = if spherical {
-        Cow::Owned([YUV_COLOR_SHADER_WGSL, SPHERICAL_VIDEO_RENDER_SHADER_WGSL].concat())
+    let shader = if spherical {
+        &crate::VIDEO_YUV_SPHERICAL_SHADER
     } else {
-        Cow::Borrowed(YUV_COLOR_SHADER_WGSL)
+        &crate::VIDEO_YUV_SHADER
     };
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Video render shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source),
-    });
+    let fragment_entry_point = if spherical { "fs_spherical" } else { "fs_main" };
+    let (vertex_shader, fragment_shader) =
+        shader.create_render_stages(device, "vs_main", fragment_entry_point);
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Video pipeline layout"),
-        bind_group_layouts: &[bind_group_layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Video render pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
+            module: vertex_shader.module(),
+            entry_point: Some(vertex_shader.entry_point()),
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: usize_to_u64(4 * core::mem::size_of::<f32>(), "video vertex stride"),
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -5712,8 +5708,8 @@ fn create_video_render_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some(if spherical { "fs_spherical" } else { "fs_main" }),
+            module: fragment_shader.module(),
+            entry_point: Some(fragment_shader.entry_point()),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -5732,7 +5728,7 @@ fn create_video_render_pipeline(
         },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -5745,7 +5741,7 @@ fn create_video_sampler(device: &wgpu::Device) -> wgpu::Sampler {
         address_mode_w: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
         ..Default::default()
     })
 }
@@ -6222,6 +6218,7 @@ mod tests {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, bind_group, &[]);

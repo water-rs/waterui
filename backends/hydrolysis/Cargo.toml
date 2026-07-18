@@ -18,6 +18,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nami.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
 waterui-canvas.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
@@ -46,6 +47,7 @@ accesskit_winit = { version = "0.32.1", optional = true }
 
 [build-dependencies]
 cfg_aliases = "0.2.1"
+waterui-build-support.workspace = true
 
 # Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
 # window's NSView declares the 120Hz frame-rate demand (see

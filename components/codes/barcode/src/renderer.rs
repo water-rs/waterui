@@ -6,7 +6,7 @@ use nami::signal::IntoComputed;
 use waterui_core::{Computed, Environment, layout::UnitPoint};
 use wgpu::util::DeviceExt;
 
-use crate::{BarcodeSource, view::BarcodeFill};
+use crate::{BarcodeSource, shaders::QR_RENDER, view::BarcodeFill};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuView,
     color::{Color, ResolvedColor, Srgb},
@@ -193,12 +193,9 @@ impl BarcodeRenderer {
     fn create_render_pipeline(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("QR render shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/qr_render.wgsl").into()),
-        });
+        let (vertex_shader, fragment_shader) =
+            QR_RENDER.create_render_stages(device, "vs_main", "fs_main");
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("QR render bind group layout"),
@@ -228,22 +225,22 @@ impl BarcodeRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("QR render pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("QR render pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
+                module: vertex_shader.module(),
+                entry_point: Some(vertex_shader.entry_point()),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
+                module: fragment_shader.module(),
+                entry_point: Some(fragment_shader.entry_point()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -262,8 +259,8 @@ impl BarcodeRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: pipeline_cache,
+            multiview_mask: None,
+            cache: None,
         });
 
         (pipeline, bind_group_layout)
@@ -312,8 +309,7 @@ impl GpuView for BarcodeRenderer {
         ctx: &GpuContext<'_>,
         env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        let (pipeline, bgl) =
-            Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
+        let (pipeline, bgl) = Self::create_render_pipeline(ctx.device, ctx.surface_format);
         self.render_pipeline = Some(pipeline);
         self.create_buffers_and_bind_group(ctx.device, &bgl);
         let mut reactive_colors = ReactiveBarcodeColors::new(&self.fill, &self.light_color, env);
@@ -380,6 +376,7 @@ impl GpuView for BarcodeRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, bind_group, &[]);
