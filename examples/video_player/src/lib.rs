@@ -17,6 +17,7 @@ use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::task::spawn_local;
 
 /// A selectable video source.
 #[derive(Clone, Copy)]
@@ -59,21 +60,23 @@ const SAMPLES: &[Sample] = &[
 
 /// Self-contained entry: builds the player, status, and source selector.
 pub fn demo() -> impl View {
-    let selected = Binding::usize(0);
     let status: Binding<Str> = binding("Idle");
     let is_buffering = binding(false);
+    let items = SAMPLES
+        .iter()
+        .map(|sample| MediaItem::from(Url::parse(sample.url).expect("sample URL should be valid")))
+        .collect::<Vec<_>>();
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let session = PlaybackSession::new(Playlist::new(items[0].clone(), items.into_iter().skip(1)));
+    let controller = session.controller();
+    let selected = controller.current_item_index();
 
-    let source = selected
-        .clone()
-        .map(|index| Url::parse(SAMPLES[index].url).expect("sample URL should be valid"));
-
-    let player = VideoPlayer::new(source)
+    let player = VideoPlayer::new(session)
         .show_controls(true)
         .aspect_ratio(AspectRatio::Fit)
         .on_event({
             let status = status.clone();
             let is_buffering = is_buffering.clone();
-            let selected = selected.clone();
             move |event| match event {
                 video::Event::ReadyToPlay => {
                     is_buffering.set(false);
@@ -102,12 +105,7 @@ pub fn demo() -> impl View {
                     });
                 }
                 video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
-                video::Event::NextRequested => {
-                    selected.set((selected.get() + 1) % SAMPLES.len());
-                }
-                video::Event::PreviousRequested => {
-                    selected.set((selected.get() + SAMPLES.len() - 1) % SAMPLES.len());
-                }
+                video::Event::NextRequested | video::Event::PreviousRequested => {}
                 video::Event::Ended => {
                     is_buffering.set(false);
                     status.set(Str::from_static("Ended"));
@@ -119,7 +117,13 @@ pub fn demo() -> impl View {
             }
         });
 
-    player_shell(player, selected, status, is_buffering)
+    player_shell(
+        player,
+        selected,
+        status,
+        is_buffering,
+        Some((controller, item_ids)),
+    )
 }
 
 /// Static preview frame — keeps `water preview` and Hydrolysis perf tests off the network.
@@ -138,15 +142,16 @@ fn video_player_preview() -> impl View {
         ))
         .spacing(12.0),
     ));
-    player_shell(frame, selected, status, is_buffering)
+    player_shell(frame, selected.computed(), status, is_buffering, None)
 }
 
 /// Shared layout: title, player with a buffering overlay, status line, and source pills.
 fn player_shell(
     player: impl View,
-    selected: Binding<usize>,
+    selected: Computed<usize>,
     status: Binding<Str>,
     is_buffering: Binding<bool>,
+    playlist: Option<(PlayerController, Vec<MediaItemId>)>,
 ) -> impl View {
     let title = selected.clone().map(|index| SAMPLES[index].title);
     let profile = selected.clone().map(|index| SAMPLES[index].profile);
@@ -156,21 +161,23 @@ fn player_shell(
         .background(Srgb::BLACK.with_opacity(0.8))
         .visible(is_buffering.clone());
 
-    let source_grid = layout_grid(
-        3,
-        [
-            grid_row((
-                pill_button(SAMPLES[0].title, 0, &selected),
-                pill_button(SAMPLES[1].title, 1, &selected),
-                pill_button(SAMPLES[2].title, 2, &selected),
-            )),
-            grid_row((
-                pill_button(SAMPLES[3].title, 3, &selected),
-                pill_button(SAMPLES[4].title, 4, &selected),
-            )),
-        ],
-    )
-    .spacing(12.0);
+    let source_grid = playlist.map(|(controller, ids)| {
+        layout_grid(
+            3,
+            [
+                grid_row((
+                    pill_button(SAMPLES[0].title, 0, ids[0], &selected, &controller),
+                    pill_button(SAMPLES[1].title, 1, ids[1], &selected, &controller),
+                    pill_button(SAMPLES[2].title, 2, ids[2], &selected, &controller),
+                )),
+                grid_row((
+                    pill_button(SAMPLES[3].title, 3, ids[3], &selected, &controller),
+                    pill_button(SAMPLES[4].title, 4, ids[4], &selected, &controller),
+                )),
+            ],
+        )
+        .spacing(12.0)
+    });
 
     vstack((
         text("WaterUI Video Player").headline(),
@@ -185,18 +192,31 @@ fn player_shell(
 }
 
 /// Pill-style selection button reflecting the active source.
-fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> impl View {
+fn pill_button(
+    label: &'static str,
+    index: usize,
+    item_id: MediaItemId,
+    selected: &Computed<usize>,
+    controller: &PlayerController,
+) -> impl View {
     let is_selected = selected.clone().map(move |s| s == index);
-    let selected_for_action = selected.clone();
+    let controller = controller.clone();
     let selected_bg_opacity = is_selected.clone().select(1.0, 0.0);
     let idle_bg_opacity = is_selected.select(0.0, 1.0);
 
     zstack((
         Srgb::WHITE.with_opacity(0.15).opacity(idle_bg_opacity),
         Srgb::WHITE.with_opacity(0.35).opacity(selected_bg_opacity),
-        button(label)
-            .action(move |State(s): State<Binding<usize>>| s.set(index))
-            .state(&selected_for_action),
+        button(label).action(move || {
+            let controller = controller.clone();
+            spawn_local(async move {
+                controller
+                    .seek_to_item(item_id)
+                    .await
+                    .expect("sample item must remain in the player playlist");
+            })
+            .detach();
+        }),
     ))
 }
 

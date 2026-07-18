@@ -96,6 +96,7 @@ nami-core = { version = "0.3.2", path = "utils/nami/core" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.18"
+uuid = { version = "1.21.0", features = ["v4"] }
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.1", path = "utils/url" }
@@ -103,6 +104,7 @@ waterui-text = { version = "0.2.2", path = "components/foundation/text" }
 waterui-media = { version = "0.2.1", path = "components/multimedia/media" }
 waterui-image = { version = "0.2.1", path = "components/visual/image" }
 waterui-video = { version = "0.2.1", path = "components/multimedia/video" }
+waterui-video-gpu = { version = "0.2.1", path = "components/multimedia/video_gpu" }
 waterui-form = { version = "0.2.1", path = "components/foundation/form" }
 waterui-controls = { version = "0.2.1", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.2.1", path = "components/visual/graphics", default-features = false }
@@ -131,10 +133,10 @@ waterkit-fs = { version = "0.1.0", path = "kit/platform/fs" }
 waterkit-haptic = { version = "0.1.0", path = "kit/device/haptic" }
 waterkit-camera = { version = "0.1.0", path = "kit/device/camera" }
 waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-features = false }
-waterkit-video = { version = "0.1.0", path = "kit/multimedia/video" }
+waterkit-video = { version = "0.1.0", path = "kit/multimedia/video", features = ["streaming"] }
 waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core", default-features = false }
-filtrate = { version = "0.1.0", path = "utils/filtrate" }
+filtrate = { version = "0.2.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate/core" }
 filtrate-derive = { version = "0.1.0", path = "utils/filtrate/derive" }
 waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
@@ -166,7 +168,7 @@ lyon = "1.0"
 wgpu-hal = { version = "27", features = ["gles", "metal"] }
 glow = "0.16"
 tiny-skia = "0.11"
-zenwave = { version = "0.3.0", default-features = false, features = ["hyper-backend", "ws"] }
+zenwave = { version = "0.4.0", default-features = false, features = ["hyper-backend", "ws"] }
 skyzen = { version = "0.1.0", default-features = false }
 pastey = "0.2.1"
 tracing-panic = "0.1.2"

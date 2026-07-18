@@ -132,13 +132,13 @@ impl VideoAsset {
     /// Builds a raw [`Video`] view from this asset.
     #[must_use]
     pub fn raw(self) -> Video {
-        Video::new(self.url())
+        waterui_video::video(self.url())
     }
 
     /// Builds a [`VideoPlayer`] view from this asset.
     #[must_use]
     pub fn player(self) -> VideoPlayer {
-        VideoPlayer::new(self.url())
+        waterui_video::video_player(self.url())
     }
 }
 

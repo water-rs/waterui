@@ -142,10 +142,17 @@ fn media_video_uses_video_player_accessibility_controls() {
 
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();
-    app.query().role(Role::BUTTON).label("1.0x").assert_exists();
     app.query()
         .role(Role::BUTTON)
-        .label("Pitch On")
+        .label("Playback speed 1.0 times")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Disable pitch preservation")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Subtitles automatic")
         .assert_exists();
     assert_eq!(
         app.query().role(Role::SLIDER).all().len(),

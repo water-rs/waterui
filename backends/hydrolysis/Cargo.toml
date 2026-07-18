@@ -22,7 +22,7 @@ waterui-canvas.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
-waterui-video.workspace = true
+waterui-video-gpu.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
 waterui-layout = { workspace = true, features = ["parallel"] }

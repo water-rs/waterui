@@ -262,8 +262,8 @@ async fn latest_cmdline_tools_archive_url() -> eyre::Result<String> {
     const REPOSITORY_URL: &str = "https://dl.google.com/android/repository/repository2-3.xml";
     const REPOSITORY_PREFIX: &str = "https://dl.google.com/android/repository/";
 
-    let mut client = FollowRedirect::new(zenwave::client());
-    let response = client.method(Method::GET, REPOSITORY_URL).await?;
+    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let response = client.method(Method::GET, REPOSITORY_URL)?.await?;
     if !response.status().is_success() {
         return Err(eyre::eyre!(
             "Failed to query Android SDK repository metadata: HTTP {}",

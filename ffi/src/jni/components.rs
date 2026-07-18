@@ -635,7 +635,7 @@ unsafe extern "C" fn drop_android_layout_invalidation_target(context: *mut c_voi
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatchInvalidation<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
     owner: JObject<'local>,
@@ -650,7 +650,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatchInvali
     });
     let context = Box::into_raw(target).cast::<c_void>();
     unsafe {
-        crate::components::layouting::layout::waterui_layout_watch_invalidation(
+        crate::components::layout::waterui_layout_watch_invalidation(
             layout_ptr as *const WuiLayout,
             context,
             invalidate_android_layout,
@@ -667,8 +667,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatcherDrop
     watcher_ptr: jlong,
 ) {
     unsafe {
-        crate::components::layouting::layout::waterui_layout_watcher_drop(
-            watcher_ptr as *mut crate::components::layouting::layout::WuiLayoutWatcher,
+        crate::components::layout::waterui_layout_watcher_drop(
+            watcher_ptr as *mut crate::components::layout::WuiLayoutWatcher,
         );
     }
 }
@@ -1497,6 +1497,56 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView
 }
 
 // ============================================================================
+// Android video surface host
+// ============================================================================
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostAttach<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    bridge_ptr: jlong,
+    host: JObject<'local>,
+) {
+    let bridge = unsafe { &*(bridge_ptr as *const waterui_video_gpu::AndroidVideoSurfaceBridge) };
+    unsafe { bridge.attach_host(&mut env, &host) }
+        .unwrap_or_else(|error| panic!("WatcherJni.androidVideoSurfaceHostAttach failed: {error}"));
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostDrop<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    bridge_ptr: jlong,
+) {
+    unsafe {
+        drop(Box::from_raw(
+            bridge_ptr as *mut waterui_video_gpu::AndroidVideoSurfaceBridge,
+        ));
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostSurfaceDestroyed<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    bridge_ptr: jlong,
+) {
+    let bridge = unsafe { &*(bridge_ptr as *const waterui_video_gpu::AndroidVideoSurfaceBridge) };
+    bridge.surface_destroyed().unwrap_or_else(|error| {
+        panic!("WatcherJni.androidVideoSurfaceHostSurfaceDestroyed failed: {error}")
+    });
+}
+
+// ============================================================================
 // GpuSurface Functions
 // ============================================================================
 
@@ -1531,7 +1581,7 @@ unsafe extern "C" fn drop_android_gpu_surface_redraw_target(context: *mut c_void
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     owner: JObject<'local>,
     renderer_ptr: jlong,
@@ -1626,7 +1676,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     surface: JObject<'local>,

@@ -73,7 +73,7 @@ fn init_main_thread_executors() {
 }
 
 fn install_native_component_hooks(env: &mut Environment) {
-    waterui_video::install_rust_player_hooks(env);
+    waterui_video_gpu::install(env);
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
