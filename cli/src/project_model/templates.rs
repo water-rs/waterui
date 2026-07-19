@@ -177,6 +177,8 @@ pub struct TemplateContext {
     pub accessory: bool,
     /// Preview runtime fingerprint inserted into preview support app templates.
     pub preview_runtime_fingerprint: Option<String>,
+    /// Exact WaterUI feature set linked into a preview support runtime.
+    pub preview_runtime_features: Vec<String>,
     /// Package type of the project being scaffolded.
     pub package_type: crate::project::PackageType,
     /// ESP32 harness parameters used by the esp32 templates.
@@ -208,6 +210,7 @@ impl TemplateContext {
             ios_permissions: Vec::new(),
             accessory: false,
             preview_runtime_fingerprint: None,
+            preview_runtime_features: Vec::new(),
             package_type: options.package_type,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -235,6 +238,7 @@ impl TemplateContext {
             ios_permissions: Vec::new(),
             accessory: manifest.package.accessory,
             preview_runtime_fingerprint: None,
+            preview_runtime_features: Vec::new(),
             package_type: manifest.package.package_type,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -269,6 +273,7 @@ impl TemplateContext {
             ios_permissions: Vec::new(),
             accessory,
             preview_runtime_fingerprint,
+            preview_runtime_features: Vec::new(),
             package_type: crate::project::PackageType::Playground,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -285,6 +290,13 @@ impl TemplateContext {
     #[must_use]
     pub fn with_project_root_path(mut self, path: PathBuf) -> Self {
         self.project_root_path = Some(path);
+        self
+    }
+
+    /// Set the exact WaterUI feature set used by a preview support runtime.
+    #[must_use]
+    pub fn with_preview_runtime_features(mut self, features: Vec<String>) -> Self {
+        self.preview_runtime_features = features;
         self
     }
 
@@ -775,6 +787,7 @@ mod tests {
             ios_permissions: Vec::new(),
             accessory: false,
             preview_runtime_fingerprint: None,
+            preview_runtime_features: Vec::new(),
             package_type,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -1061,7 +1074,8 @@ mod tests {
 
     #[test]
     fn preview_scaffold_uses_embedded_workspace_version() {
-        let ctx = app_ctx();
+        let ctx = app_ctx()
+            .with_preview_runtime_features(vec!["dynamic_linking".to_string(), "gpu".to_string()]);
         let tempdir = tempdir().expect("temporary preview scaffold dir");
 
         smol::block_on(crate::templates::preview::scaffold(tempdir.path(), &ctx))
@@ -1071,7 +1085,16 @@ mod tests {
             .expect("preview Cargo.toml should be written");
         assert!(cargo_toml.contains(&format!("version = \"{PREVIEW_VERSION}\"")));
         assert!(cargo_toml.contains("default-features = false"));
-        assert!(cargo_toml.contains("dev = [\"waterui/dynamic_linking\"]"));
+        let manifest = cargo_toml
+            .parse::<toml::Table>()
+            .expect("preview Cargo.toml should parse");
+        let dev_features = manifest["features"]["dev"]
+            .as_array()
+            .expect("preview dev feature should be an array")
+            .iter()
+            .map(|feature| feature.as_str().expect("feature should be a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(dev_features, ["waterui/dynamic_linking", "waterui/gpu"]);
 
         let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
             .expect("preview lib.rs should be written");
@@ -2473,9 +2496,22 @@ pub mod preview {
                 dependency_version(PREVIEW_VERSION),
             );
         }
+        if !ctx
+            .preview_runtime_features
+            .iter()
+            .any(|feature| feature == "dynamic_linking")
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Preview support runtime features must include waterui/dynamic_linking",
+            ));
+        }
         let features = BTreeMap::from([(
             "dev".to_string(),
-            vec!["waterui/dynamic_linking".to_string()],
+            ctx.preview_runtime_features
+                .iter()
+                .map(|feature| format!("waterui/{feature}"))
+                .collect(),
         )]);
         write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), features, dependencies).await
     }

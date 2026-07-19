@@ -41,6 +41,7 @@ const PREVIEW_DYLIB_METADATA_SUFFIX: &str = ".waterui-preview-dylib-signature";
 struct PreviewRequirements {
     waterui_path: Option<PathBuf>,
     runtime_fingerprint: String,
+    runtime_features: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1047,7 +1048,8 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
         waterui_path,
         true,
         Some(requirements.runtime_fingerprint.clone()),
-    );
+    )
+    .with_preview_runtime_features(requirements.runtime_features.clone());
 
     crate::templates::preview::scaffold(project.root(), &ctx)
         .await
@@ -1070,26 +1072,15 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
 }
 
 async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequirements> {
-    if let Some(requirements) = resolve_preview_requirements_from_manifest(project_path).await? {
+    let metadata = resolve_preview_metadata(project_path).await?;
+    let waterui = select_unique_package(&metadata, "waterui")?;
+    let runtime_features = resolved_package_features(&metadata, waterui)?;
+
+    if let Some(requirements) =
+        resolve_preview_requirements_from_manifest(project_path, &runtime_features).await?
+    {
         return Ok(requirements);
     }
-
-    let current_dir = project_path.to_path_buf();
-    let metadata_start = Instant::now();
-    let metadata = smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(current_dir)
-            .exec()
-    })
-    .await
-    .wrap_err("Failed to resolve user project Cargo metadata for preview compatibility")?;
-    info!(
-        project_path = %project_path.display(),
-        elapsed_ms = metadata_start.elapsed().as_millis(),
-        "Preview resolved user project cargo metadata"
-    );
-
-    let waterui = select_unique_package(&metadata, "waterui")?;
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
     let runtime_identity = runtime_package_identity(waterui_core);
 
@@ -1109,7 +1100,8 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
         );
         return Ok(PreviewRequirements {
             waterui_path: Some(waterui_root),
-            runtime_fingerprint: format!("{fingerprint}|profile={}", runtime_profile_tag()),
+            runtime_fingerprint: runtime_fingerprint(&fingerprint, &runtime_features),
+            runtime_features,
         });
     } else {
         let source = waterui
@@ -1128,15 +1120,14 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
 
     Ok(PreviewRequirements {
         waterui_path: None,
-        runtime_fingerprint: format!(
-            "{runtime_fingerprint_base}|profile={}",
-            runtime_profile_tag()
-        ),
+        runtime_fingerprint: runtime_fingerprint(&runtime_fingerprint_base, &runtime_features),
+        runtime_features,
     })
 }
 
 async fn resolve_preview_requirements_from_manifest(
     project_path: &Path,
+    runtime_features: &[String],
 ) -> Result<Option<PreviewRequirements>> {
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
@@ -1174,10 +1165,9 @@ async fn resolve_preview_requirements_from_manifest(
     );
 
     let runtime_fingerprint_start = Instant::now();
-    let runtime_fingerprint = format!(
-        "{}|profile={}",
-        compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?,
-        runtime_profile_tag()
+    let runtime_fingerprint = runtime_fingerprint(
+        &compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?,
+        runtime_features,
     );
     info!(
         project_path = %project_path.display(),
@@ -1189,7 +1179,68 @@ async fn resolve_preview_requirements_from_manifest(
     Ok(Some(PreviewRequirements {
         waterui_path: Some(waterui_root),
         runtime_fingerprint,
+        runtime_features: runtime_features.to_vec(),
     }))
+}
+
+async fn resolve_preview_metadata(project_path: &Path) -> Result<cargo_metadata::Metadata> {
+    let current_dir = project_path.to_path_buf();
+    let metadata_start = Instant::now();
+    let metadata = smol::unblock(move || {
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
+            .current_dir(current_dir)
+            .features(cargo_metadata::CargoOpt::SomeFeatures(vec![
+                "dev".to_string(),
+            ]));
+        command.exec()
+    })
+    .await
+    .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;
+    info!(
+        project_path = %project_path.display(),
+        elapsed_ms = metadata_start.elapsed().as_millis(),
+        "Preview resolved user project cargo metadata"
+    );
+    Ok(metadata)
+}
+
+fn resolved_package_features(
+    metadata: &cargo_metadata::Metadata,
+    package: &cargo_metadata::Package,
+) -> Result<Vec<String>> {
+    let resolve = metadata.resolve.as_ref().ok_or_else(|| {
+        color_eyre::eyre::eyre!("Cargo metadata omitted its dependency resolution graph")
+    })?;
+    let node = resolve
+        .nodes
+        .iter()
+        .find(|node| node.id == package.id)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "Cargo metadata omitted the resolution node for package `{}`",
+                package.name
+            )
+        })?;
+    let mut features = node
+        .features
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    features.sort_unstable();
+    features.dedup();
+    if !features.iter().any(|feature| feature == "dynamic_linking") {
+        bail!("Preview requires the project dev feature to enable waterui/dynamic_linking");
+    }
+    Ok(features)
+}
+
+fn runtime_fingerprint(base: &str, features: &[String]) -> String {
+    format!(
+        "{base}|features={}|profile={}",
+        features.join(","),
+        runtime_profile_tag()
+    )
 }
 
 async fn resolve_waterui_root_from_manifest(
