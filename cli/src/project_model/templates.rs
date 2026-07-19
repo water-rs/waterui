@@ -1071,6 +1071,7 @@ mod tests {
             .expect("preview Cargo.toml should be written");
         assert!(cargo_toml.contains(&format!("version = \"{PREVIEW_VERSION}\"")));
         assert!(cargo_toml.contains("default-features = false"));
+        assert!(cargo_toml.contains("dev = [\"waterui/dynamic_linking\"]"));
 
         let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
             .expect("preview lib.rs should be written");
@@ -1107,6 +1108,7 @@ mod tests {
         let expected_ffi_path = normalize_path_for_config(&expected_ffi_path);
 
         assert!(cargo_toml.contains(&format!("path = \"{expected_ffi_path}\"")));
+        assert!(cargo_toml.contains("dev = [\"waterui_test/dev\"]"));
     }
 
     #[test]
@@ -1325,6 +1327,8 @@ async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
 struct SupportCargoManifest {
     package: SupportPackageSection,
     lib: SupportLibSection,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
     workspace: SupportWorkspaceSection,
 }
@@ -1367,6 +1371,7 @@ struct SupportDependencyDetail {
 async fn write_support_cargo_toml(
     base_dir: &Path,
     crate_name: &str,
+    features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
 ) -> io::Result<()> {
     let manifest = SupportCargoManifest {
@@ -1382,6 +1387,7 @@ async fn write_support_cargo_toml(
                 "rlib".to_string(),
             ],
         },
+        features,
         dependencies,
         workspace: SupportWorkspaceSection {},
     };
@@ -2167,6 +2173,10 @@ pub mod ffi {
             })),
         );
 
+        manifest
+            .features
+            .insert("dev".to_string(), vec![format!("{}/dev", ctx.crate_name)]);
+
         let waterui_dependency = ctx.waterui_path.as_ref().map_or_else(
             || {
                 Dependency::Detailed(Box::new(DependencyDetail {
@@ -2463,7 +2473,11 @@ pub mod preview {
                 dependency_version(PREVIEW_VERSION),
             );
         }
-        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), dependencies).await
+        let features = BTreeMap::from([(
+            "dev".to_string(),
+            vec!["waterui/dynamic_linking".to_string()],
+        )]);
+        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), features, dependencies).await
     }
 }
 
@@ -2606,6 +2620,12 @@ pub mod inspector {
         dependencies.insert("smol".to_string(), dependency_version("2.0.2"));
         dependencies.insert("futures-lite".to_string(), dependency_version("2.6"));
 
-        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), dependencies).await
+        write_support_cargo_toml(
+            base_dir,
+            ctx.crate_name.as_str(),
+            BTreeMap::new(),
+            dependencies,
+        )
+        .await
     }
 }

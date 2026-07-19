@@ -4,6 +4,7 @@
 pub mod backend;
 /// Apple device detection and management.
 pub mod device;
+pub(crate) mod dynamic_runtime;
 /// macOS local device gestures and screenshot.
 #[cfg(target_os = "macos")]
 pub mod local;

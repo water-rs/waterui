@@ -292,6 +292,9 @@ pub struct PackageOptions {
     /// This flag is not conflict with `distribution`, since `distribution` decide the package format,
     /// while `debug` decide the build configuration.
     debug: bool,
+
+    /// Whether the package embeds the shared WaterUI Rust runtime.
+    shared_rust_runtime: bool,
 }
 
 impl PackageOptions {
@@ -301,7 +304,15 @@ impl PackageOptions {
         Self {
             distribution,
             debug,
+            shared_rust_runtime: false,
         }
+    }
+
+    /// Embed the shared WaterUI Rust runtime in the native package.
+    #[must_use]
+    pub const fn with_shared_rust_runtime(mut self) -> Self {
+        self.shared_rust_runtime = true;
+        self
     }
 
     /// Whether to package in distribution mode
@@ -314,5 +325,11 @@ impl PackageOptions {
     #[must_use]
     pub const fn is_debug(&self) -> bool {
         self.debug
+    }
+
+    /// Whether the package must embed the shared WaterUI Rust runtime.
+    #[must_use]
+    pub const fn uses_shared_rust_runtime(&self) -> bool {
+        self.shared_rust_runtime
     }
 }
