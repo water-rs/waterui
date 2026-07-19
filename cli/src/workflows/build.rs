@@ -5,8 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use color_eyre::eyre::{self, bail};
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
+
+use crate::utils::{command, run_command};
 
 /// Get the dynamic library extension for a target triple.
 #[must_use]
@@ -24,7 +27,40 @@ pub const fn lib_extension_for_triple(triple: &Triple) -> &'static str {
     }
 }
 
-use crate::utils::{command, run_command};
+/// Resolve the Rust standard-library directory for a target triple.
+///
+/// # Errors
+/// Returns an error if rustc cannot resolve an existing target library directory.
+pub async fn rust_target_libdir(triple: &Triple) -> eyre::Result<PathBuf> {
+    let target = triple.to_string();
+    let output = run_command(
+        "rustc",
+        ["--print", "target-libdir", "--target", target.as_str()],
+    )
+    .await?;
+    let libdir = output.trim();
+    if libdir.is_empty() {
+        bail!("`rustc --print target-libdir --target {target}` returned an empty path");
+    }
+    let path = PathBuf::from(libdir);
+    if !path.is_dir() {
+        bail!(
+            "Rust target libdir does not exist for dynamic linking: {}",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+/// Selects how Rust dependencies are linked into a native application.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RustLinkage {
+    /// Link the WaterUI runtime into the application archive.
+    #[default]
+    Static,
+    /// Link the application and loadable modules against one shared WaterUI runtime.
+    SharedRuntime,
+}
 
 /// Represents a Rust build for a specific target triple.
 #[derive(Debug, Clone)]
@@ -52,6 +88,8 @@ pub struct BuildOptions {
     sccache_path: Option<std::path::PathBuf>,
     /// Optional target triple override.
     target_triple: Option<Triple>,
+    /// Rust runtime linkage used by the final native application.
+    linkage: RustLinkage,
 }
 
 impl BuildOptions {
@@ -63,6 +101,7 @@ impl BuildOptions {
             output_dir: None,
             sccache_path: None,
             target_triple: None,
+            linkage: RustLinkage::Static,
         }
     }
 
@@ -112,6 +151,19 @@ impl BuildOptions {
     pub fn with_target_triple(mut self, target_triple: Triple) -> Self {
         self.target_triple = Some(target_triple);
         self
+    }
+
+    /// Link the native application against a shared Rust runtime.
+    #[must_use]
+    pub const fn with_shared_runtime(mut self) -> Self {
+        self.linkage = RustLinkage::SharedRuntime;
+        self
+    }
+
+    /// Get the selected Rust runtime linkage.
+    #[must_use]
+    pub const fn linkage(&self) -> RustLinkage {
+        self.linkage
     }
 }
 
