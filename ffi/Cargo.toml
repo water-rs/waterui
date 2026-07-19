@@ -62,6 +62,7 @@ tracing-oslog = "0.3"
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"] }
 wgpu-hal = { workspace = true, features = ["metal"] }
+waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"] }
 
 [target.'cfg(all(not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
 waterui-video-gpu.workspace = true

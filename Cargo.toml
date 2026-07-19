@@ -125,7 +125,7 @@ waterui-locale = { version = "0.1.0", path = "utils/locale" }
 waterui-map = { version = "0.1.0", path = "components/data/map" }
 waterkit-location = { version = "0.1.0", path = "kit/device/location" }
 waterkit-screen = { version = "0.1.0", path = "kit/platform/screen" }
-waterkit-audio = { version = "0.1.0", path = "kit/multimedia/audio" }
+waterkit-audio = { version = "0.1.0", path = "kit/multimedia/audio", default-features = false }
 waterkit-clipboard = { version = "0.1.0", path = "kit/platform/clipboard" }
 waterkit-permission = { version = "0.1.0", path = "kit/platform/permission" }
 waterkit-dialog = { version = "0.1.0", path = "kit/sharing/dialog" }

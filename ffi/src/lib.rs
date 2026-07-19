@@ -45,6 +45,8 @@ pub use ty::WuiTypeId;
 
 use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
+#[cfg(target_vendor = "apple")]
+use waterkit_audio as _;
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
 pub use waterui_video;

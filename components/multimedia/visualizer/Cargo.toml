@@ -17,7 +17,7 @@ workspace = true
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 shaderloom.workspace = true
-waterkit-audio.workspace = true
+waterkit-audio = { workspace = true, features = ["recording"] }
 wgpu.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 async-channel.workspace = true
