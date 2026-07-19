@@ -44,6 +44,15 @@ struct PreviewRequirements {
     runtime_features: Vec<String>,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
+    dependency_lockfile: PathBuf,
+}
+
+#[derive(Debug)]
+struct ResolvedPreviewMetadata {
+    metadata: cargo_metadata::Metadata,
+    app_crate_name: crate::project_types::CrateName,
+    app_path: PathBuf,
+    dependency_lockfile: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -555,12 +564,38 @@ async fn open_preview_support_project(requirements: &PreviewRequirements) -> Res
     let project = Project::open(&preview_app_path)
         .await
         .wrap_err("Failed to open preview app project")?;
+    synchronize_preview_dependency_lock(
+        &requirements.dependency_lockfile,
+        &project.ffi_crate_path().join("Cargo.lock"),
+    )
+    .await?;
     info!(
         path = %preview_app_path.display(),
         elapsed_ms = open_start.elapsed().as_millis(),
         "Preview support project opened"
     );
     Ok(project)
+}
+
+async fn synchronize_preview_dependency_lock(source: &Path, destination: &Path) -> Result<()> {
+    let source_contents = smol::fs::read(source).await.wrap_err_with(|| {
+        format!(
+            "Failed to read preview module dependency lockfile {}",
+            source.display()
+        )
+    })?;
+    if smol::fs::read(destination).await.ok().as_deref() == Some(source_contents.as_slice()) {
+        return Ok(());
+    }
+    smol::fs::write(destination, source_contents)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "Failed to synchronize preview host dependency lockfile {}",
+                destination.display()
+            )
+        })?;
+    Ok(())
 }
 
 async fn launch_preview_app_for_platform(
@@ -1085,7 +1120,8 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
 }
 
 async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequirements> {
-    let (metadata, app_crate_name, app_path) = resolve_preview_metadata(project_path).await?;
+    let resolved = resolve_preview_metadata(project_path).await?;
+    let metadata = &resolved.metadata;
     let waterui = select_unique_package(&metadata, "waterui")?;
     let runtime_features = resolved_package_features(&metadata, waterui)?;
     let graph_fingerprint = resolved_graph_fingerprint(&metadata)?;
@@ -1094,8 +1130,9 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
         project_path,
         &runtime_features,
         &graph_fingerprint,
-        &app_crate_name,
-        &app_path,
+        &resolved.app_crate_name,
+        &resolved.app_path,
+        &resolved.dependency_lockfile,
     )
     .await?
     {
@@ -1126,8 +1163,9 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
                 &graph_fingerprint,
             ),
             runtime_features,
-            app_crate_name,
-            app_path,
+            app_crate_name: resolved.app_crate_name,
+            app_path: resolved.app_path,
+            dependency_lockfile: resolved.dependency_lockfile,
         });
     } else {
         let source = waterui
@@ -1152,8 +1190,9 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
             &graph_fingerprint,
         ),
         runtime_features,
-        app_crate_name,
-        app_path,
+        app_crate_name: resolved.app_crate_name,
+        app_path: resolved.app_path,
+        dependency_lockfile: resolved.dependency_lockfile,
     })
 }
 
@@ -1163,6 +1202,7 @@ async fn resolve_preview_requirements_from_manifest(
     graph_fingerprint: &str,
     app_crate_name: &crate::project_types::CrateName,
     app_path: &Path,
+    dependency_lockfile: &Path,
 ) -> Result<Option<PreviewRequirements>> {
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
@@ -1218,29 +1258,23 @@ async fn resolve_preview_requirements_from_manifest(
         runtime_features: runtime_features.to_vec(),
         app_crate_name: app_crate_name.clone(),
         app_path: app_path.to_path_buf(),
+        dependency_lockfile: dependency_lockfile.to_path_buf(),
     }))
 }
 
-async fn resolve_preview_metadata(
-    project_path: &Path,
-) -> Result<(
-    cargo_metadata::Metadata,
-    crate::project_types::CrateName,
-    PathBuf,
-)> {
+async fn resolve_preview_metadata(project_path: &Path) -> Result<ResolvedPreviewMetadata> {
     let project = Project::open_for_preview_build(project_path).await?;
     ensure_project_dev_feature_for_preview(&project).await?;
     let manifest_path = project.preview_dylib_crate_path().join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
     let metadata_start = Instant::now();
+    let metadata_manifest_path = manifest_path.clone();
     let metadata = smol::unblock(move || {
         let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(manifest_path)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(vec![
-                "shared-runtime-abi".to_string(),
-            ]));
+        command.manifest_path(metadata_manifest_path).features(
+            cargo_metadata::CargoOpt::SomeFeatures(vec!["shared-runtime-abi".to_string()]),
+        );
         command.exec()
     })
     .await
@@ -1250,7 +1284,22 @@ async fn resolve_preview_metadata(
         elapsed_ms = metadata_start.elapsed().as_millis(),
         "Preview resolved user project cargo metadata"
     );
-    Ok((metadata, app_crate_name, app_path))
+    let dependency_lockfile = manifest_path
+        .parent()
+        .expect("preview wrapper manifest must have a parent directory")
+        .join("Cargo.lock");
+    if !dependency_lockfile.is_file() {
+        bail!(
+            "Cargo metadata did not create the preview dependency lockfile at {}",
+            dependency_lockfile.display()
+        );
+    }
+    Ok(ResolvedPreviewMetadata {
+        metadata,
+        app_crate_name,
+        app_path,
+        dependency_lockfile,
+    })
 }
 
 fn resolved_package_features(
@@ -1400,7 +1449,7 @@ fn select_unique_package<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewLinkMode, PreviewPlatform};
+    use super::{PreviewLinkMode, PreviewPlatform, synchronize_preview_dependency_lock};
 
     #[test]
     fn macos_preview_uses_shared_waterui_runtime() {
@@ -1432,5 +1481,27 @@ mod tests {
                 "preview-cdylib+shared-waterui-dylib+prefer-dynamic"
             );
         }
+    }
+
+    #[test]
+    fn preview_host_uses_the_module_dependency_lock() {
+        smol::block_on(async {
+            let directory = tempfile::tempdir().expect("temporary preview directories");
+            let source = directory.path().join("module.lock");
+            let destination = directory.path().join("host.lock");
+            std::fs::write(&source, "module dependency resolution")
+                .expect("write module dependency lock");
+            std::fs::write(&destination, "different host resolution")
+                .expect("write host dependency lock");
+
+            synchronize_preview_dependency_lock(&source, &destination)
+                .await
+                .expect("synchronize dependency lock");
+
+            assert_eq!(
+                std::fs::read_to_string(destination).expect("read synchronized dependency lock"),
+                "module dependency resolution"
+            );
+        });
     }
 }
