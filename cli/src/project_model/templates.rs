@@ -179,6 +179,8 @@ pub struct TemplateContext {
     pub preview_runtime_fingerprint: Option<String>,
     /// Exact WaterUI feature set linked into a preview support runtime.
     pub preview_runtime_features: Vec<String>,
+    /// User crate whose dependency graph defines the preview runtime ABI.
+    pub preview_app_dependency: Option<(CrateName, PathBuf)>,
     /// Package type of the project being scaffolded.
     pub package_type: crate::project::PackageType,
     /// ESP32 harness parameters used by the esp32 templates.
@@ -211,6 +213,7 @@ impl TemplateContext {
             accessory: false,
             preview_runtime_fingerprint: None,
             preview_runtime_features: Vec::new(),
+            preview_app_dependency: None,
             package_type: options.package_type,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -239,6 +242,7 @@ impl TemplateContext {
             accessory: manifest.package.accessory,
             preview_runtime_fingerprint: None,
             preview_runtime_features: Vec::new(),
+            preview_app_dependency: None,
             package_type: manifest.package.package_type,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -274,6 +278,7 @@ impl TemplateContext {
             accessory,
             preview_runtime_fingerprint,
             preview_runtime_features: Vec::new(),
+            preview_app_dependency: None,
             package_type: crate::project::PackageType::Playground,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -297,6 +302,13 @@ impl TemplateContext {
     #[must_use]
     pub fn with_preview_runtime_features(mut self, features: Vec<String>) -> Self {
         self.preview_runtime_features = features;
+        self
+    }
+
+    /// Set the user crate used to reproduce the preview module's dependency graph.
+    #[must_use]
+    pub fn with_preview_app_dependency(mut self, crate_name: CrateName, path: PathBuf) -> Self {
+        self.preview_app_dependency = Some((crate_name, path));
         self
     }
 
@@ -788,6 +800,7 @@ mod tests {
             accessory: false,
             preview_runtime_fingerprint: None,
             preview_runtime_features: Vec::new(),
+            preview_app_dependency: None,
             package_type,
             esp32: Esp32TemplateEntry::default(),
         }
@@ -1074,9 +1087,13 @@ mod tests {
 
     #[test]
     fn preview_scaffold_uses_embedded_workspace_version() {
-        let ctx = app_ctx()
-            .with_preview_runtime_features(vec!["dynamic_linking".to_string(), "gpu".to_string()]);
         let tempdir = tempdir().expect("temporary preview scaffold dir");
+        let ctx = app_ctx()
+            .with_preview_runtime_features(vec!["dynamic_linking".to_string(), "gpu".to_string()])
+            .with_preview_app_dependency(
+                CrateName::try_from("preview_test_app").expect("test crate name must be valid"),
+                tempdir.path().join("app"),
+            );
 
         smol::block_on(crate::templates::preview::scaffold(tempdir.path(), &ctx))
             .expect("preview scaffold should succeed");
@@ -1095,6 +1112,8 @@ mod tests {
             .map(|feature| feature.as_str().expect("feature should be a string"))
             .collect::<Vec<_>>();
         assert_eq!(dev_features, ["waterui/dynamic_linking", "waterui/gpu"]);
+        assert!(cargo_toml.contains("package = \"preview_test_app\""));
+        assert!(cargo_toml.contains("features = [\"dev\"]"));
 
         let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
             .expect("preview lib.rs should be written");
@@ -1143,8 +1162,12 @@ mod tests {
             .join("cache")
             .join("managed_backends")
             .join("preview_ffi");
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CLI crate should be inside the WaterUI workspace")
+            .to_path_buf();
         let ctx = ctx(
-            Some(PathBuf::from("../waterui")),
+            Some(workspace_root),
             Some(preview_ffi_dir.clone()),
             Some(project_root),
             crate::project::PackageType::Playground,
@@ -1159,6 +1182,27 @@ mod tests {
 
         let cargo_toml = std::fs::read_to_string(preview_ffi_dir.join("Cargo.toml"))
             .expect("preview ffi Cargo.toml should be written");
+        let manifest = cargo_toml
+            .parse::<toml::Table>()
+            .expect("preview ffi Cargo.toml should parse");
+        let shared_runtime_features = manifest["features"]["shared-runtime-abi"]
+            .as_array()
+            .expect("shared runtime ABI feature should be an array")
+            .iter()
+            .map(|feature| feature.as_str().expect("feature should be a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shared_runtime_features,
+            ["dep:waterui-ffi", "dep:waterui-preview"]
+        );
+        assert_eq!(
+            manifest["dependencies"]["waterui-ffi"]["optional"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            manifest["dependencies"]["waterui-preview"]["optional"].as_bool(),
+            Some(true)
+        );
         assert!(cargo_toml.contains("crate-type = [\"dylib\"]"));
         assert!(cargo_toml.contains("features = [\"dev\"]"));
         assert!(!cargo_toml.contains("[dependencies.waterui]"));
@@ -1382,6 +1426,8 @@ enum SupportDependencyValue {
 #[derive(serde::Serialize)]
 struct SupportDependencyDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
+    package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
@@ -1548,6 +1594,7 @@ async fn write_native_backend_bin_cargo_toml(
 
 fn dependency_path(path: &Path) -> SupportDependencyValue {
     SupportDependencyValue::Detailed(SupportDependencyDetail {
+        package: None,
         version: None,
         path: Some(normalize_path_for_config(path)),
         default_features: None,
@@ -2413,7 +2460,7 @@ pub mod preview {
     /// (e.g. `waterui-preview` relocating from `components/preview` to
     /// `components/devtools/preview/runtime`): a stale path makes the scaffold's
     /// `cargo metadata` fail and aborts the whole preview build.
-    async fn resolve_workspace_member_dir(
+    pub(super) async fn resolve_workspace_member_dir(
         workspace_root: &Path,
         package_name: &str,
     ) -> io::Result<std::path::PathBuf> {
@@ -2462,6 +2509,7 @@ pub mod preview {
             dependencies.insert(
                 "waterui".to_string(),
                 SupportDependencyValue::Detailed(SupportDependencyDetail {
+                    package: None,
                     version: None,
                     path: Some(super::normalize_path_for_config(waterui_path)),
                     default_features: Some(false),
@@ -2485,6 +2533,7 @@ pub mod preview {
             dependencies.insert(
                 "waterui".to_string(),
                 SupportDependencyValue::Detailed(SupportDependencyDetail {
+                    package: None,
                     version: Some(WATERUI_VERSION.to_string()),
                     path: None,
                     default_features: Some(false),
@@ -2496,6 +2545,22 @@ pub mod preview {
                 dependency_version(PREVIEW_VERSION),
             );
         }
+        let (app_crate_name, app_path) = ctx.preview_app_dependency.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Preview support runtime requires a user crate dependency",
+            )
+        })?;
+        dependencies.insert(
+            "waterui-preview-app".to_string(),
+            SupportDependencyValue::Detailed(SupportDependencyDetail {
+                package: Some(app_crate_name.to_string()),
+                version: None,
+                path: Some(super::normalize_path_for_config(app_path)),
+                default_features: None,
+                features: vec!["dev".to_string()],
+            }),
+        );
         if !ctx
             .preview_runtime_features
             .iter()
@@ -2522,8 +2587,9 @@ pub mod preview_ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
 
     use super::{
-        Path, TemplateContext, TemplateNamespace, embedded, fs, io, scaffold_dir,
-        write_file_if_changed,
+        NativeBackendDependencyPathKind, PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace,
+        WATERUI_FFI_VERSION, compute_native_backend_dependency_path, embedded, fs, io,
+        scaffold_dir, write_file_if_changed,
     };
 
     /// Write preview-only wrapper templates to the given directory.
@@ -2568,6 +2634,56 @@ pub mod preview_ffi {
                 features: vec!["dev".to_string()],
                 ..Default::default()
             })),
+        );
+
+        let ffi_dependency = ctx.waterui_path.as_ref().map_or_else(
+            || DependencyDetail {
+                version: Some(WATERUI_FFI_VERSION.to_string()),
+                optional: true,
+                ..Default::default()
+            },
+            |waterui_path| DependencyDetail {
+                path: Some(compute_native_backend_dependency_path(
+                    ctx,
+                    waterui_path,
+                    NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
+                )),
+                optional: true,
+                ..Default::default()
+            },
+        );
+        manifest.dependencies.insert(
+            "waterui-ffi".to_string(),
+            Dependency::Detailed(Box::new(ffi_dependency)),
+        );
+
+        let preview_dependency = if let Some(waterui_path) = &ctx.waterui_path {
+            let preview_path =
+                super::preview::resolve_workspace_member_dir(waterui_path, "waterui-preview")
+                    .await?;
+            DependencyDetail {
+                path: Some(super::normalize_path_for_config(&preview_path)),
+                optional: true,
+                ..Default::default()
+            }
+        } else {
+            DependencyDetail {
+                version: Some(PREVIEW_VERSION.to_string()),
+                optional: true,
+                ..Default::default()
+            }
+        };
+        manifest.dependencies.insert(
+            "waterui-preview".to_string(),
+            Dependency::Detailed(Box::new(preview_dependency)),
+        );
+
+        manifest.features.insert(
+            "shared-runtime-abi".to_string(),
+            vec![
+                "dep:waterui-ffi".to_string(),
+                "dep:waterui-preview".to_string(),
+            ],
         );
 
         manifest.workspace = Some(Workspace::default());
