@@ -23,7 +23,8 @@ use super::protocol::PreviewPlatform;
 use super::protocol::PreviewRuntimePlatform;
 use super::protocol::PreviewTcpConfig;
 
-use crate::build::RustBuild;
+use crate::apple::dynamic_runtime;
+use crate::build::{RustBuild, RustLinkage, rust_target_libdir};
 use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
@@ -69,7 +70,7 @@ impl PreviewLinkMode {
 
     const fn signature_tag(self) -> &'static str {
         if self.prefer_dynamic {
-            "preview-dylib+waterui-dylib+prefer-dynamic"
+            "preview-dylib+shared-waterui-dylib+prefer-dynamic"
         } else {
             "preview-cdylib+static-waterui"
         }
@@ -247,7 +248,7 @@ async fn build_preview_dylib(
         rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
         if link_mode.prefer_dynamic {
             rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
-            let rust_target_libdir = rust_target_libdir(&target_triple).await?;
+            let rust_target_libdir = rust_target_libdir(&target.triple()).await?;
             rust_build = rust_build.with_rustc_flag(format!(
                 "-Clink-arg=-Wl,-rpath,{}",
                 rust_target_libdir.display()
@@ -258,6 +259,15 @@ async fn build_preview_dylib(
             .build_dylib(preview_crate_name.as_str(), false)
             .await
             .wrap_err("Failed to build dylib")?;
+        if link_mode.prefer_dynamic {
+            let build_lib_dir = built_path.parent().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Preview dylib path has no output directory: {}",
+                    built_path.display()
+                )
+            })?;
+            dynamic_runtime::retarget_module(&built_path, build_lib_dir).await?;
+        }
         write_dylib_signature(&built_path, &dylib_signature).await?;
         info!(
             build_crate_path = %preview_crate_path.display(),
@@ -306,47 +316,6 @@ async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()>
         );
     }
     Ok(())
-}
-
-async fn rust_target_libdir(target_triple: &str) -> Result<PathBuf> {
-    let target_triple_owned = target_triple.to_string();
-    let output = smol::unblock(move || {
-        std::process::Command::new("rustc")
-            .arg("--print")
-            .arg("target-libdir")
-            .arg("--target")
-            .arg(&target_triple_owned)
-            .output()
-    })
-    .await
-    .wrap_err("Failed to run `rustc --print target-libdir` for preview dynamic linking")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!(
-            "`rustc --print target-libdir --target {target_triple}` failed: {}",
-            if stderr.is_empty() {
-                "unknown rustc error"
-            } else {
-                &stderr
-            }
-        );
-    }
-
-    let libdir = String::from_utf8(output.stdout)
-        .wrap_err("`rustc --print target-libdir` returned invalid UTF-8")?;
-    let libdir = libdir.trim();
-    if libdir.is_empty() {
-        bail!("`rustc --print target-libdir --target {target_triple}` returned an empty path");
-    }
-    let path = PathBuf::from(libdir);
-    if !path.is_dir() {
-        bail!(
-            "Rust target libdir does not exist for preview dynamic linking: {}",
-            path.display()
-        );
-    }
-
-    Ok(path)
 }
 
 fn dylib_signature_path(path: &Path) -> PathBuf {
@@ -605,10 +574,11 @@ async fn launch_preview_on_macos(project: &Project) -> Result<Running> {
     device.launch().await?;
     info!("Building and running preview app on macOS...");
     project
-        .run_with_options(
+        .run_with_linkage(
             backend,
             TargetPlatform::MacOS,
             device,
+            RustLinkage::SharedRuntime,
             preview_run_options(),
         )
         .await
@@ -1315,7 +1285,7 @@ mod tests {
         assert!(link_mode.prefer_dynamic);
         assert_eq!(
             link_mode.signature_tag(),
-            "preview-dylib+waterui-dylib+prefer-dynamic"
+            "preview-dylib+shared-waterui-dylib+prefer-dynamic"
         );
     }
 

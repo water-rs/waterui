@@ -212,8 +212,6 @@ macro_rules! __export_preview {
             #[doc(hidden)]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_preview_ env!("CARGO_PKG_NAME") _ $fn_name>]() -> *mut () {
-                #[cfg(target_os = "macos")]
-                $crate::task::__initialize_preview_runtime();
                 $body
             }
         }

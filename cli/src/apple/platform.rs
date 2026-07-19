@@ -17,8 +17,9 @@ use tracing::{debug, info};
 
 use crate::{
     apple::backend::AppleBackend,
+    apple::dynamic_runtime,
     assets::{self, ResolvedFont},
-    build::{BuildOptions, RustBuild},
+    build::{BuildOptions, RustBuild, RustLinkage, rust_target_libdir},
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
@@ -64,6 +65,17 @@ pub async fn build_rust_lib(
         .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1");
+    if options.linkage() == RustLinkage::SharedRuntime {
+        if platform != TargetPlatform::MacOS {
+            bail!("Shared WaterUI runtime linking is only supported for macOS preview hosts");
+        }
+        let target_libdir = rust_target_libdir(&triple).await?;
+        build = build
+            .with_feature("dev")
+            .with_rustc_flag("-Cdebuginfo=0")
+            .with_rustc_flag("-Cprefer-dynamic")
+            .with_rustc_flag(format!("-Clink-arg=-Wl,-rpath,{}", target_libdir.display()));
+    }
     let lib_dir = build.build_lib(options.is_release()).await?;
 
     // If output_dir is specified, copy the library there
@@ -420,6 +432,18 @@ pub async fn package_apple(
     let dest_lib = products_dir.join("libwaterui_app.a");
     copy_file(&source_lib, &dest_lib).await?;
 
+    let shared_runtime = if options.uses_shared_rust_runtime() {
+        if platform != TargetPlatform::MacOS {
+            bail!("Shared WaterUI runtime packaging is only supported for macOS preview hosts");
+        }
+        let runtime = dynamic_runtime::build_path(&lib_dir);
+        dynamic_runtime::prepare_host_runtime(&runtime).await?;
+        copy_file(&runtime, &products_dir.join(dynamic_runtime::FILE_NAME)).await?;
+        Some(runtime)
+    } else {
+        None
+    };
+
     let native_link_inputs = collect_apple_native_link_inputs(&lib_dir).await?;
     for archive in &native_link_inputs.archives {
         let file_name = archive.file_name().ok_or_else(|| {
@@ -432,6 +456,9 @@ pub async fn package_apple(
     }
 
     let mut required_link_flags = vec!["-framework VideoToolbox".to_string()];
+    if shared_runtime.is_some() {
+        required_link_flags.push("-lwaterui_dylib".to_string());
+    }
     for flag in native_link_inputs.linker_flags {
         push_unique_flag(&mut required_link_flags, flag);
     }
@@ -486,6 +513,12 @@ pub async fn package_apple(
             "Built app not found at {}. Check xcodebuild output for errors.",
             app_path.display()
         );
+    }
+
+    if let Some(runtime) = shared_runtime {
+        let frameworks_dir = app_path.join("Contents/Frameworks");
+        fs::create_dir_all(&frameworks_dir).await?;
+        copy_file(&runtime, &frameworks_dir.join(dynamic_runtime::FILE_NAME)).await?;
     }
 
     Ok(Artifact::new(project.bundle_identifier(), app_path))
