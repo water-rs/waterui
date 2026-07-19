@@ -177,7 +177,7 @@ pub struct TemplateContext {
     pub accessory: bool,
     /// Preview runtime fingerprint inserted into preview support app templates.
     pub preview_runtime_fingerprint: Option<String>,
-    /// Exact WaterUI feature set linked into a preview support runtime.
+    /// Exact `WaterUI` feature set linked into a preview support runtime.
     pub preview_runtime_features: Vec<String>,
     /// User crate whose dependency graph defines the preview runtime ABI.
     pub preview_app_dependency: Option<(CrateName, PathBuf)>,
@@ -298,7 +298,7 @@ impl TemplateContext {
         self
     }
 
-    /// Set the exact WaterUI feature set used by a preview support runtime.
+    /// Set the exact `WaterUI` feature set used by a preview support runtime.
     #[must_use]
     pub fn with_preview_runtime_features(mut self, features: Vec<String>) -> Self {
         self.preview_runtime_features = features;

@@ -293,7 +293,7 @@ pub struct PackageOptions {
     /// while `debug` decide the build configuration.
     debug: bool,
 
-    /// Whether the package embeds the shared WaterUI Rust runtime.
+    /// Whether the package embeds the shared `WaterUI` Rust runtime.
     shared_rust_runtime: bool,
 }
 
@@ -308,7 +308,7 @@ impl PackageOptions {
         }
     }
 
-    /// Embed the shared WaterUI Rust runtime in the native package.
+    /// Embed the shared `WaterUI` Rust runtime in the native package.
     #[must_use]
     pub const fn with_shared_rust_runtime(mut self) -> Self {
         self.shared_rust_runtime = true;
@@ -327,7 +327,7 @@ impl PackageOptions {
         self.debug
     }
 
-    /// Whether the package must embed the shared WaterUI Rust runtime.
+    /// Whether the package must embed the shared `WaterUI` Rust runtime.
     #[must_use]
     pub const fn uses_shared_rust_runtime(&self) -> bool {
         self.shared_rust_runtime

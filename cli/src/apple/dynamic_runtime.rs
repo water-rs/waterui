@@ -1,4 +1,4 @@
-//! Shared WaterUI runtime linkage for dynamically loaded Apple modules.
+//! Shared `WaterUI` runtime linkage for dynamically loaded Apple modules.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -7,14 +7,14 @@ use color_eyre::eyre::{Context as _, Result, bail};
 
 use crate::utils::run_command_os;
 
-pub(crate) const FILE_NAME: &str = "libwaterui_dylib.dylib";
-pub(crate) const INSTALL_NAME: &str = "@rpath/libwaterui_dylib.dylib";
+pub const FILE_NAME: &str = "libwaterui_dylib.dylib";
+pub const INSTALL_NAME: &str = "@rpath/libwaterui_dylib.dylib";
 
-pub(crate) fn build_path(lib_dir: &Path) -> PathBuf {
+pub fn build_path(lib_dir: &Path) -> PathBuf {
     lib_dir.join("deps").join(FILE_NAME)
 }
 
-pub(crate) async fn prepare_host_runtime(path: &Path) -> Result<()> {
+pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
     require_runtime(path)?;
     if install_name(path).await? != INSTALL_NAME {
         run_command_os(
@@ -38,7 +38,7 @@ pub(crate) async fn prepare_host_runtime(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn retarget_module(module_path: &Path, build_lib_dir: &Path) -> Result<()> {
+pub async fn retarget_module(module_path: &Path, build_lib_dir: &Path) -> Result<()> {
     let runtime_path = build_path(build_lib_dir);
     require_runtime(&runtime_path)?;
     let current_install_name = install_name(&runtime_path).await?;
