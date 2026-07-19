@@ -628,8 +628,8 @@ async fn run_web_app(project: &Project) -> Result<()> {
 async fn run_esp32_app(project: &Project, device: Option<&str>) -> Result<()> {
     let sccache_path = detect_sccache_path().await;
     let build_options = sccache_path.map_or_else(
-        || BuildOptions::new(false),
-        |sccache| BuildOptions::new(false).with_sccache(sccache),
+        || BuildOptions::development(false),
+        |sccache| BuildOptions::development(false).with_sccache(sccache),
     );
 
     shell::status(">", "Building ESP32 firmware...");
@@ -855,8 +855,8 @@ fn spawn_device_launch_task(
 
 fn build_options(config: &BuildRunConfig) -> BuildOptions {
     config.sccache_path.as_ref().map_or_else(
-        || BuildOptions::new(false),
-        |sccache| BuildOptions::new(false).with_sccache(sccache.clone()),
+        || BuildOptions::development(false),
+        |sccache| BuildOptions::development(false).with_sccache(sccache.clone()),
     )
 }
 
@@ -897,7 +897,7 @@ async fn package_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
 ) -> Result<Artifact> {
-    let package_options = PackageOptions::new(false, true);
+    let package_options = PackageOptions::development();
     match backend {
         TargetBackend::Apple => package_apple(project, plan.lib_platform, package_options).await,
         TargetBackend::Android => {

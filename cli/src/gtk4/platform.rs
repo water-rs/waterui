@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::{
     assets,
-    build::BuildOptions,
+    build::{BuildOptions, RustDynamicLibraries, configure_cargo_linkage},
     device::Artifact,
     gtk4::backend::Gtk4Backend,
     platform::{PackageOptions, TargetPlatform},
@@ -58,6 +58,12 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
     let cargo = command(&mut cargo);
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
     cargo.arg("--target-dir").arg(&backend_target_dir);
+    configure_cargo_linkage(
+        cargo,
+        options.linkage(),
+        &format!("{}/dev", project.crate_name()),
+        Some("$ORIGIN"),
+    );
     if options.is_release() {
         cargo.arg("--release");
     }
@@ -161,6 +167,19 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
             );
         }
     };
+
+    if options.uses_shared_rust_runtime() {
+        let runtime_dir = final_binary_path.parent().ok_or_else(|| {
+            eyre::eyre!(
+                "GTK4 binary path has no output directory: {}",
+                final_binary_path.display()
+            )
+        })?;
+        RustDynamicLibraries::resolve(runtime_dir, &TargetPlatform::Linux.triple())
+            .await?
+            .stage(runtime_dir)
+            .await?;
+    }
 
     Ok(Artifact::new(
         project.bundle_identifier(),
