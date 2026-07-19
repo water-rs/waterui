@@ -42,6 +42,8 @@ struct PreviewRequirements {
     waterui_path: Option<PathBuf>,
     runtime_fingerprint: String,
     runtime_features: Vec<String>,
+    app_crate_name: crate::project_types::CrateName,
+    app_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,9 +80,14 @@ impl PreviewLinkMode {
     }
 
     fn configure_build(self, build: RustBuild) -> RustBuild {
-        match self.crate_type_override {
+        let build = match self.crate_type_override {
             Some(crate_type) => build.with_crate_type_override(crate_type),
             None => build,
+        };
+        if self.prefer_dynamic {
+            build.with_feature("shared-runtime-abi")
+        } else {
+            build
         }
     }
 }
@@ -1049,7 +1056,11 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
         true,
         Some(requirements.runtime_fingerprint.clone()),
     )
-    .with_preview_runtime_features(requirements.runtime_features.clone());
+    .with_preview_runtime_features(requirements.runtime_features.clone())
+    .with_preview_app_dependency(
+        requirements.app_crate_name.clone(),
+        requirements.app_path.clone(),
+    );
 
     crate::templates::preview::scaffold(project.root(), &ctx)
         .await
@@ -1072,12 +1083,19 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
 }
 
 async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequirements> {
-    let metadata = resolve_preview_metadata(project_path).await?;
+    let (metadata, app_crate_name, app_path) = resolve_preview_metadata(project_path).await?;
     let waterui = select_unique_package(&metadata, "waterui")?;
     let runtime_features = resolved_package_features(&metadata, waterui)?;
+    let graph_fingerprint = resolved_graph_fingerprint(&metadata)?;
 
-    if let Some(requirements) =
-        resolve_preview_requirements_from_manifest(project_path, &runtime_features).await?
+    if let Some(requirements) = resolve_preview_requirements_from_manifest(
+        project_path,
+        &runtime_features,
+        &graph_fingerprint,
+        &app_crate_name,
+        &app_path,
+    )
+    .await?
     {
         return Ok(requirements);
     }
@@ -1100,8 +1118,14 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
         );
         return Ok(PreviewRequirements {
             waterui_path: Some(waterui_root),
-            runtime_fingerprint: runtime_fingerprint(&fingerprint, &runtime_features),
+            runtime_fingerprint: runtime_fingerprint(
+                &fingerprint,
+                &runtime_features,
+                &graph_fingerprint,
+            ),
             runtime_features,
+            app_crate_name,
+            app_path,
         });
     } else {
         let source = waterui
@@ -1120,14 +1144,23 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
 
     Ok(PreviewRequirements {
         waterui_path: None,
-        runtime_fingerprint: runtime_fingerprint(&runtime_fingerprint_base, &runtime_features),
+        runtime_fingerprint: runtime_fingerprint(
+            &runtime_fingerprint_base,
+            &runtime_features,
+            &graph_fingerprint,
+        ),
         runtime_features,
+        app_crate_name,
+        app_path,
     })
 }
 
 async fn resolve_preview_requirements_from_manifest(
     project_path: &Path,
     runtime_features: &[String],
+    graph_fingerprint: &str,
+    app_crate_name: &crate::project_types::CrateName,
+    app_path: &Path,
 ) -> Result<Option<PreviewRequirements>> {
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
@@ -1168,6 +1201,7 @@ async fn resolve_preview_requirements_from_manifest(
     let runtime_fingerprint = runtime_fingerprint(
         &compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?,
         runtime_features,
+        graph_fingerprint,
     );
     info!(
         project_path = %project_path.display(),
@@ -1180,18 +1214,30 @@ async fn resolve_preview_requirements_from_manifest(
         waterui_path: Some(waterui_root),
         runtime_fingerprint,
         runtime_features: runtime_features.to_vec(),
+        app_crate_name: app_crate_name.clone(),
+        app_path: app_path.to_path_buf(),
     }))
 }
 
-async fn resolve_preview_metadata(project_path: &Path) -> Result<cargo_metadata::Metadata> {
-    let current_dir = project_path.to_path_buf();
+async fn resolve_preview_metadata(
+    project_path: &Path,
+) -> Result<(
+    cargo_metadata::Metadata,
+    crate::project_types::CrateName,
+    PathBuf,
+)> {
+    let project = Project::open_for_preview_build(project_path).await?;
+    ensure_project_dev_feature_for_preview(&project).await?;
+    let manifest_path = project.preview_dylib_crate_path().join("Cargo.toml");
+    let app_crate_name = project.crate_name().clone();
+    let app_path = project.root().to_path_buf();
     let metadata_start = Instant::now();
     let metadata = smol::unblock(move || {
         let mut command = cargo_metadata::MetadataCommand::new();
         command
-            .current_dir(current_dir)
+            .manifest_path(manifest_path)
             .features(cargo_metadata::CargoOpt::SomeFeatures(vec![
-                "dev".to_string(),
+                "shared-runtime-abi".to_string(),
             ]));
         command.exec()
     })
@@ -1202,7 +1248,7 @@ async fn resolve_preview_metadata(project_path: &Path) -> Result<cargo_metadata:
         elapsed_ms = metadata_start.elapsed().as_millis(),
         "Preview resolved user project cargo metadata"
     );
-    Ok(metadata)
+    Ok((metadata, app_crate_name, app_path))
 }
 
 fn resolved_package_features(
@@ -1235,10 +1281,37 @@ fn resolved_package_features(
     Ok(features)
 }
 
-fn runtime_fingerprint(base: &str, features: &[String]) -> String {
+fn resolved_graph_fingerprint(metadata: &cargo_metadata::Metadata) -> Result<String> {
+    let resolve = metadata.resolve.as_ref().ok_or_else(|| {
+        color_eyre::eyre::eyre!("Cargo metadata omitted its dependency resolution graph")
+    })?;
+    let mut units = resolve
+        .nodes
+        .iter()
+        .map(|node| {
+            let mut features = node
+                .features
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            features.sort_unstable();
+            format!("{}|{}", node.id, features.join(","))
+        })
+        .collect::<Vec<_>>();
+    units.sort_unstable();
+    let mut hasher = sha2::Sha256::new();
+    for unit in units {
+        hasher.update(unit.as_bytes());
+        hasher.update(b"\n");
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn runtime_fingerprint(base: &str, features: &[String], graph_fingerprint: &str) -> String {
     format!(
-        "{base}|features={}|profile={}",
+        "{base}|features={}|graph={}|profile={}",
         features.join(","),
+        graph_fingerprint,
         runtime_profile_tag()
     )
 }

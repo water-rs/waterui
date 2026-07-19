@@ -224,26 +224,15 @@ impl Project {
     }
 
     /// Get the crate root path used to build preview dylibs.
-    ///
-    /// Playground projects preview through the managed FFI wrapper crate so the user crate can
-    /// remain a plain Rust `lib`.
     #[must_use]
     pub fn preview_dylib_crate_path(&self) -> PathBuf {
-        if self.is_playground() {
-            return self.preview_ffi_crate_path();
-        }
-
-        self.root.clone()
+        self.preview_ffi_crate_path()
     }
 
     /// Get the crate name used to build preview dylibs.
     #[must_use]
     pub fn preview_dylib_crate_name(&self) -> CrateName {
-        if self.is_playground() {
-            return self.preview_ffi_crate_name();
-        }
-
-        self.crate_name.clone()
+        self.preview_ffi_crate_name()
     }
 
     /// Get configured or default GTK backend crate name for app mode.
@@ -1052,66 +1041,52 @@ impl Project {
             || std::env::var("ACTION").is_ok() // Xcode sets this during builds
             || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
 
-        if is_playground && !skip_backend_init {
-            match open_mode {
-                OpenMode::Full => {
-                    let apple_backend_start = std::time::Instant::now();
-                    let apple_backend = AppleBackend::init(&project)
-                        .await
-                        .map_err(FailToOpenProject::BackendInit)?;
-                    info!(
-                        path = %project.root.display(),
-                        elapsed_ms = apple_backend_start.elapsed().as_millis(),
-                        "Project::open initialized Apple backend"
-                    );
-                    project.manifest.backends.set_apple(apple_backend);
+        if is_playground && !skip_backend_init && open_mode == OpenMode::Full {
+            let apple_backend_start = std::time::Instant::now();
+            let apple_backend = AppleBackend::init(&project)
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
+            info!(
+                path = %project.root.display(),
+                elapsed_ms = apple_backend_start.elapsed().as_millis(),
+                "Project::open initialized Apple backend"
+            );
+            project.manifest.backends.set_apple(apple_backend);
 
-                    let android_backend_start = std::time::Instant::now();
-                    let android_backend = AndroidBackend::init(&project)
-                        .await
-                        .map_err(FailToOpenProject::BackendInit)?;
-                    info!(
-                        path = %project.root.display(),
-                        elapsed_ms = android_backend_start.elapsed().as_millis(),
-                        "Project::open initialized Android backend"
-                    );
-                    project.manifest.backends.set_android(android_backend);
+            let android_backend_start = std::time::Instant::now();
+            let android_backend = AndroidBackend::init(&project)
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
+            info!(
+                path = %project.root.display(),
+                elapsed_ms = android_backend_start.elapsed().as_millis(),
+                "Project::open initialized Android backend"
+            );
+            project.manifest.backends.set_android(android_backend);
 
-                    let ffi_companion_start = std::time::Instant::now();
-                    project
-                        .scaffold_ffi_companion()
-                        .await
-                        .map_err(FailToOpenProject::BackendInit)?;
-                    info!(
-                        path = %project.root.display(),
-                        elapsed_ms = ffi_companion_start.elapsed().as_millis(),
-                        "Project::open scaffolded native ffi companion"
-                    );
+            let ffi_companion_start = std::time::Instant::now();
+            project
+                .scaffold_ffi_companion()
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
+            info!(
+                path = %project.root.display(),
+                elapsed_ms = ffi_companion_start.elapsed().as_millis(),
+                "Project::open scaffolded native ffi companion"
+            );
+        }
 
-                    let preview_wrapper_start = std::time::Instant::now();
-                    project
-                        .scaffold_preview_ffi_companion()
-                        .await
-                        .map_err(FailToOpenProject::BackendInit)?;
-                    info!(
-                        path = %project.root.display(),
-                        elapsed_ms = preview_wrapper_start.elapsed().as_millis(),
-                        "Project::open scaffolded preview wrapper"
-                    );
-                }
-                OpenMode::PreviewBuild => {
-                    let preview_wrapper_start = std::time::Instant::now();
-                    project
-                        .scaffold_preview_ffi_companion()
-                        .await
-                        .map_err(FailToOpenProject::BackendInit)?;
-                    info!(
-                        path = %project.root.display(),
-                        elapsed_ms = preview_wrapper_start.elapsed().as_millis(),
-                        "Project::open scaffolded preview wrapper"
-                    );
-                }
-            }
+        if !skip_backend_init && (is_playground || open_mode == OpenMode::PreviewBuild) {
+            let preview_wrapper_start = std::time::Instant::now();
+            project
+                .scaffold_preview_ffi_companion()
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
+            info!(
+                path = %project.root.display(),
+                elapsed_ms = preview_wrapper_start.elapsed().as_millis(),
+                "Project::open scaffolded preview wrapper"
+            );
         }
 
         info!(
