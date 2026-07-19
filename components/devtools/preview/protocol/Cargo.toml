@@ -19,7 +19,6 @@ bincode = { version = "2", features = ["serde"] }
 thiserror.workspace = true
 futures-lite = "2.6"
 hex = "0.4"
-sha2 = "0.10"
 dirs.workspace = true
 
 [lints]

@@ -1,16 +1,3 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    reason = "intentional lossy numeric cast in performance-metric formatting"
-)]
-#![allow(
-    clippy::too_many_lines,
-    clippy::struct_field_names,
-    clippy::needless_pass_by_value,
-    clippy::unnecessary_wraps,
-    reason = "linear CLI orchestration and report-generation routines"
-)]
 //! `water preview` command implementation.
 //!
 //! Renders, tests, or profiles a `WaterUI` preview.
@@ -33,14 +20,13 @@ use crate::{error, header, note, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
 use waterui_cli::preview::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPerfRun, HydrolysisPreviewPointerButton,
-    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,
-    HydrolysisPreviewRequest, HydrolysisPreviewTestMode, HydrolysisPreviewTheme, PreviewPlatform,
-    PreviewSession,
-    launch_preview_session, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
+    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
+    HydrolysisPreviewSource, HydrolysisPreviewTestMode, HydrolysisPreviewTheme, PreviewPlatform,
+    PreviewSession, launch_preview_session, render_preview_with_hydrolysis,
+    test_preview_with_hydrolysis,
 };
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
-
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -112,6 +98,10 @@ async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps one ordered perf run lifecycle from artifact planning through report emission"
+)]
 async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
     let platform = resolve_preview_platform(args.platform)?;
     ensure_hydrolysis_preview_platform(platform)?;
@@ -143,8 +133,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
     let format_output = args.output.clone();
     let flamegraph_path =
         resolve_preview_perf_flamegraph_path(args.all, format_output.as_deref(), args.flamegraph);
-    let flamegraphs =
-        resolve_flamegraphs(Some(flamegraph_path.as_path()), args.all, &targets)?;
+    let flamegraphs = resolve_flamegraphs(Some(flamegraph_path.as_path()), args.all, &targets)?;
     let json_reports =
         resolve_perf_artifacts(args.report_json.as_deref(), args.all, &targets, "json")?;
     let traces = resolve_perf_artifacts(args.trace.as_deref(), args.all, &targets, "json")?;
@@ -195,11 +184,11 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         enforce_perf_budget(
             &perf_report,
             PreviewPerfBudget {
-                max_p95_us: args.max_p95_us,
-                max_rebuild_ratio: args.max_rebuild_ratio,
-                max_scene_layers: args.max_scene_layers,
-                max_gpu_surface_layers: args.max_gpu_surface_layers,
-                max_clip_layers: args.max_clip_layers,
+                p95_us: args.max_p95_us,
+                rebuild_ratio: args.max_rebuild_ratio,
+                scene_layers: args.max_scene_layers,
+                gpu_surface_layers: args.max_gpu_surface_layers,
+                clip_layers: args.max_clip_layers,
             },
         )?;
         if args.format == PreviewPerfOutputFormat::Human {
@@ -508,6 +497,10 @@ use waterui_preview_protocol::hydrolysis::{
 ///
 /// # Errors
 /// Returns an error if preview fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps preview command dispatch and support-app cleanup in one linear lifecycle"
+)]
 pub async fn run(args: Args) -> Result<()> {
     match args.command {
         Some(PreviewCommand::Test(args)) => return run_preview_test(args).await,
@@ -641,8 +634,12 @@ pub async fn run(args: Args) -> Result<()> {
         }
         Err(err) => {
             // On failure, terminate the preview app to avoid reusing a broken process.
-            session.shutdown().await?;
-            Err(err)
+            match session.shutdown().await {
+                Ok(()) => Err(err),
+                Err(shutdown_error) => Err(err.wrap_err(format!(
+                    "preview support app shutdown also failed: {shutdown_error}"
+                ))),
+            }
         }
     }
 }
@@ -692,7 +689,7 @@ async fn load_hydrolysis_scenario(
     }
     let mut events = scenario
         .events
-        .into_iter()
+        .iter()
         .map(parse_scenario_event)
         .collect::<Result<Vec<_>>>()?;
     events.sort_by_key(|event| event.at_ms);
@@ -703,7 +700,7 @@ async fn load_hydrolysis_scenario(
     }))
 }
 
-fn parse_scenario_event(event: ScenarioEventFile) -> Result<HydrolysisPreviewScenarioEvent> {
+fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewScenarioEvent> {
     let kind = match event.kind.as_str() {
         "pointer_move" | "hover" => HydrolysisPreviewEventKind::PointerMove,
         "pointer_down" => HydrolysisPreviewEventKind::PointerDown,
@@ -954,7 +951,10 @@ fn resolve_preview_perf_flamegraph_path(
         if all {
             PathBuf::from("__waterui_default_flamegraph__")
         } else {
-            output.map_or_else(|| PathBuf::from("__waterui_default_flamegraph__"), |path| path.with_extension("flamegraph.svg"))
+            output.map_or_else(
+                || PathBuf::from("__waterui_default_flamegraph__"),
+                |path| path.with_extension("flamegraph.svg"),
+            )
         }
     })
 }
@@ -1016,7 +1016,10 @@ fn resolve_perf_mode_artifacts(
                     "internal error: single HTML report path received for multiple preview targets"
                 );
             }
-            let path = output.map_or_else(|| std::env::temp_dir().join("waterui-preview-perf.html"), Path::to_path_buf);
+            let path = output.map_or_else(
+                || std::env::temp_dir().join("waterui-preview-perf.html"),
+                Path::to_path_buf,
+            );
             if let Some(parent) = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
@@ -1035,8 +1038,8 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
         .map(str::trim)
         .find_map(|line| line.strip_prefix(PERF_REPORT_LINE_PREFIX))
         .ok_or_else(|| color_eyre::eyre::eyre!("Hydrolysis preview perf emitted no perf report"))?;
-    let measurements: Vec<PreviewPerfMeasurement> = serde_json::from_str(json)
-        .map_err(|error| {
+    let measurements: Vec<PreviewPerfMeasurement> =
+        serde_json::from_str(json).map_err(|error| {
             color_eyre::eyre::eyre!("Failed to parse hydrolysis preview perf report: {error}")
         })?;
     if measurements.is_empty() {
@@ -1134,9 +1137,38 @@ fn micros_label(value: u64) -> String {
     format!("{value}us")
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "preview charts intentionally project integer telemetry into floating-point display coordinates"
+)]
+const fn metric_to_f64(value: u64) -> f64 {
+    value as f64
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "preview chart sample counts are converted only for display averages and coordinates"
+)]
+const fn sample_count_to_f64(value: usize) -> f64 {
+    value as f64
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "preview chart scales contain finite non-negative telemetry and labels use rounded integers"
+)]
+fn rounded_metric_to_u64(value: f64) -> u64 {
+    assert!(
+        value.is_finite() && value >= 0.0 && value <= metric_to_f64(u64::MAX),
+        "preview chart metric must be finite, non-negative, and fit into u64"
+    );
+    value.round() as u64
+}
+
 fn bytes_label(value: u64) -> String {
     const MIB: f64 = 1_048_576.0;
-    format!("{:.1}MiB", value as f64 / MIB)
+    format!("{:.1}MiB", metric_to_f64(value) / MIB)
 }
 
 struct PreviewPerfResourceSummary {
@@ -1155,7 +1187,7 @@ fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfR
     if measurement.frames.is_empty() {
         return None;
     }
-    let sample_count = measurement.frames.len() as f64;
+    let sample_count = sample_count_to_f64(measurement.frames.len());
     let avg_cpu_percent = measurement
         .frames
         .iter()
@@ -1191,7 +1223,7 @@ fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfR
         avg_scene_layers: measurement
             .frames
             .iter()
-            .map(|frame| frame.scene_layers as f64)
+            .map(|frame| metric_to_f64(frame.scene_layers))
             .sum::<f64>()
             / sample_count,
         max_scene_layers: measurement
@@ -1203,7 +1235,7 @@ fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfR
         avg_clip_layers: measurement
             .frames
             .iter()
-            .map(|frame| frame.clip_layers as f64)
+            .map(|frame| metric_to_f64(frame.clip_layers))
             .sum::<f64>()
             / sample_count,
         max_clip_depth: measurement
@@ -1217,16 +1249,16 @@ fn resource_summary(measurement: &PreviewPerfMeasurement) -> Option<PreviewPerfR
 
 #[derive(Clone, Copy, Debug)]
 struct PreviewPerfBudget {
-    max_p95_us: Option<u64>,
-    max_rebuild_ratio: Option<f64>,
-    max_scene_layers: Option<u64>,
-    max_gpu_surface_layers: Option<u64>,
-    max_clip_layers: Option<u64>,
+    p95_us: Option<u64>,
+    rebuild_ratio: Option<f64>,
+    scene_layers: Option<u64>,
+    gpu_surface_layers: Option<u64>,
+    clip_layers: Option<u64>,
 }
 
 fn enforce_perf_budget(report: &PreviewPerfReport, budget: PreviewPerfBudget) -> Result<()> {
     for measurement in &report.measurements {
-        if let Some(max_p95_us) = budget.max_p95_us
+        if let Some(max_p95_us) = budget.p95_us
             && measurement.p95_us > max_p95_us
         {
             bail!(
@@ -1236,8 +1268,9 @@ fn enforce_perf_budget(report: &PreviewPerfReport, budget: PreviewPerfBudget) ->
                 max_p95_us
             );
         }
-        if let Some(max_rebuild_ratio) = budget.max_rebuild_ratio {
-            let rebuild_ratio = measurement.rebuilt_frames as f64 / measurement.samples as f64;
+        if let Some(max_rebuild_ratio) = budget.rebuild_ratio {
+            let rebuild_ratio =
+                metric_to_f64(measurement.rebuilt_frames) / metric_to_f64(measurement.samples);
             if rebuild_ratio > max_rebuild_ratio {
                 bail!(
                     "Preview perf `{}` rebuild ratio {} exceeded budget {}",
@@ -1247,7 +1280,7 @@ fn enforce_perf_budget(report: &PreviewPerfReport, budget: PreviewPerfBudget) ->
                 );
             }
         }
-        if let Some(max_scene_layers) = budget.max_scene_layers
+        if let Some(max_scene_layers) = budget.scene_layers
             && measurement.scene_layers > max_scene_layers
         {
             bail!(
@@ -1257,7 +1290,7 @@ fn enforce_perf_budget(report: &PreviewPerfReport, budget: PreviewPerfBudget) ->
                 max_scene_layers
             );
         }
-        if let Some(max_gpu_surface_layers) = budget.max_gpu_surface_layers
+        if let Some(max_gpu_surface_layers) = budget.gpu_surface_layers
             && measurement.gpu_surface_layers > max_gpu_surface_layers
         {
             bail!(
@@ -1267,7 +1300,7 @@ fn enforce_perf_budget(report: &PreviewPerfReport, budget: PreviewPerfBudget) ->
                 max_gpu_surface_layers
             );
         }
-        if let Some(max_clip_layers) = budget.max_clip_layers
+        if let Some(max_clip_layers) = budget.clip_layers
             && measurement.clip_layers > max_clip_layers
         {
             bail!(
@@ -1483,7 +1516,10 @@ struct FpsChartView {
 }
 
 #[derive(Template)]
-#[template(path = "src/templates/preview_perf/frame_timeline.html", escape = "html")]
+#[template(
+    path = "src/templates/preview_perf/frame_timeline.html",
+    escape = "html"
+)]
 struct FrameTimelineView {
     timing: TimingChartView,
     fps: FpsChartView,
@@ -1628,7 +1664,10 @@ fn render_preview_perf_diagnosis_html(measurement: &PreviewPerfMeasurement) -> S
         .measurement_cache_hits
         .saturating_add(measurement.measurement_cache_misses);
     let cache_hit_ratio = ratio_percent(measurement.measurement_cache_hits, cache_total);
-    let worst_frame = worst.map_or_else(|| "none".to_string(), |frame| format!("frame {} / {}", frame.index, micros_label(frame.total_us)));
+    let worst_frame = worst.map_or_else(
+        || "none".to_string(),
+        |frame| format!("frame {} / {}", frame.index, micros_label(frame.total_us)),
+    );
     render_perf_template(&DiagnosisView {
         p95: micros_label(measurement.p95_us),
         mean: micros_label(measurement.mean_us),
@@ -1684,28 +1723,28 @@ fn render_preview_perf_resource_timeline_html(measurement: &PreviewPerfMeasureme
         "Memory",
         "line-memory",
         &measurement.frames,
-        |frame| frame.memory_bytes as f64 / 1_048_576.0,
+        |frame| metric_to_f64(frame.memory_bytes) / 1_048_576.0,
         |value| format!("{value:.1} MiB"),
     );
     let gpu_chart = render_preview_perf_metric_chart_html(
         "GPU pipeline",
         "line-gpu",
         &measurement.frames,
-        |frame| frame.gpu_frame_us as f64,
-        |value| micros_label(value.round() as u64),
+        |frame| metric_to_f64(frame.gpu_frame_us),
+        |value| micros_label(rounded_metric_to_u64(value)),
     );
     let layer_chart = render_preview_perf_metric_chart_html(
         "Compositor layers",
         "line-layers",
         &measurement.frames,
-        |frame| frame.scene_layers as f64,
+        |frame| metric_to_f64(frame.scene_layers),
         |value| format!("{value:.0}"),
     );
     let clip_chart = render_preview_perf_metric_chart_html(
         "Clip layers",
         "line-clip",
         &measurement.frames,
-        |frame| frame.clip_layers as f64,
+        |frame| metric_to_f64(frame.clip_layers),
         |value| format!("{value:.0}"),
     );
     render_perf_template(&ResourcesView {
@@ -1731,10 +1770,10 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
         .iter()
         .flat_map(|frame| {
             [
-                frame.total_us as f64,
-                frame.render_us as f64,
-                frame.rebuild_us as f64,
-                frame.gpu_frame_us as f64,
+                metric_to_f64(frame.total_us),
+                metric_to_f64(frame.render_us),
+                metric_to_f64(frame.rebuild_us),
+                metric_to_f64(frame.gpu_frame_us),
             ]
         })
         .collect::<Vec<_>>();
@@ -1752,26 +1791,26 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
         });
     let total_points =
         render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
-            frame.total_us as f64
+            metric_to_f64(frame.total_us)
         });
     let render_points =
         render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
-            frame.render_us as f64
+            metric_to_f64(frame.render_us)
         });
     let rebuild_points =
         render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
-            frame.rebuild_us as f64
+            metric_to_f64(frame.rebuild_us)
         });
     let gpu_points =
         render_preview_perf_float_polyline_points(&measurement.frames, timing_scale, |frame| {
-            frame.gpu_frame_us as f64
+            metric_to_f64(frame.gpu_frame_us)
         });
     let timing_samples = measurement
         .frames
         .iter()
         .map(|frame| {
             let cx = frame_chart_x(frame.index, measurement.frames.len());
-            let cy = timing_scale.y(frame.total_us as f64);
+            let cy = timing_scale.y(metric_to_f64(frame.total_us));
             PerfSampleView {
                 build: Some(micros_label(frame.build_content_us)),
                 dispatch: Some(micros_label(frame.scene_dispatch_us)),
@@ -1796,8 +1835,8 @@ fn render_preview_perf_frame_timeline_html(measurement: &PreviewPerfMeasurement)
         .collect();
     render_perf_template(&FrameTimelineView {
         timing: TimingChartView {
-            min_label: micros_label(timing_scale.min.round() as u64),
-            max_label: micros_label(timing_scale.max.round() as u64),
+            min_label: micros_label(rounded_metric_to_u64(timing_scale.min)),
+            max_label: micros_label(rounded_metric_to_u64(timing_scale.max)),
             budget_lines: render_preview_perf_budget_lines(timing_scale),
             total_points,
             gpu_points,
@@ -1924,7 +1963,7 @@ fn frame_chart_x(index: u64, frame_count: usize) -> f64 {
     if frame_count <= 1 {
         return 6.0;
     }
-    (index as f64 / (frame_count - 1) as f64).mul_add(88.0, 6.0)
+    (metric_to_f64(index) / sample_count_to_f64(frame_count - 1)).mul_add(88.0, 6.0)
 }
 
 #[derive(Clone, Copy)]
@@ -1990,7 +2029,7 @@ fn render_preview_perf_fps_budget_lines(scale: PreviewPerfChartScale) -> Vec<Bud
 }
 
 fn preview_perf_throughput_fps(frame: &PreviewPerfFrame) -> f64 {
-    1_000_000.0 / frame.total_us.max(1) as f64
+    1_000_000.0 / metric_to_f64(frame.total_us.max(1))
 }
 
 fn fps_label(value: f64) -> String {
@@ -2005,7 +2044,7 @@ fn ratio_percent(numerator: u64, denominator: u64) -> f64 {
     if denominator == 0 {
         return 0.0;
     }
-    (numerator as f64 / denominator as f64) * 100.0
+    (metric_to_f64(numerator) / metric_to_f64(denominator)) * 100.0
 }
 
 async fn open_preview_perf_html(path: &Path) -> Result<()> {
@@ -2155,6 +2194,10 @@ const fn resolve_preview_platform(
     native_preview_platform()
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "non-macOS hosts return an explicit unsupported-host error"
+)]
 const fn native_preview_platform() -> Result<CliPreviewPlatform> {
     #[cfg(target_os = "macos")]
     {
@@ -2224,7 +2267,6 @@ async fn check_toolchain_for_backend(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn render_with_symbol(
     session: &mut PreviewSession,
     function_path: &str,
@@ -2422,10 +2464,10 @@ mod tests {
 
     #[test]
     fn formats_missing_preview_symbol_message() {
-        let symbol = "waterui_preview_app_dashboard_admin_card_preview";
+        let symbol = "waterui_preview_app_card_preview";
         let message = missing_preview_symbol_message("dashboard::admin::card_preview", symbol);
         assert!(message.contains("dashboard::admin::card_preview"));
-        assert!(message.contains("waterui_preview_app_dashboard_admin_card_preview"));
+        assert!(message.contains("waterui_preview_app_card_preview"));
         assert!(message.contains("#[preview]"));
         assert!(message.contains("fn card_preview()"));
     }
@@ -2455,7 +2497,7 @@ mod tests {
             panic!("expected function target");
         };
         assert_eq!(function_path, "dashboard::card");
-        assert_eq!(symbol, "waterui_preview_my_crate_dashboard_card");
+        assert_eq!(symbol, "waterui_preview_my_crate_card");
     }
 
     #[test]

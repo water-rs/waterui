@@ -17,13 +17,13 @@ use crate::utils::command;
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
 
+use waterui_preview_protocol::hydrolysis::{
+    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
+};
 pub use waterui_preview_protocol::hydrolysis::{
     PerfRunConfig as HydrolysisPreviewPerfRun, ScenarioEvent as HydrolysisPreviewScenarioEvent,
     ScenarioEventKind as HydrolysisPreviewEventKind,
     ScenarioPointerButton as HydrolysisPreviewPointerButton,
-};
-use waterui_preview_protocol::hydrolysis::{
-    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
 };
 
 /// Theme package selected for Hydrolysis preview rendering.
@@ -81,7 +81,10 @@ pub struct HydrolysisPreviewScenario {
 }
 
 #[derive(Template)]
-#[template(path = "src/preview/hydrolysis_preview_bindings.rs.tpl", escape = "none")]
+#[template(
+    path = "src/preview/hydrolysis_preview_bindings.rs.tpl",
+    escape = "none"
+)]
 struct HydrolysisPreviewBindingsTemplate<'a> {
     expression_mode: bool,
     preview_symbol: &'a str,
@@ -261,12 +264,12 @@ async fn write_preview_bindings(
         HydrolysisPreviewSource::Expression(expression) => (true, "", expression),
     };
     let (semantic_automation_body, perf_automation_body) =
-        automation.as_ref().map_or(("", ""), |automation| {
-            match automation.mode {
+        automation
+            .as_ref()
+            .map_or(("", ""), |automation| match automation.mode {
                 HydrolysisPreviewTestMode::Semantic => (automation.body, ""),
                 HydrolysisPreviewTestMode::Perf(_) => ("", automation.body),
-            }
-        });
+            });
     let rendered = HydrolysisPreviewBindingsTemplate {
         expression_mode,
         preview_symbol,

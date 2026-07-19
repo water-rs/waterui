@@ -1,6 +1,11 @@
 //! Hydrolysis preview runtime for {{ ctx.app_display_name }}.
 
-use std::{fs, path::Path, path::PathBuf, time::{Duration, Instant}};
+use std::{
+    fs,
+    path::Path,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use crate::preview_symbol;
 use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton};
@@ -60,7 +65,9 @@ fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
 
 fn run_image(output_path: &Path, width: f32, height: f32) {
     let mut runtime = new_runtime(width, height);
-    let result = runtime.pump(true);
+    let frame_at = Instant::now();
+    let _ = runtime.pump_semantic_at(frame_at);
+    let result = runtime.pump_at(true, frame_at);
     let snapshot = result
         .snapshot
         .unwrap_or_else(|| panic!("hydrolysis preview: static capture produced no snapshot"));
@@ -100,7 +107,10 @@ fn run_scenario(
         let Some(snapshot) = result.snapshot else {
             panic!("hydrolysis preview: scenario capture at {capture_ms}ms produced no snapshot");
         };
-        write_snapshot_png(snapshot, &output_dir.join(format!("frame-{capture_ms:04}ms.png")));
+        write_snapshot_png(
+            snapshot,
+            &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+        );
     }
 }
 
