@@ -23,7 +23,7 @@ use crate::{
         toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
     },
     assets::{self, ResolvedFont},
-    build::{BuildOptions, RustBuild},
+    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
@@ -629,6 +629,12 @@ fn configure_android_rust_build(
 ) -> eyre::Result<RustBuild> {
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
         .with_feature("waterui-ffi/android-jni");
+    if options.linkage() == RustLinkage::SharedRuntime {
+        build = build
+            .with_feature("dev")
+            .with_rustc_flag("-Cdebuginfo=0")
+            .with_preferred_dynamic_linking();
+    }
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -728,6 +734,12 @@ async fn copy_android_build_outputs(
     let libcxx_path = ndk_libcxx_path(ndk_path, abi);
     if libcxx_path.exists() {
         copy_file(&libcxx_path, &output_dir.join("libc++_shared.so")).await?;
+    }
+
+    if options.linkage() == RustLinkage::SharedRuntime {
+        let triple = AndroidPlatform::new(abi).triple();
+        let libraries = RustDynamicLibraries::resolve(lib_dir, &triple).await?;
+        libraries.stage(&output_dir).await?;
     }
 
     Ok(())

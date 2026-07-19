@@ -198,8 +198,6 @@ dirs = "6"
 
 [dependencies]
 waterui-internal = { path = "src", default-features = false }
-
-[target.'cfg(not(windows))'.dependencies]
 waterui-dylib = { path = "utils/dylib", optional = true, default-features = false }
 
 [features]

@@ -298,21 +298,24 @@ pub struct PackageOptions {
 }
 
 impl PackageOptions {
-    /// Create new package options
+    /// Create options for installing and running a development build.
     #[must_use]
-    pub const fn new(distribution: bool, debug: bool) -> Self {
+    pub const fn development() -> Self {
+        Self {
+            distribution: false,
+            debug: true,
+            shared_rust_runtime: true,
+        }
+    }
+
+    /// Create options for a self-contained package artifact.
+    #[must_use]
+    pub const fn packaging(distribution: bool, debug: bool) -> Self {
         Self {
             distribution,
             debug,
             shared_rust_runtime: false,
         }
-    }
-
-    /// Embed the shared `WaterUI` Rust runtime in the native package.
-    #[must_use]
-    pub const fn with_shared_rust_runtime(mut self) -> Self {
-        self.shared_rust_runtime = true;
-        self
     }
 
     /// Whether to package in distribution mode
@@ -331,5 +334,25 @@ impl PackageOptions {
     #[must_use]
     pub const fn uses_shared_rust_runtime(&self) -> bool {
         self.shared_rust_runtime
+    }
+}
+
+#[cfg(test)]
+mod package_options_tests {
+    use super::PackageOptions;
+
+    #[test]
+    fn development_embeds_shared_runtime_and_packaging_does_not() {
+        let development = PackageOptions::development();
+        assert!(development.is_debug());
+        assert!(!development.is_distribution());
+        assert!(development.uses_shared_rust_runtime());
+
+        for options in [
+            PackageOptions::packaging(false, true),
+            PackageOptions::packaging(true, false),
+        ] {
+            assert!(!options.uses_shared_rust_runtime());
+        }
     }
 }

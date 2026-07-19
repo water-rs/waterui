@@ -149,7 +149,7 @@ async fn prepare_packaging_context(args: &Args) -> Result<PackagingContext> {
     Ok(PackagingContext {
         project,
         backend,
-        build_options: BuildOptions::new(args.release),
+        build_options: BuildOptions::packaging(args.release),
     })
 }
 
@@ -385,7 +385,7 @@ async fn package_artifact(args: &Args, context: &PackagingContext) -> Result<()>
 }
 
 async fn package_artifact_inner(args: &Args, context: &PackagingContext) -> Result<Artifact> {
-    let package_options = PackageOptions::new(args.distribution, !args.release);
+    let package_options = PackageOptions::packaging(args.distribution, !args.release);
     match context.backend {
         TargetBackend::Android => {
             let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();

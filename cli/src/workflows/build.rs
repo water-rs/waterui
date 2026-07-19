@@ -53,13 +53,153 @@ pub async fn rust_target_libdir(triple: &Triple) -> eyre::Result<PathBuf> {
 }
 
 /// Selects how Rust dependencies are linked into a native application.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RustLinkage {
     /// Link the `WaterUI` runtime into the application archive.
-    #[default]
     Static,
     /// Link the application and loadable modules against one shared `WaterUI` runtime.
     SharedRuntime,
+}
+
+/// Configure a Cargo command for the selected Rust linkage model.
+pub fn configure_cargo_linkage(
+    command: &mut Command,
+    linkage: RustLinkage,
+    development_feature: &str,
+    loader_search_path: Option<&str>,
+) {
+    if linkage == RustLinkage::Static {
+        return;
+    }
+
+    command.args(["--features", development_feature]);
+    let mut rustflags = std::env::var_os("RUSTFLAGS").unwrap_or_default();
+    if !rustflags.is_empty() {
+        rustflags.push(" ");
+    }
+    rustflags.push("-Cprefer-dynamic -Crpath");
+    if let Some(path) = loader_search_path {
+        rustflags.push(format!(" -Clink-arg=-Wl,-rpath,{path}"));
+    }
+    command.env("RUSTFLAGS", rustflags);
+}
+
+/// Dynamic Rust libraries required by a shared-runtime development build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustDynamicLibraries {
+    waterui: PathBuf,
+    standard_library: PathBuf,
+}
+
+impl RustDynamicLibraries {
+    /// Resolve the shared `WaterUI` runtime and target Rust standard library.
+    ///
+    /// # Errors
+    /// Returns an error when either required dynamic library is absent or ambiguous.
+    pub async fn resolve(lib_dir: &Path, triple: &Triple) -> eyre::Result<Self> {
+        let waterui = lib_dir
+            .join("deps")
+            .join(dynamic_library_file_name("waterui_dylib", triple));
+        if !waterui.is_file() {
+            bail!(
+                "Shared WaterUI runtime was not built at {}",
+                waterui.display()
+            );
+        }
+
+        let target_libdir = rust_target_libdir(triple).await?;
+        let triple = triple.clone();
+        let standard_library =
+            unblock(move || resolve_rust_standard_library_in(&target_libdir, &triple)).await?;
+
+        Ok(Self {
+            waterui,
+            standard_library,
+        })
+    }
+
+    /// Shared `WaterUI` runtime path.
+    #[must_use]
+    pub fn waterui(&self) -> &Path {
+        &self.waterui
+    }
+
+    /// Target Rust standard-library dynamic library path.
+    #[must_use]
+    pub fn standard_library(&self) -> &Path {
+        &self.standard_library
+    }
+
+    /// Iterate over every library that must be staged with the application.
+    pub fn iter(&self) -> impl Iterator<Item = &Path> {
+        [self.waterui(), self.standard_library()].into_iter()
+    }
+
+    /// Copy all required dynamic libraries into a runtime search directory.
+    ///
+    /// # Errors
+    /// Returns an error when the destination cannot be created or a library cannot be copied.
+    pub async fn stage(&self, destination: &Path) -> eyre::Result<()> {
+        smol::fs::create_dir_all(destination).await?;
+        for source in self.iter() {
+            let file_name = source.file_name().ok_or_else(|| {
+                eyre::eyre!(
+                    "Dynamic library path has no file name: {}",
+                    source.display()
+                )
+            })?;
+            smol::fs::copy(source, destination.join(file_name)).await?;
+        }
+        Ok(())
+    }
+}
+
+fn dynamic_library_file_name(crate_name: &str, triple: &Triple) -> String {
+    if triple.operating_system == OperatingSystem::Windows {
+        format!("{crate_name}.dll")
+    } else {
+        format!("lib{crate_name}.{}", lib_extension_for_triple(triple))
+    }
+}
+
+fn resolve_rust_standard_library_in(libdir: &Path, triple: &Triple) -> eyre::Result<PathBuf> {
+    let (prefix, extension) = if triple.operating_system == OperatingSystem::Windows {
+        ("std-", "dll")
+    } else {
+        ("libstd-", lib_extension_for_triple(triple))
+    };
+    let entries = std::fs::read_dir(libdir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let mut matches = entries
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with(prefix)
+                        && path.extension().and_then(|extension| extension.to_str())
+                            == Some(extension)
+                })
+        })
+        .collect::<Vec<_>>();
+    matches.sort_unstable();
+    match matches.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => bail!(
+            "Rust target libdir {} contains no dynamic standard library for {triple}",
+            libdir.display()
+        ),
+        _ => bail!(
+            "Rust target libdir {} contains multiple dynamic standard libraries for {triple}: {}",
+            libdir.display(),
+            matches
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// Represents a Rust build for a specific target triple.
@@ -80,7 +220,7 @@ pub struct RustBuild {
 }
 
 /// Options for building Rust libraries.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BuildOptions {
     release: bool,
     output_dir: Option<std::path::PathBuf>,
@@ -93,9 +233,21 @@ pub struct BuildOptions {
 }
 
 impl BuildOptions {
-    /// Create new build options
+    /// Create options for a development build that uses the shared Rust runtime.
     #[must_use]
-    pub const fn new(release: bool) -> Self {
+    pub const fn development(release: bool) -> Self {
+        Self {
+            release,
+            output_dir: None,
+            sccache_path: None,
+            target_triple: None,
+            linkage: RustLinkage::SharedRuntime,
+        }
+    }
+
+    /// Create options for a self-contained package build.
+    #[must_use]
+    pub const fn packaging(release: bool) -> Self {
         Self {
             release,
             output_dir: None,
@@ -150,13 +302,6 @@ impl BuildOptions {
     #[must_use]
     pub fn with_target_triple(mut self, target_triple: Triple) -> Self {
         self.target_triple = Some(target_triple);
-        self
-    }
-
-    /// Link the native application against a shared Rust runtime.
-    #[must_use]
-    pub const fn with_shared_runtime(mut self) -> Self {
-        self.linkage = RustLinkage::SharedRuntime;
         self
     }
 
@@ -224,6 +369,13 @@ impl RustBuild {
     pub fn with_rustc_flag(mut self, flag: impl Into<String>) -> Self {
         self.rustc_flags.push(flag.into());
         self
+    }
+
+    /// Prefer dynamic Rust dependencies and emit loader search paths for them.
+    #[must_use]
+    pub fn with_preferred_dynamic_linking(self) -> Self {
+        self.with_rustc_flag("-Cprefer-dynamic")
+            .with_rustc_flag("-Crpath")
     }
 
     /// Override the library crate type passed to `rustc`.
@@ -617,8 +769,12 @@ async fn ensure_meson_installed_for_build() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use target_lexicon::Triple;
+    use tempfile::tempdir;
 
-    use super::lib_extension_for_triple;
+    use super::{
+        BuildOptions, RustLinkage, dynamic_library_file_name, lib_extension_for_triple,
+        resolve_rust_standard_library_in,
+    };
 
     fn triple(value: &str) -> Triple {
         value.parse().expect("test target triple must parse")
@@ -653,6 +809,43 @@ mod tests {
         assert_eq!(
             lib_extension_for_triple(&triple("x86_64-pc-windows-msvc")),
             "dll"
+        );
+    }
+
+    #[test]
+    fn development_and_packaging_have_distinct_linkage() {
+        assert_eq!(
+            BuildOptions::development(false).linkage(),
+            RustLinkage::SharedRuntime
+        );
+        assert_eq!(
+            BuildOptions::packaging(false).linkage(),
+            RustLinkage::Static
+        );
+        assert!(BuildOptions::development(true).is_release());
+        assert!(BuildOptions::packaging(true).is_release());
+    }
+
+    #[test]
+    fn resolves_target_standard_library_without_guessing_hash() {
+        let directory = tempdir().expect("temporary target libdir");
+        let android_triple = triple("aarch64-linux-android");
+        let expected = directory.path().join("libstd-1234567890abcdef.so");
+        std::fs::write(&expected, []).expect("write test std library");
+        std::fs::write(directory.path().join("libcore.rlib"), []).expect("write unrelated library");
+
+        assert_eq!(
+            resolve_rust_standard_library_in(directory.path(), &android_triple)
+                .expect("resolve dynamic std"),
+            expected
+        );
+        assert_eq!(
+            dynamic_library_file_name("waterui_dylib", &android_triple),
+            "libwaterui_dylib.so"
+        );
+        assert_eq!(
+            dynamic_library_file_name("waterui_dylib", &triple("x86_64-pc-windows-msvc")),
+            "waterui_dylib.dll"
         );
     }
 }

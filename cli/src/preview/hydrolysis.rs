@@ -134,7 +134,7 @@ pub async fn render_preview_with_hydrolysis(
     write_preview_bindings(&project, source, theme, None).await?;
     stage_preview_resources(&project, theme).await?;
 
-    let mut build_options = BuildOptions::new(false);
+    let mut build_options = BuildOptions::development(false);
     if let Some(sccache_path) = sccache_path {
         build_options = build_options.with_sccache(sccache_path);
     }
@@ -181,7 +181,7 @@ pub async fn test_preview_with_hydrolysis(
     .await?;
     stage_preview_resources(&project, theme).await?;
 
-    let mut build_options = BuildOptions::new(false);
+    let mut build_options = BuildOptions::development(false);
     if let Some(sccache_path) = sccache_path {
         build_options = build_options.with_sccache(sccache_path);
     }

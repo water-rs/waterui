@@ -266,8 +266,8 @@ where
 
 fn build_options(args: &Args, backend: TargetBackend) -> BuildOptions {
     let mut build_options = args.output_dir.as_ref().map_or_else(
-        || BuildOptions::new(args.release),
-        |output_dir| BuildOptions::new(args.release).with_output_dir(output_dir),
+        || BuildOptions::development(args.release),
+        |output_dir| BuildOptions::development(args.release).with_output_dir(output_dir),
     );
 
     if backend == TargetBackend::Apple
