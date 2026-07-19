@@ -1,6 +1,6 @@
 //! Dynamic library loading for preview.
 //!
-//! Handles loading dylibs received from the daemon and resolving preview symbols.
+//! Handles loading dylibs received from the CLI and resolving preview symbols.
 
 use std::ffi::CString;
 use std::path::Path;

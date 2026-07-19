@@ -6,7 +6,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre::{Context, Result, bail};
@@ -17,11 +17,11 @@ use smol::stream::StreamExt;
 use tracing::{error, info};
 
 use super::app_client::PreviewAppClient;
+use super::inputs::{ProjectInputsFingerprint, project_inputs_fingerprint};
 use super::protocol::DylibId;
 use super::protocol::PreviewPlatform;
 use super::protocol::PreviewRuntimePlatform;
 use super::protocol::PreviewTcpConfig;
-use super::watcher::ProjectWatcher;
 
 use crate::build::RustBuild;
 use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
@@ -47,8 +47,6 @@ struct PreviewRequirements {
 pub struct PreviewSession {
     /// TCP client to the preview app.
     pub client: PreviewAppClient,
-    /// Watcher for detecting file changes.
-    pub watcher: ProjectWatcher,
     /// Current platform.
     pub platform: PreviewPlatform,
     /// Path to the built dylib (if any).
@@ -81,7 +79,6 @@ impl PreviewSession {
         build_preview_dylib(
             project_path,
             self.platform,
-            &mut self.watcher,
             self.sccache_path.as_ref(),
             &self.runtime_fingerprint,
             &mut self.dylib_path,
@@ -117,24 +114,24 @@ impl PreviewSession {
     /// Shutdown the preview app if this session launched it.
     ///
     /// # Errors
-    /// This method currently does not return an operational error.
+    /// Returns an error if the support app does not acknowledge the shutdown request.
     pub async fn shutdown(&mut self) -> Result<()> {
         if self.owns_app {
-            let _ = self.client.shutdown().await;
+            let result = self.client.shutdown().await;
             // Dropping `running` will terminate the app if still alive.
             self.running.take();
+            self.owns_app = false;
+            result?;
         }
         Ok(())
     }
 
     /// Detach the preview app so it keeps running after this session is dropped.
     ///
-    /// This "forgets" the Running instance so its Drop handler won't kill the app.
-    /// The app will continue running and can be reused by future preview sessions.
+    /// The app continues running and can be reused by future preview sessions.
     pub fn detach(&mut self) {
-        if let Some(running) = self.running.take() {
-            // Leak the Running to prevent Drop from killing the app
-            std::mem::forget(running);
+        if let Some(mut running) = self.running.take() {
+            running.as_mut().detach();
             self.owns_app = false;
         }
     }
@@ -143,19 +140,18 @@ impl PreviewSession {
 async fn build_preview_dylib(
     project_path: &Path,
     platform: PreviewPlatform,
-    watcher: &mut ProjectWatcher,
     sccache_path: Option<&PathBuf>,
     runtime_fingerprint: &str,
     dylib_path: &mut Option<PathBuf>,
 ) -> Result<BuiltDylib> {
     let total_start = Instant::now();
-    let stamp_start = Instant::now();
-    let stamp = watcher.stamp(project_path).await?;
+    let fingerprint_start = Instant::now();
+    let project_inputs = project_inputs_fingerprint(project_path).await?;
     info!(
         project_path = %project_path.display(),
-        changed = stamp.changed,
-        elapsed_ms = stamp_start.elapsed().as_millis(),
-        "Preview watcher scanned project inputs"
+        fingerprint = %project_inputs,
+        elapsed_ms = fingerprint_start.elapsed().as_millis(),
+        "Preview fingerprinted project inputs"
     );
 
     let project_open_start = Instant::now();
@@ -178,16 +174,6 @@ async fn build_preview_dylib(
     ensure_project_dev_feature_for_preview(&project).await?;
 
     let mut rust_build = RustBuild::new(&preview_crate_path, target.triple());
-    if let Some(sccache) = sccache_path {
-        rust_build = rust_build.with_sccache(sccache.clone());
-    }
-    rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
-    rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
-    let rust_target_libdir = rust_target_libdir(&target_triple).await?;
-    rust_build = rust_build.with_rustc_flag(format!(
-        "-Clink-arg=-Wl,-rpath,{}",
-        rust_target_libdir.display()
-    ));
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -202,15 +188,26 @@ async fn build_preview_dylib(
     let candidate_path = dylib_path.clone().unwrap_or_else(|| expected_path.clone());
 
     let dylib_signature = dylib_build_signature(
+        project_inputs,
         runtime_fingerprint,
         &target_triple,
         preview_crate_name.as_str(),
         true,
     );
-    let built_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await? {
+    let built_path = if dylib_is_up_to_date(&candidate_path, &dylib_signature).await? {
         candidate_path
     } else {
         info!("Building dylib...");
+        if let Some(sccache) = sccache_path {
+            rust_build = rust_build.with_sccache(sccache.clone());
+        }
+        rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
+        rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
+        let rust_target_libdir = rust_target_libdir(&target_triple).await?;
+        rust_build = rust_build.with_rustc_flag(format!(
+            "-Clink-arg=-Wl,-rpath,{}",
+            rust_target_libdir.display()
+        ));
         let build_start = Instant::now();
         let built_path = rust_build
             .build_dylib(preview_crate_name.as_str(), false)
@@ -314,6 +311,7 @@ fn dylib_signature_path(path: &Path) -> PathBuf {
 }
 
 fn dylib_build_signature(
+    project_inputs: ProjectInputsFingerprint,
     runtime_fingerprint: &str,
     target_triple: &str,
     crate_name: &str,
@@ -325,7 +323,7 @@ fn dylib_build_signature(
         "preview-cdylib+static-waterui"
     };
     format!(
-        "runtime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}\nlink_mode={link_mode}"
+        "inputs={project_inputs}\nruntime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}\nlink_mode={link_mode}"
     )
 }
 
@@ -362,20 +360,11 @@ async fn write_dylib_signature(path: &Path, signature: &str) -> Result<()> {
     Ok(())
 }
 
-async fn dylib_is_up_to_date(
-    path: &std::path::Path,
-    source_mtime: SystemTime,
-    expected_signature: &str,
-) -> Result<bool> {
-    let metadata = match smol::fs::metadata(path).await {
-        Ok(m) => m,
+async fn dylib_is_up_to_date(path: &std::path::Path, expected_signature: &str) -> Result<bool> {
+    match smol::fs::metadata(path).await {
+        Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.into()),
-    };
-
-    let dylib_mtime = metadata.modified()?;
-    if dylib_mtime < source_mtime {
-        return Ok(false);
     }
 
     let signature_path = dylib_signature_path(path);
@@ -503,7 +492,6 @@ async fn try_connect_existing_preview_app(
     info!("Connected to existing preview app");
     Ok(Some(PreviewSession {
         client,
-        watcher: ProjectWatcher::new(),
         platform,
         dylib_path: None,
         running: None,
@@ -683,7 +671,6 @@ async fn build_preview_session_from_launch(
             };
             Ok(PreviewSession {
                 client,
-                watcher: ProjectWatcher::new(),
                 platform,
                 dylib_path: None,
                 running: Some(running),
@@ -973,7 +960,7 @@ async fn preview_connection_result_from_device_event(
 }
 
 fn parse_preview_listening_addr(message: &str) -> Option<SocketAddr> {
-    const PREFIX: &str = "Preview daemon listening on ";
+    const PREFIX: &str = "Preview support app listening on ";
     let suffix = message.split(PREFIX).nth(1)?;
     let port = suffix.rsplit(':').next()?.trim().parse::<u16>().ok()?;
     Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))

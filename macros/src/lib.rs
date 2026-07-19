@@ -869,17 +869,16 @@ fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
 /// # How It Works
 ///
 /// The macro generates a C-exported symbol with the naming pattern:
-/// `waterui_preview_<module_path_with_underscores>`
+/// `waterui_preview_<crate_name>_<function_name>`
 ///
-/// For example, `my_crate::dashboard::card` becomes `waterui_preview_my_crate_dashboard_card`.
+/// For example, `card` in `my-crate` becomes `waterui_preview_my_crate_card`.
 ///
-/// This symbol can be loaded by the preview daemon to render the view.
+/// This symbol can be loaded by the preview support app to render the view.
 ///
 /// # Symbol Naming
 ///
-/// The symbol name is derived from the full module path:
-/// - `::` is replaced with `_`
-/// - Prefix: `waterui_preview_`
+/// Preview function names must be unique within a crate because Rust procedural macros do not
+/// receive the surrounding module path. The CLI reports duplicate names during `--all` discovery.
 ///
 /// This allows even private functions to be previewable since the symbol is always public.
 ///
@@ -900,29 +899,56 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     let fn_name_str = fn_name.to_string();
 
     // Parse function parameters and collect default values from macro args
-    let params: Vec<_> = input_fn
+    let params = input_fn
         .sig
         .inputs
         .iter()
-        .filter_map(|arg| {
-            if let syn::FnArg::Typed(pat_type) = arg
-                && let syn::Pat::Ident(pat_ident) = &*pat_type.pat
-            {
-                return Some((pat_ident.ident.clone(), pat_type.ty.clone()));
+        .map(|arg| match arg {
+            syn::FnArg::Typed(pat_type) => {
+                let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
+                    return Err(syn::Error::new_spanned(
+                        &pat_type.pat,
+                        "`#[preview]` parameters must use identifier patterns",
+                    ));
+                };
+                Ok(pat_ident.ident.clone())
             }
-            None
+            syn::FnArg::Receiver(receiver) => Err(syn::Error::new_spanned(
+                receiver,
+                "`#[preview]` can only be applied to free functions",
+            )),
         })
-        .collect();
+        .collect::<syn::Result<Vec<_>>>();
+    let params = match params {
+        Ok(params) => params,
+        Err(error) => return error.to_compile_error().into(),
+    };
 
     // Build a map of parameter defaults from the macro arguments
-    let defaults: HashMap<String, Expr> = args
-        .iter()
-        .map(|arg| (arg.name.to_string(), arg.value.clone()))
-        .collect();
+    let mut defaults = HashMap::<String, Expr>::with_capacity(args.len());
+    for arg in args {
+        let name = arg.name.to_string();
+        if !params.iter().any(|param| param == &arg.name) {
+            return syn::Error::new_spanned(
+                arg.name,
+                format!("unknown `#[preview]` parameter default `{name}`"),
+            )
+            .to_compile_error()
+            .into();
+        }
+        if defaults.insert(name.clone(), arg.value).is_some() {
+            return syn::Error::new_spanned(
+                arg.name,
+                format!("duplicate `#[preview]` parameter default `{name}`"),
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
 
     // Check that all parameters have defaults if the function has arguments
     if !params.is_empty() {
-        for (param_name, _) in &params {
+        for param_name in &params {
             if !defaults.contains_key(&param_name.to_string()) {
                 return syn::Error::new_spanned(
                     param_name,
@@ -939,7 +965,7 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // Generate the call expression with defaults
     let call_args: Vec<_> = params
         .iter()
-        .map(|(name, _)| {
+        .map(|name| {
             defaults
                 .get(&name.to_string())
                 .cloned()
