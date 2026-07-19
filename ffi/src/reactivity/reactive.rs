@@ -713,8 +713,9 @@ impl<T: IntoFFI> WuiWatcher<T> {
                 unsafe { (self.drop)(self.data) }
             }
         }
-        let cleaner = Cleaner { data, drop };
+        let cleaner = Rc::new(Cleaner { data, drop });
         WuiWatcher(Rc::new(move |ctx| {
+            let cleaner = Rc::clone(&cleaner);
             let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
             let value = ctx.into_value();
             unsafe {
@@ -737,6 +738,53 @@ impl<T: IntoFFI> IntoFFI for Watcher<T> {
     type FFI = *mut WuiWatcher<T>;
     fn into_ffi(self) -> Self::FFI {
         Box::into_raw(Box::new(WuiWatcher(self)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WuiWatcher, WuiWatcherMetadata};
+    use alloc::boxed::Box;
+    use alloc::rc::Rc;
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+    use nami::watcher::{Context, Metadata};
+
+    struct NativeWatcherData {
+        events: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    unsafe extern "C" fn record_call(
+        data: *mut (),
+        _value: u32,
+        metadata: *mut WuiWatcherMetadata,
+    ) {
+        let data = unsafe { &*data.cast::<NativeWatcherData>() };
+        data.events.borrow_mut().push("call");
+        unsafe { super::waterui_drop_watcher_metadata(metadata) };
+    }
+
+    unsafe extern "C" fn record_drop(data: *mut ()) {
+        let data = unsafe { Box::from_raw(data.cast::<NativeWatcherData>()) };
+        data.events.borrow_mut().push("drop");
+    }
+
+    #[test]
+    fn native_watcher_data_lives_until_the_last_callback_owner_drops() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let data = Box::into_raw(Box::new(NativeWatcherData {
+            events: Rc::clone(&events),
+        }))
+        .cast();
+
+        let watcher = unsafe { WuiWatcher::<u32>::new(data, record_call, record_drop) };
+        let callback = watcher.into_inner();
+
+        callback(Context::new(42, Metadata::new()));
+        assert_eq!(&*events.borrow(), &["call"]);
+
+        drop(callback);
+        assert_eq!(&*events.borrow(), &["call", "drop"]);
     }
 }
 
