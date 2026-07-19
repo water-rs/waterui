@@ -54,10 +54,14 @@ macro_rules! ffi_safe {
 #[macro_export]
 macro_rules! ffi_view {
     ($view:ty, $ffi:ty, $ident:tt) => {
-        $crate::ffi_view!($view, $ffi, $ident, all());
+        $crate::ffi_view!($view, $ffi, $ident, all(), all());
     };
 
     ($view:ty, $ffi:ty, $ident:tt, $jni:meta) => {
+        $crate::ffi_view!($view, $ffi, $ident, $jni, $jni);
+    };
+
+    ($view:ty, $ffi:ty, $ident:tt, $jni_id:meta, $jni_force:meta) => {
         pastey::paste! {
             // ========== C-API (for Apple/GTK backends) ==========
             /// # Safety
@@ -84,7 +88,7 @@ macro_rules! ffi_view {
             // ========== Android JNI ==========
             // :lower_camel → buttonId, colorPickerId (first letter lowercase)
             // :camel → Button, ColorPicker (first letter uppercase, for forceAs prefix)
-            #[cfg(all(feature = "android-jni", $jni))]
+            #[cfg(all(feature = "android-jni", $jni_id))]
             #[unsafe(no_mangle)]
             pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ $ident:lower_camel Id>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
@@ -99,7 +103,7 @@ macro_rules! ffi_view {
             /// `view_ptr` must be a valid, owning `WuiAnyView` handle (as a `jlong`) whose
             /// erased value is a `Native<_>` of the expected view type; it is consumed by
             /// this call and must not be used afterwards.
-            #[cfg(all(feature = "android-jni", $jni))]
+            #[cfg(all(feature = "android-jni", $jni_force))]
             #[unsafe(no_mangle)]
             pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAs $ident:camel>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
@@ -134,6 +138,14 @@ macro_rules! ffi_view {
 #[macro_export]
 macro_rules! ffi_metadata {
     ($ty:ty, $ffi:ty, $ident:tt) => {
+        $crate::ffi_metadata!($ty, $ffi, $ident, all(), all());
+    };
+
+    ($ty:ty, $ffi:ty, $ident:tt, $jni:meta) => {
+        $crate::ffi_metadata!($ty, $ffi, $ident, $jni, $jni);
+    };
+
+    ($ty:ty, $ffi:ty, $ident:tt, $jni_id:meta, $jni_force:meta) => {
         pastey::paste! {
             // ========== C-API (for Apple/GTK backends) ==========
             #[cfg(feature = "c-api")]
@@ -164,7 +176,7 @@ macro_rules! ffi_metadata {
             }
 
             // ========== Android JNI ==========
-            #[cfg(feature = "android-jni")]
+            #[cfg(all(feature = "android-jni", $jni_id))]
             /// JNI: Returns the type ID for this metadata type.
             #[unsafe(no_mangle)]
             pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_metadata $ident:camel Id>]<'local>(
@@ -175,7 +187,7 @@ macro_rules! ffi_metadata {
                 $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
             }
 
-            #[cfg(feature = "android-jni")]
+            #[cfg(all(feature = "android-jni", $jni_force))]
             /// JNI: Force-casts an AnyView pointer to this metadata type.
             ///
             /// # Safety

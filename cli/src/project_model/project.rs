@@ -1047,6 +1047,23 @@ impl Project {
             );
         }
 
+        if !is_playground
+            && !skip_backend_init
+            && open_mode == OpenMode::Full
+            && (project.apple_backend().is_some() || project.android_backend().is_some())
+        {
+            let ffi_companion_start = std::time::Instant::now();
+            project
+                .scaffold_ffi_companion()
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
+            info!(
+                path = %project.root.display(),
+                elapsed_ms = ffi_companion_start.elapsed().as_millis(),
+                "Project::open refreshed native ffi companion"
+            );
+        }
+
         if !skip_backend_init && (is_playground || open_mode == OpenMode::PreviewBuild) {
             let preview_wrapper_start = std::time::Instant::now();
             project
