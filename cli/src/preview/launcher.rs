@@ -42,6 +42,47 @@ struct PreviewRequirements {
     runtime_fingerprint: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewLinkMode {
+    crate_type_override: Option<&'static str>,
+    prefer_dynamic: bool,
+}
+
+impl PreviewLinkMode {
+    const MACOS_DYNAMIC: Self = Self {
+        crate_type_override: None,
+        prefer_dynamic: true,
+    };
+    const PORTABLE_STATIC: Self = Self {
+        crate_type_override: Some("cdylib"),
+        prefer_dynamic: false,
+    };
+
+    const fn for_platform(platform: PreviewPlatform) -> Self {
+        match platform {
+            PreviewPlatform::Macos => Self::MACOS_DYNAMIC,
+            PreviewPlatform::Ios | PreviewPlatform::IosSimulator | PreviewPlatform::Android => {
+                Self::PORTABLE_STATIC
+            }
+        }
+    }
+
+    const fn signature_tag(self) -> &'static str {
+        if self.prefer_dynamic {
+            "preview-dylib+waterui-dylib+prefer-dynamic"
+        } else {
+            "preview-cdylib+static-waterui"
+        }
+    }
+
+    fn configure_build(self, build: RustBuild) -> RustBuild {
+        match self.crate_type_override {
+            Some(crate_type) => build.with_crate_type_override(crate_type),
+            None => build,
+        }
+    }
+}
+
 /// A preview session that manages the preview app and TCP connection.
 #[derive(Debug)]
 pub struct PreviewSession {
@@ -170,10 +211,12 @@ async fn build_preview_dylib(
         PreviewPlatform::Android => TargetPlatform::Android,
     };
     let target_triple = target.triple().to_string();
+    let link_mode = PreviewLinkMode::for_platform(platform);
 
     ensure_project_dev_feature_for_preview(&project).await?;
 
-    let mut rust_build = RustBuild::new(&preview_crate_path, target.triple());
+    let mut rust_build =
+        link_mode.configure_build(RustBuild::new(&preview_crate_path, target.triple()));
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -192,7 +235,7 @@ async fn build_preview_dylib(
         runtime_fingerprint,
         &target_triple,
         preview_crate_name.as_str(),
-        true,
+        link_mode,
     );
     let built_path = if dylib_is_up_to_date(&candidate_path, &dylib_signature).await? {
         candidate_path
@@ -202,12 +245,14 @@ async fn build_preview_dylib(
             rust_build = rust_build.with_sccache(sccache.clone());
         }
         rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
-        rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
-        let rust_target_libdir = rust_target_libdir(&target_triple).await?;
-        rust_build = rust_build.with_rustc_flag(format!(
-            "-Clink-arg=-Wl,-rpath,{}",
-            rust_target_libdir.display()
-        ));
+        if link_mode.prefer_dynamic {
+            rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
+            let rust_target_libdir = rust_target_libdir(&target_triple).await?;
+            rust_build = rust_build.with_rustc_flag(format!(
+                "-Clink-arg=-Wl,-rpath,{}",
+                rust_target_libdir.display()
+            ));
+        }
         let build_start = Instant::now();
         let built_path = rust_build
             .build_dylib(preview_crate_name.as_str(), false)
@@ -315,13 +360,9 @@ fn dylib_build_signature(
     runtime_fingerprint: &str,
     target_triple: &str,
     crate_name: &str,
-    prefer_dynamic_linking: bool,
+    link_mode: PreviewLinkMode,
 ) -> String {
-    let link_mode = if prefer_dynamic_linking {
-        "preview-dylib+waterui-dylib+prefer-dynamic"
-    } else {
-        "preview-cdylib+static-waterui"
-    };
+    let link_mode = link_mode.signature_tag();
     format!(
         "inputs={project_inputs}\nruntime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}\nlink_mode={link_mode}"
     )
@@ -1259,4 +1300,38 @@ fn select_unique_package<'a>(
         );
     }
     Ok(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PreviewLinkMode, PreviewPlatform};
+
+    #[test]
+    fn macos_preview_uses_shared_waterui_runtime() {
+        let link_mode = PreviewLinkMode::for_platform(PreviewPlatform::Macos);
+
+        assert_eq!(link_mode, PreviewLinkMode::MACOS_DYNAMIC);
+        assert_eq!(link_mode.crate_type_override, None);
+        assert!(link_mode.prefer_dynamic);
+        assert_eq!(
+            link_mode.signature_tag(),
+            "preview-dylib+waterui-dylib+prefer-dynamic"
+        );
+    }
+
+    #[test]
+    fn remote_preview_platforms_use_self_contained_cdylibs() {
+        for platform in [
+            PreviewPlatform::Ios,
+            PreviewPlatform::IosSimulator,
+            PreviewPlatform::Android,
+        ] {
+            let link_mode = PreviewLinkMode::for_platform(platform);
+
+            assert_eq!(link_mode, PreviewLinkMode::PORTABLE_STATIC);
+            assert_eq!(link_mode.crate_type_override, Some("cdylib"));
+            assert!(!link_mode.prefer_dynamic);
+            assert_eq!(link_mode.signature_tag(), "preview-cdylib+static-waterui");
+        }
+    }
 }
