@@ -59,24 +59,31 @@ struct ResolvedPreviewMetadata {
 struct PreviewLinkMode {
     crate_type_override: Option<&'static str>,
     prefer_dynamic: bool,
+    abi_feature: &'static str,
 }
 
 impl PreviewLinkMode {
     const MACOS_DYNAMIC: Self = Self {
         crate_type_override: None,
         prefer_dynamic: true,
+        abi_feature: crate::templates::preview_ffi::APPLE_ABI_FEATURE,
     };
     const PORTABLE_DYNAMIC: Self = Self {
         crate_type_override: Some("cdylib"),
         prefer_dynamic: true,
+        abi_feature: crate::templates::preview_ffi::APPLE_ABI_FEATURE,
+    };
+    const ANDROID_DYNAMIC: Self = Self {
+        crate_type_override: Some("cdylib"),
+        prefer_dynamic: true,
+        abi_feature: crate::templates::preview_ffi::ANDROID_ABI_FEATURE,
     };
 
     const fn for_platform(platform: PreviewPlatform) -> Self {
         match platform {
             PreviewPlatform::Macos => Self::MACOS_DYNAMIC,
-            PreviewPlatform::Ios | PreviewPlatform::IosSimulator | PreviewPlatform::Android => {
-                Self::PORTABLE_DYNAMIC
-            }
+            PreviewPlatform::Ios | PreviewPlatform::IosSimulator => Self::PORTABLE_DYNAMIC,
+            PreviewPlatform::Android => Self::ANDROID_DYNAMIC,
         }
     }
 
@@ -93,7 +100,7 @@ impl PreviewLinkMode {
             Some(crate_type) => build.with_crate_type_override(crate_type),
             None => build,
         };
-        build.with_feature("shared-runtime-abi")
+        build.with_feature(self.abi_feature)
     }
 }
 
@@ -458,7 +465,7 @@ pub async fn launch_preview_session(
     sccache_path: Option<PathBuf>,
 ) -> Result<PreviewSession> {
     let requirements_start = Instant::now();
-    let requirements = resolve_preview_requirements(project_path).await?;
+    let requirements = resolve_preview_requirements(project_path, platform).await?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = requirements_start.elapsed().as_millis(),
@@ -1119,12 +1126,15 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
     )
 }
 
-async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequirements> {
-    let resolved = resolve_preview_metadata(project_path).await?;
+async fn resolve_preview_requirements(
+    project_path: &Path,
+    platform: PreviewPlatform,
+) -> Result<PreviewRequirements> {
+    let resolved = resolve_preview_metadata(project_path, platform).await?;
     let metadata = &resolved.metadata;
-    let waterui = select_unique_package(&metadata, "waterui")?;
-    let runtime_features = resolved_package_features(&metadata, waterui)?;
-    let graph_fingerprint = resolved_graph_fingerprint(&metadata)?;
+    let waterui = select_unique_package(metadata, "waterui")?;
+    let runtime_features = resolved_package_features(metadata, waterui)?;
+    let graph_fingerprint = resolved_graph_fingerprint(metadata)?;
 
     if let Some(requirements) = resolve_preview_requirements_from_manifest(
         project_path,
@@ -1138,7 +1148,7 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
     {
         return Ok(requirements);
     }
-    let waterui_core = select_unique_package(&metadata, "waterui-core")?;
+    let waterui_core = select_unique_package(metadata, "waterui-core")?;
     let runtime_identity = runtime_package_identity(waterui_core);
 
     let runtime_fingerprint_start = Instant::now();
@@ -1262,7 +1272,10 @@ async fn resolve_preview_requirements_from_manifest(
     }))
 }
 
-async fn resolve_preview_metadata(project_path: &Path) -> Result<ResolvedPreviewMetadata> {
+async fn resolve_preview_metadata(
+    project_path: &Path,
+    platform: PreviewPlatform,
+) -> Result<ResolvedPreviewMetadata> {
     let project = Project::open_for_preview_build(project_path).await?;
     ensure_project_dev_feature_for_preview(&project).await?;
     let manifest_path = project.preview_dylib_crate_path().join("Cargo.toml");
@@ -1270,11 +1283,14 @@ async fn resolve_preview_metadata(project_path: &Path) -> Result<ResolvedPreview
     let app_path = project.root().to_path_buf();
     let metadata_start = Instant::now();
     let metadata_manifest_path = manifest_path.clone();
+    let abi_feature = PreviewLinkMode::for_platform(platform)
+        .abi_feature
+        .to_string();
     let metadata = smol::unblock(move || {
         let mut command = cargo_metadata::MetadataCommand::new();
-        command.manifest_path(metadata_manifest_path).features(
-            cargo_metadata::CargoOpt::SomeFeatures(vec!["shared-runtime-abi".to_string()]),
-        );
+        command
+            .manifest_path(metadata_manifest_path)
+            .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
         command.exec()
     })
     .await
@@ -1459,6 +1475,10 @@ mod tests {
         assert_eq!(link_mode.crate_type_override, None);
         assert!(link_mode.prefer_dynamic);
         assert_eq!(
+            link_mode.abi_feature,
+            crate::templates::preview_ffi::APPLE_ABI_FEATURE
+        );
+        assert_eq!(
             link_mode.signature_tag(),
             "preview-dylib+shared-waterui-dylib+prefer-dynamic"
         );
@@ -1466,21 +1486,33 @@ mod tests {
 
     #[test]
     fn remote_preview_platforms_use_shared_runtime_cdylibs() {
-        for platform in [
-            PreviewPlatform::Ios,
-            PreviewPlatform::IosSimulator,
-            PreviewPlatform::Android,
-        ] {
+        for platform in [PreviewPlatform::Ios, PreviewPlatform::IosSimulator] {
             let link_mode = PreviewLinkMode::for_platform(platform);
 
             assert_eq!(link_mode, PreviewLinkMode::PORTABLE_DYNAMIC);
             assert_eq!(link_mode.crate_type_override, Some("cdylib"));
             assert!(link_mode.prefer_dynamic);
             assert_eq!(
+                link_mode.abi_feature,
+                crate::templates::preview_ffi::APPLE_ABI_FEATURE
+            );
+            assert_eq!(
                 link_mode.signature_tag(),
                 "preview-cdylib+shared-waterui-dylib+prefer-dynamic"
             );
         }
+    }
+
+    #[test]
+    fn android_preview_uses_the_jni_shared_runtime_abi() {
+        let link_mode = PreviewLinkMode::for_platform(PreviewPlatform::Android);
+        assert_eq!(link_mode, PreviewLinkMode::ANDROID_DYNAMIC);
+        assert_eq!(link_mode.crate_type_override, Some("cdylib"));
+        assert!(link_mode.prefer_dynamic);
+        assert_eq!(
+            link_mode.abi_feature,
+            crate::templates::preview_ffi::ANDROID_ABI_FEATURE
+        );
     }
 
     #[test]

@@ -983,9 +983,9 @@ pub(crate) fn create_surface_from_layer(
     unsafe {
         instance
             .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: raw_window_handle::RawDisplayHandle::Android(
+                raw_display_handle: Some(raw_window_handle::RawDisplayHandle::Android(
                     raw_window_handle::AndroidDisplayHandle::new(),
-                ),
+                )),
                 raw_window_handle: RawWindowHandle::AndroidNdk(handle),
             })
             .expect("failed to create wgpu surface from ANativeWindow")

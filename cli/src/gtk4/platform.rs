@@ -179,6 +179,14 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
             .await?
             .stage(runtime_dir)
             .await?;
+    } else {
+        let runtime_dir = final_binary_path.parent().ok_or_else(|| {
+            eyre::eyre!(
+                "GTK4 binary path has no output directory: {}",
+                final_binary_path.display()
+            )
+        })?;
+        RustDynamicLibraries::remove_staged(runtime_dir, &TargetPlatform::Linux.triple()).await?;
     }
 
     Ok(Artifact::new(

@@ -45,7 +45,7 @@ impl IntoFFI for TableColumn {
     }
 }
 
-ffi_view!(TableConfig, WuiTable, table);
+ffi_view!(TableConfig, WuiTable, table, any());
 
 /// Consumes a table-column descriptor view extracted from a table's known column collection.
 ///

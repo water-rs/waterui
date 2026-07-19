@@ -771,7 +771,7 @@ mod tests {
     use super::{
         ANDROID_BACKEND, APPLE_BACKEND, Esp32TemplateEntry, GTK_BACKEND_VERSION, PREVIEW_VERSION,
         TemplateContext, TemplateNamespace, embedded, jitpack_dependency_coordinate,
-        normalize_path_for_config, render_scaffold_template,
+        normalize_path_for_config, preview_ffi, render_scaffold_template,
     };
     use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
@@ -1151,6 +1151,13 @@ mod tests {
 
         assert!(cargo_toml.contains(&format!("path = \"{expected_ffi_path}\"")));
         assert!(cargo_toml.contains("dev = [\"waterui_test/dev\"]"));
+        let manifest = cargo_toml
+            .parse::<toml::Table>()
+            .expect("ffi Cargo.toml should parse");
+        assert_eq!(
+            manifest["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1185,19 +1192,28 @@ mod tests {
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("preview ffi Cargo.toml should parse");
-        let shared_runtime_features = manifest["features"]["shared-runtime-abi"]
-            .as_array()
-            .expect("shared runtime ABI feature should be an array")
-            .iter()
-            .map(|feature| feature.as_str().expect("feature should be a string"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            shared_runtime_features,
-            ["dep:waterui-ffi", "dep:waterui-preview"]
-        );
+        for (feature, ffi_feature) in [
+            (preview_ffi::APPLE_ABI_FEATURE, "waterui-ffi/c-api"),
+            (preview_ffi::ANDROID_ABI_FEATURE, "waterui-ffi/android-jni"),
+        ] {
+            let features = manifest["features"][feature]
+                .as_array()
+                .expect("platform preview ABI feature should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                features,
+                ["dep:waterui-ffi", ffi_feature, "dep:waterui-preview"]
+            );
+        }
         assert_eq!(
             manifest["dependencies"]["waterui-ffi"]["optional"].as_bool(),
             Some(true)
+        );
+        assert_eq!(
+            manifest["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
+            Some(false)
         );
         assert_eq!(
             manifest["dependencies"]["waterui-preview"]["optional"].as_bool(),
@@ -2275,6 +2291,7 @@ pub mod ffi {
             || {
                 Dependency::Detailed(Box::new(DependencyDetail {
                     version: Some(WATERUI_FFI_VERSION.to_string()),
+                    default_features: false,
                     ..Default::default()
                 }))
             },
@@ -2285,6 +2302,7 @@ pub mod ffi {
                         waterui_path,
                         NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
                     )),
+                    default_features: false,
                     ..Default::default()
                 }))
             },
@@ -2517,9 +2535,6 @@ pub mod preview {
                 }),
             );
 
-            let ffi_path = waterui_path.join("ffi");
-            dependencies.insert("waterui-ffi".to_string(), dependency_path(&ffi_path));
-
             // Resolve `waterui-preview` from the workspace metadata so the path
             // tracks the crate if it is moved within the workspace.
             let preview_path =
@@ -2592,6 +2607,11 @@ pub mod preview_ffi {
         scaffold_dir, write_file_if_changed,
     };
 
+    /// Preview ABI exported to Apple support applications.
+    pub const APPLE_ABI_FEATURE: &str = "apple-preview-abi";
+    /// Preview ABI exported to Android support applications.
+    pub const ANDROID_ABI_FEATURE: &str = "android-preview-abi";
+
     /// Write preview-only wrapper templates to the given directory.
     ///
     /// # Errors
@@ -2640,6 +2660,7 @@ pub mod preview_ffi {
             || DependencyDetail {
                 version: Some(WATERUI_FFI_VERSION.to_string()),
                 optional: true,
+                default_features: false,
                 ..Default::default()
             },
             |waterui_path| DependencyDetail {
@@ -2649,6 +2670,7 @@ pub mod preview_ffi {
                     NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
                 )),
                 optional: true,
+                default_features: false,
                 ..Default::default()
             },
         );
@@ -2689,13 +2711,19 @@ pub mod preview_ffi {
             Dependency::Detailed(Box::new(preview_dependency)),
         );
 
-        manifest.features.insert(
-            "shared-runtime-abi".to_string(),
-            vec![
-                "dep:waterui-ffi".to_string(),
-                "dep:waterui-preview".to_string(),
-            ],
-        );
+        for (feature, ffi_feature) in [
+            (APPLE_ABI_FEATURE, "waterui-ffi/c-api"),
+            (ANDROID_ABI_FEATURE, "waterui-ffi/android-jni"),
+        ] {
+            manifest.features.insert(
+                feature.to_string(),
+                vec![
+                    "dep:waterui-ffi".to_string(),
+                    ffi_feature.to_string(),
+                    "dep:waterui-preview".to_string(),
+                ],
+            );
+        }
 
         manifest.workspace = Some(Workspace::default());
 

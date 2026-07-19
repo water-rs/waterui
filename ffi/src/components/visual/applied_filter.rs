@@ -94,7 +94,13 @@ impl IntoFFI for waterui_core::Metadata<AppliedFilter> {
 }
 
 // Generate waterui_metadata_applied_filter_id() and waterui_force_as_metadata_applied_filter()
-ffi_metadata!(AppliedFilter, WuiAppliedFilter, applied_filter);
+ffi_metadata!(
+    AppliedFilter,
+    WuiAppliedFilter,
+    applied_filter,
+    all(),
+    any()
+);
 
 /// Opaque state held by the native backend for one semantic applied filter.
 pub struct WuiAppliedFilterState {

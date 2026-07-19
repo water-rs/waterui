@@ -77,7 +77,7 @@ required-features = ["cbindgen"]
 default = ["std", "c-api"]
 std = []
 # C FFI for Apple/GTK backends (default)
-c-api = []
+c-api = ["std"]
 # JNI for Android backend - mutually exclusive with c-api
 # Note: android-jni requires std because jni crate uses std
 android-jni = ["dep:jni", "dep:bytemuck", "std"]

@@ -13,6 +13,7 @@ use smol::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+use target_lexicon::Triple;
 use tracing::info;
 
 use crate::{
@@ -318,29 +319,40 @@ pub async fn package_hydrolysis(
                 &dist_dir,
             )
             .await?;
-            if let Some(libraries) = &shared_libraries {
-                libraries
-                    .stage(&app_path.join("Contents/Frameworks"))
-                    .await?;
-            }
+            synchronize_shared_runtime(
+                &app_path.join("Contents/Frameworks"),
+                shared_libraries.as_ref(),
+                &platform.triple(),
+            )
+            .await?;
             return Ok(Artifact::new(project.bundle_identifier(), app_path));
         }
     }
 
-    if let Some(libraries) = &shared_libraries {
-        let runtime_dir = final_binary_path.parent().ok_or_else(|| {
-            eyre::eyre!(
-                "Hydrolysis binary path has no output directory: {}",
-                final_binary_path.display()
-            )
-        })?;
-        libraries.stage(runtime_dir).await?;
-    }
+    let runtime_dir = final_binary_path.parent().ok_or_else(|| {
+        eyre::eyre!(
+            "Hydrolysis binary path has no output directory: {}",
+            final_binary_path.display()
+        )
+    })?;
+    synchronize_shared_runtime(runtime_dir, shared_libraries.as_ref(), &platform.triple()).await?;
 
     Ok(Artifact::new(
         project.bundle_identifier(),
         final_binary_path,
     ))
+}
+
+async fn synchronize_shared_runtime(
+    destination: &Path,
+    libraries: Option<&RustDynamicLibraries>,
+    triple: &Triple,
+) -> eyre::Result<()> {
+    if let Some(libraries) = libraries {
+        libraries.stage(destination).await
+    } else {
+        RustDynamicLibraries::remove_staged(destination, triple).await
+    }
 }
 
 /// Check if a platform is supported by the hydrolysis backend.
