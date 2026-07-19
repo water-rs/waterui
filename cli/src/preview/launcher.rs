@@ -267,15 +267,7 @@ async fn build_preview_dylib(
             .build_dylib(preview_crate_name.as_str(), false)
             .await
             .wrap_err("Failed to build dylib")?;
-        if link_mode.prefer_dynamic {
-            let build_lib_dir = built_path.parent().ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "Preview dylib path has no output directory: {}",
-                    built_path.display()
-                )
-            })?;
-            dynamic_runtime::retarget_module(&built_path, build_lib_dir).await?;
-        }
+        prepare_preview_module_linkage(&built_path, link_mode).await?;
         write_dylib_signature(&built_path, &dylib_signature).await?;
         info!(
             build_crate_path = %preview_crate_path.display(),
@@ -301,6 +293,22 @@ async fn build_preview_dylib(
         id,
         path: built_path,
     })
+}
+
+async fn prepare_preview_module_linkage(
+    built_path: &Path,
+    link_mode: PreviewLinkMode,
+) -> Result<()> {
+    if !link_mode.prefer_dynamic {
+        return Ok(());
+    }
+    let build_lib_dir = built_path.parent().ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "Preview dylib path has no output directory: {}",
+            built_path.display()
+        )
+    })?;
+    dynamic_runtime::retarget_module(built_path, build_lib_dir).await
 }
 
 async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()> {

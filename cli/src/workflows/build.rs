@@ -55,10 +55,10 @@ pub async fn rust_target_libdir(triple: &Triple) -> eyre::Result<PathBuf> {
 /// Selects how Rust dependencies are linked into a native application.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RustLinkage {
-    /// Link the WaterUI runtime into the application archive.
+    /// Link the `WaterUI` runtime into the application archive.
     #[default]
     Static,
-    /// Link the application and loadable modules against one shared WaterUI runtime.
+    /// Link the application and loadable modules against one shared `WaterUI` runtime.
     SharedRuntime,
 }
 
