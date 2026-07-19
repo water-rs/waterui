@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 
 use askama::Template;
 use color_eyre::eyre::{self, Context, bail};
-use futures::StreamExt as _;
 use smol::fs;
 use target_lexicon::Architecture;
 use tracing::{debug, info};
@@ -58,7 +57,8 @@ pub async fn build_rust_lib(
         .unwrap_or_else(|| platform.triple());
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
-    let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone());
+    let mut build =
+        RustBuild::new(project.ffi_crate_path(), triple.clone()).with_feature("waterui-ffi/c-api");
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -66,6 +66,9 @@ pub async fn build_rust_lib(
         .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1");
+    let (deployment_environment, deployment_target) =
+        apple_deployment_target(project, platform).await?;
+    build = build.with_env(deployment_environment, deployment_target);
     if options.linkage() == RustLinkage::SharedRuntime {
         build = build
             .with_feature("dev")
@@ -97,6 +100,49 @@ pub async fn build_rust_lib(
     }
 
     Ok(lib_dir)
+}
+
+async fn apple_deployment_target(
+    project: &Project,
+    platform: TargetPlatform,
+) -> eyre::Result<(&'static str, String)> {
+    let backend = project
+        .apple_backend()
+        .ok_or_else(|| eyre::eyre!("Apple backend must be configured"))?;
+    let (environment, build_setting) = match platform {
+        TargetPlatform::MacOS => ("MACOSX_DEPLOYMENT_TARGET", "MACOSX_DEPLOYMENT_TARGET"),
+        TargetPlatform::IOS | TargetPlatform::IOSSimulator => {
+            ("IPHONEOS_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET")
+        }
+        other => bail!("Platform {other:?} does not have an Apple deployment target"),
+    };
+    let project_file = project
+        .backend_path::<AppleBackend>()
+        .join(format!("{}.xcodeproj", backend.scheme))
+        .join("project.pbxproj");
+    let contents = fs::read_to_string(&project_file)
+        .await
+        .wrap_err_with(|| format!("Failed to read {}", project_file.display()))?;
+    let target = unique_xcode_build_setting(&contents, build_setting)?;
+    Ok((environment, target))
+}
+
+fn unique_xcode_build_setting(contents: &str, key: &str) -> eyre::Result<String> {
+    let prefix = format!("{key} = ");
+    let values = contents
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(&prefix))
+        .filter_map(|value| value.strip_suffix(';'))
+        .map(|value| value.trim_matches('"').to_string())
+        .collect::<BTreeSet<_>>();
+    match values.len() {
+        1 => Ok(values.into_iter().next().expect("one build setting value")),
+        0 => bail!("Xcode project does not define {key}"),
+        _ => bail!(
+            "Xcode project defines conflicting {key} values: {}",
+            values.into_iter().collect::<Vec<_>>().join(", ")
+        ),
+    }
 }
 
 // ============================================================================
@@ -439,7 +485,7 @@ pub async fn package_apple(
         libraries.stage(&products_dir).await?;
         Some(libraries)
     } else {
-        remove_dynamic_libraries(&products_dir).await?;
+        RustDynamicLibraries::remove_staged(&products_dir, &triple).await?;
         None
     };
 
@@ -519,7 +565,7 @@ pub async fn package_apple(
         fs::create_dir_all(&frameworks_dir).await?;
         libraries.stage(&frameworks_dir).await?;
     } else {
-        remove_dynamic_libraries(&frameworks_dir).await?;
+        RustDynamicLibraries::remove_staged(&frameworks_dir, &triple).await?;
     }
 
     Ok(Artifact::new(project.bundle_identifier(), app_path))
@@ -531,24 +577,6 @@ fn apple_frameworks_dir(app_path: &Path, sdk_name: &str) -> PathBuf {
     } else {
         app_path.join("Frameworks")
     }
-}
-
-async fn remove_dynamic_libraries(directory: &Path) -> eyre::Result<()> {
-    if !directory.is_dir() {
-        return Ok(());
-    }
-    let mut entries = fs::read_dir(directory).await?;
-    while let Some(entry) = entries.next().await {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-        if file_name == dynamic_runtime::FILE_NAME
-            || (file_name.starts_with("libstd-") && file_name.ends_with(".dylib"))
-        {
-            fs::remove_file(entry.path()).await?;
-        }
-    }
-    Ok(())
 }
 
 // ============================================================================
@@ -647,8 +675,26 @@ mod tests {
 
     use super::{
         apple_linker_flags_from_build_output, collect_apple_native_link_inputs_sync,
-        inject_other_ldflags,
+        inject_other_ldflags, unique_xcode_build_setting,
     };
+
+    #[test]
+    fn derives_a_unique_xcode_deployment_target() {
+        let settings = "MACOSX_DEPLOYMENT_TARGET = 15.0;\nMACOSX_DEPLOYMENT_TARGET = 15.0;\n";
+        assert_eq!(
+            unique_xcode_build_setting(settings, "MACOSX_DEPLOYMENT_TARGET")
+                .expect("unique deployment target"),
+            "15.0"
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_xcode_deployment_targets() {
+        let settings = "MACOSX_DEPLOYMENT_TARGET = 14.0;\nMACOSX_DEPLOYMENT_TARGET = 15.0;\n";
+        let error = unique_xcode_build_setting(settings, "MACOSX_DEPLOYMENT_TARGET")
+            .expect_err("conflicting targets must fail");
+        assert!(error.to_string().contains("14.0, 15.0"));
+    }
 
     #[test]
     fn injects_required_apple_frameworks_into_other_ldflags() {

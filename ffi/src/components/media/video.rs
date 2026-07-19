@@ -1228,7 +1228,7 @@ mod tests {
 }
 
 #[cfg(feature = "c-api")]
-ffi_view!(NativeVideoConfig, WuiVideo, video);
+ffi_view!(NativeVideoConfig, WuiVideo, video, any());
 
 #[cfg(feature = "c-api")]
-ffi_view!(NativeVideoPlayerConfig, WuiVideoPlayer, video_player);
+ffi_view!(NativeVideoPlayerConfig, WuiVideoPlayer, video_player, any());

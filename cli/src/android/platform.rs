@@ -740,6 +740,9 @@ async fn copy_android_build_outputs(
         let triple = AndroidPlatform::new(abi).triple();
         let libraries = RustDynamicLibraries::resolve(lib_dir, &triple).await?;
         libraries.stage(&output_dir).await?;
+    } else {
+        RustDynamicLibraries::remove_staged(&output_dir, &AndroidPlatform::new(abi).triple())
+            .await?;
     }
 
     Ok(())

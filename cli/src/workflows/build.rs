@@ -6,6 +6,7 @@ use std::{
 };
 
 use color_eyre::eyre::{self, bail};
+use futures::StreamExt as _;
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
 
@@ -89,6 +90,7 @@ pub fn configure_cargo_linkage(
 pub struct RustDynamicLibraries {
     waterui: PathBuf,
     standard_library: PathBuf,
+    triple: Triple,
 }
 
 impl RustDynamicLibraries {
@@ -108,13 +110,15 @@ impl RustDynamicLibraries {
         }
 
         let target_libdir = rust_target_libdir(triple).await?;
-        let triple = triple.clone();
+        let resolution_triple = triple.clone();
         let standard_library =
-            unblock(move || resolve_rust_standard_library_in(&target_libdir, &triple)).await?;
+            unblock(move || resolve_rust_standard_library_in(&target_libdir, &resolution_triple))
+                .await?;
 
         Ok(Self {
             waterui,
             standard_library,
+            triple: triple.clone(),
         })
     }
 
@@ -141,6 +145,7 @@ impl RustDynamicLibraries {
     /// Returns an error when the destination cannot be created or a library cannot be copied.
     pub async fn stage(&self, destination: &Path) -> eyre::Result<()> {
         smol::fs::create_dir_all(destination).await?;
+        Self::remove_staged(destination, &self.triple).await?;
         for source in self.iter() {
             let file_name = source.file_name().ok_or_else(|| {
                 eyre::eyre!(
@@ -149,6 +154,37 @@ impl RustDynamicLibraries {
                 )
             })?;
             smol::fs::copy(source, destination.join(file_name)).await?;
+        }
+        Ok(())
+    }
+
+    /// Remove shared-runtime libraries left by an earlier development build.
+    ///
+    /// # Errors
+    /// Returns an error when the destination cannot be read or a matching library cannot be removed.
+    pub async fn remove_staged(destination: &Path, triple: &Triple) -> eyre::Result<()> {
+        if !destination.is_dir() {
+            return Ok(());
+        }
+
+        let waterui = dynamic_library_file_name("waterui_dylib", triple);
+        let (standard_library_prefix, extension) =
+            if triple.operating_system == OperatingSystem::Windows {
+                ("std-", "dll")
+            } else {
+                ("libstd-", lib_extension_for_triple(triple))
+            };
+        let mut entries = smol::fs::read_dir(destination).await?;
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if file_name == waterui
+                || (file_name.starts_with(standard_library_prefix)
+                    && entry.path().extension().and_then(|value| value.to_str()) == Some(extension))
+            {
+                smol::fs::remove_file(entry.path()).await?;
+            }
         }
         Ok(())
     }
@@ -772,8 +808,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BuildOptions, RustLinkage, dynamic_library_file_name, lib_extension_for_triple,
-        resolve_rust_standard_library_in,
+        BuildOptions, RustDynamicLibraries, RustLinkage, dynamic_library_file_name,
+        lib_extension_for_triple, resolve_rust_standard_library_in,
     };
 
     fn triple(value: &str) -> Triple {
@@ -847,5 +883,31 @@ mod tests {
             dynamic_library_file_name("waterui_dylib", &triple("x86_64-pc-windows-msvc")),
             "waterui_dylib.dll"
         );
+    }
+
+    #[test]
+    fn static_packaging_removes_only_staged_android_runtime_libraries() {
+        smol::block_on(async {
+            let directory = tempdir().expect("temporary Android runtime directory");
+            let android_triple = triple("aarch64-linux-android");
+            for file_name in [
+                "libwaterui_dylib.so",
+                "libstd-old.so",
+                "libwaterui_app.so",
+                "libc++_shared.so",
+            ] {
+                std::fs::write(directory.path().join(file_name), [])
+                    .expect("write staged runtime test file");
+            }
+
+            RustDynamicLibraries::remove_staged(directory.path(), &android_triple)
+                .await
+                .expect("remove shared Rust runtime libraries");
+
+            assert!(!directory.path().join("libwaterui_dylib.so").exists());
+            assert!(!directory.path().join("libstd-old.so").exists());
+            assert!(directory.path().join("libwaterui_app.so").exists());
+            assert!(directory.path().join("libc++_shared.so").exists());
+        });
     }
 }

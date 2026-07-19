@@ -150,7 +150,7 @@ struct ViewEffectRendererWrapper {
 }
 
 // Generate waterui_view_effect_id() and waterui_force_as_view_effect()
-ffi_view!(ViewEffectErased, WuiViewEffect, view_effect);
+ffi_view!(ViewEffectErased, WuiViewEffect, view_effect, all(), any());
 
 /// Opaque state held by the native backend after initialization.
 pub struct WuiViewEffectState {
