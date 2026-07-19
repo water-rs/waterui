@@ -2658,8 +2658,19 @@ pub mod preview_ffi {
         );
 
         let preview_dependency = if let Some(waterui_path) = &ctx.waterui_path {
+            let waterui_root = Path::new(&compute_native_backend_dependency_path(
+                ctx,
+                waterui_path,
+                NativeBackendDependencyPathKind::WateruiRoot,
+            ))
+            .to_path_buf();
+            let waterui_root = if waterui_root.is_absolute() {
+                waterui_root
+            } else {
+                base_dir.join(waterui_root)
+            };
             let preview_path =
-                super::preview::resolve_workspace_member_dir(waterui_path, "waterui-preview")
+                super::preview::resolve_workspace_member_dir(&waterui_root, "waterui-preview")
                     .await?;
             DependencyDetail {
                 path: Some(super::normalize_path_for_config(&preview_path)),
