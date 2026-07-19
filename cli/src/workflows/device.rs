@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     fmt::Debug,
     path::{Path, PathBuf},
+    pin::Pin,
 };
 
 use color_eyre::eyre;
@@ -252,10 +253,12 @@ impl Running {
 
     /// Detach the running instance, preventing the app from being killed on drop.
     ///
-    /// This is useful for long-running apps like the preview daemon that should
+    /// This is useful for long-running apps like the preview support app that should
     /// stay running after the CLI command completes.
-    pub fn detach(&mut self) {
-        self.on_drop.clear();
+    pub fn detach(self: Pin<&mut Self>) {
+        // SAFETY: `on_drop` is not structurally pinned and clearing the vector does not move the
+        // pinned `receiver` field.
+        unsafe { self.get_unchecked_mut() }.on_drop.clear();
     }
 }
 

@@ -93,6 +93,11 @@ pub mod registry {
     impl PreviewAppInstance {
         #[must_use]
         /// Create a registry entry for a support app instance.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the system clock predates the Unix epoch or its millisecond timestamp does
+        /// not fit into `u64`.
         pub fn new(
             pid: u32,
             host: IpAddr,
@@ -106,8 +111,10 @@ pub mod registry {
                 waterui_core_fingerprint: waterui_core_fingerprint.into(),
                 registered_at_unix_ms: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
-                    .unwrap_or_default(),
+                    .expect("system clock must not be earlier than the Unix epoch")
+                    .as_millis()
+                    .try_into()
+                    .expect("preview registration timestamp must fit into u64"),
             }
         }
     }
@@ -161,13 +168,22 @@ pub mod transport {
     /// Hard limit for a single frame to prevent OOM from malformed inputs.
     ///
     /// Override via `WATERUI_PREVIEW_MAX_FRAME_BYTES`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `WATERUI_PREVIEW_MAX_FRAME_BYTES` is not a valid UTF-8 `usize` value.
     #[must_use]
     pub fn max_frame_bytes() -> usize {
         const DEFAULT: usize = 128 * 1024 * 1024;
-        std::env::var("WATERUI_PREVIEW_MAX_FRAME_BYTES")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(DEFAULT)
+        match std::env::var("WATERUI_PREVIEW_MAX_FRAME_BYTES") {
+            Ok(value) => value.parse::<usize>().unwrap_or_else(|error| {
+                panic!("invalid WATERUI_PREVIEW_MAX_FRAME_BYTES value `{value}`: {error}")
+            }),
+            Err(std::env::VarError::NotPresent) => DEFAULT,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                panic!("WATERUI_PREVIEW_MAX_FRAME_BYTES must be valid UTF-8")
+            }
+        }
     }
 
     /// Read a single length-prefixed binary frame.
@@ -232,32 +248,6 @@ pub mod transport {
         writer.write_all(&data).await?;
         writer.flush().await?;
         Ok(())
-    }
-
-    /// Backward-compatible alias for older call sites.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error produced by [`read_frame`].
-    pub async fn read_json_frame<R, T>(reader: &mut R) -> io::Result<T>
-    where
-        R: AsyncRead + Unpin + Send,
-        T: DeserializeOwned,
-    {
-        read_frame(reader).await
-    }
-
-    /// Backward-compatible alias for older call sites.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error produced by [`write_frame`].
-    pub async fn write_json_frame<W, T>(writer: &mut W, value: &T) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin + Send,
-        T: Serialize + Sync,
-    {
-        write_frame(writer, value).await
     }
 }
 
@@ -390,14 +380,6 @@ impl DylibId {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-
-    #[must_use]
-    /// Compute a dylib id from the dylib payload bytes.
-    pub fn from_payload(bytes: &[u8]) -> Self {
-        use sha2::Digest as _;
-        let hash: [u8; 32] = sha2::Sha256::digest(bytes).into();
-        Self(hash)
-    }
 }
 
 impl fmt::Debug for DylibId {
@@ -466,7 +448,7 @@ impl<'de> Deserialize<'de> for DylibId {
 pub enum DylibSource {
     /// Inline dylib bytes (used when the app doesn't have `id` yet).
     ///
-    /// `id` must equal `sha256(bytes)`.
+    /// The CLI must use a fresh `id` whenever the payload changes.
     Bytes {
         /// Dylib payload identifier.
         id: DylibId,
@@ -600,13 +582,6 @@ pub enum PreviewResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-    enum LegacyDylibSource {
-        Bytes { id: DylibId, bytes: Vec<u8> },
-        Cached { id: DylibId },
-    }
 
     #[test]
     fn dylib_id_roundtrip_hex() {
@@ -614,60 +589,5 @@ mod tests {
         let json = serde_json::to_string(&id).unwrap();
         let de: DylibId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, de);
-    }
-
-    #[test]
-    fn cached_variant_stays_backward_compatible_for_bincode() {
-        let id = DylibId::from_bytes([0xCD; 32]);
-        let source = DylibSource::Cached { id };
-        let bytes = bincode::serde::encode_to_vec(&source, bincode::config::standard())
-            .expect("encode cached source");
-        let (decoded, consumed): (LegacyDylibSource, usize) =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .expect("decode cached source with legacy layout");
-        assert_eq!(consumed, bytes.len());
-        assert_eq!(decoded, LegacyDylibSource::Cached { id });
-    }
-
-    #[test]
-    fn bytes_variant_stays_backward_compatible_for_bincode() {
-        let id = DylibId::from_bytes([0xEF; 32]);
-        let source = DylibSource::Bytes {
-            id,
-            bytes: vec![1, 2, 3, 4],
-        };
-        let bytes = bincode::serde::encode_to_vec(&source, bincode::config::standard())
-            .expect("encode bytes source");
-        let (decoded, consumed): (LegacyDylibSource, usize) =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .expect("decode bytes source with legacy layout");
-        assert_eq!(consumed, bytes.len());
-        assert_eq!(
-            decoded,
-            LegacyDylibSource::Bytes {
-                id,
-                bytes: vec![1, 2, 3, 4],
-            }
-        );
-    }
-
-    #[test]
-    fn local_path_variant_uses_new_tag_after_legacy_variants() {
-        let id = DylibId::from_bytes([0x12; 32]);
-        let source = DylibSource::LocalPath {
-            id,
-            path: PathBuf::from("/tmp/example.dylib"),
-        };
-        let bytes = bincode::serde::encode_to_vec(&source, bincode::config::standard())
-            .expect("encode local path source");
-        let err = bincode::serde::decode_from_slice::<LegacyDylibSource, _>(
-            &bytes,
-            bincode::config::standard(),
-        )
-        .expect_err("legacy layout must reject new local-path tag");
-        assert!(
-            err.to_string()
-                .contains("expected variant index 0 <= i < 2")
-        );
     }
 }

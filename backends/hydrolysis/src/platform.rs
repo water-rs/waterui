@@ -658,22 +658,24 @@ impl SurfaceProvider for OffscreenSurface {
     }
 
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis-offscreen-frame"),
-            size: wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: self.format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
+        let texture = self.last_presented.take().unwrap_or_else(|| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("hydrolysis-offscreen-frame"),
+                size: wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Ok(SurfaceFrame::Offscreen { texture, view })
@@ -704,8 +706,13 @@ impl SurfaceProvider for OffscreenSurface {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        self.width = width.max(1);
-        self.height = height.max(1);
+        let width = width.max(1);
+        let height = height.max(1);
+        if (width, height) != (self.width, self.height) {
+            self.width = width;
+            self.height = height;
+            self.last_presented = None;
+        }
     }
 }
 

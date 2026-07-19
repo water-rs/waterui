@@ -1,16 +1,15 @@
-#![allow(clippy::cast_possible_truncation, reason = "intentional lossy numeric cast in rendering/layout code")]
 //! Preview view component for the preview support app.
 //!
 //! This view starts a TCP server (localhost) and serializes all render work through a single
 //! worker to satisfy platform constraints (e.g. macOS main-thread renderer requirements),
 //! while still allowing multiple CLI clients to connect concurrently.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
@@ -20,7 +19,7 @@ use futures_lite::io::BufReader;
 use waterui_core::view_renderer::{RenderSize, ViewRenderer};
 use waterui_core::{Environment, Metadata, Retain, View};
 
-use crate::library::PreviewLibrary;
+use crate::library::{LoadError, PreviewLibrary};
 use crate::renderer::RenderResultExt as _;
 use waterui_preview_protocol::registry::{
     PreviewAppInstance, preview_instance_registry_dir, preview_instance_registry_path,
@@ -109,20 +108,21 @@ async fn run_tcp_server(env: Environment, waterui_core_fingerprint: String) -> i
     let registration_path =
         register_preview_instance(listener.local_addr()?, &waterui_core_fingerprint).await?;
     tracing::info!(
-        "Preview daemon listening on {}:{}",
+        "Preview support app listening on {}:{}",
         config.host,
         listener.local_addr()?.port()
     );
 
     let listener = Async::new(listener)?;
 
-    let (worker_tx, worker_rx) = async_channel::unbounded::<WorkerMessage>();
-    let activity = Arc::new(PreviewActivity::new());
+    let (worker_tx, worker_rx) = async_channel::bounded::<WorkerMessage>(1);
+    let (activity, activity_events) = PreviewActivity::new();
 
     let worker_fingerprint = waterui_core_fingerprint.clone();
     let _worker_task = spawn_local(render_worker(env, worker_rx, worker_fingerprint));
     spawn_local(idle_shutdown_task(
         activity.clone(),
+        activity_events,
         registration_path.clone(),
     ))
     .detach();
@@ -154,51 +154,70 @@ async fn run_tcp_server(env: Environment, waterui_core_fingerprint: String) -> i
 
 #[derive(Debug)]
 struct PreviewActivity {
-    active_connections: AtomicUsize,
-    last_activity_epoch_seconds: AtomicUsize,
+    active_connections: Cell<usize>,
+    last_activity: Cell<Instant>,
+    events: Sender<()>,
 }
 
 impl PreviewActivity {
-    fn new() -> Self {
-        Self {
-            active_connections: AtomicUsize::new(0),
-            last_activity_epoch_seconds: AtomicUsize::new(current_epoch_seconds()),
-        }
+    fn new() -> (Rc<Self>, Receiver<()>) {
+        let (events, event_receiver) = async_channel::bounded(1);
+        (
+            Rc::new(Self {
+                active_connections: Cell::new(0),
+                last_activity: Cell::new(Instant::now()),
+                events,
+            }),
+            event_receiver,
+        )
     }
 
     fn begin_connection(&self) {
         self.touch();
-        self.active_connections.fetch_add(1, Ordering::Relaxed);
+        let active_connections = self
+            .active_connections
+            .get()
+            .checked_add(1)
+            .expect("preview active connection count overflowed");
+        self.active_connections.set(active_connections);
     }
 
     fn end_connection(&self) {
         self.touch();
-        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        let active_connections = self
+            .active_connections
+            .get()
+            .checked_sub(1)
+            .expect("preview active connection count underflowed");
+        self.active_connections.set(active_connections);
     }
 
     fn touch(&self) {
-        self.last_activity_epoch_seconds
-            .store(current_epoch_seconds(), Ordering::Relaxed);
+        self.last_activity.set(Instant::now());
+        match self.events.try_send(()) {
+            Ok(()) | Err(async_channel::TrySendError::Full(())) => {}
+            Err(async_channel::TrySendError::Closed(())) => {
+                panic!("preview activity task exited while the TCP server is still running")
+            }
+        }
     }
 
-    fn active_connections(&self) -> usize {
-        self.active_connections.load(Ordering::Relaxed)
+    const fn active_connections(&self) -> usize {
+        self.active_connections.get()
     }
 
     fn idle_for(&self) -> Duration {
-        let now = current_epoch_seconds();
-        let last = self.last_activity_epoch_seconds.load(Ordering::Relaxed);
-        Duration::from_secs(now.saturating_sub(last) as u64)
+        self.last_activity.get().elapsed()
     }
 }
 
 #[derive(Debug)]
 struct ActiveConnectionGuard {
-    activity: Arc<PreviewActivity>,
+    activity: Rc<PreviewActivity>,
 }
 
 impl ActiveConnectionGuard {
-    fn new(activity: Arc<PreviewActivity>) -> Self {
+    fn new(activity: Rc<PreviewActivity>) -> Self {
         activity.begin_connection();
         Self { activity }
     }
@@ -210,50 +229,72 @@ impl Drop for ActiveConnectionGuard {
     }
 }
 
-fn current_epoch_seconds() -> usize {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as usize)
-        .unwrap_or_default()
-}
-
 fn preview_idle_shutdown_after() -> Duration {
     const DEFAULT_SECONDS: u64 = 900;
-    std::env::var("WATERUI_PREVIEW_IDLE_SHUTDOWN_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map_or_else(|| Duration::from_secs(DEFAULT_SECONDS), Duration::from_secs)
+    let seconds = match std::env::var("WATERUI_PREVIEW_IDLE_SHUTDOWN_SECS") {
+        Ok(value) => value.parse::<u64>().unwrap_or_else(|error| {
+            panic!("invalid WATERUI_PREVIEW_IDLE_SHUTDOWN_SECS value `{value}`: {error}")
+        }),
+        Err(std::env::VarError::NotPresent) => DEFAULT_SECONDS,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("WATERUI_PREVIEW_IDLE_SHUTDOWN_SECS must be valid UTF-8")
+        }
+    };
+    Duration::from_secs(seconds)
 }
 
-async fn idle_shutdown_task(activity: Arc<PreviewActivity>, registration_path: Arc<PathBuf>) {
+#[expect(
+    clippy::future_not_send,
+    reason = "preview lifecycle state is confined to the support app's main-thread executor"
+)]
+async fn idle_shutdown_task(
+    activity: Rc<PreviewActivity>,
+    activity_events: Receiver<()>,
+    registration_path: Rc<PathBuf>,
+) {
     let idle_shutdown_after = preview_idle_shutdown_after();
-    let poll_interval = Duration::from_secs(1);
 
     loop {
-        async_io::Timer::after(poll_interval).await;
-
         if activity.active_connections() != 0 {
+            activity_events
+                .recv()
+                .await
+                .expect("preview activity event channel must remain open");
             continue;
         }
 
         let idle_for = activity.idle_for();
-        if idle_for < idle_shutdown_after {
-            continue;
+        if idle_for >= idle_shutdown_after {
+            tracing::info!(
+                idle_for_ms = idle_for.as_millis(),
+                idle_shutdown_after_ms = idle_shutdown_after.as_millis(),
+                "Preview support app is idle and will exit"
+            );
+            exit_process(registration_path.as_ref());
         }
 
-        tracing::info!(
-            idle_for_ms = idle_for.as_millis(),
-            idle_shutdown_after_ms = idle_shutdown_after.as_millis(),
-            "Preview support app is idle and will exit"
-        );
-        exit_process(registration_path.as_ref());
+        let remaining = idle_shutdown_after
+            .checked_sub(idle_for)
+            .expect("preview idle duration was checked above");
+        futures_lite::future::race(
+            async {
+                activity_events
+                    .recv()
+                    .await
+                    .expect("preview activity event channel must remain open");
+            },
+            async {
+                async_io::Timer::after(remaining).await;
+            },
+        )
+        .await;
     }
 }
 
 async fn register_preview_instance(
     addr: std::net::SocketAddr,
     waterui_core_fingerprint: &str,
-) -> io::Result<Arc<PathBuf>> {
+) -> io::Result<Rc<PathBuf>> {
     let instance = PreviewAppInstance::new(
         std::process::id(),
         addr.ip(),
@@ -272,11 +313,18 @@ async fn register_preview_instance(
     async_fs::write(&temp, bytes).await?;
     async_fs::rename(&temp, &path).await?;
     tracing::info!(path = %path.display(), "Preview registry wrote instance file");
-    Ok(Arc::new(path))
+    Ok(Rc::new(path))
 }
 
 fn cleanup_registration_file(path: &std::path::Path) {
-    let _ = std::fs::remove_file(path);
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => panic!(
+            "failed to remove preview registration file {}: {error}",
+            path.display()
+        ),
+    }
 }
 
 fn exit_process(registration_path: &std::path::Path) -> ! {
@@ -284,10 +332,6 @@ fn exit_process(registration_path: &std::path::Path) -> ! {
     std::process::exit(0)
 }
 
-#[allow(
-    clippy::needless_continue,
-    reason = "the explicit `continue` documents retrying the next port on address-in-use"
-)]
 fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpListener> {
     for port in config.ports() {
         let addr = std::net::SocketAddr::new(config.host, port);
@@ -296,7 +340,7 @@ fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpLis
                 listener.set_nonblocking(true)?;
                 return Ok(listener);
             }
-            Err(e) if e.kind() == io::ErrorKind::AddrInUse => continue,
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => {}
             Err(e) => {
                 return Err(io::Error::new(
                     e.kind(),
@@ -312,11 +356,15 @@ fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpLis
     ))
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "preview connections share lifecycle state on the support app's main-thread executor"
+)]
 async fn handle_connection(
     stream: Async<std::net::TcpStream>,
     worker_tx: Sender<WorkerMessage>,
-    activity: Arc<PreviewActivity>,
-    registration_path: Arc<PathBuf>,
+    activity: Rc<PreviewActivity>,
+    registration_path: Rc<PathBuf>,
     waterui_core_fingerprint: &str,
 ) -> io::Result<()> {
     let _connection_guard = ActiveConnectionGuard::new(activity.clone());
@@ -437,9 +485,14 @@ impl DylibCache {
         }
 
         let path = preview_dylib_cache_path(id);
-        let (library, timings) = unsafe { PreviewLibrary::load_from_path(&path) }
-            .await
-            .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+        let (library, timings) = match unsafe { PreviewLibrary::load_from_path(&path) }.await {
+            Ok(loaded) => loaded,
+            Err(LoadError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                self.disk_present.remove(&id);
+                return Err(PreviewError::UnknownDylibId(id));
+            }
+            Err(error) => return Err(PreviewError::DylibLoad(error.to_string())),
+        };
         self.insert_loaded(id, library);
         Ok(Some(timings))
     }
@@ -481,11 +534,16 @@ async fn load_disk_dylibs() -> io::Result<HashSet<DylibId>> {
 
 fn dylib_cache_capacity() -> NonZeroUsize {
     const DEFAULT: usize = 8;
-    std::env::var("WATERUI_PREVIEW_DYLIB_CACHE_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .and_then(NonZeroUsize::new)
-        .unwrap_or_else(|| NonZeroUsize::new(DEFAULT).expect("DEFAULT is non-zero"))
+    let capacity = match std::env::var("WATERUI_PREVIEW_DYLIB_CACHE_SIZE") {
+        Ok(value) => value.parse::<usize>().unwrap_or_else(|error| {
+            panic!("invalid WATERUI_PREVIEW_DYLIB_CACHE_SIZE value `{value}`: {error}")
+        }),
+        Err(std::env::VarError::NotPresent) => DEFAULT,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("WATERUI_PREVIEW_DYLIB_CACHE_SIZE must be valid UTF-8")
+        }
+    };
+    NonZeroUsize::new(capacity).expect("WATERUI_PREVIEW_DYLIB_CACHE_SIZE must be greater than zero")
 }
 
 #[expect(

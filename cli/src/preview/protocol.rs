@@ -1,57 +1,11 @@
-//! Protocol definitions for preview daemon communication.
+//! Preview command protocol types.
 //!
 //! This module defines the messages exchanged between:
-//! - CLI → Daemon (preview requests via Unix socket)
-//! - Daemon → Preview App (render commands via TCP)
-//! - Preview App → Daemon (PNG data via TCP)
+//! - CLI → Preview support app (render commands via TCP)
+//! - Preview support app → CLI (render results via TCP)
 
-use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
-
-// ============================================================================
-// CLI → Daemon protocol (Unix socket)
-// ============================================================================
-
-/// Request from CLI to daemon.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DaemonRequest {
-    /// Request to preview a specific view function.
-    Preview(PreviewRequest),
-    /// Shutdown the daemon gracefully.
-    Shutdown,
-    /// Ping to check if daemon is alive.
-    Ping,
-}
-
-/// A preview request containing all info needed to render a view.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreviewRequest {
-    /// Absolute path to the project directory.
-    pub project_path: PathBuf,
-    /// Function path like `dashboard::admin::card`.
-    pub function_path: String,
-    /// Target platform.
-    pub platform: PreviewPlatform,
-    /// Frame size (width, height) in points.
-    pub frame: (f32, f32),
-}
-
-/// Response from daemon to CLI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DaemonResponse {
-    /// Preview completed successfully with PNG data.
-    Png(Vec<u8>),
-    /// Preview failed with error message.
-    Error(String),
-    /// Build progress update.
-    Progress(String),
-    /// Pong response to ping.
-    Pong,
-}
-
-/// Target platform for preview.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Target platform for a native preview support app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PreviewPlatform {
     /// Physical iOS device.
     Ios,
@@ -77,34 +31,37 @@ impl std::str::FromStr for PreviewPlatform {
     }
 }
 
-// ============================================================================
-// Daemon → Preview App protocol (TCP, ports 2106+)
-// Re-exported from `waterui-preview-protocol` for serde compat across CLI/app
-// ============================================================================
-
 pub use waterui_preview_protocol::{
-    DylibId, DylibSource, PreviewError as AppError, PreviewOutput as AppOutput,
-    PreviewRequest as AppRequest, PreviewResponse as AppResponse, PreviewRuntimePlatform, Size,
+    DylibId, DylibSource, PREVIEW_PROTOCOL_COMMIT, PreviewError as AppError,
+    PreviewOutput as AppOutput, PreviewProtocolInfo, PreviewRequest as AppRequest,
+    PreviewResponse as AppResponse, PreviewRuntimePlatform, Size,
 };
 
 pub use waterui_preview_protocol::tcp::PreviewTcpConfig;
-
-// ============================================================================
-// Utility functions
-// ============================================================================
 
 /// Convert a function path to preview export symbol.
 ///
 /// Example:
 /// - `sidebar` with crate `my-crate` -> `waterui_preview_my_crate_sidebar`
 /// - `dashboard::admin::card_preview` with crate `my-crate`
-///   -> `waterui_preview_my_crate_dashboard_admin_card_preview`
+///   -> `waterui_preview_my_crate_card_preview`
+///
+/// # Panics
+///
+/// Panics if `function_path` does not end with a function name.
 #[must_use]
 pub fn function_path_to_symbol(crate_name: &str, function_path: &str) -> String {
     // Replace dashes with underscores (Cargo uses dashes, Rust uses underscores)
     let crate_name = crate_name.replace('-', "_");
-    let full_path = function_path.replace("::", "_");
-    format!("waterui_preview_{crate_name}_{full_path}")
+    let function_name = function_path
+        .rsplit("::")
+        .next()
+        .expect("splitting a string always yields one segment");
+    assert!(
+        !function_name.is_empty(),
+        "preview function path must end with a function name"
+    );
+    format!("waterui_preview_{crate_name}_{function_name}")
 }
 
 #[cfg(test)]
@@ -120,7 +77,7 @@ mod tests {
 
         assert_eq!(
             function_path_to_symbol("my-crate", "dashboard::admin::card_preview"),
-            "waterui_preview_my_crate_dashboard_admin_card_preview"
+            "waterui_preview_my_crate_card_preview"
         );
     }
 }

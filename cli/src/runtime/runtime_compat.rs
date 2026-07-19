@@ -56,7 +56,7 @@ pub(crate) fn runtime_profile_tag() -> String {
 #[must_use]
 #[expect(
     clippy::redundant_pub_crate,
-    reason = "preview watcher and runtime fingerprinting share this crate-private rule"
+    reason = "preview input and runtime fingerprinting share this crate-private rule"
 )]
 pub(crate) fn should_skip_scan_dir(name: &OsStr) -> bool {
     matches!(
@@ -91,7 +91,7 @@ pub(crate) const fn runtime_fingerprint_root_dirs() -> &'static [&'static str] {
 #[must_use]
 #[expect(
     clippy::redundant_pub_crate,
-    reason = "preview watcher and runtime fingerprinting share this crate-private rule"
+    reason = "preview input and runtime fingerprinting share this crate-private rule"
 )]
 pub(crate) fn is_preview_build_input_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {

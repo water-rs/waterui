@@ -2,16 +2,16 @@
 //!
 //! This module provides infrastructure for the `water preview` command:
 //!
-//! - [`app_client`]: TCP client for communicating with preview app (ports 2106+)
-//! - [`protocol`]: Message definitions for preview app communication
-//! - [`watcher`]: File change detection for build caching
-//! - [`launcher`]: Preview app lifecycle management
+//! - [`app_client`]: TCP client for communicating with the preview support app
+//! - [`protocol`]: Message definitions for preview support app communication
+//! - [`inputs`]: Content fingerprinting for preview build caching
+//! - [`launcher`]: Preview support app lifecycle management
 
 mod app_client;
 mod hydrolysis;
+mod inputs;
 mod launcher;
 pub mod protocol;
-pub mod watcher;
 
 pub use app_client::PreviewAppClient;
 pub use hydrolysis::{

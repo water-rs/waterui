@@ -31,7 +31,7 @@ pub struct PreviewRunConfig {
 /// What a preview run produces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreviewRunMode {
-    /// A single PNG capture of the first frame.
+    /// A single PNG capture after the view tree has mounted.
     Image {
         /// Destination PNG path.
         output: PathBuf,

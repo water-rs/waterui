@@ -68,6 +68,7 @@ heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
 dirs = "6"                    # Platform-specific directories (cache, config, etc.)
 hex = "0.4"                   # Hex encoding for hashes
 sha2 = "0.10"                 # SHA256 hashing
+sysinfo.workspace = true      # Preview support-process discovery
 zip = "7.2"                   # ZIP archive extraction
 roxmltree = "0.20"            # Android SDK repository XML parsing
 fs_extra = "1.3"
