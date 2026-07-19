@@ -24,7 +24,7 @@ use super::protocol::PreviewRuntimePlatform;
 use super::protocol::PreviewTcpConfig;
 
 use crate::apple::dynamic_runtime;
-use crate::build::{RustBuild, RustLinkage, rust_target_libdir};
+use crate::build::RustBuild;
 use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
@@ -57,25 +57,25 @@ impl PreviewLinkMode {
         crate_type_override: None,
         prefer_dynamic: true,
     };
-    const PORTABLE_STATIC: Self = Self {
+    const PORTABLE_DYNAMIC: Self = Self {
         crate_type_override: Some("cdylib"),
-        prefer_dynamic: false,
+        prefer_dynamic: true,
     };
 
     const fn for_platform(platform: PreviewPlatform) -> Self {
         match platform {
             PreviewPlatform::Macos => Self::MACOS_DYNAMIC,
             PreviewPlatform::Ios | PreviewPlatform::IosSimulator | PreviewPlatform::Android => {
-                Self::PORTABLE_STATIC
+                Self::PORTABLE_DYNAMIC
             }
         }
     }
 
     const fn signature_tag(self) -> &'static str {
-        if self.prefer_dynamic {
-            "preview-dylib+shared-waterui-dylib+prefer-dynamic"
+        if self.crate_type_override.is_some() {
+            "preview-cdylib+shared-waterui-dylib+prefer-dynamic"
         } else {
-            "preview-cdylib+static-waterui"
+            "preview-dylib+shared-waterui-dylib+prefer-dynamic"
         }
     }
 
@@ -84,11 +84,7 @@ impl PreviewLinkMode {
             Some(crate_type) => build.with_crate_type_override(crate_type),
             None => build,
         };
-        if self.prefer_dynamic {
-            build.with_feature("shared-runtime-abi")
-        } else {
-            build
-        }
+        build.with_feature("shared-runtime-abi")
     }
 }
 
@@ -255,19 +251,14 @@ async fn build_preview_dylib(
         }
         rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
         if link_mode.prefer_dynamic {
-            rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
-            let rust_target_libdir = rust_target_libdir(&target.triple()).await?;
-            rust_build = rust_build.with_rustc_flag(format!(
-                "-Clink-arg=-Wl,-rpath,{}",
-                rust_target_libdir.display()
-            ));
+            rust_build = rust_build.with_preferred_dynamic_linking();
         }
         let build_start = Instant::now();
         let built_path = rust_build
             .build_dylib(preview_crate_name.as_str(), false)
             .await
             .wrap_err("Failed to build dylib")?;
-        prepare_preview_module_linkage(&built_path, link_mode).await?;
+        prepare_preview_module_linkage(&built_path, link_mode, platform).await?;
         write_dylib_signature(&built_path, &dylib_signature).await?;
         info!(
             build_crate_path = %preview_crate_path.display(),
@@ -298,8 +289,12 @@ async fn build_preview_dylib(
 async fn prepare_preview_module_linkage(
     built_path: &Path,
     link_mode: PreviewLinkMode,
+    platform: PreviewPlatform,
 ) -> Result<()> {
     if !link_mode.prefer_dynamic {
+        return Ok(());
+    }
+    if platform == PreviewPlatform::Android {
         return Ok(());
     }
     let build_lib_dir = built_path.parent().ok_or_else(|| {
@@ -590,11 +585,10 @@ async fn launch_preview_on_macos(project: &Project) -> Result<Running> {
     device.launch().await?;
     info!("Building and running preview app on macOS...");
     project
-        .run_with_linkage(
+        .run_with_options(
             backend,
             TargetPlatform::MacOS,
             device,
-            RustLinkage::SharedRuntime,
             preview_run_options(),
         )
         .await
@@ -1422,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_preview_platforms_use_self_contained_cdylibs() {
+    fn remote_preview_platforms_use_shared_runtime_cdylibs() {
         for platform in [
             PreviewPlatform::Ios,
             PreviewPlatform::IosSimulator,
@@ -1430,10 +1424,13 @@ mod tests {
         ] {
             let link_mode = PreviewLinkMode::for_platform(platform);
 
-            assert_eq!(link_mode, PreviewLinkMode::PORTABLE_STATIC);
+            assert_eq!(link_mode, PreviewLinkMode::PORTABLE_DYNAMIC);
             assert_eq!(link_mode.crate_type_override, Some("cdylib"));
-            assert!(!link_mode.prefer_dynamic);
-            assert_eq!(link_mode.signature_tag(), "preview-cdylib+static-waterui");
+            assert!(link_mode.prefer_dynamic);
+            assert_eq!(
+                link_mode.signature_tag(),
+                "preview-cdylib+shared-waterui-dylib+prefer-dynamic"
+            );
         }
     }
 }

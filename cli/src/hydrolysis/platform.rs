@@ -17,7 +17,7 @@ use tracing::info;
 
 use crate::{
     assets,
-    build::BuildOptions,
+    build::{BuildOptions, RustDynamicLibraries, configure_cargo_linkage},
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
     macos_bundle::{MacOsUsageDescription, package_binary_as_app},
@@ -110,6 +110,17 @@ pub async fn build_hydrolysis_with_envs_and_args(
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
     cargo.arg("--target-dir").arg(&backend_target_dir);
     cargo.args(extra_args);
+    configure_cargo_linkage(
+        cargo,
+        options.linkage(),
+        &format!("{}/dev", project.crate_name()),
+        match platform {
+            TargetPlatform::MacOS => Some("@executable_path/../Frameworks"),
+            TargetPlatform::Linux => Some("$ORIGIN"),
+            TargetPlatform::Windows => None,
+            _ => unreachable!("native Hydrolysis platform validated above"),
+        },
+    );
     if let Some(sccache_path) = options.sccache_path() {
         cargo.env("RUSTC_WRAPPER", sccache_path);
     }
@@ -256,6 +267,17 @@ pub async fn package_hydrolysis(
     copy_assets_and_fonts(project, &backend_path).await?;
 
     let final_binary_path = built_hydrolysis_binary_path(project, profile).await?;
+    let shared_libraries = if options.uses_shared_rust_runtime() {
+        let lib_dir = final_binary_path.parent().ok_or_else(|| {
+            eyre::eyre!(
+                "Hydrolysis binary path has no output directory: {}",
+                final_binary_path.display()
+            )
+        })?;
+        Some(RustDynamicLibraries::resolve(lib_dir, &platform.triple()).await?)
+    } else {
+        None
+    };
 
     #[cfg(target_os = "macos")]
     {
@@ -296,8 +318,23 @@ pub async fn package_hydrolysis(
                 &dist_dir,
             )
             .await?;
+            if let Some(libraries) = &shared_libraries {
+                libraries
+                    .stage(&app_path.join("Contents/Frameworks"))
+                    .await?;
+            }
             return Ok(Artifact::new(project.bundle_identifier(), app_path));
         }
+    }
+
+    if let Some(libraries) = &shared_libraries {
+        let runtime_dir = final_binary_path.parent().ok_or_else(|| {
+            eyre::eyre!(
+                "Hydrolysis binary path has no output directory: {}",
+                final_binary_path.display()
+            )
+        })?;
+        libraries.stage(runtime_dir).await?;
     }
 
     Ok(Artifact::new(

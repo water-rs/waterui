@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use askama::Template;
 use color_eyre::eyre::{self, Context, bail};
+use futures::StreamExt as _;
 use smol::fs;
 use target_lexicon::Architecture;
 use tracing::{debug, info};
@@ -19,7 +20,7 @@ use crate::{
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
     assets::{self, ResolvedFont},
-    build::{BuildOptions, RustBuild, RustLinkage, rust_target_libdir},
+    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
@@ -66,15 +67,10 @@ pub async fn build_rust_lib(
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1");
     if options.linkage() == RustLinkage::SharedRuntime {
-        if platform != TargetPlatform::MacOS {
-            bail!("Shared WaterUI runtime linking is only supported for macOS preview hosts");
-        }
-        let target_libdir = rust_target_libdir(&triple).await?;
         build = build
             .with_feature("dev")
             .with_rustc_flag("-Cdebuginfo=0")
-            .with_rustc_flag("-Cprefer-dynamic")
-            .with_rustc_flag(format!("-Clink-arg=-Wl,-rpath,{}", target_libdir.display()));
+            .with_preferred_dynamic_linking();
     }
     let lib_dir = build.build_lib(options.is_release()).await?;
 
@@ -93,6 +89,11 @@ pub async fn build_rust_lib(
         fs::create_dir_all(output_dir).await?;
         let dest_lib = output_dir.join("libwaterui_app.a");
         copy_file(&source_lib, &dest_lib).await?;
+        if options.linkage() == RustLinkage::SharedRuntime {
+            let libraries = RustDynamicLibraries::resolve(&lib_dir, &triple).await?;
+            dynamic_runtime::prepare_host_runtime(libraries.waterui()).await?;
+            libraries.stage(output_dir).await?;
+        }
     }
 
     Ok(lib_dir)
@@ -189,16 +190,16 @@ fn inject_other_ldflags(content: &str, required_flags: &[String]) -> (String, bo
             && let Some((prefix, rest)) = line.split_once("OTHER_LDFLAGS = \"")
             && let Some((flags, suffix)) = rest.split_once("\";")
         {
-            let (mut merged, mut line_changed) = sanitize_other_ldflags(flags);
+            let (mut merged, _) = sanitize_other_ldflags(flags);
             for required in required_flags {
                 if !merged.contains(required) {
                     if !merged.is_empty() {
                         merged.push(' ');
                     }
                     merged.push_str(required);
-                    line_changed = true;
                 }
             }
+            let line_changed = merged != flags;
             if line_changed {
                 changed = true;
             }
@@ -218,7 +219,7 @@ fn inject_other_ldflags(content: &str, required_flags: &[String]) -> (String, bo
 fn sanitize_other_ldflags(flags: &str) -> (String, bool) {
     let normalized = flags
         .split_whitespace()
-        .filter(|flag| *flag != "-lwaterui_app")
+        .filter(|flag| !matches!(*flag, "-lwaterui_app" | "-lwaterui_dylib"))
         .collect::<Vec<_>>()
         .join(" ");
     let changed = normalized != flags;
@@ -433,14 +434,12 @@ pub async fn package_apple(
     copy_file(&source_lib, &dest_lib).await?;
 
     let shared_runtime = if options.uses_shared_rust_runtime() {
-        if platform != TargetPlatform::MacOS {
-            bail!("Shared WaterUI runtime packaging is only supported for macOS preview hosts");
-        }
-        let runtime = dynamic_runtime::build_path(&lib_dir);
-        dynamic_runtime::prepare_host_runtime(&runtime).await?;
-        copy_file(&runtime, &products_dir.join(dynamic_runtime::FILE_NAME)).await?;
-        Some(runtime)
+        let libraries = RustDynamicLibraries::resolve(&lib_dir, &triple).await?;
+        dynamic_runtime::prepare_host_runtime(libraries.waterui()).await?;
+        libraries.stage(&products_dir).await?;
+        Some(libraries)
     } else {
+        remove_dynamic_libraries(&products_dir).await?;
         None
     };
 
@@ -515,13 +514,41 @@ pub async fn package_apple(
         );
     }
 
-    if let Some(runtime) = shared_runtime {
-        let frameworks_dir = app_path.join("Contents/Frameworks");
+    let frameworks_dir = apple_frameworks_dir(&app_path, sdk_name);
+    if let Some(libraries) = shared_runtime {
         fs::create_dir_all(&frameworks_dir).await?;
-        copy_file(&runtime, &frameworks_dir.join(dynamic_runtime::FILE_NAME)).await?;
+        libraries.stage(&frameworks_dir).await?;
+    } else {
+        remove_dynamic_libraries(&frameworks_dir).await?;
     }
 
     Ok(Artifact::new(project.bundle_identifier(), app_path))
+}
+
+fn apple_frameworks_dir(app_path: &Path, sdk_name: &str) -> PathBuf {
+    if sdk_name == "macosx" {
+        app_path.join("Contents/Frameworks")
+    } else {
+        app_path.join("Frameworks")
+    }
+}
+
+async fn remove_dynamic_libraries(directory: &Path) -> eyre::Result<()> {
+    if !directory.is_dir() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(directory).await?;
+    while let Some(entry) = entries.next().await {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name == dynamic_runtime::FILE_NAME
+            || (file_name.starts_with("libstd-") && file_name.ends_with(".dylib"))
+        {
+            fs::remove_file(entry.path()).await?;
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -653,6 +680,23 @@ mod tests {
             output,
             "OTHER_LDFLAGS = \"-lc++ -framework VideoToolbox\";\n"
         );
+    }
+
+    #[test]
+    fn switches_between_shared_runtime_and_static_link_flags() {
+        let input = "OTHER_LDFLAGS = \"-lc++ -framework VideoToolbox\";\n";
+        let dynamic_flags = vec![
+            "-framework VideoToolbox".to_string(),
+            "-lwaterui_dylib".to_string(),
+        ];
+        let (dynamic, changed) = inject_other_ldflags(input, &dynamic_flags);
+        assert!(changed);
+        assert!(dynamic.contains("-lwaterui_dylib"));
+
+        let static_flags = vec!["-framework VideoToolbox".to_string()];
+        let (static_linked, changed) = inject_other_ldflags(&dynamic, &static_flags);
+        assert!(changed);
+        assert_eq!(static_linked, input);
     }
 
     #[test]

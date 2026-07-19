@@ -7,8 +7,6 @@ use futures::future::{BoxFuture, Shared};
 use sha2::Digest as _;
 use tracing::info;
 
-use crate::build::RustLinkage;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
     Full,
@@ -73,42 +71,15 @@ impl Project {
         device: D,
         run_options: RunOptions,
     ) -> Result<Running, FailToRun> {
-        self.run_with_linkage(backend, platform, device, RustLinkage::Static, run_options)
-            .await
-    }
-
-    /// Run the project with an explicit Rust runtime linkage model.
-    ///
-    /// # Errors
-    /// Returns an error if building, packaging, or launching the app fails.
-    pub async fn run_with_linkage<B: Backend, D: Device>(
-        &self,
-        backend: &B,
-        platform: TargetPlatform,
-        device: D,
-        linkage: RustLinkage,
-        run_options: RunOptions,
-    ) -> Result<Running, FailToRun> {
-        let build_options = match linkage {
-            RustLinkage::Static => BuildOptions::new(false),
-            RustLinkage::SharedRuntime => BuildOptions::new(false).with_shared_runtime(),
-        };
-        let package_options = match linkage {
-            RustLinkage::Static => PackageOptions::new(false, true),
-            RustLinkage::SharedRuntime => {
-                PackageOptions::new(false, true).with_shared_rust_runtime()
-            }
-        };
-
         // Build rust library for the target platform
         backend
-            .build(self, platform, build_options)
+            .build(self, platform, BuildOptions::development(false))
             .await
             .map_err(FailToRun::Build)?;
 
         // Package the build artifacts for the target platform
         let artifact = backend
-            .package(self, platform, package_options)
+            .package(self, platform, PackageOptions::development())
             .await
             .map_err(FailToRun::Package)?;
 
@@ -135,12 +106,12 @@ impl Project {
             .map_err(FailToRun::Build)?;
 
         AndroidPlatform::new(abi)
-            .build(self, BuildOptions::new(false))
+            .build(self, BuildOptions::development(false))
             .await
             .map_err(FailToRun::Build)?;
 
         let artifact =
-            AndroidPlatform::package_with_abis(self, PackageOptions::new(false, true), &[abi])
+            AndroidPlatform::package_with_abis(self, PackageOptions::development(), &[abi])
                 .await
                 .map_err(FailToRun::Package)?;
 
