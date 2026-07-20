@@ -35,7 +35,7 @@ waterui-locale.workspace = true
 vello.workspace = true
 parley = { workspace = true, features = ["system"] }
 wgpu.workspace = true
-rayon = "1.11"
+rayon = "1.12"
 pollster.workspace = true
 executor-core.workspace = true
 rustc-hash.workspace = true
@@ -43,10 +43,10 @@ async-task = "4.7"
 native-executor.workspace = true
 winit = { version = "0.30", optional = true }
 accesskit = { version = "0.24", optional = true }
-accesskit_winit = { version = "0.32.1", optional = true }
+accesskit_winit = { version = "0.33.2", optional = true }
 
 [build-dependencies]
-cfg_aliases = "0.2.1"
+cfg_aliases = "0.2.2"
 waterui-build-support.workspace = true
 
 # Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit

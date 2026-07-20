@@ -50,20 +50,21 @@ pub(crate) fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
 
 /// Emits the image accessibility node shared by the static graphics leaves
 /// (gradient, shape, morph shape). Their a11y is *not* render-driven: the leaf
-/// emits a single `Image` node from the surrounding environment's label. Shared by
-/// the dispatch path and the retained `Widget`-node path so both produce the same
-/// a11y tree.
+/// emits a single `Image` node from the surrounding environment's label, or the
+/// leaf-provided default when no override is installed. Shared by the dispatch
+/// path and the retained `Widget`-node path so both produce the same a11y tree.
 pub(crate) fn graphics_image_accessibility(
     renderer: &mut HydrolysisRenderer,
     ctx: RenderContext,
     env: &Environment,
+    default_label: Option<String>,
 ) {
     #[cfg(feature = "accessibility")]
     {
         let mut node = AccessibilityNode::new(
             renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
         );
-        if let Some(label) = renderer.resolve_accessibility_label(env, None) {
+        if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
             node.set_label(label);
         }
         let _ = renderer.register_accessibility_node(
@@ -75,7 +76,7 @@ pub(crate) fn graphics_image_accessibility(
     }
     #[cfg(not(feature = "accessibility"))]
     {
-        let _ = (renderer, ctx, env);
+        let _ = (renderer, ctx, env, default_label);
     }
 }
 
@@ -118,7 +119,7 @@ pub(crate) fn render_gradient_node(
         .is_some_and(AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), render_ctx, env);
+        graphics_image_accessibility(ctx.renderer_mut(), render_ctx, env, None);
     }
     render_gradient_parts(ctx, gradient, env);
 }
@@ -162,7 +163,7 @@ pub(crate) fn render_shape_node(
         .is_some_and(AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), render_ctx, env);
+        graphics_image_accessibility(ctx.renderer_mut(), render_ctx, env, None);
     }
     render_shape_parts(ctx, shape, env);
 }
@@ -212,7 +213,7 @@ pub(crate) fn render_morph_shape_node(
         .is_some_and(AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), render_ctx, env);
+        graphics_image_accessibility(ctx.renderer_mut(), render_ctx, env, None);
     }
     render_morph_shape_parts(ctx, shape, env);
 }

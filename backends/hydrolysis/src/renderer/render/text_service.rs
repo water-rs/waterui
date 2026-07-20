@@ -256,7 +256,6 @@ fn build_parley_layout(
     input: &ResolvedTextLayoutInput,
     max_width: Option<f32>,
 ) -> parley::Layout<[u8; 4]> {
-    let mut family_storage = Vec::new();
     let mut builder =
         scratch
             .layout_cx
@@ -266,20 +265,27 @@ fn build_parley_layout(
     builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
         input.default_font.weight,
     )));
-    builder.push_default(parley::StyleProperty::Locale(Some(input.locale.as_str())));
-    builder.push_default(parley::StyleProperty::FontStack(font_stack(
+    let locale = input
+        .locale
+        .parse::<parley::Language>()
+        .unwrap_or_else(|error| {
+            panic!(
+                "WaterUI locale `{}` is not a valid BCP 47 language tag: {error}",
+                input.locale
+            )
+        });
+    builder.push_default(parley::StyleProperty::Locale(Some(locale)));
+    builder.push_default(parley::StyleProperty::FontFamily(font_family(
         input.default_font.family.as_deref(),
-        &mut family_storage,
     )));
 
     for (range, style) in &input.spans {
-        push_text_style(&mut builder, &mut family_storage, style, range.clone());
+        push_text_style(&mut builder, style, range.clone());
     }
 
     let mut layout = builder.build(&input.plain);
     layout.break_all_lines(max_width);
     layout.align(
-        max_width,
         parley_alignment(input.alignment),
         parley::AlignmentOptions::default(),
     );
@@ -288,7 +294,6 @@ fn build_parley_layout(
 
 fn push_text_style(
     builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
-    family_storage: &mut Vec<String>,
     style: &ResolvedTextStyleSpec,
     range: Range<usize>,
 ) {
@@ -302,7 +307,7 @@ fn push_text_style(
     );
     if let Some(family) = &style.font.family {
         builder.push(
-            parley::StyleProperty::FontStack(font_stack(Some(family.as_str()), family_storage)),
+            parley::StyleProperty::FontFamily(font_family(Some(family.as_str()))),
             range.clone(),
         );
     }
@@ -327,20 +332,11 @@ fn push_text_style(
     }
 }
 
-fn font_stack<'a>(
-    family: Option<&str>,
-    family_storage: &'a mut Vec<String>,
-) -> parley::FontStack<'a> {
-    let Some(family) = family else {
-        return parley::FontStack::Single(parley::FontFamily::Generic(
-            parley::style::GenericFamily::SansSerif,
-        ));
-    };
-    family_storage.push(family.to_string());
-    let family_name = family_storage
-        .last()
-        .expect("font family storage must contain the pushed value");
-    parley::FontStack::Source(Cow::Borrowed(family_name.as_str()))
+fn font_family(family: Option<&str>) -> parley::FontFamily<'static> {
+    family.map_or_else(
+        || parley::style::GenericFamily::SansSerif.into(),
+        |family| parley::FontFamily::Source(std::borrow::Cow::Owned(family.to_string())),
+    )
 }
 
 fn text_layout_locale(env: &Environment) -> String {
@@ -440,35 +436,28 @@ pub(crate) struct TextLayoutFontCacheKey {
 }
 
 #[cfg(test)]
-mod font_stack_tests {
-    use super::{font_stack, text_layout_locale};
-    use parley::style::{FontFamily, GenericFamily};
+mod font_family_tests {
+    use super::{font_family, text_layout_locale};
+    use parley::style::GenericFamily;
     use waterui_core::Environment;
     use waterui_locale::locales;
 
     #[test]
     fn explicit_family_list_is_preserved_for_parley_css_parsing() {
-        let mut family_storage = Vec::new();
-        let stack = font_stack(
-            Some("Roboto, Noto Sans CJK SC, sans-serif"),
-            &mut family_storage,
-        );
+        let family = font_family(Some("Roboto, Noto Sans CJK SC, sans-serif"));
 
         assert_eq!(
-            stack,
-            parley::FontStack::Source("Roboto, Noto Sans CJK SC, sans-serif".into())
+            family,
+            parley::FontFamily::Source("Roboto, Noto Sans CJK SC, sans-serif".into())
         );
     }
 
     #[test]
     fn missing_family_uses_sans_serif_generic() {
-        let mut family_storage = Vec::new();
-
         assert_eq!(
-            font_stack(None, &mut family_storage),
-            parley::FontStack::Single(FontFamily::Generic(GenericFamily::SansSerif))
+            font_family(None),
+            parley::FontFamily::from(GenericFamily::SansSerif)
         );
-        assert!(family_storage.is_empty());
     }
 
     #[test]

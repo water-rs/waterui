@@ -5,7 +5,7 @@ use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::RoundedRectangle;
-use waterui::view;
+use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -399,15 +399,10 @@ fn reminder_section(
                     ))
                     .spacing(2.0),
                     spacer(),
-                    view! {
-                        if row.flagged {
-                            mdi::flag()
-                                .size(12.0, 12.0)
-                                .tint(Srgb::from_hex("#F28A34"))
-                        } else {
-                            spacer().width(12.0)
-                        }
-                    },
+                    when(row.flagged, || {
+                        mdi::flag().size(12.0, 12.0).tint(Srgb::from_hex("#F28A34"))
+                    })
+                    .otherwise(|| spacer().width(12.0)),
                 ))
                 .padding_with(EdgeInsets::symmetric(10.0, 18.0))
                 .visible(visible),

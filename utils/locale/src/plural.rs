@@ -1,10 +1,6 @@
 //! CLDR plural rules using ICU4X.
 
-use core::str::FromStr;
-
-use icu_plurals::PluralOperands;
 use icu_plurals::PluralRules;
-use icu_provider::DataLocale;
 use num::ToPrimitive;
 
 use crate::locale::Locale;
@@ -41,11 +37,9 @@ pub use icu_plurals::PluralCategory;
 /// ```
 pub fn select_plural<N: ToPrimitive + ?Sized>(locale: &Locale, n: &N) -> PluralCategory {
     // Create plural rules for the locale
-    let data_locale: DataLocale = locale.0.clone().into();
-    let rules = PluralRules::try_new_cardinal(&data_locale).unwrap_or_else(|_| {
+    let rules = PluralRules::try_new_cardinal(locale.0.clone().into()).unwrap_or_else(|_| {
         // Fallback to English rules if locale not supported
-        let en_locale: DataLocale = icu_locid::langid!("en").into();
-        PluralRules::try_new_cardinal(&en_locale)
+        PluralRules::try_new_cardinal(icu_locale::locale!("en").into())
             .expect("English plural rules should always be available")
     });
 
@@ -60,11 +54,14 @@ pub fn select_plural<N: ToPrimitive + ?Sized>(locale: &Locale, n: &N) -> PluralC
         }
     }
 
-    let operand_str = float_value.abs().to_string();
-    PluralOperands::from_str(&operand_str).map_or_else(
-        |_| rules.category_for(0_u8),
-        |operands| rules.category_for(operands),
-    )
+    float_value
+        .abs()
+        .to_string()
+        .parse::<fixed_decimal::Decimal>()
+        .map_or_else(
+            |_| rules.category_for(0_u8),
+            |decimal| rules.category_for(&decimal),
+        )
 }
 
 /// Get all valid plural categories for a locale.
@@ -93,10 +90,8 @@ pub fn select_plural<N: ToPrimitive + ?Sized>(locale: &Locale, n: &N) -> PluralC
 /// ```
 #[must_use]
 pub fn valid_categories(locale: &Locale) -> Vec<PluralCategory> {
-    let data_locale: DataLocale = locale.0.clone().into();
-    let rules = PluralRules::try_new_cardinal(&data_locale).unwrap_or_else(|_| {
-        let en_locale: DataLocale = icu_locid::langid!("en").into();
-        PluralRules::try_new_cardinal(&en_locale)
+    let rules = PluralRules::try_new_cardinal(locale.0.clone().into()).unwrap_or_else(|_| {
+        PluralRules::try_new_cardinal(icu_locale::locale!("en").into())
             .expect("English plural rules should always be available")
     });
 

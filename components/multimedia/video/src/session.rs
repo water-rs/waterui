@@ -554,7 +554,7 @@ impl PlayerController {
         let item = items.remove(source);
         items.insert(destination, item);
         let current_id = state.bindings.current_item_id.get();
-        state.playlist.items.replace(items.clone());
+        let _ = state.playlist.items.replace(items.clone());
         let current = items
             .iter()
             .position(|item| item.id == current_id)

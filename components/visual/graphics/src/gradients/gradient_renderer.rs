@@ -476,18 +476,13 @@ impl View for Gradient {
 }
 
 mod shader_types {
-    #![expect(
-        dead_code,
-        reason = "encase ShaderType derive emits layout check helpers"
-    )]
-
     use encase::ShaderType;
 
     /// A resolved color stop ready for GPU upload.
     #[derive(Debug, Clone, Copy, Default, ShaderType)]
     pub(super) struct GpuColorStop {
         /// RGBA color in linear space.
-        pub(super) color: glam::Vec4,
+        pub(super) color: [f32; 4],
         /// Position along the gradient (0.0 to 1.0).
         pub(super) position: f32,
     }
@@ -496,9 +491,9 @@ mod shader_types {
     #[derive(Debug, Clone, Copy, Default, ShaderType)]
     pub(super) struct GpuMeshVertex {
         /// Position in unit coordinates (0.0 to 1.0).
-        pub(super) position: glam::Vec2,
+        pub(super) position: [f32; 2],
         /// RGBA color in linear space.
-        pub(super) color: glam::Vec4,
+        pub(super) color: [f32; 4],
     }
 
     /// Uniform buffer layout for mesh gradient parameters.
@@ -508,8 +503,8 @@ mod shader_types {
         pub(super) num_stops: u32,
         pub(super) mesh_width: u32,
         pub(super) mesh_height: u32,
-        pub(super) start_point: glam::Vec2,
-        pub(super) end_point: glam::Vec2,
+        pub(super) start_point: [f32; 2],
+        pub(super) end_point: [f32; 2],
         pub(super) start_value: f32,
         pub(super) end_value: f32,
         pub(super) smooths_colors: u32,
@@ -663,8 +658,8 @@ fn write_mesh_data(
         num_stops: 0,
         mesh_width: width,
         mesh_height: height,
-        start_point: glam::Vec2::new(0.0, 0.0),
-        end_point: glam::Vec2::new(1.0, 1.0),
+        start_point: [0.0, 0.0],
+        end_point: [1.0, 1.0],
         start_value: 0.0,
         end_value: 1.0,
         smooths_colors: u32::from(smooths_colors),
@@ -759,8 +754,8 @@ impl StaticMeshRenderer {
         let vertices = vertices
             .into_iter()
             .map(|(position, color)| GpuMeshVertex {
-                position: glam::Vec2::new(position[0], position[1]),
-                color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
+                position,
+                color: [color.red, color.green, color.blue, color.opacity],
             })
             .collect();
 
@@ -930,8 +925,8 @@ where
                     let x = usize_to_f32(index % w) / usize_to_f32((w - 1).max(1));
                     let y = usize_to_f32(index / w) / usize_to_f32((h - 1).max(1));
                     vertices.push(GpuMeshVertex {
-                        position: glam::Vec2::new(x, y),
-                        color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
+                        position: [x, y],
+                        color: [color.red, color.green, color.blue, color.opacity],
                     });
                 }
 

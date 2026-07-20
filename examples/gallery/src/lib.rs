@@ -127,13 +127,11 @@ fn set_group_expanded(rows: &ReactiveList<Row>, group: usize, expanded: bool) {
             .iter()
             .position(|row| *row == Row::Header(group))
             .expect("drawer group header must be present");
-        let mut at = header_pos + 1;
-        for index in items {
+        for (at, index) in (header_pos + 1..).zip(items) {
             let present = rows.snapshot().as_slice().contains(&Row::Item(index));
             if !present {
                 rows.insert(at, Row::Item(index));
             }
-            at += 1;
         }
     } else {
         while let Some(pos) = rows

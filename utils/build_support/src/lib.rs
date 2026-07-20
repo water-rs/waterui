@@ -49,7 +49,8 @@ pub fn fetch_text(source: &str, description: &str) -> Result<String, String> {
         ureq::get(source)
             .call()
             .map_err(|error| format!("Download failed: {error}"))?
-            .into_string()
+            .into_body()
+            .read_to_string()
             .map_err(|error| format!("Failed to read response: {error}"))
     } else {
         eprintln!("Reading {description} from local file: {source}");

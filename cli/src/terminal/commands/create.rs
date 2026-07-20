@@ -245,7 +245,8 @@ async fn create_project(plan: &CreatePlan) -> Result<Project> {
                 .map_err(|error| eyre!(error))?,
             package_type: plan.package_type,
             waterui_path: plan.waterui_path.clone(),
-            author: whoami::username(),
+            author: whoami::username()
+                .map_err(|error| eyre!("Failed to determine project author: {error}"))?,
         },
     )
     .await?;

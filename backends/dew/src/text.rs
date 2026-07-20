@@ -69,7 +69,6 @@ impl DewState {
         let mut layout = builder.build(text);
         layout.break_all_lines(max_width);
         layout.align(
-            max_width,
             parley::Alignment::Start,
             parley::AlignmentOptions::default(),
         );
@@ -100,7 +99,6 @@ impl DewState {
         }
 
         let default_font = Font::default().resolve(env).get();
-        let mut family_storage = Vec::new();
         let mut builder = self
             .layout_cx
             .ranged_builder(&mut self.font_cx, &plain, 1.0, true);
@@ -109,19 +107,17 @@ impl DewState {
         builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
             default_font.weight,
         )));
-        builder.push_default(parley::StyleProperty::FontStack(font_stack(
+        builder.push_default(parley::StyleProperty::FontFamily(font_family(
             default_font.family.as_deref(),
-            &mut family_storage,
         )));
 
         for (range, style) in spans {
-            push_span_style(&mut builder, &mut family_storage, style, env, range);
+            push_span_style(&mut builder, style, env, range);
         }
 
         let mut layout = builder.build(&plain);
         layout.break_all_lines(max_width);
         layout.align(
-            max_width,
             parley::Alignment::Start,
             parley::AlignmentOptions::default(),
         );
@@ -151,7 +147,6 @@ impl DewState {
 /// Pushes one [`StyledStr`] chunk's resolved style as parley range styles.
 fn push_span_style(
     builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
-    family_storage: &mut Vec<String>,
     style: &Style,
     env: &Environment,
     range: core::ops::Range<usize>,
@@ -164,7 +159,7 @@ fn push_span_style(
     );
     if let Some(family) = &font.family {
         builder.push(
-            parley::StyleProperty::FontStack(font_stack(Some(family.as_str()), family_storage)),
+            parley::StyleProperty::FontFamily(font_family(Some(family.as_str()))),
             range.clone(),
         );
     }
@@ -193,7 +188,7 @@ fn push_span_style(
     }
 }
 
-fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
+const fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
     parley::FontWeight::new(match weight {
         FontWeight::Thin => 100.0,
         FontWeight::UltraLight => 200.0,
@@ -207,20 +202,11 @@ fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
     })
 }
 
-fn font_stack<'a>(
-    family: Option<&str>,
-    family_storage: &'a mut Vec<String>,
-) -> parley::FontStack<'a> {
-    let Some(family) = family else {
-        return parley::FontStack::Single(parley::FontFamily::Generic(
-            parley::style::GenericFamily::SansSerif,
-        ));
-    };
-    family_storage.push(family.to_string());
-    let family_name = family_storage
-        .last()
-        .expect("font family storage must contain the pushed value");
-    parley::FontStack::Source(std::borrow::Cow::Borrowed(family_name.as_str()))
+fn font_family(family: Option<&str>) -> parley::FontFamily<'static> {
+    family.map_or_else(
+        || parley::style::GenericFamily::SansSerif.into(),
+        |family| parley::FontFamily::Source(std::borrow::Cow::Owned(family.to_string())),
+    )
 }
 
 #[expect(
@@ -297,7 +283,25 @@ pub(crate) fn emit_text_commands(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui_text::font::{Subheadline, Title};
+    use waterui::Plugin as _;
+    use waterui::theme::{FontSettings, Theme};
+    use waterui_text::font::{FontWeight, ResolvedFont, Subheadline, Title};
+
+    fn test_environment() -> Environment {
+        let mut env = Environment::new();
+        Theme::new()
+            .fonts(
+                FontSettings::new()
+                    .body(ResolvedFont::new(16.0, FontWeight::Normal))
+                    .title(ResolvedFont::new(24.0, FontWeight::Normal))
+                    .headline(ResolvedFont::new(22.0, FontWeight::Normal))
+                    .subheadline(ResolvedFont::new(20.0, FontWeight::Normal))
+                    .caption(ResolvedFont::new(12.0, FontWeight::Normal))
+                    .footnote(ResolvedFont::new(11.0, FontWeight::Normal)),
+            )
+            .install(&mut env);
+        env
+    }
 
     fn run_font_sizes(layout: &parley::Layout<[u8; 4]>) -> Vec<f32> {
         let mut sizes = Vec::new();
@@ -315,7 +319,7 @@ mod tests {
     /// sizes, visibly distinct from body text.
     #[test]
     fn styled_spans_produce_distinct_font_sizes() {
-        let env = Environment::new();
+        let env = test_environment();
         let mut state = DewState::default();
         let mut styled = StyledStr::empty();
         styled.push("Heading", Style::new().font(Title));
@@ -344,7 +348,7 @@ mod tests {
     /// the surrounding body text, producing a separate glyph run.
     #[test]
     fn bold_span_splits_into_its_own_run() {
-        let env = Environment::new();
+        let env = test_environment();
         let mut state = DewState::default();
         let mut styled = StyledStr::empty();
         styled.push("normal ", Style::new());
@@ -370,7 +374,7 @@ mod tests {
     fn span_color_reaches_the_brush() {
         use waterui_graphics::color::Color;
 
-        let env = Environment::new();
+        let env = test_environment();
         let mut state = DewState::default();
         let mut styled = StyledStr::empty();
         styled.push("red", Style::new().foreground(Color::srgb(255, 0, 0)));

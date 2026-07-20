@@ -12,7 +12,7 @@ categories = ["graphics", "development-tools::build-utils"]
 
 [dependencies]
 wgpu.workspace = true
-naga = { version = "29.0.4", optional = true, features = ["hlsl-out", "msl-out", "spv-out", "wgsl-in"] }
+naga = { version = "30.0.0", optional = true, features = ["hlsl-out", "msl-out", "spv-out", "wgsl-in"] }
 
 [features]
 default = []

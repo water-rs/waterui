@@ -48,7 +48,7 @@ pub const fn progress() -> ProgressMotion {
     ProgressMotion {
         linear_determinate: Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0),
         circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
-        linear_indeterminate_cycle: Duration::from_millis(2_000),
+        linear_indeterminate_cycle: Duration::from_secs(2),
         circular_indeterminate_cycle: Duration::from_millis(5_332),
     }
 }
@@ -149,10 +149,7 @@ mod tests {
             motion.circular_determinate,
             Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0)
         );
-        assert_eq!(
-            motion.linear_indeterminate_cycle,
-            Duration::from_millis(2_000)
-        );
+        assert_eq!(motion.linear_indeterminate_cycle, Duration::from_secs(2));
         assert_eq!(
             motion.circular_indeterminate_cycle,
             Duration::from_millis(5_332)

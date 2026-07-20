@@ -8,14 +8,17 @@ use crate::{
 };
 use encase::{ShaderSize, StorageBuffer};
 use num_traits::ToPrimitive;
+use shaderloom::ShaderStage;
 use std::cell::Cell;
 use std::mem::offset_of;
 use std::rc::Rc;
-use shaderloom::ShaderStage;
 use waterui_core::{Computed, Environment, Signal, reactive::watcher::BoxWatcherGuard};
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuView, color::ResolvedColor, gpu_surface::RedrawHandle,
+    GpuContext, GpuFrame, GpuView,
+    color::ResolvedColor,
+    gpu_surface::RedrawHandle,
     reactive_color::ReactiveColor,
+    shader_types::{ShaderVec2, ShaderVec4},
 };
 
 /// Resolved particle configuration ready for GPU.
@@ -230,17 +233,17 @@ const PARTICLE_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 8] = [
 )]
 const PARTICLE_UNIFORM_SIZE: usize = <Uniforms as ShaderSize>::SHADER_SIZE.get() as usize;
 
-const fn encode_emitter_size(shape: EmitterShape) -> glam::Vec2 {
+const fn encode_emitter_size(shape: EmitterShape) -> ShaderVec2 {
     match shape {
-        EmitterShape::Point => glam::Vec2::ZERO,
-        EmitterShape::Rect { width, height } => glam::Vec2::new(width, height),
-        EmitterShape::Circle { radius } => glam::Vec2::new(radius, -1.0),
+        EmitterShape::Point => ShaderVec2::ZERO,
+        EmitterShape::Rect { width, height } => ShaderVec2::new(width, height),
+        EmitterShape::Circle { radius } => ShaderVec2::new(radius, -1.0),
     }
 }
 
-fn resolved_linear_color(color: ResolvedColor) -> glam::Vec4 {
+fn resolved_linear_color(color: ResolvedColor) -> ShaderVec4 {
     let [red, green, blue] = color.linear_with_headroom();
-    glam::Vec4::new(red, green, blue, color.opacity)
+    ShaderVec4::new(red, green, blue, color.opacity)
 }
 
 fn write_obstacles(queue: &wgpu::Queue, buffer: &wgpu::Buffer, obstacles: &[[f32; 3]]) {
@@ -250,7 +253,7 @@ fn write_obstacles(queue: &wgpu::Queue, buffer: &wgpu::Buffer, obstacles: &[[f32
         obstacles
             .iter()
             .map(|obstacle| {
-                GpuCircleObstacle::new(glam::Vec2::new(obstacle[0], obstacle[1]), obstacle[2])
+                GpuCircleObstacle::new(ShaderVec2::new(obstacle[0], obstacle[1]), obstacle[2])
             })
             .collect()
     };
@@ -446,9 +449,9 @@ impl ParticleRenderer {
             dt,
             seed: fastrand::u32(..),
             max_particles: config.max_particles,
-            gravity: glam::Vec2::from_array(config.gravity),
-            wind: glam::Vec2::from_array(config.wind),
-            emitter_pos: glam::Vec2::from_array(config.emitter_pos),
+            gravity: config.gravity.into(),
+            wind: config.wind.into(),
+            emitter_pos: config.emitter_pos.into(),
             emitter_size: encode_emitter_size(config.emitter_shape),
             emit_rate: config.emit_rate,
             turbulence: config.turbulence,
@@ -470,15 +473,15 @@ impl ParticleRenderer {
                 config.collision_enabled,
                 config.collision_restitution,
                 config.collision_surface_friction,
-                glam::Vec4::from_array(config.collision_bounds),
+                config.collision_bounds.into(),
                 u32::try_from(config.collision_circle_obstacles.len())
                     .expect("particle collision obstacle count must fit into u32"),
             ),
-            life_range: glam::Vec2::from_array(config.life_range),
-            speed_range: glam::Vec2::from_array(config.speed_range),
-            angle_range: glam::Vec2::from_array(config.angle_range),
-            size_range: glam::Vec2::from_array(config.size_range),
-            spin_range: glam::Vec2::from_array(config.spin_range),
+            life_range: config.life_range.into(),
+            speed_range: config.speed_range.into(),
+            angle_range: config.angle_range.into(),
+            size_range: config.size_range.into(),
+            spin_range: config.spin_range.into(),
             color_start: resolved_linear_color(config.color_start),
             color_end: resolved_linear_color(config.color_end),
             shape: particle_shape_code(config.shape),
@@ -900,7 +903,10 @@ mod tests {
     use encase::{ShaderSize, StorageBuffer};
     use waterui_core::{Binding, Environment, SignalExt};
     use waterui_graphics::{
-        GpuContext, GpuRuntime, GpuView, color::ResolvedColor, gpu_surface::RedrawHandle,
+        GpuContext, GpuRuntime, GpuView,
+        color::ResolvedColor,
+        gpu_surface::RedrawHandle,
+        shader_types::{ShaderVec2, ShaderVec4},
     };
 
     fn test_gpu_runtime() -> GpuRuntime {
@@ -1025,14 +1031,14 @@ mod tests {
     fn circle_emitters_use_disk_encoding() {
         assert_eq!(
             encode_emitter_size(EmitterShape::Circle { radius: 0.25 }),
-            glam::Vec2::new(0.25, -1.0)
+            ShaderVec2::new(0.25, -1.0)
         );
         assert_eq!(
             encode_emitter_size(EmitterShape::Rect {
                 width: 0.4,
                 height: 0.2,
             }),
-            glam::Vec2::new(0.4, 0.2)
+            ShaderVec2::new(0.4, 0.2)
         );
     }
 
@@ -1048,7 +1054,7 @@ mod tests {
 
         assert_eq!(
             resolved_linear_color(color),
-            glam::Vec4::new(0.5, 1.0, 1.5, 0.4)
+            ShaderVec4::new(0.5, 1.0, 1.5, 0.4)
         );
     }
 
@@ -1087,14 +1093,14 @@ mod tests {
                 self.inner.setup(ctx, env).await;
 
                 let mut particle = GpuParticle::default();
-                particle.pos = glam::Vec2::new(0.5, 0.5);
-                particle.vel = glam::Vec2::ZERO;
+                particle.pos = ShaderVec2::new(0.5, 0.5);
+                particle.vel = ShaderVec2::ZERO;
                 particle.life = 1.0;
                 particle.max_life = 1.0;
                 particle.size = 0.25;
                 particle.rotation = 0.0;
                 particle.rot_speed = 0.0;
-                particle.color = glam::Vec4::ONE;
+                particle.color = ShaderVec4::ONE;
 
                 let mut particle_data = StorageBuffer::new(Vec::new());
                 particle_data
@@ -1222,14 +1228,14 @@ mod tests {
         pollster::block_on(renderer.setup(&ctx, &mut env));
 
         let mut particle = GpuParticle::default();
-        particle.pos = glam::Vec2::new(0.95, 0.5);
-        particle.vel = glam::Vec2::new(2.0, 1.0);
+        particle.pos = ShaderVec2::new(0.95, 0.5);
+        particle.vel = ShaderVec2::new(2.0, 1.0);
         particle.life = 1.0;
         particle.max_life = 1.0;
         particle.size = 0.1;
         particle.rotation = 0.0;
         particle.rot_speed = 0.0;
-        particle.color = glam::Vec4::ONE;
+        particle.color = ShaderVec4::ONE;
 
         let mut particle_data = StorageBuffer::new(Vec::new());
         particle_data
@@ -1245,12 +1251,12 @@ mod tests {
                 true,
                 0.5,
                 0.25,
-                glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
+                ShaderVec4::new(0.0, 0.0, 1.0, 1.0),
                 0,
             ),
-            size_range: glam::Vec2::new(0.1, 0.1),
-            color_start: glam::Vec4::ONE,
-            color_end: glam::Vec4::ONE,
+            size_range: ShaderVec2::new(0.1, 0.1),
+            color_start: ShaderVec4::ONE,
+            color_end: ShaderVec4::ONE,
             ..Uniforms::default()
         };
         let mut uniform_data = StorageBuffer::new(Vec::new());
@@ -1277,19 +1283,19 @@ mod tests {
             &mapped[..usize::try_from(buffer_size).expect("particle buffer size must fit usize")],
         );
         assert!(
-            (updated.pos.x - 0.9).abs() < 0.0001,
+            (updated.pos.x() - 0.9).abs() < 0.0001,
             "particle should clamp against the right wall, got {}",
-            updated.pos.x
+            updated.pos.x()
         );
         assert!(
-            (updated.vel.x + 1.0).abs() < 0.0001,
+            (updated.vel.x() + 1.0).abs() < 0.0001,
             "particle should bounce on the x axis, got {}",
-            updated.vel.x
+            updated.vel.x()
         );
         assert!(
-            (updated.vel.y - 0.25).abs() < 0.0001,
+            (updated.vel.y() - 0.25).abs() < 0.0001,
             "particle tangential velocity should be damped on collision, got {}",
-            updated.vel.y
+            updated.vel.y()
         );
     }
 
@@ -1308,12 +1314,12 @@ mod tests {
         pollster::block_on(renderer.setup(&ctx, &mut env));
 
         let mut particle = GpuParticle::default();
-        particle.pos = glam::Vec2::new(0.86, 0.5);
-        particle.vel = glam::Vec2::new(-1.0, 0.4);
+        particle.pos = ShaderVec2::new(0.86, 0.5);
+        particle.vel = ShaderVec2::new(-1.0, 0.4);
         particle.life = 1.0;
         particle.max_life = 1.0;
         particle.size = 0.05;
-        particle.color = glam::Vec4::ONE;
+        particle.color = ShaderVec4::ONE;
 
         let mut particle_data = StorageBuffer::new(Vec::new());
         particle_data
@@ -1329,12 +1335,12 @@ mod tests {
                 false,
                 0.5,
                 0.25,
-                glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
+                ShaderVec4::new(0.0, 0.0, 1.0, 1.0),
                 2,
             ),
-            size_range: glam::Vec2::new(0.05, 0.05),
-            color_start: glam::Vec4::ONE,
-            color_end: glam::Vec4::ONE,
+            size_range: ShaderVec2::new(0.05, 0.05),
+            color_start: ShaderVec4::ONE,
+            color_end: ShaderVec4::ONE,
             ..Uniforms::default()
         };
         let mut uniform_data = StorageBuffer::new(Vec::new());
@@ -1361,19 +1367,19 @@ mod tests {
             &mapped[..usize::try_from(buffer_size).expect("particle buffer size must fit usize")],
         );
         assert!(
-            (updated.pos.x - 0.9).abs() < 0.0001,
+            (updated.pos.x() - 0.9).abs() < 0.0001,
             "particle should clamp against the second obstacle surface, got {}",
-            updated.pos.x
+            updated.pos.x()
         );
         assert!(
-            (updated.vel.x - 0.5).abs() < 0.0001,
+            (updated.vel.x() - 0.5).abs() < 0.0001,
             "particle should bounce away from the obstacle, got {}",
-            updated.vel.x
+            updated.vel.x()
         );
         assert!(
-            (updated.vel.y - 0.1).abs() < 0.0001,
+            (updated.vel.y() - 0.1).abs() < 0.0001,
             "particle tangential velocity should be damped against the obstacle, got {}",
-            updated.vel.y
+            updated.vel.y()
         );
     }
 
@@ -1392,18 +1398,18 @@ mod tests {
         pollster::block_on(renderer.setup(&ctx, &mut env));
 
         let mut first = GpuParticle::default();
-        first.pos = glam::Vec2::new(0.5, 0.5);
+        first.pos = ShaderVec2::new(0.5, 0.5);
         first.life = 1.0;
         first.max_life = 1.0;
         first.size = 0.02;
-        first.color = glam::Vec4::ONE;
+        first.color = ShaderVec4::ONE;
 
         let mut second = GpuParticle::default();
-        second.pos = glam::Vec2::new(0.53, 0.5);
+        second.pos = ShaderVec2::new(0.53, 0.5);
         second.life = 1.0;
         second.max_life = 1.0;
         second.size = 0.02;
-        second.color = glam::Vec4::ONE;
+        second.color = ShaderVec4::ONE;
 
         let mut particle_data = StorageBuffer::new(Vec::new());
         particle_data
@@ -1416,9 +1422,9 @@ mod tests {
             dt: 0.1,
             max_particles: 2,
             interaction: InteractionUniforms::new(true, 2, 2, 0.02, 20.0),
-            size_range: glam::Vec2::new(0.02, 0.02),
-            color_start: glam::Vec4::ONE,
-            color_end: glam::Vec4::ONE,
+            size_range: ShaderVec2::new(0.02, 0.02),
+            color_start: ShaderVec4::ONE,
+            color_end: ShaderVec4::ONE,
             ..Uniforms::default()
         };
         let mut uniform_data = StorageBuffer::new(Vec::new());
@@ -1446,14 +1452,14 @@ mod tests {
         let second_updated =
             bytemuck::pod_read_unaligned::<GpuParticle>(&mapped[stride..(2 * stride)]);
         assert!(
-            first_updated.vel.x < 0.0,
+            first_updated.vel.x() < 0.0,
             "first particle should be pushed left, got {}",
-            first_updated.vel.x
+            first_updated.vel.x()
         );
         assert!(
-            second_updated.vel.x > 0.0,
+            second_updated.vel.x() > 0.0,
             "second particle should be pushed right, got {}",
-            second_updated.vel.x
+            second_updated.vel.x()
         );
     }
 }
