@@ -718,11 +718,8 @@ fn collect_changed_ranges(
 fn collect_block_ranges(tree: &Tree, text_len: usize) -> Vec<BlockRange> {
     let mut blocks = Vec::new();
     let root = tree.root_node();
-    let child_count = root.named_child_count();
-    for i in 0..child_count {
-        let Some(child) = root.named_child(i) else {
-            continue;
-        };
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
         let start = child.start_byte();
         let end = child.end_byte().min(text_len);
         if start >= end {
@@ -1569,11 +1566,9 @@ fn collect_leaf_tokens(node: tree_sitter::Node<'_>, out: &mut Vec<(usize, usize,
         return;
     }
 
-    let child_count = node.child_count();
-    for i in 0..child_count {
-        if let Some(child) = node.child(i) {
-            collect_leaf_tokens(child, out);
-        }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_leaf_tokens(child, out);
     }
 }
 

@@ -21,7 +21,7 @@ waterui-core.workspace = true
 nami.workspace = true
 waterui-graphics.workspace = true
 num-traits = { version = "0.2", default-features = false }
-rayon = { version = "1.11", optional = true }
+rayon = { version = "1.12", optional = true }
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true

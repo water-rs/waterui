@@ -2,12 +2,8 @@
 //!
 //! Uses encase for automatic WGSL-compatible alignment.
 
-#![expect(
-    dead_code,
-    reason = "encase ShaderType derive emits layout check helpers"
-)]
-
 use encase::ShaderType;
+use waterui_graphics::shader_types::{ShaderVec2, ShaderVec4};
 
 /// GPU representation of a single particle.
 /// Uses explicit padding so the storage layout also works as an instanced vertex buffer.
@@ -15,9 +11,9 @@ use encase::ShaderType;
 #[derive(Clone, Copy, Debug, Default, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuParticle {
     /// Position in normalized coordinates [0, 1].
-    pub pos: glam::Vec2,
+    pub pos: ShaderVec2,
     /// Velocity.
-    pub vel: glam::Vec2,
+    pub vel: ShaderVec2,
     /// Current life remaining.
     pub life: f32,
     /// Maximum life (for interpolation ratio).
@@ -32,7 +28,7 @@ pub struct GpuParticle {
     _pad1: f32,
     _pad2: f32,
     /// Color in Linear sRGB.
-    pub color: glam::Vec4,
+    pub color: ShaderVec4,
 }
 
 /// GPU uniforms for compute and render shaders.
@@ -83,13 +79,13 @@ pub struct CollisionUniforms {
     /// Number of circular obstacle colliders in the storage buffer.
     pub circle_obstacle_count: u32,
     /// Collision bounds encoded as `min_x`, `min_y`, `max_x`, `max_y`.
-    pub bounds: glam::Vec4,
+    pub bounds: ShaderVec4,
 }
 
 /// GPU representation of a circular obstacle collider.
 #[derive(Clone, Copy, Debug, Default, ShaderType)]
 pub struct GpuCircleObstacle {
-    pub center: glam::Vec2,
+    pub center: ShaderVec2,
     pub radius: f32,
 }
 
@@ -99,7 +95,7 @@ impl CollisionUniforms {
         enabled: bool,
         restitution: f32,
         surface_friction: f32,
-        bounds: glam::Vec4,
+        bounds: ShaderVec4,
         circle_obstacle_count: u32,
     ) -> Self {
         Self {
@@ -114,7 +110,7 @@ impl CollisionUniforms {
 
 impl GpuCircleObstacle {
     #[must_use]
-    pub const fn new(center: glam::Vec2, radius: f32) -> Self {
+    pub const fn new(center: ShaderVec2, radius: f32) -> Self {
         Self { center, radius }
     }
 }
@@ -132,14 +128,14 @@ pub struct Uniforms {
     /// Maximum particle count.
     pub max_particles: u32,
     /// Gravity vector.
-    pub gravity: glam::Vec2,
+    pub gravity: ShaderVec2,
     /// Wind vector.
-    pub wind: glam::Vec2,
+    pub wind: ShaderVec2,
     /// Emitter position.
-    pub emitter_pos: glam::Vec2,
+    pub emitter_pos: ShaderVec2,
     /// Emitter size.
     /// `Rect`: `(width, height)`, `Circle`: `(radius, -1.0)`, `Point`: `(0.0, 0.0)`.
-    pub emitter_size: glam::Vec2,
+    pub emitter_size: ShaderVec2,
     /// Emission rate (particles per second).
     pub emit_rate: f32,
     /// Turbulence factor.
@@ -155,19 +151,19 @@ pub struct Uniforms {
     /// Collision configuration.
     pub collision: CollisionUniforms,
     /// Life range (min, max).
-    pub life_range: glam::Vec2,
+    pub life_range: ShaderVec2,
     /// Speed range (min, max).
-    pub speed_range: glam::Vec2,
+    pub speed_range: ShaderVec2,
     /// Angle range (min, max) in radians.
-    pub angle_range: glam::Vec2,
+    pub angle_range: ShaderVec2,
     /// Size range (min, max).
-    pub size_range: glam::Vec2,
+    pub size_range: ShaderVec2,
     /// Spin speed range (min, max) in radians/sec.
-    pub spin_range: glam::Vec2,
+    pub spin_range: ShaderVec2,
     /// Start color.
-    pub color_start: glam::Vec4,
+    pub color_start: ShaderVec4,
     /// End color.
-    pub color_end: glam::Vec4,
+    pub color_end: ShaderVec4,
     /// Particle shape (0=Circle, 1=Rect).
     pub shape: u32,
     /// Viewport width in pixels.
@@ -183,10 +179,10 @@ impl Default for Uniforms {
             dt: 1.0 / 60.0,
             seed: 0,
             max_particles: 1000,
-            gravity: glam::Vec2::ZERO,
-            wind: glam::Vec2::ZERO,
-            emitter_pos: glam::Vec2::new(0.5, 0.5),
-            emitter_size: glam::Vec2::ZERO,
+            gravity: ShaderVec2::default(),
+            wind: ShaderVec2::default(),
+            emitter_pos: ShaderVec2::new(0.5, 0.5),
+            emitter_size: ShaderVec2::default(),
             emit_rate: 100.0,
             turbulence: 0.0,
             drag: 1.0,
@@ -194,13 +190,13 @@ impl Default for Uniforms {
             softness: 0.5,
             interaction: InteractionUniforms::default(),
             collision: CollisionUniforms::default(),
-            life_range: glam::Vec2::new(1.0, 1.0),
-            speed_range: glam::Vec2::new(1.0, 1.0),
-            angle_range: glam::Vec2::ZERO,
-            size_range: glam::Vec2::new(0.01, 0.01),
-            spin_range: glam::Vec2::ZERO,
-            color_start: glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
-            color_end: glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
+            life_range: ShaderVec2::new(1.0, 1.0),
+            speed_range: ShaderVec2::new(1.0, 1.0),
+            angle_range: ShaderVec2::default(),
+            size_range: ShaderVec2::new(0.01, 0.01),
+            spin_range: ShaderVec2::default(),
+            color_start: ShaderVec4::ONE,
+            color_end: ShaderVec4::ONE,
             shape: 0,
             viewport_width: 0,
             viewport_height: 0,

@@ -20,7 +20,7 @@ use core::time::Duration;
 use vello::kurbo::{BezPath, Point, Rect};
 use waterui::animation::Animation;
 
-const LINEAR_INDETERMINATE_CYCLE: Duration = Duration::from_millis(2_000);
+const LINEAR_INDETERMINATE_CYCLE: Duration = Duration::from_secs(2);
 const CIRCULAR_ARC_DURATION: Duration = Duration::from_millis(1_333);
 const CIRCULAR_CYCLE_DURATION: Duration = Duration::from_millis(5_332);
 const CIRCULAR_LINEAR_ROTATE_DURATION_SECS: f64 = 1.333 * 360.0 / 306.0;

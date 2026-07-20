@@ -741,53 +741,6 @@ impl<T: IntoFFI> IntoFFI for Watcher<T> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{WuiWatcher, WuiWatcherMetadata};
-    use alloc::boxed::Box;
-    use alloc::rc::Rc;
-    use alloc::vec::Vec;
-    use core::cell::RefCell;
-    use nami::watcher::{Context, Metadata};
-
-    struct NativeWatcherData {
-        events: Rc<RefCell<Vec<&'static str>>>,
-    }
-
-    unsafe extern "C" fn record_call(
-        data: *mut (),
-        _value: u32,
-        metadata: *mut WuiWatcherMetadata,
-    ) {
-        let data = unsafe { &*data.cast::<NativeWatcherData>() };
-        data.events.borrow_mut().push("call");
-        unsafe { super::waterui_drop_watcher_metadata(metadata) };
-    }
-
-    unsafe extern "C" fn record_drop(data: *mut ()) {
-        let data = unsafe { Box::from_raw(data.cast::<NativeWatcherData>()) };
-        data.events.borrow_mut().push("drop");
-    }
-
-    #[test]
-    fn native_watcher_data_lives_until_the_last_callback_owner_drops() {
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let data = Box::into_raw(Box::new(NativeWatcherData {
-            events: Rc::clone(&events),
-        }))
-        .cast();
-
-        let watcher = unsafe { WuiWatcher::<u32>::new(data, record_call, record_drop) };
-        let callback = watcher.into_inner();
-
-        callback(Context::new(42, Metadata::new()));
-        assert_eq!(&*events.borrow(), &["call"]);
-
-        drop(callback);
-        assert_eq!(&*events.borrow(), &["call", "drop"]);
-    }
-}
-
 /// Creates a new watcher guard from raw data and a drop function.
 ///
 /// # Safety
@@ -897,4 +850,51 @@ pub unsafe extern "C" fn waterui_new_watcher_secure(
     use alloc::boxed::Box;
     let watcher = unsafe { WuiWatcher::new(data, call, drop) };
     Box::into_raw(Box::new(watcher))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WuiWatcher, WuiWatcherMetadata};
+    use alloc::boxed::Box;
+    use alloc::rc::Rc;
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+    use nami::watcher::{Context, Metadata};
+
+    struct NativeWatcherData {
+        events: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    unsafe extern "C" fn record_call(
+        data: *mut (),
+        _value: u32,
+        metadata: *mut WuiWatcherMetadata,
+    ) {
+        let data = unsafe { &*data.cast::<NativeWatcherData>() };
+        data.events.borrow_mut().push("call");
+        unsafe { super::waterui_drop_watcher_metadata(metadata) };
+    }
+
+    unsafe extern "C" fn record_drop(data: *mut ()) {
+        let data = unsafe { Box::from_raw(data.cast::<NativeWatcherData>()) };
+        data.events.borrow_mut().push("drop");
+    }
+
+    #[test]
+    fn native_watcher_data_lives_until_the_last_callback_owner_drops() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let data = Box::into_raw(Box::new(NativeWatcherData {
+            events: Rc::clone(&events),
+        }))
+        .cast();
+
+        let watcher = unsafe { WuiWatcher::<u32>::new(data, record_call, record_drop) };
+        let callback = watcher.into_inner();
+
+        callback(Context::new(42, Metadata::new()));
+        assert_eq!(&*events.borrow(), &["call"]);
+
+        drop(callback);
+        assert_eq!(&*events.borrow(), &["call", "drop"]);
+    }
 }

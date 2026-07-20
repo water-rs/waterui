@@ -261,7 +261,7 @@ impl Shell {
                         tag_style = styles::TAG,
                     )?;
                 } else {
-                    writeln!(stderr, "{level_style}{platform}/{level_char}{reset} {msg}",)?;
+                    writeln!(stderr, "{level_style}{platform}/{level_char}{reset} {msg}")?;
                 }
                 stderr.flush()
             }

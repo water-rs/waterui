@@ -24,7 +24,7 @@ async-channel.workspace = true
 blocking.workspace = true
 encase.workspace = true
 executor-core.workspace = true
-glam = "0.29"
+glam = "0.33"
 num-traits = { version = "0.2", default-features = false }
 futures.workspace = true
 tracing.workspace = true

@@ -67,7 +67,7 @@ impl CrashReportContext {
             return Ok(None);
         }
 
-        let device_identifier = whoami::fallible::hostname()
+        let device_identifier = whoami::hostname()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to determine hostname: {e}"))?;
 
         let process_name = match project.manifest().package.package_type {

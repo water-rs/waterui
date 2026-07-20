@@ -143,10 +143,10 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
 
     for ((((target, flamegraph), json_report), trace), html_report) in targets
         .into_iter()
-        .zip(flamegraphs.into_iter())
-        .zip(json_reports.into_iter())
-        .zip(traces.into_iter())
-        .zip(html_reports.into_iter())
+        .zip(flamegraphs)
+        .zip(json_reports)
+        .zip(traces)
+        .zip(html_reports)
     {
         if args.format != PreviewPerfOutputFormat::Json {
             header!("Preview perf: {}", target.display_name());

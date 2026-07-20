@@ -7,8 +7,10 @@
 use waterui::prelude::*;
 use waterui::prelude::{slider::slider, stepper::stepper};
 use waterui::reactive::binding;
-use waterui_core::{AnyView, Environment};
+use waterui_core::AnyView;
 use waterui_dew::{DewRenderer, DrawCommand, render_view_png, theme};
+
+mod support;
 
 // The prelude glob also exports `waterui::test`; pull the built-in test
 // attribute back into scope explicitly.
@@ -89,7 +91,7 @@ fn build_screen() -> impl View {
 /// white background fill, and exports it for visual review.
 #[test]
 fn form_ui_renders_to_png() {
-    let png = render_view_png(build_screen, Environment::new(), WIDTH, HEIGHT);
+    let png = render_view_png(build_screen, support::test_environment(), WIDTH, HEIGHT);
     std::fs::write("/tmp/dew_form_render.png", &png).expect("export form render PNG");
 
     let pixmap = vello_cpu::Pixmap::from_png(std::io::Cursor::new(png.as_slice()))
@@ -113,7 +115,7 @@ fn form_scene_contains_expected_widget_commands() {
     let mut renderer = DewRenderer::default();
     let list = renderer.render_tree(
         AnyView::new(build_screen()),
-        &Environment::new(),
+        &support::test_environment(),
         f64::from(WIDTH),
         f64::from(HEIGHT),
     );

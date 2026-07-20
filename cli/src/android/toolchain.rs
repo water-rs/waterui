@@ -860,24 +860,6 @@ fn parse_android_ndk_version_from_runtime_build_gradle(contents: &str) -> Option
     })
 }
 
-#[cfg(test)]
-fn parse_android_kotlin_version_from_settings_gradle(contents: &str) -> Option<String> {
-    contents.lines().find_map(|line| {
-        let line = line.split("//").next()?.trim();
-        if !line.contains("id(\"org.jetbrains.kotlin.android\")") {
-            return None;
-        }
-        let version_marker = "version \"";
-        let version_start = line.find(version_marker)? + version_marker.len();
-        let version = line[version_start..].split('"').next()?.trim();
-        if version.is_empty() {
-            None
-        } else {
-            Some(version.to_string())
-        }
-    })
-}
-
 fn required_ndk_version_in_current_workspace() -> Option<String> {
     let runtime_build_gradle =
         find_file_in_current_workspace(Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH))?;
@@ -1828,28 +1810,13 @@ mod tests {
     fn parse_android_ndk_version_from_runtime_build_gradle_extracts_declared_version() {
         let contents = r#"
 android {
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = "29.0.14206865"
 }
 "#;
         assert_eq!(
             parse_android_ndk_version_from_runtime_build_gradle(contents),
             Some("29.0.14206865".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_android_kotlin_version_from_settings_gradle_extracts_declared_version() {
-        let contents = r#"
-pluginManagement {
-    plugins {
-        id("org.jetbrains.kotlin.android") version "2.0.21"
-    }
-}
-"#;
-        assert_eq!(
-            parse_android_kotlin_version_from_settings_gradle(contents),
-            Some("2.0.21".to_string())
         );
     }
 

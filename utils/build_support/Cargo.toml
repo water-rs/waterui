@@ -11,9 +11,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-askama = "0.14"
+askama = "0.16"
 heck = "0.5"
-ureq = "2.12"
+ureq = "3.3"
 shaderloom = { workspace = true, features = ["build"] }
 
 [lints]

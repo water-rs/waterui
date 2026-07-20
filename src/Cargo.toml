@@ -52,17 +52,17 @@ waterui-particle = { workspace = true, optional = true }
 
 async-fs = "2.2.0"
 pastey.workspace = true
-tree-sitter = { version = "0.25", optional = true }
+tree-sitter = { version = "0.26", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
-tree-sitter-rust = { version = "0.23", optional = true }
-tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-python = { version = "0.23", optional = true }
-tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
 tree-sitter-java = { version = "0.23", optional = true }
 tree-sitter-swift = { version = "0.7", optional = true }
 tree-sitter-json = { version = "0.24", optional = true }
-tree-sitter-bash = { version = "0.23", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
 tree-sitter-sequel = { version = "0.3.11", optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]

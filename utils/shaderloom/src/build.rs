@@ -230,8 +230,8 @@ const fn is_msl_version_error(error: &msl::Error) -> bool {
         error,
         msl::Error::UnsupportedAttribute(_)
             | msl::Error::UnsupportedFunction(_)
-            | msl::Error::UnsupportedWriteableStorageBuffer
-            | msl::Error::UnsupportedWriteableStorageTexture(_)
+            | msl::Error::UnsupportedWritableStorageBuffer
+            | msl::Error::UnsupportedWritableStorageTexture(_)
             | msl::Error::UnsupportedRWStorageTexture
             | msl::Error::UnsupportedArrayOf(_)
             | msl::Error::UnsupportedRayTracing

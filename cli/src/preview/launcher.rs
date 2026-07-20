@@ -1371,7 +1371,7 @@ fn resolved_graph_fingerprint(metadata: &cargo_metadata::Metadata) -> Result<Str
         hasher.update(unit.as_bytes());
         hasher.update(b"\n");
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn runtime_fingerprint(base: &str, features: &[String], graph_fingerprint: &str) -> String {

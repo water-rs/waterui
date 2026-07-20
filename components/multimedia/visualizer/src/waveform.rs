@@ -25,37 +25,34 @@ struct ResolvedWaveform {
 }
 
 mod shader_types {
-    #![expect(
-        dead_code,
-        reason = "encase ShaderType derive emits layout check helpers"
-    )]
-
     use encase::ShaderType;
+    use waterui_graphics::shader_types::{ShaderVec2, ShaderVec3};
 
     /// Uniform buffer struct for waveform visualizer.
     /// Uses encase for automatic WGSL-compatible alignment.
     #[derive(Copy, Clone, Debug, ShaderType)]
     pub(super) struct Uniforms {
         /// Viewport resolution [width, height].
-        pub(super) resolution: glam::Vec2,
+        pub(super) resolution: ShaderVec2,
         /// Elapsed time in seconds.
         pub(super) time: f32,
         /// Sensitivity (amplitude multiplier).
         pub(super) sensitivity: f32,
         /// Background color in linear RGB.
-        pub(super) bg_color: glam::Vec3,
+        pub(super) bg_color: ShaderVec3,
         /// Line width in pixels.
         pub(super) line_width: f32,
         /// Glow intensity (0.0 to 1.0).
         pub(super) glow_intensity: f32,
         /// Line color in linear RGB.
-        pub(super) line_color: glam::Vec3,
+        pub(super) line_color: ShaderVec3,
         /// Glow color in linear RGB.
-        pub(super) glow_color: glam::Vec3,
+        pub(super) glow_color: ShaderVec3,
     }
 }
 
 use shader_types::Uniforms;
+use waterui_graphics::shader_types::{ShaderVec2, ShaderVec3};
 
 /// A real-time waveform oscilloscope visualizer.
 ///
@@ -445,7 +442,7 @@ impl GpuView for WaveformRenderer {
 
         // 2. Update Uniforms using encase
         let uniforms = Uniforms {
-            resolution: glam::Vec2::new(
+            resolution: ShaderVec2::new(
                 frame
                     .width
                     .to_f32()
@@ -460,11 +457,11 @@ impl GpuView for WaveformRenderer {
                 .sensitivity
                 .to_f32()
                 .expect("waveform sensitivity must be representable as f32"),
-            bg_color: glam::Vec3::from_array(config.bg_color),
+            bg_color: ShaderVec3::from_array(config.bg_color),
             line_width: config.line_width,
             glow_intensity: config.glow_intensity,
-            line_color: glam::Vec3::from_array(config.line_color),
-            glow_color: glam::Vec3::from_array(config.glow_color),
+            line_color: ShaderVec3::from_array(config.line_color),
+            glow_color: ShaderVec3::from_array(config.glow_color),
         };
         self.uniform_data.as_mut().clear();
         self.uniform_data

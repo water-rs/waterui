@@ -79,50 +79,45 @@ pub(crate) fn draw_scroll_indicators(
     let theme = widget_theme(env);
     let mut draw = ctx.draw_context();
     match axis {
-        ScrollAxis::Vertical | ScrollAxis::All => {
-            if metrics.max_y > 0.0 {
-                let track_height = viewport.height();
-                let min_thumb_height = track_height.min(12.0);
-                let thumb_height = (track_height
-                    * (metrics.viewport_height / metrics.content_height))
-                    .clamp(min_thumb_height, track_height);
-                let travel = track_height - thumb_height;
-                let progress = metrics.offset_y / metrics.max_y;
-                let thumb_y = viewport.y0 + travel * progress;
-                theme.draw_scroll_indicator(
-                    &mut draw,
-                    vello::kurbo::Rect::new(
-                        viewport.x1 - 4.0,
-                        thumb_y,
-                        viewport.x1 - 1.5,
-                        thumb_y + thumb_height,
-                    ),
-                );
-            }
+        ScrollAxis::Vertical | ScrollAxis::All if metrics.max_y > 0.0 => {
+            let track_height = viewport.height();
+            let min_thumb_height = track_height.min(12.0);
+            let thumb_height = (track_height * (metrics.viewport_height / metrics.content_height))
+                .clamp(min_thumb_height, track_height);
+            let travel = track_height - thumb_height;
+            let progress = metrics.offset_y / metrics.max_y;
+            let thumb_y = viewport.y0 + travel * progress;
+            theme.draw_scroll_indicator(
+                &mut draw,
+                vello::kurbo::Rect::new(
+                    viewport.x1 - 4.0,
+                    thumb_y,
+                    viewport.x1 - 1.5,
+                    thumb_y + thumb_height,
+                ),
+            );
         }
         _ => {}
     }
 
     match axis {
-        ScrollAxis::Horizontal | ScrollAxis::All => {
-            if metrics.max_x > 0.0 {
-                let track_width = viewport.width();
-                let min_thumb_width = track_width.min(12.0);
-                let thumb_width = (track_width * (metrics.viewport_width / metrics.content_width))
-                    .clamp(min_thumb_width, track_width);
-                let travel = track_width - thumb_width;
-                let progress = metrics.offset_x / metrics.max_x;
-                let thumb_x = viewport.x0 + travel * progress;
-                theme.draw_scroll_indicator(
-                    &mut draw,
-                    vello::kurbo::Rect::new(
-                        thumb_x,
-                        viewport.y1 - 4.0,
-                        thumb_x + thumb_width,
-                        viewport.y1 - 1.5,
-                    ),
-                );
-            }
+        ScrollAxis::Horizontal | ScrollAxis::All if metrics.max_x > 0.0 => {
+            let track_width = viewport.width();
+            let min_thumb_width = track_width.min(12.0);
+            let thumb_width = (track_width * (metrics.viewport_width / metrics.content_width))
+                .clamp(min_thumb_width, track_width);
+            let travel = track_width - thumb_width;
+            let progress = metrics.offset_x / metrics.max_x;
+            let thumb_x = viewport.x0 + travel * progress;
+            theme.draw_scroll_indicator(
+                &mut draw,
+                vello::kurbo::Rect::new(
+                    thumb_x,
+                    viewport.y1 - 4.0,
+                    thumb_x + thumb_width,
+                    viewport.y1 - 1.5,
+                ),
+            );
         }
         _ => {}
     }

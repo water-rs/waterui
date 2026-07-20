@@ -14,6 +14,8 @@ mod gradients;
 mod image;
 #[cfg(feature = "gpu")]
 mod scene;
+#[cfg(feature = "gpu")]
+pub mod shader_types;
 
 pub use color::{Color, Colorspace, ResolvedColor};
 #[cfg(feature = "gpu")]

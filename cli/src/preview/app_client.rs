@@ -536,7 +536,7 @@ fn load_registered_instances_sync(
         }
     }
 
-    matching.sort_by(|left, right| right.registered_at_unix_ms.cmp(&left.registered_at_unix_ms));
+    matching.sort_by_key(|registration| std::cmp::Reverse(registration.registered_at_unix_ms));
 
     for path in stale_paths {
         match fs::remove_file(path) {

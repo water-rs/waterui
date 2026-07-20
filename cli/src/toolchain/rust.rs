@@ -18,19 +18,19 @@ pub struct RustToolchain;
 #[derive(Debug, Clone, Default)]
 pub struct RustToolchainInstallation {
     install_stable_toolchain: bool,
-    update_stable_toolchain: bool,
+    update_toolchain: Option<String>,
     add_host_target: Option<String>,
 }
 
 impl RustToolchainInstallation {
-    const fn require_stable_install(&mut self) {
+    fn require_stable_install(&mut self) {
         self.install_stable_toolchain = true;
-        self.update_stable_toolchain = false;
+        self.update_toolchain = None;
     }
 
-    const fn require_stable_update(&mut self) {
+    fn require_toolchain_update(&mut self, toolchain: String) {
         if !self.install_stable_toolchain {
-            self.update_stable_toolchain = true;
+            self.update_toolchain = Some(toolchain);
         }
     }
 
@@ -42,7 +42,7 @@ impl RustToolchainInstallation {
     #[must_use]
     pub const fn has_actions(&self) -> bool {
         self.install_stable_toolchain
-            || self.update_stable_toolchain
+            || self.update_toolchain.is_some()
             || self.add_host_target.is_some()
     }
 
@@ -53,8 +53,8 @@ impl RustToolchainInstallation {
         if self.install_stable_toolchain {
             actions.push(String::from("install `rustup toolchain install stable`"));
         }
-        if self.update_stable_toolchain {
-            actions.push(String::from("run `rustup update stable`"));
+        if let Some(toolchain) = &self.update_toolchain {
+            actions.push(format!("update `{toolchain}` via rustup"));
         }
         if let Some(target) = &self.add_host_target {
             actions.push(format!("add host target via `rustup target add {target}`"));
@@ -77,9 +77,14 @@ pub enum FailToInstallRustToolchain {
     /// Failed to install stable toolchain.
     #[error("Failed to install Rust stable toolchain: {0}")]
     InstallStableToolchain(eyre::Report),
-    /// Failed to update stable toolchain.
-    #[error("Failed to update Rust stable toolchain: {0}")]
-    UpdateStableToolchain(eyre::Report),
+    /// Failed to update the active toolchain.
+    #[error("Failed to update active Rust toolchain `{toolchain}`: {source}")]
+    UpdateToolchain {
+        /// Active rustup toolchain that failed to update.
+        toolchain: String,
+        /// Underlying command error.
+        source: eyre::Report,
+    },
     /// Failed to add host target.
     #[error("Failed to add Rust host target `{target}`: {source}")]
     AddHostTarget {
@@ -108,10 +113,13 @@ impl Installation for RustToolchainInstallation {
                 .map_err(FailToInstallRustToolchain::InstallStableToolchain)?;
         }
 
-        if self.update_stable_toolchain {
-            run_command("rustup", ["update", "stable"])
+        if let Some(toolchain) = &self.update_toolchain {
+            run_command("rustup", ["update", toolchain.as_str()])
                 .await
-                .map_err(FailToInstallRustToolchain::UpdateStableToolchain)?;
+                .map_err(|source| FailToInstallRustToolchain::UpdateToolchain {
+                    toolchain: toolchain.clone(),
+                    source,
+                })?;
         }
 
         if let Some(target) = &self.add_host_target {
@@ -134,10 +142,15 @@ impl Toolchain for RustToolchain {
         let availability = detect_rust_tool_availability().await;
         ensure_minimum_rust_tools(availability)?;
         let mut installation = RustToolchainInstallation::default();
-        check_active_toolchain(availability.rustup_available, &mut installation).await?;
+        let active_toolchain =
+            check_active_toolchain(availability.rustup_available, &mut installation).await?;
         ensure_cargo_available(availability, &mut installation)?;
-        let host_target =
-            check_rustc_version_and_host_target(availability, &mut installation).await?;
+        let host_target = check_rustc_version_and_host_target(
+            availability,
+            active_toolchain.as_deref(),
+            &mut installation,
+        )
+        .await?;
         check_installed_targets(availability.rustup_available, &installation, host_target).await?;
 
         installation
@@ -179,18 +192,23 @@ async fn detect_rust_tool_availability() -> RustToolAvailability {
 async fn check_active_toolchain(
     rustup_available: bool,
     installation: &mut RustToolchainInstallation,
-) -> Result<(), ToolchainError<RustToolchainInstallation>> {
+) -> Result<Option<String>, ToolchainError<RustToolchainInstallation>> {
     if !rustup_available {
-        return Ok(());
+        return Ok(None);
     }
 
     match run_command("rustup", ["show", "active-toolchain"]).await {
-        Ok(_) => Ok(()),
+        Ok(output) => parse_active_toolchain(&output).map(Some).map_err(|error| {
+            ToolchainError::unfixable(
+                format!("Could not parse the active rustup toolchain: {error}"),
+                "Run `rustup show active-toolchain`; repair or reinstall rustup if it does not return a toolchain name.",
+            )
+        }),
         Err(error) => {
             let error_message = error.to_string();
             if is_no_active_toolchain_error(&error_message) {
                 installation.require_stable_install();
-                Ok(())
+                Ok(None)
             } else {
                 Err(ToolchainError::unfixable(
                     format!(
@@ -223,6 +241,7 @@ fn ensure_cargo_available(
 
 async fn check_rustc_version_and_host_target(
     availability: RustToolAvailability,
+    active_toolchain: Option<&str>,
     installation: &mut RustToolchainInstallation,
 ) -> Result<Option<String>, ToolchainError<RustToolchainInstallation>> {
     if !availability.rustc_available {
@@ -237,6 +256,7 @@ async fn check_rustc_version_and_host_target(
     let required_version = parse_required_rustc_version()?;
     maybe_require_rust_update(
         availability.rustup_available,
+        active_toolchain,
         &installed_version,
         &required_version,
         installation,
@@ -311,6 +331,7 @@ fn parse_required_rustc_version() -> Result<Version, ToolchainError<RustToolchai
 
 fn maybe_require_rust_update(
     rustup_available: bool,
+    active_toolchain: Option<&str>,
     installed_version: &Version,
     required_version: &Version,
     installation: &mut RustToolchainInstallation,
@@ -320,7 +341,10 @@ fn maybe_require_rust_update(
     }
 
     if rustup_available {
-        installation.require_stable_update();
+        match active_toolchain {
+            Some(toolchain) => installation.require_toolchain_update(toolchain.to_owned()),
+            None => installation.require_stable_install(),
+        }
         Ok(())
     } else {
         Err(ToolchainError::unfixable(
@@ -389,6 +413,15 @@ async fn installed_rustup_targets() -> eyre::Result<Vec<String>> {
 
 fn required_rust_version() -> eyre::Result<Version> {
     parse_semver_version(REQUIRED_RUST_VERSION)
+}
+
+fn parse_active_toolchain(output: &str) -> eyre::Result<String> {
+    output
+        .split_whitespace()
+        .next()
+        .filter(|toolchain| !toolchain.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| eyre::eyre!("expected `<toolchain> (<reason>)` output"))
 }
 
 fn parse_rustc_version(output: &str) -> eyre::Result<Version> {
@@ -464,7 +497,8 @@ mod tests {
     use semver::Version;
 
     use super::{
-        RustToolchainInstallation, parse_host_target, parse_rustc_version, parse_semver_version,
+        RustToolchainInstallation, parse_active_toolchain, parse_host_target, parse_rustc_version,
+        parse_semver_version,
     };
 
     #[test]
@@ -484,6 +518,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_active_toolchain_preserves_selected_channel() {
+        let toolchain = parse_active_toolchain("nightly-aarch64-apple-darwin (default)")
+            .expect("active toolchain");
+        assert_eq!(toolchain, "nightly-aarch64-apple-darwin");
+    }
+
+    #[test]
     fn parse_host_target_extracts_host_line() {
         let output = "rustc 1.88.0 (aabbcc 2026-01-01)\nbinary: rustc\nhost: x86_64-unknown-linux-gnu\nrelease: 1.88.0\n";
         let host = parse_host_target(output).expect("host target");
@@ -493,10 +534,10 @@ mod tests {
     #[test]
     fn installation_summary_lists_actions() {
         let mut installation = RustToolchainInstallation::default();
-        installation.require_stable_update();
+        installation.require_toolchain_update(String::from("nightly-aarch64-apple-darwin"));
         installation.require_host_target(String::from("x86_64-unknown-linux-gnu"));
         let summary = installation.summary();
-        assert!(summary.contains("rustup update stable"));
+        assert!(summary.contains("update `nightly-aarch64-apple-darwin` via rustup"));
         assert!(summary.contains("rustup target add x86_64-unknown-linux-gnu"));
     }
 }

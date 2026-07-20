@@ -4,9 +4,8 @@ use core::ops::Deref;
 use core::str::FromStr;
 use std::collections::BTreeSet;
 
-use icu_locid::{LanguageIdentifier, Locale as IcuLocale};
-use icu_locid_transform::LocaleFallbacker;
-use icu_locid_transform::fallback::LocaleFallbackConfig;
+use icu_locale::fallback::LocaleFallbackConfig;
+use icu_locale::{LanguageIdentifier, Locale as IcuLocale, LocaleFallbacker};
 use icu_provider::DataLocale;
 use nami::{Binding, impl_constant};
 use waterui_core::Environment;
@@ -84,7 +83,7 @@ impl<'a> From<&'a Locale> for &'a LanguageIdentifier {
 }
 
 impl FromStr for Locale {
-    type Err = icu_locid::ParserError;
+    type Err = icu_locale::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         IcuLocale::from_str(s).map(Self)
@@ -93,7 +92,7 @@ impl FromStr for Locale {
 
 /// Built-in locale constants using ICU4X.
 pub mod locales {
-    use icu_locid::locale;
+    use icu_locale::locale;
 
     use super::Locale;
 
@@ -213,10 +212,10 @@ fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut
     // Collect up to 10 fallback locales.
     for _ in 0..10 {
         let current = iterator.get();
-        if current.is_und() {
+        if current.is_unknown() {
             break;
         }
-        let fallback = Locale(current.clone().into_locale());
+        let fallback = Locale((*current).into_locale());
         if seen.insert(fallback.canonical_tag()) {
             out.push(fallback);
         }

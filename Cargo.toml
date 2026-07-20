@@ -60,7 +60,7 @@ path = "src/runtime/facade.rs"
 version = "0.2.1"
 edition = "2024"
 authors = ["Lexo Liu"]
-rust-version = "1.88"
+rust-version = "1.95"
 license = "Apache-2.0 OR MIT"
 readme = "README.md"
 repository = "https://github.com/water-rs/waterui"
@@ -85,8 +85,7 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 [workspace.dependencies]
-# dispatch2 0.3.1 exceeds rustc's macro recursion limit with bitflags 2.12 on Apple.
-bitflags = "=2.11.1"
+bitflags = "2.13.1"
 blocking = "1.6.2"
 executor-core = { version = "0.7.1", features = ["std"]}
 futures = "0.3"
@@ -95,8 +94,8 @@ nami = { version = "0.10.1", path = "utils/nami" }
 nami-core = { version = "0.3.2", path = "utils/nami/core" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "2.0.18"
-uuid = { version = "1.21.0", features = ["v4"] }
+thiserror = "2.0.19"
+uuid = { version = "1.24.0", features = ["v4"] }
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.1", path = "utils/url" }
@@ -158,39 +157,39 @@ waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 wgpu = "29.0.4"
-encase = { version = "0.10", features = ["glam"] }
+encase = "0.12"
 vello = "0.9"
-parley = { version = "0.7", default-features = false }
-vello_svg = { git = "https://github.com/linebender/vello_svg.git", rev = "2db0427e4dc9879bd636caf69e60dee026d83699" }
+parley = { version = "0.11", default-features = false }
+vello_svg = "0.10.0"
 kurbo = "0.13"
 peniko = "0.6"
 vello_cpu = "0.0.9"
 lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
-glow = "0.16"
-tiny-skia = "0.11"
+glow = "0.18"
+tiny-skia = "0.12"
 zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend", "ws"] }
-pastey = "0.2.1"
+pastey = "0.2.3"
 tracing-panic = "0.1.2"
-robius-open = { version = "0.1", default-features = false }
-gtk4 = "0.9"
-gdk4 = "0.9"
-glib = "0.20"
-cairo-rs = { version = "0.20", features = ["v1_18"] }
-pollster = "0.4"
+robius-open = { version = "0.3", default-features = false }
+gtk4 = "0.11"
+gdk4 = "0.11"
+glib = "0.22"
+cairo-rs = { version = "0.22", features = ["v1_18"] }
+pollster = "1.0"
 jiff = { version = "0.2", features = ["serde"] }
 async-channel = "2.5"
-rodio = { version = "0.19", features = ["symphonia-isomp4", "symphonia-aac"] }
-cpal = "0.15"
-rustc-hash = "2.1.2"
+rodio = { version = "0.22", features = ["symphonia-isomp4", "symphonia-aac"] }
+cpal = "0.18"
+rustc-hash = "2.1.3"
 swift-bridge = "0.1"
 swift-bridge-build = "0.1"
-jni = "0.21"
+jni = "0.22"
 windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 zbus = "5"
 minstant = "0.1"
 cpu-time = "1.0"
-sysinfo = "0.37"
+sysinfo = "0.39"
 sys-locale = "0.3"
 iana-time-zone = "0.1"
 dirs = "6"

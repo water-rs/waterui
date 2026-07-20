@@ -1139,9 +1139,9 @@ fn validate_test_fn(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
         .to_compile_error()
         .into());
     }
-    if input_fn.sig.unsafety.is_some() {
+    if let syn::Safety::Unsafe(unsafe_token) = &input_fn.sig.safety {
         return Err(syn::Error::new_spanned(
-            input_fn.sig.unsafety,
+            unsafe_token,
             "`#[waterui::test(...)]` does not support unsafe functions",
         )
         .to_compile_error()

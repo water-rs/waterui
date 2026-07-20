@@ -1,29 +1,20 @@
 //! Locale-aware number formatting.
 
-use core::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fixed_decimal::FixedDecimal;
-use icu_decimal::{FixedDecimalFormatter, options::FixedDecimalFormatterOptions};
-use icu_provider::DataLocale;
+use fixed_decimal::Decimal;
+use icu_decimal::{DecimalFormatter, options::DecimalFormatterOptions};
 
 use crate::locale::{Locale, locales};
 
 static NUMBER_FORMATTER_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 
-fn data_locale(locale: &Locale) -> DataLocale {
-    locale.0.clone().into()
-}
-
-fn decimal_formatter(locale: &Locale) -> Option<FixedDecimalFormatter> {
-    match FixedDecimalFormatter::try_new(
-        &data_locale(locale),
-        FixedDecimalFormatterOptions::default(),
-    ) {
+fn decimal_formatter(locale: &Locale) -> Option<DecimalFormatter> {
+    match DecimalFormatter::try_new(locale.0.clone().into(), DecimalFormatterOptions::default()) {
         Ok(formatter) => Some(formatter),
-        Err(primary_error) => match FixedDecimalFormatter::try_new(
-            &data_locale(&locales::EN),
-            FixedDecimalFormatterOptions::default(),
+        Err(primary_error) => match DecimalFormatter::try_new(
+            locales::EN.0.into(),
+            DecimalFormatterOptions::default(),
         ) {
             Ok(formatter) => Some(formatter),
             Err(fallback_error) => {
@@ -44,8 +35,8 @@ fn decimal_formatter(locale: &Locale) -> Option<FixedDecimalFormatter> {
     }
 }
 
-fn to_fixed_decimal(n: f64) -> FixedDecimal {
-    debug_assert!(n.is_finite(), "to_fixed_decimal expects a finite number");
+fn to_decimal(n: f64) -> Decimal {
+    debug_assert!(n.is_finite(), "to_decimal expects a finite number");
 
     // Preserve up to 15 fractional digits while avoiding scientific notation.
     let mut buf = format!("{n:.15}");
@@ -58,11 +49,12 @@ fn to_fixed_decimal(n: f64) -> FixedDecimal {
         }
     }
 
-    if let Ok(parsed) = FixedDecimal::from_str(&buf) {
+    if let Ok(parsed) = buf.parse() {
         return parsed;
     }
 
-    FixedDecimal::from_str(&format!("{n:.2}"))
+    format!("{n:.2}")
+        .parse()
         .expect("fixed decimal fallback formatting should always produce a parseable decimal")
 }
 
@@ -95,7 +87,7 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
         };
     }
 
-    let decimal = to_fixed_decimal(n);
+    let decimal = to_decimal(n);
     decimal_formatter(locale).map_or_else(
         || n.to_string(),
         |formatter| formatter.format(&decimal).to_string(),

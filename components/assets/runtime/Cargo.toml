@@ -24,12 +24,12 @@ blocking = "1.6.2"
 memmap2 = "0.9"
 
 # Caching
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 # Async filesystem
 smol = "2.0"
-tempfile = "3.26"
+tempfile = "3.27"
 dirs.workspace = true
 
 [features]

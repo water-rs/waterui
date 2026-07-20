@@ -186,11 +186,6 @@ impl Default for AnimatedMeshGradientConfig {
 }
 
 mod shader_types {
-    #![expect(
-        dead_code,
-        reason = "encase ShaderType derive emits layout check helpers"
-    )]
-
     use super::ANIMATED_MESH_PALETTE_LEN;
     use encase::ShaderType;
 
@@ -200,9 +195,9 @@ mod shader_types {
         pub(super) speed: f32,
         pub(super) warp: f32,
         pub(super) _pad0: f32,
-        pub(super) resolution: glam::Vec2,
-        pub(super) _pad1: glam::Vec2,
-        pub(super) palette: [glam::Vec4; ANIMATED_MESH_PALETTE_LEN],
+        pub(super) resolution: [f32; 2],
+        pub(super) _pad1: [f32; 2],
+        pub(super) palette: [[f32; 4]; ANIMATED_MESH_PALETTE_LEN],
     }
 }
 
@@ -210,7 +205,7 @@ use shader_types::AnimatedMeshUniforms;
 
 struct AnimatedMeshRenderer {
     config: AnimatedMeshGradientConfig,
-    palette_gpu: [glam::Vec4; ANIMATED_MESH_PALETTE_LEN],
+    palette_gpu: [[f32; 4]; ANIMATED_MESH_PALETTE_LEN],
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
@@ -220,9 +215,9 @@ struct AnimatedMeshRenderer {
 
 impl AnimatedMeshRenderer {
     fn new(config: AnimatedMeshGradientConfig) -> Self {
-        let mut palette_gpu = [glam::Vec4::ZERO; ANIMATED_MESH_PALETTE_LEN];
+        let mut palette_gpu = [[0.0; 4]; ANIMATED_MESH_PALETTE_LEN];
         for (dst, src) in palette_gpu.iter_mut().zip(config.palette.iter()) {
-            *dst = glam::Vec4::new(src.red, src.green, src.blue, src.opacity);
+            *dst = [src.red, src.green, src.blue, src.opacity];
         }
 
         Self {
@@ -350,8 +345,8 @@ impl GpuView for AnimatedMeshRenderer {
             speed: self.config.speed,
             warp: self.config.warp,
             _pad0: 0.0,
-            resolution: glam::Vec2::new(u32_to_f32(frame.width), u32_to_f32(frame.height)),
-            _pad1: glam::Vec2::ZERO,
+            resolution: [u32_to_f32(frame.width), u32_to_f32(frame.height)],
+            _pad1: [0.0; 2],
             palette: self.palette_gpu,
         };
 

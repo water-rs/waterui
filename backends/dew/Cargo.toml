@@ -61,6 +61,8 @@ esp-idf-svc = { version = "0.52", optional = true }
 
 [dev-dependencies]
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
+executor-core.workspace = true
+native-executor.workspace = true
 
 [[example]]
 name = "watch_sim"

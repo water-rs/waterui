@@ -1,7 +1,7 @@
 //! Runtime translation catalog loaded from app-provided i18n tables.
 
 use std::collections::BTreeMap;
-use std::string::{String, ToString};
+use std::string::String;
 
 use waterui_core::plugin::Plugin;
 use waterui_str::Str;

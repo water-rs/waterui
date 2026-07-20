@@ -228,7 +228,9 @@ fn analyze_fields(fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<Fie
 
     for (tuple_idx, field) in fields.iter().enumerate() {
         match &field.ty {
-            Type::Path(TypePath { qself: None, path }) => {
+            Type::Path(TypePath {
+                qself: None, path, ..
+            }) => {
                 let ident = path
                     .get_ident()
                     .cloned()
@@ -246,7 +248,9 @@ fn analyze_fields(fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<Fie
             }
             Type::Array(TypeArray { elem, len, .. }) => {
                 let ident = match &**elem {
-                    Type::Path(TypePath { qself: None, path }) => path
+                    Type::Path(TypePath {
+                        qself: None, path, ..
+                    }) => path
                         .get_ident()
                         .cloned()
                         .ok_or_else(|| {

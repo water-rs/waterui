@@ -34,7 +34,7 @@ use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
 use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Str, View};
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_layout::Divider;
 use waterui_layout::container::FixedContainer;
 use waterui_layout::scroll::ScrollView;
@@ -332,7 +332,9 @@ pub(crate) fn measure_view(
         let (width, height) = state.borrow_mut().measure_plain(text, proposal.width);
         return ViewDimensions::new(Size::new(width, height));
     }
-    if view.downcast_ref::<Native<ResolvedColor>>().is_some() {
+    if view.downcast_ref::<Native<Color>>().is_some()
+        || view.downcast_ref::<Native<ResolvedColor>>().is_some()
+    {
         return ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(0.0),
             proposal.height.unwrap_or(0.0),
@@ -428,6 +430,7 @@ fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
 
 fn register_core_handlers(dispatcher: &mut DewDispatcher) {
     dispatcher.register::<Native<FixedContainer>>(render_container);
+    dispatcher.register::<Native<Color>>(render_color);
     dispatcher.register::<Native<ResolvedColor>>(render_resolved_color);
     dispatcher.register::<Native<Spacer>>(render_spacer);
     dispatcher.register::<Native<()>>(render_unit);
@@ -468,13 +471,27 @@ fn render_container(
     }
 }
 
+fn render_color(
+    renderer: &mut DewRenderer,
+    ctx: RenderContext,
+    view: Native<Color>,
+    env: &Environment,
+) {
+    let resolved = view.into_inner().resolve(env);
+    let color = renderer.read_signal(&resolved);
+    render_color_value(renderer, ctx, color);
+}
+
 fn render_resolved_color(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
     view: Native<ResolvedColor>,
     _env: &Environment,
 ) {
-    let color = view.into_inner();
+    render_color_value(renderer, ctx, view.into_inner());
+}
+
+fn render_color_value(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedColor) {
     let srgb = color.to_srgb_with_headroom();
     let paint = peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity]);
     renderer.list.fill(&ctx.bounds, ctx.transform, paint);

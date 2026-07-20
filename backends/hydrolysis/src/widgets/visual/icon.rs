@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::ViewExt as _;
-use waterui::accessibility::AccessibilityRole;
+use waterui::accessibility::AccessibilityHidden;
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::shape::RoundedRectangle;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -11,7 +11,8 @@ use waterui_layout::stack::zstack;
 
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, WidgetRenderContext,
-    measure_view_dimensions_with_proposal, measure_view_intrinsic, normalize_view_for_render,
+    graphics_image_accessibility, measure_view_dimensions_with_proposal, measure_view_intrinsic,
+    normalize_view_for_render,
 };
 
 /// Side length of the unsupported-`SystemIcon` placeholder marker, in points.
@@ -29,22 +30,19 @@ const ICON_RADIUS: f32 = 6.0;
 /// (an outlined rounded square in theme tokens) that surfaces the asymmetry without
 /// faking the icon — portable code should depend on a packaged icon crate
 /// (`waterui-icons-material-icon`, `waterui-icons-lucide`, `waterui-icons-fontawesome7`)
-/// instead. The marker carries the requested symbol name as its accessibility label.
-fn system_icon_placeholder(icon: &SystemIcon, env: &Environment) -> AnyView {
+/// instead. The icon leaf exposes the requested symbol name as its default
+/// accessibility label without overriding an app-provided label.
+fn system_icon_placeholder(env: &Environment) -> AnyView {
     let inner = ICON_SIZE - ICON_BORDER * 2.0;
     normalize_view_for_render(
-        AnyView::new(
-            zstack((
-                ().size(ICON_SIZE, ICON_SIZE)
-                    .background(MutedForeground)
-                    .clip(RoundedRectangle::new(ICON_RADIUS)),
-                ().size(inner, inner)
-                    .background(Surface)
-                    .clip(RoundedRectangle::new(ICON_RADIUS - ICON_BORDER)),
-            ))
-            .a11y_role(AccessibilityRole::Image)
-            .a11y_label(icon.name.as_str().to_owned()),
-        ),
+        AnyView::new(zstack((
+            ().size(ICON_SIZE, ICON_SIZE)
+                .background(MutedForeground)
+                .clip(RoundedRectangle::new(ICON_RADIUS)),
+            ().size(inner, inner)
+                .background(Surface)
+                .clip(RoundedRectangle::new(ICON_RADIUS - ICON_BORDER)),
+        ))),
         env,
     )
 }
@@ -52,16 +50,18 @@ fn system_icon_placeholder(icon: &SystemIcon, env: &Environment) -> AnyView {
 /// The retained render state of a system icon: the placeholder marker is a
 /// move-only `AnyView` (built once from the static icon name), so the persistent
 /// `Widget` node holds it as a [`RetainedSubview`] built once and re-flushed each
-/// frame. The marker's own dispatch drives accessibility (icon a11y is
-/// render-driven).
+/// frame. The icon leaf emits one image accessibility node alongside the marker,
+/// preserving an app-provided label over the symbol-name default.
 pub(crate) struct IconRenderState {
     placeholder: RetainedSubview,
+    default_label: String,
 }
 
 impl IconRenderState {
     pub(crate) fn from_icon(icon: &SystemIcon, env: &Environment) -> Self {
         Self {
-            placeholder: RetainedSubview::new(system_icon_placeholder(icon, env)),
+            placeholder: RetainedSubview::new(system_icon_placeholder(env)),
+            default_label: icon.name.as_str().to_owned(),
         }
     }
 
@@ -73,22 +73,17 @@ impl IconRenderState {
 }
 
 impl HydroNativeView for Native<SystemIcon> {
-    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
-        measure_view_intrinsic(&system_icon_placeholder(view.as_inner(), env), state, env)
+    fn intrinsic(state: &mut HydroState, _view: &Self, env: &Environment) -> LayoutSize {
+        measure_view_intrinsic(&system_icon_placeholder(env), state, env)
     }
 
     fn dimensions(
         state: &mut HydroState,
-        view: &Self,
+        _view: &Self,
         env: &Environment,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        measure_view_dimensions_with_proposal(
-            &system_icon_placeholder(view.as_inner(), env),
-            proposal,
-            state,
-            env,
-        )
+        measure_view_dimensions_with_proposal(&system_icon_placeholder(env), proposal, state, env)
     }
 }
 
@@ -103,8 +98,8 @@ pub(crate) fn measure_icon_node(
     ViewDimensions::new(state.placeholder.measure_built(hydro, env))
 }
 
-/// Renders a retained icon leaf every flush: flushes the placeholder marker
-/// sub-view, whose own dispatch drives accessibility (icon a11y is render-driven).
+/// Renders a retained icon leaf every flush: flushes the placeholder marker and
+/// emits its image accessibility node with the app label or symbol-name default.
 pub(crate) fn render_icon_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<IconRenderState>>,
@@ -124,4 +119,15 @@ pub(crate) fn render_icon_parts(
     state
         .placeholder
         .flush_in_rect(ctx.renderer_mut(), render_ctx, env, bounds);
+    if !env
+        .get::<AccessibilityHidden>()
+        .is_some_and(AccessibilityHidden::is_hidden)
+    {
+        graphics_image_accessibility(
+            ctx.renderer_mut(),
+            render_ctx,
+            env,
+            Some(state.default_label.clone()),
+        );
+    }
 }

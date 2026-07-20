@@ -491,6 +491,7 @@ mod tests {
                         item_name: String::new(),
                         content_type: None,
                         content_encoding: None,
+                        item_uri_type: None,
                         item_not_in_presentation: false,
                     }],
                 }),

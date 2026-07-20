@@ -6,8 +6,10 @@
 
 use nami::binding;
 use waterui::prelude::{Color, text, vstack};
-use waterui_core::{AnyView, Environment};
+use waterui_core::AnyView;
 use waterui_dew::{DewRuntime, HostBoard, render_view_png};
+
+mod support;
 
 /// Two stacked colors must split the screen, proving measure → place →
 /// render flows through a real `VStack` layout.
@@ -15,7 +17,7 @@ use waterui_dew::{DewRuntime, HostBoard, render_view_png};
 fn vstack_of_colors_splits_the_screen() {
     let png = render_view_png(
         || vstack((Color::red(), Color::blue())),
-        Environment::new(),
+        support::test_environment(),
         128,
         128,
     );
@@ -40,7 +42,7 @@ fn vstack_of_colors_splits_the_screen() {
 /// Text must produce visible glyphs: dark pixels somewhere in the layout.
 #[test]
 fn text_renders_visible_glyphs() {
-    let env = Environment::new();
+    let env = support::test_environment();
     let mut runtime = DewRuntime::new(HostBoard::new(240, 80), env, 16, || {
         AnyView::new(text("Hello, dew!"))
     });
@@ -64,7 +66,7 @@ fn text_renders_visible_glyphs() {
 fn binding_change_dirties_only_the_text_region() {
     let count = binding(1);
     let count_for_root = count.clone();
-    let env = Environment::new();
+    let env = support::test_environment();
     let mut runtime = DewRuntime::new(HostBoard::new(240, 240), env, 16, move || {
         let count = count_for_root.clone();
         AnyView::new(text!("Count: {count}"))
@@ -98,7 +100,7 @@ fn export_composed_ui_for_visual_review() {
                 text("vello_cpu + banded flush"),
             ))
         },
-        Environment::new(),
+        support::test_environment(),
         320,
         160,
     );
