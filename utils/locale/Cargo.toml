@@ -18,22 +18,21 @@ nami.workspace = true
 anyhow = "1.0"
 
 # ICU4X for locale handling
-icu_locid = "1.5"
-icu_locid_transform = "1.5"
-icu_plurals = "1.5"
-icu_decimal = "1.5"
-icu_datetime = { version = "1.5", features = ["experimental"] }
-icu_timezone = "1.5"
-icu_calendar = "1.5"
-icu_list = "1.5"
-icu_provider = "1.5"
-fixed_decimal = "0.5"
+icu_locale = "2.2"
+icu_plurals = "2.2"
+icu_decimal = "2.2"
+icu_datetime = "2.2"
+icu_time = { version = "2.2", features = ["unstable_jiff_0_2"] }
+icu_calendar = "2.2"
+icu_list = "2.2"
+icu_provider = "2.2"
+fixed_decimal = "0.7"
 jiff.workspace = true
 
 # Other dependencies
 num = "0.4"
 serde = { workspace = true, features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
 tracing.workspace = true
 sys-locale.workspace = true
 

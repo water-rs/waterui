@@ -66,7 +66,7 @@ impl ResourceFontFamilies {
             collection.set_generic_families(GenericFamily::SystemUi, self.generic.iter().copied());
         }
 
-        let hani = Script::from("Hani");
+        let hani = Script::from_str_unchecked("Hani");
         set_fallbacks(collection, hani, &self.hani_simplified);
         for locale in ["zh", "zh-CN", "zh-SG"] {
             set_fallbacks(collection, (hani, locale), &self.hani_simplified);

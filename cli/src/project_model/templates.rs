@@ -25,6 +25,18 @@ fn normalize_path_for_config(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn cargo_semver(version: &str) -> cargo_toml::SemVer {
+    version
+        .parse()
+        .unwrap_or_else(|error| panic!("Invalid Cargo semantic version `{version}`: {error}"))
+}
+
+fn cargo_version_req(version: &str) -> cargo_toml::VersionReq {
+    version
+        .parse()
+        .unwrap_or_else(|error| panic!("Invalid Cargo version requirement `{version}`: {error}"))
+}
+
 /// Embedded template directories.
 mod embedded {
     use super::{Dir, include_dir};
@@ -1554,7 +1566,7 @@ async fn write_native_backend_bin_cargo_toml(
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
 
     let mut manifest = Manifest::<()>::default();
-    let mut package = Package::new(package_name.to_string(), "0.1.0".to_string());
+    let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
     package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
     manifest.package = Some(package);
 
@@ -1592,7 +1604,7 @@ async fn write_native_backend_bin_cargo_toml(
         manifest.dependencies.insert(
             dependency.crate_name.to_string(),
             Dependency::Detailed(Box::new(DependencyDetail {
-                version: Some(dependency.version.to_string()),
+                version: Some(cargo_version_req(dependency.version)),
                 features,
                 ..Default::default()
             })),
@@ -2214,8 +2226,9 @@ pub mod ffi {
 
     use super::{
         NativeBackendDependencyPathKind, Path, TemplateContext, TemplateNamespace,
-        WATERUI_FFI_VERSION, WATERUI_VERSION, compute_native_backend_dependency_path, embedded, fs,
-        io, scaffold_dir, write_file_if_changed,
+        WATERUI_FFI_VERSION, WATERUI_VERSION, cargo_semver, cargo_version_req,
+        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
+        write_file_if_changed,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -2238,7 +2251,7 @@ pub mod ffi {
         package_name: &str,
     ) -> io::Result<()> {
         let mut manifest = Manifest::<()>::default();
-        let mut package = Package::new(package_name.to_string(), "0.1.0".to_string());
+        let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         manifest.package = Some(package);
 
@@ -2266,7 +2279,7 @@ pub mod ffi {
         let waterui_dependency = ctx.waterui_path.as_ref().map_or_else(
             || {
                 Dependency::Detailed(Box::new(DependencyDetail {
-                    version: Some(WATERUI_VERSION.to_string()),
+                    version: Some(cargo_version_req(WATERUI_VERSION)),
                     default_features: false,
                     ..Default::default()
                 }))
@@ -2290,7 +2303,7 @@ pub mod ffi {
         let ffi_dependency = ctx.waterui_path.as_ref().map_or_else(
             || {
                 Dependency::Detailed(Box::new(DependencyDetail {
-                    version: Some(WATERUI_FFI_VERSION.to_string()),
+                    version: Some(cargo_version_req(WATERUI_FFI_VERSION)),
                     default_features: false,
                     ..Default::default()
                 }))
@@ -2447,7 +2460,7 @@ pub mod preview {
                 dirs_to_process.push(subdir);
             }
         }
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 
     /// Write preview app templates to the given directory.
@@ -2603,8 +2616,9 @@ pub mod preview_ffi {
 
     use super::{
         NativeBackendDependencyPathKind, PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace,
-        WATERUI_FFI_VERSION, compute_native_backend_dependency_path, embedded, fs, io,
-        scaffold_dir, write_file_if_changed,
+        WATERUI_FFI_VERSION, cargo_semver, cargo_version_req,
+        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
+        write_file_if_changed,
     };
 
     /// Preview ABI exported to Apple support applications.
@@ -2638,7 +2652,7 @@ pub mod preview_ffi {
         package_name: &str,
     ) -> io::Result<()> {
         let mut manifest = Manifest::<()>::default();
-        let mut package = Package::new(package_name.to_string(), "0.1.0".to_string());
+        let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         manifest.package = Some(package);
 
@@ -2658,7 +2672,7 @@ pub mod preview_ffi {
 
         let ffi_dependency = ctx.waterui_path.as_ref().map_or_else(
             || DependencyDetail {
-                version: Some(WATERUI_FFI_VERSION.to_string()),
+                version: Some(cargo_version_req(WATERUI_FFI_VERSION)),
                 optional: true,
                 default_features: false,
                 ..Default::default()
@@ -2701,7 +2715,7 @@ pub mod preview_ffi {
             }
         } else {
             DependencyDetail {
-                version: Some(PREVIEW_VERSION.to_string()),
+                version: Some(cargo_version_req(PREVIEW_VERSION)),
                 optional: true,
                 ..Default::default()
             }
@@ -2758,7 +2772,7 @@ pub mod inspector {
                 dirs_to_process.push(subdir);
             }
         }
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 
     /// Write inspector app templates to the given directory.

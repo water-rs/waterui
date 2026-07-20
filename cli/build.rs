@@ -12,7 +12,6 @@ use toml::Value;
 
 const DEV_BRANCH_BUILD_KIND: &str = "dev-branch";
 const RELEASE_BUILD_KIND: &str = "release";
-const ANDROID_SETTINGS_GRADLE_RELATIVE_PATH: &str = "backends/android/settings.gradle.kts";
 
 struct ScaffoldVersions {
     waterui: String,
@@ -155,14 +154,6 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
         );
         println!(
             "cargo:rerun-if-changed={}",
-            workspace_root
-                .join("backends")
-                .join("android")
-                .join("settings.gradle.kts")
-                .display()
-        );
-        println!(
-            "cargo:rerun-if-changed={}",
             workspace_root.join(".gitmodules").display()
         );
         register_git_head_rerun(workspace_root);
@@ -203,6 +194,8 @@ fn resolve_scaffold_metadata(
     cli_manifest_dir: &Path,
     workspace_root: Option<&Path>,
 ) -> ScaffoldMetadata {
+    let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
+    let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
     if let Some(workspace_root) = workspace_root {
         return ScaffoldMetadata {
             versions: ScaffoldVersions {
@@ -224,7 +217,10 @@ fn resolve_scaffold_metadata(
                         .join("runtime")
                         .join("Cargo.toml"),
                 ),
-                android_kotlin: workspace_android_kotlin_version(workspace_root),
+                android_kotlin: manifest_scaffold_string(
+                    scaffold_metadata,
+                    "android-kotlin-version",
+                ),
                 hydrolysis: manifest_package_version(
                     &workspace_root
                         .join("backends")
@@ -243,8 +239,6 @@ fn resolve_scaffold_metadata(
         };
     }
 
-    let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
-    let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
     ScaffoldMetadata {
         versions: ScaffoldVersions {
             waterui: manifest_scaffold_string(scaffold_metadata, "waterui-version"),
@@ -265,35 +259,6 @@ fn manifest_scaffold_string(scaffold_metadata: &Value, key: &str) -> String {
         .as_str()
         .unwrap_or_else(|| panic!("missing package.metadata.waterui-scaffold.{key}"))
         .to_string()
-}
-
-fn parse_android_kotlin_version_from_settings_gradle(contents: &str) -> Option<String> {
-    contents.lines().find_map(|line| {
-        let line = line.split("//").next()?.trim();
-        if !line.contains("id(\"org.jetbrains.kotlin.android\")") {
-            return None;
-        }
-        let version_marker = "version \"";
-        let version_start = line.find(version_marker)? + version_marker.len();
-        let version = line[version_start..].split('"').next()?.trim();
-        if version.is_empty() {
-            None
-        } else {
-            Some(version.to_string())
-        }
-    })
-}
-
-fn workspace_android_kotlin_version(workspace_root: &Path) -> String {
-    let settings_gradle = workspace_root.join(ANDROID_SETTINGS_GRADLE_RELATIVE_PATH);
-    let contents = fs::read_to_string(&settings_gradle)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", settings_gradle.display()));
-    parse_android_kotlin_version_from_settings_gradle(&contents).unwrap_or_else(|| {
-        panic!(
-            "failed to parse Kotlin plugin version from {}",
-            settings_gradle.display()
-        )
-    })
 }
 
 fn workspace_backend_reference(workspace_root: &Path, submodule_path: &str) -> BackendReference {

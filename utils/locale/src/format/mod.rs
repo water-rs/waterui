@@ -95,14 +95,15 @@ pub struct LocalizedList<'a>(pub &'a [&'a str]);
 
 impl LocalizedDisplay for LocalizedList<'_> {
     fn fmt(&self, locale: &Locale, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use icu_list::{ListFormatter, ListLength};
-        use icu_provider::DataLocale;
+        use icu_list::{
+            ListFormatter,
+            options::{ListFormatterOptions, ListLength},
+        };
 
-        let data_locale: DataLocale = locale.0.clone().into();
-        let formatter = ListFormatter::try_new_and_with_length(&data_locale, ListLength::Wide)
+        let options = ListFormatterOptions::default().with_length(ListLength::Wide);
+        let formatter = ListFormatter::try_new_and(locale.0.clone().into(), options)
             .unwrap_or_else(|_| {
-                let en_locale: DataLocale = icu_locid::langid!("en").into();
-                ListFormatter::try_new_and_with_length(&en_locale, ListLength::Wide)
+                ListFormatter::try_new_and(icu_locale::locale!("en").into(), options)
                     .expect("English list formatter should always be available")
             });
 

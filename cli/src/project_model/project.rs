@@ -159,7 +159,7 @@ impl Project {
     pub async fn backend_target_dir(&self, backend_name: &str) -> eyre::Result<PathBuf> {
         let mut hasher = sha2::Sha256::new();
         hasher.update(self.root.display().to_string().as_bytes());
-        let digest = format!("{:x}", hasher.finalize());
+        let digest = hex::encode(hasher.finalize());
         let project_fingerprint = &digest[..12];
         Ok(self
             .target_dir()
@@ -1007,8 +1007,7 @@ impl Project {
         // 2. Running inside any sandbox (sandbox-exec sets __XCODE_BUILT_PRODUCTS_DIR_PATHS or similar)
         // 3. Xcode is the current build tool (ACTION env var is set by Xcode)
         let skip_backend_init = std::env::var("WATERUI_SKIP_RUST_BUILD")
-            .map(|v| v == "1")
-            .unwrap_or(false)
+            .is_ok_and(|value| value == "1")
             || std::env::var("ACTION").is_ok() // Xcode sets this during builds
             || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
 

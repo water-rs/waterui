@@ -1121,7 +1121,7 @@ fn spawn_macos_bundle_monitor(
 
     let pid_for_crash_kill = app_pid.to_string();
     let pid_for_crash = Some(app_pid);
-    let device_identifier = whoami::fallible::hostname().map_err(|error| {
+    let device_identifier = whoami::hostname().map_err(|error| {
         FailToRun::Launch(eyre::eyre!(
             "Failed to determine hostname for crash reports: {error}"
         ))

@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // =============================================================================
@@ -110,12 +109,12 @@ tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLibFolders"
 
 android {
     namespace = "{{ ctx.android_package_name() }}"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "{{ ctx.bundle_identifier }}"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 
@@ -142,9 +141,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
-    kotlinOptions {
-        jvmTarget = "21"
-    }
     sourceSets {
         getByName("main") {
             jniLibs.srcDir("src/main/jniLibs")
@@ -157,10 +153,6 @@ android {
     }
 }
 
-kotlin {
-    jvmToolchain(21)
-}
-
 dependencies {
     // Use the backend commit embedded into the CLI build in remote mode, local backend otherwise
     if ({{ ctx.use_remote_dev_backend }}) {
@@ -169,12 +161,12 @@ dependencies {
         implementation("dev.waterui.android:runtime")
     }
 
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.core:core-ktx:1.19.0")
+    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("androidx.activity:activity-ktx:1.13.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     testImplementation("junit:junit:4.13.2")
 }

@@ -37,7 +37,7 @@ waterui-build-support.workspace = true
 waterkit-codec.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21.1"
+jni = "0.22.4"
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true

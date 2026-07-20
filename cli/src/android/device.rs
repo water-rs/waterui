@@ -882,7 +882,7 @@ impl Device for AndroidEmulator {
             .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
 
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(300);
+        let timeout = std::time::Duration::from_mins(5);
         let mut last_emulator_states = String::new();
 
         loop {

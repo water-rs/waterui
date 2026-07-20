@@ -16,10 +16,10 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = { version = "2.0", features = ["full", "visit-mut"] }
-icu_locid = "1.5"
-icu_locid_transform = "1.5"
-toml = "0.8"
+syn = { version = "3.0", features = ["full", "visit-mut"] }
+icu_locid = "2.0"
+icu_locid_transform = "2.0"
+toml = "1.1"
 proc-macro-crate = "3"
 
 [dev-dependencies]

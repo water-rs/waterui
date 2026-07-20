@@ -19,8 +19,8 @@ waterkit-codec = { workspace = true, features = ["software-fallback"] }
 tracing.workspace = true
 wgpu.workspace = true
 num-traits = { version = "0.2", default-features = false }
-image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "avif", "tiff"] }
-mp4-atom = "0.10.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "avif", "tiff"] }
+mp4-atom = "0.14.0"
 
 [build-dependencies]
 waterui-build-support.workspace = true

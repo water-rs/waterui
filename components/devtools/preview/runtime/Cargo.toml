@@ -32,7 +32,7 @@ executor-core.workspace = true
 futures-lite = "2.6"
 
 # Dynamic library loading
-libloading = "0.8"
+libloading = "0.9"
 
 # PNG encoding
 image = { version = "0.25", default-features = false, features = ["png"] }

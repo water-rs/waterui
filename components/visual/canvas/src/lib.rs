@@ -1,6 +1,9 @@
 #![cfg_attr(
     test,
-    allow(clippy::float_cmp, reason = "tests assert exact canvas geometry values")
+    allow(
+        clippy::float_cmp,
+        reason = "tests assert exact canvas geometry values"
+    )
 )]
 //! Canvas view for 2D vector graphics rendering.
 //!
@@ -63,7 +66,6 @@ pub use image::{CanvasImage, ImageError};
 
 pub use text::{FontSpec, FontStyle, FontWeight, TextMetrics};
 
-use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::any::Any;
@@ -1160,16 +1162,15 @@ fn build_text_layout_with_engine(
         font.style,
     )));
     if !family.is_empty() {
-        builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
-            parley::FontFamily::Named(Cow::Owned(family)),
-        )));
+        builder.push_default(parley::StyleProperty::FontFamily(
+            parley::FontFamily::named(&family),
+        ));
     }
 
     let mut layout = builder.build(text);
     text_engine.layout_cx = Some(layout_cx);
     layout.break_all_lines(max_width);
     layout.align(
-        max_width,
         parley::Alignment::Start,
         parley::AlignmentOptions::default(),
     );

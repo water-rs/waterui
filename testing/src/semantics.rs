@@ -119,7 +119,7 @@ impl NodeBounds {
 
     /// Returns the center point.
     #[must_use]
-    pub fn center(self) -> (f32, f32) {
+    pub const fn center(self) -> (f32, f32) {
         (
             self.width.mul_add(0.5, self.x),
             self.height.mul_add(0.5, self.y),

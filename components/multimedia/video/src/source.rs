@@ -115,7 +115,7 @@ pub enum Delivery {
 
 const DEFAULT_MAXIMUM_LICENSE_RESPONSE_BYTES: NonZeroUsize =
     NonZeroUsize::new(4 * 1024 * 1024).expect("license response bound must be non-zero");
-const DEFAULT_LICENSE_RENEWAL_THRESHOLD: Duration = Duration::from_secs(60);
+const DEFAULT_LICENSE_RENEWAL_THRESHOLD: Duration = Duration::from_mins(1);
 
 /// Opaque, non-empty persistent-license identity returned by a platform CDM.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -275,7 +275,7 @@ mod drm_tests {
             drm.resolved_maximum_response_bytes(),
             NonZeroUsize::new(4 * 1024 * 1024).expect("fixture bound must be non-zero")
         );
-        assert_eq!(drm.resolved_renewal_threshold(), Duration::from_secs(60));
+        assert_eq!(drm.resolved_renewal_threshold(), Duration::from_mins(1));
         assert!(drm.resolved_license_url().is_none());
         assert!(drm.resolved_provisioning_url().is_none());
         assert!(drm.resolved_offline_key_set().is_none());
