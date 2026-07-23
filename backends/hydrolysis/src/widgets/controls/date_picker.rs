@@ -170,6 +170,7 @@ pub(crate) fn render_date_picker_parts(
     state: &Rc<RefCell<DatePickerRenderState>>,
     env: &Environment,
 ) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Menu);
     let input_metrics = theme.input_field_metrics();
@@ -215,7 +216,7 @@ pub(crate) fn render_date_picker_parts(
     }
 
     // Reading the value through `read_signal` watches it (registers a
-    // `request_rebuild` watcher), so a value change schedules a frame and this
+    // retained-refresh watcher), so a value change schedules a frame and this
     // persistent node re-renders the new formatted value.
     let value = ty.format_value(
         ctx.renderer_mut()
@@ -224,7 +225,9 @@ pub(crate) fn render_date_picker_parts(
     );
 
     let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
-    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) =
+        ctx.renderer_mut()
+            .bind_interaction_target(interaction_key, hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();

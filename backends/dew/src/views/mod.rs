@@ -1,12 +1,9 @@
 //! Widget handlers: `WaterUI` control semantics rendered as dew draw
 //! commands.
 //!
-//! Each submodule owns one native view type — its draw commands (kurbo
-//! shapes painted with [`crate::theme`] colors) and its intrinsic
-//! measurement — mirroring the semantics of the hydrolysis widget set at
-//! dew's smaller scale. Handlers read reactive inputs through
-//! [`DewRenderer::read_signal`], so a changed binding re-renders through
-//! the runtime's display-list diff.
+//! Each submodule owns one persistent native-view node. Nodes retain their
+//! semantic configuration and read reactive inputs on refresh, so bindings
+//! never require a view-body rebuild.
 //!
 //! Control labels are semantic [`Label`]s: dew renders them through the
 //! styled-text pipeline from their semantic text, which is also exactly
@@ -18,11 +15,11 @@ use std::cell::RefCell;
 use kurbo::{Affine, Rect};
 use nami::Signal;
 use waterui_controls::label::{Label, LabelDisplayMode};
-use waterui_core::layout::{ProposalSize, Size};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::Environment;
+use waterui_core::layout::Size;
 use waterui_text::styled::StyledStr;
 
-use crate::dispatch::{DewDispatcher, DewRenderer, RenderContext, measure_view};
+use crate::dispatch::{DewRenderer, RenderContext};
 use crate::text::DewState;
 use crate::theme;
 
@@ -34,20 +31,6 @@ pub mod slider;
 pub mod stepper;
 pub mod text_field;
 pub mod toggle;
-
-/// Registers every widget handler on the dispatcher.
-pub fn register(dispatcher: &mut DewDispatcher) {
-    dispatcher.register::<waterui_layout::Divider>(divider::render);
-    dispatcher.register::<Native<waterui_layout::scroll::ScrollView>>(scroll::render);
-    dispatcher.register::<Native<waterui_controls::toggle::ToggleConfig>>(toggle::render);
-    dispatcher.register::<Native<waterui_controls::slider::SliderConfig>>(slider::render);
-    dispatcher.register::<Native<waterui_controls::stepper::StepperConfig>>(stepper::render);
-    dispatcher.register::<Native<waterui_controls::text_field::ResolvedTextFieldConfig>>(
-        text_field::render,
-    );
-    #[cfg(feature = "progress")]
-    dispatcher.register::<Native<waterui::component::progress::ProgressConfig>>(progress::render);
-}
 
 /// Narrows a logical-pixel `f64` to layout's `f32` vocabulary.
 #[expect(
@@ -108,12 +91,6 @@ pub fn emit_styled_text(
     crate::text::emit_text_commands(renderer.list_mut(), &layout, transform);
 }
 
-/// Measures a normalized child view (slider end labels, progress labels) at
-/// its intrinsic size.
-pub fn measure_subview(state: &RefCell<DewState>, view: &AnyView, env: &Environment) -> Size {
-    measure_view(state, view, env, ProposalSize::UNSPECIFIED).size
-}
-
 /// A child render context covering the window-coordinate-free local `rect`
 /// within the current widget's bounds.
 pub fn child_in_rect(ctx: RenderContext, rect: Rect) -> RenderContext {
@@ -133,6 +110,7 @@ mod tests {
     use peniko::Brush;
     use waterui_controls::slider::slider;
     use waterui_controls::toggle::Toggle;
+    use waterui_core::AnyView;
 
     fn render_commands(view: impl waterui_core::View, width: f64, height: f64) -> Vec<DrawCommand> {
         let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());

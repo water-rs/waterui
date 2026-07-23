@@ -60,7 +60,7 @@ fn text_renders_visible_glyphs() {
     );
 }
 
-/// A `Binding` change must trigger exactly one rebuild whose dirty region
+/// A `Binding` change must trigger exactly one retained refresh whose dirty region
 /// stays local to the text that changed — the flush-economy contract.
 #[test]
 fn binding_change_dirties_only_the_text_region() {
@@ -79,7 +79,7 @@ fn binding_change_dirties_only_the_text_region() {
     count.set(2);
     let dirty = runtime
         .pump()
-        .expect("binding change must request a rebuild");
+        .expect("binding change must request a retained refresh");
     assert!(!dirty.is_empty(), "changed text must produce dirty rects");
     for rect in &dirty {
         assert!(

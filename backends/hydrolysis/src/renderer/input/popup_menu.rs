@@ -690,7 +690,7 @@ impl HydrolysisRenderer {
             .expect("hydrolysis picker menus require WindowManager in environment")
             .show(window);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_rebuild();
+        self.request_refresh();
         true
     }
 

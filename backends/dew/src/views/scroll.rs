@@ -1,71 +1,79 @@
-//! [`ScrollView`]: a clipped viewport over content measured without a
-//! constraint on the scroll axis.
-//!
-//! Dew has no interaction runtime yet, so content renders at offset zero;
-//! the viewport clip is retained per command, keeping overflow invisible
-//! while the flat display list stays diffable for partial flushes.
+//! Persistent [`ScrollView`] node.
 
-use std::cell::RefCell;
+use core::cell::RefCell;
 
-use waterui_core::layout::{Point, ProposalSize, Rect as LayoutRect, Size, ViewDimensions};
-use waterui_core::{Environment, Native};
+use waterui_core::Environment;
+use waterui_core::layout::{
+    Point, ProposalSize, Rect as LayoutRect, Size, StretchAxis, ViewDimensions,
+};
 use waterui_layout::scroll::{Axis, ScrollView};
 
-use crate::dispatch::{DewRenderer, RenderContext, measure_view};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext, build_node};
 use crate::text::DewState;
 use crate::views::to_f32;
 
-/// Renders the content at offset zero, clipped to the viewport.
-pub fn render(
+struct ScrollNode {
+    axis: Axis,
+    child: Box<dyn DewNode>,
+}
+
+pub fn build(
     renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    view: Native<ScrollView>,
+    scroll: ScrollView,
     env: &Environment,
-) {
-    let (axis, content) = view.into_inner().into_inner();
-    let viewport = ctx.bounds;
-    let proposal = ProposalSize::new(
-        Some(to_f32(viewport.width())),
-        Some(to_f32(viewport.height())),
-    );
-    let intrinsic = measure_view(
-        renderer.state_cell(),
-        &content,
-        env,
-        content_proposal(axis, proposal),
-    )
-    .size;
-    let (content_width, content_height) = content_size(axis, viewport, intrinsic);
-
-    let clip = ctx.transform.transform_rect_bbox(viewport);
-    renderer.list_mut().push_clip(clip);
-    let frame = LayoutRect::new(
-        Point::new(0.0, 0.0),
-        Size::new(content_width, content_height),
-    );
-    renderer.dispatch_child(content, env, ctx.child(frame));
-    renderer.list_mut().pop_clip();
+    depth: usize,
+) -> Box<dyn DewNode> {
+    let (axis, content) = scroll.into_inner();
+    Box::new(ScrollNode {
+        axis,
+        child: build_node(renderer, content, env, depth),
+    })
 }
 
-/// Stretches to the proposal on both axes; the content's intrinsic size
-/// (measured unconstrained along the scroll axis) backstops unspecified
-/// proposals.
-pub fn measure(
-    state: &RefCell<DewState>,
-    scroll: &ScrollView,
-    env: &Environment,
-    proposal: ProposalSize,
-) -> ViewDimensions {
-    let (axis, content) = scroll.as_parts();
-    let intrinsic = measure_view(state, content, env, content_proposal(axis, proposal)).size;
-    ViewDimensions::new(Size::new(
-        proposal.width.unwrap_or(intrinsic.width),
-        proposal.height.unwrap_or(intrinsic.height),
-    ))
+impl DewNode for ScrollNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        let intrinsic = self
+            .child
+            .measure(state, content_proposal(self.axis, proposal))
+            .size;
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(intrinsic.width),
+            proposal.height.unwrap_or(intrinsic.height),
+        ))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        let viewport = ctx.bounds;
+        let proposal = ProposalSize::new(
+            Some(to_f32(viewport.width())),
+            Some(to_f32(viewport.height())),
+        );
+        let intrinsic = self
+            .child
+            .measure(renderer.state_cell(), content_proposal(self.axis, proposal))
+            .size;
+        let (content_width, content_height) = content_size(self.axis, viewport, intrinsic);
+        let clip = ctx.transform.transform_rect_bbox(viewport);
+        renderer.list_mut().push_clip(clip);
+        self.child.render(
+            renderer,
+            ctx.child(LayoutRect::new(
+                Point::new(0.0, 0.0),
+                Size::new(content_width, content_height),
+            )),
+        );
+        renderer.list_mut().pop_clip();
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        self.child.patch(renderer)
+    }
 }
 
-/// The content proposal: the scroll axis is unconstrained, the cross axis
-/// keeps the viewport constraint.
 fn content_proposal(axis: Axis, proposal: ProposalSize) -> ProposalSize {
     match axis {
         Axis::Horizontal => ProposalSize::new(None, proposal.height),
@@ -75,8 +83,6 @@ fn content_proposal(axis: Axis, proposal: ProposalSize) -> ProposalSize {
     }
 }
 
-/// The placed content size: the viewport on the cross axis, the intrinsic
-/// extent (at least the viewport) on the scroll axis.
 fn content_size(axis: Axis, viewport: kurbo::Rect, intrinsic: Size) -> (f32, f32) {
     let viewport_width = to_f32(viewport.width());
     let viewport_height = to_f32(viewport.height());

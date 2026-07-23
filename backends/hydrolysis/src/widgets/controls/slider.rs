@@ -202,6 +202,7 @@ pub(crate) fn render_slider_parts(
     state: &Rc<RefCell<SliderRenderState>>,
     env: &Environment,
 ) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let metrics = theme.slider_metrics();
     let mut state = state.borrow_mut();
@@ -322,7 +323,7 @@ pub(crate) fn render_slider_parts(
     );
 
     // Reading the value through `read_signal` watches it (registers a
-    // `request_rebuild` watcher), so a value change schedules a frame and this
+    // retained-refresh watcher), so a value change schedules a frame and this
     // persistent node re-renders the new fill/thumb position.
     let value_binding = state.value.clone();
     let clamped = ctx
@@ -346,9 +347,12 @@ pub(crate) fn render_slider_parts(
             control_bottom,
         ),
     );
-    let (interaction, press_slot, _) = ctx
-        .renderer_mut()
-        .bind_control_interaction_target(hit_bounds, env, disabled);
+    let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
+        interaction_key,
+        hit_bounds,
+        env,
+        disabled,
+    );
     let thumb_center = vello::kurbo::Point::new(fill_right, track_center_y);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);

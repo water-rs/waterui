@@ -362,9 +362,13 @@ pub(crate) fn render_button_parts(
     };
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot, _) = ctx
-        .renderer_mut()
-        .bind_control_interaction_target(hit_bounds, env, disabled);
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
+        interaction_key,
+        hit_bounds,
+        env,
+        disabled,
+    );
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style, interaction);
@@ -438,7 +442,10 @@ pub(crate) fn render_menu_parts(
     let style = ButtonStyle::Borderless;
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let (interaction, press_slot, _) =
+        ctx.renderer_mut()
+            .bind_interaction_target(interaction_key, hit_bounds, env);
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style, interaction);

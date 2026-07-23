@@ -243,7 +243,7 @@ impl RenderNode {
                     ),
                 );
                 if needs_next {
-                    renderer.request_next_frame_rebuild();
+                    renderer.request_refresh();
                 }
             }
             RenderNode::GpuSurface(node) => {

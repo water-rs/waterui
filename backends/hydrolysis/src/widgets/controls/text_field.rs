@@ -130,6 +130,7 @@ pub(crate) fn render_text_field_parts(
     state: &Rc<RefCell<TextFieldRenderState>>,
     env: &Environment,
 ) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
     ctx.renderer_mut()
@@ -214,6 +215,7 @@ pub(crate) fn render_text_field_parts(
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
     let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_interaction_target(
+        interaction_key,
         transformed_rect(hit_transform, field_rect),
         env,
         is_focused,
@@ -420,6 +422,7 @@ pub(crate) fn render_secure_field_parts(
     state: &Rc<RefCell<SecureFieldRenderState>>,
     env: &Environment,
 ) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
     ctx.renderer_mut()
@@ -481,6 +484,7 @@ pub(crate) fn render_secure_field_parts(
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
     let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_interaction_target(
+        interaction_key,
         transformed_rect(hit_transform, field_rect),
         env,
         is_focused,

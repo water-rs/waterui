@@ -251,6 +251,9 @@ pub(crate) fn render_tabs_parts(
 
     for index in 0..tab_count {
         let button_rect = tabs_button_rect(bar_rect, tab_count, index, style);
+        let tab_id = state.borrow().tabs[index].tag;
+        let interaction_key =
+            crate::renderer::InteractionKey::for_rc(state, i32::from(tab_id) as u32 as usize);
         // The label sub-view is prebuilt (node path: `prebuild_labels`; dispatch
         // path: `render` calls `prebuild_labels`), so measure it directly for
         // placement.
@@ -261,7 +264,8 @@ pub(crate) fn render_tabs_parts(
         {
             let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
             let (interaction, press_slot, _) =
-                ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+                ctx.renderer_mut()
+                    .bind_interaction_target(interaction_key, hit_bounds, env);
             let interaction =
                 crate::renderer::local_interaction_state(interaction, ctx.hit_transform);
             let is_selected = index == selected_index;
@@ -289,7 +293,6 @@ pub(crate) fn render_tabs_parts(
                 );
             }
             let selection_binding = selection.clone();
-            let tab_id = state.borrow().tabs[index].tag;
             let enabled = {
                 let st = state.borrow();
                 ctx.renderer_mut().read_signal(&st.tabs[index].enabled)

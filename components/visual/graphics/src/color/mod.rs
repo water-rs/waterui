@@ -25,10 +25,10 @@ use num_traits::ToPrimitive;
 use pastey::paste;
 pub use srgb::{BLACK, Srgb, WHITE};
 
-use nami::{Computed, Signal, SignalExt, impl_constant};
+use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 
 use waterui_core::{
-    Environment, IntoSignalF32, View,
+    Environment, IntoSignalF32, View, flatten_signal,
     resolve::{self, AnyResolvable, Resolvable},
 };
 
@@ -82,6 +82,26 @@ impl Resolvable for ResolvedColor {
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
         *self
     }
+}
+
+#[derive(Debug, Clone)]
+struct SignalColor(Computed<Color>);
+
+impl Resolvable for SignalColor {
+    type Resolved = ResolvedColor;
+
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        let env = env.clone();
+        flatten_signal(self.0.clone().map(move |color| color.resolve(&env)))
+    }
+}
+
+/// Creates a semantic color view backed by a reactive color signal.
+///
+/// Both replacement of the selected color and changes inside its environment
+/// resolution update the existing native color node without rebuilding it.
+pub fn signal_color(source: impl IntoSignal<Color> + 'static) -> Color {
+    Color::new(SignalColor(source.into_signal().computed()))
 }
 
 impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {

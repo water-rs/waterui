@@ -10,7 +10,10 @@ mod text_service;
 mod view_helpers;
 
 pub use compositor::HydrolysisRenderTarget;
-pub(crate) use compositor::*;
+pub(crate) use compositor::{
+    ActiveSceneLayer, Compositor, EmbeddedGpuSurfaceRuntime, GpuSurfaceLayer, GpuSurfaceSource,
+    LayerShape, RenderLayer,
+};
 pub(crate) use measurement::*;
 pub(crate) use measurement_cache::MeasurementCaches;
 pub use render_context::RenderContext;

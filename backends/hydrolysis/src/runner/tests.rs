@@ -66,7 +66,8 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
     runtime.renderer.set_frame_instant(now);
     runtime.renderer.set_text_caret_motion(motion);
     assert!(runtime.renderer.set_focused_text_input(Some(0)));
-    assert!(runtime.renderer.take_rebuild_request());
+    assert!(runtime.renderer.take_patch_request());
+    assert!(!runtime.renderer.take_rebuild_request());
     runtime.clear_frame_mode();
     assert!(!runtime.platform.take_redraw_request());
 

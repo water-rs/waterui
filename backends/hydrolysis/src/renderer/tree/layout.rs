@@ -170,13 +170,24 @@ impl RenderNode {
                     _ => panic!("hydrolysis render tree: unsupported scroll axis"),
                 };
                 node.child.layout(renderer, env, content_size);
-                node.handle = Some(renderer.bind_render_scroll_handle(
-                    node.axis,
-                    f64::from(size.width),
-                    f64::from(size.height),
-                    f64::from(content_size.width),
-                    f64::from(content_size.height),
-                ));
+                let handle = if let Some(handle) = node.handle.as_mut() {
+                    handle.rebind(
+                        node.axis,
+                        f64::from(size.width),
+                        f64::from(size.height),
+                        f64::from(content_size.width),
+                        f64::from(content_size.height),
+                    )
+                } else {
+                    ScrollHandle::new(
+                        node.axis,
+                        f64::from(size.width),
+                        f64::from(size.height),
+                        f64::from(content_size.width),
+                        f64::from(content_size.height),
+                    )
+                };
+                node.handle = Some(handle);
                 node.content_size = content_size;
                 node.viewport = size;
             }

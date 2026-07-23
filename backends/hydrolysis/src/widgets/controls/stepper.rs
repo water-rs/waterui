@@ -153,6 +153,8 @@ pub(crate) fn render_stepper_parts(
     state: &Rc<RefCell<StepperRenderState>>,
     env: &Environment,
 ) {
+    let minus_interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let plus_interaction_key = crate::renderer::InteractionKey::for_rc(state, 1);
     let theme = widget_theme(env);
     let mut state = state.borrow_mut();
     let (range, value, step) = {
@@ -212,12 +214,12 @@ pub(crate) fn render_stepper_parts(
     let hit_transform = ctx.hit_transform;
     let minus_hit_bounds = transformed_rect(hit_transform, minus_bounds);
     let plus_hit_bounds = transformed_rect(hit_transform, plus_bounds);
-    let (minus_interaction, minus_press_slot, _) = ctx
-        .renderer_mut()
-        .bind_interaction_target(minus_hit_bounds, env);
-    let (plus_interaction, plus_press_slot, _) = ctx
-        .renderer_mut()
-        .bind_interaction_target(plus_hit_bounds, env);
+    let (minus_interaction, minus_press_slot, _) =
+        ctx.renderer_mut()
+            .bind_interaction_target(minus_interaction_key, minus_hit_bounds, env);
+    let (plus_interaction, plus_press_slot, _) =
+        ctx.renderer_mut()
+            .bind_interaction_target(plus_interaction_key, plus_hit_bounds, env);
     let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
     let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
     {

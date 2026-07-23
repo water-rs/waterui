@@ -1,5 +1,6 @@
 use super::*;
 use crate::animation::AnimationKey;
+use std::collections::{BTreeMap, BTreeSet};
 use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
 
 const INTERACTION_FOCUS_KEY: usize = 0;
@@ -8,14 +9,47 @@ const INTERACTION_STATE_LAYER_KEY: usize = 1;
 /// consecutive keys (opacity, grow progress).
 const INTERACTION_WAVE_KEYS_BASE: usize = 2;
 const INTERACTION_KEYS_PER_WAVE: usize = 2;
-/// Renderer-local animation keys claimed by one widget's interaction slot.
-const INTERACTION_KEYS_PER_SLOT: usize =
+/// Renderer-local animation keys claimed by one semantic interaction identity.
+const INTERACTION_KEYS_PER_IDENTITY: usize =
     INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * MAX_PRESS_WAVES;
 
 #[derive(Debug, Default)]
 pub(crate) struct InteractionEngine {
-    hover_controller: HoverController,
-    press_controller: PressController,
+    states: BTreeMap<InteractionKey, InteractionState>,
+    active: BTreeSet<InteractionKey>,
+}
+
+/// Stable identity of one semantic interaction target.
+///
+/// `owner` is the retained node/state `Rc`, while `discriminator` distinguishes
+/// multiple controls owned by that node (for example a stepper's minus/plus
+/// buttons). Identity never depends on render order or body call position.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct InteractionKey {
+    owner: RetainedIdentity,
+    discriminator: usize,
+}
+
+impl InteractionKey {
+    pub(crate) fn for_rc<T: 'static>(owner: &Rc<T>, discriminator: usize) -> Self {
+        Self {
+            owner: RetainedIdentity::for_rc(owner),
+            discriminator,
+        }
+    }
+
+    fn animation_discriminator(&self, key: usize) -> usize {
+        self.discriminator
+            .checked_mul(INTERACTION_KEYS_PER_IDENTITY)
+            .and_then(|base| base.checked_add(key))
+            .expect("interaction animation discriminator overflow")
+    }
+}
+
+#[derive(Debug, Default)]
+struct InteractionState {
+    hovering: bool,
+    handles: Option<Rc<InteractionLayerHandles>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,54 +74,70 @@ impl InteractionFocus {
 
 impl InteractionEngine {
     pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.hover_controller.begin_rebuild_frame();
-        self.press_controller.begin_rebuild_frame();
+        self.active.clear();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.hover_controller.finish_rebuild_frame();
-        self.press_controller.finish_rebuild_frame();
+        self.states.retain(|key, _| self.active.contains(key));
     }
 
-    pub(crate) fn bind_hover(&mut self) -> (HoverSlot, bool) {
-        self.hover_controller.bind()
+    pub(crate) fn bind_hover(&mut self, key: &InteractionKey) -> (HoverSlot, bool) {
+        self.active.insert(key.clone());
+        let hovering = self.states.entry(key.clone()).or_default().hovering;
+        (HoverSlot { key: key.clone() }, hovering)
     }
 
-    pub(crate) fn hover_cursor(&self) -> usize {
-        self.hover_controller.cursor()
+    pub(crate) fn set_hovering(&mut self, slot: &HoverSlot, hovering: bool) {
+        self.states
+            .get_mut(&slot.key)
+            .expect("hover target identity must be active")
+            .hovering = hovering;
     }
 
-    pub(crate) fn rewind_hover_to(&mut self, cursor: usize) {
-        self.hover_controller.rewind_to(cursor);
-    }
-
-    pub(crate) fn set_hovering(&mut self, slot: HoverSlot, hovering: bool) {
-        self.hover_controller.set_hovering(slot, hovering);
-    }
-
-    pub(crate) fn hovering(&self, slot: HoverSlot) -> bool {
-        self.hover_controller.hovering(slot)
+    pub(crate) fn hovering(&self, slot: &HoverSlot) -> bool {
+        self.states
+            .get(&slot.key)
+            .expect("hover target identity must be active")
+            .hovering
     }
 
     pub(crate) fn begin_press(
         &mut self,
-        slot: PressSlot,
+        slot: &PressSlot,
         origin: vello::kurbo::Point,
         now: Instant,
     ) {
-        self.press_controller.begin_press(slot, origin, now);
+        if let Some(handles) = self
+            .states
+            .get(&slot.key)
+            .and_then(|state| state.handles.as_ref())
+        {
+            handles.begin_press(origin, now);
+        }
     }
 
     pub(crate) fn clear_all_presses(&mut self, now: Instant) -> PressClear {
-        self.press_controller.clear_all(now)
+        let mut clear = PressClear::default();
+        for state in self.states.values() {
+            if let Some(handles) = &state.handles
+                && handles.release(now)
+            {
+                clear.visual_changed = true;
+                clear.chrome_changed |= handles.chrome_state_dependent();
+            }
+        }
+        clear
     }
 
-    pub(crate) fn handles_for(&self, slot: PressSlot) -> Option<Rc<InteractionLayerHandles>> {
-        self.press_controller.slots[slot.index].handles.clone()
+    pub(crate) fn handles_for(&self, slot: &PressSlot) -> Option<Rc<InteractionLayerHandles>> {
+        self.states
+            .get(&slot.key)
+            .and_then(|state| state.handles.clone())
     }
 
     pub(crate) fn bind_widget_state(
         &mut self,
+        key: &InteractionKey,
         input: WidgetInteractionInput,
         motion: &InteractionMotion,
         animation_controller: &mut AnimationController,
@@ -97,18 +147,10 @@ impl InteractionEngine {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        let (press_slot, _) = self.press_controller.bind();
-        let animation_key_base = press_slot
-            .index
-            .checked_mul(INTERACTION_KEYS_PER_SLOT)
-            .expect("interaction animation key overflow");
-        let previous = self.press_controller.slots[press_slot.index].handles.take();
-        // Flag slot reuse by an unrelated widget: the previous occupant sat at a
-        // different position than the widget now binding this slot.
-        let slot_reused = self.press_controller.slots[press_slot.index]
-            .last_bounds
-            .replace(input.bounds)
-            .is_some_and(|bounds| !interaction_bounds_match(bounds, input.bounds));
+        self.active.insert(key.clone());
+        let interaction_state = self.states.entry(key.clone()).or_default();
+        let press_slot = PressSlot { key: key.clone() };
+        let previous = interaction_state.handles.take();
 
         // Inherited press/hover must not migrate to a different widget: a wave
         // only survives if its press origin still lands inside the widget's
@@ -116,7 +158,7 @@ impl InteractionEngine {
         // occupant) is dropped. A disabled widget drops everything — a control
         // disabled mid-hover or mid-press comes to rest immediately.
         if let Some(prev) = &previous {
-            if slot_reused || input.disabled {
+            if input.disabled {
                 prev.clear_press_state();
             } else {
                 prev.retain_waves_with_origin(|origin| input.bounds.contains(origin));
@@ -124,8 +166,6 @@ impl InteractionEngine {
         }
         let hovered = if input.disabled {
             false
-        } else if slot_reused {
-            input.hovered
         } else {
             previous
                 .as_ref()
@@ -134,7 +174,10 @@ impl InteractionEngine {
         let focus_visible = !input.disabled && input.focus.is_some_and(|focus| focus.visible);
 
         let focus_alpha = animation_controller.bind_scalar_target(
-            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_FOCUS_KEY),
+            AnimationKey::renderer_local_scalar_with_discriminator(
+                key.owner.address(),
+                key.animation_discriminator(INTERACTION_FOCUS_KEY),
+            ),
             if focus_visible { 1.0 } else { 0.0 },
             if focus_visible {
                 motion.focus_enter.clone()
@@ -145,20 +188,25 @@ impl InteractionEngine {
         );
         let hover_target = if hovered { motion.hover_opacity } else { 0.0 };
         let hover_alpha = animation_controller.bind_scalar_target(
-            AnimationKey::renderer_local_scalar(animation_key_base + INTERACTION_STATE_LAYER_KEY),
+            AnimationKey::renderer_local_scalar_with_discriminator(
+                key.owner.address(),
+                key.animation_discriminator(INTERACTION_STATE_LAYER_KEY),
+            ),
             hover_target,
             state_layer_animation(hover_target, motion),
             now,
         );
         let waves = core::array::from_fn(|index| {
-            let wave_key_base =
-                animation_key_base + INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * index;
+            let wave_key_base = INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * index;
             let wave_visual = previous.as_ref().is_some_and(|prev| {
                 prev.wave(index)
                     .visually_pressed(motion.minimum_press_duration, now)
             });
             let alpha = animation_controller.bind_scalar_target(
-                AnimationKey::renderer_local_scalar(wave_key_base),
+                AnimationKey::renderer_local_scalar_with_discriminator(
+                    key.owner.address(),
+                    key.animation_discriminator(wave_key_base),
+                ),
                 if wave_visual {
                     motion.pressed_opacity
                 } else {
@@ -176,7 +224,10 @@ impl InteractionEngine {
             // the wave is invisible.
             let wave_visible = wave_visual || alpha.sample(now) > 0.0;
             let progress = animation_controller.bind_scalar_target(
-                AnimationKey::renderer_local_scalar(wave_key_base + 1),
+                AnimationKey::renderer_local_scalar_with_discriminator(
+                    key.owner.address(),
+                    key.animation_discriminator(wave_key_base + 1),
+                ),
                 if wave_visible { 1.0 } else { 0.0 },
                 if wave_visible {
                     motion.press_grow.clone()
@@ -193,14 +244,12 @@ impl InteractionEngine {
             waves,
             motion.clone(),
         ));
-        // A reused slot's previous state belongs to a different widget; start
-        // fresh. A disabled widget also starts at rest.
-        if let Some(previous) = previous.filter(|_| !slot_reused && !input.disabled) {
+        if let Some(previous) = previous.filter(|_| !input.disabled) {
             handles.copy_interaction_state_from(&previous);
         } else {
             handles.set_initial_hovering(hovered);
         }
-        self.press_controller.slots[press_slot.index].handles = Some(Rc::clone(&handles));
+        interaction_state.handles = Some(Rc::clone(&handles));
 
         let state = WidgetInteractionState {
             disabled: input.disabled,
@@ -220,89 +269,9 @@ impl InteractionEngine {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct PressController {
-    pub(crate) slots: Vec<PressStateSlot>,
-    pub(crate) cursor: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct PressSlot {
-    pub(crate) index: usize,
-}
-
-/// Per-widget press slot: the cursor allocates stable renderer-local
-/// animation key indices, while the interaction state itself lives in the
-/// shared [`InteractionLayerHandles`].
-#[derive(Debug, Default)]
-pub(crate) struct PressStateSlot {
-    pub(crate) handles: Option<Rc<InteractionLayerHandles>>,
-    /// The window-space bounds of the widget that last occupied this slot. A
-    /// cursor-allocated slot index can be reassigned to a *different* widget when
-    /// an earlier collection's membership changes (its item count shifts every
-    /// later widget's slot); a bounds mismatch flags that reuse so inherited
-    /// hover/press state is not migrated to the wrong widget.
-    pub(crate) last_bounds: Option<vello::kurbo::Rect>,
-}
-
-/// Whether two window-space widget bounds are close enough to be the same widget
-/// across frames (position and size unchanged within half a pixel).
-fn interaction_bounds_match(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
-    const EPSILON: f64 = 0.5;
-    (a.x0 - b.x0).abs() <= EPSILON
-        && (a.y0 - b.y0).abs() <= EPSILON
-        && (a.x1 - b.x1).abs() <= EPSILON
-        && (a.y1 - b.y1).abs() <= EPSILON
-}
-
-impl PressController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    pub(crate) fn bind(&mut self) -> (PressSlot, bool) {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("press controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(PressStateSlot::default());
-        }
-        let pressing = self.slots[index]
-            .handles
-            .as_ref()
-            .is_some_and(|handles| handles.pressing());
-        (PressSlot { index }, pressing)
-    }
-
-    pub(crate) fn begin_press(
-        &mut self,
-        slot: PressSlot,
-        origin: vello::kurbo::Point,
-        now: Instant,
-    ) {
-        if let Some(handles) = &self.slots[slot.index].handles {
-            handles.begin_press(origin, now);
-        }
-    }
-
-    pub(crate) fn clear_all(&mut self, now: Instant) -> PressClear {
-        let mut clear = PressClear::default();
-        for slot in &self.slots {
-            if let Some(handles) = &slot.handles
-                && handles.release(now)
-            {
-                clear.visual_changed = true;
-                clear.chrome_changed |= handles.chrome_state_dependent();
-            }
-        }
-        clear
-    }
+    pub(crate) key: InteractionKey,
 }
 
 /// Outcome of releasing all active presses: `visual_changed` replays state
@@ -314,63 +283,9 @@ pub(crate) struct PressClear {
     pub(crate) chrome_changed: bool,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct HoverController {
-    pub(crate) slots: Vec<HoverStateSlot>,
-    pub(crate) cursor: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct HoverSlot {
-    pub(crate) index: usize,
-}
-
-#[derive(Debug)]
-pub(crate) struct HoverStateSlot {
-    pub(crate) hovering: bool,
-}
-
-impl HoverController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    pub(crate) fn bind(&mut self) -> (HoverSlot, bool) {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("hover controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(HoverStateSlot { hovering: false });
-        }
-        (HoverSlot { index }, self.slots[index].hovering)
-    }
-
-    pub(crate) fn hovering(&self, slot: HoverSlot) -> bool {
-        self.slots[slot.index].hovering
-    }
-
-    pub(crate) fn set_hovering(&mut self, slot: HoverSlot, hovering: bool) {
-        self.slots[slot.index].hovering = hovering;
-    }
-
-    pub(crate) fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    pub(crate) fn rewind_to(&mut self, cursor: usize) {
-        assert!(
-            (cursor <= self.cursor),
-            "hover controller rewind cursor exceeds current cursor"
-        );
-        self.cursor = cursor;
-        self.slots.truncate(cursor);
-    }
+    pub(crate) key: InteractionKey,
 }
 
 pub(crate) fn local_interaction_state(
@@ -401,10 +316,11 @@ fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> A
 #[cfg(test)]
 mod tests {
     use super::super::interaction_layers::{InteractionLayerHandles, WaveLayer};
-    use super::{InteractionEngine, WidgetInteractionInput};
+    use super::{InteractionEngine, InteractionKey, WidgetInteractionInput};
     use crate::animation::{AnimationController, AnimationKey};
     use crate::time::Instant;
     use core::time::Duration;
+    use std::rc::Rc;
     use waterui::animation::Animation;
     use waterui_backend_core::widget::InteractionMotion;
 
@@ -449,12 +365,15 @@ mod tests {
         let mut controller = AnimationController::default();
         let motion = motion();
         let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
+        let owner = Rc::new(());
+        let key = InteractionKey::for_rc(&owner, 0);
 
         let bind =
             |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
                 engine.begin_rebuild_frame();
                 controller.begin_rebuild_frame();
                 let bound = engine.bind_widget_state(
+                    &key,
                     WidgetInteractionInput {
                         bounds,
                         hovered: false,
@@ -471,7 +390,7 @@ mod tests {
             };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
-        engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, vello::kurbo::Point::new(10.0, 10.0), started);
 
         // Release after the grow completed (test grow: 225ms linear); the
         // minimum press duration (75ms) has elapsed, so the release applies
@@ -510,12 +429,15 @@ mod tests {
         let mut controller = AnimationController::default();
         let motion = motion();
         let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
+        let owner = Rc::new(());
+        let key = InteractionKey::for_rc(&owner, 0);
 
         let bind =
             |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
                 engine.begin_rebuild_frame();
                 controller.begin_rebuild_frame();
                 let bound = engine.bind_widget_state(
+                    &key,
                     WidgetInteractionInput {
                         bounds,
                         hovered: false,
@@ -532,7 +454,7 @@ mod tests {
             };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
-        engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, vello::kurbo::Point::new(10.0, 10.0), started);
 
         // Quick tap: released long before the grow (225ms) finishes.
         engine.clear_all_presses(started + Duration::from_millis(40));
@@ -540,7 +462,7 @@ mod tests {
         // Re-press at a different point while the first wave is mid-flight.
         let repressed = started + Duration::from_millis(100);
         let (_, slot, _) = bind(&mut engine, &mut controller, repressed);
-        engine.begin_press(slot, vello::kurbo::Point::new(80.0, 30.0), repressed);
+        engine.begin_press(&slot, vello::kurbo::Point::new(80.0, 30.0), repressed);
 
         // Both waves are visible: the released first wave keeps its own grow
         // progress and origin while the fresh wave starts over from zero.
@@ -588,6 +510,8 @@ mod tests {
         let mut controller = AnimationController::default();
         let motion = motion();
         let bounds = vello::kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
+        let owner = Rc::new(());
+        let key = InteractionKey::for_rc(&owner, 0);
 
         let bind = |engine: &mut InteractionEngine,
                     controller: &mut AnimationController,
@@ -597,6 +521,7 @@ mod tests {
             engine.begin_rebuild_frame();
             controller.begin_rebuild_frame();
             let bound = engine.bind_widget_state(
+                &key,
                 WidgetInteractionInput {
                     bounds,
                     hovered,
@@ -615,7 +540,7 @@ mod tests {
         // Hovered and mid-press, then the widget becomes disabled: the
         // sampled state comes to rest immediately and carries the flag.
         let (_, slot, _) = bind(&mut engine, &mut controller, started, true, false);
-        engine.begin_press(slot, vello::kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, vello::kurbo::Point::new(10.0, 10.0), started);
 
         let disabled_at = started + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, disabled_at, true, true);

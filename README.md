@@ -296,7 +296,7 @@ fn contacts_list() -> impl View {
 
 ### Advanced
 
-- `Dynamic::watch()` - Observe reactive signals and rebuild views on change
+- `Dynamic::watch()` - Explicitly replace a subtree when its semantic structure changes; scalar state should flow through signal-aware component inputs
 - `AnyView` - Type-erased view container for heterogeneous collections
 - `Environment` - Dependency injection and context propagation
 - `ViewExt` - Extension trait providing modifier methods for all views

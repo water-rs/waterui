@@ -2,10 +2,9 @@
 //!
 //! One [`DewRuntime`] owns the renderer, painter, scheduler, and a [`Board`]
 //! (the platform substrate — display, clock, input). Each
-//! [`DewRuntime::pump`] call performs at most one frame: when the tree's
-//! watched signals requested a rebuild (or nothing was rendered yet), the
-//! view tree is re-dispatched, the new display list is diffed against the
-//! previous one, and only the changed regions are re-rasterized and flushed
+//! [`DewRuntime::pump`] call performs at most one frame. The root view is built
+//! once; later signal changes refresh the retained node tree, diff its new
+//! display list against the previous one, and only re-rasterize changed regions
 //! to the board's display. On an SPI-bound panel the diff is what makes
 //! reactivity affordable: a text change re-sends a few bands, not a frame.
 //!
@@ -30,7 +29,7 @@ pub struct DewRuntime<B: Board> {
     scheduler: BandScheduler,
     board: B,
     env: Environment,
-    build_root: Box<dyn Fn() -> AnyView>,
+    build_root: Option<Box<dyn Fn() -> AnyView>>,
     current: DisplayList,
     rendered_once: bool,
 }
@@ -49,9 +48,7 @@ impl<B: Board> DewRuntime<B> {
     /// Creates a runtime rendering `build_root()` onto `board`, slicing work
     /// into bands at most `band_height` rows tall.
     ///
-    /// `build_root` is invoked once per structural rebuild; it must return
-    /// an equivalent fresh view tree each time (the standard `WaterUI`
-    /// root-builder pattern).
+    /// `build_root` is invoked exactly once, on the first pump.
     pub fn new(
         mut board: B,
         env: Environment,
@@ -65,25 +62,44 @@ impl<B: Board> DewRuntime<B> {
             scheduler: BandScheduler::new(width, height, band_height),
             board,
             env,
-            build_root: Box::new(build_root),
+            build_root: Some(Box::new(build_root)),
             current: DisplayList::new(),
             rendered_once: false,
         }
     }
 
-    /// Renders one frame if the tree requested a rebuild (or none was
+    /// Renders one frame if the retained tree requested a refresh (or none was
     /// rendered yet); returns the logical dirty rects that were flushed, or
     /// [`None`] when the frame was clean.
+    ///
+    /// # Panics
+    ///
+    /// Panics when external code requests a root rebuild after the initial
+    /// frame; structural changes must use an explicit local `Dynamic` node.
     pub fn pump(&mut self) -> Option<Vec<Rect>> {
         let first = !self.rendered_once;
-        if !(first || self.renderer.signals().take_rebuild_request()) {
+        let signals = self.renderer.signals();
+        let rebuild = signals.take_rebuild_request();
+        assert!(
+            first || !rebuild,
+            "Dew does not rebuild the root view; use Dynamic for an explicit local structural replacement"
+        );
+        let refresh = signals.take_patch_request() | signals.take_redraw_request();
+        if !(first || refresh) {
             return None;
         }
         let (width, height) = self.board.display().size();
-        let root = (self.build_root)();
-        let list = self
-            .renderer
-            .render_tree(root, &self.env, f64::from(width), f64::from(height));
+        let list = if first {
+            let build_root = self
+                .build_root
+                .take()
+                .expect("Dew root builder must exist before the first frame");
+            self.renderer
+                .render_tree(build_root(), &self.env, f64::from(width), f64::from(height))
+        } else {
+            self.renderer
+                .refresh_tree(f64::from(width), f64::from(height))
+        };
         let dirty = if first {
             vec![Rect::new(0.0, 0.0, f64::from(width), f64::from(height))]
         } else {
@@ -108,8 +124,8 @@ impl<B: Board> DewRuntime<B> {
         &self.board
     }
 
-    /// The frame-trigger handle, for callers that need to request rebuilds
-    /// outside the watched-signal path (e.g. size changes, benchmarks).
+    /// The frame-trigger handle, for callers that need to request a retained
+    /// refresh outside the watched-signal path (e.g. size changes).
     #[must_use]
     pub fn signals(&self) -> waterui_backend_core::frame_signals::FrameSignals {
         self.renderer.signals()
@@ -165,8 +181,52 @@ pub fn render_view_png<V: View>(
 mod tests {
     use super::*;
     use crate::display_list::DisplayList;
+    use core::cell::Cell;
     use kurbo::Affine;
+    use nami::{Binding, binding};
     use peniko::Color;
+    use std::rc::Rc;
+    use waterui_controls::toggle::Toggle;
+
+    struct CountingToggle {
+        body_calls: Rc<Cell<usize>>,
+        value: Binding<bool>,
+    }
+
+    impl View for CountingToggle {
+        fn body(self, _env: &Environment) -> impl View {
+            self.body_calls.set(self.body_calls.get() + 1);
+            Toggle::new(&self.value)
+        }
+    }
+
+    #[test]
+    fn binding_refresh_does_not_rebuild_view_body() {
+        let body_calls = Rc::new(Cell::new(0));
+        let value = binding(false);
+        let mut runtime = DewRuntime::new(HostBoard::new(200, 40), Environment::new(), 16, {
+            let body_calls = Rc::clone(&body_calls);
+            let value = value.clone();
+            move || {
+                AnyView::new(CountingToggle {
+                    body_calls: Rc::clone(&body_calls),
+                    value: value.clone(),
+                })
+            }
+        });
+
+        assert!(runtime.pump().is_some());
+        assert_eq!(body_calls.get(), 1);
+        assert!(runtime.pump().is_none(), "clean frame must not render");
+
+        value.set(true);
+        let dirty = runtime
+            .pump()
+            .expect("binding refresh must render the retained tree");
+
+        assert!(!dirty.is_empty());
+        assert_eq!(body_calls.get(), 1, "refresh must not evaluate body again");
+    }
 
     #[test]
     fn diff_marks_only_changed_commands() {

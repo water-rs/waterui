@@ -1,13 +1,9 @@
-//! Scroll offset/viewport math and per-identity scroll handle registry.
+//! Scroll offset/viewport math owned by each semantic scroll view.
 //!
-//! [`ScrollController`] owns one slot per scroll view in body order, rebound
-//! on every structural rebuild via cursor reuse. Each [`bind`] hands out a
-//! [`ScrollHandle`] stamped with a generation; when a rebuild changes the
-//! scroll view's layout (axis, viewport, or content extent), the generation
-//! advances and input routed through stale handles from earlier frames is
-//! silently dropped. All lengths and offsets are f64 logical pixels.
-//!
-//! [`bind`]: ScrollController::bind
+//! A [`ScrollHandle`] retains one scroll view's state directly. Rebinding the
+//! same handle after layout preserves its offset; a layout change advances its
+//! generation so input closures captured by an earlier frame become inert.
+//! There is deliberately no renderer slot registry or body-order identity.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,25 +22,6 @@ const WHEEL_SMOOTHING_TAU: f64 = 0.06;
 /// Remaining gap below which a smoothed wheel scroll snaps to its target and
 /// the animation ends.
 const WHEEL_SETTLE_EPSILON: f64 = 0.1;
-
-/// Registry of scroll-view state slots, keyed by body order across rebuilds.
-///
-/// The renderer brackets every structural rebuild with
-/// [`begin_rebuild_frame`](Self::begin_rebuild_frame) /
-/// [`finish_rebuild_frame`](Self::finish_rebuild_frame) and calls
-/// [`bind`](Self::bind) once per scroll view encountered during dispatch, so
-/// the n-th scroll view of consecutive frames shares the same persistent
-/// offset state.
-#[derive(Debug, Default)]
-pub struct ScrollController {
-    slots: Vec<ScrollSlot>,
-    cursor: usize,
-}
-
-#[derive(Debug)]
-struct ScrollSlot {
-    state: Rc<RefCell<ScrollState>>,
-}
 
 /// Cloneable reference to one scroll view's offset state, valid for the
 /// layout generation it was bound against.
@@ -100,70 +77,48 @@ struct ScrollState {
     wheel_last_tick: Option<Instant>,
 }
 
-impl ScrollController {
-    /// Resets the slot cursor; called at the begin of a structural rebuild,
-    /// before any scroll view is dispatched.
-    pub const fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
+impl ScrollHandle {
+    /// Creates the state owned by one semantic scroll view.
+    #[must_use]
+    pub fn new(
+        axis: Axis,
+        viewport_width: f64,
+        viewport_height: f64,
+        content_width: f64,
+        content_height: f64,
+    ) -> Self {
+        Self {
+            state: Rc::new(RefCell::new(ScrollState::new(
+                axis,
+                viewport_width,
+                viewport_height,
+                content_width,
+                content_height,
+            ))),
+            generation: 1,
+        }
     }
 
-    /// Drops slots not rebound during the rebuild that just finished, so
-    /// scroll views removed from the tree release their state.
-    pub fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    /// Binds the next scroll view in body order to its persistent slot and
-    /// returns a handle for routing input to it.
-    ///
-    /// Reuses the slot at the current cursor (creating it on first
-    /// encounter), updates it with the freshly measured layout in logical
-    /// pixels, and re-clamps the retained offsets. If axis, viewport, content
-    /// extent, or the clamped offsets changed, the slot's generation advances
-    /// and handles bound in earlier frames become inert.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the scroll controller cursor counter overflows.
-    pub fn bind(
+    /// Rebinds this scroll view to its latest layout and returns the handle
+    /// generation that input registered for the current frame must capture.
+    #[must_use]
+    pub fn rebind(
         &mut self,
         axis: Axis,
         viewport_width: f64,
         viewport_height: f64,
         content_width: f64,
         content_height: f64,
-    ) -> ScrollHandle {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("scroll controller cursor overflow");
-
-        if index == self.slots.len() {
-            self.slots.push(ScrollSlot {
-                state: Rc::new(RefCell::new(ScrollState::new(
-                    axis,
-                    viewport_width,
-                    viewport_height,
-                    content_width,
-                    content_height,
-                ))),
-            });
-        }
-
-        let state = Rc::clone(&self.slots[index].state);
-        let generation = state.borrow_mut().prepare_generation(
+    ) -> Self {
+        self.generation = self.state.borrow_mut().prepare_generation(
             axis,
             viewport_width,
             viewport_height,
             content_width,
             content_height,
         );
-        ScrollHandle { state, generation }
+        self.clone()
     }
-}
-
-impl ScrollHandle {
     /// Returns a key identifying the underlying scroll slot, stable for the
     /// slot's lifetime across rebuilds (the address of the shared state).
     #[must_use]
@@ -315,13 +270,11 @@ impl ScrollState {
         match self.axis {
             Axis::Horizontal => {
                 let target = self.wheel_target_x.unwrap_or(self.offset_x);
-                self.wheel_target_x =
-                    Some(clamp_scroll_offset(target - scaled_dx, metrics.max_x));
+                self.wheel_target_x = Some(clamp_scroll_offset(target - scaled_dx, metrics.max_x));
             }
             Axis::Vertical => {
                 let target = self.wheel_target_y.unwrap_or(self.offset_y);
-                self.wheel_target_y =
-                    Some(clamp_scroll_offset(target - scaled_dy, metrics.max_y));
+                self.wheel_target_y = Some(clamp_scroll_offset(target - scaled_dy, metrics.max_y));
             }
             Axis::All => {
                 let target_x = self.wheel_target_x.unwrap_or(self.offset_x);
@@ -422,16 +375,13 @@ mod tests {
     use super::*;
     use core::time::Duration;
 
-    fn vertical_controller() -> (ScrollController, ScrollHandle) {
-        let mut controller = ScrollController::default();
-        controller.begin_rebuild_frame();
-        let handle = controller.bind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0);
-        (controller, handle)
+    fn vertical_handle() -> ScrollHandle {
+        ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0)
     }
 
     #[test]
     fn scroll_offsets_clamp_to_content_extent() {
-        let (_controller, handle) = vertical_controller();
+        let handle = vertical_handle();
         assert!(handle.apply_scroll_delta(0.0, -50.0, false));
         assert_eq!(handle.metrics().offset_y, 50.0);
 
@@ -449,14 +399,14 @@ mod tests {
 
     #[test]
     fn vertical_axis_ignores_horizontal_delta() {
-        let (_controller, handle) = vertical_controller();
+        let handle = vertical_handle();
         assert!(!handle.apply_scroll_delta(-30.0, 0.0, false));
         assert_eq!(handle.metrics().offset_x, 0.0);
     }
 
     #[test]
     fn line_deltas_smooth_toward_the_scaled_target() {
-        let (_controller, handle) = vertical_controller();
+        let handle = vertical_handle();
         let start = Instant::now();
         // Two wheel ticks accumulate one 80px target without moving yet.
         assert!(handle.apply_scroll_delta(0.0, -2.0, true));
@@ -482,10 +432,8 @@ mod tests {
     fn smooth_wheel_progress_is_frame_rate_independent() {
         // The same wall-clock time must land at the same offset whether it is
         // sampled at 120Hz or 30Hz.
-        let (_controller, fine) = vertical_controller();
-        let mut controller_coarse = ScrollController::default();
-        controller_coarse.begin_rebuild_frame();
-        let coarse = controller_coarse.bind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0);
+        let fine = vertical_handle();
+        let coarse = vertical_handle();
 
         let start = Instant::now();
         assert!(fine.apply_scroll_delta(0.0, -4.0, true));
@@ -508,7 +456,7 @@ mod tests {
 
     #[test]
     fn pixel_deltas_cancel_in_flight_wheel_smoothing() {
-        let (_controller, handle) = vertical_controller();
+        let handle = vertical_handle();
         let start = Instant::now();
         assert!(handle.apply_scroll_delta(0.0, -2.0, true));
         let _ = handle.tick_smooth_scroll(start);
@@ -526,12 +474,10 @@ mod tests {
 
     #[test]
     fn rebinding_with_same_layout_keeps_offset_and_handle_validity() {
-        let (mut controller, handle) = vertical_controller();
+        let mut owner = vertical_handle();
+        let handle = owner.clone();
         assert!(handle.apply_scroll_delta(0.0, -50.0, false));
-        controller.finish_rebuild_frame();
-
-        controller.begin_rebuild_frame();
-        let rebound = controller.bind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0);
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0);
         assert_eq!(rebound.metrics().offset_y, 50.0);
         // The previous handle still targets the same generation.
         assert!(handle.apply_scroll_delta(0.0, -10.0, false));
@@ -539,11 +485,9 @@ mod tests {
 
     #[test]
     fn layout_change_invalidates_stale_handles() {
-        let (mut controller, handle) = vertical_controller();
-        controller.finish_rebuild_frame();
-
-        controller.begin_rebuild_frame();
-        let rebound = controller.bind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0);
+        let mut owner = vertical_handle();
+        let handle = owner.clone();
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0);
         // The stale handle's generation no longer matches: input is dropped.
         assert!(!handle.apply_scroll_delta(0.0, -10.0, false));
         assert!(
@@ -554,14 +498,12 @@ mod tests {
 
     #[test]
     fn viewport_growth_reclamps_existing_offset() {
-        let (mut controller, handle) = vertical_controller();
+        let mut owner = vertical_handle();
+        let handle = owner.clone();
         assert!(handle.apply_scroll_delta(0.0, -10_000.0, false));
         assert_eq!(handle.metrics().offset_y, 200.0);
-        controller.finish_rebuild_frame();
-
         // The viewport now shows the whole content: the offset clamps home.
-        controller.begin_rebuild_frame();
-        let rebound = controller.bind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0);
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0);
         assert_eq!(rebound.metrics().offset_y, 0.0);
         assert_eq!(rebound.metrics().max_y, 0.0);
     }
