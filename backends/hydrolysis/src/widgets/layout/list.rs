@@ -8,6 +8,7 @@ use crate::renderer::{
     WidgetRenderContext, local_interaction_state, materialize_list_item, materialize_list_row,
     measure_list_intrinsic, measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
 };
+use crate::scroll::ScrollHandle;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -32,6 +33,11 @@ type ListItemId = SelfId<RawId>;
 /// scroll out), so the list stays virtualized — cost is bounded by visible rows.
 pub(crate) struct ListRenderState {
     pub(crate) config: ListConfig,
+    /// Estimated/measured row extents belong to this list, not to its render
+    /// position in a backend-global slot array.
+    row_extents: RefCell<Vec<Option<f64>>>,
+    /// The scroll offset belongs to this semantic list node.
+    scroll: RefCell<Option<ScrollHandle>>,
     /// Content sub-views for the rows currently in view, keyed by stable row id so a
     /// steady scroll reuses each visible row's node (keeping its reactive content
     /// live) and only builds rows entering the window.
@@ -42,7 +48,41 @@ impl ListRenderState {
     pub(crate) fn from_config(config: ListConfig) -> Self {
         Self {
             config,
+            row_extents: RefCell::new(Vec::new()),
+            scroll: RefCell::new(None),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
+        }
+    }
+
+    fn prepare_rows(&self, len: usize) {
+        self.row_extents.borrow_mut().resize(len, None);
+    }
+
+    fn bind_scroll(
+        &self,
+        viewport_width: f64,
+        viewport_height: f64,
+        content_height: f64,
+    ) -> ScrollHandle {
+        let mut scroll = self.scroll.borrow_mut();
+        if let Some(handle) = scroll.as_mut() {
+            handle.rebind(
+                ScrollAxis::Vertical,
+                viewport_width,
+                viewport_height,
+                viewport_width,
+                content_height,
+            )
+        } else {
+            let handle = ScrollHandle::new(
+                ScrollAxis::Vertical,
+                viewport_width,
+                viewport_height,
+                viewport_width,
+                content_height,
+            );
+            *scroll = Some(handle.clone());
+            handle
         }
     }
 }
@@ -53,39 +93,26 @@ impl HydroNativeView for Native<ListConfig> {
     }
 }
 
-/// Emits a list's accessibility tree from its config — and crucially binds the
-/// list's scroll handle (`bind_scroll_handle` pushes it pending), which the
-/// subsequent `render_list_parts` consumes via `take_pending_scroll_handle`. The
-/// dispatch wrapper calls this before `render`, and the retained `Widget`-node
-/// path calls it from `render_list_node` for the same ordering, so the handle is
-/// always bound before the draw whether or not accessibility nodes are emitted.
+/// Emits a list's accessibility tree from its node-owned retained state.
 pub(crate) fn list_accessibility(
     renderer: &mut HydrolysisRenderer,
     ctx: RenderContext,
-    list: &ListConfig,
+    state: &Rc<RefCell<ListRenderState>>,
     env: &Environment,
 ) {
+    let state = state.borrow();
+    let list = &state.config;
     let row_count_signal = list.contents.len();
     let row_count = renderer.read_signal(&row_count_signal);
-    let slot_index = {
-        let index = renderer.lazy.lazy_list_controller.bind();
-        renderer.lazy.lazy_list_controller.slots[index].prepare_len(row_count);
-        index
-    };
+    state.prepare_rows(row_count);
     let viewport = ctx.bounds;
     let list_metrics = crate::widgets::widget_theme(env).list_metrics();
     let content_height = sum_cached_or_estimated(
-        &renderer.lazy.lazy_list_controller.slots[slot_index].row_extents,
+        &state.row_extents.borrow(),
         list_metrics.one_line_row_height,
     )
     .max(viewport.height());
-    let handle = renderer.bind_scroll_handle(
-        ScrollAxis::Vertical,
-        viewport.width(),
-        viewport.height(),
-        viewport.width(),
-        content_height,
-    );
+    let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
     #[cfg(feature = "accessibility")]
     {
         let metrics = handle.metrics();
@@ -94,15 +121,13 @@ pub(crate) fn list_accessibility(
             metrics.offset_y,
             metrics.offset_y + viewport.height(),
             |index| {
-                let cached_extent =
-                    renderer.lazy.lazy_list_controller.slots[slot_index].row_extents[index];
+                let cached_extent = state.row_extents.borrow()[index];
                 if let Some(extent) = cached_extent {
                     return extent;
                 }
                 let (_item, extent) =
                     materialize_list_row(&list.contents, index, renderer.state_mut(), env);
-                renderer.lazy.lazy_list_controller.slots[slot_index].row_extents[index] =
-                    Some(extent);
+                state.row_extents.borrow_mut()[index] = Some(extent);
                 extent
             },
         );
@@ -123,15 +148,13 @@ pub(crate) fn list_accessibility(
             let row_env = env.clone();
             let item = materialize_list_item(&list.contents, index, &row_env);
             let row_height = {
-                let cached_extent =
-                    renderer.lazy.lazy_list_controller.slots[slot_index].row_extents[index];
+                let cached_extent = state.row_extents.borrow()[index];
                 if let Some(extent) = cached_extent {
                     extent
                 } else {
                     let extent =
                         measure_list_item_row_height(&item, renderer.state_mut(), &row_env);
-                    renderer.lazy.lazy_list_controller.slots[slot_index].row_extents[index] =
-                        Some(extent);
+                    state.row_extents.borrow_mut()[index] = Some(extent);
                     extent
                 }
             };
@@ -184,12 +207,7 @@ pub(crate) fn measure_list_node(
     ViewDimensions::new(measure_list_intrinsic(list, state, env))
 }
 
-/// Renders a retained list leaf every flush. List accessibility is not
-/// render-driven and additionally binds the scroll handle the draw consumes, so
-/// this node always runs `list_accessibility` first (mirroring the dispatch
-/// wrapper's `accessibility`-then-`render` order); when the list is
-/// accessibility-hidden it runs that step inside a suppression scope so the
-/// handle is still bound while the a11y nodes are suppressed.
+/// Renders a retained list leaf every flush.
 pub(crate) fn render_list_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ListRenderState>>,
@@ -205,7 +223,7 @@ pub(crate) fn render_list_node(
     }
     {
         let render_ctx = ctx.render_context();
-        list_accessibility(ctx.renderer_mut(), render_ctx, &state.borrow().config, env);
+        list_accessibility(ctx.renderer_mut(), render_ctx, state, env);
     }
     #[cfg(feature = "accessibility")]
     if hidden {
@@ -229,16 +247,18 @@ pub(crate) fn render_list_parts(
     };
     let editing = ctx.renderer_mut().read_signal(&editing);
     let row_count = ctx.renderer_mut().read_signal(&row_count_signal);
-    let slot_index = {
-        let renderer = ctx.renderer_mut();
-        let index = renderer.lazy.lazy_list_controller.bind();
-        renderer.lazy.lazy_list_controller.slots[index].prepare_len(row_count);
-        index
-    };
+    state.borrow().prepare_rows(row_count);
 
     let viewport = ctx.bounds;
     let list_metrics = widget_theme(env).list_metrics();
-    let handle = ctx.renderer_mut().take_pending_scroll_handle("render_list");
+    let content_height = sum_cached_or_estimated(
+        &state.borrow().row_extents.borrow(),
+        list_metrics.one_line_row_height,
+    )
+    .max(viewport.height());
+    let handle = state
+        .borrow()
+        .bind_scroll(viewport.width(), viewport.height(), content_height);
     let metrics = handle.metrics();
     let needs_viewport_clip = metrics.max_y > 0.0;
     if needs_viewport_clip {
@@ -250,15 +270,12 @@ pub(crate) fn render_list_parts(
         metrics.offset_y,
         metrics.offset_y + viewport.height(),
         |index| {
-            let cached_extent = {
-                ctx.renderer_mut().lazy.lazy_list_controller.slots[slot_index].row_extents[index]
-            };
+            let cached_extent = state.borrow().row_extents.borrow()[index];
             if let Some(extent) = cached_extent {
                 return extent;
             }
             let (_item, extent) = materialize_list_row(&contents, index, ctx.state_mut(), env);
-            ctx.renderer_mut().lazy.lazy_list_controller.slots[slot_index].row_extents[index] =
-                Some(extent);
+            state.borrow().row_extents.borrow_mut()[index] = Some(extent);
             extent
         },
     );
@@ -275,16 +292,19 @@ pub(crate) fn render_list_parts(
     for index in window.start..window.end {
         let row_env = env.clone();
         let item = materialize_list_item(&contents, index, &row_env);
+        let row_id = contents
+            .get_id(index)
+            .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
+        let row_interaction_base = (i32::from(*row_id) as u32 as usize)
+            .checked_mul(3)
+            .expect("hydrolysis List interaction identity overflow");
         let row_height = {
-            let cached_extent = {
-                ctx.renderer_mut().lazy.lazy_list_controller.slots[slot_index].row_extents[index]
-            };
+            let cached_extent = state.borrow().row_extents.borrow()[index];
             if let Some(extent) = cached_extent {
                 extent
             } else {
                 let extent = measure_list_item_row_height(&item, ctx.state_mut(), &row_env);
-                ctx.renderer_mut().lazy.lazy_list_controller.slots[slot_index].row_extents[index] =
-                    Some(extent);
+                state.borrow().row_extents.borrow_mut()[index] = Some(extent);
                 extent
             }
         };
@@ -329,16 +349,18 @@ pub(crate) fn render_list_parts(
             );
             let up_interaction = (index > 0).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, up_rect);
+                let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base);
                 let (state, slot, _) = ctx
                     .renderer_mut()
-                    .bind_interaction_target(hit_bounds, &row_env);
+                    .bind_interaction_target(key, hit_bounds, &row_env);
                 (hit_bounds, state, slot)
             });
             let down_interaction = (index + 1 < total_rows).then(|| {
                 let hit_bounds = transformed_rect(ctx.hit_transform, down_rect);
+                let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 1);
                 let (state, slot, _) = ctx
                     .renderer_mut()
-                    .bind_interaction_target(hit_bounds, &row_env);
+                    .bind_interaction_target(key, hit_bounds, &row_env);
                 (hit_bounds, state, slot)
             });
             {
@@ -395,9 +417,11 @@ pub(crate) fn render_list_parts(
             );
             trailing_x = delete_rect.x0 - list_metrics.trailing_control_spacing;
             let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
+            let delete_key =
+                crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 2);
             let (delete_interaction, delete_press_slot, _) = ctx
                 .renderer_mut()
-                .bind_interaction_target(delete_hit_bounds, &row_env);
+                .bind_interaction_target(delete_key, delete_hit_bounds, &row_env);
             {
                 let delete_interaction =
                     local_interaction_state(delete_interaction, ctx.hit_transform);

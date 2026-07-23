@@ -19,14 +19,16 @@
 //! ```
 
 use alloc::borrow::{Cow, ToOwned};
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::fmt;
 use num_traits::ToPrimitive;
 
 use crate::codec::{self, DecodedRgba};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_core::{Environment, View};
+use waterui_core::{Binding, Environment, SignalExt, View};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuRuntime, GpuSurface, GpuView, OffscreenRenderConfig,
     OffscreenRenderError, OffscreenRenderOutput, OffscreenRenderOutputHdr,
@@ -62,6 +64,8 @@ pub use crate::codec::DecodePath;
 #[derive(Debug)]
 pub struct Image {
     renderer: ImageRenderer,
+    width: u32,
+    height: u32,
     /// When `true`, the image stretches to fill its proposed bounds via the
     /// configured [`Interpolation`]; otherwise it locks to its native pixel
     /// size like a `SwiftUI` `Image` (the default).
@@ -143,6 +147,8 @@ impl Image {
                 false,
                 false,
             ),
+            width,
+            height,
         }
     }
 
@@ -178,6 +184,8 @@ impl Image {
                 source_is_hdr,
                 source_is_wide_gamut,
             ),
+            width,
+            height,
         }
     }
 
@@ -210,19 +218,19 @@ impl Image {
     /// Get the image dimensions (width, height).
     #[must_use]
     pub const fn dimensions(&self) -> (u32, u32) {
-        (self.renderer.width, self.renderer.height)
+        (self.width, self.height)
     }
 
     /// Get the image width in pixels.
     #[must_use]
     pub const fn width(&self) -> u32 {
-        self.renderer.width
+        self.width
     }
 
     /// Get the image height in pixels.
     #[must_use]
     pub const fn height(&self) -> u32 {
-        self.renderer.height
+        self.height
     }
 
     /// Decode encoded image bytes and construct a GPU-backed `Image`.
@@ -311,8 +319,8 @@ impl Image {
 
 impl View for Image {
     fn body(self, _env: &Environment) -> impl View {
-        let width = u32_to_f32(self.renderer.width);
-        let height = u32_to_f32(self.renderer.height);
+        let width = u32_to_f32(self.width);
+        let height = u32_to_f32(self.height);
         let resizable = self.resizable;
         let surface = GpuSurface::new(self.renderer);
         let frame = Frame::new(surface);
@@ -322,6 +330,155 @@ impl View for Image {
             frame.width(width).height(height)
         }
     }
+}
+
+struct ImageFrame {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    source_pixel_format: SourcePixelFormat,
+    source_is_hdr: bool,
+    source_is_wide_gamut: bool,
+    interpolation: Interpolation,
+}
+
+impl fmt::Debug for ImageFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ImageFrame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("source_pixel_format", &self.source_pixel_format)
+            .field("source_is_hdr", &self.source_is_hdr)
+            .field("source_is_wide_gamut", &self.source_is_wide_gamut)
+            .field("interpolation", &self.interpolation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Image {
+    fn into_frame(mut self) -> ImageFrame {
+        let pixels = self
+            .renderer
+            .pending_pixels
+            .take()
+            .expect("Image can only enter a reactive image before GPU setup");
+        ImageFrame {
+            pixels,
+            width: self.width,
+            height: self.height,
+            source_pixel_format: self.renderer.source_pixel_format,
+            source_is_hdr: self.renderer.source_is_hdr,
+            source_is_wide_gamut: self.renderer.source_is_wide_gamut,
+            interpolation: self.renderer.interpolation,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct PendingImageUpdate {
+    dirty: bool,
+    frame: Option<ImageFrame>,
+}
+
+#[derive(Debug)]
+struct ReactiveImageState {
+    pending: RefCell<PendingImageUpdate>,
+    dimensions: Binding<Option<(u32, u32)>>,
+    redraw: RefCell<Option<waterui_graphics::RedrawHandle>>,
+}
+
+impl ReactiveImageState {
+    fn publish(&self, frame: Option<ImageFrame>) {
+        self.dimensions
+            .set(frame.as_ref().map(|frame| (frame.width, frame.height)));
+        *self.pending.borrow_mut() = PendingImageUpdate { dirty: true, frame };
+        if let Some(redraw) = self.redraw.borrow().as_ref() {
+            redraw.request_redraw();
+        }
+    }
+
+    fn take_pending(&self) -> PendingImageUpdate {
+        core::mem::take(&mut *self.pending.borrow_mut())
+    }
+}
+
+/// A handle that publishes decoded frames into one persistent [`ReactiveImage`].
+#[derive(Clone, Debug)]
+pub struct ReactiveImageHandle {
+    state: Rc<ReactiveImageState>,
+}
+
+impl ReactiveImageHandle {
+    /// Replaces the displayed GPU texture without replacing the image view.
+    pub fn set(&self, image: Image) {
+        self.state.publish(Some(image.into_frame()));
+    }
+
+    /// Removes the displayed frame without replacing the image view.
+    pub fn clear(&self) {
+        self.state.publish(None);
+    }
+}
+
+/// An image view whose decoded frame can change without rebuilding its subtree.
+#[derive(Debug)]
+pub struct ReactiveImage {
+    state: Rc<ReactiveImageState>,
+    resizable: bool,
+}
+
+impl ReactiveImage {
+    /// Allows this image to stretch to its proposed bounds.
+    #[must_use]
+    pub const fn resizable(mut self) -> Self {
+        self.resizable = true;
+        self
+    }
+}
+
+impl View for ReactiveImage {
+    fn body(self, _env: &Environment) -> impl View {
+        let width = self
+            .state
+            .dimensions
+            .map(|dimensions| dimensions.map_or(0.0, |(width, _)| u32_to_f32(width)))
+            .computed();
+        let height = self
+            .state
+            .dimensions
+            .map(|dimensions| dimensions.map_or(0.0, |(_, height)| u32_to_f32(height)))
+            .computed();
+        let surface = GpuSurface::new(ReactiveImageRenderer {
+            image: ImageRenderer::empty(),
+            state: Rc::clone(&self.state),
+        });
+        let frame = Frame::new(surface);
+        if self.resizable {
+            frame
+        } else {
+            frame.width(width).height(height)
+        }
+    }
+}
+
+/// Creates one persistent image view and its precise frame-update handle.
+#[must_use]
+pub fn reactive_image() -> (ReactiveImageHandle, ReactiveImage) {
+    let state = Rc::new(ReactiveImageState {
+        pending: RefCell::new(PendingImageUpdate::default()),
+        dimensions: Binding::container(None),
+        redraw: RefCell::new(None),
+    });
+    (
+        ReactiveImageHandle {
+            state: Rc::clone(&state),
+        },
+        ReactiveImage {
+            state,
+            resizable: false,
+        },
+    )
 }
 
 /// Internal GPU renderer for images.
@@ -383,6 +540,42 @@ impl ImageRenderer {
             bind_group: None,
             sampler: None,
         }
+    }
+
+    const fn empty() -> Self {
+        Self {
+            pending_pixels: None,
+            source_pixel_format: SourcePixelFormat::Rgba8UnormSrgb,
+            source_is_hdr: false,
+            source_is_wide_gamut: false,
+            width: 0,
+            height: 0,
+            interpolation: Interpolation::Linear,
+            texture: None,
+            render_pipeline: None,
+            bind_group: None,
+            sampler: None,
+        }
+    }
+
+    fn accept_frame(&mut self, frame: ImageFrame) {
+        self.pending_pixels = Some(frame.pixels);
+        self.source_pixel_format = frame.source_pixel_format;
+        self.source_is_hdr = frame.source_is_hdr;
+        self.source_is_wide_gamut = frame.source_is_wide_gamut;
+        self.width = frame.width;
+        self.height = frame.height;
+        self.interpolation = frame.interpolation;
+    }
+
+    fn clear_frame(&mut self) {
+        self.pending_pixels = None;
+        self.texture = None;
+        self.render_pipeline = None;
+        self.bind_group = None;
+        self.sampler = None;
+        self.width = 0;
+        self.height = 0;
     }
 
     #[inline]
@@ -513,6 +706,98 @@ impl ImageRenderer {
 
         (render_pipeline, bind_group_layout, sampler)
     }
+
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) {
+        let Some(pixels) = self.pending_pixels.take() else {
+            return;
+        };
+        let texture_format = match self.source_pixel_format {
+            SourcePixelFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+            SourcePixelFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+        };
+        let bytes_per_pixel = Self::bytes_per_pixel(self.source_pixel_format);
+        let unpadded_bpr = self.width * bytes_per_pixel;
+        let padded_bpr = Self::align_bytes_per_row(unpadded_bpr);
+        let upload_pixels: Cow<'_, [u8]> = if padded_bpr == unpadded_bpr {
+            Cow::Borrowed(pixels.as_slice())
+        } else {
+            Cow::Owned(Self::pad_rows_for_upload(
+                &pixels,
+                unpadded_bpr,
+                padded_bpr,
+                self.height,
+            ))
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Image source texture"),
+            size: wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: texture_format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            upload_pixels.as_ref(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bpr),
+                rows_per_image: Some(self.height),
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let hdr_to_sdr_tonemap =
+            should_tonemap_hdr_to_sdr(self.source_pixel_format, self.source_is_hdr, target_format);
+        let (render_pipeline, bind_group_layout, sampler) = Self::create_render_pipeline(
+            device,
+            target_format,
+            hdr_to_sdr_tonemap,
+            self.interpolation,
+        );
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Image bind group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        self.texture = Some(texture);
+        self.render_pipeline = Some(render_pipeline);
+        self.bind_group = Some(bind_group);
+        self.sampler = Some(sampler);
+    }
 }
 
 impl GpuView for ImageRenderer {
@@ -541,109 +826,7 @@ impl GpuView for ImageRenderer {
             self.source_is_hdr,
             self.source_is_wide_gamut
         );
-
-        // Upload pending pixels to GPU texture
-        if let Some(pixels) = self.pending_pixels.take() {
-            let texture_format = match self.source_pixel_format {
-                SourcePixelFormat::Rgba8UnormSrgb =>
-                // Use sRGB format - standard web/PNG/JPEG content.
-                // GPU automatically converts sRGB to linear when sampling.
-                {
-                    wgpu::TextureFormat::Rgba8UnormSrgb
-                }
-                SourcePixelFormat::Rgba16Float =>
-                // HDR path: linear extended-range source pixels.
-                {
-                    wgpu::TextureFormat::Rgba16Float
-                }
-            };
-            let bytes_per_pixel = Self::bytes_per_pixel(self.source_pixel_format);
-            let unpadded_bpr = self.width * bytes_per_pixel;
-            let padded_bpr = Self::align_bytes_per_row(unpadded_bpr);
-            let upload_pixels: Cow<'_, [u8]> = if padded_bpr == unpadded_bpr {
-                Cow::Borrowed(pixels.as_slice())
-            } else {
-                Cow::Owned(Self::pad_rows_for_upload(
-                    &pixels,
-                    unpadded_bpr,
-                    padded_bpr,
-                    self.height,
-                ))
-            };
-
-            let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Image source texture"),
-                size: wgpu::Extent3d {
-                    width: self.width,
-                    height: self.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: texture_format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-
-            ctx.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                upload_pixels.as_ref(),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bpr),
-                    rows_per_image: Some(self.height),
-                },
-                wgpu::Extent3d {
-                    width: self.width,
-                    height: self.height,
-                    depth_or_array_layers: 1,
-                },
-            );
-
-            self.texture = Some(texture);
-            // pixels dropped here - NOT stored
-        }
-
-        // Create render pipeline
-        let hdr_to_sdr_tonemap = should_tonemap_hdr_to_sdr(
-            self.source_pixel_format,
-            self.source_is_hdr,
-            ctx.surface_format,
-        );
-        let (render_pipeline, bind_group_layout, sampler) = Self::create_render_pipeline(
-            ctx.device,
-            ctx.surface_format,
-            hdr_to_sdr_tonemap,
-            self.interpolation,
-        );
-
-        let texture = self.texture.as_ref().expect("Texture should be created");
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Image bind group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-
-        self.render_pipeline = Some(render_pipeline);
-        self.bind_group = Some(bind_group);
-        self.sampler = Some(sampler);
+        self.prepare(ctx.device, ctx.queue, ctx.surface_format);
         core::future::ready(())
     }
 
@@ -655,14 +838,6 @@ impl GpuView for ImageRenderer {
             frame.height,
             self.render_pipeline.is_some()
         );
-
-        // Render to screen
-        let Some(render_pipeline) = &self.render_pipeline else {
-            return;
-        };
-        let Some(bind_group) = &self.bind_group else {
-            return;
-        };
 
         let mut encoder = frame
             .device
@@ -688,12 +863,72 @@ impl GpuView for ImageRenderer {
                 multiview_mask: None,
             });
 
-            render_pass.set_pipeline(render_pipeline);
-            render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.draw(0..6, 0..1); // 2 triangles = 6 vertices
+            if let (Some(render_pipeline), Some(bind_group)) =
+                (&self.render_pipeline, &self.bind_group)
+            {
+                render_pass.set_pipeline(render_pipeline);
+                render_pass.set_bind_group(0, bind_group, &[]);
+                render_pass.draw(0..6, 0..1);
+            }
         }
 
         frame.queue.submit([encoder.finish()]);
+    }
+}
+
+struct ReactiveImageRenderer {
+    image: ImageRenderer,
+    state: Rc<ReactiveImageState>,
+}
+
+impl GpuView for ReactiveImageRenderer {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let (width, height) = self.state.dimensions.get().unwrap_or((0, 0));
+        let intrinsic = Size::new(u32_to_f32(width), u32_to_f32(height));
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(intrinsic.width),
+            proposal.height.unwrap_or(intrinsic.height),
+        ))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
+        *self.state.redraw.borrow_mut() = Some(ctx.redraw_handle.clone());
+        let update = self.state.take_pending();
+        if update.dirty {
+            match update.frame {
+                Some(frame) => self.image.accept_frame(frame),
+                None => self.image.clear_frame(),
+            }
+        }
+        self.image.setup(ctx, env)
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        let update = self.state.take_pending();
+        if update.dirty {
+            match update.frame {
+                Some(image) => {
+                    self.image.accept_frame(image);
+                    self.image.prepare(frame.device, frame.queue, frame.format);
+                }
+                None => self.image.clear_frame(),
+            }
+        }
+        self.image.render(frame);
+    }
+}
+
+impl Drop for ReactiveImageRenderer {
+    fn drop(&mut self) {
+        self.state.redraw.borrow_mut().take();
     }
 }
 
@@ -807,7 +1042,26 @@ fn u32_to_f32(value: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourcePixelFormat, should_tonemap_hdr_to_sdr};
+    use super::{Image, SourcePixelFormat, reactive_image, should_tonemap_hdr_to_sdr};
+
+    #[test]
+    fn reactive_image_replaces_frame_without_replacing_view() {
+        let (handle, _view) = reactive_image();
+        handle.set(Image::new(vec![0, 0, 0, 255], 1, 1));
+
+        assert_eq!(handle.state.dimensions.get(), Some((1, 1)));
+        let update = handle.state.take_pending();
+        assert!(update.dirty, "published frame must be pending");
+        let frame = update.frame.expect("published update must contain a frame");
+        assert_eq!((frame.width, frame.height), (1, 1));
+        assert!(!handle.state.take_pending().dirty);
+
+        handle.clear();
+        assert_eq!(handle.state.dimensions.get(), None);
+        let update = handle.state.take_pending();
+        assert!(update.dirty);
+        assert!(update.frame.is_none());
+    }
 
     #[test]
     fn tonemap_only_for_hdr_float_source_into_sdr_target() {

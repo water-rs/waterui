@@ -8,13 +8,11 @@
 //! - ColorPicker with alpha and HDR support
 //! - FilePicker for file selection and import
 
-use std::{collections::BTreeSet, rc::Rc};
+use std::collections::BTreeSet;
 
 use jiff::civil::{Date, DateTime, Time};
-use waterui::Signal;
 use waterui::app::App;
 use waterui::color::Srgb;
-use waterui::component::Dynamic;
 use waterui::form::Calendar;
 use waterui::form::picker::color::ColorPicker;
 use waterui::form::picker::date::{DatePicker, DatePickerType};
@@ -232,34 +230,11 @@ impl ColorSwatch {
 
 impl View for ColorSwatch {
     fn body(self, _env: &Environment) -> impl View {
-        signal_driven_view(self.color, |color| {
-            Rectangle
-                .fill(color)
-                .size(64.0, 32.0)
-                .clip(RoundedRectangle::new(0.1))
-        })
+        Rectangle
+            .fill(signal_color(self.color))
+            .size(64.0, 32.0)
+            .clip(RoundedRectangle::new(0.1))
     }
-}
-
-fn signal_driven_view<T, S, V>(source: S, build: impl Fn(T) -> V + 'static) -> impl View
-where
-    S: Signal<Output = T> + Clone + 'static,
-    T: 'static,
-    V: View,
-{
-    let (handler, dynamic) = Dynamic::new();
-    let build = Rc::new(build);
-    handler.set(build(source.get()));
-
-    let guard = source.watch({
-        let build = Rc::clone(&build);
-        move |ctx| {
-            let metadata = ctx.metadata().clone();
-            handler.set_with_metadata(build(ctx.into_value()), metadata);
-        }
-    });
-
-    dynamic.retain((guard, source, build))
 }
 
 fn file_list(files: &Binding<Vec<Url>>) -> impl View {

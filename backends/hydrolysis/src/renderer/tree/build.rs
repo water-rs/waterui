@@ -42,6 +42,10 @@ impl RenderNode {
         let view = match view.downcast::<Native<FixedContainer>>() {
             Ok(container) => {
                 let (layout, children) = (*container).into_inner().into_inner();
+                let signals = renderer.signals.clone();
+                let guards = layout.watch_invalidation(Rc::new(move || {
+                    signals.request_refresh();
+                }));
                 let children = children
                     .into_iter()
                     .map(|child| {
@@ -52,6 +56,7 @@ impl RenderNode {
                     layout,
                     children,
                     placed: Vec::new(),
+                    _guards: guards,
                 }));
             }
             Err(view) => view,
@@ -751,7 +756,7 @@ impl RenderNode {
         let mut content = scene_view.into_inner().into_content();
         let signals = renderer.signals.clone();
         content.set_invalidator(Some(Rc::new(move || {
-            signals.request_next_frame_rebuild();
+            signals.request_refresh();
         })));
         RenderNode::SceneView(Box::new(SceneViewNode {
             content: RefCell::new(content),

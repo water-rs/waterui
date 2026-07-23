@@ -30,6 +30,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         }),
         children: vec![text_node("Hello"), text_node("World")],
         placed: Vec::new(),
+        _guards: Vec::new(),
     }));
 
     let window = Size::new(200.0, 120.0);
@@ -78,6 +79,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         }),
         children: vec![text_node("Cached")],
         placed: Vec::new(),
+        _guards: Vec::new(),
     }));
 
     let window = Size::new(200.0, 120.0);
@@ -385,7 +387,7 @@ fn render_tree_live_path_processes_watch_switch() {
 
     // A `watch`-driven content switch (the chart example's `chart_layers` shape):
     // on the legacy patch path this could silently fail to switch (Bug 1). The
-    // render-tree path processes it as a rebuild, so the switch always takes.
+    // render-tree path patches only the Dynamic node, so the switch always takes.
     let mode = binding(false);
     let builder = {
         let mode = mode.clone();
@@ -548,7 +550,7 @@ fn render_tree_chart_switch_snapshot() {
 /// The exact chart case: a `watch`-driven swap between two `Canvas` (`SceneView`)
 /// charts — the effect-slot path where Bug 1 lived. On the render-tree path the
 /// switch must visibly take effect (red -> blue scene), proving the SceneView
-/// switch is fixed (the cursor is reset on the reuse-rebuild path).
+/// switch is fixed (the patched node is re-dispatched in isolation).
 #[test]
 fn render_tree_scene_view_switch_snapshot() {
     use core::time::Duration;
@@ -691,12 +693,10 @@ fn render_tree_scroll_snapshot() {
     eprintln!("wrote /tmp/waterui_tree_scroll_before.png and /tmp/waterui_tree_scroll_after.png");
 }
 
-/// The scroll offset must survive the refresh pump. With full layout every frame,
-/// the `ScrollNode` re-binds its handle on each refresh; the scroll-controller
-/// cursor must therefore be reset on the refresh path too (like the interaction
-/// cursors), or the n-th scroll view is handed a fresh (offset 0) slot and the
-/// scroll silently resets. Asserts the scrolled frame differs from the unscrolled
-/// one, and that a following no-op refresh keeps the offset (no reset, no drift).
+/// The scroll offset must survive the refresh pump. The retained `ScrollNode` owns
+/// one handle and re-binds its extents on each layout; no renderer-order slot is
+/// involved. Asserts the scrolled frame differs from the unscrolled one, and that
+/// a following no-op refresh keeps the offset (no reset, no drift).
 #[test]
 fn scroll_offset_persists_across_refresh() {
     use core::time::Duration;

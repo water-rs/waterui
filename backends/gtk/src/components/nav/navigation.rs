@@ -1,12 +1,14 @@
 //! GTK4 Navigation components implementation.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gtk4::Widget;
 use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui_controls::text_field::TextField;
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_core::{AnyView, Environment};
 use waterui_navigation::{
@@ -544,15 +546,37 @@ impl GtkNavigationControllerInner {
     }
 }
 
-fn replace_split_host(host: gtk4::Box, env: Environment, view: AnyView) {
-    glib::idle_add_local_once(move || {
-        clear_box_children(&host);
-        let mut renderer = GtkRenderer::new();
-        let widget = renderer.render_any(view, &env);
-        widget.set_hexpand(true);
-        widget.set_vexpand(true);
-        host.append(&widget);
-    });
+fn cached_split_host_switcher(
+    host: gtk4::Box,
+    env: Environment,
+    placeholder: AnyViewBuilder<AnyView>,
+    destination: impl Fn(Id) -> AnyView + 'static,
+) -> Rc<dyn Fn(Option<Id>)> {
+    let widgets = Rc::new(RefCell::new(BTreeMap::<Option<Id>, Widget>::new()));
+    let destination = Rc::new(destination);
+    Rc::new(move |selected| {
+        let host = host.clone();
+        let env = env.clone();
+        let placeholder = placeholder.clone();
+        let destination = Rc::clone(&destination);
+        let widgets = Rc::clone(&widgets);
+        glib::idle_add_local_once(move || {
+            let widget = if let Some(widget) = widgets.borrow().get(&selected) {
+                widget.clone()
+            } else {
+                let view =
+                    selected.map_or_else(|| placeholder.build(), |selected| destination(selected));
+                let mut renderer = GtkRenderer::new();
+                let widget = renderer.render_any(view, &env);
+                widget.set_hexpand(true);
+                widget.set_vexpand(true);
+                widgets.borrow_mut().insert(selected, widget.clone());
+                widget
+            };
+            clear_box_children(&host);
+            host.append(&widget);
+        });
+    })
 }
 
 impl GtkComponent for NavigationSplitLayout {
@@ -604,45 +628,35 @@ impl GtkComponent for NavigationSplitLayout {
         let env = env.clone();
         let mut guards: Vec<nami::watcher::BoxWatcherGuard> = Vec::new();
         if let Some(content) = content {
-            let rebuild_content = {
-                let host = content_host.clone();
-                let env = env.clone();
-                let placeholder = placeholder.clone();
-                move |selected: Option<Id>| {
-                    let view = selected.map_or_else(
-                        || placeholder.build(),
-                        |selected| AnyView::new(content.build(selected)),
-                    );
-                    replace_split_host(host.clone(), env.clone(), view);
-                }
-            };
-            rebuild_content(primary_selection.get());
-            guards.push(primary_selection.clone().computed().watch(
+            let switch_content = cached_split_host_switcher(
+                content_host.clone(),
+                env.clone(),
+                placeholder.clone(),
+                move |selected| AnyView::new(content.build(selected)),
+            );
+            switch_content(primary_selection.get());
+            guards.push(primary_selection.clone().computed().watch({
+                let switch_content = Rc::clone(&switch_content);
                 move |ctx: nami::watcher::Context<Option<Id>>| {
-                    rebuild_content(ctx.into_value());
-                },
-            ));
+                    switch_content(ctx.into_value());
+                }
+            }));
         }
 
         let detail_selection = secondary_selection.unwrap_or_else(|| primary_selection.clone());
-        let rebuild_detail = {
-            let host = detail_host.clone();
-            let env = env.clone();
-            let placeholder = placeholder.clone();
-            move |selected: Option<Id>| {
-                let view = selected.map_or_else(
-                    || placeholder.build(),
-                    |selected| AnyView::new(detail.build(selected)),
-                );
-                replace_split_host(host.clone(), env.clone(), view);
-            }
-        };
-        rebuild_detail(detail_selection.get());
-        guards.push(detail_selection.clone().computed().watch(
+        let switch_detail = cached_split_host_switcher(
+            detail_host.clone(),
+            env.clone(),
+            placeholder,
+            move |selected| AnyView::new(detail.build(selected)),
+        );
+        switch_detail(detail_selection.get());
+        guards.push(detail_selection.clone().computed().watch({
+            let switch_detail = Rc::clone(&switch_detail);
             move |ctx: nami::watcher::Context<Option<Id>>| {
-                rebuild_detail(ctx.into_value());
-            },
-        ));
+                switch_detail(ctx.into_value());
+            }
+        }));
 
         let apply_visibility = {
             let primary = primary_widget.clone();

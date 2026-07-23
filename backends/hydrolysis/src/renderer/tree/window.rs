@@ -200,16 +200,9 @@ impl HydrolysisRenderer {
         // accumulating. `patch` may build new `Dynamic` subtrees that subscribe, so
         // this precedes it.
         self.lifecycle.begin_rebuild_frame();
-        // Reset the FLUSH-BOUND slot cursors that the full re-flush re-binds every
-        // frame in stable walk order: interaction (press/hover/hit-test order), scroll
-        // (each `ScrollNode::layout` re-binds its handle), lazy list/table, and
-        // navigation. Resetting the navigation cursor preserves each slot's entries
-        // and transition state while rebinding the same slot index; without it, every
-        // refresh allocates an empty slot and loses the active destination. The
-        // animation controller is signal/node-identity keyed and deliberately not
-        // reset here.
+        // Reset frame-bound input registrations. Scroll, list, and table state
+        // are owned by their semantic retained nodes.
         self.hit_test.begin_rebuild_frame();
-        self.scroll_controller.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
         // Apply any pending reactive Dynamic content changes incrementally
@@ -248,8 +241,6 @@ impl HydrolysisRenderer {
         self.render_active_text_context_menu_overlay(env, transform);
         self.flush_vello_scene_layer();
         self.hit_test.finish_rebuild_frame();
-        self.scroll_controller.finish_rebuild_frame();
-        self.lazy.finish_rebuild_frame();
         self.navigation.finish_rebuild_frame();
         if structural_change {
             // Drop animation slots + `Dynamic`-dimension cache entries for subtrees

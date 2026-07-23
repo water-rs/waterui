@@ -144,6 +144,7 @@ pub(crate) fn render_toggle_parts(
     state: &Rc<RefCell<ToggleRenderState>>,
     env: &Environment,
 ) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let mut state = state.borrow_mut();
     let style = state.config.style;
@@ -180,7 +181,7 @@ pub(crate) fn render_toggle_parts(
     }
 
     // Reading the toggle value through `resolve_toggle_progress` watches the
-    // signal (it registers a `request_rebuild` watcher), so a value change
+    // signal (it registers a retained-refresh watcher), so a value change
     // schedules a frame and this persistent node re-renders the new state.
     let (thumb_progress, selected) = {
         let binding = state.config.toggle.clone();
@@ -188,9 +189,12 @@ pub(crate) fn render_toggle_parts(
             .resolve_toggle_progress(&binding, theme.toggle_value_animation())
     };
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot, _) = ctx
-        .renderer_mut()
-        .bind_control_interaction_target(hit_bounds, env, disabled);
+    let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
+        interaction_key,
+        hit_bounds,
+        env,
+        disabled,
+    );
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
         let mut draw = ctx.draw_context();

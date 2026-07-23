@@ -253,13 +253,13 @@ pub(crate) fn render_picker_parts(
     );
     match style {
         PickerStyle::Automatic | PickerStyle::Menu => {
-            render_menu_picker(ctx, selection, items, menu_open, env);
+            render_menu_picker(ctx, config, selection, items, menu_open, env);
         }
         PickerStyle::Radio => {
-            render_radio_picker(ctx, selection, items, env);
+            render_radio_picker(ctx, config, selection, items, env);
         }
         PickerStyle::Segmented => {
-            render_segmented_picker(ctx, selection, items, env);
+            render_segmented_picker(ctx, config, selection, items, env);
         }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
     }
@@ -295,11 +295,13 @@ pub(crate) fn menu_picker_option_rect(
 
 pub(crate) fn render_menu_picker(
     ctx: &mut WidgetRenderContext<'_>,
+    owner: &Rc<RefCell<PickerConfig>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     menu_open: &Rc<Cell<bool>>,
     env: &Environment,
 ) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(owner, 0);
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Menu);
     let selected = ctx.renderer_mut().read_signal(&selection);
@@ -341,7 +343,8 @@ pub(crate) fn render_menu_picker(
         let bounds = ctx.bounds;
         let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
         let (interaction, press_slot, _) =
-            ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+            ctx.renderer_mut()
+                .bind_interaction_target(interaction_key, hit_bounds, env);
         {
             let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let mut draw = ctx.draw_context();
@@ -401,6 +404,7 @@ pub(crate) fn render_menu_picker(
 
 pub(crate) fn render_radio_picker(
     ctx: &mut WidgetRenderContext<'_>,
+    owner: &Rc<RefCell<PickerConfig>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     env: &Environment,
@@ -452,8 +456,11 @@ pub(crate) fn render_radio_picker(
             }
         };
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
+        let discriminator = i32::from(item.tag) as u32 as usize;
+        let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
         let (interaction, press_slot, _) =
-            ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+            ctx.renderer_mut()
+                .bind_interaction_target(interaction_key, hit_rect, env);
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         {
             let mut draw = ctx.draw_context();
@@ -497,6 +504,7 @@ pub(crate) fn render_radio_picker(
 
 pub(crate) fn render_segmented_picker(
     ctx: &mut WidgetRenderContext<'_>,
+    owner: &Rc<RefCell<PickerConfig>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     env: &Environment,
@@ -513,8 +521,11 @@ pub(crate) fn render_segmented_picker(
         let segment_rect = vello::kurbo::Rect::new(x0, bounds.y0, x0 + segment_width, bounds.y1);
         let is_selected = item.tag == selected;
         let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
+        let discriminator = i32::from(item.tag) as u32 as usize;
+        let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
         let (interaction, press_slot, _) =
-            ctx.renderer_mut().bind_interaction_target(hit_rect, env);
+            ctx.renderer_mut()
+                .bind_interaction_target(interaction_key, hit_rect, env);
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         {
             let mut draw = ctx.draw_context();

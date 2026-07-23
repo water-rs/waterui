@@ -98,7 +98,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
     use nami::{Binding, SignalExt};
 
     #[derive(Clone)]

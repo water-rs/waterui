@@ -124,7 +124,7 @@ fn mode_controls(mode: &Binding<ChartMode>) -> impl View {
 /// stacking 15 GPU scene-views and the reactive-visibility wrapper that the
 /// retained renderer does not yet composite for scene-views.
 fn chart_layers(mode: &Binding<ChartMode>) -> impl View {
-    watch(mode.clone(), |mode| match mode {
+    Dynamic::watch(mode.clone(), |mode| match mode {
         ChartMode::Bar => AnyView::new(bar_chart_preview()),
         ChartMode::Line => AnyView::new(line_chart_preview()),
         ChartMode::Pie => AnyView::new(pie_chart_preview()),

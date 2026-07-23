@@ -13,7 +13,7 @@ use std::{
 };
 
 use executor_core::spawn_local;
-use nami::{Computed, watcher::BoxWatcherGuard};
+use nami::{Computed, collection::SignalCollection, watcher::BoxWatcherGuard};
 use num_traits::ToPrimitive;
 use uuid::Uuid;
 use waterkit_audio::{
@@ -51,15 +51,16 @@ use waterui_core::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent,
         MagnificationGesture,
     },
+    id::SelfId,
     layout::{ProposalSize, Size, StretchAxis, ViewDimensions},
 };
 use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, RedrawHandle};
 use waterui_layout::{
     frame::Frame,
     overlay,
-    stack::{Alignment, hstack, vstack},
+    stack::{Alignment, HStack, hstack, vstack},
 };
-use waterui_text::{Text, text};
+use waterui_text::Text;
 
 use waterui_video::video::VideoEventHandler;
 use waterui_video::{
@@ -1388,16 +1389,10 @@ fn next_video_selection(
 }
 
 fn subtitle_banner(subtitle_text: &Binding<String>) -> impl View + use<> {
-    subtitle_text
-        .map(|current| {
-            (!current.trim().is_empty()).then(|| {
-                text(current)
-                    .footnote()
-                    .color(Color::srgb(255, 255, 255))
-                    .background_color(Color::srgb(0, 0, 0))
-            })
-        })
-        .computed()
+    Text::display(subtitle_text.clone())
+        .footnote()
+        .color(Color::srgb(255, 255, 255))
+        .background_color(Color::srgb(0, 0, 0))
 }
 
 fn picture_in_picture_button(request: &Binding<u64>) -> impl View + use<> {
@@ -1583,38 +1578,47 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
         speed_controls,
     } = bindings;
     let previous_controller = controller.clone();
-    let previous_button = has_previous
-        .map({
-            let on_event = on_event.clone();
-            move |enabled| {
-                enabled.then({
-                    let on_event = on_event.clone();
-                    let controller = previous_controller.clone();
-                    move || {
-                        button("Previous").action(move || {
-                            request_previous(&controller);
-                            emit_event(&on_event, Event::PreviousRequested);
-                        })
-                    }
-                })
-            }
-        })
-        .computed();
-    let next_controller = controller;
-    let next_button = has_next
-        .map(move |enabled| {
-            enabled.then({
-                let on_event = on_event.clone();
-                let controller = next_controller.clone();
+    let previous_on_event = on_event.clone();
+    let previous_items = has_previous.map(|enabled| {
+        enabled
+            .then_some(SelfId::new(0usize))
+            .into_iter()
+            .collect::<Vec<_>>()
+    });
+    let previous_button = HStack::for_each(
+        SignalCollection::new(previous_items),
+        move |_item: SelfId<usize>| {
+            button("Previous").action({
+                let on_event = previous_on_event.clone();
+                let controller = previous_controller.clone();
                 move || {
-                    button("Next").action(move || {
-                        request_next(&controller);
-                        emit_event(&on_event, Event::NextRequested);
-                    })
+                    request_previous(&controller);
+                    emit_event(&on_event, Event::PreviousRequested);
                 }
             })
-        })
-        .computed();
+        },
+    );
+    let next_controller = controller;
+    let next_on_event = on_event;
+    let next_items = has_next.map(|enabled| {
+        enabled
+            .then_some(SelfId::new(1usize))
+            .into_iter()
+            .collect::<Vec<_>>()
+    });
+    let next_button = HStack::for_each(
+        SignalCollection::new(next_items),
+        move |_item: SelfId<usize>| {
+            button("Next").action({
+                let on_event = next_on_event.clone();
+                let controller = next_controller.clone();
+                move || {
+                    request_next(&controller);
+                    emit_event(&on_event, Event::NextRequested);
+                }
+            })
+        },
+    );
 
     let primary = hstack((
         previous_button,

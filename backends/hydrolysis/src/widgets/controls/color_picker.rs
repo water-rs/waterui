@@ -168,6 +168,7 @@ pub(crate) fn render_color_picker_parts(
     state: &Rc<RefCell<ColorPickerRenderState>>,
     env: &Environment,
 ) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
     let mut state = state.borrow_mut();
@@ -216,7 +217,9 @@ pub(crate) fn render_color_picker_parts(
     }
 
     let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
-    let (interaction, press_slot, _) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+    let (interaction, press_slot, _) =
+        ctx.renderer_mut()
+            .bind_interaction_target(interaction_key, hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
@@ -236,7 +239,7 @@ pub(crate) fn render_color_picker_parts(
         content_bounds.y0 + (content_bounds.height() + swatch_size) / 2.0,
     );
     // Reading the value through `read_signal` watches it (registers a
-    // `request_rebuild` watcher), so a value change schedules a frame and this
+    // retained-refresh watcher), so a value change schedules a frame and this
     // persistent node re-renders the new swatch color.
     let color = ctx.renderer_mut().read_signal(&value_binding);
     let swatch_color = resolved_color_to_peniko(color.resolve(env).get());

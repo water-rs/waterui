@@ -27,9 +27,11 @@ use nami::collection::List;
 use waterui::graphics::Color;
 use waterui_core::dynamic::watch;
 use waterui_core::views::ForEach;
+use waterui_graphics::color::signal_color;
 use waterui_layout::AbsoluteLayout;
 use waterui_layout::collection_transition::collection_transition;
 use waterui_layout::container::LazyContainer;
+use waterui_layout::frame::Frame;
 
 use super::test_environment;
 use crate::HeadlessRuntime;
@@ -523,10 +525,11 @@ fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
         let background = is_selected
             .select(Color::srgb(200, 90, 160), Color::srgb(228, 224, 236))
             .computed();
-        AnyView::new(().size(120.0, 40.0).background(background))
+        AnyView::new(().size(120.0, 40.0).background(signal_color(background)))
     });
     let collection = collection_transition(collection, Animation::linear(Duration::from_millis(1)));
-    let sizer = watch(selected.clone(), |s| ().size(80.0, 40.0 + s as f32 * 30.0));
+    let height = selected.clone().map(|s| 40.0 + s as f32 * 30.0);
+    let sizer = Frame::new(()).width(80.0).height(height);
     AnyView::new(vstack((sizer, collection)))
 }
 

@@ -13,6 +13,7 @@ use waterui_layout::StretchAxis;
 use waterui_layout::container::LazyContainer;
 
 use crate::component::GtkComponent;
+use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guard;
 
@@ -22,20 +23,16 @@ impl GtkComponent for Native<LazyContainer> {
         let contents = SharedAnyViews::from(contents);
         let env = env.clone();
 
-        // Create ListStore with placeholder objects (indices)
-        let store = gtk4::gio::ListStore::new::<glib::BoxedAnyObject>();
-        let reload_model: Rc<dyn Fn()> = {
-            let store = store.clone();
-            let contents = contents.clone();
-            Rc::new(move || {
-                store.remove_all();
-                let len = contents.len().get();
-                for index in 0..len {
-                    store.append(&glib::BoxedAnyObject::new(index));
-                }
+        let model = Rc::new(KeyedModel::new());
+        let initial_ids = (0..contents.len().get())
+            .map(|index| {
+                let id = contents
+                    .get_id(index)
+                    .expect("LazyContainer contents must provide an ID for every child");
+                i32::from(*id)
             })
-        };
-        reload_model();
+            .collect::<Vec<_>>();
+        model.reconcile(&initial_ids);
 
         // Determine orientation from layout
         let orientation = match layout.stretch_axis() {
@@ -57,7 +54,14 @@ impl GtkComponent for Native<LazyContainer> {
 
         factory.connect_bind(move |_, item| {
             let list_item = item.downcast_ref::<gtk4::ListItem>().unwrap();
-            let index = list_item.position() as usize;
+            let id = list_item_id(list_item);
+            let index = (0..contents_clone.len().get())
+                .find(|index| {
+                    contents_clone
+                        .get_id(*index)
+                        .is_some_and(|candidate| i32::from(*candidate) == id)
+                })
+                .expect("GTK LazyContainer model ID must exist in WaterUI contents");
 
             // Reconstruct view lazily
             if let Some(view) = contents_clone.get_view(index) {
@@ -77,19 +81,24 @@ impl GtkComponent for Native<LazyContainer> {
         });
 
         // Create ListView (NO ScrolledWindow - parent handles scrolling)
-        let selection = gtk4::NoSelection::new(Some(store));
+        let selection = gtk4::NoSelection::new(Some(model.store()));
         let list_view = gtk4::ListView::new(Some(selection), Some(factory));
         list_view.set_orientation(orientation);
         list_view.set_hexpand(true);
         list_view.set_vexpand(true);
 
-        // Rebuild index model when the underlying list structure changes.
+        // Reconcile the GTK model by stable WaterUI child identity.
         let contents_guard = contents.watch(.., {
-            let reload_model = reload_model.clone();
-            move |_| {
-                let reload_model = reload_model.clone();
+            let model = Rc::clone(&model);
+            move |context| {
+                let ids = context
+                    .value()
+                    .iter()
+                    .map(|id| i32::from(**id))
+                    .collect::<Vec<_>>();
+                let model = Rc::clone(&model);
                 glib::idle_add_local_once(move || {
-                    reload_model();
+                    model.reconcile(&ids);
                 });
             }
         });

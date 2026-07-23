@@ -877,7 +877,7 @@ impl HydrolysisRenderer {
             self.dismiss_active_text_context_menu();
             self.dismiss_active_popup_menu();
         }
-        self.request_rebuild();
+        self.request_refresh();
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             previous_focus = ?previous,
@@ -890,7 +890,7 @@ impl HydrolysisRenderer {
     pub(crate) fn dismiss_active_text_context_menu(&mut self) {
         if let Some(menu) = self.text_editing.active_text_context_menu.take() {
             match menu {
-                ActiveTextContextMenu::Overlay { .. } => self.request_rebuild(),
+                ActiveTextContextMenu::Overlay { .. } => self.request_refresh(),
                 ActiveTextContextMenu::NativeWindow { state, .. } => state.set(WindowState::Closed),
             }
         }
@@ -1336,7 +1336,7 @@ impl HydrolysisRenderer {
                     env: env.clone(),
                 },
             });
-            self.request_rebuild();
+            self.request_refresh();
             return true;
         }
 

@@ -25,11 +25,10 @@ use futures::StreamExt;
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
-use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
-use waterui_image::Image;
+use waterui_image::{Image, ReactiveImage, ReactiveImageHandle, reactive_image};
 use zenwave::{Client, Method, redirect::FollowRedirect};
 
 /// A photo component that displays an image from a URL.
@@ -51,10 +50,10 @@ pub struct Photo {
     /// [`BoxedEventAction`] so the closure can extract `State<T>` /
     /// environment values, mirroring the [`Button::action`] pattern.
     on_event: Option<waterui_core::handler::BoxedEventAction<Event>>,
-    /// Dynamic view content updated when decoded frames arrive.
-    content: Dynamic,
+    /// Persistent GPU image surface updated when decoded frames arrive.
+    content: ReactiveImage,
     /// Handle for publishing decoded frames into `content`.
-    content_handler: DynamicHandler,
+    content_handler: ReactiveImageHandle,
 }
 
 impl core::fmt::Debug for Photo {
@@ -85,8 +84,7 @@ impl Photo {
     /// * `source` - The URL of the image to display.
     #[must_use]
     pub fn new(source: impl IntoComputed<Url>) -> Self {
-        let (content_handler, content) = Dynamic::new();
-        content_handler.set(());
+        let (content_handler, content) = reactive_image();
         Self {
             source: source.into_computed(),
             on_event: None,
@@ -242,7 +240,7 @@ type PhotoEventHandler = Rc<RefCell<Option<waterui_core::handler::BoxedEventActi
 fn start_load_task(
     url: Url,
     on_event: PhotoEventHandler,
-    handler: DynamicHandler,
+    handler: ReactiveImageHandle,
     env: Environment,
     generation: Rc<Cell<usize>>,
 ) {
@@ -251,7 +249,7 @@ fn start_load_task(
         .checked_add(1)
         .expect("Photo load generation overflowed");
     generation.set(token);
-    handler.set(());
+    handler.clear();
     spawn_local(async move {
         let frame_generation = generation.clone();
         match fetch_and_decode_streaming(url, move |image| {
@@ -341,7 +339,7 @@ async fn fetch_and_decode_streaming(
     Ok(())
 }
 
-fn publish_decoded_frame(handler: &DynamicHandler, image: Image) {
+fn publish_decoded_frame(handler: &ReactiveImageHandle, image: Image) {
     handler.set(image);
 }
 

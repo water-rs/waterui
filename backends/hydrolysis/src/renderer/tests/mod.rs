@@ -1,5 +1,6 @@
 use super::*;
 use std::borrow::Cow;
+use std::rc::Rc;
 
 mod perf_full_rebuild;
 mod perf_scroll;
@@ -541,14 +542,19 @@ fn interaction_press_origin_is_converted_to_widget_local_space() {
 }
 
 #[test]
-fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
+fn interaction_state_does_not_migrate_between_semantic_identities() {
     let mut renderer = test_renderer();
     let env = test_environment();
+    let first_owner = Rc::new(());
+    let second_owner = Rc::new(());
+    let first_key = InteractionKey::for_rc(&first_owner, 0);
+    let second_key = InteractionKey::for_rc(&second_owner, 0);
 
     renderer.begin_rebuild_frame();
-    let (_, slot, _) = renderer.bind_interaction_target(Rect::new(0.0, 0.0, 80.0, 80.0), &env);
+    let (_, slot, _) =
+        renderer.bind_interaction_target(first_key, Rect::new(0.0, 0.0, 80.0, 80.0), &env);
     renderer.hit_test.interaction.begin_press(
-        slot,
+        &slot,
         Point::new(20.0, 20.0),
         renderer.frame_instant(),
     );
@@ -556,7 +562,7 @@ fn interaction_press_slot_does_not_migrate_to_unrelated_bounds() {
 
     renderer.begin_rebuild_frame();
     let (state, _, _) =
-        renderer.bind_interaction_target(Rect::new(100.0, 100.0, 180.0, 180.0), &env);
+        renderer.bind_interaction_target(second_key, Rect::new(100.0, 100.0, 180.0, 180.0), &env);
 
     assert!(!state.pressed);
     assert!(state.press_waves.is_empty());
@@ -571,11 +577,13 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
 
     renderer.begin_rebuild_frame();
-    let (_, slot, _) = renderer.bind_interaction_target(bounds, &env);
+    let (_, slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
     renderer.hit_test.interaction.begin_press(
-        slot,
+        &slot,
         Point::new(20.0, 20.0),
         renderer.frame_instant(),
     );
@@ -590,7 +598,7 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
         .expect("test press deadline overflow");
     renderer.set_frame_instant(later);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(bounds, &env);
+    let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
     assert!(state.pressed, "held press must stay visually pressed");
     let wave = state
         .press_waves
@@ -608,10 +616,12 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
 fn interaction_engine_resolves_focus_state() {
     let mut renderer = test_renderer();
     let env = test_environment();
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
 
     renderer.begin_rebuild_frame();
     let (state, _, _) =
-        renderer.bind_focused_interaction_target(Rect::new(0.0, 0.0, 80.0, 80.0), &env, true);
+        renderer.bind_focused_interaction_target(key, Rect::new(0.0, 0.0, 80.0, 80.0), &env, true);
 
     assert!(state.focus_visible);
     assert_eq!(state.focus_progress, 1.0);
@@ -1082,8 +1092,12 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
 
     assert!(renderer.set_focused_text_input(Some(0)));
     assert!(
-        renderer.take_rebuild_request(),
-        "text input focus changes must rebuild immediately so focus animations start on click"
+        renderer.take_patch_request(),
+        "text input focus changes must refresh the retained tree so focus animations start on click"
+    );
+    assert!(
+        !renderer.take_rebuild_request(),
+        "text input focus changes must not rebuild the view body"
     );
     assert!(renderer.handle_ime_preedit("拼音"));
     assert_eq!(renderer.text_editing.ime_preedit.as_deref(), Some("拼音"));

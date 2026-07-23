@@ -272,7 +272,7 @@ fn drawer_row(
 ) -> impl View {
     let selected: Color = SurfaceVariant.into();
     let clear: Color = waterui::color::Srgb::WHITE.with_opacity(0.0).into();
-    let pill = active.select(selected, clear).computed();
+    let pill = signal_color(active.select(selected, clear).computed());
     hstack((leading, spacer(), trailing))
         .height(DRAWER_ITEM_HEIGHT)
         .padding_with(EdgeInsets::new(

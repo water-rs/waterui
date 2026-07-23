@@ -294,7 +294,7 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
                     text!("{count}").caption().foreground(MutedForeground),
                 ))
                 .padding_with(EdgeInsets::symmetric(10.0, 14.0))
-                .background(bg)
+                .background(signal_color(bg))
                 .clip(RoundedRectangle::new(10.0))
                 .on_tap({
                     let selection_for_action = selection_for_action.clone();

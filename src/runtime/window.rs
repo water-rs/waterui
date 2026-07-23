@@ -21,9 +21,9 @@
 
 use std::{fmt::Debug, rc::Rc};
 
-use nami::{Binding, Computed, SignalExt, impl_constant, signal::IntoComputed};
+use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, Environment, IgnorableMetadata, View};
+use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size, stack::zstack};
 use waterui_str::Str;
@@ -416,20 +416,17 @@ where
     let creator = Rc::new(creator);
     let state = state.clone();
 
-    state
-        .clone()
-        .map(move |s| {
-            if s == WindowState::Closed {
-                shown.set(false);
-                AnyView::new(())
-            } else if !shown.get() {
-                shown.set(true);
-                AnyView::new((creator.as_ref())(state.clone()))
-            } else {
-                AnyView::new(())
-            }
-        })
-        .computed()
+    Dynamic::watch(state.clone(), move |s| {
+        if s == WindowState::Closed {
+            shown.set(false);
+            AnyView::new(())
+        } else if !shown.get() {
+            shown.set(true);
+            AnyView::new((creator.as_ref())(state.clone()))
+        } else {
+            AnyView::new(())
+        }
+    })
 }
 
 /// A handle to control a window after it has been shown.

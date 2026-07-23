@@ -94,7 +94,7 @@ pub(crate) struct ScrollTarget {
 ///
 /// `visual_changed` means a replayable state layer's target changed (a redraw
 /// replays it); `handler_changed` means a user hover handler reported a state
-/// change (escalates to rebuild like any other action).
+/// change (schedules a retained-tree refresh like any other action).
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct HoverSync {
     pub(crate) visual_changed: bool,
@@ -172,9 +172,9 @@ impl HitTestState {
         let mut sync = HoverSync::default();
         for target in &mut self.hover_targets {
             let contains = target.bounds.contains(point);
-            let slot_hovering = self.interaction.hovering(target.slot);
+            let slot_hovering = self.interaction.hovering(&target.slot);
             if contains != slot_hovering {
-                self.interaction.set_hovering(target.slot, contains);
+                self.interaction.set_hovering(&target.slot, contains);
                 if let Some(handles) = &target.handles {
                     // Replayable state layer: the hover alpha animates through
                     // its retained draw, no structural rebuild needed unless
@@ -397,18 +397,18 @@ impl HydrolysisRenderer {
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
-        let mut rebuild_requested = false;
+        let mut refresh_requested = false;
         let mut visual_changed = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
-        rebuild_requested |= self.cancel_active_drag(env);
+        refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         visual_changed |= press_clear.visual_changed;
-        rebuild_requested |= press_clear.chrome_changed;
-        if rebuild_requested {
-            self.request_rebuild();
+        refresh_requested |= press_clear.chrome_changed;
+        if refresh_requested {
+            self.request_refresh();
         } else if visual_changed {
             self.request_redraw();
         }
@@ -442,7 +442,7 @@ impl HydrolysisRenderer {
         );
 
         let gesture_changed = self.gesture_engine.handle_pointer_down(point, at, env);
-        rebuild_requested |= gesture_changed;
+        refresh_requested |= gesture_changed;
 
         let mut pointer_indices: Vec<usize> = self
             .hit_test
@@ -510,7 +510,7 @@ impl HydrolysisRenderer {
                     _ => {}
                 }
             }
-            return rebuild_requested || visual_changed || changed;
+            return refresh_requested || visual_changed || changed;
         }
 
         if button != PointerButton::Primary {
@@ -518,24 +518,24 @@ impl HydrolysisRenderer {
                 && let Some(target) = self.topmost_context_menu_target_at_point(point)
             {
                 if self.set_focused_text_input(focused) {
-                    rebuild_requested = true;
+                    refresh_requested = true;
                 }
                 let changed = self.show_popup_menu_nodes(
                     popup_menu_nodes(&target.items.get()),
                     LayoutPoint::new(point.x as f32, point.y as f32),
                     env,
                 );
-                return rebuild_requested || visual_changed || changed;
+                return refresh_requested || visual_changed || changed;
             }
             if self.set_focused_text_input(focused) {
-                rebuild_requested = true;
+                refresh_requested = true;
             }
-            return rebuild_requested || visual_changed;
+            return refresh_requested || visual_changed;
         }
 
         for index in pointer_indices {
             let target = self.hit_test.pointer_targets[index].clone();
-            if let Some(slot) = target.press_slot {
+            if let Some(slot) = target.press_slot.as_ref() {
                 self.hit_test.interaction.begin_press(slot, point, at);
                 self.hit_test.active_press_bounds = Some(target.bounds);
                 self.hit_test.active_press_origin = Some(point);
@@ -544,8 +544,8 @@ impl HydrolysisRenderer {
                     .as_ref()
                     .is_some_and(|handles| handles.chrome_state_dependent())
                 {
-                    self.request_rebuild();
-                    rebuild_requested = true;
+                    self.request_refresh();
+                    refresh_requested = true;
                 } else {
                     self.request_redraw();
                 }
@@ -563,8 +563,8 @@ impl HydrolysisRenderer {
             );
             let changed = (target.action.borrow_mut())(self, point, env);
             if changed {
-                self.request_rebuild();
-                rebuild_requested = true;
+                self.request_refresh();
+                refresh_requested = true;
             }
             if target.captures_drag {
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
@@ -572,7 +572,7 @@ impl HydrolysisRenderer {
             }
             // A target with a press slot is an opaque interactive control: it
             // consumes the primary press even when its action reports no state
-            // change (a button action's `false` means "no rebuild needed", not
+            // change (a button action's `false` means "no refresh needed", not
             // "unhandled"). Only slot-less utility targets stay transparent —
             // otherwise one tap would fire every overlapping control beneath
             // the topmost one.
@@ -588,7 +588,7 @@ impl HydrolysisRenderer {
                 order = target.order,
                 "pointer target handled event"
             );
-            return rebuild_requested || visual_changed || changed;
+            return refresh_requested || visual_changed || changed;
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -598,9 +598,9 @@ impl HydrolysisRenderer {
             "pointer down text-input fallback"
         );
         if self.set_focused_text_input(focused) {
-            rebuild_requested = true;
+            refresh_requested = true;
         }
-        rebuild_requested || visual_changed
+        refresh_requested || visual_changed
     }
 
     pub fn handle_pointer_up(
@@ -615,7 +615,7 @@ impl HydrolysisRenderer {
         let mut changed = self.handle_pointer_move(x, y, env);
         let drop_changed = self.finish_active_drag(point, env);
         if drop_changed {
-            self.request_rebuild();
+            self.request_refresh();
         }
         changed |= drop_changed;
         changed |= self.finish_interactive_navigation_pop(false);
@@ -626,7 +626,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_press_origin = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
-            self.request_rebuild();
+            self.request_refresh();
         } else if press_clear.visual_changed {
             self.request_redraw();
         }
@@ -647,36 +647,36 @@ impl HydrolysisRenderer {
     pub fn handle_pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
-        let mut rebuild_requested = false;
+        let mut refresh_requested = false;
         let mut drag_changed = false;
         if let Some(index) = self.text_editing.active_text_selection_drag {
             let text_drag_changed = self.update_text_selection_from_pointer(index, point, true);
             drag_changed |= text_drag_changed;
-            rebuild_requested |= text_drag_changed;
+            refresh_requested |= text_drag_changed;
         }
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
             if pointer_drag_changed {
-                self.request_rebuild();
+                self.request_refresh();
             }
             drag_changed |= pointer_drag_changed;
-            rebuild_requested |= pointer_drag_changed;
+            refresh_requested |= pointer_drag_changed;
         }
         let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
-        rebuild_requested |= gesture_changed;
+        refresh_requested |= gesture_changed;
         let hover = self.hit_test.sync_hover_targets(point, env, true, at);
         if hover.visual_changed {
             self.request_redraw();
         }
         if hover.handler_changed {
-            self.request_rebuild();
+            self.request_refresh();
         }
-        rebuild_requested |= hover.handler_changed;
+        refresh_requested |= hover.handler_changed;
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
             y,
-            changed = rebuild_requested,
+            changed = refresh_requested,
             drag_changed,
             gesture_changed,
             hover_visual = hover.visual_changed,
@@ -684,7 +684,7 @@ impl HydrolysisRenderer {
             gesture_active = self.gesture_engine.has_active_recognizer(),
             "pointer move handled"
         );
-        rebuild_requested || hover.visual_changed
+        refresh_requested || hover.visual_changed
     }
 
     pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
@@ -696,7 +696,7 @@ impl HydrolysisRenderer {
         }
         let changed = hover.handler_changed;
         if changed {
-            self.request_rebuild();
+            self.request_refresh();
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -712,43 +712,43 @@ impl HydrolysisRenderer {
 
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
         let at = self.frame_instant();
-        let mut rebuild_requested = self.finish_interactive_navigation_pop(true);
+        let mut refresh_requested = self.finish_interactive_navigation_pop(true);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
-        rebuild_requested |= self.cancel_active_drag(env);
+        refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
-            self.request_rebuild();
+            self.request_refresh();
         } else if press_clear.visual_changed {
             self.request_redraw();
         }
-        rebuild_requested |= press_clear.chrome_changed;
+        refresh_requested |= press_clear.chrome_changed;
         let gesture_changed = self
             .gesture_engine
             .handle_pointer_cancel(self.frame_instant(), env);
-        rebuild_requested |= gesture_changed;
+        refresh_requested |= gesture_changed;
         let mut hover_visual_changed = false;
         for target in &mut self.hit_test.hover_targets {
-            let hovering = self.hit_test.interaction.hovering(target.slot);
+            let hovering = self.hit_test.interaction.hovering(&target.slot);
             if !hovering {
                 continue;
             }
-            self.hit_test.interaction.set_hovering(target.slot, false);
+            self.hit_test.interaction.set_hovering(&target.slot, false);
             if let Some(handles) = &target.handles {
                 handles.set_hovering(false, at);
                 hover_visual_changed = true;
             }
             if let Some(on_exit) = target.on_exit.as_mut() {
-                rebuild_requested |= (on_exit.borrow_mut())(env);
+                refresh_requested |= (on_exit.borrow_mut())(env);
             }
         }
         if hover_visual_changed {
             self.request_redraw();
         }
-        rebuild_requested || hover_visual_changed
+        refresh_requested || hover_visual_changed
     }
 
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
@@ -804,7 +804,9 @@ impl HydrolysisRenderer {
             return;
         }
         let order = self.hit_test.next_hit_test_order();
-        let interaction = press_slot.and_then(|slot| self.hit_test.interaction.handles_for(slot));
+        let interaction = press_slot
+            .as_ref()
+            .and_then(|slot| self.hit_test.interaction.handles_for(slot));
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag,
@@ -865,6 +867,7 @@ impl HydrolysisRenderer {
 
     pub(crate) fn bind_interaction_target(
         &mut self,
+        key: InteractionKey,
         bounds: vello::kurbo::Rect,
         env: &Environment,
     ) -> (
@@ -872,7 +875,7 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(bounds, env, None, false)
+        self.bind_interaction_target_with_focus(key, bounds, env, None, false)
     }
 
     /// Binds an interaction target for a control that supports the disabled
@@ -881,6 +884,7 @@ impl HydrolysisRenderer {
     /// pointer neither hovers nor presses it.
     pub(crate) fn bind_control_interaction_target(
         &mut self,
+        key: InteractionKey,
         bounds: vello::kurbo::Rect,
         env: &Environment,
         disabled: bool,
@@ -889,11 +893,12 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(bounds, env, None, disabled)
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled)
     }
 
     pub(crate) fn bind_focused_interaction_target(
         &mut self,
+        key: InteractionKey,
         bounds: vello::kurbo::Rect,
         env: &Environment,
         focused: bool,
@@ -903,6 +908,7 @@ impl HydrolysisRenderer {
         Rc<InteractionLayerHandles>,
     ) {
         self.bind_interaction_target_with_focus(
+            key,
             bounds,
             env,
             Some(InteractionFocus::visible(focused)),
@@ -912,6 +918,7 @@ impl HydrolysisRenderer {
 
     fn bind_interaction_target_with_focus(
         &mut self,
+        key: InteractionKey,
         bounds: vello::kurbo::Rect,
         env: &Environment,
         focus: Option<InteractionFocus>,
@@ -921,16 +928,17 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        let (hover_slot, hovered) = self.hit_test.interaction.bind_hover();
+        let (hover_slot, hovered) = self.hit_test.interaction.bind_hover(&key);
         if disabled {
             // No hover target is registered for a disabled control, so pointer
             // moves never sync its slot; reset it so a stale hover from before
             // the control was disabled does not resurface on re-enable.
-            self.hit_test.interaction.set_hovering(hover_slot, false);
+            self.hit_test.interaction.set_hovering(&hover_slot, false);
         }
         let motion = widget_theme(env).interaction_motion();
         let now = self.frame_instant();
         let (state, press_slot, handles) = self.hit_test.interaction.bind_widget_state(
+            &key,
             WidgetInteractionInput {
                 bounds,
                 hovered,
@@ -971,7 +979,7 @@ impl HydrolysisRenderer {
             return;
         }
         let order = self.hit_test.next_hit_test_order();
-        let interaction = self.hit_test.interaction.handles_for(press_slot);
+        let interaction = self.hit_test.interaction.handles_for(&press_slot);
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag: false,
@@ -995,7 +1003,7 @@ impl HydrolysisRenderer {
             return;
         }
         let order = self.hit_test.next_hit_test_order();
-        let interaction = self.hit_test.interaction.handles_for(press_slot);
+        let interaction = self.hit_test.interaction.handles_for(&press_slot);
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag: true,
@@ -1045,16 +1053,18 @@ impl HydrolysisRenderer {
 
     pub(crate) fn register_hover_target(
         &mut self,
+        key: InteractionKey,
         bounds: vello::kurbo::Rect,
         on_enter: Option<HoverAction>,
         on_move: Option<HoverMoveAction>,
         on_exit: Option<HoverAction>,
     ) {
-        self.register_hover_target_with_handles(bounds, None, on_enter, on_move, on_exit);
+        self.register_hover_target_with_handles(key, bounds, None, on_enter, on_move, on_exit);
     }
 
     pub(crate) fn register_hover_target_with_handles(
         &mut self,
+        key: InteractionKey,
         bounds: vello::kurbo::Rect,
         handles: Option<Rc<InteractionLayerHandles>>,
         on_enter: Option<HoverAction>,
@@ -1064,7 +1074,7 @@ impl HydrolysisRenderer {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        let (slot, _hovering) = self.hit_test.interaction.bind_hover();
+        let (slot, _hovering) = self.hit_test.interaction.bind_hover(&key);
         self.hit_test.hover_targets.push(HoverTarget {
             bounds,
             slot,
@@ -1075,25 +1085,37 @@ impl HydrolysisRenderer {
         });
     }
 
-    pub(crate) fn register_hover_enter_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
-    where
+    pub(crate) fn register_hover_enter_target<F>(
+        &mut self,
+        key: InteractionKey,
+        bounds: vello::kurbo::Rect,
+        action: F,
+    ) where
         F: 'static + FnMut(&Environment) -> bool,
     {
-        self.register_hover_target(bounds, Some(Rc::new(RefCell::new(action))), None, None);
+        self.register_hover_target(key, bounds, Some(Rc::new(RefCell::new(action))), None, None);
     }
 
-    pub(crate) fn register_hover_exit_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
-    where
+    pub(crate) fn register_hover_exit_target<F>(
+        &mut self,
+        key: InteractionKey,
+        bounds: vello::kurbo::Rect,
+        action: F,
+    ) where
         F: 'static + FnMut(&Environment) -> bool,
     {
-        self.register_hover_target(bounds, None, None, Some(Rc::new(RefCell::new(action))));
+        self.register_hover_target(key, bounds, None, None, Some(Rc::new(RefCell::new(action))));
     }
 
-    pub(crate) fn register_hover_move_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
-    where
+    pub(crate) fn register_hover_move_target<F>(
+        &mut self,
+        key: InteractionKey,
+        bounds: vello::kurbo::Rect,
+        action: F,
+    ) where
         F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
     {
-        self.register_hover_target(bounds, None, Some(Rc::new(RefCell::new(action))), None);
+        self.register_hover_target(key, bounds, None, Some(Rc::new(RefCell::new(action))), None);
     }
 
     pub(crate) fn register_scroll_target<F>(

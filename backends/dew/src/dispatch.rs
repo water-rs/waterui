@@ -1,23 +1,12 @@
-//! View dispatch: turning a `WaterUI` view tree into a [`DisplayList`].
+//! Persistent `WaterUI` view dispatch for the Dew backend.
 //!
-//! Mirrors the hydrolysis dispatcher at a smaller scale: a type-id → handler
-//! map over [`AnyView`], with unknown views resolved through their `body()`
-//! (Vue-like reconstruction). Before dispatch, the tree is *normalized*:
-//! every node is body-expanded until it is a renderable native type, and
-//! container children are normalized recursively so measurement can walk
-//! the tree without re-evaluating bodies.
-//!
-//! Reactive inputs are read through [`DewRenderer::read_signal`], which
-//! registers a watcher that requests a structural rebuild on change. The
-//! runtime then diffs the rebuilt display list against the previous one so
-//! only genuinely changed screen regions are re-rasterized and flushed —
-//! the rebuild is cheap Rust-side work; the flush economy stays
-//! fine-grained. Per-`Dynamic` retained patching (hydrolysis-style) is the
-//! planned next refinement.
+//! Dew expands each view body exactly once into a retained [`DewNode`] tree.
+//! Scalar signals request a refresh; a refresh re-reads those signals, runs
+//! layout, and emits a new display list without evaluating any view body.
+//! [`Dynamic`] is the sole structural seam and replaces only its own child node.
 
 use core::any::TypeId;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use core::cell::RefCell;
 use std::rc::Rc;
 
 use kurbo::{Affine, Rect};
@@ -30,10 +19,11 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
+use waterui_core::dynamic::Dynamic;
 use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
-use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Str, View};
+use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Retain, Str, View};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_layout::Divider;
 use waterui_layout::container::FixedContainer;
@@ -46,8 +36,6 @@ use crate::text::{DewState, emit_text_commands};
 use crate::theme;
 use crate::views;
 
-/// Maximum `body()` expansions before normalization gives up — a guard
-/// against views whose body never reaches a native type.
 const MAX_BODY_DEPTH: usize = 64;
 
 /// Where a view draws: the accumulated transform and its local bounds.
@@ -69,7 +57,7 @@ impl RenderContext {
         }
     }
 
-    /// A child context placed at `frame` (logical pixels) inside this one.
+    /// A child context placed at `frame` inside this context.
     #[must_use]
     pub fn child(self, frame: LayoutRect) -> Self {
         Self {
@@ -85,75 +73,36 @@ impl RenderContext {
     }
 }
 
-type DewHandlerFn = Box<dyn Fn(&mut DewRenderer, RenderContext, AnyView, &Environment)>;
+/// One persistent Dew render-tree node.
+pub(crate) trait DewNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions;
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext);
 
-/// Type-id keyed handler table, cheaply cloneable so handlers can re-enter
-/// dispatch while the renderer is mutably borrowed.
-#[derive(Clone, Default)]
-pub(crate) struct DewDispatcher {
-    handlers: Rc<HashMap<TypeId, DewHandlerFn>>,
-}
-
-impl DewDispatcher {
-    pub(crate) fn register<V: View>(
-        &mut self,
-        handler: impl 'static + Fn(&mut DewRenderer, RenderContext, V, &Environment),
-    ) {
-        let handlers = Rc::get_mut(&mut self.handlers)
-            .unwrap_or_else(|| panic!("dew dispatcher handlers cannot be mutated after cloning"));
-        handlers.insert(
-            TypeId::of::<V>(),
-            Box::new(move |renderer, ctx, view, env| {
-                let view = *view.downcast::<V>().expect("dew dispatch type mismatch");
-                handler(renderer, ctx, view, env);
-            }),
-        );
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
     }
 
-    fn supports(&self, type_id: TypeId) -> bool {
-        self.handlers.contains_key(&type_id)
-    }
-
-    fn dispatch_boxed(
-        &self,
-        renderer: &mut DewRenderer,
-        view: AnyView,
-        env: &Environment,
-        ctx: RenderContext,
-    ) {
-        if let Some(handler) = self.handlers.get(&view.type_id()) {
-            handler(renderer, ctx, view, env);
-            return;
-        }
-        let body = AnyView::new(view.body(env));
-        self.dispatch_boxed(renderer, body, env, ctx);
+    fn patch(&mut self, _renderer: &mut DewRenderer) -> bool {
+        false
     }
 }
 
-/// The dew renderer: dispatches a view tree into a retained
-/// [`DisplayList`] and tracks the reactive inputs it read along the way.
+/// Dew's retained renderer and signal subscriptions.
 pub struct DewRenderer {
-    dispatcher: DewDispatcher,
     signals: FrameSignals,
     state: RefCell<DewState>,
     list: DisplayList,
     watch_guards: Vec<Box<dyn core::any::Any>>,
-}
-
-impl core::fmt::Debug for DewDispatcher {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DewDispatcher")
-            .field("handlers", &self.handlers.len())
-            .finish()
-    }
+    root: Option<Box<dyn DewNode>>,
 }
 
 impl core::fmt::Debug for DewRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DewRenderer")
-            .field("dispatcher", &self.dispatcher)
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("DewRenderer")
             .field("list", &self.list)
             .field("watchers", &self.watch_guards.len())
+            .field("has_root", &self.root.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -165,17 +114,15 @@ impl Default for DewRenderer {
 }
 
 impl DewRenderer {
-    /// Creates a renderer wired to `signals` for rebuild requests.
+    /// Creates a retained renderer wired to `signals`.
     #[must_use]
     pub fn new(signals: FrameSignals) -> Self {
-        let mut dispatcher = DewDispatcher::default();
-        register_core_handlers(&mut dispatcher);
         Self {
-            dispatcher,
             signals,
             state: RefCell::new(DewState::default()),
             list: DisplayList::new(),
             watch_guards: Vec::new(),
+            root: None,
         }
     }
 
@@ -185,8 +132,10 @@ impl DewRenderer {
         self.signals.clone()
     }
 
-    /// Dispatches `view` into a fresh display list for a `width` × `height`
-    /// window, replacing all reactive watchers from the previous tree.
+    /// Builds a fresh retained root and renders its first display list.
+    ///
+    /// Runtime code calls this exactly once. Explicit callers may use it to
+    /// render unrelated one-shot trees in tests and tools.
     pub fn render_tree(
         &mut self,
         view: AnyView,
@@ -194,213 +143,201 @@ impl DewRenderer {
         width: f64,
         height: f64,
     ) -> DisplayList {
+        self.root = Some(build_node(self, view, env, 0));
+        self.refresh_tree(width, height)
+    }
+
+    /// Re-layouts and re-renders the retained root without evaluating bodies.
+    pub(crate) fn refresh_tree(&mut self, width: f64, height: f64) -> DisplayList {
+        let mut root = self
+            .root
+            .take()
+            .expect("Dew refresh requires an initialized retained root");
         self.list.clear();
         self.watch_guards.clear();
-        let normalized = self.normalize(view, env);
-        let dispatcher = self.dispatcher.clone();
-        dispatcher.dispatch_boxed(self, normalized, env, RenderContext::root(width, height));
+        root.patch(self);
+        root.render(self, RenderContext::root(width, height));
+        self.root = Some(root);
         core::mem::take(&mut self.list)
     }
 
-    /// Reads a reactive input, registering a rebuild-on-change watcher whose
-    /// lifetime is the current tree.
+    /// Reads a reactive input and schedules a retained-tree refresh on change.
     pub(crate) fn read_signal<S>(&mut self, signal: &S) -> S::Output
     where
         S: Signal + Clone + 'static,
     {
         let signals = self.signals.clone();
-        let guard = signal.watch(move |_| signals.request_rebuild());
+        let guard = signal.watch(move |_| signals.request_refresh());
         self.watch_guards.push(Box::new(guard));
         signal.get()
     }
 
-    /// The retained scene being built for the current tree.
     pub(crate) const fn list_mut(&mut self) -> &mut DisplayList {
         &mut self.list
     }
 
-    /// The shared text-shaping state, for measurement inside handlers.
     pub(crate) const fn state_cell(&self) -> &RefCell<DewState> {
         &self.state
     }
-
-    /// Re-enters dispatch for a child view (a control label, scroll content,
-    /// or any other nested subtree) at `ctx`.
-    pub(crate) fn dispatch_child(&mut self, view: AnyView, env: &Environment, ctx: RenderContext) {
-        let dispatcher = self.dispatcher.clone();
-        dispatcher.dispatch_boxed(self, view, env, ctx);
-    }
-
-    /// Body-expands `view` until it is a renderable native type, recursing
-    /// into container children so the whole tree becomes measurable.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a view fails to normalize within [`MAX_BODY_DEPTH`]
-    /// expansions — dew does not silently skip unsupported views.
-    fn normalize(&mut self, view: AnyView, env: &Environment) -> AnyView {
-        let mut view = view;
-        for _ in 0..MAX_BODY_DEPTH {
-            let type_id = view.type_id();
-            if type_id == TypeId::of::<Metadata<Environment>>() {
-                let Metadata { content, value } = *view
-                    .downcast::<Metadata<Environment>>()
-                    .expect("dew normalize environment metadata downcast");
-                let content = self.normalize(content, &value);
-                return AnyView::new(Metadata { content, value });
-            }
-            if type_id == TypeId::of::<Native<FixedContainer>>() {
-                let native = *view
-                    .downcast::<Native<FixedContainer>>()
-                    .expect("dew normalize container downcast");
-                let (layout, contents) = native.into_inner().into_inner();
-                let contents: Vec<AnyView> = contents
-                    .into_iter()
-                    .map(|child| self.normalize(child, env))
-                    .collect();
-                return AnyView::new(Native::new(FixedContainer::from_parts(layout, contents)));
-            }
-            if type_id == TypeId::of::<Native<ScrollView>>() {
-                let native = *view
-                    .downcast::<Native<ScrollView>>()
-                    .expect("dew normalize scroll downcast");
-                let (axis, content) = native.into_inner().into_inner();
-                let content = self.normalize(content, env);
-                return AnyView::new(Native::new(ScrollView::new(axis, content)));
-            }
-            if type_id == TypeId::of::<Native<SliderConfig>>() {
-                let mut config = view
-                    .downcast::<Native<SliderConfig>>()
-                    .expect("dew normalize slider downcast")
-                    .into_inner();
-                config.min_value_label = self.normalize(config.min_value_label, env);
-                config.max_value_label = self.normalize(config.max_value_label, env);
-                return AnyView::new(Native::new(config));
-            }
-            #[cfg(feature = "progress")]
-            if type_id == TypeId::of::<Native<ProgressConfig>>() {
-                let mut config = view
-                    .downcast::<Native<ProgressConfig>>()
-                    .expect("dew normalize progress downcast")
-                    .into_inner();
-                config.label = self.normalize(config.label, env);
-                config.value_label = self.normalize(config.value_label, env);
-                return AnyView::new(Native::new(config));
-            }
-            if self.dispatcher.supports(type_id) {
-                return view;
-            }
-            view = AnyView::new(view.body(env));
-        }
-        panic!(
-            "dew: view did not normalize to a renderable type within {MAX_BODY_DEPTH} body expansions"
-        );
-    }
 }
 
-/// Measures a *normalized* view.
-///
-/// # Panics
-///
-/// Panics on un-normalized view types: measurement never evaluates bodies.
-pub(crate) fn measure_view(
-    state: &RefCell<DewState>,
-    view: &AnyView,
+#[expect(
+    clippy::too_many_lines,
+    reason = "type-directed retained node construction is clearer as one exhaustive dispatch chain"
+)]
+pub(crate) fn build_node(
+    renderer: &mut DewRenderer,
+    mut view: AnyView,
     env: &Environment,
-    proposal: ProposalSize,
-) -> ViewDimensions {
-    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        return measure_view(state, &metadata.content, &metadata.value, proposal);
+    depth: usize,
+) -> Box<dyn DewNode> {
+    assert!(
+        depth < MAX_BODY_DEPTH,
+        "dew: view did not resolve within {MAX_BODY_DEPTH} body expansions"
+    );
+
+    let type_id = view.type_id();
+    if type_id == TypeId::of::<Metadata<Environment>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<Environment>>()
+            .expect("dew environment metadata downcast must match its type id");
+        return build_node(renderer, content, &value, depth + 1);
     }
-    if let Some(native) = view.downcast_ref::<Native<FixedContainer>>() {
-        let (layout, contents) = native.as_inner().as_parts();
-        let subviews: Vec<DewSubview> = contents
-            .iter()
-            .map(|child| DewSubview::new(child, state, env))
+    if type_id == TypeId::of::<Metadata<Retain>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<Retain>>()
+            .expect("dew retain metadata downcast must match its type id");
+        return Box::new(RetainNode {
+            _retain: value,
+            child: build_node(renderer, content, env, depth + 1),
+        });
+    }
+    if type_id == TypeId::of::<Native<FixedContainer>>() {
+        let native = *view
+            .downcast::<Native<FixedContainer>>()
+            .expect("dew container downcast must match its type id");
+        let (layout, contents) = native.into_inner().into_inner();
+        let children = contents
+            .into_iter()
+            .map(|child| build_node(renderer, child, env, depth + 1))
             .collect();
-        let refs: Vec<&dyn SubView> = subviews.iter().map(|s| s as &dyn SubView).collect();
-        return ViewDimensions::new(layout.size_that_fits(proposal, &refs));
+        return Box::new(ContainerNode { layout, children });
     }
-    if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
-        let styled = text.as_inner().content.get();
-        let (width, height) = state
-            .borrow_mut()
-            .measure_styled(&styled, env, proposal.width);
-        return ViewDimensions::new(Size::new(width, height));
+    if type_id == TypeId::of::<Dynamic>() {
+        let dynamic = *view
+            .downcast::<Dynamic>()
+            .expect("dew Dynamic downcast must match its type id");
+        return build_dynamic_node(renderer, dynamic, env, depth + 1);
     }
-    if let Some(text) = view.downcast_ref::<Str>() {
-        let (width, height) = state.borrow_mut().measure_plain(text, proposal.width);
-        return ViewDimensions::new(Size::new(width, height));
+    if type_id == TypeId::of::<Native<ScrollView>>() {
+        let scroll = *view
+            .downcast::<Native<ScrollView>>()
+            .expect("dew ScrollView downcast must match its type id");
+        return views::scroll::build(renderer, scroll.into_inner(), env, depth + 1);
     }
-    if view.downcast_ref::<Native<Color>>().is_some()
-        || view.downcast_ref::<Native<ResolvedColor>>().is_some()
-    {
-        return ViewDimensions::new(Size::new(
-            proposal.width.unwrap_or(0.0),
-            proposal.height.unwrap_or(0.0),
-        ));
+    if type_id == TypeId::of::<Native<Color>>() {
+        let color = *view
+            .downcast::<Native<Color>>()
+            .expect("dew Color downcast must match its type id");
+        return Box::new(ColorNode {
+            color: color.into_inner().resolve(env),
+        });
     }
-    if view.downcast_ref::<Native<Spacer>>().is_some()
-        || view.downcast_ref::<Native<()>>().is_some()
-    {
-        return ViewDimensions::new(Size::new(0.0, 0.0));
+    if type_id == TypeId::of::<Native<ResolvedColor>>() {
+        let color = *view
+            .downcast::<Native<ResolvedColor>>()
+            .expect("dew ResolvedColor downcast must match its type id");
+        return Box::new(ResolvedColorNode(color.into_inner()));
     }
-    if let Some(scroll) = view.downcast_ref::<Native<ScrollView>>() {
-        return views::scroll::measure(state, scroll.as_inner(), env, proposal);
+    if type_id == TypeId::of::<Native<TextConfig>>() {
+        let text = *view
+            .downcast::<Native<TextConfig>>()
+            .expect("dew TextConfig downcast must match its type id");
+        return Box::new(TextNode {
+            config: text.into_inner(),
+            env: env.clone(),
+        });
     }
-    if view.downcast_ref::<Divider>().is_some() {
-        return ViewDimensions::new(views::divider::measure());
+    if type_id == TypeId::of::<Str>() {
+        return Box::new(StrNode {
+            value: *view
+                .downcast::<Str>()
+                .expect("dew Str downcast must match its type id"),
+        });
     }
-    if let Some(toggle) = view.downcast_ref::<Native<ToggleConfig>>() {
-        return ViewDimensions::new(views::toggle::measure(state, toggle.as_inner(), env));
+    if type_id == TypeId::of::<Native<Spacer>>() {
+        let spacer = *view
+            .downcast::<Native<Spacer>>()
+            .expect("dew Spacer downcast must match its type id");
+        return Box::new(EmptyNode {
+            stretch: spacer.stretch_axis(),
+        });
     }
-    if let Some(slider) = view.downcast_ref::<Native<SliderConfig>>() {
-        return ViewDimensions::new(views::slider::measure(state, slider.as_inner(), env));
+    if type_id == TypeId::of::<Native<()>>() {
+        return Box::new(EmptyNode {
+            stretch: StretchAxis::None,
+        });
     }
-    if let Some(stepper) = view.downcast_ref::<Native<StepperConfig>>() {
-        return ViewDimensions::new(views::stepper::measure(state, stepper.as_inner(), env));
+    if type_id == TypeId::of::<Divider>() {
+        return views::divider::build(env);
     }
-    if let Some(field) = view.downcast_ref::<Native<ResolvedTextFieldConfig>>() {
-        return ViewDimensions::new(views::text_field::measure(state, field.as_inner(), env));
+    if type_id == TypeId::of::<Native<ToggleConfig>>() {
+        let toggle = *view
+            .downcast::<Native<ToggleConfig>>()
+            .expect("dew ToggleConfig downcast must match its type id");
+        return views::toggle::build(toggle.into_inner(), env);
+    }
+    if type_id == TypeId::of::<Native<SliderConfig>>() {
+        let slider = *view
+            .downcast::<Native<SliderConfig>>()
+            .expect("dew SliderConfig downcast must match its type id");
+        return views::slider::build(renderer, slider.into_inner(), env, depth + 1);
+    }
+    if type_id == TypeId::of::<Native<StepperConfig>>() {
+        let stepper = *view
+            .downcast::<Native<StepperConfig>>()
+            .expect("dew StepperConfig downcast must match its type id");
+        return views::stepper::build(stepper.into_inner(), env);
+    }
+    if type_id == TypeId::of::<Native<ResolvedTextFieldConfig>>() {
+        let field = *view
+            .downcast::<Native<ResolvedTextFieldConfig>>()
+            .expect("dew text-field downcast must match its type id");
+        return views::text_field::build(field.into_inner(), env);
     }
     #[cfg(feature = "progress")]
-    if let Some(progress) = view.downcast_ref::<Native<ProgressConfig>>() {
-        return ViewDimensions::new(views::progress::measure(state, progress.as_inner(), env));
+    if type_id == TypeId::of::<Native<ProgressConfig>>() {
+        let progress = *view
+            .downcast::<Native<ProgressConfig>>()
+            .expect("dew ProgressConfig downcast must match its type id");
+        return views::progress::build(renderer, progress.into_inner(), env, depth + 1);
     }
-    panic!("dew cannot measure un-normalized view; normalize the tree before measuring");
+
+    view = AnyView::new(view.body(env));
+    build_node(renderer, view, env, depth + 1)
 }
 
-/// A measurable child handed to a [`waterui_core::layout::Layout`]
-/// implementation.
-struct DewSubview<'a> {
-    // Measurement borrows the `!Send` dew render state and `Environment` and recurses
-    // into child bodies, so the subview is confined to the main thread
-    // (`require_main_thread() == true`); the `MainThreadBound` assertions catch a
-    // worker-thread misschedule.
-    view: MainThreadBound<&'a AnyView>,
+struct NodeSubview<'a> {
+    node: MainThreadBound<&'a dyn DewNode>,
     state: MainThreadBound<&'a RefCell<DewState>>,
-    env: MainThreadBound<Environment>,
-    stretch: StretchAxis,
 }
 
-impl<'a> DewSubview<'a> {
-    fn new(view: &'a AnyView, state: &'a RefCell<DewState>, env: &Environment) -> Self {
+impl<'a> NodeSubview<'a> {
+    fn new(node: &'a dyn DewNode, state: &'a RefCell<DewState>) -> Self {
         Self {
-            view: MainThreadBound::new(view),
+            node: MainThreadBound::new(node),
             state: MainThreadBound::new(state),
-            env: MainThreadBound::new(env.clone()),
-            stretch: effective_stretch_axis(view),
         }
     }
 }
 
-impl SubView for DewSubview<'_> {
+impl SubView for NodeSubview<'_> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure_view(*self.state, *self.view, &self.env, proposal)
+        self.node.measure(*self.state, proposal)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        self.stretch
+        self.node.stretch_axis()
     }
 
     fn priority(&self) -> i32 {
@@ -412,149 +349,261 @@ impl SubView for DewSubview<'_> {
     }
 }
 
-/// The stretch axis of a view, looking through environment-metadata
-/// wrappers (which would otherwise report no stretch).
-///
-/// [`Divider`] is special-cased to stretch along its parent stack's cross
-/// axis, mirroring hydrolysis: its `View` impl reports no stretch because
-/// the axis is only known from the surrounding container.
-fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
-    if view.downcast_ref::<Divider>().is_some() {
-        return StretchAxis::CrossAxis;
-    }
-    view.downcast_ref::<Metadata<Environment>>().map_or_else(
-        || view.stretch_axis(),
-        |metadata| effective_stretch_axis(&metadata.content),
-    )
+struct ContainerNode {
+    layout: Box<dyn waterui_core::layout::Layout>,
+    children: Vec<Box<dyn DewNode>>,
 }
 
-fn register_core_handlers(dispatcher: &mut DewDispatcher) {
-    dispatcher.register::<Native<FixedContainer>>(render_container);
-    dispatcher.register::<Native<Color>>(render_color);
-    dispatcher.register::<Native<ResolvedColor>>(render_resolved_color);
-    dispatcher.register::<Native<Spacer>>(render_spacer);
-    dispatcher.register::<Native<()>>(render_unit);
-    dispatcher.register::<Native<TextConfig>>(render_text_config);
-    dispatcher.register::<Str>(render_str);
-    dispatcher.register::<Metadata<Environment>>(render_environment_metadata);
-    views::register(dispatcher);
-}
-
-fn render_environment_metadata(
-    renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    metadata: Metadata<Environment>,
-    _env: &Environment,
-) {
-    renderer.dispatch_child(metadata.content, &metadata.value, ctx);
-}
-
-fn render_container(
-    renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    view: Native<FixedContainer>,
-    env: &Environment,
-) {
-    let (layout, contents) = view.into_inner().into_inner();
-    let frames = {
-        let subviews: Vec<DewSubview> = contents
+impl DewNode for ContainerNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        let subviews = self
+            .children
             .iter()
-            .map(|child| DewSubview::new(child, &renderer.state, env))
-            .collect();
-        let refs: Vec<&dyn SubView> = subviews.iter().map(|s| s as &dyn SubView).collect();
-        let proposal = proposal_from_bounds(ctx.bounds);
-        let size = layout.size_that_fits(proposal, &refs);
-        layout.place(LayoutRect::from_size(size), &refs)
-    };
-    for (child, frame) in contents.into_iter().zip(frames) {
-        renderer.dispatch_child(child, env, ctx.child(frame));
+            .map(|child| NodeSubview::new(child.as_ref(), state))
+            .collect::<Vec<_>>();
+        let refs = subviews
+            .iter()
+            .map(|subview| subview as &dyn SubView)
+            .collect::<Vec<_>>();
+        ViewDimensions::new(self.layout.size_that_fits(proposal, &refs))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        let frames = {
+            let subviews = self
+                .children
+                .iter()
+                .map(|child| NodeSubview::new(child.as_ref(), &renderer.state))
+                .collect::<Vec<_>>();
+            let refs = subviews
+                .iter()
+                .map(|subview| subview as &dyn SubView)
+                .collect::<Vec<_>>();
+            let proposal = proposal_from_bounds(ctx.bounds);
+            let size = self.layout.size_that_fits(proposal, &refs);
+            self.layout.place(LayoutRect::from_size(size), &refs)
+        };
+        for (child, frame) in self.children.iter_mut().zip(frames) {
+            child.render(renderer, ctx.child(frame));
+        }
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        self.children
+            .iter_mut()
+            .fold(false, |changed, child| child.patch(renderer) | changed)
     }
 }
 
-fn render_color(
+struct RetainNode {
+    _retain: Retain,
+    child: Box<dyn DewNode>,
+}
+
+impl DewNode for RetainNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        self.child.measure(state, proposal)
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        self.child.render(renderer, ctx);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.child.stretch_axis()
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        self.child.patch(renderer)
+    }
+}
+
+struct DynamicNode {
+    _source: Dynamic,
+    pending: Rc<RefCell<Option<AnyView>>>,
+    child: Box<dyn DewNode>,
+    env: Environment,
+    depth: usize,
+}
+
+fn build_dynamic_node(
     renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    view: Native<Color>,
+    dynamic: Dynamic,
     env: &Environment,
-) {
-    let resolved = view.into_inner().resolve(env);
-    let color = renderer.read_signal(&resolved);
-    render_color_value(renderer, ctx, color);
+    depth: usize,
+) -> Box<dyn DewNode> {
+    let initial = dynamic
+        .with_unconnected_view_mut(Option::take)
+        .expect("Dew cannot attach the same Dynamic instance more than once")
+        .unwrap_or_else(|| AnyView::new(()));
+    let pending = Rc::new(RefCell::new(None));
+    let signals = renderer.signals();
+    dynamic.clone().connect({
+        let pending = Rc::clone(&pending);
+        move |context| {
+            pending.borrow_mut().replace(context.into_value());
+            signals.request_refresh();
+        }
+    });
+    Box::new(DynamicNode {
+        _source: dynamic,
+        pending,
+        child: build_node(renderer, initial, env, depth),
+        env: env.clone(),
+        depth,
+    })
 }
 
-fn render_resolved_color(
-    renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    view: Native<ResolvedColor>,
-    _env: &Environment,
-) {
-    render_color_value(renderer, ctx, view.into_inner());
+impl DewNode for DynamicNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        self.child.measure(state, proposal)
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        self.child.render(renderer, ctx);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.child.stretch_axis()
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        let changed = if let Some(view) = self.pending.borrow_mut().take() {
+            self.child = build_node(renderer, view, &self.env, self.depth);
+            true
+        } else {
+            false
+        };
+        self.child.patch(renderer) | changed
+    }
 }
 
-fn render_color_value(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedColor) {
+struct ColorNode {
+    color: nami::Computed<ResolvedColor>,
+}
+
+impl DewNode for ColorNode {
+    fn measure(&self, _state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        ))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        let color = renderer.read_signal(&self.color);
+        render_color(renderer, ctx, color);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+struct ResolvedColorNode(ResolvedColor);
+
+impl DewNode for ResolvedColorNode {
+    fn measure(&self, _state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        ))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        render_color(renderer, ctx, self.0);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+fn render_color(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedColor) {
     let srgb = color.to_srgb_with_headroom();
-    let paint = peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity]);
-    renderer.list.fill(&ctx.bounds, ctx.transform, paint);
-}
-
-fn render_spacer(
-    _renderer: &mut DewRenderer,
-    _ctx: RenderContext,
-    _view: Native<Spacer>,
-    _env: &Environment,
-) {
-}
-
-fn render_unit(
-    _renderer: &mut DewRenderer,
-    _ctx: RenderContext,
-    _view: Native<()>,
-    _env: &Environment,
-) {
-}
-
-fn render_text_config(
-    renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    view: Native<TextConfig>,
-    env: &Environment,
-) {
-    let config = view.into_inner();
-    let styled = renderer.read_signal(&config.content);
-    let layout = renderer.state.borrow_mut().build_styled_layout(
-        &styled,
-        env,
-        max_width_from_bounds(ctx.bounds),
-        theme::FOREGROUND,
+    renderer.list.fill(
+        &ctx.bounds,
+        ctx.transform,
+        peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity]),
     );
-    let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
-    emit_text_commands(&mut renderer.list, &layout, transform);
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "dispatcher handlers receive views by value per the handler contract"
-)]
-fn render_str(renderer: &mut DewRenderer, ctx: RenderContext, text: Str, _env: &Environment) {
-    let layout = renderer
-        .state
-        .borrow_mut()
-        .build_plain_layout(&text, max_width_from_bounds(ctx.bounds));
-    let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
-    emit_text_commands(&mut renderer.list, &layout, transform);
+struct TextNode {
+    config: TextConfig,
+    env: Environment,
+}
+
+impl DewNode for TextNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        let styled = self.config.content.get();
+        let (width, height) = state
+            .borrow_mut()
+            .measure_styled(&styled, &self.env, proposal.width);
+        ViewDimensions::new(Size::new(width, height))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        let styled = renderer.read_signal(&self.config.content);
+        let layout = renderer.state.borrow_mut().build_styled_layout(
+            &styled,
+            &self.env,
+            max_width_from_bounds(ctx.bounds),
+            theme::FOREGROUND,
+        );
+        let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
+        emit_text_commands(&mut renderer.list, &layout, transform);
+    }
+}
+
+struct StrNode {
+    value: Str,
+}
+
+impl DewNode for StrNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        let (width, height) = state
+            .borrow_mut()
+            .measure_plain(&self.value, proposal.width);
+        ViewDimensions::new(Size::new(width, height))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        let layout = renderer
+            .state
+            .borrow_mut()
+            .build_plain_layout(&self.value, max_width_from_bounds(ctx.bounds));
+        let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
+        emit_text_commands(&mut renderer.list, &layout, transform);
+    }
+}
+
+struct EmptyNode {
+    stretch: StretchAxis,
+}
+
+impl DewNode for EmptyNode {
+    fn measure(&self, _state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::zero())
+    }
+
+    fn render(&mut self, _renderer: &mut DewRenderer, _ctx: RenderContext) {}
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.stretch
+    }
 }
 
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "logical-pixel bounds are far below f32 precision limits"
+    reason = "logical-pixel geometry is far below f32 precision limits"
 )]
-fn proposal_from_bounds(bounds: Rect) -> ProposalSize {
+pub(crate) fn proposal_from_bounds(bounds: Rect) -> ProposalSize {
     ProposalSize::new(Some(bounds.width() as f32), Some(bounds.height() as f32))
 }
 
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "logical-pixel bounds are far below f32 precision limits"
+    reason = "logical-pixel geometry is far below f32 precision limits"
 )]
 fn max_width_from_bounds(bounds: Rect) -> Option<f32> {
     (bounds.width() > 0.0).then(|| bounds.width() as f32)

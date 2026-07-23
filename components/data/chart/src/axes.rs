@@ -5,17 +5,22 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
-use nami::{Signal, SignalExt};
+use nami::{Computed, Signal, SignalExt, collection::SignalCollection};
 use waterui_core::accessibility::{AccessibilityLabel, AccessibilityRole};
-use waterui_core::{AnyView, Environment, Metadata, View};
+use waterui_core::{AnyView, Environment, Metadata, View, id::Identifiable, views::ForEach};
 use waterui_graphics::color::Color;
-use waterui_layout::container::FixedContainer;
+use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::{
-    Layout, Point, PositionExt, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint, absolute,
+    AbsoluteLayout, Layout, Point, PositionExt, ProposalSize, Rect, Size, StretchAxis, SubView,
+    UnitPoint, absolute,
 };
 use waterui_text::{Text, text};
 
@@ -412,6 +417,184 @@ fn axis_overlay(
     }
 }
 
+#[derive(Clone)]
+struct ReactiveTick(Tick);
+
+impl Identifiable for ReactiveTick {
+    type Id = (u32, u32, String);
+
+    fn id(&self) -> Self::Id {
+        (
+            self.0.value().to_bits(),
+            self.0.position().to_bits(),
+            self.0.label().to_string(),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReactiveAxisLayout {
+    vertical: bool,
+    position: f32,
+    padding: AxisPadding,
+    label: bool,
+}
+
+impl ReactiveAxisLayout {
+    fn chart_bounds(&self, bounds: Rect) -> (f32, f32, f32, f32) {
+        let chart_left = bounds.x() + self.padding.left;
+        let chart_right = bounds.x() + bounds.width() - self.padding.right;
+        let chart_top = bounds.y() + self.padding.top;
+        let chart_bottom = bounds.y() + bounds.height() - self.padding.bottom;
+        let chart_width = (chart_right - chart_left).max(0.0);
+        let chart_height = (chart_bottom - chart_top).max(0.0);
+        let plot_padding = self.padding.plot.clamp(0.0, 0.45);
+        let plot_pad_x = chart_width * plot_padding;
+        let plot_pad_y = chart_height * plot_padding;
+        (
+            chart_left + plot_pad_x,
+            chart_top + plot_pad_y,
+            (chart_width - plot_pad_x * 2.0).max(0.0),
+            (chart_height - plot_pad_y * 2.0).max(0.0),
+        )
+    }
+}
+
+impl Layout for ReactiveAxisLayout {
+    fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+        Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        )
+    }
+
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        let [child] = children else {
+            panic!("reactive axis item must contain exactly one child");
+        };
+        let (chart_left, chart_top, chart_width, chart_height) = self.chart_bounds(bounds);
+        let position = self.position.clamp(0.0, 1.0);
+
+        if self.label {
+            let size = child.measure(ProposalSize::UNSPECIFIED).size;
+            if self.vertical {
+                let x = bounds.x() + self.padding.left - 5.0 - size.width;
+                let y = size
+                    .height
+                    .mul_add(-0.5, (1.0 - position).mul_add(chart_height, chart_top));
+                vec![Rect::new(Point::new(x, y), size)]
+            } else {
+                let x = size
+                    .width
+                    .mul_add(-0.5, chart_left + position * chart_width);
+                let y = bounds.y() + bounds.height() - self.padding.bottom + 5.0 - size.height;
+                vec![Rect::new(Point::new(x, y), size)]
+            }
+        } else if self.vertical {
+            let y = (1.0 - position).mul_add(chart_height, chart_top);
+            vec![Rect::new(
+                Point::new(chart_left, y - 0.5),
+                Size::new(chart_width, 1.0),
+            )]
+        } else {
+            let x = chart_left + position * chart_width;
+            vec![Rect::new(
+                Point::new(x - 0.5, chart_top),
+                Size::new(1.0, chart_height),
+            )]
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+struct ReactiveAxisTick {
+    tick: Tick,
+    vertical: bool,
+    show_grid: bool,
+    padding: AxisPadding,
+}
+
+impl View for ReactiveAxisTick {
+    fn body(self, _env: &Environment) -> impl View {
+        let grid = self.show_grid.then(|| {
+            FixedContainer::new(
+                ReactiveAxisLayout {
+                    vertical: self.vertical,
+                    position: self.tick.position(),
+                    padding: self.padding.clone(),
+                    label: false,
+                },
+                (grid_color(),),
+            )
+        });
+        let label = FixedContainer::new(
+            ReactiveAxisLayout {
+                vertical: self.vertical,
+                position: self.tick.position(),
+                padding: self.padding,
+                label: true,
+            },
+            (text(self.tick.label().to_string()).size(11.0),),
+        );
+
+        absolute((grid, label))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+struct ReactiveAxis {
+    ticks: Computed<Vec<ReactiveTick>>,
+    vertical: bool,
+    show_grid: bool,
+    padding: AxisPadding,
+}
+
+impl ReactiveAxis {
+    const fn new(
+        ticks: Computed<Vec<ReactiveTick>>,
+        vertical: bool,
+        show_grid: bool,
+        padding: AxisPadding,
+    ) -> Self {
+        Self {
+            ticks,
+            vertical,
+            show_grid,
+            padding,
+        }
+    }
+}
+
+impl View for ReactiveAxis {
+    fn body(self, _env: &Environment) -> impl View {
+        let vertical = self.vertical;
+        let show_grid = self.show_grid;
+        let padding = self.padding;
+        LazyContainer::new(
+            AbsoluteLayout,
+            ForEach::new(
+                SignalCollection::new(self.ticks),
+                move |tick: ReactiveTick| ReactiveAxisTick {
+                    tick: tick.0,
+                    vertical,
+                    show_grid,
+                    padding: padding.clone(),
+                },
+            ),
+        )
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
 fn axis_titles(y_label: Option<Text>, x_label: Option<Text>) -> impl View {
     absolute((
         y_label.map(|label| {
@@ -668,33 +851,40 @@ where
             self.chart,
         );
 
-        let reactive_axes = self
+        let y_show_grid = y_axis
+            .as_ref()
+            .is_some_and(super::axis::AxisConfig::has_grid);
+        let x_show_grid = x_axis
+            .as_ref()
+            .is_some_and(super::axis::AxisConfig::has_grid);
+        let y_ticks = self
             .bounds
             .map(move |bounds: DataBounds| {
-                let y_show_grid = y_axis
-                    .as_ref()
-                    .is_some_and(super::axis::AxisConfig::has_grid);
-                let x_show_grid = x_axis
-                    .as_ref()
-                    .is_some_and(super::axis::AxisConfig::has_grid);
-                let y_ticks = y_axis
+                y_axis
                     .as_ref()
                     .map(|axis| axis.compute_ticks(bounds.min_y, bounds.max_y))
-                    .unwrap_or_default();
-                let x_ticks = x_axis
-                    .as_ref()
-                    .map(|axis| axis.compute_ticks(bounds.min_x, bounds.max_x))
-                    .unwrap_or_default();
-
-                AxisAccessibilityBoundary::new(axis_overlay(
-                    y_show_grid,
-                    x_show_grid,
-                    y_ticks,
-                    x_ticks,
-                    &padding,
-                ))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(ReactiveTick)
+                    .collect()
             })
             .computed();
+        let x_ticks = self
+            .bounds
+            .map(move |bounds: DataBounds| {
+                x_axis
+                    .as_ref()
+                    .map(|axis| axis.compute_ticks(bounds.min_x, bounds.max_x))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(ReactiveTick)
+                    .collect()
+            })
+            .computed();
+        let reactive_axes = AxisAccessibilityBoundary::new(absolute((
+            ReactiveAxis::new(y_ticks, true, y_show_grid, padding.clone()),
+            ReactiveAxis::new(x_ticks, false, x_show_grid, padding),
+        )));
 
         // Use absolute layout - it stretches to fill parent
         absolute((

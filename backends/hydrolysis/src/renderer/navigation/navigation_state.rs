@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
@@ -89,9 +90,18 @@ pub(crate) type NavigationEvents = Rc<RefCell<Vec<HydroNavigationEvent>>>;
 
 #[derive(Default)]
 pub(crate) struct NavigationState {
-    pub(crate) slots: Vec<NavigationSlot>,
-    pub(crate) pending_entries: Vec<(usize, NavigationEntries)>,
-    pub(crate) cursor: usize,
+    pub(crate) slots: BTreeMap<NavigationKey, NavigationSlot>,
+    active: BTreeSet<NavigationKey>,
+}
+
+/// Stable identity of one retained navigation stack.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct NavigationKey(RetainedIdentity);
+
+impl NavigationKey {
+    pub(crate) fn for_rc<T: 'static>(owner: &Rc<T>) -> Self {
+        Self(RetainedIdentity::for_rc(owner))
+    }
 }
 
 pub(crate) struct NavigationSlot {
@@ -153,12 +163,11 @@ pub(crate) struct NavigationInteractivePop {
 
 impl NavigationState {
     pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.pending_entries.clear();
-        self.cursor = 0;
+        self.active.clear();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
+        self.slots.retain(|key, _| self.active.contains(key));
     }
 }
 
@@ -327,7 +336,7 @@ impl CustomNavigationController for HydroNavigationController {
             current_identity,
             removed,
         });
-        self.signals.request_rebuild();
+        self.signals.request_refresh();
     }
 }
 
@@ -411,13 +420,13 @@ fn put_destination_state(
 impl HydrolysisRenderer {
     pub(crate) fn install_navigation_root_state(
         &mut self,
-        slot_index: usize,
+        slot_key: &NavigationKey,
         state: NavigationDestinationState,
     ) {
         let slot = self
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(slot_key)
             .expect("Hydrolysis navigation slot missing during root installation");
         assert!(
             slot.root_state.is_none(),
@@ -428,14 +437,14 @@ impl HydrolysisRenderer {
 
     pub(crate) fn activate_navigation_root_if_needed(
         &mut self,
-        slot_index: usize,
+        slot_key: &NavigationKey,
         env: &Environment,
     ) {
         let should_activate = {
             let slot = self
                 .navigation
                 .slots
-                .get(slot_index)
+                .get(slot_key)
                 .expect("Hydrolysis navigation slot missing during root activation");
             slot.active_identity == ROOT_NAVIGATION_IDENTITY
                 && slot.pending_transaction_id.is_none()
@@ -447,7 +456,7 @@ impl HydrolysisRenderer {
         let slot = self
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(slot_key)
             .expect("Hydrolysis navigation slot missing during root activation");
         let mut state = slot
             .root_state
@@ -522,45 +531,20 @@ impl HydrolysisRenderer {
         );
     }
 
-    pub(crate) fn bind_navigation_entries(&mut self) -> (usize, NavigationEntries) {
-        let index = self.navigation.cursor;
-        self.navigation.cursor = self
+    pub(crate) fn bind_navigation_entries(&mut self, key: &NavigationKey) -> NavigationEntries {
+        self.navigation.active.insert(key.clone());
+        let slot = self
             .navigation
-            .cursor
-            .checked_add(1)
-            .expect("navigation slot cursor overflow");
-
-        if index == self.navigation.slots.len() {
-            self.navigation
-                .slots
-                .push(NavigationSlot::new(self.signals.clone()));
-        }
-
-        (index, Rc::clone(&self.navigation.slots[index].entries))
-    }
-
-    pub(crate) fn push_pending_navigation_entries(
-        &mut self,
-        slot_index: usize,
-        entries: NavigationEntries,
-    ) {
-        self.navigation.pending_entries.push((slot_index, entries));
-    }
-
-    pub(crate) fn take_pending_navigation_entries(
-        &mut self,
-        caller: &'static str,
-    ) -> (usize, NavigationEntries) {
-        self.navigation
-            .pending_entries
-            .pop()
-            .unwrap_or_else(|| panic!("hydrolysis {caller} requires prebound navigation entries"))
+            .slots
+            .entry(key.clone())
+            .or_insert_with(|| NavigationSlot::new(self.signals.clone()));
+        Rc::clone(&slot.entries)
     }
 
     pub(crate) fn finish_interactive_navigation_pop(&mut self, cancelled: bool) -> bool {
         let now = self.frame_instant();
         let mut changed = false;
-        for slot in &mut self.navigation.slots {
+        for slot in self.navigation.slots.values_mut() {
             if let Some(interactive) = slot.interactive_pop.as_mut()
                 && matches!(interactive.phase, NavigationInteractivePopPhase::Dragging)
             {
@@ -569,16 +553,20 @@ impl HydrolysisRenderer {
             }
         }
         if changed {
-            self.signals.request_rebuild();
+            self.signals.request_refresh();
         }
         changed
     }
 
-    pub(crate) fn attempt_navigation_pop(&mut self, slot_index: usize, env: &Environment) -> bool {
+    pub(crate) fn attempt_navigation_pop(
+        &mut self,
+        slot_key: &NavigationKey,
+        env: &Environment,
+    ) -> bool {
         let slot = self
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(slot_key)
             .expect("Hydrolysis navigation slot missing during pop attempt");
         let identity = slot.active_identity;
         let Some(mut state) = take_destination_state(slot, identity) else {
@@ -591,14 +579,14 @@ impl HydrolysisRenderer {
 
     pub(crate) fn navigation_destination_disappeared(
         &mut self,
-        slot_index: usize,
+        slot_key: &NavigationKey,
         identity: u64,
         env: &Environment,
     ) {
         let slot = self
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(slot_key)
             .expect("Hydrolysis navigation slot missing during disappear callback");
         if identity == ROOT_NAVIGATION_IDENTITY {
             if !slot.root_is_active {
@@ -612,12 +600,16 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(crate) fn complete_navigation_transaction(&mut self, slot_index: usize, env: &Environment) {
+    pub(crate) fn complete_navigation_transaction(
+        &mut self,
+        slot_key: &NavigationKey,
+        env: &Environment,
+    ) {
         let (mut removed, appearance_identity, transaction_id, controller) = {
             let slot = self
                 .navigation
                 .slots
-                .get_mut(slot_index)
+                .get_mut(slot_key)
                 .expect("Hydrolysis navigation slot missing during transaction completion");
             let appearance_identity = slot.pending_appearance.then_some(slot.active_identity);
             slot.pending_appearance = false;
@@ -640,7 +632,7 @@ impl HydrolysisRenderer {
             let slot = self
                 .navigation
                 .slots
-                .get_mut(slot_index)
+                .get_mut(slot_key)
                 .expect("Hydrolysis navigation slot missing during appear callback");
             if let Some(mut state) = take_destination_state(slot, identity) {
                 state.appeared(env);
