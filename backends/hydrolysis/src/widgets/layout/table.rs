@@ -4,13 +4,15 @@ use std::rc::Rc;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::lazy::{
-    resolve_table_visible_rows, resolve_visible_column_window, table_metrics_from_slot,
+    LazyTableSlot, resolve_table_visible_rows, resolve_visible_column_window,
+    table_metrics_from_slot,
 };
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, VisibleSubviewCache,
     WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline, table_data_cell_rect,
     table_header_cell_rect, transformed_rect, update_table_slot_visible_cell_widths,
 };
+use crate::scroll::ScrollHandle;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -44,6 +46,10 @@ enum TableCellKey {
 /// virtualized — cost is bounded by visible cells.
 pub(crate) struct TableRenderState {
     pub(crate) config: TableConfig,
+    /// Column metrics belong to this semantic table node.
+    slot: RefCell<LazyTableSlot>,
+    /// Scroll state belongs to this semantic table node.
+    scroll: RefCell<Option<ScrollHandle>>,
     /// Content sub-views for the cells currently in view, keyed by [`TableCellKey`]
     /// so a steady scroll reuses each visible cell's node (keeping its reactive
     /// content live) and only builds cells entering the window.
@@ -54,7 +60,38 @@ impl TableRenderState {
     pub(crate) fn from_config(config: TableConfig) -> Self {
         Self {
             config,
+            slot: RefCell::new(LazyTableSlot::default()),
+            scroll: RefCell::new(None),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
+        }
+    }
+
+    fn bind_scroll(
+        &self,
+        viewport_width: f64,
+        viewport_height: f64,
+        content_width: f64,
+        content_height: f64,
+    ) -> ScrollHandle {
+        let mut scroll = self.scroll.borrow_mut();
+        if let Some(handle) = scroll.as_mut() {
+            handle.rebind(
+                ScrollAxis::All,
+                viewport_width,
+                viewport_height,
+                content_width,
+                content_height,
+            )
+        } else {
+            let handle = ScrollHandle::new(
+                ScrollAxis::All,
+                viewport_width,
+                viewport_height,
+                content_width,
+                content_height,
+            );
+            *scroll = Some(handle.clone());
+            handle
         }
     }
 }
@@ -79,35 +116,30 @@ fn measure_table_intrinsic(
     LayoutSize::new(metrics.table_width as f32, metrics.table_height as f32)
 }
 
-/// Emits a table's accessibility tree from its config — and crucially binds the
-/// table's scroll handle (`bind_scroll_handle` pushes it pending), which the
-/// subsequent `render_table_parts` consumes via `take_pending_scroll_handle`. The
-/// dispatch wrapper calls this before `render`, and the retained `Widget`-node
-/// path calls it from `render_table_node` for the same ordering, so the handle is
-/// always bound before the draw whether or not accessibility nodes are emitted.
+/// Emits a table's accessibility tree from its node-owned retained state.
 pub(crate) fn table_accessibility(
     renderer: &mut HydrolysisRenderer,
     ctx: RenderContext,
-    table: &TableConfig,
+    state: &Rc<RefCell<TableRenderState>>,
     env: &Environment,
 ) {
-    let columns = renderer.read_signal(&table.columns);
+    let columns_signal = state.borrow().config.columns.clone();
+    let columns = renderer.read_signal(&columns_signal);
     if columns.is_empty() {
         return;
     }
-    let slot_index = renderer.lazy.lazy_table_controller.bind();
     {
-        let (slot, state) = renderer.table_slot_and_state_mut(slot_index);
-        refresh_table_slot_baseline(&columns, slot, state, env);
+        let state_ref = state.borrow();
+        let mut slot = state_ref.slot.borrow_mut();
+        refresh_table_slot_baseline(&columns, &mut slot, renderer.state_mut(), env);
     }
     let viewport = ctx.bounds;
     let layout_metrics = widget_theme(env).table_metrics();
     let table_metrics = {
-        let slot = &renderer.lazy.lazy_table_controller.slots[slot_index];
-        table_metrics_from_slot(slot, layout_metrics)
+        let state_ref = state.borrow();
+        table_metrics_from_slot(&state_ref.slot.borrow(), layout_metrics)
     };
-    let handle = renderer.bind_scroll_handle(
-        ScrollAxis::All,
+    let handle = state.borrow().bind_scroll(
         viewport.width(),
         viewport.height(),
         table_metrics.table_width.max(viewport.width()),
@@ -117,7 +149,8 @@ pub(crate) fn table_accessibility(
     {
         let scroll_metrics = handle.metrics();
         let row_window = {
-            let slot = &renderer.lazy.lazy_table_controller.slots[slot_index];
+            let state_ref = state.borrow();
+            let slot = state_ref.slot.borrow();
             resolve_table_visible_rows(
                 scroll_metrics.offset_y,
                 viewport.height(),
@@ -126,7 +159,8 @@ pub(crate) fn table_accessibility(
             )
         };
         let mut column_window = {
-            let slot = &renderer.lazy.lazy_table_controller.slots[slot_index];
+            let state_ref = state.borrow();
+            let slot = state_ref.slot.borrow();
             resolve_visible_column_window(
                 &slot.column_widths,
                 scroll_metrics.offset_x,
@@ -135,17 +169,19 @@ pub(crate) fn table_accessibility(
         };
         {
             {
-                let (slot, state) = renderer.table_slot_and_state_mut(slot_index);
+                let state_ref = state.borrow();
+                let mut slot = state_ref.slot.borrow_mut();
                 update_table_slot_visible_cell_widths(
                     &columns,
-                    slot,
+                    &mut slot,
                     row_window,
                     column_window,
-                    state,
+                    renderer.state_mut(),
                     env,
                 );
             }
-            let slot = &renderer.lazy.lazy_table_controller.slots[slot_index];
+            let state_ref = state.borrow();
+            let slot = state_ref.slot.borrow();
             column_window = resolve_visible_column_window(
                 &slot.column_widths,
                 scroll_metrics.offset_x,
@@ -179,8 +215,7 @@ pub(crate) fn table_accessibility(
             .take(column_window.end)
             .skip(column_window.start)
         {
-            let width =
-                renderer.lazy.lazy_table_controller.slots[slot_index].column_widths[column_index];
+            let width = state.borrow().slot.borrow().column_widths[column_index];
             let header_cell =
                 table_header_cell_rect(origin_x, origin_y, x_offset, width, layout_metrics);
             let header_view = AnyView::new(column.label());
@@ -261,12 +296,7 @@ pub(crate) fn measure_table_node(
     ViewDimensions::new(measure_table_intrinsic(table, state, env))
 }
 
-/// Renders a retained table leaf every flush. Table accessibility is not
-/// render-driven and additionally binds the scroll handle the draw consumes, so
-/// this node always runs `table_accessibility` first (mirroring the dispatch
-/// wrapper's `accessibility`-then-`render` order); when the table is
-/// accessibility-hidden it runs that step inside a suppression scope so the
-/// handle is still bound while the a11y nodes are suppressed.
+/// Renders a retained table leaf every flush.
 pub(crate) fn render_table_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TableRenderState>>,
@@ -282,7 +312,7 @@ pub(crate) fn render_table_node(
     }
     {
         let render_ctx = ctx.render_context();
-        table_accessibility(ctx.renderer_mut(), render_ctx, &state.borrow().config, env);
+        table_accessibility(ctx.renderer_mut(), render_ctx, state, env);
     }
     #[cfg(feature = "accessibility")]
     if hidden {
@@ -302,18 +332,26 @@ pub(crate) fn render_table_parts(
         return;
     }
     let viewport = ctx.bounds;
-    let handle = ctx
-        .renderer_mut()
-        .take_pending_scroll_handle("render_table");
-    let scroll_metrics = handle.metrics();
-    let slot_index = ctx.renderer_mut().lazy.lazy_table_controller.bind();
     let layout_metrics = widget_theme(env).table_metrics();
     {
-        let (slot, state) = ctx.renderer_mut().table_slot_and_state_mut(slot_index);
-        refresh_table_slot_baseline(&columns, slot, state, env);
+        let state_ref = state.borrow();
+        let mut slot = state_ref.slot.borrow_mut();
+        refresh_table_slot_baseline(&columns, &mut slot, ctx.state_mut(), env);
     }
+    let initial_table_metrics = {
+        let state_ref = state.borrow();
+        table_metrics_from_slot(&state_ref.slot.borrow(), layout_metrics)
+    };
+    let handle = state.borrow().bind_scroll(
+        viewport.width(),
+        viewport.height(),
+        initial_table_metrics.table_width.max(viewport.width()),
+        initial_table_metrics.table_height.max(viewport.height()),
+    );
+    let mut scroll_metrics = handle.metrics();
     let row_window = {
-        let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
+        let state_ref = state.borrow();
+        let slot = state_ref.slot.borrow();
         resolve_table_visible_rows(
             scroll_metrics.offset_y,
             viewport.height(),
@@ -322,7 +360,8 @@ pub(crate) fn render_table_parts(
         )
     };
     let mut column_window = {
-        let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
+        let state_ref = state.borrow();
+        let slot = state_ref.slot.borrow();
         resolve_visible_column_window(
             &slot.column_widths,
             scroll_metrics.offset_x,
@@ -330,28 +369,37 @@ pub(crate) fn render_table_parts(
         )
     };
     {
-        let (slot, state) = ctx.renderer_mut().table_slot_and_state_mut(slot_index);
+        let state_ref = state.borrow();
+        let mut slot = state_ref.slot.borrow_mut();
         update_table_slot_visible_cell_widths(
             &columns,
-            slot,
+            &mut slot,
             row_window,
             column_window,
-            state,
+            ctx.state_mut(),
             env,
         );
     }
+    let table_metrics = {
+        let state_ref = state.borrow();
+        table_metrics_from_slot(&state_ref.slot.borrow(), layout_metrics)
+    };
+    let handle = state.borrow().bind_scroll(
+        viewport.width(),
+        viewport.height(),
+        table_metrics.table_width.max(viewport.width()),
+        table_metrics.table_height.max(viewport.height()),
+    );
+    scroll_metrics = handle.metrics();
     {
-        let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
+        let state_ref = state.borrow();
+        let slot = state_ref.slot.borrow();
         column_window = resolve_visible_column_window(
             &slot.column_widths,
             scroll_metrics.offset_x,
             scroll_metrics.offset_x + viewport.width(),
         );
     }
-    let table_metrics = {
-        let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
-        table_metrics_from_slot(slot, layout_metrics)
-    };
 
     ctx.push_layer_rect(1.0, viewport);
 

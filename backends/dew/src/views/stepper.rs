@@ -5,11 +5,11 @@ use std::cell::RefCell;
 use kurbo::{Line, Rect, RoundedRect, Stroke};
 use nami::Signal;
 use waterui_controls::stepper::StepperConfig;
-use waterui_core::layout::Size;
-use waterui_core::{Environment, Native};
+use waterui_core::Environment;
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_text::styled::StyledStr;
 
-use crate::dispatch::{DewRenderer, RenderContext};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{emit_styled_text, measure_label, render_label, to_f32};
@@ -49,15 +49,38 @@ fn value_text_for_measure(config: &StepperConfig) -> StyledStr {
     )
 }
 
-/// Draws the label leading, the current value trailing before the buttons,
-/// and the `[-]` `[+]` boxes at the far end.
-pub fn render(
+struct StepperNode {
+    config: StepperConfig,
+    env: Environment,
+}
+
+pub fn build(config: StepperConfig, env: &Environment) -> Box<dyn DewNode> {
+    Box::new(StepperNode {
+        config,
+        env: env.clone(),
+    })
+}
+
+impl DewNode for StepperNode {
+    fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(measure(state, &self.config, &self.env))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        render(renderer, ctx, &self.config, &self.env);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
+fn render(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
-    view: Native<StepperConfig>,
+    config: &StepperConfig,
     env: &Environment,
 ) {
-    let config = view.into_inner();
     assert!(
         config.range.start() <= config.range.end(),
         "dew stepper requires an ordered range"
@@ -68,7 +91,7 @@ pub fn render(
     let controls_width = button_size.mul_add(2.0, BUTTON_SPACING);
     let controls_x0 = (bounds.x1 - controls_width).max(bounds.x0);
 
-    let styled_value = value_text(renderer, &config);
+    let styled_value = value_text(renderer, config);
     let (value_width, _) =
         renderer
             .state_cell()
@@ -152,7 +175,7 @@ fn draw_button(renderer: &mut DewRenderer, ctx: RenderContext, rect: Rect, plus:
 
 /// Label plus value text plus the two-button block; horizontal stretch
 /// pushes the buttons to the trailing edge during placement.
-pub fn measure(state: &RefCell<DewState>, config: &StepperConfig, env: &Environment) -> Size {
+fn measure(state: &RefCell<DewState>, config: &StepperConfig, env: &Environment) -> Size {
     assert!(
         config.range.start() <= config.range.end(),
         "dew stepper requires an ordered range"

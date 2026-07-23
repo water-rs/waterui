@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::{Computed, SignalExt as _};
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, Dynamic, Environment, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
@@ -269,21 +269,24 @@ where
             build,
         } = self;
 
-        absolute((hit
-            .zip(&chart_frame)
-            .map(move |(hit, frame)| {
-                if let Some(hit) = hit {
-                    let (x, y) = tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame);
-                    let max_width = (frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0);
-                    AnyView::new(Frame::new(build(hit)).max_width(max_width).position_anchor(
-                        UnitPoint::BOTTOM_LEADING,
-                        x,
-                        y,
-                    ))
-                } else {
-                    AnyView::new(())
-                }
+        let position = hit.zip(&chart_frame);
+        let x = position.map(|(hit, frame)| {
+            hit.map_or(0.0, |hit| {
+                tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame).0
             })
-            .computed(),))
+        });
+        let y = position.map(|(hit, frame)| {
+            hit.map_or(0.0, |hit| {
+                tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame).1
+            })
+        });
+        let max_width = chart_frame.map(|frame| (frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0));
+        let content = Dynamic::watch(hit, move |hit| hit.map_or_else(|| AnyView::new(()), &build));
+
+        absolute((Frame::new(content).max_width(max_width).position_anchor(
+            UnitPoint::BOTTOM_LEADING,
+            x,
+            y,
+        ),))
     }
 }

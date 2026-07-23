@@ -168,6 +168,19 @@ impl AnimationKey {
         }
     }
 
+    /// Returns a renderer-owned scalar key scoped by a stable semantic owner
+    /// and a per-owner discriminator.
+    #[must_use]
+    pub const fn renderer_local_scalar_with_discriminator(
+        identity: usize,
+        discriminator: usize,
+    ) -> Self {
+        Self {
+            scope: AnimationKeyScope::RendererLocalScalar,
+            identity: mix_identity(identity, discriminator),
+        }
+    }
+
     /// Returns whether this key was built with
     /// [`renderer_local_scalar`](Self::renderer_local_scalar) rather than
     /// from a signal identity.

@@ -22,6 +22,7 @@ mod accessibility;
 mod bindings;
 mod effects;
 mod frame;
+mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
@@ -38,6 +39,7 @@ mod views;
 
 pub(crate) use effects::*;
 pub(crate) use frame::*;
+pub(crate) use identity::*;
 pub(crate) use native_measure::*;
 pub(crate) use retained::*;
 pub(crate) use tree::*;
@@ -147,6 +149,7 @@ use waterui_graphics::{
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
+#[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
@@ -166,7 +169,8 @@ use crate::gesture::GestureEngine;
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
 };
-use crate::scroll::{ScrollController, ScrollHandle};
+#[cfg(feature = "accessibility")]
+use crate::scroll::ScrollHandle;
 use crate::time::Instant;
 use crate::widgets::{inset_rect, widget_theme};
 
@@ -211,7 +215,6 @@ pub struct HydrolysisRenderer {
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
-    scroll_controller: ScrollController,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     frame_applied_filter_count: u32,
@@ -330,7 +333,6 @@ impl HydrolysisRenderer {
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,
-            scroll_controller: ScrollController::default(),
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_applied_filter_count: 0,

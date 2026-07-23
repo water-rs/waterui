@@ -202,7 +202,6 @@ impl HydrolysisRenderer {
         let gesture_start = renderer.gesture_engine.target_count();
         let cursor_start = renderer.hit_test.cursor_targets.len();
         let hover_start = renderer.hit_test.hover_targets.len();
-        let hover_cursor_start = renderer.hit_test.interaction.hover_cursor();
         let scroll_start = renderer.hit_test.scroll_targets.len();
         let text_start = renderer.text_editing.text_input_targets.len();
 
@@ -216,11 +215,18 @@ impl HydrolysisRenderer {
         renderer.ensure_active_pointer_drag_target_is_live();
         renderer.gesture_engine.truncate_targets(gesture_start);
         renderer.hit_test.cursor_targets.truncate(cursor_start);
+        let removed_hover: Vec<_> = renderer.hit_test.hover_targets[hover_start..]
+            .iter()
+            .map(|target| (target.slot.clone(), target.handles.clone()))
+            .collect();
+        let now = renderer.frame_instant();
+        for (slot, handles) in removed_hover {
+            renderer.hit_test.interaction.set_hovering(&slot, false);
+            if let Some(handles) = handles {
+                handles.set_hovering(false, now);
+            }
+        }
         renderer.hit_test.hover_targets.truncate(hover_start);
-        renderer
-            .hit_test
-            .interaction
-            .rewind_hover_to(hover_cursor_start);
         renderer.hit_test.scroll_targets.truncate(scroll_start);
         let text_end = renderer.text_editing.text_input_targets.len();
         renderer
@@ -327,11 +333,12 @@ impl HydrolysisRenderer {
         render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
         let event = handler.borrow().event();
+        let interaction_key = InteractionKey::for_rc(&handler, 0);
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         match event {
             Event::HoverEnter => {
                 let captured_env = env.clone();
-                renderer.register_hover_enter_target(bounds, move |env| {
+                renderer.register_hover_enter_target(interaction_key, bounds, move |env| {
                     let action_env = captured_env.layered_on(env);
                     handler.borrow_mut().handle(&action_env);
                     true
@@ -339,7 +346,7 @@ impl HydrolysisRenderer {
             }
             Event::HoverMove => {
                 let captured_env = env.clone();
-                renderer.register_hover_move_target(bounds, move |point, env| {
+                renderer.register_hover_move_target(interaction_key, bounds, move |point, env| {
                     let hover_event = HoverEvent::new(waterui_core::layout::Point::new(
                         point.x as f32 - bounds.x0 as f32,
                         point.y as f32 - bounds.y0 as f32,
@@ -351,7 +358,7 @@ impl HydrolysisRenderer {
             }
             Event::HoverExit => {
                 let captured_env = env.clone();
-                renderer.register_hover_exit_target(bounds, move |env| {
+                renderer.register_hover_exit_target(interaction_key, bounds, move |env| {
                     let action_env = captured_env.layered_on(env);
                     handler.borrow_mut().handle(&action_env);
                     true

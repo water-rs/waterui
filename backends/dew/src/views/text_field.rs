@@ -9,10 +9,10 @@ use std::cell::RefCell;
 use kurbo::{Rect, RoundedRect, Stroke};
 use nami::Signal;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
-use waterui_core::layout::Size;
-use waterui_core::{Environment, Native};
+use waterui_core::Environment;
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
-use crate::dispatch::{DewRenderer, RenderContext};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{emit_styled_text, measure_label, render_label, to_f32};
@@ -32,15 +32,38 @@ const CORNER_RADIUS: f64 = 6.0;
 /// Outline width of the box.
 const BOX_BORDER: f64 = 1.0;
 
-/// Draws the label row, the surface box with its border, and the value
-/// text — or the muted prompt while the value is empty.
-pub fn render(
+struct TextFieldNode {
+    config: ResolvedTextFieldConfig,
+    env: Environment,
+}
+
+pub fn build(config: ResolvedTextFieldConfig, env: &Environment) -> Box<dyn DewNode> {
+    Box::new(TextFieldNode {
+        config,
+        env: env.clone(),
+    })
+}
+
+impl DewNode for TextFieldNode {
+    fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(measure(state, &self.config, &self.env))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        render(renderer, ctx, &self.config, &self.env);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
+fn render(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
-    view: Native<ResolvedTextFieldConfig>,
+    config: &ResolvedTextFieldConfig,
     env: &Environment,
 ) {
-    let config = view.into_inner();
     let bounds = ctx.bounds;
 
     let label_size = measure_label(renderer.state_cell(), &config.label, env);
@@ -99,11 +122,7 @@ pub fn render(
 
 /// Intrinsic size: the label row above a box sized for the larger of the
 /// value and prompt texts, floored at the minimum box footprint.
-pub fn measure(
-    state: &RefCell<DewState>,
-    config: &ResolvedTextFieldConfig,
-    env: &Environment,
-) -> Size {
+fn measure(state: &RefCell<DewState>, config: &ResolvedTextFieldConfig, env: &Environment) -> Size {
     let label = measure_label(state, &config.label, env);
     let value = config.value.get();
     let prompt = config.prompt.content.get();

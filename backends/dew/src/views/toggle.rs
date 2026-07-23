@@ -4,10 +4,10 @@ use std::cell::RefCell;
 
 use kurbo::{Circle, Rect, RoundedRect, Stroke};
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
-use waterui_core::layout::Size;
-use waterui_core::{Environment, Native};
+use waterui_core::Environment;
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
-use crate::dispatch::{DewRenderer, RenderContext};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{measure_label, render_label, to_f32};
@@ -30,16 +30,39 @@ fn require_switch_style(style: ToggleStyle) {
     );
 }
 
-/// Draws the label on the left and the switch trailing on the right: an
-/// accent pill when on, a muted track when off, with a circular thumb at
-/// the active end.
-pub fn render(
+struct ToggleNode {
+    config: ToggleConfig,
+    env: Environment,
+}
+
+pub fn build(config: ToggleConfig, env: &Environment) -> Box<dyn DewNode> {
+    require_switch_style(config.style);
+    Box::new(ToggleNode {
+        config,
+        env: env.clone(),
+    })
+}
+
+impl DewNode for ToggleNode {
+    fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(measure(state, &self.config, &self.env))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        render(renderer, ctx, &self.config, &self.env);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
+fn render(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
-    view: Native<ToggleConfig>,
+    config: &ToggleConfig,
     env: &Environment,
 ) {
-    let config = view.into_inner();
     require_switch_style(config.style);
     let on = renderer.read_signal(&config.toggle);
     let bounds = ctx.bounds;
@@ -90,7 +113,7 @@ pub fn render(
 
 /// Label width plus the switch footprint; the dispatcher's horizontal
 /// stretch lets the row expand so the switch trails at the far edge.
-pub fn measure(state: &RefCell<DewState>, config: &ToggleConfig, env: &Environment) -> Size {
+fn measure(state: &RefCell<DewState>, config: &ToggleConfig, env: &Environment) -> Size {
     require_switch_style(config.style);
     let label = measure_label(state, &config.label, env);
     let width = if label.width > 0.0 {

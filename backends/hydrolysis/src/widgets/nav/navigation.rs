@@ -1246,20 +1246,16 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
     }
 }
 
-/// Binds the navigation entries (pushing them pending for the subsequent render to
-/// consume) and emits the back-button a11y node when the stack is non-empty. Shared
-/// by the dispatch path and the retained `Widget`-node path; the binding side
-/// effect runs regardless of the `accessibility` feature.
+/// Binds the navigation stack by retained semantic identity and emits the
+/// back-button accessibility node when the stack is non-empty.
 pub(crate) fn navigation_stack_accessibility(
     renderer: &mut HydrolysisRenderer,
     ctx: RenderContext,
+    state: &Rc<RefCell<NavigationStackRenderState>>,
     env: &Environment,
 ) {
-    let entries = {
-        let (slot_index, entries) = renderer.bind_navigation_entries();
-        renderer.push_pending_navigation_entries(slot_index, Rc::clone(&entries));
-        entries
-    };
+    let slot_key = crate::renderer::NavigationKey::for_rc(state);
+    let entries = renderer.bind_navigation_entries(&slot_key);
     let depth = entries.borrow().len();
     #[cfg(feature = "accessibility")]
     {
@@ -1322,7 +1318,7 @@ pub(crate) fn render_navigation_stack_node(
     }
     {
         let render_ctx = ctx.render_context();
-        navigation_stack_accessibility(ctx.renderer_mut(), render_ctx, env);
+        navigation_stack_accessibility(ctx.renderer_mut(), render_ctx, state, env);
     }
     #[cfg(feature = "accessibility")]
     if hidden {
@@ -1338,16 +1334,15 @@ pub(crate) fn render_navigation_stack_parts(
 ) {
     let transition_style = state.borrow().transition_style.clone();
     let transition_motion = widget_theme(env).navigation_motion();
-    let (slot_index, entries) = ctx
-        .renderer_mut()
-        .take_pending_navigation_entries("render_navigation_stack");
+    let slot_key = crate::renderer::NavigationKey::for_rc(state);
+    let entries = ctx.renderer_mut().bind_navigation_entries(&slot_key);
 
     let mut local_env = env.clone();
     let controller = ctx
         .renderer_mut()
         .navigation
         .slots
-        .get(slot_index)
+        .get(&slot_key)
         .expect("hydrolysis navigation slot missing")
         .controller
         .clone();
@@ -1358,7 +1353,7 @@ pub(crate) fn render_navigation_stack_parts(
 
     if let Some(root_state) = state.borrow_mut().resolve_root(&local_env) {
         ctx.renderer_mut()
-            .install_navigation_root_state(slot_index, root_state);
+            .install_navigation_root_state(&slot_key, root_state);
     }
 
     let depth = entries.borrow().len();
@@ -1390,7 +1385,7 @@ pub(crate) fn render_navigation_stack_parts(
             .renderer_mut()
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(&slot_key)
             .expect("Hydrolysis navigation slot missing");
         slot.events.borrow_mut().drain(..).collect::<Vec<_>>()
     };
@@ -1419,7 +1414,7 @@ pub(crate) fn render_navigation_stack_parts(
                 .renderer_mut()
                 .navigation
                 .slots
-                .get_mut(slot_index)
+                .get_mut(&slot_key)
                 .expect("Hydrolysis navigation slot missing");
             assert_eq!(
                 events
@@ -1449,7 +1444,7 @@ pub(crate) fn render_navigation_stack_parts(
         };
         if previous_identity != active_identity {
             ctx.renderer_mut().navigation_destination_disappeared(
-                slot_index,
+                &slot_key,
                 previous_identity,
                 &local_env,
             );
@@ -1457,14 +1452,14 @@ pub(crate) fn render_navigation_stack_parts(
     }
 
     ctx.renderer_mut()
-        .activate_navigation_root_if_needed(slot_index, &local_env);
+        .activate_navigation_root_if_needed(&slot_key, &local_env);
 
     if let Some((previous_identity, _)) = navigation_change {
         let previous_scene_is_cached = ctx
             .renderer_mut()
             .navigation
             .slots
-            .get(slot_index)
+            .get(&slot_key)
             .expect("Hydrolysis navigation slot missing")
             .scene_cache
             .contains_key(&previous_identity);
@@ -1485,7 +1480,7 @@ pub(crate) fn render_navigation_stack_parts(
             ctx.renderer_mut()
                 .navigation
                 .slots
-                .get_mut(slot_index)
+                .get_mut(&slot_key)
                 .expect("Hydrolysis navigation slot missing")
                 .scene_cache
                 .insert(previous_identity, previous_scene);
@@ -1508,7 +1503,7 @@ pub(crate) fn render_navigation_stack_parts(
             .renderer_mut()
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(&slot_key)
             .expect("hydrolysis navigation slot missing");
         if let Some((previous_identity, previous_depth)) = navigation_change {
             let skip_transition = slot.skip_next_pop_transition && depth < previous_depth;
@@ -1562,7 +1557,7 @@ pub(crate) fn render_navigation_stack_parts(
 
     if complete_transaction {
         ctx.renderer_mut()
-            .complete_navigation_transaction(slot_index, &local_env);
+            .complete_navigation_transaction(&slot_key, &local_env);
     }
 
     let interactive_frame = {
@@ -1570,7 +1565,7 @@ pub(crate) fn render_navigation_stack_parts(
             .renderer_mut()
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(&slot_key)
             .expect("Hydrolysis navigation slot missing");
         slot.interactive_pop.as_mut().map(|interactive| {
             let (progress, completed, cancelled) =
@@ -1599,7 +1594,7 @@ pub(crate) fn render_navigation_stack_parts(
                 .renderer_mut()
                 .navigation
                 .slots
-                .get_mut(slot_index)
+                .get_mut(&slot_key)
                 .expect("Hydrolysis navigation slot missing");
             slot.interactive_pop = None;
             if completed {
@@ -1611,7 +1606,7 @@ pub(crate) fn render_navigation_stack_parts(
                 .renderer_mut()
                 .navigation
                 .slots
-                .get(slot_index)
+                .get(&slot_key)
                 .expect("Hydrolysis navigation slot missing")
                 .controller
                 .clone();
@@ -1645,7 +1640,7 @@ pub(crate) fn render_navigation_stack_parts(
         .renderer_mut()
         .navigation
         .slots
-        .get(slot_index)
+        .get(&slot_key)
         .expect("Hydrolysis navigation slot missing")
         .scene_cache
         .get(&previous_identity)
@@ -1663,7 +1658,7 @@ pub(crate) fn render_navigation_stack_parts(
         ctx.renderer_mut()
             .navigation
             .slots
-            .get_mut(slot_index)
+            .get_mut(&slot_key)
             .expect("Hydrolysis navigation slot missing")
             .scene_cache
             .insert(previous_identity, scene.clone());
@@ -1682,6 +1677,7 @@ pub(crate) fn render_navigation_stack_parts(
     let active_scene_for_gesture = active_scene.clone();
     let previous_scene_for_gesture = previous_scene;
     let navigation_width = ctx.bounds.width();
+    let drag_slot_key = slot_key.clone();
     ctx.renderer_mut().register_pointer_drag_target(
         edge_hit_rect,
         move |renderer, point, pop_env| {
@@ -1689,18 +1685,18 @@ pub(crate) fn render_navigation_stack_parts(
             let starting = renderer
                 .navigation
                 .slots
-                .get(slot_index)
+                .get(&drag_slot_key)
                 .expect("Hydrolysis navigation slot missing")
                 .interactive_pop
                 .is_none();
             if starting {
-                if !renderer.attempt_navigation_pop(slot_index, pop_env) {
+                if !renderer.attempt_navigation_pop(&drag_slot_key, pop_env) {
                     return false;
                 }
                 let slot = renderer
                     .navigation
                     .slots
-                    .get_mut(slot_index)
+                    .get_mut(&drag_slot_key)
                     .expect("Hydrolysis navigation slot missing");
                 slot.transition = None;
                 slot.interactive_pop = Some(
@@ -1716,7 +1712,7 @@ pub(crate) fn render_navigation_stack_parts(
             renderer
                 .navigation
                 .slots
-                .get_mut(slot_index)
+                .get_mut(&drag_slot_key)
                 .expect("Hydrolysis navigation slot missing")
                 .interactive_pop
                 .as_mut()
@@ -1730,20 +1726,25 @@ pub(crate) fn render_navigation_stack_parts(
         .renderer_mut()
         .navigation
         .slots
-        .get(slot_index)
+        .get(&slot_key)
         .expect("Hydrolysis navigation slot missing")
         .controller
         .clone();
     let hit_transform = ctx.hit_transform;
     let back_hit_rect = transformed_rect(hit_transform, back_button_rect);
-    let (_, back_press_slot, _) =
-        ctx.renderer_mut()
-            .bind_control_interaction_target(back_hit_rect, env, false);
+    let back_interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let (_, back_press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
+        back_interaction_key,
+        back_hit_rect,
+        env,
+        false,
+    );
+    let back_slot_key = slot_key;
     ctx.renderer_mut().register_interactive_pointer_target(
         back_hit_rect,
         back_press_slot,
         move |renderer, _point, pop_env| {
-            if !renderer.attempt_navigation_pop(slot_index, pop_env) {
+            if !renderer.attempt_navigation_pop(&back_slot_key, pop_env) {
                 return false;
             }
             controller.request_pop(1);

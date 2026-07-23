@@ -7,10 +7,11 @@
 //! retained-scene layer is unnecessary complexity for Hydrolysis's "game-engine,
 //! full-redraw-every-frame" design point.
 //!
-//! Each frame mutates a `Binding` read by a single reactive `text!`, scheduling a
-//! full structural rebuild (`watch_signal` -> `request_rebuild`). The scene is a
-//! `VStack<(Vec<AnyView>,)>` (a `FixedContainer`: non-virtualized, non-collection),
-//! so every child is re-dispatched and re-encoded from scratch each frame.
+//! Each rebuild sample creates a fresh runtime and measures its one initial
+//! structural dispatch. The scene includes a reactive `text!` to keep the tested
+//! tree representative, but later signal changes use the retained refresh path and
+//! are deliberately not counted as structural rebuilds. The scene is a
+//! `VStack<(Vec<AnyView>,)>` (a `FixedContainer`: non-virtualized, non-collection).
 //!
 //! Rows come in two shapes with the **same primitive count** — a `text` variant
 //! (2 glyph runs/row) and a `shapes` variant (2 rect fills/row) — to separate the
@@ -83,7 +84,7 @@ fn dense_row(i: usize, with_text: bool) -> AnyView {
 }
 
 /// A full screen of `cards` dense rows in a fixed container, plus one reactive
-/// `text!` driven by `tick` that forces a full rebuild (re-dispatch) every frame.
+/// `text!` driven by `tick`; this tree is used for fresh-runtime initial builds.
 fn rebuild_screen(cards: usize, with_text: bool, tick: Binding<u64>) -> AnyView {
     use waterui::prelude::*;
     let mut children: Vec<AnyView> = Vec::with_capacity(cards + 1);

@@ -404,6 +404,8 @@ pub(crate) struct ContainerNode {
     /// Child frames cached by [`RenderNode::layout`]; reused by
     /// [`RenderNode::flush`] so a geometry-static frame pays only re-encode.
     pub(crate) placed: Vec<Rect>,
+    /// Precise layout-signal subscriptions owned by this retained container.
+    pub(crate) _guards: Vec<BoxWatcherGuard>,
 }
 
 /// An animated-opacity wrapper: re-samples its alpha each flush and pushes a

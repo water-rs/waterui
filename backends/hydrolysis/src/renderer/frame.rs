@@ -61,16 +61,6 @@ impl HydrolysisRenderer {
         (&mut self.state, &mut self.scene)
     }
 
-    pub(crate) fn table_slot_and_state_mut(
-        &mut self,
-        index: usize,
-    ) -> (&mut crate::renderer::lazy::LazyTableSlot, &mut HydroState) {
-        (
-            &mut self.lazy.lazy_table_controller.slots[index],
-            &mut self.state,
-        )
-    }
-
     #[must_use]
     pub fn scene(&self) -> &vello::Scene {
         &self.scene
@@ -111,7 +101,6 @@ impl HydrolysisRenderer {
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
         self.animation_controller.begin_rebuild_frame();
-        self.scroll_controller.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
         self.compositor.render_layers.clear();
@@ -185,9 +174,7 @@ impl HydrolysisRenderer {
 
         self.animation_controller
             .finish_rebuild_frame_with_inactive_slot_retention(false);
-        self.scroll_controller.finish_rebuild_frame();
         self.hit_test.finish_rebuild_frame();
-        self.lazy.finish_rebuild_frame();
         self.navigation.finish_rebuild_frame();
         self.signals.finish_rebuild();
         #[cfg(feature = "accessibility")]
@@ -320,6 +307,10 @@ impl HydrolysisRenderer {
 
     pub fn request_redraw(&self) {
         self.signals.request_redraw();
+    }
+
+    pub(crate) fn request_refresh(&self) {
+        self.signals.request_refresh();
     }
 
     pub fn take_redraw_request(&self) -> bool {

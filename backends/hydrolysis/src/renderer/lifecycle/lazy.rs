@@ -3,51 +3,13 @@ use waterui_layout::stack::{HStackLayout, VStackLayout};
 
 #[derive(Default)]
 pub(crate) struct LazyState {
-    pub(crate) lazy_list_controller: LazyListController,
-    pub(crate) lazy_table_controller: LazyTableController,
     pub(crate) lazy_viewport_stack: Vec<vello::kurbo::Rect>,
-    pub(crate) pending_scroll_handles: Vec<ScrollHandle>,
 }
 
 impl LazyState {
     pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.lazy_list_controller.begin_rebuild_frame();
-        self.lazy_table_controller.begin_rebuild_frame();
         self.lazy_viewport_stack.clear();
-        self.pending_scroll_handles.clear();
     }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.lazy_list_controller.finish_rebuild_frame();
-        self.lazy_table_controller.finish_rebuild_frame();
-    }
-
-    pub(crate) fn push_pending_scroll_handle(&mut self, handle: ScrollHandle) {
-        self.pending_scroll_handles.push(handle);
-    }
-
-    pub(crate) fn take_pending_scroll_handle(&mut self, caller: &'static str) -> ScrollHandle {
-        self.pending_scroll_handles
-            .pop()
-            .unwrap_or_else(|| panic!("hydrolysis {caller} requires prebound scroll handle"))
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct LazyListController {
-    pub(crate) slots: Vec<LazyListSlot>,
-    pub(crate) cursor: usize,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct LazyTableController {
-    pub(crate) slots: Vec<LazyTableSlot>,
-    pub(crate) cursor: usize,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct LazyListSlot {
-    pub(crate) row_extents: Vec<Option<f64>>,
 }
 
 #[derive(Debug, Default)]
@@ -80,56 +42,6 @@ pub(crate) enum LazyStackAxisConfig {
         spacing: nami::Computed<f32>,
         alignment: VerticalAlignment,
     },
-}
-
-impl LazyListController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    pub(crate) fn bind(&mut self) -> usize {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("lazy list controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(LazyListSlot::default());
-        }
-        index
-    }
-}
-
-impl LazyTableController {
-    pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.truncate(self.cursor);
-    }
-
-    pub(crate) fn bind(&mut self) -> usize {
-        let index = self.cursor;
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .expect("lazy table controller cursor overflow");
-        if index == self.slots.len() {
-            self.slots.push(LazyTableSlot::default());
-        }
-        index
-    }
-}
-
-impl LazyListSlot {
-    pub(crate) fn prepare_len(&mut self, len: usize) {
-        self.row_extents.resize(len, None);
-    }
 }
 
 impl LazyTableSlot {

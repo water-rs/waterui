@@ -13,6 +13,7 @@ use waterui_core::views::Views;
 use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;
+use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
 use crate::renderer::GtkRenderer;
 use crate::util::{store_watcher_guard, store_watcher_guards};
 
@@ -34,20 +35,16 @@ impl GtkComponent for Native<ListConfig> {
         scrolled_window.set_vexpand(true);
         scrolled_window.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
 
-        // Backing model stores row indices. GTK ListView will only bind visible rows.
-        let store = gtk4::gio::ListStore::new::<glib::BoxedAnyObject>();
-        let reload_model: Rc<dyn Fn()> = {
-            let store = store.clone();
-            let contents = contents.clone();
-            Rc::new(move || {
-                store.remove_all();
-                let len = contents.len().get();
-                for index in 0..len {
-                    store.append(&glib::BoxedAnyObject::new(index));
-                }
+        let model = Rc::new(KeyedModel::new());
+        let initial_ids = (0..contents.len().get())
+            .map(|index| {
+                let id = contents
+                    .get_id(index)
+                    .expect("List contents must provide an ID for every row");
+                i32::from(*id)
             })
-        };
-        reload_model();
+            .collect::<Vec<_>>();
+        model.reconcile(&initial_ids);
 
         let factory = gtk4::SignalListItemFactory::new();
         {
@@ -59,7 +56,14 @@ impl GtkComponent for Native<ListConfig> {
                 let Some(list_item) = item.downcast_ref::<gtk4::ListItem>() else {
                     return;
                 };
-                let index = list_item.position() as usize;
+                let id = list_item_id(list_item);
+                let index = (0..contents.len().get())
+                    .find(|index| {
+                        contents
+                            .get_id(*index)
+                            .is_some_and(|candidate| i32::from(*candidate) == id)
+                    })
+                    .expect("GTK List model ID must exist in WaterUI contents");
                 let Some(item) = contents.get_view(index) else {
                     list_item.set_child(Option::<&Widget>::None);
                     return;
@@ -83,8 +87,16 @@ impl GtkComponent for Native<ListConfig> {
 
                     let env_clone = env.clone();
                     let on_delete = on_delete.clone();
+                    let contents = contents.clone();
                     delete_btn.connect_clicked(move |_| {
-                        on_delete(&env_clone, index);
+                        let current_index = (0..contents.len().get())
+                            .find(|index| {
+                                contents
+                                    .get_id(*index)
+                                    .is_some_and(|candidate| i32::from(*candidate) == id)
+                            })
+                            .expect("GTK deleted List row ID must still exist");
+                        on_delete(&env_clone, current_index);
                     });
 
                     let show_delete = editing
@@ -118,19 +130,24 @@ impl GtkComponent for Native<ListConfig> {
             }
         });
 
-        let selection = gtk4::NoSelection::new(Some(store));
+        let selection = gtk4::NoSelection::new(Some(model.store()));
         let list_view = gtk4::ListView::new(Some(selection), Some(factory));
         list_view.set_hexpand(true);
         list_view.set_vexpand(true);
         list_view.add_css_class("boxed-list");
 
-        // Rebuild index model on structural updates.
+        // Reconcile the GTK model by stable WaterUI row identity.
         let contents_guard = contents.watch(.., {
-            let reload_model = reload_model.clone();
-            move |_| {
-                let reload_model = reload_model.clone();
+            let model = Rc::clone(&model);
+            move |context| {
+                let ids = context
+                    .value()
+                    .iter()
+                    .map(|id| i32::from(**id))
+                    .collect::<Vec<_>>();
+                let model = Rc::clone(&model);
                 glib::idle_add_local_once(move || {
-                    reload_model();
+                    model.reconcile(&ids);
                 });
             }
         });
