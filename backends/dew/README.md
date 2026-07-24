@@ -11,8 +11,8 @@ memory discipline: WaterUI's fine-grained reactivity identifies exactly
 which view changed, the changed display-list commands identify the dirty
 screen regions, and only those regions are re-rasterized — band by band,
 through a scratch buffer no taller than `band_height` rows — then streamed
-to the panel. On a SPI/QSPI-bound display this is the difference between
-26 fps full-frame refreshes and 60 fps local updates.
+to the panel. On an SPI/QSPI-bound display, local updates avoid the bandwidth
+ceiling imposed by full-frame transfers.
 
 ## Architecture
 
@@ -29,11 +29,12 @@ Painter (vello_cpu)    rasterize each band into a scratch pixmap
    │
 DisplayFlush           the only platform-specific piece:
                        BufferDisplay (tests) · simulator window (desktop)
-                       · RGB565 panel stream (embedded)
+                       · Rgb565Display → simulated or physical band sink
 ```
 
-The interaction runtime (gestures, scrolling, frame economy) is shared
-with other self-drawn backends through `waterui-backend-core`.
+Dew shares frame signals and input types with other self-drawn backends through
+`waterui-backend-core`. `DewRuntime` routes retained pointer input to buttons,
+toggles, sliders, and steppers without rebuilding their view bodies.
 
 ## Embedded-device simulator
 
@@ -48,12 +49,33 @@ cargo run -p waterui-dew --example watch_sim --features embedded-simulator
 virtual panel of any size; `render_view_png` renders one frame headlessly
 for snapshot tests.
 
+## Performance gate
+
+The ignored commercial-load test renders an interactive 480×320 vending-machine
+screen with twelve product buttons, reactive order/payment text, and a
+continuously updating progress bar. It constrains rasterization to the scalar
+single-thread fallback, converts every rendered band through the same
+`Rgb565Display` adapter used by ESP-IDF, accounts for transfers over a 40 MHz
+SPI bus, and fails if any sampled frame exceeds the 60 Hz budget. Its simulated
+panel retains no framebuffer; only one RGBA raster band and one RGB565 DMA band
+exist at a time.
+
+```bash
+DEW_PERF_WARMUP=120 DEW_PERF_FRAMES=3600 cargo test -p waterui-dew \
+  --test vending_performance vending_machine_holds_stable_sixty_fps \
+  -- --ignored --exact
+```
+
 ## Status
 
 Supported today: layout containers (`vstack`/`hstack`/`zstack`/padding),
-colors, spacers, text (parley shaping; per-span styles pending), reactive
-updates via `Binding`/`Computed` with dirty-region flushes. Unsupported
-views fail fast with a clear panic rather than rendering incorrectly.
+solid/gradient/image brushes, colors, spacers, styled text through parley,
+reactive updates via `Binding`/`Computed`, retained pointer controls, and
+dirty-region flushes. Unsupported views fail fast with a clear panic rather
+than rendering incorrectly.
 
-Embedded target status and the current Xtensa toolchain miscompilation
-blocker are documented in `examples/embedded/dew-esp32s3/`.
+Without a selected physical board, the ESP-IDF entry is explicitly a headless
+streaming simulation: it performs banded rasterization and RGB565 conversion
+without allocating a framebuffer, then consumes each band. A physical board
+implements `Rgb565Sink` to replace only that final sink; the Dew renderer,
+memory discipline, and application remain unchanged.

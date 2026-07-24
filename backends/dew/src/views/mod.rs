@@ -23,6 +23,7 @@ use crate::dispatch::{DewRenderer, RenderContext};
 use crate::text::DewState;
 use crate::theme;
 
+pub mod button;
 pub mod divider;
 #[cfg(feature = "progress")]
 pub mod progress;
@@ -63,12 +64,25 @@ pub fn render_label(
     label: &Label,
     env: &Environment,
 ) {
+    render_label_with_brush(renderer, ctx, rect, label, env, theme::FOREGROUND);
+}
+
+/// Renders a control [`Label`]'s semantic text with a caller-selected default
+/// brush for styles whose surface changes the foreground contrast.
+pub fn render_label_with_brush(
+    renderer: &mut DewRenderer,
+    ctx: RenderContext,
+    rect: Rect,
+    label: &Label,
+    env: &Environment,
+    brush: peniko::Color,
+) {
     if matches!(label.display_mode_preference(), LabelDisplayMode::Hidden) {
         return;
     }
     let content = label.semantic_text().resolve(env).content;
     let styled = renderer.read_signal(&content);
-    emit_styled_text(renderer, ctx, rect, &styled, env, theme::FOREGROUND);
+    emit_styled_text(renderer, ctx, rect, &styled, env, brush);
 }
 
 /// Emits styled text laid out to `rect`'s width, vertically centered within

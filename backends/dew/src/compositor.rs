@@ -140,9 +140,9 @@ impl BandScheduler {
     /// Converts dirty logical-pixel bounds into the band-sliced device
     /// regions that must be re-rasterized, in top-to-bottom order.
     ///
-    /// Overlapping dirty rects falling into the same band row are merged
-    /// into their bounding region, so each band is rasterized and flushed
-    /// at most once per frame.
+    /// Overlapping dirty rects falling into the same band row are merged.
+    /// Disjoint rects remain separate so a small update on each side of a
+    /// panel never turns into a nearly full-width transfer.
     #[must_use]
     pub fn schedule(&self, dirty: &[Rect]) -> Vec<DeviceRegion> {
         let regions: Vec<DeviceRegion> = dirty
@@ -160,17 +160,37 @@ impl BandScheduler {
                 width: self.screen_width,
                 height: self.band_height.min(self.screen_height - row),
             };
-            let merged = regions
+            let intersections = regions
                 .iter()
                 .filter_map(|region| region.intersect(band))
-                .reduce(DeviceRegion::union);
-            if let Some(region) = merged {
-                bands.push(region);
-            }
+                .collect::<Vec<_>>();
+            bands.extend(merge_overlapping(intersections));
             row += self.band_height;
         }
         bands
     }
+}
+
+fn merge_overlapping(mut pending: Vec<DeviceRegion>) -> Vec<DeviceRegion> {
+    let mut merged = Vec::new();
+    while let Some(mut region) = pending.pop() {
+        let mut index = 0;
+        while index < merged.len() {
+            if regions_touch(region, merged[index]) {
+                region = region.union(merged.swap_remove(index));
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        merged.push(region);
+    }
+    merged.sort_unstable_by_key(|region| (region.y, region.x));
+    merged
+}
+
+const fn regions_touch(a: DeviceRegion, b: DeviceRegion) -> bool {
+    a.x <= b.x + b.width && b.x <= a.x + a.width && a.y <= b.y + b.height && b.y <= a.y + a.height
 }
 
 #[cfg(test)]
@@ -229,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_dirty_rects_merge_within_a_band() {
+    fn disjoint_dirty_rects_stay_separate_within_a_band() {
         let scheduler = BandScheduler::new(320, 240, 16);
         let bands = scheduler.schedule(&[
             Rect::new(0.0, 0.0, 20.0, 10.0),
@@ -237,11 +257,37 @@ mod tests {
         ]);
         assert_eq!(
             bands,
+            vec![
+                DeviceRegion {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 10
+                },
+                DeviceRegion {
+                    x: 100,
+                    y: 4,
+                    width: 40,
+                    height: 6
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn overlapping_dirty_rects_merge_within_a_band() {
+        let scheduler = BandScheduler::new(320, 240, 16);
+        let bands = scheduler.schedule(&[
+            Rect::new(0.0, 0.0, 20.0, 10.0),
+            Rect::new(15.0, 4.0, 40.0, 12.0),
+        ]);
+        assert_eq!(
+            bands,
             vec![DeviceRegion {
                 x: 0,
                 y: 0,
-                width: 140,
-                height: 10
+                width: 40,
+                height: 12
             }]
         );
     }
