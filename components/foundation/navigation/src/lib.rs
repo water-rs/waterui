@@ -222,18 +222,67 @@ pub trait CustomNavigationController: 'static {
     fn apply(&mut self, transaction: NavigationTransaction);
 }
 
+trait NavigationControllerState {
+    fn apply_transaction(&self, transaction: NavigationTransaction);
+    fn retained(&self) -> &RefCell<Option<Retain>>;
+    fn retained_environment(&self) -> &RefCell<Option<Environment>>;
+    fn depth(&self) -> &Cell<usize>;
+    fn next_transaction_id(&self) -> &Cell<NavigationTransactionId>;
+    fn pending_transaction_id(&self) -> &Cell<Option<NavigationTransactionId>>;
+    fn path_pop_handler(&self) -> &RefCell<Option<PathPopHandler>>;
+    fn native_applied_pops(&self) -> &Cell<usize>;
+}
+
+struct NavigationControllerStateImpl<R> {
+    receiver: RefCell<R>,
+    retained: RefCell<Option<Retain>>,
+    retained_environment: RefCell<Option<Environment>>,
+    depth: Cell<usize>,
+    next_transaction_id: Cell<NavigationTransactionId>,
+    pending_transaction_id: Cell<Option<NavigationTransactionId>>,
+    path_pop_handler: RefCell<Option<PathPopHandler>>,
+    native_applied_pops: Cell<usize>,
+}
+
+impl<R: CustomNavigationController> NavigationControllerState for NavigationControllerStateImpl<R> {
+    fn apply_transaction(&self, transaction: NavigationTransaction) {
+        self.receiver.borrow_mut().apply(transaction);
+    }
+
+    fn retained(&self) -> &RefCell<Option<Retain>> {
+        &self.retained
+    }
+
+    fn retained_environment(&self) -> &RefCell<Option<Environment>> {
+        &self.retained_environment
+    }
+
+    fn depth(&self) -> &Cell<usize> {
+        &self.depth
+    }
+
+    fn next_transaction_id(&self) -> &Cell<NavigationTransactionId> {
+        &self.next_transaction_id
+    }
+
+    fn pending_transaction_id(&self) -> &Cell<Option<NavigationTransactionId>> {
+        &self.pending_transaction_id
+    }
+
+    fn path_pop_handler(&self) -> &RefCell<Option<PathPopHandler>> {
+        &self.path_pop_handler
+    }
+
+    fn native_applied_pops(&self) -> &Cell<usize> {
+        &self.native_applied_pops
+    }
+}
+
 /// A receiver that handles navigation actions.
 /// For renderers to implement navigation handling.
 #[derive(Clone)]
 pub struct NavigationController {
-    receiver: Rc<RefCell<dyn CustomNavigationController>>,
-    retained: Rc<RefCell<Option<Retain>>>,
-    retained_environment: Rc<RefCell<Option<Environment>>>,
-    depth: Rc<Cell<usize>>,
-    next_transaction_id: Rc<Cell<NavigationTransactionId>>,
-    pending_transaction_id: Rc<Cell<Option<NavigationTransactionId>>>,
-    path_pop_handler: Rc<RefCell<Option<PathPopHandler>>>,
-    native_applied_pops: Rc<Cell<usize>>,
+    state: Rc<dyn NavigationControllerState>,
 }
 
 impl_extractor!(NavigationController);
@@ -252,27 +301,29 @@ impl NavigationController {
     /// * `receiver` - An implementation of `CustomNavigationController`
     pub fn new(receiver: impl CustomNavigationController) -> Self {
         Self {
-            receiver: Rc::new(RefCell::new(receiver)),
-            retained: Rc::new(RefCell::new(None)),
-            retained_environment: Rc::new(RefCell::new(None)),
-            depth: Rc::new(Cell::new(0)),
-            next_transaction_id: Rc::new(Cell::new(1)),
-            pending_transaction_id: Rc::new(Cell::new(None)),
-            path_pop_handler: Rc::new(RefCell::new(None)),
-            native_applied_pops: Rc::new(Cell::new(0)),
+            state: Rc::new(NavigationControllerStateImpl {
+                receiver: RefCell::new(receiver),
+                retained: RefCell::new(None),
+                retained_environment: RefCell::new(None),
+                depth: Cell::new(0),
+                next_transaction_id: Cell::new(1),
+                pending_transaction_id: Cell::new(None),
+                path_pop_handler: RefCell::new(None),
+                native_applied_pops: Cell::new(0),
+            }),
         }
     }
 
     /// Pushes a destination builder onto the stack.
     pub fn push_builder(&self, content: AnyViewBuilder<NavigationView>) {
         let content = self.with_retained_environment_builder(content);
-        let depth = self.depth.get();
+        let depth = self.state.depth().get();
         self.apply(depth, 0, vec![content]);
     }
 
     /// Pops the top navigation view off the stack.
     pub fn pop(&self) {
-        let depth = self.depth.get();
+        let depth = self.state.depth().get();
         if depth != 0 {
             self.apply(depth - 1, 1, Vec::new());
         }
@@ -290,7 +341,7 @@ impl NavigationController {
         removed: usize,
         inserted: Vec<AnyViewBuilder<NavigationView>>,
     ) {
-        let current_depth = self.depth.get();
+        let current_depth = self.state.depth().get();
         assert_eq!(
             retained_prefix + removed,
             current_depth,
@@ -298,25 +349,27 @@ impl NavigationController {
         );
 
         let next_depth = retained_prefix + inserted.len();
-        self.depth.set(next_depth);
+        self.state.depth().set(next_depth);
 
         if removed == 0 && inserted.is_empty() {
             return;
         }
 
-        let native_applied = self.native_applied_pops.get();
+        let native_applied = self.state.native_applied_pops().get();
         if inserted.is_empty() && removed != 0 && native_applied >= removed {
-            self.native_applied_pops.set(native_applied - removed);
+            self.state
+                .native_applied_pops()
+                .set(native_applied - removed);
             return;
         }
 
-        let id = self.next_transaction_id.get();
-        self.next_transaction_id.set(
+        let id = self.state.next_transaction_id().get();
+        self.state.next_transaction_id().set(
             id.checked_add(1)
                 .expect("navigation transaction identifier overflowed"),
         );
-        self.pending_transaction_id.set(Some(id));
-        self.receiver.borrow_mut().apply(NavigationTransaction {
+        self.state.pending_transaction_id().set(Some(id));
+        self.state.apply_transaction(NavigationTransaction {
             id,
             retained_prefix,
             removed,
@@ -329,10 +382,10 @@ impl NavigationController {
     /// Returns `false` for a stale completion superseded by a newer transaction.
     #[must_use]
     pub fn transition_completed(&self, id: NavigationTransactionId) -> bool {
-        if self.pending_transaction_id.get() != Some(id) {
+        if self.state.pending_transaction_id().get() != Some(id) {
             return false;
         }
-        self.pending_transaction_id.set(None);
+        self.state.pending_transaction_id().set(None);
         true
     }
 
@@ -341,10 +394,10 @@ impl NavigationController {
     /// Returns `false` for a stale cancellation superseded by a newer transaction.
     #[must_use]
     pub fn transition_cancelled(&self, id: NavigationTransactionId) -> bool {
-        if self.pending_transaction_id.get() != Some(id) {
+        if self.state.pending_transaction_id().get() != Some(id) {
             return false;
         }
-        self.pending_transaction_id.set(None);
+        self.state.pending_transaction_id().set(None);
         true
     }
 
@@ -354,7 +407,10 @@ impl NavigationController {
     ///
     /// Panics if a path-pop handler is already installed on this controller.
     pub fn install_path_pop_handler(&self, handler: impl Fn(usize) + 'static) {
-        let previous = self.path_pop_handler.replace(Some(Rc::new(handler)));
+        let previous = self
+            .state
+            .path_pop_handler()
+            .replace(Some(Rc::new(handler)));
         assert!(
             previous.is_none(),
             "a navigation controller cannot drive more than one explicit path"
@@ -368,7 +424,7 @@ impl NavigationController {
     /// Panics when `count` is zero.
     pub fn request_pop(&self, count: usize) {
         assert!(count != 0, "navigation pop count must be non-zero");
-        if let Some(handler) = self.path_pop_handler.borrow().as_ref().cloned() {
+        if let Some(handler) = self.state.path_pop_handler().borrow().as_ref().cloned() {
             handler(count);
         } else {
             for _ in 0..count {
@@ -386,19 +442,20 @@ impl NavigationController {
     pub fn complete_native_pop(&self, count: usize) {
         assert!(count != 0, "navigation pop count must be non-zero");
         assert!(
-            count <= self.depth.get(),
+            count <= self.state.depth().get(),
             "native navigation pop exceeds the current path depth"
         );
-        if let Some(handler) = self.path_pop_handler.borrow().as_ref().cloned() {
-            self.native_applied_pops.set(
-                self.native_applied_pops
+        if let Some(handler) = self.state.path_pop_handler().borrow().as_ref().cloned() {
+            self.state.native_applied_pops().set(
+                self.state
+                    .native_applied_pops()
                     .get()
                     .checked_add(count)
                     .expect("native navigation pop counter overflowed"),
             );
             handler(count);
         } else {
-            self.depth.set(self.depth.get() - count);
+            self.state.depth().set(self.state.depth().get() - count);
         }
     }
 
@@ -407,18 +464,18 @@ impl NavigationController {
     /// Path-backed navigation stacks use this to keep their path watcher alive
     /// while destinations are active and the root view is no longer rendered.
     pub fn retain(&self, retained: Retain) {
-        *self.retained.borrow_mut() = Some(retained);
+        *self.state.retained().borrow_mut() = Some(retained);
     }
 
     /// Replaces the controller-scoped environment.
     pub fn retain_environment(&self, env: Environment) {
-        *self.retained_environment.borrow_mut() = Some(env);
+        *self.state.retained_environment().borrow_mut() = Some(env);
     }
 
     /// Returns the controller-scoped environment.
     #[must_use]
     pub fn retained_environment(&self) -> Option<Environment> {
-        self.retained_environment.borrow().clone()
+        self.state.retained_environment().borrow().clone()
     }
 
     fn with_retained_environment_builder(

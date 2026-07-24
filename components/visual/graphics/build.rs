@@ -133,6 +133,10 @@ fn main() {
             shader_root.join("mesh_gradient.wgsl"),
             "mesh_gradient",
         );
+        waterui_build_support::shader::compile_wgsl_shader(
+            shader_root.join("image_generator.wgsl"),
+            "image_generator",
+        );
         waterui_build_support::shader::compile_wgsl_shader(shader_root.join("blit.wgsl"), "blit");
         let flowing_gradient_source = format!(
             "{}{}",

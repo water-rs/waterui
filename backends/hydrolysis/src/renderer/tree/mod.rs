@@ -24,6 +24,31 @@
 //! layout cache is load-bearing), well under the 120fps budget, whereas
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
+macro_rules! impl_widget_behavior {
+    ($state:ty, $render:path, $measure:expr) => {
+        impl WidgetBehavior for RefCell<$state> {
+            fn render(
+                self: Rc<Self>,
+                renderer: &mut HydrolysisRenderer,
+                ctx: RenderContext,
+                env: &Environment,
+            ) {
+                let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
+                $render(&mut widget_ctx, &self, env);
+            }
+
+            fn measure(
+                &self,
+                state: &mut HydroState,
+                proposal: ProposalSize,
+                env: &Environment,
+            ) -> ViewDimensions {
+                ($measure)(&self.borrow(), proposal, state, env)
+            }
+        }
+    };
+}
+
 mod build;
 mod build_controls;
 mod build_views;
@@ -135,5 +160,5 @@ pub(crate) enum RenderNode {
     /// label, a bound value) stays live. Re-dispatching a *leaf* is cheap (no body
     /// expansion, no structural rebuild) — this is the new-architecture replacement
     /// for the old capture-once capture/replay path, now removed.
-    Widget(Box<WidgetNode>),
+    Widget(WidgetNode),
 }

@@ -20,6 +20,7 @@ nami.workspace = true
 syntect = { version = "5", default-features = false, features = ["default-themes", "regex-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 pulldown-cmark = "0.13"
+smallvec.workspace = true
 
 [dev-dependencies]
 waterui.workspace = true

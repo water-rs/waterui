@@ -4,21 +4,82 @@
 
 use super::*;
 
+impl_widget_behavior!(
+    crate::widgets::controls::button::ButtonRenderState,
+    crate::widgets::controls::button::render_button_node,
+    crate::widgets::controls::button::measure_button_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::toggle::ToggleRenderState,
+    crate::widgets::controls::toggle::render_toggle_node,
+    crate::widgets::controls::toggle::measure_toggle_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::slider::SliderRenderState,
+    crate::widgets::controls::slider::render_slider_node,
+    crate::widgets::controls::slider::measure_slider_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::stepper::StepperRenderState,
+    crate::widgets::controls::stepper::render_stepper_node,
+    crate::widgets::controls::stepper::measure_stepper_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::progress::ProgressRenderState,
+    crate::widgets::controls::progress::render_progress_node,
+    crate::widgets::controls::progress::measure_progress_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::button::MenuRenderState,
+    crate::widgets::controls::button::render_menu_node,
+    crate::widgets::controls::button::measure_menu_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::date_picker::DatePickerRenderState,
+    crate::widgets::controls::date_picker::render_date_picker_node,
+    crate::widgets::controls::date_picker::measure_date_picker_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::color_picker::ColorPickerRenderState,
+    crate::widgets::controls::color_picker::render_color_picker_node,
+    crate::widgets::controls::color_picker::measure_color_picker_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::picker::PickerRenderState,
+    crate::widgets::controls::picker::render_picker_node,
+    crate::widgets::controls::picker::measure_picker_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::text_field::TextFieldRenderState,
+    crate::widgets::controls::text_field::render_text_field_node,
+    crate::widgets::controls::text_field::measure_text_field_node
+);
+impl_widget_behavior!(
+    crate::widgets::controls::text_field::SecureFieldRenderState,
+    crate::widgets::controls::text_field::render_secure_field_node,
+    crate::widgets::controls::text_field::measure_secure_field_node
+);
+impl_widget_behavior!(
+    crate::widgets::layout::badge::BadgeRenderState,
+    crate::widgets::layout::badge::render_badge_node,
+    crate::widgets::layout::badge::measure_badge_node
+);
+
 impl RenderNode {
-    /// Build a `Widget` node from its per-flush render + measure closures and its
-    /// stretch axis. The closures retain the widget's signal-holding config.
-    pub(super) fn build_widget(
-        render: WidgetRenderFn,
-        measure: WidgetMeasureFn,
+    /// Build a `Widget` node around its single shared state allocation.
+    pub(super) fn build_widget<S>(
+        state: Rc<S>,
         stretch: StretchAxis,
         env: &Environment,
-    ) -> RenderNode {
-        RenderNode::Widget(Box::new(WidgetNode {
-            render,
-            measure,
+    ) -> RenderNode
+    where
+        S: WidgetBehavior + 'static,
+    {
+        RenderNode::Widget(WidgetNode {
+            behavior: state,
             stretch,
             env: env.clone(),
-        }))
+        })
     }
 
     /// Build a persistent button node: retain the config behind an `Rc<RefCell<…>>`
@@ -34,34 +95,7 @@ impl RenderNode {
         // Pre-build the general label sub-view (the measure path has no renderer).
         state.prebuild_label(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    crate::widgets::controls::button::render_button_node(
-                        &mut widget_ctx,
-                        &state,
-                        env,
-                    );
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    crate::widgets::controls::button::measure_button_node(
-                        &state.borrow(),
-                        proposal,
-                        hydro,
-                        env,
-                    )
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, StretchAxis::None, env)
+        Self::build_widget(state, StretchAxis::None, env)
     }
 
     /// Build a persistent toggle node: its main label is pre-built into a
@@ -73,32 +107,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::toggle::{
-            ToggleRenderState, measure_toggle_node, render_toggle_node,
-        };
+        use crate::widgets::controls::toggle::ToggleRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ToggleRenderState::from_config(config);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_toggle_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_toggle_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent slider node: its value-end labels are move-only
@@ -110,32 +124,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::slider::{
-            SliderRenderState, measure_slider_node, render_slider_node,
-        };
+        use crate::widgets::controls::slider::SliderRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = SliderRenderState::from_config(config);
         state.prebuild_labels(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_slider_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_slider_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent stepper node: its main label is pre-built into a
@@ -147,32 +141,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::stepper::{
-            StepperRenderState, measure_stepper_node, render_stepper_node,
-        };
+        use crate::widgets::controls::stepper::StepperRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = StepperRenderState::from_config(config);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_stepper_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_stepper_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent progress node: its label/value labels are move-only
@@ -184,32 +158,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::progress::{
-            ProgressRenderState, measure_progress_node, render_progress_node,
-        };
+        use crate::widgets::controls::progress::ProgressRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ProgressRenderState::from_config(config);
         state.prebuild_labels(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_progress_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_progress_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent menu node: its trigger label is a move-only `AnyView`
@@ -220,32 +174,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::button::{
-            MenuRenderState, measure_menu_node, render_menu_node,
-        };
+        use crate::widgets::controls::button::MenuRenderState;
         let stretch = <ResolvedMenu as waterui_core::NativeView>::stretch_axis(&menu);
         let mut state = MenuRenderState::from_resolved(menu);
         state.prebuild_label(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_menu_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_menu_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent date-picker node: its main label is pre-built into a
@@ -258,32 +192,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::date_picker::{
-            DatePickerRenderState, measure_date_picker_node, render_date_picker_node,
-        };
+        use crate::widgets::controls::date_picker::DatePickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = DatePickerRenderState::from_config(config);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_date_picker_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_date_picker_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent color-picker node: its main label is pre-built into a
@@ -296,67 +210,22 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::color_picker::{
-            ColorPickerRenderState, measure_color_picker_node, render_color_picker_node,
-        };
+        use crate::widgets::controls::color_picker::ColorPickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ColorPickerRenderState::from_config(config);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_color_picker_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_color_picker_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent picker node: retain the config (its `items`/`selection`
     /// signals are read through `read_signal` each frame so a membership or selection
     /// change schedules a frame). Stretch is content-sized (read from the config).
     pub(super) fn build_picker(config: PickerConfig, env: &Environment) -> RenderNode {
-        use crate::widgets::controls::picker::{measure_picker_node, render_picker_node};
+        use crate::widgets::controls::picker::PickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let config = Rc::new(RefCell::new(config));
-        // Node-owned menu open/closed state: it persists across frames as a field of
-        // this node's render closure, not in a renderer-global, flush-order-indexed
-        // slot pool. The renderer keeps only an Rc-pruned registry of these handles so
-        // an outside click can dismiss every open menu; a dropped picker's handle falls
-        // out of the registry by strong count.
-        let menu_open = Rc::new(Cell::new(false));
-        let render = {
-            let config = Rc::clone(&config);
-            let menu_open = Rc::clone(&menu_open);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_picker_node(&mut widget_ctx, &config, &menu_open, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let config = Rc::clone(&config);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_picker_node(&config.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        let state = Rc::new(RefCell::new(PickerRenderState::new(config)));
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent text-field node: its floating label is pre-built into a
@@ -372,32 +241,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::text_field::{
-            TextFieldRenderState, measure_text_field_node, render_text_field_node,
-        };
+        use crate::widgets::controls::text_field::TextFieldRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = TextFieldRenderState::from_config(config);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_text_field_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_text_field_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent secure-field node: its floating label is pre-built into a
@@ -412,32 +261,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::controls::text_field::{
-            SecureFieldRenderState, measure_secure_field_node, render_secure_field_node,
-        };
+        use crate::widgets::controls::text_field::SecureFieldRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = SecureFieldRenderState::from_config(config);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_secure_field_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_secure_field_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent badge node: its wrapped content is a move-only `AnyView`
@@ -449,31 +278,11 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::layout::badge::{
-            BadgeRenderState, measure_badge_node, render_badge_node,
-        };
+        use crate::widgets::layout::badge::BadgeRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = BadgeRenderState::from_config(config);
         state.prebuild_content(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_badge_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_badge_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 }
