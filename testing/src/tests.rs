@@ -1008,3 +1008,35 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     assert_eq!(focus.get(), None);
     assert_eq!(app.tree().focus(), submit_id);
 }
+
+#[test]
+fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
+    use waterui::prelude::*;
+
+    let value = Binding::container(Str::from(""));
+    let value_for_view = value.clone();
+    let mut env = Environment::new();
+    hydrolysis_m3::install(&mut env);
+    let mut app = ui()
+        .environment(env)
+        .mount(move || TextField::new(&value_for_view).label(text("Full Name")));
+
+    assert!(
+        app.query()
+            .role(Role::TEXT_INPUT)
+            .label("Full Name")
+            .focus(),
+        "expected the text field focus action to succeed"
+    );
+
+    let mut expected = String::new();
+    for character in "Lexo Liu".chars() {
+        expected.push(character);
+        assert!(app.text_input(character.to_string()));
+        assert_eq!(
+            value.get().as_str(),
+            expected,
+            "each retained refresh must preserve the caret after the committed prefix"
+        );
+    }
+}

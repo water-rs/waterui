@@ -1,6 +1,8 @@
 use waterui::reactive::{Computed, Signal};
-use waterui::text::font::{Font, FontWeight, ResolvedFont};
-use waterui::theme::FontSettings;
+use waterui::text::font::{
+    Body, Caption, Font, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
+};
+use waterui::theme::install_font_signal;
 use waterui_core::{Environment, resolve::Resolvable};
 
 const MATERIAL_TYPEFACE: &str =
@@ -16,14 +18,19 @@ const fn font(
         .with_typography_metrics(line_height, letter_spacing)
 }
 
-pub fn settings() -> FontSettings {
-    FontSettings::new()
-        .body(font(16.0, FontWeight::Normal, 24.0, 0.15))
-        .title(font(22.0, FontWeight::Normal, 28.0, 0.0))
-        .headline(font(24.0, FontWeight::Normal, 32.0, 0.0))
-        .subheadline(font(16.0, FontWeight::Medium, 24.0, 0.15))
-        .caption(font(12.0, FontWeight::Normal, 16.0, 0.4))
-        .footnote(font(11.0, FontWeight::Medium, 16.0, 0.5))
+fn install_default<T: 'static>(env: &mut Environment, value: ResolvedFont) {
+    if env.query::<T, Computed<ResolvedFont>>().is_none() {
+        install_font_signal::<T>(env, Computed::constant(value));
+    }
+}
+
+pub fn install_defaults(env: &mut Environment) {
+    install_default::<Body>(env, font(16.0, FontWeight::Normal, 24.0, 0.15));
+    install_default::<Title>(env, font(22.0, FontWeight::Normal, 28.0, 0.0));
+    install_default::<Headline>(env, font(24.0, FontWeight::Normal, 32.0, 0.0));
+    install_default::<Subheadline>(env, font(16.0, FontWeight::Medium, 24.0, 0.15));
+    install_default::<Caption>(env, font(12.0, FontWeight::Normal, 16.0, 0.4));
+    install_default::<Footnote>(env, font(11.0, FontWeight::Medium, 16.0, 0.5));
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -149,13 +156,15 @@ pub fn headline_small() -> Font {
 #[cfg(test)]
 mod tests {
     use super::{
-        MATERIAL_TYPEFACE, body_large, body_medium, body_small, headline_small, label_large,
-        label_medium, label_small, settings, title_small,
+        MATERIAL_TYPEFACE, body_large, body_medium, body_small, headline_small, install_defaults,
+        label_large, label_medium, label_small, title_small,
     };
     use waterui::Plugin as _;
     use waterui::env::Environment;
     use waterui::reactive::Signal as _;
-    use waterui::text::font::{Body, Caption, FontWeight, Footnote, Headline, Subheadline, Title};
+    use waterui::text::font::{
+        Body, Caption, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
+    };
     use waterui_core::resolve::Resolvable as _;
 
     #[allow(
@@ -187,9 +196,7 @@ mod tests {
     #[test]
     fn font_slots_match_mdui_2_1_5_type_scale() {
         let mut env = Environment::new();
-        waterui::theme::Theme::new()
-            .fonts(settings())
-            .install(&mut env);
+        install_defaults(&mut env);
 
         assert_material_font(
             Body.resolve(&env).get(),
@@ -232,6 +239,29 @@ mod tests {
             FontWeight::Medium,
             16.0,
             0.5,
+        );
+    }
+
+    #[test]
+    fn material_defaults_preserve_app_font_overrides() {
+        let app_body = ResolvedFont::new(27.0, FontWeight::Bold);
+        let mut env = Environment::new();
+        waterui::theme::Theme::new()
+            .fonts(waterui::theme::FontSettings::new().body(app_body.clone()))
+            .install(&mut env);
+
+        install_defaults(&mut env);
+
+        let resolved_body = Body.resolve(&env).get();
+        assert_eq!(resolved_body.size, app_body.size);
+        assert_eq!(resolved_body.weight, app_body.weight);
+        assert_eq!(resolved_body.family, app_body.family);
+        assert_material_font(
+            Title.resolve(&env).get(),
+            22.0,
+            FontWeight::Normal,
+            28.0,
+            0.0,
         );
     }
 
