@@ -5,7 +5,6 @@ use crate::dimensions::{
     INPUT_LABEL_HEIGHT,
 };
 use crate::theme::colors::MaterialColorScheme;
-use crate::theme::state_layer;
 use crate::{Brush, DrawContext, InputFieldMetrics, WidgetInteractionState};
 use material_color_utils::utils::color_utils::Argb;
 use vello::kurbo::{Point, Rect, RoundedRectRadii};
@@ -54,6 +53,11 @@ pub fn draw_field(
     bounds: Rect,
     state: WidgetInteractionState,
 ) {
+    let container_color = if state.disabled {
+        role_with_alpha(colors.on_surface.argb(), 0.04)
+    } else {
+        colors.surface_container_highest.peniko()
+    };
     draw.fill_rounded_rect(
         bounds,
         RoundedRectRadii::new(
@@ -62,9 +66,11 @@ pub fn draw_field(
             0.0,
             0.0,
         ),
-        &Brush::from(colors.surface_container_highest.peniko()),
+        &Brush::from(container_color),
     );
-    let baseline_color = if state.hovered {
+    let baseline_color = if state.disabled {
+        role_with_alpha(colors.on_surface.argb(), 0.38)
+    } else if state.hovered {
         colors.on_surface.peniko()
     } else {
         colors.on_surface_variant.peniko()
@@ -95,23 +101,11 @@ pub fn draw_field(
 }
 
 pub fn draw_state_layer(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    bounds: Rect,
-    state: WidgetInteractionState,
+    _colors: &MaterialColorScheme,
+    _draw: &mut dyn DrawContext,
+    _bounds: Rect,
+    _state: WidgetInteractionState,
 ) {
-    state_layer::draw_bounded(
-        draw,
-        bounds,
-        RoundedRectRadii::new(
-            INPUT_FILLED_CONTAINER_TOP_RADIUS,
-            INPUT_FILLED_CONTAINER_TOP_RADIUS,
-            0.0,
-            0.0,
-        ),
-        colors.on_surface.peniko(),
-        state,
-    );
 }
 
 #[cfg(test)]

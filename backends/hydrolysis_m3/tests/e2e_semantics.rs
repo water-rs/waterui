@@ -39,6 +39,17 @@ where
     })
 }
 
+fn mount_m3_fullscreen<V, F>(build: F) -> SemanticApp
+where
+    V: View + 'static,
+    F: Fn() -> V + 'static,
+{
+    let mut env = Environment::new();
+    install(&mut env);
+
+    ui().environment(env).viewport(360, 320).mount(build)
+}
+
 fn mount_m3_offscreen<V, F>(build: F) -> OffscreenApp
 where
     V: View + 'static,
@@ -429,6 +440,26 @@ fn material_tooltips_expose_accessibility_labels_and_action_semantics() {
 }
 
 #[test]
+fn anchored_material_tooltip_opens_on_keyboard_focus() {
+    let mut app = mount_m3(move || {
+        plain_tooltip("Adds this item to your favorites")
+            .for_target(button("Favorite").action(|| {}))
+    });
+
+    app.query()
+        .label("Adds this item to your favorites")
+        .assert_not_exists();
+    assert!(app.press_named_key("Tab"));
+    app.query()
+        .label("Adds this item to your favorites")
+        .assert_exists();
+    assert!(app.press_named_key("Escape"));
+    app.query()
+        .label("Adds this item to your favorites")
+        .assert_not_exists();
+}
+
+#[test]
 fn material_dialog_exposes_semantics_and_action_buttons() {
     let cancel_tapped = Binding::bool(false);
     let confirm_tapped = Binding::bool(false);
@@ -526,13 +557,13 @@ fn material_navigation_drawer_exposes_item_semantics_and_open_state() {
     });
 
     app.query()
-        .label("Navigation drawer")
-        .expanded(true)
-        .assert_exists();
-    app.query()
         .role(Role::BUTTON)
         .label("Inbox")
         .selected(true)
+        .assert_exists();
+    app.query()
+        .label("Navigation drawer")
+        .expanded(true)
         .assert_exists();
     app.query()
         .role(Role::BUTTON)
@@ -547,6 +578,48 @@ fn material_navigation_drawer_exposes_item_semantics_and_open_state() {
         archive_tapped.get(),
         "navigation drawer item tap should update state"
     );
+}
+
+#[test]
+fn material_modal_navigation_drawer_closes_from_escape_and_scrim() {
+    let opened = Binding::bool(true);
+    let opened_for_view = opened.clone();
+    let overlay_tapped = Binding::bool(false);
+    let overlay_for_view = overlay_tapped.clone();
+    let mut app = mount_m3_fullscreen(move || {
+        navigation_drawer(
+            &opened_for_view,
+            navigation_drawer_item("Inbox", text("I"), &Binding::bool(true)),
+        )
+        .modal()
+        .close_on_escape()
+        .close_on_overlay_click()
+        .overlay_action({
+            let overlay_for_view = overlay_for_view.clone();
+            move || overlay_for_view.set(true)
+        })
+    });
+
+    app.query()
+        .label("Navigation drawer")
+        .expanded(true)
+        .assert_exists();
+    assert!(app.pointer_down_at(330.0, 160.0));
+    assert!(app.pointer_up_at(330.0, 160.0));
+    assert!(overlay_tapped.get());
+    assert!(!opened.get());
+    assert!(app.wait_for_nonexistence(
+        &Selector::default().label("Navigation drawer"),
+        Duration::from_millis(250),
+    ));
+
+    opened.set(true);
+    assert!(app.wait_for_existence(
+        &Selector::default().label("Navigation drawer"),
+        Duration::from_millis(250),
+    ));
+    assert!(app.press_named_key("Escape"));
+    assert!(!opened.get());
 }
 
 #[test]
@@ -767,9 +840,18 @@ fn material_collection_items_expose_accessibility_and_survive_membership_change(
     }
 
     let list = List::from(vec![
-        Row { id: 1, label: Str::from("Alpha") },
-        Row { id: 2, label: Str::from("Bravo") },
-        Row { id: 3, label: Str::from("Charlie") },
+        Row {
+            id: 1,
+            label: Str::from("Alpha"),
+        },
+        Row {
+            id: 2,
+            label: Str::from("Bravo"),
+        },
+        Row {
+            id: 3,
+            label: Str::from("Charlie"),
+        },
     ]);
     let list_for_action = list.clone();
 
@@ -780,7 +862,11 @@ fn material_collection_items_expose_accessibility_and_survive_membership_change(
         let list_for_action = list_for_action.clone();
         vstack((
             button("Remove Bravo").action(move || {
-                if let Some(index) = list_for_action.snapshot().iter().position(|row| row.id == 2) {
+                if let Some(index) = list_for_action
+                    .snapshot()
+                    .iter()
+                    .position(|row| row.id == 2)
+                {
                     let _ = list_for_action.remove(index);
                 }
             }),
@@ -798,11 +884,16 @@ fn material_collection_items_expose_accessibility_and_survive_membership_change(
         app.query().role(Role::BUTTON).label("Remove Bravo").tap(),
         "remove button should route its tap through Hydrolysis gestures"
     );
-    let bravo = Selector::default().role(Role::LABEL).label("Bravo".to_owned());
+    let bravo = Selector::default()
+        .role(Role::LABEL)
+        .label("Bravo".to_owned());
     assert!(
         app.wait_for_nonexistence(&bravo, Duration::from_secs(1)),
         "the removed collection item must leave the accessibility tree"
     );
     app.query().role(Role::LABEL).label("Alpha").assert_exists();
-    app.query().role(Role::LABEL).label("Charlie").assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("Charlie")
+        .assert_exists();
 }

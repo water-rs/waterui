@@ -116,6 +116,12 @@ pub struct SnackbarTheme {
     pub shadow_radius: f32,
     /// Shadow vertical offset.
     pub shadow_offset_y: f32,
+    /// Ambient shadow color.
+    pub ambient_shadow_color: Color,
+    /// Ambient shadow blur radius.
+    pub ambient_shadow_radius: f32,
+    /// Ambient shadow vertical offset.
+    pub ambient_shadow_offset_y: f32,
     /// Entrance and dismissal vertical travel.
     pub motion_offset_y: f32,
     /// Entrance animation.
@@ -144,6 +150,9 @@ impl Default for SnackbarTheme {
             shadow_color: Color::srgb(0, 0, 0).with_opacity(0.2),
             shadow_radius: 3.0,
             shadow_offset_y: 3.0,
+            ambient_shadow_color: Color::srgb(0, 0, 0).with_opacity(0.0),
+            ambient_shadow_radius: 0.0,
+            ambient_shadow_offset_y: 0.0,
             motion_offset_y: 20.0,
             enter_animation: Animation::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
             exit_animation: Animation::bezier(Duration::from_millis(200), 0.3, 0.0, 1.0, 1.0),
@@ -775,6 +784,11 @@ impl View for StackedSnackbarView {
             Vector::new(0.0, theme.shadow_offset_y),
             theme.shadow_radius,
         );
+        let ambient_shadow = Shadow::new(
+            theme.ambient_shadow_color.clone(),
+            Vector::new(0.0, theme.ambient_shadow_offset_y),
+            theme.ambient_shadow_radius,
+        );
 
         // The appear hook runs while this subtree is dispatched — after the
         // animated opacity/offset handles bind at their hidden initial values —
@@ -798,6 +812,7 @@ impl View for StackedSnackbarView {
                 .background(
                     RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
                 )
+                .shadow(ambient_shadow)
                 .shadow(shadow)
                 .opacity(item.opacity.with_animation(enter_animation.clone()))
                 // Entrance slide and reflow shift are independent animated

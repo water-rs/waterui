@@ -13,10 +13,10 @@ use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, boxed_action};
 
 use crate::color::{
-    OnPrimaryContainer, OnSecondaryContainer, OnSurfaceVariant, OnTertiaryContainer,
-    PrimaryContainer, SecondaryContainer, Shadow as ShadowColor, SurfaceContainerHigh,
-    TertiaryContainer,
+    OnPrimaryContainer, OnSecondaryContainer, OnTertiaryContainer, Primary, PrimaryContainer,
+    SecondaryContainer, Shadow as ShadowColor, SurfaceContainerHigh, TertiaryContainer,
 };
+use crate::semantics::interaction_style;
 use crate::theme::typography;
 
 const FAB_CONTAINER_HEIGHT: f32 = 56.0;
@@ -65,7 +65,7 @@ impl FabVariantTokens for SurfaceFab {
     }
 
     fn content_color() -> Color {
-        OnSurfaceVariant.into()
+        Primary.into()
     }
 }
 
@@ -193,6 +193,10 @@ where
             .a11y_label(self.accessibility_label)
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
+            .install(interaction_style(
+                Tokens::content_color(),
+                f64::from(FAB_CONTAINER_SHAPE),
+            ))
     }
 }
 
@@ -302,6 +306,10 @@ where
             .a11y_label(self.accessibility_label)
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
+            .install(interaction_style(
+                Tokens::content_color(),
+                f64::from(EXTENDED_FAB_SHAPE),
+            ))
     }
 }
 

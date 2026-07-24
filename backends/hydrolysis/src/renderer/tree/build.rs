@@ -46,15 +46,27 @@ impl RenderNode {
                 let guards = layout.watch_invalidation(Rc::new(move || {
                     signals.request_refresh();
                 }));
+                #[cfg(feature = "accessibility")]
+                let accessibility_child_env = accessibility_group_child_environment(env);
+                #[cfg(feature = "accessibility")]
+                let child_env = accessibility_child_env.as_ref().unwrap_or(env);
+                #[cfg(not(feature = "accessibility"))]
+                let child_env = env;
                 let children = children
                     .into_iter()
                     .map(|child| {
-                        RenderNode::build(normalize_layout_view(child, env), env, renderer)
+                        RenderNode::build(
+                            normalize_layout_view(child, child_env),
+                            child_env,
+                            renderer,
+                        )
                     })
                     .collect();
                 return RenderNode::Container(Box::new(ContainerNode {
                     layout,
                     children,
+                    #[cfg(feature = "accessibility")]
+                    accessibility_child_env,
                     placed: Vec::new(),
                     _guards: guards,
                 }));

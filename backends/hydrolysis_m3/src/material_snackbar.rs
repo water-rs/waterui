@@ -21,7 +21,7 @@ mod tests {
     use crate::MaterialTheme;
 
     #[test]
-    fn material_snackbar_tokens_match_material_web_v0_192() {
+    fn material_snackbar_tokens_match_mdui_2_1_5() {
         let theme = crate::layout::snackbar::theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.single_line_min_height, 48.0);
@@ -29,8 +29,8 @@ mod tests {
         assert_eq!(theme.content_padding.top(), 12.0);
         assert_eq!(theme.content_padding.leading(), 16.0);
         assert_eq!(theme.content_spacing, 12.0);
-        assert_eq!(theme.shadow_radius, 3.0);
-        assert_eq!(theme.shadow_offset_y, 3.0);
+        assert_eq!(theme.shadow_radius, 5.0);
+        assert_eq!(theme.shadow_offset_y, 1.25);
         assert_eq!(theme.motion_offset_y, 20.0);
     }
 }

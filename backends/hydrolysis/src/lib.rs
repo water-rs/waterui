@@ -28,8 +28,8 @@ pub use platform::BrowserWindow;
 pub use platform::WinitWindow;
 pub use platform::{
     InputEvent, KeyCode, KeyState, Modifiers, OffscreenSurface, OffscreenWindow, PlatformWindow,
-    PointerButton, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
-    TouchPhase,
+    PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
+    TextInputState, TouchPhase,
 };
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 pub use runner::run;

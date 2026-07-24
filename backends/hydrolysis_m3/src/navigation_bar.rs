@@ -7,16 +7,16 @@ use waterui::color::Color;
 use waterui::layout::padding::EdgeInsets;
 use waterui::reactive::SignalExt as _;
 use waterui::shape::{RoundedRectangle, ShapeExt as _};
-use waterui::style::{Shadow, Vector};
-use waterui::widget::condition::when;
-use waterui::{Binding, Environment, Signal, Str, View, ViewExt as _};
+use waterui::{Binding, Environment, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, boxed_action};
 use waterui_core::view::TupleViews;
 
 use crate::color::{
-    OnSecondaryContainer, OnSurface, OnSurfaceVariant, SecondaryContainer, SurfaceContainer,
+    OnSecondaryContainer, OnSurface, OnSurfaceVariant, SecondaryContainer, Surface,
 };
+use crate::elevation::{MaterialElevationLevel, material_elevation};
+use crate::semantics::{conditional_color, interaction_style, label_plain_text};
 use crate::theme::typography;
 
 const NAVIGATION_BAR_CONTAINER_HEIGHT: f32 = 80.0;
@@ -30,9 +30,6 @@ const NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT: f32 = 32.0;
 const NAVIGATION_BAR_ACTIVE_INDICATOR_CLIP_RADIUS: f32 =
     NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT / NAVIGATION_BAR_ACTIVE_INDICATOR_WIDTH;
 const NAVIGATION_BAR_LABEL_TOP_SPACE: f32 = 4.0;
-const NAVIGATION_BAR_CONTAINER_ELEVATION_Y: f32 = 2.0;
-const NAVIGATION_BAR_CONTAINER_ELEVATION_BLUR: f32 = 4.0;
-const NAVIGATION_BAR_CONTAINER_SHADOW_OPACITY: f32 = 0.2;
 
 /// A Material Design 3 navigation bar.
 pub struct NavigationBar<Tabs> {
@@ -58,17 +55,15 @@ where
     Tabs: TupleViews + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
-        waterui::component::hstack(self.tabs)
-            .height(NAVIGATION_BAR_CONTAINER_HEIGHT)
-            .max_width(f32::MAX)
-            .background(SurfaceContainer)
-            .shadow(Shadow::new(
-                Color::srgb(0, 0, 0).with_opacity(NAVIGATION_BAR_CONTAINER_SHADOW_OPACITY),
-                Vector::new(0.0, NAVIGATION_BAR_CONTAINER_ELEVATION_Y),
-                NAVIGATION_BAR_CONTAINER_ELEVATION_BLUR,
-            ))
-            .a11y_label("Navigation")
-            .a11y_role(AccessibilityRole::TabList)
+        material_elevation(
+            MaterialElevationLevel::LEVEL2,
+            waterui::component::hstack(self.tabs)
+                .height(NAVIGATION_BAR_CONTAINER_HEIGHT)
+                .max_width(f32::MAX)
+                .background(Surface),
+        )
+        .a11y_label("Navigation")
+        .a11y_role(AccessibilityRole::TabList)
     }
 }
 
@@ -133,18 +128,27 @@ where
         let accessibility_state = self
             .selected
             .map(|selected| AccessibilityState::new().selected(selected));
-        let selected_for_state = self.selected;
-        let selected_icon = self.icon.clone();
-        let unselected_icon = self.icon;
-        let selected_label = self.label.clone();
-        let unselected_label = self.label;
+        let indicator_color = conditional_color(
+            self.selected.clone(),
+            SecondaryContainer,
+            Color::transparent(),
+        );
+        let icon_color = conditional_color(
+            self.selected.clone(),
+            OnSecondaryContainer,
+            OnSurfaceVariant,
+        );
+        let label_color = conditional_color(self.selected.clone(), OnSurface, OnSurfaceVariant);
+        let state_layer_color =
+            conditional_color(self.selected, OnSecondaryContainer, OnSurfaceVariant);
 
-        when(selected_for_state, move || {
-            navigation_tab_content(selected_label.clone(), selected_icon.clone(), true)
-        })
-        .otherwise(move || {
-            navigation_tab_content(unselected_label.clone(), unselected_icon.clone(), false)
-        })
+        navigation_tab_content(
+            self.label,
+            self.icon,
+            indicator_color,
+            icon_color,
+            label_color,
+        )
         .min_width(NAVIGATION_BAR_ITEM_MIN_WIDTH)
         .max_width(f32::MAX)
         .height(NAVIGATION_BAR_CONTAINER_HEIGHT)
@@ -159,25 +163,31 @@ where
         .a11y_role(AccessibilityRole::Tab)
         .a11y_state_signal(accessibility_state)
         .a11y_children(AccessibilityChildren::ExcludeDescendants)
+        .install(
+            interaction_style(
+                state_layer_color,
+                f64::from(NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT * 0.5),
+            )
+            .fixed_state_layer(
+                f64::from(NAVIGATION_BAR_ACTIVE_INDICATOR_WIDTH),
+                f64::from(NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT),
+                0.5,
+                f64::from(NAVIGATION_BAR_ITEM_TOP_PADDING)
+                    / f64::from(
+                        NAVIGATION_BAR_CONTAINER_HEIGHT - NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT,
+                    ),
+            ),
+        )
     }
 }
 
-fn navigation_tab_content(label: Label, icon: impl View, selected: bool) -> impl View {
-    let indicator_color: Color = if selected {
-        SecondaryContainer.into()
-    } else {
-        Color::transparent()
-    };
-    let icon_color: Color = if selected {
-        OnSecondaryContainer.into()
-    } else {
-        OnSurfaceVariant.into()
-    };
-    let label_color: Color = if selected {
-        OnSurface.into()
-    } else {
-        OnSurfaceVariant.into()
-    };
+fn navigation_tab_content(
+    label: Label,
+    icon: impl View,
+    indicator_color: Color,
+    icon_color: Color,
+    label_color: Color,
+) -> impl View {
     let icon_slot = icon
         .foreground(icon_color)
         .width(NAVIGATION_BAR_ICON_SIZE)
@@ -202,16 +212,6 @@ fn navigation_tab_content(label: Label, icon: impl View, selected: bool) -> impl
     .spacing(NAVIGATION_BAR_LABEL_TOP_SPACE)
 }
 
-fn label_plain_text(label: &Label) -> Str {
-    label
-        .semantic_text()
-        .clone()
-        .resolve(&Environment::new())
-        .content
-        .get()
-        .to_plain()
-}
-
 const fn noop(_env: &Environment) {}
 
 /// Creates a Material Design 3 navigation bar.
@@ -234,21 +234,22 @@ pub fn navigation_tab<Icon>(
 mod tests {
     use super::{
         NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT, NAVIGATION_BAR_ACTIVE_INDICATOR_WIDTH,
-        NAVIGATION_BAR_CONTAINER_ELEVATION_BLUR, NAVIGATION_BAR_CONTAINER_ELEVATION_Y,
-        NAVIGATION_BAR_CONTAINER_HEIGHT, NAVIGATION_BAR_CONTAINER_SHADOW_OPACITY,
-        NAVIGATION_BAR_ICON_SIZE, NAVIGATION_BAR_ITEM_MIN_WIDTH, NAVIGATION_BAR_LABEL_TOP_SPACE,
+        NAVIGATION_BAR_CONTAINER_HEIGHT, NAVIGATION_BAR_ICON_SIZE, NAVIGATION_BAR_ITEM_MIN_WIDTH,
+        NAVIGATION_BAR_LABEL_TOP_SPACE,
     };
+    use crate::elevation::MaterialElevationLevel;
 
     #[test]
-    fn navigation_bar_tokens_match_material_web_v0_192() {
+    fn navigation_bar_tokens_match_mdui_2_1_5() {
         assert_eq!(NAVIGATION_BAR_CONTAINER_HEIGHT, 80.0);
         assert_eq!(NAVIGATION_BAR_ITEM_MIN_WIDTH, 48.0);
         assert_eq!(NAVIGATION_BAR_ACTIVE_INDICATOR_WIDTH, 64.0);
         assert_eq!(NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT, 32.0);
         assert_eq!(NAVIGATION_BAR_ICON_SIZE, 24.0);
         assert_eq!(NAVIGATION_BAR_LABEL_TOP_SPACE, 4.0);
-        assert_eq!(NAVIGATION_BAR_CONTAINER_ELEVATION_Y, 2.0);
-        assert_eq!(NAVIGATION_BAR_CONTAINER_ELEVATION_BLUR, 4.0);
-        assert_eq!(NAVIGATION_BAR_CONTAINER_SHADOW_OPACITY, 0.2);
+        assert_eq!(
+            MaterialElevationLevel::new(2),
+            MaterialElevationLevel::LEVEL2
+        );
     }
 }

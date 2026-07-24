@@ -15,6 +15,14 @@ pub enum PointerButton {
     Other(u16),
 }
 
+/// Physical pointer source reported by the platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerKind {
+    Mouse,
+    Touch,
+    Pen,
+}
+
 /// Input key state mapped from a platform keyboard event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState {
@@ -62,20 +70,29 @@ pub struct TextInputState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
     PointerDown {
+        id: u64,
+        kind: PointerKind,
         x: f32,
         y: f32,
         button: PointerButton,
     },
     PointerUp {
+        id: u64,
+        kind: PointerKind,
         x: f32,
         y: f32,
         button: PointerButton,
     },
     PointerMove {
+        id: u64,
+        kind: PointerKind,
         x: f32,
         y: f32,
     },
-    PointerCancel,
+    PointerCancel {
+        id: u64,
+        kind: PointerKind,
+    },
     Moved {
         x: f32,
         y: f32,
@@ -837,7 +854,8 @@ mod winit_impl {
 
     use super::{
         CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-        SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase,
+        PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
+        TouchPhase,
     };
 
     pub struct WinitSurface {
@@ -1068,12 +1086,17 @@ mod winit_impl {
                         "winit raw input event"
                     );
                     self.pending_events.push(InputEvent::PointerMove {
+                        id: 0,
+                        kind: PointerKind::Mouse,
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
                     });
                 }
                 WindowEvent::CursorLeft { .. } => {
-                    self.pending_events.push(InputEvent::PointerCancel);
+                    self.pending_events.push(InputEvent::PointerCancel {
+                        id: 0,
+                        kind: PointerKind::Mouse,
+                    });
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
                     let mapped_button = map_button(*button);
@@ -1090,6 +1113,8 @@ mod winit_impl {
                     match state {
                         ElementState::Pressed => {
                             self.pending_events.push(InputEvent::PointerDown {
+                                id: 0,
+                                kind: PointerKind::Mouse,
                                 x,
                                 y,
                                 button: mapped_button,
@@ -1097,12 +1122,46 @@ mod winit_impl {
                         }
                         ElementState::Released => {
                             self.pending_events.push(InputEvent::PointerUp {
+                                id: 0,
+                                kind: PointerKind::Mouse,
                                 x,
                                 y,
                                 button: mapped_button,
                             });
                         }
                     }
+                }
+                WindowEvent::Touch(touch) => {
+                    let position = map_cursor_position(&touch.location, self.window.scale_factor());
+                    self.pointer_position = position;
+                    let (x, y) = position;
+                    let event = match touch.phase {
+                        WinitTouchPhase::Started => InputEvent::PointerDown {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                            x,
+                            y,
+                            button: PointerButton::Primary,
+                        },
+                        WinitTouchPhase::Moved => InputEvent::PointerMove {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                            x,
+                            y,
+                        },
+                        WinitTouchPhase::Ended => InputEvent::PointerUp {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                            x,
+                            y,
+                            button: PointerButton::Primary,
+                        },
+                        WinitTouchPhase::Cancelled => InputEvent::PointerCancel {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                        },
+                    };
+                    self.pending_events.push(event);
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (dx, dy, is_line_delta) =

@@ -33,7 +33,10 @@ pub fn draw_track(
             colors.on_surface.peniko_disabled_content(),
         )
     } else {
-        (colors.secondary_container.peniko(), colors.primary.peniko())
+        (
+            colors.surface_container_highest.peniko(),
+            colors.primary.peniko(),
+        )
     };
     draw.fill_rounded_rect(
         track_rect,
@@ -67,7 +70,7 @@ pub fn draw_thumb(
         draw.fill_rounded_rect(
             bounds,
             (width / 2.0).into(),
-            &Brush::from(colors.surface.peniko()),
+            &Brush::from(colors.background.peniko()),
         );
         draw.fill_rounded_rect(
             bounds,
@@ -156,19 +159,19 @@ mod tests {
     }
 
     #[test]
-    fn slider_metrics_match_material_web_latest_tokens() {
+    fn slider_metrics_match_mdui_2_1_5_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.track_height, SLIDER_TRACK_HEIGHT);
         assert_eq!(metrics.thumb_radius, SLIDER_HANDLE_HEIGHT / 2.0);
-        assert_eq!(SLIDER_TRACK_HEIGHT, 16.0);
-        assert_eq!(SLIDER_HANDLE_WIDTH, 4.0);
-        assert_eq!(SLIDER_HANDLE_HEIGHT, 44.0);
+        assert_eq!(SLIDER_TRACK_HEIGHT, 4.0);
+        assert_eq!(SLIDER_HANDLE_WIDTH, 20.0);
+        assert_eq!(SLIDER_HANDLE_HEIGHT, 20.0);
         assert_eq!(SLIDER_STATE_LAYER_RADIUS, 20.0);
     }
 
     #[test]
-    fn slider_thumb_draws_material_vertical_handle() {
+    fn slider_thumb_draws_mdui_circular_handle() {
         let mut draw = RecordingDrawContext::default();
         draw_thumb(
             &MaterialColorScheme::baseline_light(),
@@ -185,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn slider_pressed_thumb_uses_material_narrow_handle() {
+    fn slider_pressed_thumb_keeps_mdui_circular_handle() {
         let mut draw = RecordingDrawContext::default();
         draw_thumb(
             &MaterialColorScheme::baseline_light(),
@@ -246,7 +249,7 @@ mod tests {
         );
         assert!(matches!(
             &thumb.rounded_fills[0].1,
-            Brush::Solid(color) if *color == colors.surface.peniko()
+            Brush::Solid(color) if *color == colors.background.peniko()
         ));
         assert!(matches!(
             &thumb.rounded_fills[1].1,
@@ -269,7 +272,7 @@ mod tests {
         assert_eq!(draw.rounded_fills.len(), 2);
         assert!(matches!(
             &draw.rounded_fills[0].1,
-            Brush::Solid(color) if *color == colors.secondary_container.peniko()
+            Brush::Solid(color) if *color == colors.surface_container_highest.peniko()
         ));
         assert!(matches!(
             &draw.rounded_fills[1].1,

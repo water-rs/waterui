@@ -17,11 +17,10 @@ const PRESSED_STATE_LAYER_OPACITY: f32 = 0.12;
 /// animated value when one is in flight, otherwise the MD3 token for the
 /// active boolean state (focus outranks hover).
 fn resolved_state_layer_opacity(state: WidgetInteractionState) -> f32 {
-    if state.state_layer_opacity > 0.0 {
-        return state.state_layer_opacity;
-    }
     if state.focus_visible {
-        FOCUS_STATE_LAYER_OPACITY
+        state.focus_progress * FOCUS_STATE_LAYER_OPACITY
+    } else if state.state_layer_opacity > 0.0 {
+        state.state_layer_opacity
     } else if state.hovered {
         HOVER_STATE_LAYER_OPACITY
     } else {

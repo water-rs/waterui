@@ -14,6 +14,7 @@ use crate::color::{
     InverseOnSurface, InverseSurface, OnPrimary, OnSecondaryContainer, OnSurfaceVariant, Outline,
     Primary, SecondaryContainer,
 };
+use crate::semantics::interaction_style;
 
 const ICON_BUTTON_STATE_LAYER_SIZE: f32 = 40.0;
 const ICON_BUTTON_ICON_SIZE: f32 = 24.0;
@@ -235,6 +236,10 @@ where
             .a11y_label(self.accessibility_label)
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
+            .install(interaction_style(
+                Tokens::icon_color(),
+                f64::from(ICON_BUTTON_STATE_LAYER_SIZE * 0.5),
+            ))
     }
 }
 

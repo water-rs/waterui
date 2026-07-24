@@ -5,7 +5,7 @@ use accesskit::{
 };
 use hydrolysis::{
     FrameProfile, HeadlessRuntime, InputEvent, KeyCode, KeyState, Modifiers, PointerButton,
-    TouchPhase,
+    PointerKind, TouchPhase,
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
 use waterui_core::handler::AnyViewBuilder;
@@ -14,6 +14,8 @@ use waterui_core::{AnyView, Environment};
 use crate::app::DriverMode;
 use crate::semantics::NodeId;
 use crate::snapshot::Snapshot;
+
+const TEST_POINTER_ID: u64 = 0;
 
 pub trait A11yDriver {
     fn pump(
@@ -153,7 +155,12 @@ impl A11yDriver for HydrolysisA11yDriver {
             .runtime
             .as_mut()
             .expect("waterui-testing hover requested before runtime initialization");
-        runtime.push_input_event(InputEvent::PointerMove { x, y });
+        runtime.push_input_event(InputEvent::PointerMove {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+        });
         true
     }
 
@@ -163,6 +170,8 @@ impl A11yDriver for HydrolysisA11yDriver {
             .as_mut()
             .expect("waterui-testing pointer down requested before runtime initialization");
         runtime.push_input_event(InputEvent::PointerDown {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
             x,
             y,
             button: PointerButton::Primary,
@@ -175,7 +184,12 @@ impl A11yDriver for HydrolysisA11yDriver {
             .runtime
             .as_mut()
             .expect("waterui-testing pointer move requested before runtime initialization");
-        runtime.push_input_event(InputEvent::PointerMove { x, y });
+        runtime.push_input_event(InputEvent::PointerMove {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+        });
         true
     }
 
@@ -185,6 +199,8 @@ impl A11yDriver for HydrolysisA11yDriver {
             .as_mut()
             .expect("waterui-testing pointer up requested before runtime initialization");
         runtime.push_input_event(InputEvent::PointerUp {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
             x,
             y,
             button: PointerButton::Primary,

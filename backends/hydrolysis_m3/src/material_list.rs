@@ -17,7 +17,7 @@ use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, boxed_action}
 
 use crate::color::{OnSurface, OnSurfaceVariant};
 use crate::dimensions::{LIST_ONE_LINE_ROW_HEIGHT, LIST_VERTICAL_INSET};
-use crate::semantics::label_plain_text;
+use crate::semantics::{interaction_style, label_plain_text};
 use crate::theme::typography;
 
 const LIST_CONTAINER_TOP_SPACE: f32 = 8.0;
@@ -210,7 +210,10 @@ impl MaterialListItem {
             .a11y_label(self.accessibility_label);
 
         match self.action {
-            Some(action) => AnyView::new(item.on_tap(move |env: Environment| action.call(&env))),
+            Some(action) => AnyView::new(
+                item.on_tap(move |env: Environment| action.call(&env))
+                    .install(interaction_style(OnSurface, 0.0)),
+            ),
             None => AnyView::new(item),
         }
     }

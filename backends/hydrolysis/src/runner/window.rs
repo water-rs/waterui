@@ -791,12 +791,22 @@ where
                 runtime.request_refresh();
                 runtime.platform.request_redraw();
             }
-            InputEvent::PointerDown { x, y, button } => {
+            InputEvent::PointerDown {
+                id,
+                kind,
+                x,
+                y,
+                button,
+            } => {
                 runtime.pointer_position = Some((x, y));
-                let changed =
-                    runtime
-                        .renderer
-                        .handle_pointer_down(x, y, button, &input_env(runtime, env));
+                let changed = runtime.renderer.handle_pointer_down_with_source(
+                    id,
+                    kind,
+                    x,
+                    y,
+                    button,
+                    &input_env(runtime, env),
+                );
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_down",
@@ -808,12 +818,22 @@ where
                 );
                 schedule_redraw_or_refresh(runtime, changed);
             }
-            InputEvent::PointerUp { x, y, button } => {
+            InputEvent::PointerUp {
+                id,
+                kind,
+                x,
+                y,
+                button,
+            } => {
                 runtime.pointer_position = Some((x, y));
-                let changed =
-                    runtime
-                        .renderer
-                        .handle_pointer_up(x, y, button, &input_env(runtime, env));
+                let changed = runtime.renderer.handle_pointer_up_with_source(
+                    id,
+                    kind,
+                    x,
+                    y,
+                    button,
+                    &input_env(runtime, env),
+                );
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_up",
@@ -825,11 +845,15 @@ where
                 );
                 schedule_redraw_or_refresh(runtime, changed);
             }
-            InputEvent::PointerMove { x, y } => {
+            InputEvent::PointerMove { id, kind, x, y } => {
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime
-                    .renderer
-                    .handle_pointer_move(x, y, &input_env(runtime, env));
+                let changed = runtime.renderer.handle_pointer_move_with_source(
+                    id,
+                    kind,
+                    x,
+                    y,
+                    &input_env(runtime, env),
+                );
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_move",
@@ -840,10 +864,12 @@ where
                 );
                 schedule_redraw_or_refresh(runtime, changed);
             }
-            InputEvent::PointerCancel => {
-                let changed = runtime
-                    .renderer
-                    .handle_pointer_cancel(&input_env(runtime, env));
+            InputEvent::PointerCancel { id, kind } => {
+                let changed = runtime.renderer.handle_pointer_cancel_with_source(
+                    id,
+                    kind,
+                    &input_env(runtime, env),
+                );
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_cancel",
@@ -902,7 +928,10 @@ where
                 state: KeyState::Pressed,
                 modifiers,
             } => {
-                let changed = runtime.renderer.handle_key(&key, modifiers);
+                let changed =
+                    runtime
+                        .renderer
+                        .handle_key_with_env(&key, modifiers, &input_env(runtime, env));
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "key_pressed",
@@ -946,9 +975,15 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Key {
+                key,
                 state: KeyState::Released,
                 ..
-            } => {}
+            } => {
+                let changed = runtime
+                    .renderer
+                    .handle_key_release_with_env(&key, &input_env(runtime, env));
+                schedule_redraw_or_refresh(runtime, changed);
+            }
         }
     }
     runtime
