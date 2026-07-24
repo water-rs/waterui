@@ -636,23 +636,18 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
                 #(#captures)*
 
                 move |_env: &#waterui::Environment, locale: &#waterui::locale::Locale| {
-                    let resolve = |locale_key: &str| -> Option<#waterui::text::TextConfig> {
-                        match locale_key {
-                            #(#locale_arms)*
-                            _ => None,
-                        }
+                    let resolve = |locale_key: &#waterui::locale::Locale| -> Option<#waterui::text::TextConfig> {
+                        #(#locale_arms)*
+                        None
                     };
 
-                    for fallback_locale in #waterui::locale::locale::get_fallback_chain(locale) {
-                        // Match translation tables by language-id form (without extensions),
-                        // e.g. "en-GB", even if runtime locale is "en-GB-u-hc-h23".
-                        let locale_key = fallback_locale.id().to_string();
-                        if let Some(text) = resolve(locale_key.as_str()) {
-                            return text;
-                        }
+                    if let Some(text) =
+                        #waterui::locale::locale::find_in_fallback_chain(locale, &resolve)
+                    {
+                        return text;
                     }
 
-                    if let Some(text) = resolve("en") {
+                    if let Some(text) = resolve(&#waterui::locale::locale::locales::EN) {
                         return text;
                     }
 
@@ -721,12 +716,64 @@ fn generate_simple_translation_arm(
     text: &str,
     all_idents: &[Ident],
 ) -> TokenStream2 {
+    let condition = locale_match_condition(locale_code);
     let format_lit = translation_format_lit(text);
     let text_config = build_text_config_expr(waterui, &format_lit, all_idents);
     quote! {
-        #locale_code => {
-            Some(#text_config)
+        if #condition {
+            return Some(#text_config);
         }
+    }
+}
+
+fn locale_match_condition(locale_code: &str) -> TokenStream2 {
+    let locale = locale_code
+        .parse::<icu_locale_core::LanguageIdentifier>()
+        .unwrap_or_else(|error| panic!("invalid translation locale '{locale_code}': {error}"));
+    let language = LitStr::new(locale.language.as_str(), Span::call_site());
+    let script = locale
+        .script
+        .as_ref()
+        .map(|script| LitStr::new(script.as_str(), Span::call_site()));
+    let region = locale
+        .region
+        .as_ref()
+        .map(|region| LitStr::new(region.as_str(), Span::call_site()));
+    let variants = locale
+        .variants
+        .iter()
+        .map(|variant| LitStr::new(variant.as_str(), Span::call_site()))
+        .collect::<Vec<_>>();
+    let variant_count = variants.len();
+
+    let script_match = script.map_or_else(
+        || quote! { locale_key.id().script.is_none() },
+        |script| {
+            quote! {
+                locale_key.id().script.as_ref().map(|value| value.as_str()) == Some(#script)
+            }
+        },
+    );
+    let region_match = region.map_or_else(
+        || quote! { locale_key.id().region.is_none() },
+        |region| {
+            quote! {
+                locale_key.id().region.as_ref().map(|value| value.as_str()) == Some(#region)
+            }
+        },
+    );
+
+    quote! {
+        locale_key.id().language.as_str() == #language
+            && #script_match
+            && #region_match
+            && locale_key.id().variants.len() == #variant_count
+            && locale_key
+                .id()
+                .variants
+                .iter()
+                .map(|variant| variant.as_str())
+                .eq([#(#variants),*].into_iter())
     }
 }
 
@@ -753,6 +800,7 @@ fn generate_plural_translation_arm(
     all_idents: &[Ident],
     plural_names: &[&str],
 ) -> TokenStream2 {
+    let condition = locale_match_condition(locale_code);
     let plural_var = plural_names.first().copied().unwrap_or("count");
     let plural_ident = Ident::new(plural_var, proc_macro2::Span::call_site());
     let mut category_arms = Vec::new();
@@ -779,9 +827,9 @@ fn generate_plural_translation_arm(
     let content = build_signal_map(waterui, all_idents, &body);
 
     quote! {
-        #locale_code => {
+        if #condition {
             let #locale_ident = locale.clone();
-            Some(#waterui::text::TextConfig::new(#content))
+            return Some(#waterui::text::TextConfig::new(#content));
         }
     }
 }
@@ -804,6 +852,7 @@ fn generate_dual_plural_translation_arm(
     all_idents: &[Ident],
     plural_names: &[&str],
 ) -> TokenStream2 {
+    let condition = locale_match_condition(locale_code);
     let plural_var_1 = plural_names.first().copied().unwrap_or("count");
     let plural_var_2 = plural_names.get(1).copied().unwrap_or(plural_var_1);
     let plural_ident_1 = Ident::new(plural_var_1, proc_macro2::Span::call_site());
@@ -838,9 +887,9 @@ fn generate_dual_plural_translation_arm(
     let content = build_signal_map(waterui, all_idents, &body);
 
     quote! {
-        #locale_code => {
+        if #condition {
             let #locale_ident = locale.clone();
-            Some(#waterui::text::TextConfig::new(#content))
+            return Some(#waterui::text::TextConfig::new(#content));
         }
     }
 }

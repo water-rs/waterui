@@ -204,6 +204,56 @@ pub fn get_fallback_chain(locale: &Locale) -> Vec<Locale> {
     results
 }
 
+/// Resolves the first value produced by a locale's ICU fallback chain.
+///
+/// Unlike [`get_fallback_chain`], this visits candidates lazily and stops at the
+/// first match, so translation lookup does not allocate a complete fallback list.
+#[doc(hidden)]
+pub fn find_in_fallback_chain<T>(
+    locale: &Locale,
+    mut resolve: impl FnMut(&Locale) -> Option<T>,
+) -> Option<T> {
+    if let Some(value) = find_in_locale_chain(locale, &mut resolve) {
+        return Some(value);
+    }
+
+    let runtime_settings = regional::current_settings();
+    if runtime_settings.locale_tag() == locale.canonical_tag() {
+        for preferred in runtime_settings.preferred_languages() {
+            if let Ok(preferred_locale) = Locale::from_str(preferred)
+                && let Some(value) = find_in_locale_chain(&preferred_locale, &mut resolve)
+            {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
+
+fn find_in_locale_chain<T>(
+    locale: &Locale,
+    resolve: &mut impl FnMut(&Locale) -> Option<T>,
+) -> Option<T> {
+    let fallbacker = LocaleFallbacker::new();
+    let config = fallbacker.for_config(LocaleFallbackConfig::default());
+    let mut iterator = config.fallback_for(DataLocale::from(locale.0.clone()));
+
+    for _ in 0..10 {
+        let current = iterator.get();
+        if current.is_unknown() {
+            break;
+        }
+        let fallback = Locale((*current).into_locale());
+        if let Some(value) = resolve(&fallback) {
+            return Some(value);
+        }
+        iterator.step();
+    }
+
+    None
+}
+
 fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut Vec<Locale>) {
     let fallbacker = LocaleFallbacker::new();
     let config = fallbacker.for_config(LocaleFallbackConfig::default());

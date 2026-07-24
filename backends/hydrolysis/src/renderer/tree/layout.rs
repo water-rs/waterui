@@ -94,7 +94,7 @@ impl RenderNode {
             // Layout-transparent: the wrapper measures its child under the node's
             // scoped environment (effect colors/a11y read env every frame).
             RenderNode::Wrapper(node) => node.child.measure(state, &node.env, proposal),
-            RenderNode::Widget(node) => (node.measure)(state, proposal, &node.env),
+            RenderNode::Widget(node) => node.behavior.measure(state, proposal, &node.env),
         }
     }
 

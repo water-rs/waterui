@@ -447,10 +447,8 @@ impl HydrolysisRenderer {
                     if normalized_coords.is_empty() {
                         glyph_run_builder.draw(vello::peniko::Fill::NonZero, glyphs);
                     } else {
-                        let normalized_coords: Vec<vello::NormalizedCoord> =
-                            normalized_coords.to_vec();
                         glyph_run_builder
-                            .normalized_coords(&normalized_coords)
+                            .normalized_coords(normalized_coords)
                             .draw(vello::peniko::Fill::NonZero, glyphs);
                     }
                 }

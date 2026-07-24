@@ -9,6 +9,10 @@ pub const ANIMATED_MESH_GRADIENT: CompiledShader =
 /// General mesh-gradient shader.
 pub const MESH_GRADIENT: CompiledShader = include!(concat!(env!("OUT_DIR"), "/mesh_gradient.rs"));
 
+/// Procedural image-generator shader.
+pub const IMAGE_GENERATOR: CompiledShader =
+    include!(concat!(env!("OUT_DIR"), "/image_generator.rs"));
+
 /// Scene texture blit shader.
 pub const BLIT: CompiledShader = include!(concat!(env!("OUT_DIR"), "/blit.rs"));
 

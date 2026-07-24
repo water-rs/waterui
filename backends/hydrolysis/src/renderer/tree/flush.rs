@@ -324,7 +324,7 @@ impl RenderNode {
                 // re-reads live signals and re-emits interaction targets + a11y at the
                 // current bounds. A leaf render starts a fresh recursion depth.
                 renderer.render_depth = 0;
-                (node.render)(renderer, ctx, &node.env);
+                Rc::clone(&node.behavior).render(renderer, ctx, &node.env);
             }
         }
     }

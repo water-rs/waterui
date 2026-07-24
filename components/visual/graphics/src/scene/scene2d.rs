@@ -31,6 +31,17 @@ pub trait Scene2D {
     /// Appends a pre-built Vello scene.
     fn append_vello_scene(&mut self, scene: &vello::Scene, transform: Option<Affine>);
 
+    /// Encodes directly into the backing Vello scene when available.
+    ///
+    /// Other scene implementations preserve the same behavior by recording into
+    /// a temporary scene and appending it after `encode` returns.
+    #[doc(hidden)]
+    fn encode_vello(&mut self, encode: &mut dyn FnMut(&mut vello::Scene)) {
+        let mut scene = vello::Scene::new();
+        encode(&mut scene);
+        self.append_vello_scene(&scene, None);
+    }
+
     /// Clears all recorded scene commands.
     fn reset(&mut self);
 }

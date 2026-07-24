@@ -89,6 +89,7 @@ bitflags = "2.13.1"
 blocking = "1.6.2"
 executor-core = { version = "0.7.1", features = ["std"]}
 futures = "0.3"
+smallvec = "1.15"
 # Local vendored dependency overrides via git submodule.
 nami = { version = "0.10.1", path = "utils/nami" }
 nami-core = { version = "0.3.2", path = "utils/nami/core" }

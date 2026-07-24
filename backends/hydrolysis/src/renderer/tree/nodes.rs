@@ -295,22 +295,31 @@ pub(crate) struct WrapperNode {
     pub(super) child: RenderNode,
 }
 
-/// Re-renders a [`WidgetNode`]'s leaf every flush from its retained config (reads
-/// live signals, re-registers interaction targets + a11y at the current bounds).
-pub(crate) type WidgetRenderFn = Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>;
+/// The type-erased behavior of one retained native widget state allocation.
+pub(crate) trait WidgetBehavior {
+    /// Re-renders the leaf from its retained state.
+    fn render(
+        self: Rc<Self>,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+    );
 
-/// Measures a [`WidgetNode`]'s leaf for layout (reads the config's sizing signals).
-pub(crate) type WidgetMeasureFn =
-    Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>;
+    /// Measures the leaf from its retained state.
+    fn measure(
+        &self,
+        state: &mut HydroState,
+        proposal: ProposalSize,
+        env: &Environment,
+    ) -> ViewDimensions;
+}
 
-/// A native widget leaf rendered every flush from a retained config. `builder`
-/// reconstructs the leaf `AnyView` (with its actions retained behind `Rc` and its
-/// label/value signals kept), so each flush re-dispatches the leaf through its
-/// existing handler — re-reading live signals and re-emitting interaction targets
-/// and accessibility with current bounds. No bake, no capture-once freeze.
+/// A native widget leaf rendered every flush from one retained state allocation.
+/// The behavior reuses the widget's existing render and measure functions, which
+/// re-read live signals and re-emit interaction targets and accessibility at the
+/// current bounds. No bake, no capture-once freeze.
 pub(crate) struct WidgetNode {
-    pub(super) render: WidgetRenderFn,
-    pub(super) measure: WidgetMeasureFn,
+    pub(super) behavior: Rc<dyn WidgetBehavior>,
     pub(super) stretch: StretchAxis,
     pub(super) env: Environment,
 }

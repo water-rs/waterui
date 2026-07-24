@@ -1,8 +1,11 @@
 use crate::GpuRuntime;
 use crate::color::Srgb;
-use crate::gpu_surface::{OffscreenRenderConfig, OffscreenSize};
+use crate::gpu_surface::{
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
+};
 use crate::multi_input_filter::FilterImage;
-use crate::shader_surface::ShaderSurface;
+use crate::shaders::IMAGE_GENERATOR;
+use bytemuck::{Pod, Zeroable};
 use core::future::Future;
 use std::path::Path;
 
@@ -85,12 +88,201 @@ pub trait ImageGenerator {
     fn generate(&self, runtime: &GpuRuntime) -> impl Future<Output = GeneratedImage>;
 }
 
-fn srgb_rgb_literal(color: Srgb) -> [String; 3] {
-    [
-        color.red.to_string(),
-        color.green.to_string(),
-        color.blue.to_string(),
-    ]
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+enum GeneratorKind {
+    Checkerboard,
+    Stripes,
+    DotGrid,
+    Noise,
+    LinearGradient,
+    RadialGradient,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct GeneratorUniforms {
+    resolution: [f32; 2],
+    kind: u32,
+    flag: u32,
+    color_a: [f32; 4],
+    color_b: [f32; 4],
+    params_a: [f32; 4],
+    uint_params: [u32; 4],
+}
+
+impl GeneratorUniforms {
+    const fn new(kind: GeneratorKind) -> Self {
+        Self {
+            resolution: [0.0; 2],
+            kind: kind as u32,
+            flag: 0,
+            color_a: [0.0; 4],
+            color_b: [0.0; 4],
+            params_a: [0.0; 4],
+            uint_params: [0; 4],
+        }
+    }
+
+    const fn colors(mut self, color_a: Srgb, color_b: Srgb) -> Self {
+        self.color_a = [color_a.red, color_a.green, color_a.blue, 1.0];
+        self.color_b = [color_b.red, color_b.green, color_b.blue, 1.0];
+        self
+    }
+}
+
+struct GeneratorResources {
+    format: wgpu::TextureFormat,
+    pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+struct GeneratorRenderer {
+    uniforms: GeneratorUniforms,
+    resources: Option<GeneratorResources>,
+}
+
+impl GeneratorRenderer {
+    const fn new(uniforms: GeneratorUniforms) -> Self {
+        Self {
+            uniforms,
+            resources: None,
+        }
+    }
+}
+
+impl GpuView for GeneratorRenderer {
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView setup is confined to the render thread and borrows its device context"
+    )]
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+        let (vertex_shader, fragment_shader) =
+            IMAGE_GENERATOR.create_render_stages(ctx.device, "vs_main", "fs_main");
+        let mut bind_group_layouts = IMAGE_GENERATOR.create_bind_group_layouts(ctx.device);
+        assert_eq!(
+            bind_group_layouts.len(),
+            1,
+            "image generator shader must use exactly one bind group"
+        );
+        let bind_group_layout = bind_group_layouts
+            .pop()
+            .expect("one image generator bind group was asserted");
+        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Image Generator Uniforms"),
+            size: size_of::<GeneratorUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Image Generator Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Image Generator Pipeline Layout"),
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
+            });
+        let pipeline_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Image Generator Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: (!ctx.is_hdr()).then_some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+        let pipeline_error = pipeline_scope.pop().await;
+        assert!(
+            pipeline_error.is_none(),
+            "image generator pipeline creation failed: {pipeline_error:?}"
+        );
+        self.resources = Some(GeneratorResources {
+            format: ctx.surface_format,
+            pipeline,
+            uniform_buffer,
+            bind_group,
+        });
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        let resources = self
+            .resources
+            .as_ref()
+            .expect("GeneratorRenderer::setup() must run before render()");
+        assert_eq!(
+            resources.format, frame.format,
+            "image generator format mismatch"
+        );
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "GPU viewport dimensions are represented as f32 shader uniforms"
+        )]
+        {
+            self.uniforms.resolution = [frame.width as f32, frame.height as f32];
+        }
+        frame.queue.write_buffer(
+            &resources.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&self.uniforms),
+        );
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Image Generator Encoder"),
+            });
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Image Generator Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            render_pass.set_pipeline(&resources.pipeline);
+            render_pass.set_bind_group(0, &resources.bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+        frame.queue.submit(core::iter::once(encoder.finish()));
+    }
 }
 
 #[expect(
@@ -101,14 +293,13 @@ async fn render_fragment(
     runtime: &GpuRuntime,
     width: u32,
     height: u32,
-    fragment: String,
+    uniforms: GeneratorUniforms,
 ) -> GeneratedImage {
     let size = OffscreenSize::try_from_pixels(width, height)
         .expect("ImageGenerator::render_fragment: dimensions must be non-zero");
     let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
     let mut env = waterui_core::Environment::new();
-    let output = ShaderSurface::new(fragment)
-        .into_inner()
+    let output = GpuSurface::new(GeneratorRenderer::new(uniforms))
         .render_offscreen(runtime, config, &mut env)
         .await
         .expect("ImageGenerator::render_fragment: GPU offscreen render should succeed");
@@ -144,23 +335,10 @@ impl ImageGenerator for CheckerboardGenerator {
             self.cell_size > 0,
             "CheckerboardGenerator: cell_size must be > 0"
         );
-        let [lr, lg, lb] = srgb_rgb_literal(self.light);
-        let [dr, dg, db] = srgb_rgb_literal(self.dark);
-        let fragment = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/generators/checkerboard.wgsl"
-        ))
-        .replace("__LIGHT_R__", &lr)
-        .replace("__LIGHT_G__", &lg)
-        .replace("__LIGHT_B__", &lb)
-        .replace("__DARK_R__", &dr)
-        .replace("__DARK_G__", &dg)
-        .replace("__DARK_B__", &db)
-        .replace("__CELL_W__", &self.cell_size.to_string())
-        .replace("__CELL_H__", &self.cell_size.to_string())
-        .replace("__OFFSET_X__", &self.offset_x.to_string())
-        .replace("__OFFSET_Y__", &self.offset_y.to_string());
-        render_fragment(runtime, self.width, self.height, fragment).await
+        let mut uniforms =
+            GeneratorUniforms::new(GeneratorKind::Checkerboard).colors(self.light, self.dark);
+        uniforms.uint_params = [self.cell_size, self.cell_size, self.offset_x, self.offset_y];
+        render_fragment(runtime, self.width, self.height, uniforms).await
     }
 }
 
@@ -193,25 +371,11 @@ impl ImageGenerator for StripeGenerator {
             self.stripe_width > 0,
             "StripeGenerator: stripe_width must be > 0"
         );
-        let [pr, pg, pb] = srgb_rgb_literal(self.primary);
-        let [sr, sg, sb] = srgb_rgb_literal(self.secondary);
-        let fragment = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/generators/stripes.wgsl"
-        ))
-        .replace("__PRIMARY_R__", &pr)
-        .replace("__PRIMARY_G__", &pg)
-        .replace("__PRIMARY_B__", &pb)
-        .replace("__SECONDARY_R__", &sr)
-        .replace("__SECONDARY_G__", &sg)
-        .replace("__SECONDARY_B__", &sb)
-        .replace("__STRIPE_WIDTH__", &self.stripe_width.to_string())
-        .replace(
-            "__HORIZONTAL__",
-            if self.horizontal { "true" } else { "false" },
-        )
-        .replace("__OFFSET__", &self.offset.to_string());
-        render_fragment(runtime, self.width, self.height, fragment).await
+        let mut uniforms =
+            GeneratorUniforms::new(GeneratorKind::Stripes).colors(self.primary, self.secondary);
+        uniforms.flag = u32::from(self.horizontal);
+        uniforms.uint_params = [self.stripe_width, self.offset, 0, 0];
+        render_fragment(runtime, self.width, self.height, uniforms).await
     }
 }
 
@@ -239,21 +403,11 @@ impl ImageGenerator for DotGridGenerator {
     )]
     async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
         assert!(self.spacing > 0, "DotGridGenerator: spacing must be > 0");
-        let [fr, fg, fb] = srgb_rgb_literal(self.foreground);
-        let [br, bg, bb] = srgb_rgb_literal(self.background);
-        let fragment = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/generators/dot_grid.wgsl"
-        ))
-        .replace("__FG_R__", &fr)
-        .replace("__FG_G__", &fg)
-        .replace("__FG_B__", &fb)
-        .replace("__BG_R__", &br)
-        .replace("__BG_G__", &bg)
-        .replace("__BG_B__", &bb)
-        .replace("__SPACING__", &self.spacing.to_string())
-        .replace("__RADIUS__", &self.radius.to_string());
-        render_fragment(runtime, self.width, self.height, fragment).await
+        let mut uniforms =
+            GeneratorUniforms::new(GeneratorKind::DotGrid).colors(self.foreground, self.background);
+        uniforms.params_a[0] = self.radius;
+        uniforms.uint_params[0] = self.spacing;
+        render_fragment(runtime, self.width, self.height, uniforms).await
     }
 }
 
@@ -274,12 +428,15 @@ impl ImageGenerator for NoiseGenerator {
         reason = "image generators await the UI-local offscreen GpuView renderer"
     )]
     async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
-        let fragment = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/generators/noise.wgsl"
-        ))
-        .replace("__SEED__", &self.seed.to_string());
-        render_fragment(runtime, self.width, self.height, fragment).await
+        let mut uniforms = GeneratorUniforms::new(GeneratorKind::Noise);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "the previous WGSL constant represented the seed as f32"
+        )]
+        {
+            uniforms.params_a[0] = self.seed as f32;
+        }
+        render_fragment(runtime, self.width, self.height, uniforms).await
     }
 }
 
@@ -306,23 +463,15 @@ impl ImageGenerator for LinearGradientGenerator {
         reason = "image generators await the UI-local offscreen GpuView renderer"
     )]
     async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
-        let [sr, sg, sb] = srgb_rgb_literal(self.start_color);
-        let [er, eg, eb] = srgb_rgb_literal(self.end_color);
-        let fragment = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/generators/linear_gradient.wgsl"
-        ))
-        .replace("__START_R__", &sr)
-        .replace("__START_G__", &sg)
-        .replace("__START_B__", &sb)
-        .replace("__END_R__", &er)
-        .replace("__END_G__", &eg)
-        .replace("__END_B__", &eb)
-        .replace("__START_X__", &self.start_point[0].to_string())
-        .replace("__START_Y__", &self.start_point[1].to_string())
-        .replace("__END_X__", &self.end_point[0].to_string())
-        .replace("__END_Y__", &self.end_point[1].to_string());
-        render_fragment(runtime, self.width, self.height, fragment).await
+        let mut uniforms = GeneratorUniforms::new(GeneratorKind::LinearGradient)
+            .colors(self.start_color, self.end_color);
+        uniforms.params_a = [
+            self.start_point[0],
+            self.start_point[1],
+            self.end_point[0],
+            self.end_point[1],
+        ];
+        render_fragment(runtime, self.width, self.height, uniforms).await
     }
 }
 
@@ -349,22 +498,10 @@ impl ImageGenerator for RadialGradientGenerator {
         reason = "image generators await the UI-local offscreen GpuView renderer"
     )]
     async fn generate(&self, runtime: &GpuRuntime) -> GeneratedImage {
-        let [ir, ig, ib] = srgb_rgb_literal(self.inner_color);
-        let [or, og, ob] = srgb_rgb_literal(self.outer_color);
-        let fragment = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/shaders/generators/radial_gradient.wgsl"
-        ))
-        .replace("__INNER_R__", &ir)
-        .replace("__INNER_G__", &ig)
-        .replace("__INNER_B__", &ib)
-        .replace("__OUTER_R__", &or)
-        .replace("__OUTER_G__", &og)
-        .replace("__OUTER_B__", &ob)
-        .replace("__CENTER_X__", &self.center[0].to_string())
-        .replace("__CENTER_Y__", &self.center[1].to_string())
-        .replace("__RADIUS__", &self.radius.to_string());
-        render_fragment(runtime, self.width, self.height, fragment).await
+        let mut uniforms = GeneratorUniforms::new(GeneratorKind::RadialGradient)
+            .colors(self.inner_color, self.outer_color);
+        uniforms.params_a = [self.center[0], self.center[1], self.radius, 0.0];
+        render_fragment(runtime, self.width, self.height, uniforms).await
     }
 }
 

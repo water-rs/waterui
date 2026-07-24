@@ -1111,36 +1111,32 @@ impl DrawingContext<'_> {
         let alpha = self.normalized_global_alpha();
         let transform = self.current_state.transform
             * kurbo::Affine::translate((f64::from(origin.x), f64::from(origin.y)));
-        let mut text_scene = vello::Scene::new();
+        self.scene.encode_vello(&mut |scene| {
+            for line in layout.lines() {
+                for item in line.items() {
+                    if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                        let run = glyph_run.run();
+                        let mut run_x = glyph_run.offset();
+                        let run_y = glyph_run.baseline();
+                        let glyphs = glyph_run.glyphs().map(move |glyph| {
+                            let x = run_x + glyph.x;
+                            let y = run_y - glyph.y;
+                            run_x += glyph.advance;
+                            vello::Glyph { id: glyph.id, x, y }
+                        });
 
-        for line in layout.lines() {
-            for item in line.items() {
-                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                    let run = glyph_run.run();
-                    let normalized_coords: Vec<vello::NormalizedCoord> =
-                        run.normalized_coords().to_vec();
-                    let mut run_x = glyph_run.offset();
-                    let run_y = glyph_run.baseline();
-                    let glyphs = glyph_run.glyphs().map(move |glyph| {
-                        let x = run_x + glyph.x;
-                        let y = run_y - glyph.y;
-                        run_x += glyph.advance;
-                        vello::Glyph { id: glyph.id, x, y }
-                    });
-
-                    text_scene
-                        .draw_glyphs(run.font())
-                        .brush(brush)
-                        .brush_alpha(alpha)
-                        .transform(transform)
-                        .font_size(run.font_size())
-                        .normalized_coords(&normalized_coords)
-                        .draw(style, glyphs);
+                        scene
+                            .draw_glyphs(run.font())
+                            .brush(brush)
+                            .brush_alpha(alpha)
+                            .transform(transform)
+                            .font_size(run.font_size())
+                            .normalized_coords(run.normalized_coords())
+                            .draw(style, glyphs);
+                    }
                 }
             }
-        }
-
-        self.scene.append_vello_scene(&text_scene, None);
+        });
     }
 }
 

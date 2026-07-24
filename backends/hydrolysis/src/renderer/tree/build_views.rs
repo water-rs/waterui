@@ -3,6 +3,91 @@
 
 use super::*;
 
+impl_widget_behavior!(
+    crate::widgets::layout::list::ListRenderState,
+    crate::widgets::layout::list::render_list_node,
+    |state: &crate::widgets::layout::list::ListRenderState, proposal, hydro, env| {
+        crate::widgets::layout::list::measure_list_node(&state.config, proposal, hydro, env)
+    }
+);
+impl_widget_behavior!(
+    crate::widgets::layout::table::TableRenderState,
+    crate::widgets::layout::table::render_table_node,
+    |state: &crate::widgets::layout::table::TableRenderState, proposal, hydro, env| {
+        crate::widgets::layout::table::measure_table_node(&state.config, proposal, hydro, env)
+    }
+);
+impl_widget_behavior!(
+    crate::widgets::nav::navigation::NavigationViewRenderState,
+    crate::widgets::nav::navigation::render_navigation_view_node,
+    crate::widgets::nav::navigation::measure_navigation_view_node
+);
+impl_widget_behavior!(
+    crate::widgets::nav::navigation::NavigationSplitRenderState,
+    crate::widgets::nav::navigation::render_navigation_split_node,
+    crate::widgets::nav::navigation::measure_navigation_split_node
+);
+impl_widget_behavior!(
+    crate::widgets::nav::navigation::NavigationStackRenderState,
+    crate::widgets::nav::navigation::render_navigation_stack_node,
+    crate::widgets::nav::navigation::measure_navigation_stack_node
+);
+impl_widget_behavior!(
+    crate::widgets::nav::tabs::TabsRenderState,
+    crate::widgets::nav::tabs::render_tabs_node,
+    crate::widgets::nav::tabs::measure_tabs_node
+);
+impl_widget_behavior!(
+    crate::widgets::visual::icon::IconRenderState,
+    crate::widgets::visual::icon::render_icon_node,
+    crate::widgets::visual::icon::measure_icon_node
+);
+impl_widget_behavior!(
+    ResolvedGradient,
+    crate::renderer::render_gradient_node,
+    crate::renderer::measure_gradient_node
+);
+impl_widget_behavior!(
+    ResolvedShape,
+    crate::renderer::render_shape_node,
+    crate::renderer::measure_shape_node
+);
+impl_widget_behavior!(
+    ResolvedMorphShape,
+    crate::renderer::render_morph_shape_node,
+    crate::renderer::measure_morph_shape_node
+);
+impl_widget_behavior!(
+    crate::widgets::visual::map::MapRenderState,
+    crate::widgets::visual::map::render_map_node,
+    crate::widgets::visual::map::measure_map_node
+);
+impl_widget_behavior!(
+    crate::widgets::platform::webview::WebViewRenderState,
+    crate::widgets::platform::webview::render_webview_node,
+    crate::widgets::platform::webview::measure_webview_node
+);
+impl_widget_behavior!(
+    Spacer,
+    crate::widgets::layout::spacer::render_spacer_node,
+    crate::widgets::layout::spacer::measure_spacer_node
+);
+impl_widget_behavior!(
+    (),
+    crate::widgets::layout::spacer::render_empty_node,
+    crate::widgets::layout::spacer::measure_empty_node
+);
+impl_widget_behavior!(
+    Divider,
+    crate::widgets::divider::render_divider_node,
+    crate::widgets::divider::measure_divider_node
+);
+impl_widget_behavior!(
+    Str,
+    crate::renderer::views::render_str_node,
+    crate::renderer::views::measure_str_node
+);
+
 impl RenderNode {
     /// Build a persistent list node: retain the config (its `contents` collection,
     /// `editing` signal, and `on_delete`/`on_move` handlers stay owned by the cell).
@@ -12,28 +97,10 @@ impl RenderNode {
     /// cache (keyed by body-order cursor slot) persists across frames. Stretches to
     /// fill the proposal (`StretchAxis::Both`, read from the config).
     pub(super) fn build_list(config: ListConfig, env: &Environment) -> RenderNode {
-        use crate::widgets::layout::list::{ListRenderState, measure_list_node, render_list_node};
+        use crate::widgets::layout::list::ListRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let state = Rc::new(RefCell::new(ListRenderState::from_config(config)));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_list_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_list_node(&state.borrow().config, proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent table node: retain the config (its `columns` signal and
@@ -44,30 +111,10 @@ impl RenderNode {
     /// `LazyTableController` column-width/row-count cache (keyed by body-order cursor
     /// slot) persists across frames. Stretch is read from the config.
     pub(super) fn build_table(config: TableConfig, env: &Environment) -> RenderNode {
-        use crate::widgets::layout::table::{
-            TableRenderState, measure_table_node, render_table_node,
-        };
+        use crate::widgets::layout::table::TableRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let state = Rc::new(RefCell::new(TableRenderState::from_config(config)));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_table_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_table_node(&state.borrow().config, proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent navigation-view node: its bar `title`/`leading`/`trailing`
@@ -80,33 +127,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::nav::navigation::{
-            NavigationViewRenderState, measure_navigation_view_node, render_navigation_view_node,
-        };
+        use crate::widgets::nav::navigation::NavigationViewRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&navigation);
         let mut state = NavigationViewRenderState::from_view(navigation, env);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_navigation_view_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        // The navigation view's measure reads its un-retained config; it is
-        // intrinsic-sized (or fills a concrete proposal), independent of the
-        // retained sub-views, so the measure closure holds the original config.
-        let measure_config = Rc::clone(&state);
-        let measure = Box::new(
-            move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                measure_navigation_view_node(&measure_config.borrow(), proposal, hydro, env)
-            },
-        )
-            as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>;
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent navigation-split node: the layout's sidebar/detail/
@@ -119,33 +145,13 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::nav::navigation::{
-            NavigationSplitRenderState, measure_navigation_split_node, render_navigation_split_node,
-        };
+        use crate::widgets::nav::navigation::NavigationSplitRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&split);
         let mut state = NavigationSplitRenderState::from_layout(split);
         // Pre-build the sidebar + placeholder sub-views (the measure path has no renderer).
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_navigation_split_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_navigation_split_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent navigation-stack node: the move-only stack root is held in
@@ -158,30 +164,10 @@ impl RenderNode {
         stack: NavigationStack<(), ()>,
         env: &Environment,
     ) -> RenderNode {
-        use crate::widgets::nav::navigation::{
-            NavigationStackRenderState, measure_navigation_stack_node, render_navigation_stack_node,
-        };
+        use crate::widgets::nav::navigation::NavigationStackRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&stack);
         let state = Rc::new(RefCell::new(NavigationStackRenderState::from_stack(stack)));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_navigation_stack_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_navigation_stack_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent tabs node: the tab labels are move-only `AnyView`s
@@ -194,30 +180,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::nav::tabs::{TabsRenderState, measure_tabs_node, render_tabs_node};
+        use crate::widgets::nav::tabs::TabsRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&tabs);
         let mut state = TabsRenderState::from_tabs(tabs);
         state.prebuild_labels(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_tabs_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_tabs_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent system-icon node: the placeholder marker is a move-only
@@ -229,30 +197,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::visual::icon::{IconRenderState, measure_icon_node, render_icon_node};
+        use crate::widgets::visual::icon::IconRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&icon);
         let mut state = IconRenderState::from_icon(&icon, env);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_icon_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_icon_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent gradient node: retain the fully-resolved gradient payload
@@ -260,28 +210,9 @@ impl RenderNode {
     /// The payload carries no signal, so nothing is watched; the gradient stretches
     /// to fill the proposal (`StretchAxis::Both`, read from the payload).
     pub(super) fn build_gradient(gradient: ResolvedGradient, env: &Environment) -> RenderNode {
-        use crate::renderer::{measure_gradient_node, render_gradient_node};
         let stretch = waterui_core::NativeView::stretch_axis(&gradient);
         let gradient = Rc::new(RefCell::new(gradient));
-        let render = {
-            let gradient = Rc::clone(&gradient);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_gradient_node(&mut widget_ctx, &gradient, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let gradient = Rc::clone(&gradient);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_gradient_node(&gradient.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(gradient, stretch, env)
     }
 
     /// Build a persistent shape node: retain the resolved shape payload and re-fill
@@ -289,28 +220,9 @@ impl RenderNode {
     /// path so theme and binding changes patch this node precisely. The shape
     /// stretches to fill the proposal (`StretchAxis::Both`, read from the payload).
     pub(super) fn build_shape(shape: ResolvedShape, env: &Environment) -> RenderNode {
-        use crate::renderer::{measure_shape_node, render_shape_node};
         let stretch = waterui_core::NativeView::stretch_axis(&shape);
         let shape = Rc::new(RefCell::new(shape));
-        let render = {
-            let shape = Rc::clone(&shape);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_shape_node(&mut widget_ctx, &shape, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let shape = Rc::clone(&shape);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_shape_node(&shape.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(shape, stretch, env)
     }
 
     /// Build a persistent morph-shape node: retain the resolved morph payload and
@@ -320,28 +232,9 @@ impl RenderNode {
     /// a time-based animation drives continuous frames via `sample_morph_progress` —
     /// so the morph stays live. Stretches to fill the proposal (`StretchAxis::Both`).
     pub(super) fn build_morph_shape(shape: ResolvedMorphShape, env: &Environment) -> RenderNode {
-        use crate::renderer::{measure_morph_shape_node, render_morph_shape_node};
         let stretch = waterui_core::NativeView::stretch_axis(&shape);
         let shape = Rc::new(RefCell::new(shape));
-        let render = {
-            let shape = Rc::clone(&shape);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_morph_shape_node(&mut widget_ctx, &shape, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let shape = Rc::clone(&shape);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_morph_shape_node(&shape.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(shape, stretch, env)
     }
 
     /// Build a persistent map node: the map is a Rust-side composer whose content
@@ -357,30 +250,12 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::visual::map::{MapRenderState, measure_map_node, render_map_node};
+        use crate::widgets::visual::map::MapRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = MapRenderState::from_config(config, env);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_map_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_map_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent webview node: the webview is a Rust-side composer whose
@@ -395,88 +270,30 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
-        use crate::widgets::platform::webview::{
-            WebViewRenderState, measure_webview_node, render_webview_node,
-        };
+        use crate::widgets::platform::webview::WebViewRenderState;
         let stretch = waterui_core::View::stretch_axis(&webview);
         let mut state = WebViewRenderState::from_view(webview, env);
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
-        let render = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_webview_node(&mut widget_ctx, &state, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let state = Rc::clone(&state);
-            Box::new(
-                move |hydro: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_webview_node(&state.borrow(), proposal, hydro, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(state, stretch, env)
     }
 
     /// Build a persistent spacer node: a no-op render with zero intrinsic; it
     /// expands during placement, not from its intrinsic size. Stretch is its
     /// main-axis fill (`StretchAxis::MainAxis`, read from the config).
     pub(super) fn build_spacer(spacer: Spacer, env: &Environment) -> RenderNode {
-        use crate::widgets::layout::spacer::{measure_spacer_node, render_spacer_node};
         let stretch = waterui_core::NativeView::stretch_axis(&spacer);
         let spacer = Rc::new(RefCell::new(spacer));
-        let render = {
-            let spacer = Rc::clone(&spacer);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_spacer_node(&mut widget_ctx, &spacer, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let spacer = Rc::clone(&spacer);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_spacer_node(&spacer.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(spacer, stretch, env)
     }
 
     /// Build a persistent empty (`()`) node: a no-op render with zero intrinsic and
     /// no accessibility. Never stretches (`StretchAxis::None`, read from the unit
     /// view).
     pub(super) fn build_empty(env: &Environment) -> RenderNode {
-        use crate::widgets::layout::spacer::{measure_empty_node, render_empty_node};
         let stretch = waterui_core::NativeView::stretch_axis(&());
         let empty = Rc::new(RefCell::new(()));
-        let render = {
-            let empty = Rc::clone(&empty);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_empty_node(&mut widget_ctx, &empty, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let empty = Rc::clone(&empty);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_empty_node(&empty.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, stretch, env)
+        Self::build_widget(empty, stretch, env)
     }
 
     /// Build a persistent divider node: a static separator line drawn from theme
@@ -484,53 +301,15 @@ impl RenderNode {
     /// Stretches on its cross axis (`StretchAxis::CrossAxis`, matching the dispatch
     /// path's [`effective_stretch_axis`] for `Divider`).
     pub(super) fn build_divider(divider: Divider, env: &Environment) -> RenderNode {
-        use crate::widgets::divider::{measure_divider_node, render_divider_node};
         let divider = Rc::new(RefCell::new(divider));
-        let render = {
-            let divider = Rc::clone(&divider);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_divider_node(&mut widget_ctx, &divider, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let divider = Rc::clone(&divider);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_divider_node(&divider.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, StretchAxis::CrossAxis, env)
+        Self::build_widget(divider, StretchAxis::CrossAxis, env)
     }
 
     /// Build a persistent string node: an immutable `Str` rendered as plain styled
     /// text each flush (no signal — its content never changes for a given node).
     /// Never stretches (`StretchAxis::None`, like text).
     pub(super) fn build_str(text: Str, env: &Environment) -> RenderNode {
-        use crate::renderer::views::{measure_str_node, render_str_node};
         let text = Rc::new(RefCell::new(text));
-        let render = {
-            let text = Rc::clone(&text);
-            Box::new(
-                move |renderer: &mut HydrolysisRenderer, ctx: RenderContext, env: &Environment| {
-                    let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
-                    render_str_node(&mut widget_ctx, &text, env);
-                },
-            ) as Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &Environment)>
-        };
-        let measure = {
-            let text = Rc::clone(&text);
-            Box::new(
-                move |state: &mut HydroState, proposal: ProposalSize, env: &Environment| {
-                    measure_str_node(&text.borrow(), proposal, state, env)
-                },
-            )
-                as Box<dyn Fn(&mut HydroState, ProposalSize, &Environment) -> ViewDimensions>
-        };
-        Self::build_widget(render, measure, StretchAxis::None, env)
+        Self::build_widget(text, StretchAxis::None, env)
     }
 }

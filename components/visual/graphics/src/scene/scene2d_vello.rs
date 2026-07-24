@@ -69,6 +69,10 @@ impl Scene2D for VelloScene2D<'_> {
         self.scene.append(scene, transform);
     }
 
+    fn encode_vello(&mut self, encode: &mut dyn FnMut(&mut vello::Scene)) {
+        encode(self.scene);
+    }
+
     fn reset(&mut self) {
         self.scene.reset();
     }
