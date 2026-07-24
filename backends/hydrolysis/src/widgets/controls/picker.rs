@@ -33,6 +33,21 @@ impl HydroNativeView for Native<PickerConfig> {
     }
 }
 
+/// State shared by the retained picker node and its popup callbacks.
+pub(crate) struct PickerRenderState {
+    pub(crate) config: PickerConfig,
+    menu_open: Rc<Cell<bool>>,
+}
+
+impl PickerRenderState {
+    pub(crate) fn new(config: PickerConfig) -> Self {
+        Self {
+            config,
+            menu_open: Rc::new(Cell::new(false)),
+        }
+    }
+}
+
 /// Emits a picker's accessibility tree from its config. Shared by the dispatch
 /// path ([`Native<PickerConfig>::accessibility`]) and the retained `Widget`-node
 /// path so both produce the same a11y tree.
@@ -208,20 +223,19 @@ pub(crate) fn picker_accessibility(
 /// Measures a retained picker leaf from its config (mirrors
 /// [`measure_picker_intrinsic`]).
 pub(crate) fn measure_picker_node(
-    config: &PickerConfig,
+    state: &PickerRenderState,
     _proposal: ProposalSize,
-    state: &mut HydroState,
+    hydro: &mut HydroState,
     env: &Environment,
 ) -> ViewDimensions {
-    ViewDimensions::new(measure_picker_intrinsic(config, state, env))
+    ViewDimensions::new(measure_picker_intrinsic(&state.config, hydro, env))
 }
 
 /// Renders a retained picker leaf every flush: emits a11y (unless hidden) then the
 /// style-specific chrome + options, reading the items/selection signals each frame.
 pub(crate) fn render_picker_node(
     ctx: &mut WidgetRenderContext<'_>,
-    config: &Rc<RefCell<PickerConfig>>,
-    menu_open: &Rc<Cell<bool>>,
+    state: &Rc<RefCell<PickerRenderState>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -229,22 +243,25 @@ pub(crate) fn render_picker_node(
         .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        picker_accessibility(ctx.renderer_mut(), render_ctx, &config.borrow(), env);
+        picker_accessibility(ctx.renderer_mut(), render_ctx, &state.borrow().config, env);
     }
-    render_picker_parts(ctx, config, menu_open, env);
+    render_picker_parts(ctx, state, env);
 }
 
 pub(crate) fn render_picker_parts(
     ctx: &mut WidgetRenderContext<'_>,
-    config: &Rc<RefCell<PickerConfig>>,
-    menu_open: &Rc<Cell<bool>>,
+    state: &Rc<RefCell<PickerRenderState>>,
     env: &Environment,
 ) {
     // The items/selection signals are read through `read_signal` so a membership or
     // selection change schedules a frame and this persistent node re-renders.
     let (items_signal, selection, style) = {
-        let picker = config.borrow();
-        (picker.items.clone(), picker.selection.clone(), picker.style)
+        let picker = state.borrow();
+        (
+            picker.config.items.clone(),
+            picker.config.selection.clone(),
+            picker.config.style,
+        )
     };
     let items = ctx.renderer_mut().read_signal(&items_signal);
     assert!(
@@ -253,13 +270,13 @@ pub(crate) fn render_picker_parts(
     );
     match style {
         PickerStyle::Automatic | PickerStyle::Menu => {
-            render_menu_picker(ctx, config, selection, items, menu_open, env);
+            render_menu_picker(ctx, state, selection, items, env);
         }
         PickerStyle::Radio => {
-            render_radio_picker(ctx, config, selection, items, env);
+            render_radio_picker(ctx, state, selection, items, env);
         }
         PickerStyle::Segmented => {
-            render_segmented_picker(ctx, config, selection, items, env);
+            render_segmented_picker(ctx, state, selection, items, env);
         }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
     }
@@ -295,10 +312,9 @@ pub(crate) fn menu_picker_option_rect(
 
 pub(crate) fn render_menu_picker(
     ctx: &mut WidgetRenderContext<'_>,
-    owner: &Rc<RefCell<PickerConfig>>,
+    owner: &Rc<RefCell<PickerRenderState>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
-    menu_open: &Rc<Cell<bool>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(owner, 0);
@@ -307,8 +323,8 @@ pub(crate) fn render_menu_picker(
     let selected = ctx.renderer_mut().read_signal(&selection);
     // Register this node-owned open handle so an outside click can dismiss it; the
     // registry is Rc-pruned, so re-registering the same handle each frame is a no-op.
-    ctx.renderer_mut().register_picker_menu(menu_open);
-    let menu_open = Rc::clone(menu_open);
+    let menu_open = Rc::clone(&owner.borrow().menu_open);
+    ctx.renderer_mut().register_picker_menu(&menu_open);
     let selected_index = items
         .iter()
         .position(|item| item.tag == selected)
@@ -404,7 +420,7 @@ pub(crate) fn render_menu_picker(
 
 pub(crate) fn render_radio_picker(
     ctx: &mut WidgetRenderContext<'_>,
-    owner: &Rc<RefCell<PickerConfig>>,
+    owner: &Rc<RefCell<PickerRenderState>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     env: &Environment,
@@ -504,7 +520,7 @@ pub(crate) fn render_radio_picker(
 
 pub(crate) fn render_segmented_picker(
     ctx: &mut WidgetRenderContext<'_>,
-    owner: &Rc<RefCell<PickerConfig>>,
+    owner: &Rc<RefCell<PickerRenderState>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     env: &Environment,

@@ -5,7 +5,7 @@ use crate::{
     font::{Font, FontWeight},
     text,
 };
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{string::String, vec::Vec};
 use core::ops::AddAssign;
 use nami::impl_constant;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
@@ -407,7 +407,7 @@ impl StyledStr {
 #[derive(Debug, Clone)]
 pub struct MarkdownInlineBuilder {
     base_style: Style,
-    stack: Vec<Style>,
+    stack: smallvec::SmallVec<[Style; 4]>,
     buffer: String,
     result: StyledStr,
 }
@@ -430,7 +430,7 @@ impl MarkdownInlineBuilder {
     pub fn with_base_style(style: Style) -> Self {
         Self {
             base_style: style.clone(),
-            stack: vec![style],
+            stack: smallvec::smallvec![style],
             buffer: String::new(),
             result: StyledStr::empty(),
         }

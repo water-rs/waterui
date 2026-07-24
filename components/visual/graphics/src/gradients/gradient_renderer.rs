@@ -516,10 +516,14 @@ use shader_types::{GpuColorStop, GpuMeshVertex, GradientUniforms};
 struct MeshGpuResources {
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
-    stops_buffer: wgpu::Buffer,
     mesh_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     pipeline_format: wgpu::TextureFormat,
+    uniform_bytes: Vec<u8>,
+    mesh_bytes: Vec<u8>,
+    mesh_vertices: Vec<GpuMeshVertex>,
+    encoder_label: String,
+    render_pass_label: String,
 }
 
 #[expect(
@@ -553,6 +557,14 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    let uniform_capacity =
+        usize::try_from(uniform_size).expect("mesh uniform buffer size must fit usize");
+    let mesh_capacity = usize::try_from(
+        vertex_size
+            .checked_mul(MAX_MESH_VERTICES as u64)
+            .expect("mesh vertex buffer size overflowed u64"),
+    )
+    .expect("mesh vertex buffer size must fit usize");
 
     let mut bind_group_layouts = MESH_GRADIENT.create_bind_group_layouts(ctx.device);
     assert_eq!(
@@ -638,21 +650,27 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
     MeshGpuResources {
         pipeline,
         uniform_buffer,
-        stops_buffer,
         mesh_buffer,
         bind_group,
         pipeline_format: ctx.surface_format,
+        uniform_bytes: Vec::with_capacity(uniform_capacity),
+        mesh_bytes: Vec::with_capacity(mesh_capacity),
+        mesh_vertices: Vec::with_capacity(MAX_MESH_VERTICES),
+        encoder_label: format!("{label_prefix} Encoder"),
+        render_pass_label: format!("{label_prefix} Render Pass"),
     }
 }
 
-fn write_mesh_data(
+fn write_mesh_data<I>(
     frame: &GpuFrame,
-    resources: &MeshGpuResources,
+    resources: &mut MeshGpuResources,
     width: u32,
     height: u32,
     smooths_colors: bool,
-    vertices: &[GpuMeshVertex],
-) {
+    vertices: I,
+) where
+    I: IntoIterator<Item = GpuMeshVertex>,
+{
     let uniforms = GradientUniforms {
         gradient_type: GradientType::Mesh as u32,
         num_stops: 0,
@@ -665,7 +683,8 @@ fn write_mesh_data(
         smooths_colors: u32::from(smooths_colors),
     };
 
-    let mut uniform_data = UniformBuffer::new(Vec::new());
+    resources.uniform_bytes.clear();
+    let mut uniform_data = UniformBuffer::new(&mut resources.uniform_bytes);
     uniform_data
         .write(&uniforms)
         .expect("failed to encode mesh uniform buffer");
@@ -673,40 +692,33 @@ fn write_mesh_data(
         .queue
         .write_buffer(&resources.uniform_buffer, 0, uniform_data.as_ref());
 
-    let stops = vec![GpuColorStop::default(); MAX_COLOR_STOPS];
-    let mut stops_data = StorageBuffer::new(Vec::new());
-    stops_data
-        .write(&stops)
-        .expect("failed to encode mesh stops buffer");
-    frame
-        .queue
-        .write_buffer(&resources.stops_buffer, 0, stops_data.as_ref());
-
-    let mut padded = Vec::with_capacity(MAX_MESH_VERTICES);
-    padded.extend(vertices.iter().copied().take(MAX_MESH_VERTICES));
-    while padded.len() < MAX_MESH_VERTICES {
-        padded.push(GpuMeshVertex::default());
-    }
-
-    let mut mesh_data = StorageBuffer::new(Vec::new());
+    resources.mesh_vertices.clear();
+    resources
+        .mesh_vertices
+        .extend(vertices.into_iter().take(MAX_MESH_VERTICES));
+    resources
+        .mesh_vertices
+        .resize(MAX_MESH_VERTICES, GpuMeshVertex::default());
+    resources.mesh_bytes.clear();
+    let mut mesh_data = StorageBuffer::new(&mut resources.mesh_bytes);
     mesh_data
-        .write(&padded)
+        .write(&resources.mesh_vertices)
         .expect("failed to encode mesh vertex buffer");
     frame
         .queue
         .write_buffer(&resources.mesh_buffer, 0, mesh_data.as_ref());
 }
 
-fn draw_mesh(frame: &mut GpuFrame, resources: &MeshGpuResources, label_prefix: &str) {
+fn draw_mesh(frame: &mut GpuFrame, resources: &MeshGpuResources) {
     let mut encoder = frame
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some(&format!("{label_prefix} Encoder")),
+            label: Some(&resources.encoder_label),
         });
 
     {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(&format!("{label_prefix} Render Pass")),
+            label: Some(&resources.render_pass_label),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &frame.view,
                 depth_slice: None,
@@ -782,7 +794,7 @@ impl GpuView for StaticMeshRenderer {
     fn render(&mut self, frame: &mut GpuFrame) {
         let resources = self
             .resources
-            .as_ref()
+            .as_mut()
             .expect("StaticMeshRenderer::setup() must run before render()");
         assert_eq!(
             resources.pipeline_format, frame.format,
@@ -796,12 +808,12 @@ impl GpuView for StaticMeshRenderer {
                 self.width,
                 self.height,
                 self.smooths_colors,
-                &self.vertices,
+                self.vertices.iter().copied(),
             );
             self.dirty = false;
         }
 
-        draw_mesh(frame, resources, "Static Mesh Gradient");
+        draw_mesh(frame, resources);
     }
 }
 /// A mesh gradient that accepts reactive Signal parameters for animation.
@@ -897,7 +909,7 @@ where
     fn render(&mut self, frame: &mut GpuFrame) {
         let resources = self
             .resources
-            .as_ref()
+            .as_mut()
             .expect("ReactiveMeshRenderer::setup() must run before render()");
         assert_eq!(
             resources.pipeline_format, frame.format,
@@ -919,16 +931,15 @@ where
 
             if colors_changed {
                 let w = self.width as usize;
-                let h = self.height as usize;
-                let mut vertices = Vec::with_capacity(colors.len().min(MAX_MESH_VERTICES));
-                for (index, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
+                let vertices = colors.iter().enumerate().map(|(index, color)| {
                     let x = usize_to_f32(index % w) / usize_to_f32((w - 1).max(1));
-                    let y = usize_to_f32(index / w) / usize_to_f32((h - 1).max(1));
-                    vertices.push(GpuMeshVertex {
+                    let y =
+                        usize_to_f32(index / w) / usize_to_f32((self.height as usize - 1).max(1));
+                    GpuMeshVertex {
                         position: [x, y],
                         color: [color.red, color.green, color.blue, color.opacity],
-                    });
-                }
+                    }
+                });
 
                 write_mesh_data(
                     frame,
@@ -936,13 +947,13 @@ where
                     self.width,
                     self.height,
                     self.smooths_colors,
-                    &vertices,
+                    vertices,
                 );
                 self.last_colors = Some(colors);
             }
         }
 
-        draw_mesh(frame, resources, "Reactive Mesh Gradient");
+        draw_mesh(frame, resources);
     }
 }
 

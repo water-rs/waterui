@@ -1145,8 +1145,9 @@ impl ProgressivePcmAudioPipeline {
 
     fn wait_for_buffer_progress(&self, control: &Receiver<DecoderControl>) -> SendResult {
         let buffer_progress = self.producer.buffer_progress_receiver();
-        let progressed = Box::pin(buffer_progress.recv());
-        let command = Box::pin(control.recv());
+        let progressed = buffer_progress.recv();
+        let command = control.recv();
+        futures::pin_mut!(progressed, command);
         match futures::executor::block_on(select(progressed, command)) {
             Either::Left((Ok(()), _)) => SendResult::Sent,
             Either::Right((Ok(DecoderControl::Seek { position }), _)) => SendResult::Seek(position),
@@ -2567,8 +2568,10 @@ fn wait_for_video_surface_host(
     surfaces: &AndroidVideoSurfaceReceiver,
     control: &Receiver<DecoderControl>,
 ) -> VideoSurfaceHostWait {
-    let surface = Box::pin(surfaces.receiver().recv());
-    let command = Box::pin(control.recv());
+    let surface_receiver = surfaces.receiver();
+    let surface = surface_receiver.recv();
+    let command = control.recv();
+    futures::pin_mut!(surface, command);
     match futures::executor::block_on(select(surface, command)) {
         Either::Left((Ok(port), _)) => VideoSurfaceHostWait::Ready(port),
         Either::Right((Ok(DecoderControl::Seek { position }), _)) => {
@@ -2789,10 +2792,12 @@ fn publish_protected_output(
         }
     }
     loop {
-        let presentation = Box::pin(channels.protected_control.recv());
-        let command = Box::pin(channels.control.recv());
-        let interaction = Box::pin(select(presentation, command));
-        let lifecycle = Box::pin(surface_port.wait_for_lifecycle());
+        let presentation = channels.protected_control.recv();
+        let command = channels.control.recv();
+        futures::pin_mut!(presentation, command);
+        let interaction = select(presentation, command);
+        let lifecycle = surface_port.wait_for_lifecycle();
+        futures::pin_mut!(interaction, lifecycle);
         match futures::executor::block_on(select(interaction, lifecycle)) {
             Either::Left((
                 Either::Left((Ok(ProtectedOutputControl::Present { sequence, delay }), _)),
@@ -3173,8 +3178,9 @@ impl SegmentedDecoders {
             .expect("streaming audio output must expose buffer progress");
 
         while audio.buffered_duration() > maximum_buffer {
-            let progressed = Box::pin(buffer_progress.recv());
-            let command = Box::pin(control.recv());
+            let progressed = buffer_progress.recv();
+            let command = control.recv();
+            futures::pin_mut!(progressed, command);
             match futures::executor::block_on(select(progressed, command)) {
                 Either::Left((Ok(()), _)) => {}
                 Either::Right((Ok(DecoderControl::Seek { position }), _)) => {
@@ -3840,8 +3846,9 @@ fn wait_for_prefetch_budget(
     commands: &Receiver<PrefetchCommand>,
     consumed: &Receiver<PrefetchConsumed>,
 ) -> PrefetchBudgetEvent {
-    let command = Box::pin(commands.recv());
-    let consumed = Box::pin(consumed.recv());
+    let command = commands.recv();
+    let consumed = consumed.recv();
+    futures::pin_mut!(command, consumed);
     match futures::executor::block_on(select(command, consumed)) {
         Either::Left((Ok(command), _)) => PrefetchBudgetEvent::Command(command),
         Either::Right((Ok(item), _)) => PrefetchBudgetEvent::Consumed(item),
@@ -3853,8 +3860,9 @@ fn wait_for_prefetch_output(
     prefetcher: &SegmentPrefetcher,
     control: &Receiver<DecoderControl>,
 ) -> DecoderWait {
-    let output = Box::pin(prefetcher.outputs.recv());
-    let command = Box::pin(control.recv());
+    let output = prefetcher.outputs.recv();
+    let command = control.recv();
+    futures::pin_mut!(output, command);
     match futures::executor::block_on(select(output, command)) {
         Either::Left((Ok(output), _)) => DecoderWait::Output(output),
         Either::Right((Ok(command), _)) => DecoderWait::Command(command),
@@ -3867,8 +3875,9 @@ fn wait_for_session(
     buffered: Duration,
     commands: &Receiver<PrefetchCommand>,
 ) -> PrefetchWait {
-    let next = Box::pin(session.next(buffered));
-    let command = Box::pin(commands.recv());
+    let next = session.next(buffered);
+    let command = commands.recv();
+    futures::pin_mut!(command);
     match futures::executor::block_on(select(next, command)) {
         Either::Left((poll, _)) => PrefetchWait::Poll(poll),
         Either::Right((Ok(command), pending)) => {
@@ -3917,8 +3926,9 @@ fn wait_for_retry(
     retry_after: Duration,
     commands: &Receiver<PrefetchCommand>,
 ) -> Option<PrefetchCommand> {
-    let timer = Box::pin(async_io::Timer::after(retry_after));
-    let command = Box::pin(commands.recv());
+    let timer = async_io::Timer::after(retry_after);
+    let command = commands.recv();
+    futures::pin_mut!(timer, command);
     match futures::executor::block_on(select(command, timer)) {
         Either::Left((Ok(command), _)) => Some(command),
         Either::Left((Err(_), _)) | Either::Right(_) => None,
@@ -3960,8 +3970,9 @@ fn send_responsive(
     control: &Receiver<DecoderControl>,
     output: DecoderOutput,
 ) -> SendResult {
-    let send = Box::pin(updates.send(output));
-    let receive = Box::pin(control.recv());
+    let send = updates.send(output);
+    let receive = control.recv();
+    futures::pin_mut!(send, receive);
     match futures::executor::block_on(select(send, receive)) {
         Either::Left((Ok(()), _)) => SendResult::Sent,
         Either::Left((Err(_), _)) | Either::Right((Err(_) | Ok(DecoderControl::Stop), _)) => {
@@ -3976,8 +3987,9 @@ fn send_frame_responsive(
     control: &Receiver<DecoderControl>,
     frame: DecodedVideoFrame,
 ) -> SendResult {
-    let send = Box::pin(frames.send(frame));
-    let receive = Box::pin(control.recv());
+    let send = frames.send(frame);
+    let receive = control.recv();
+    futures::pin_mut!(send, receive);
     match futures::executor::block_on(select(send, receive)) {
         Either::Left((Ok(()), _)) => SendResult::Sent,
         Either::Left((Err(_), _)) | Either::Right((Err(_) | Ok(DecoderControl::Stop), _)) => {
