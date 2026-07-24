@@ -47,6 +47,7 @@ nami.workspace = true
 parley = { workspace = true, features = ["libm"] }
 kurbo.workspace = true
 peniko.workspace = true
+skrifa.workspace = true
 vello_cpu = { workspace = true, features = ["f32_pipeline"] }
 winit = { version = "0.30", optional = true }
 softbuffer = { version = "0.4", optional = true }

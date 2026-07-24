@@ -32,6 +32,107 @@ pub trait DisplayFlush {
     fn present(&mut self) {}
 }
 
+/// Device-side sink for one RGB565 band.
+///
+/// Implementations own the actual panel transaction: set the target window,
+/// transfer the provided RGB565 pixels, and return only when the slice can be
+/// reused. Dew handles RGBA conversion and bounds the shared DMA buffer to the
+/// largest scheduled band.
+pub trait Rgb565Sink {
+    /// Panel size in device pixels as `(width, height)`.
+    fn size(&self) -> (u32, u32);
+
+    /// Transfers one RGB565 region in row-major order.
+    fn write_region(&mut self, region: DeviceRegion, pixels: &[u16]);
+
+    /// Commits the regions written since the previous call.
+    fn present(&mut self) {}
+}
+
+/// Converts Dew's RGBA bands into a reusable RGB565 DMA band and streams them
+/// to `S`.
+#[derive(Debug)]
+pub struct Rgb565Display<S> {
+    sink: S,
+    dma: Vec<u16>,
+    peak_rgba_bytes: usize,
+    peak_dma_bytes: usize,
+}
+
+impl<S> Rgb565Display<S> {
+    /// Wraps an RGB565 device sink.
+    #[must_use]
+    pub const fn new(sink: S) -> Self {
+        Self {
+            sink,
+            dma: Vec::new(),
+            peak_rgba_bytes: 0,
+            peak_dma_bytes: 0,
+        }
+    }
+
+    /// The underlying device sink.
+    #[must_use]
+    pub const fn sink(&self) -> &S {
+        &self.sink
+    }
+
+    /// Mutable access to the underlying device sink.
+    pub const fn sink_mut(&mut self) -> &mut S {
+        &mut self.sink
+    }
+
+    /// Largest RGBA band received so far, in bytes.
+    #[must_use]
+    pub const fn peak_rgba_bytes(&self) -> usize {
+        self.peak_rgba_bytes
+    }
+
+    /// Largest RGB565 DMA band allocated so far, in bytes.
+    #[must_use]
+    pub const fn peak_dma_bytes(&self) -> usize {
+        self.peak_dma_bytes
+    }
+}
+
+impl<S: Rgb565Sink> DisplayFlush for Rgb565Display<S> {
+    fn size(&self) -> (u32, u32) {
+        self.sink.size()
+    }
+
+    fn flush_region(&mut self, region: DeviceRegion, pixels: &[u8]) {
+        let (width, height) = self.sink.size();
+        assert!(
+            region.x + region.width <= width && region.y + region.height <= height,
+            "RGB565 region {region:?} exceeds panel size {width}x{height}"
+        );
+        let pixel_count = usize::try_from(region.area()).expect("panel region area must fit usize");
+        assert_eq!(
+            pixels.len(),
+            pixel_count * 4,
+            "RGB565 source payload must match the flushed region"
+        );
+        let (rgba, remainder) = pixels.as_chunks::<4>();
+        assert!(
+            remainder.is_empty(),
+            "RGBA payload must contain full pixels"
+        );
+        self.dma.resize(pixel_count, 0);
+        for (target, source) in self.dma.iter_mut().zip(rgba) {
+            *target = (u16::from(source[0]) >> 3) << 11
+                | (u16::from(source[1]) >> 2) << 5
+                | (u16::from(source[2]) >> 3);
+        }
+        self.peak_rgba_bytes = self.peak_rgba_bytes.max(pixels.len());
+        self.peak_dma_bytes = self.peak_dma_bytes.max(pixel_count * 2);
+        self.sink.write_region(region, &self.dma);
+    }
+
+    fn present(&mut self) {
+        self.sink.present();
+    }
+}
+
 /// Desktop/test display: a plain RGBA8 framebuffer in memory.
 ///
 /// Used by the offscreen simulator and unit tests to assert on and
@@ -77,7 +178,7 @@ impl BufferDisplay {
         for (target, source) in pixmap
             .data_mut()
             .iter_mut()
-            .zip(self.pixels.chunks_exact(4))
+            .zip(self.pixels.as_chunks::<4>().0)
         {
             target.r = source[0];
             target.g = source[1];
@@ -132,6 +233,30 @@ impl DisplayFlush for BufferDisplay {
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
+    struct RecordingRgb565Sink {
+        size: (u32, u32),
+        region: Option<DeviceRegion>,
+        pixels: Vec<u16>,
+        presents: usize,
+    }
+
+    impl Rgb565Sink for RecordingRgb565Sink {
+        fn size(&self) -> (u32, u32) {
+            self.size
+        }
+
+        fn write_region(&mut self, region: DeviceRegion, pixels: &[u16]) {
+            self.region = Some(region);
+            self.pixels.clear();
+            self.pixels.extend_from_slice(pixels);
+        }
+
+        fn present(&mut self) {
+            self.presents += 1;
+        }
+    }
+
     #[test]
     fn flushed_region_lands_at_its_offset() {
         let mut display = BufferDisplay::new(8, 4);
@@ -149,5 +274,30 @@ mod tests {
         assert_eq!(display.pixel(4, 2), [20, 21, 22, 23]);
         assert_eq!(display.pixel(0, 0), [0, 0, 0, 0]);
         assert_eq!(display.pixel(5, 1), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rgb565_display_converts_one_reusable_band() {
+        let region = DeviceRegion {
+            x: 1,
+            y: 0,
+            width: 2,
+            height: 1,
+        };
+        let mut display = Rgb565Display::new(RecordingRgb565Sink {
+            size: (4, 2),
+            region: None,
+            pixels: Vec::new(),
+            presents: 0,
+        });
+
+        display.flush_region(region, &[255, 0, 0, 255, 0, 255, 0, 255]);
+        display.present();
+
+        assert_eq!(display.sink().region, Some(region));
+        assert_eq!(display.sink().pixels, [0xf800, 0x07e0]);
+        assert_eq!(display.sink().presents, 1);
+        assert_eq!(display.peak_rgba_bytes(), 8);
+        assert_eq!(display.peak_dma_bytes(), 4);
     }
 }

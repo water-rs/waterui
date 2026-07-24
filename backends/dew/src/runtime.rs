@@ -55,10 +55,11 @@ impl<B: Board> DewRuntime<B> {
         band_height: u32,
         build_root: impl Fn() -> AnyView + 'static,
     ) -> Self {
+        let render_settings = board.render_settings();
         let (width, height) = board.display().size();
         Self {
             renderer: DewRenderer::default(),
-            painter: Painter::new(),
+            painter: Painter::new(render_settings),
             scheduler: BandScheduler::new(width, height, band_height),
             board,
             env,
@@ -79,6 +80,15 @@ impl<B: Board> DewRuntime<B> {
     pub fn pump(&mut self) -> Option<Vec<Rect>> {
         let first = !self.rendered_once;
         let signals = self.renderer.signals();
+        let mut input_changed = false;
+        if !first {
+            while let Some(sample) = self.board.poll_pointer() {
+                input_changed |= self.renderer.handle_pointer(sample, &self.env);
+            }
+        }
+        if input_changed {
+            signals.request_refresh();
+        }
         let rebuild = signals.take_rebuild_request();
         assert!(
             first || !rebuild,
@@ -124,6 +134,11 @@ impl<B: Board> DewRuntime<B> {
         &self.board
     }
 
+    /// Mutable access to the board, used by host runners to enqueue input.
+    pub const fn board_mut(&mut self) -> &mut B {
+        &mut self.board
+    }
+
     /// The frame-trigger handle, for callers that need to request a retained
     /// refresh outside the watched-signal path (e.g. size changes).
     #[must_use]
@@ -144,9 +159,7 @@ fn diff_dirty(old: &DisplayList, new: &DisplayList) -> Vec<Rect> {
     let common = old_commands.len().min(new_commands.len());
     let mut dirty = Vec::new();
     for (old_command, new_command) in old_commands.iter().zip(new_commands) {
-        if old_command != new_command {
-            dirty.push(old_command.bounds().union(new_command.bounds()));
-        }
+        dirty.extend(old_command.changed_bounds(new_command));
     }
     for command in &old_commands[common..] {
         dirty.push(command.bounds());
@@ -186,6 +199,7 @@ mod tests {
     use nami::{Binding, binding};
     use peniko::Color;
     use std::rc::Rc;
+    use waterui_backend_core::input::TouchPhase;
     use waterui_controls::toggle::Toggle;
 
     struct CountingToggle {
@@ -226,6 +240,33 @@ mod tests {
 
         assert!(!dirty.is_empty());
         assert_eq!(body_calls.get(), 1, "refresh must not evaluate body again");
+    }
+
+    #[test]
+    fn input_queued_before_initial_render_is_applied_after_targets_exist() {
+        let value = binding(false);
+        let root_value = value.clone();
+        let mut board = HostBoard::new(200, 40);
+        board.push_pointer(crate::PointerSample {
+            x: 180.0,
+            y: 20.0,
+            phase: TouchPhase::Started,
+        });
+        board.push_pointer(crate::PointerSample {
+            x: 180.0,
+            y: 20.0,
+            phase: TouchPhase::Ended,
+        });
+        let mut runtime = DewRuntime::new(board, Environment::new(), 16, move || {
+            AnyView::new(Toggle::new(&root_value))
+        });
+
+        runtime.pump().expect("initial frame must render");
+        assert!(!value.get(), "initial rendering must not discard input");
+        runtime
+            .pump()
+            .expect("queued input must render after hit targets exist");
+        assert!(value.get());
     }
 
     #[test]

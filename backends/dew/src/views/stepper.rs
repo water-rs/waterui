@@ -3,13 +3,14 @@
 use std::cell::RefCell;
 
 use kurbo::{Line, Rect, RoundedRect, Stroke};
-use nami::Signal;
+use nami::{Binding, Computed, Signal};
 use waterui_controls::stepper::StepperConfig;
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_text::styled::StyledStr;
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext};
+use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{emit_styled_text, measure_label, render_label, to_f32};
@@ -52,12 +53,67 @@ fn value_text_for_measure(config: &StepperConfig) -> StyledStr {
 struct StepperNode {
     config: StepperConfig,
     env: Environment,
+    decrement: PointerTargetHandle,
+    increment: PointerTargetHandle,
+}
+
+struct StepperPointer {
+    value: Binding<i32>,
+    step: Computed<i32>,
+    range: core::ops::RangeInclusive<i32>,
+    direction: i32,
+    armed: bool,
+}
+
+impl PointerHandler for StepperPointer {
+    fn pointer_down(&mut self, _point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+        self.armed = true;
+        false
+    }
+
+    fn pointer_up(&mut self, point: kurbo::Point, bounds: Rect, _env: &Environment) -> bool {
+        if !core::mem::take(&mut self.armed) || !bounds.contains(point) {
+            return false;
+        }
+        let step = self.step.get();
+        assert!(step > 0, "dew stepper requires a positive step");
+        let current = self.value.get();
+        let next = current
+            .saturating_add(step.saturating_mul(self.direction))
+            .clamp(*self.range.start(), *self.range.end());
+        if next == current {
+            return false;
+        }
+        self.value.set(next);
+        true
+    }
+
+    fn pointer_cancel(&mut self, _env: &Environment) -> bool {
+        self.armed = false;
+        false
+    }
 }
 
 pub fn build(config: StepperConfig, env: &Environment) -> Box<dyn DewNode> {
+    let decrement = PointerTargetHandle::new(StepperPointer {
+        value: config.value.clone(),
+        step: config.step.clone(),
+        range: config.range.clone(),
+        direction: -1,
+        armed: false,
+    });
+    let increment = PointerTargetHandle::new(StepperPointer {
+        value: config.value.clone(),
+        step: config.step.clone(),
+        range: config.range.clone(),
+        direction: 1,
+        armed: false,
+    });
     Box::new(StepperNode {
         config,
         env: env.clone(),
+        decrement,
+        increment,
     })
 }
 
@@ -67,7 +123,15 @@ impl DewNode for StepperNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        render(renderer, ctx, &self.config, &self.env);
+        let (minus, plus) = render(renderer, ctx, &self.config, &self.env);
+        renderer.register_pointer_target(
+            ctx.transform.transform_rect_bbox(minus),
+            self.decrement.clone(),
+        );
+        renderer.register_pointer_target(
+            ctx.transform.transform_rect_bbox(plus),
+            self.increment.clone(),
+        );
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -80,10 +144,14 @@ fn render(
     ctx: RenderContext,
     config: &StepperConfig,
     env: &Environment,
-) {
+) -> (Rect, Rect) {
     assert!(
         config.range.start() <= config.range.end(),
         "dew stepper requires an ordered range"
+    );
+    assert!(
+        renderer.read_signal(&config.step) > 0,
+        "dew stepper requires a positive step"
     );
     let bounds = ctx.bounds;
 
@@ -135,6 +203,7 @@ fn render(
     );
     draw_button(renderer, ctx, minus, false);
     draw_button(renderer, ctx, plus, true);
+    (minus, plus)
 }
 
 fn draw_button(renderer: &mut DewRenderer, ctx: RenderContext, rect: Rect, plus: bool) {
@@ -179,6 +248,10 @@ fn measure(state: &RefCell<DewState>, config: &StepperConfig, env: &Environment)
     assert!(
         config.range.start() <= config.range.end(),
         "dew stepper requires an ordered range"
+    );
+    assert!(
+        config.step.get() > 0,
+        "dew stepper requires a positive step"
     );
     let label = measure_label(state, &config.label, env);
     let styled_value = value_text_for_measure(config);

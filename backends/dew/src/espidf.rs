@@ -5,18 +5,74 @@
 //! patching, logging, executors, and the frame loop all live here, so user
 //! apps stay pure `WaterUI` apps that work unchanged across platforms.
 //!
-//! The flush sink is currently an in-memory framebuffer with serial frame
-//! diagnostics; panel drivers (`DisplayFlush` implementations streaming
-//! RGB565 over the display bus) plug into the same loop as they land.
+//! Without a selected physical board, this entry runs a headless streaming
+//! panel simulation: Dew still rasterizes bands and converts them to RGB565,
+//! but the simulated sink consumes each band instead of driving GPIO. It never
+//! allocates a full framebuffer.
 
-use core::time::Duration;
+use std::time::Instant;
 
 use waterui::app::App;
 
-use crate::board::HostBoard;
+use crate::board::Board;
+use crate::compositor::DeviceRegion;
+use crate::display::{Rgb565Display, Rgb565Sink};
+use crate::frame_cadence::FrameCadence;
 use crate::runtime::DewRuntime;
 
-/// Geometry of the target panel.
+#[derive(Debug)]
+struct SimulatedPanel {
+    width: u32,
+    height: u32,
+}
+
+impl SimulatedPanel {
+    const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+}
+
+impl Rgb565Sink for SimulatedPanel {
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn write_region(&mut self, region: DeviceRegion, pixels: &[u16]) {
+        assert_eq!(
+            u64::try_from(pixels.len()).expect("RGB565 band length must fit u64"),
+            region.area(),
+            "ESP-IDF simulation RGB565 payload must match its region"
+        );
+        std::hint::black_box(pixels);
+    }
+}
+
+#[derive(Debug)]
+struct SimulationBoard {
+    display: Rgb565Display<SimulatedPanel>,
+}
+
+impl SimulationBoard {
+    fn new(width: u32, height: u32) -> Self {
+        Self {
+            display: Rgb565Display::new(SimulatedPanel::new(width, height)),
+        }
+    }
+}
+
+impl Board for SimulationBoard {
+    type Display = Rgb565Display<SimulatedPanel>;
+
+    fn display(&mut self) -> &mut Self::Display {
+        &mut self.display
+    }
+
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// Geometry of the simulated target panel.
 #[derive(Debug, Clone, Copy)]
 pub struct PanelConfig {
     /// Panel width in pixels.
@@ -44,8 +100,8 @@ impl PanelConfig {
 /// Installs the main-thread executors that reactive `WaterUI` tasks
 /// (`text!`, `Binding`/`Computed` watchers) require.
 ///
-/// [`run`] calls this; firmware that drives a [`DewRuntime`] directly (e.g.
-/// to dump the framebuffer) must call it once before the first render.
+/// [`run`] calls this; firmware that drives a [`DewRuntime`] directly must
+/// call it once before the first render.
 pub fn init_executors() {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     // The reactive runtime spawns local watcher tasks from the render thread;
@@ -71,23 +127,25 @@ pub fn run(app: App, panel: PanelConfig) -> ! {
     let content = windows.remove(0).content;
 
     log::info!(
-        "dew[espidf]: starting {}x{} panel, {}px bands",
+        "dew[espidf-sim]: starting {}x{} RGB565 stream, {}px bands",
         panel.width,
         panel.height,
         panel.band_height
     );
-    // TODO(panel-driver): swap HostBoard for an Esp32Board streaming RGB565
-    // over the display bus once the panel driver lands; the engine and app
-    // are unchanged across that swap (that is the point of the Board trait).
-    let board = HostBoard::new(panel.width, panel.height);
+    let board = SimulationBoard::new(panel.width, panel.height);
     let mut runtime = DewRuntime::new(board, env, panel.band_height, move || content.build());
+    let mut cadence = FrameCadence::sixty_hz(Instant::now());
 
     loop {
         if let Some(dirty) = runtime.pump() {
-            log::info!("dew[espidf]: frame with {} dirty regions", dirty.len());
+            log::debug!(
+                "dew[espidf-sim]: frame with {} logical dirty regions",
+                dirty.len()
+            );
         }
         // Drive reactive watcher tasks so signal changes propagate.
         crate::embedded_executor::tick();
-        std::thread::sleep(Duration::from_millis(16));
+        let now = Instant::now();
+        std::thread::sleep(cadence.deadline_after_work(now).duration_since(now));
     }
 }
