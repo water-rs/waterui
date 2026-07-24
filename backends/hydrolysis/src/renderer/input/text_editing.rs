@@ -419,10 +419,13 @@ pub(crate) fn replace_model_selection(
     ) {
         return false;
     }
-    model.set_plain_text(text);
     slot.anchor = anchor;
     slot.focus = focus;
     slot.initialized = true;
+    // Binding updates synchronously request a retained-tree refresh. Publish the
+    // new selection first so that refresh observes the caret belonging to the
+    // edited value instead of reusing the previous character's position.
+    model.set_plain_text(text);
     true
 }
 
@@ -435,10 +438,10 @@ pub(crate) fn delete_model_selection(model: &TextInputModel, slot: &mut TextSele
         return false;
     }
     text.replace_range(range.clone(), "");
-    model.set_plain_text(text);
     slot.anchor = range.start;
     slot.focus = range.start;
     slot.initialized = true;
+    model.set_plain_text(text);
     true
 }
 
@@ -449,10 +452,10 @@ pub(crate) fn delete_model_backward(model: &TextInputModel, slot: &mut TextSelec
     if !delete_backward_in_selection(&mut text, &mut anchor, &mut focus) {
         return false;
     }
-    model.set_plain_text(text);
     slot.anchor = anchor;
     slot.focus = focus;
     slot.initialized = true;
+    model.set_plain_text(text);
     true
 }
 
@@ -463,10 +466,10 @@ pub(crate) fn delete_model_forward(model: &TextInputModel, slot: &mut TextSelect
     if !delete_forward_in_selection(&mut text, &mut anchor, &mut focus) {
         return false;
     }
-    model.set_plain_text(text);
     slot.anchor = anchor;
     slot.focus = focus;
     slot.initialized = true;
+    model.set_plain_text(text);
     true
 }
 
@@ -700,19 +703,21 @@ pub(crate) fn execute_text_context_menu_action(
     }
 }
 
-fn refreshed_target_selection(target: &TextInputTarget) -> parley::Selection {
-    let plain_text = target.model.plain_text();
-    let mut slot = target.selection.borrow_mut();
-    if !slot.initialized {
-        slot.anchor = plain_text.len();
-        slot.focus = plain_text.len();
-        slot.initialized = true;
-    }
-    slot.anchor = clamp_to_char_boundary(plain_text.as_str(), slot.anchor);
-    slot.focus = clamp_to_char_boundary(plain_text.as_str(), slot.focus);
-    let layout_len = target.model.layout_len_for_plain_text(plain_text.as_str());
-    let anchor_layout = target.model.layout_index_from_plain_index(slot.anchor);
-    let focus_layout = target.model.layout_index_from_plain_index(slot.focus);
+fn selection_for_target_layout(
+    model: &TextInputModel,
+    layout: &parley::Layout<[u8; 4]>,
+    slot: &TextSelectionSlot,
+) -> parley::Selection {
+    assert!(
+        slot.initialized,
+        "hydrolysis registered a text-input target before initializing its selection"
+    );
+    let plain_text = model.plain_text();
+    let anchor = clamp_to_char_boundary(plain_text.as_str(), slot.anchor);
+    let focus = clamp_to_char_boundary(plain_text.as_str(), slot.focus);
+    let layout_len = model.layout_len_for_plain_text(plain_text.as_str());
+    let anchor_layout = model.layout_index_from_plain_index(anchor);
+    let focus_layout = model.layout_index_from_plain_index(focus);
     let anchor_affinity = if anchor_layout >= layout_len {
         parley::Affinity::Upstream
     } else {
@@ -723,18 +728,20 @@ fn refreshed_target_selection(target: &TextInputTarget) -> parley::Selection {
     } else {
         parley::Affinity::Downstream
     };
-    let selection = parley::Selection::new(
-        parley::Cursor::from_byte_index(&target.layout, anchor_layout, anchor_affinity),
-        parley::Cursor::from_byte_index(&target.layout, focus_layout, focus_affinity),
+    parley::Selection::new(
+        parley::Cursor::from_byte_index(layout, anchor_layout, anchor_affinity),
+        parley::Cursor::from_byte_index(layout, focus_layout, focus_affinity),
     )
-    .refresh(&target.layout);
-    slot.anchor = target
-        .model
-        .plain_index_from_layout_index(selection.anchor().index());
-    slot.focus = target
-        .model
-        .plain_index_from_layout_index(selection.focus().index());
-    selection
+    .refresh(layout)
+}
+
+fn refreshed_target_selection(target: &TextInputTarget) -> parley::Selection {
+    let slot = target.selection.borrow();
+    // The transient overlay may run after the model changes but before the next
+    // retained-tree refresh replaces `target.layout`. Project the source
+    // selection into that stale layout for this frame without writing the
+    // clamped display position back into the model-owned selection slot.
+    selection_for_target_layout(&target.model, &target.layout, &slot)
 }
 
 impl HydrolysisRenderer {
@@ -1700,6 +1707,22 @@ mod tests {
         assert!(!replace_model_selection(&model, &mut slot, "\nworld"));
         assert_eq!(model.plain_text(), "hello\nthere");
         assert_eq!((slot.anchor, slot.focus), (11, 11));
+    }
+
+    #[test]
+    fn stale_transient_layout_does_not_rewind_the_model_selection() {
+        let model = text_field_model("l", Some(1));
+        let layout = parley::Layout::new();
+        let slot = TextSelectionSlot {
+            anchor: 1,
+            focus: 1,
+            initialized: true,
+        };
+
+        let display_selection = selection_for_target_layout(&model, &layout, &slot);
+
+        assert_eq!(display_selection.focus().index(), 0);
+        assert_eq!((slot.anchor, slot.focus), (1, 1));
     }
 
     #[test]

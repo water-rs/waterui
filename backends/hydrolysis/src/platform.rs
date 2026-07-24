@@ -1001,7 +1001,7 @@ mod winit_impl {
         pending_events: Vec<InputEvent>,
         pointer_position: (f32, f32),
         modifiers: Modifiers,
-        ime_allowed: bool,
+        applied_text_input_state: Option<TextInputState>,
         current_cursor_style: CursorStyle,
         /// Last applied (min, max) content-size limits, so per-frame application
         /// only reaches winit when the effective limits actually change.
@@ -1028,7 +1028,7 @@ mod winit_impl {
                 pending_events: Vec::new(),
                 pointer_position: (0.0, 0.0),
                 modifiers: Modifiers::default(),
-                ime_allowed: false,
+                applied_text_input_state: None,
                 current_cursor_style: CursorStyle::Arrow,
                 applied_size_limits: None,
             }
@@ -1392,11 +1392,13 @@ mod winit_impl {
         }
 
         fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
-            let ime_allowed = state.is_some();
-            if self.ime_allowed != ime_allowed {
-                self.window.set_ime_allowed(ime_allowed);
-                self.ime_allowed = ime_allowed;
+            if self.applied_text_input_state == state {
+                return;
             }
+            if self.applied_text_input_state.is_some() != state.is_some() {
+                self.window.set_ime_allowed(state.is_some());
+            }
+            self.applied_text_input_state = state;
 
             let Some(state) = state else {
                 return;
