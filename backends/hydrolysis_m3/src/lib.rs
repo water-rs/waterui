@@ -253,8 +253,8 @@ pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
                 .tertiary(colors.tertiary.resolved())
                 .tertiary_container(colors.tertiary_container.resolved()),
         )
-        .fonts(theme::typography::settings())
         .install(env);
+    theme::typography::install_defaults(env);
     env.insert(colors);
     env.insert(card::theme(&colors));
     env.insert(snackbar::theme(&colors));
@@ -348,9 +348,7 @@ fn install_dynamic_defaults(
         dark,
         |colors| colors.tertiary_container,
     );
-    Theme::new()
-        .fonts(theme::typography::settings())
-        .install(env);
+    theme::typography::install_defaults(env);
     let initial = material_scheme_for_color_scheme(light, dark, scheme.get());
     env.insert(initial);
     env.insert(MaterialColorSchemes::new(
