@@ -57,6 +57,12 @@ pub struct ResolvedFont {
     pub size: f32,
     /// Font weight.
     pub weight: FontWeight,
+    /// Absolute line height in logical points.
+    ///
+    /// `None` uses the selected font's preferred metrics.
+    pub line_height: Option<f32>,
+    /// Additional spacing between adjacent glyphs in logical points.
+    pub letter_spacing: f32,
     /// Optional font family name (e.g., "MaterialIcons-Regular").
     /// None means use the system default font.
     pub family: Option<Str>,
@@ -70,6 +76,8 @@ impl ResolvedFont {
         Self {
             size,
             weight,
+            line_height: None,
+            letter_spacing: 0.0,
             family: None,
         }
     }
@@ -80,6 +88,8 @@ impl ResolvedFont {
         Self {
             size,
             weight,
+            line_height: None,
+            letter_spacing: 0.0,
             family: Some(family.into()),
         }
     }
@@ -90,8 +100,18 @@ impl ResolvedFont {
         Self {
             size,
             weight,
+            line_height: None,
+            letter_spacing: 0.0,
             family: Some(Str::from_static(family)),
         }
+    }
+
+    /// Sets absolute line height and letter spacing.
+    #[must_use]
+    pub const fn with_typography_metrics(mut self, line_height: f32, letter_spacing: f32) -> Self {
+        self.line_height = Some(line_height);
+        self.letter_spacing = letter_spacing;
+        self
     }
 }
 
@@ -133,6 +153,8 @@ impl Font {
         Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
             size: font.size,
             weight,
+            line_height: font.line_height,
+            letter_spacing: font.letter_spacing,
             family: font.family,
         }))
     }
@@ -143,6 +165,8 @@ impl Font {
         Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
             size,
             weight: font.weight,
+            line_height: font.line_height,
+            letter_spacing: font.letter_spacing,
             family: font.family,
         }))
     }
@@ -153,7 +177,27 @@ impl Font {
         Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
             size: font.size,
             weight: font.weight,
+            line_height: font.line_height,
+            letter_spacing: font.letter_spacing,
             family: Some(family.clone().into()),
+        }))
+    }
+
+    /// Sets an absolute line height in logical points.
+    #[must_use]
+    pub fn line_height(self, line_height: f32) -> Self {
+        Self::new(resolve::Map::new(self.0, move |mut font| {
+            font.line_height = Some(line_height);
+            font
+        }))
+    }
+
+    /// Sets additional spacing between adjacent glyphs in logical points.
+    #[must_use]
+    pub fn letter_spacing(self, letter_spacing: f32) -> Self {
+        Self::new(resolve::Map::new(self.0, move |mut font| {
+            font.letter_spacing = letter_spacing;
+            font
         }))
     }
 

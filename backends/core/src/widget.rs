@@ -2,9 +2,13 @@
 
 use core::time::Duration;
 use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+use nami::signal::IntoComputed;
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::animation::Animation;
+use waterui_core::handler::SharedAction;
+use waterui_core::plugin::Plugin;
+use waterui_core::{Binding, Computed, Signal};
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
@@ -96,6 +100,207 @@ impl ButtonMetrics {
         }
     }
 }
+
+/// Backend-neutral presentation for a semantic interactive surface whose visual
+/// chrome is composed by its content view.
+///
+/// Installing this plugin on a `Button` or tappable view keeps the control's
+/// input, keyboard, focus, and accessibility semantics while allowing theme
+/// packages to supply exact state-layer geometry and colors for composed
+/// controls such as icon buttons, FABs, chips, and navigation destinations.
+#[derive(Debug, Clone)]
+pub struct InteractionStyle {
+    /// Layout metrics used by the semantic button wrapper.
+    pub metrics: ButtonMetrics,
+    /// State-layer and ripple color.
+    pub state_layer_color: Color,
+    /// State-layer clipping radii.
+    pub state_layer_radii: RoundedRectRadii,
+    /// Optional fixed state-layer width.
+    pub state_layer_width: Option<f64>,
+    /// Optional fixed state-layer height.
+    pub state_layer_height: Option<f64>,
+    /// Horizontal alignment of a fixed state layer in the hit bounds.
+    pub state_layer_alignment_x: f64,
+    /// Vertical alignment of a fixed state layer in the hit bounds.
+    pub state_layer_alignment_y: f64,
+    /// Optional enabled label color.
+    pub label_color: Option<Color>,
+    /// Optional disabled label color.
+    pub disabled_label_color: Option<Color>,
+    /// Whether this pointer action participates in keyboard focus traversal.
+    pub keyboard_focusable: bool,
+}
+
+impl InteractionStyle {
+    /// Creates an interaction presentation with transparent semantic-button
+    /// chrome and no label-color override.
+    #[must_use]
+    pub fn new(
+        metrics: ButtonMetrics,
+        state_layer_color: impl Into<Color>,
+        state_layer_radii: impl Into<RoundedRectRadii>,
+    ) -> Self {
+        Self {
+            metrics,
+            state_layer_color: state_layer_color.into(),
+            state_layer_radii: state_layer_radii.into(),
+            state_layer_width: None,
+            state_layer_height: None,
+            state_layer_alignment_x: 0.5,
+            state_layer_alignment_y: 0.5,
+            label_color: None,
+            disabled_label_color: None,
+            keyboard_focusable: true,
+        }
+    }
+
+    /// Uses a fixed state-layer size aligned within the semantic hit bounds.
+    #[must_use]
+    pub const fn fixed_state_layer(
+        mut self,
+        width: f64,
+        height: f64,
+        alignment_x: f64,
+        alignment_y: f64,
+    ) -> Self {
+        self.state_layer_width = Some(width);
+        self.state_layer_height = Some(height);
+        self.state_layer_alignment_x = alignment_x;
+        self.state_layer_alignment_y = alignment_y;
+        self
+    }
+
+    /// Resolves the state-layer drawing bounds inside the semantic hit bounds.
+    #[must_use]
+    pub fn state_layer_bounds(&self, hit_bounds: Rect) -> Rect {
+        let width = self
+            .state_layer_width
+            .unwrap_or_else(|| hit_bounds.width())
+            .min(hit_bounds.width());
+        let height = self
+            .state_layer_height
+            .unwrap_or_else(|| hit_bounds.height())
+            .min(hit_bounds.height());
+        let x0 = (hit_bounds.width() - width)
+            .mul_add(self.state_layer_alignment_x.clamp(0.0, 1.0), hit_bounds.x0);
+        let y0 = (hit_bounds.height() - height)
+            .mul_add(self.state_layer_alignment_y.clamp(0.0, 1.0), hit_bounds.y0);
+        Rect::new(x0, y0, x0 + width, y0 + height)
+    }
+
+    /// Sets enabled and disabled label colors for semantic text labels.
+    #[must_use]
+    pub fn label_colors(mut self, enabled: impl Into<Color>, disabled: impl Into<Color>) -> Self {
+        self.label_color = Some(enabled.into());
+        self.disabled_label_color = Some(disabled.into());
+        self
+    }
+
+    /// Returns the label color for the current enabled state.
+    #[must_use]
+    pub fn resolved_label_color(&self, disabled: bool) -> Option<Color> {
+        if disabled {
+            self.disabled_label_color.clone()
+        } else {
+            self.label_color.clone()
+        }
+    }
+
+    /// Keeps the interaction pointer-only, for modal scrims and similar layers.
+    #[must_use]
+    pub const fn pointer_only(mut self) -> Self {
+        self.keyboard_focusable = false;
+        self
+    }
+}
+
+impl Plugin for InteractionStyle {}
+
+/// Publishes whether an interactive subtree owns keyboard focus.
+#[derive(Debug, Clone)]
+pub struct InteractionFocusBinding {
+    focused: Binding<bool>,
+    escape_action: Option<SharedAction>,
+}
+
+impl InteractionFocusBinding {
+    /// Creates a focus observer backed by component-owned state.
+    #[must_use]
+    pub fn new(focused: &Binding<bool>) -> Self {
+        Self {
+            focused: focused.clone(),
+            escape_action: None,
+        }
+    }
+
+    /// Handles Escape while this interactive subtree owns keyboard focus.
+    #[must_use]
+    pub fn escape_action(mut self, action: SharedAction) -> Self {
+        self.escape_action = Some(action);
+        self
+    }
+
+    /// Returns the component-owned focus state.
+    #[must_use]
+    pub const fn focused(&self) -> &Binding<bool> {
+        &self.focused
+    }
+
+    /// Returns the configured Escape action.
+    #[must_use]
+    pub const fn escape_action_handle(&self) -> Option<&SharedAction> {
+        self.escape_action.as_ref()
+    }
+}
+
+impl Plugin for InteractionFocusBinding {}
+
+/// Marks a subtree as a modal interaction scope.
+#[derive(Debug, Clone)]
+pub struct ModalInteraction {
+    active: Computed<bool>,
+    close_on_escape: bool,
+    escape_action: SharedAction,
+}
+
+impl ModalInteraction {
+    /// Creates a modal scope with an optional Escape-key action.
+    #[must_use]
+    pub fn new(close_on_escape: bool, escape_action: SharedAction) -> Self {
+        Self {
+            active: Computed::constant(true),
+            close_on_escape,
+            escape_action,
+        }
+    }
+
+    /// Controls whether the modal scope currently traps interaction.
+    #[must_use]
+    pub fn active(mut self, active: impl IntoComputed<bool>) -> Self {
+        self.active = active.into_computed();
+        self
+    }
+
+    /// Whether this modal scope currently traps interaction.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active.get()
+    }
+
+    /// Whether Escape should dispatch the modal action.
+    #[must_use]
+    pub const fn close_on_escape(&self) -> bool {
+        self.close_on_escape
+    }
+
+    /// Dispatches the modal Escape action.
+    pub fn handle_escape(&self, env: &waterui_core::Environment) {
+        self.escape_action.call(env);
+    }
+}
+
+impl Plugin for ModalInteraction {}
 
 /// Maximum number of press ripple waves tracked concurrently per widget.
 ///
@@ -847,6 +1052,16 @@ pub trait WidgetTheme {
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
         _style: ButtonStyle,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Draw a state layer supplied by a composed semantic control.
+    fn draw_interaction_state_layer(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _radii: RoundedRectRadii,
+        _color: peniko::Color,
         _state: WidgetInteractionState,
     ) {
     }

@@ -410,6 +410,8 @@ pub(crate) struct TextNode {
 pub(crate) struct ContainerNode {
     pub(crate) layout: Box<dyn Layout>,
     pub(crate) children: Vec<RenderNode>,
+    #[cfg(feature = "accessibility")]
+    pub(crate) accessibility_child_env: Option<Environment>,
     /// Child frames cached by [`RenderNode::layout`]; reused by
     /// [`RenderNode::flush`] so a geometry-static frame pays only re-encode.
     pub(crate) placed: Vec<Rect>,

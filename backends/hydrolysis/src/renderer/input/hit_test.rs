@@ -2,7 +2,9 @@ use super::*;
 use crate::widgets::util::widget_theme;
 use nami::{Computed, Signal as _};
 use waterui::drag_drop::DragData;
-use waterui_backend_core::widget::WidgetInteractionState;
+use waterui_backend_core::widget::{
+    InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DropTargetKey {
@@ -61,6 +63,17 @@ pub(crate) struct PointerTarget {
     /// press feedback animates without a structural rebuild.
     pub(crate) interaction: Option<Rc<InteractionLayerHandles>>,
     pub(crate) action: PointerAction,
+    pub(crate) keyboard_step: Option<KeyboardStepAction>,
+    pub(crate) keyboard_focusable: bool,
+    pub(crate) modal: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingPointerPress {
+    pub(crate) slot: PressSlot,
+    pub(crate) origin: vello::kurbo::Point,
+    pub(crate) starts_at: Instant,
+    pub(crate) chrome_state_dependent: bool,
 }
 
 #[derive(Clone)]
@@ -103,6 +116,7 @@ pub(crate) struct HoverSync {
 
 pub(crate) type PointerAction =
     Rc<RefCell<dyn FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool>>;
+pub(crate) type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub(crate) type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
 pub(crate) type HoverMoveAction = Rc<RefCell<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>>;
 pub(crate) type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
@@ -110,6 +124,14 @@ pub(crate) type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
 #[derive(Default)]
 pub(crate) struct HitTestState {
     pub(crate) pointer_targets: Vec<PointerTarget>,
+    pub(crate) active_pointer_target: Option<PointerTarget>,
+    pub(crate) active_pointer: Option<(u64, PointerKind)>,
+    pub(crate) pending_pointer_press: Option<PendingPointerPress>,
+    pub(crate) keyboard_focus: Option<InteractionKey>,
+    pub(crate) keyboard_focus_binding: Option<Binding<bool>>,
+    pub(crate) keyboard_focus_visible: bool,
+    pub(crate) active_keyboard_target: Option<PointerTarget>,
+    pub(crate) modal_interaction: Option<ModalInteraction>,
     pub(crate) active_pointer_drag_target: Option<PointerAction>,
     pub(crate) active_pointer_drag_signature: Option<(usize, usize)>,
     pub(crate) cursor_targets: Vec<CursorTarget>,
@@ -133,6 +155,7 @@ impl HitTestState {
         self.drop_targets.clear();
         self.context_menu_targets.clear();
         self.scroll_targets.clear();
+        self.modal_interaction = None;
     }
 
     pub(crate) fn begin_rebuild_frame(&mut self) {
@@ -395,12 +418,34 @@ impl HydrolysisRenderer {
         button: PointerButton,
         env: &Environment,
     ) -> bool {
+        self.handle_pointer_down_with_source(0, PointerKind::Mouse, x, y, button, env)
+    }
+
+    pub fn handle_pointer_down_with_source(
+        &mut self,
+        pointer_id: u64,
+        pointer_kind: PointerKind,
+        x: f32,
+        y: f32,
+        button: PointerButton,
+        env: &Environment,
+    ) -> bool {
+        if self
+            .hit_test
+            .active_pointer
+            .is_some_and(|active| active != (pointer_id, pointer_kind))
+        {
+            return false;
+        }
+        self.hit_test.active_pointer = Some((pointer_id, pointer_kind));
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
         let mut refresh_requested = false;
         let mut visual_changed = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.hit_test.active_pointer_target = None;
+        self.hit_test.pending_pointer_press = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         refresh_requested |= self.cancel_active_drag(env);
@@ -485,6 +530,14 @@ impl HydrolysisRenderer {
             "pointer down candidates"
         );
         if focus_wins {
+            if let Some(index) = focused {
+                let key = self.text_editing.text_input_targets[index]
+                    .interaction_key
+                    .clone();
+                self.set_keyboard_focus(Some(key), false);
+            } else {
+                self.set_keyboard_focus(None, false);
+            }
             let mut changed = self.set_focused_text_input(focused);
             if let Some(index) = focused {
                 match button {
@@ -535,21 +588,39 @@ impl HydrolysisRenderer {
 
         for index in pointer_indices {
             let target = self.hit_test.pointer_targets[index].clone();
+            let keyboard_key = target.press_slot.as_ref().map(|slot| slot.key.clone());
+            self.set_keyboard_focus(keyboard_key, false);
+            refresh_requested |= self.set_focused_text_input(None);
             if let Some(slot) = target.press_slot.as_ref() {
-                self.hit_test.interaction.begin_press(slot, point, at);
-                self.hit_test.active_press_bounds = Some(target.bounds);
-                self.hit_test.active_press_origin = Some(point);
-                if target
+                let chrome_state_dependent = target
                     .interaction
                     .as_ref()
-                    .is_some_and(|handles| handles.chrome_state_dependent())
-                {
+                    .is_some_and(|handles| handles.chrome_state_dependent());
+                let touch_delay = target
+                    .interaction
+                    .as_ref()
+                    .map_or(Duration::ZERO, |handles| handles.touch_delay());
+                if pointer_kind == PointerKind::Mouse || touch_delay.is_zero() {
+                    self.hit_test.interaction.begin_press(slot, point, at);
+                    visual_changed = true;
+                } else {
+                    self.hit_test.pending_pointer_press = Some(PendingPointerPress {
+                        slot: slot.clone(),
+                        origin: point,
+                        starts_at: at
+                            .checked_add(touch_delay)
+                            .expect("hydrolysis pointer press start time overflow"),
+                        chrome_state_dependent,
+                    });
+                }
+                self.hit_test.active_press_bounds = Some(target.bounds);
+                self.hit_test.active_press_origin = Some(point);
+                if chrome_state_dependent && visual_changed {
                     self.request_refresh();
                     refresh_requested = true;
-                } else {
+                } else if visual_changed {
                     self.request_redraw();
                 }
-                visual_changed = true;
             }
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
@@ -561,22 +632,31 @@ impl HydrolysisRenderer {
                 order = target.order,
                 "dispatch pointer target"
             );
+            if target.captures_drag {
+                let changed = (target.action.borrow_mut())(self, point, env);
+                if changed {
+                    self.request_refresh();
+                    refresh_requested = true;
+                }
+                self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
+                self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
+                return refresh_requested || visual_changed || changed;
+            }
+            if target.press_slot.is_some() {
+                // Material controls commit on release, not on pointer-down. Keep
+                // the topmost opaque target captured so a release inside its
+                // bounds activates it exactly once; a release outside cancels.
+                self.hit_test.active_pointer_target = Some(target);
+                return refresh_requested || visual_changed;
+            }
             let changed = (target.action.borrow_mut())(self, point, env);
             if changed {
                 self.request_refresh();
                 refresh_requested = true;
             }
-            if target.captures_drag {
-                self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
-                self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
-            }
-            // A target with a press slot is an opaque interactive control: it
-            // consumes the primary press even when its action reports no state
-            // change (a button action's `false` means "no refresh needed", not
-            // "unhandled"). Only slot-less utility targets stay transparent —
-            // otherwise one tap would fire every overlapping control beneath
-            // the topmost one.
-            if !changed && !target.captures_drag && target.press_slot.is_none() {
+            // Slot-less utility targets stay transparent when unhandled,
+            // allowing an overlapping target beneath them to receive the event.
+            if !changed {
                 continue;
             }
             tracing::trace!(
@@ -600,6 +680,7 @@ impl HydrolysisRenderer {
         if self.set_focused_text_input(focused) {
             refresh_requested = true;
         }
+        self.set_keyboard_focus(None, false);
         refresh_requested || visual_changed
     }
 
@@ -607,12 +688,47 @@ impl HydrolysisRenderer {
         &mut self,
         x: f32,
         y: f32,
+        button: PointerButton,
+        env: &Environment,
+    ) -> bool {
+        self.handle_pointer_up_with_source(0, PointerKind::Mouse, x, y, button, env)
+    }
+
+    pub fn handle_pointer_up_with_source(
+        &mut self,
+        pointer_id: u64,
+        pointer_kind: PointerKind,
+        x: f32,
+        y: f32,
         _button: PointerButton,
         env: &Environment,
     ) -> bool {
+        if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
+            return false;
+        }
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
-        let mut changed = self.handle_pointer_move(x, y, env);
+        let mut changed = self.handle_pointer_move_inner(x, y, env, pointer_kind);
+        if let Some(pending) = self.hit_test.pending_pointer_press.take() {
+            self.hit_test
+                .interaction
+                .begin_press(&pending.slot, pending.origin, at);
+            if pending.chrome_state_dependent {
+                self.request_refresh();
+            } else {
+                self.request_redraw();
+            }
+            changed = true;
+        }
+        if let Some(target) = self.hit_test.active_pointer_target.take()
+            && target.bounds.contains(point)
+        {
+            let action_changed = (target.action.borrow_mut())(self, point, env);
+            if action_changed {
+                self.request_refresh();
+            }
+            changed |= action_changed;
+        }
         let drop_changed = self.finish_active_drag(point, env);
         if drop_changed {
             self.request_refresh();
@@ -622,8 +738,10 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.hit_test.active_pointer_target = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
+        self.hit_test.active_pointer = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
             self.request_refresh();
@@ -645,6 +763,41 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool {
+        self.handle_pointer_move_with_source(0, PointerKind::Mouse, x, y, env)
+    }
+
+    pub fn handle_pointer_move_with_source(
+        &mut self,
+        pointer_id: u64,
+        pointer_kind: PointerKind,
+        x: f32,
+        y: f32,
+        env: &Environment,
+    ) -> bool {
+        if self
+            .hit_test
+            .active_pointer
+            .is_some_and(|active| active != (pointer_id, pointer_kind))
+        {
+            return false;
+        }
+        if pointer_kind != PointerKind::Mouse
+            && self.hit_test.pending_pointer_press.take().is_some()
+        {
+            self.hit_test.active_pointer_target = None;
+            self.hit_test.active_press_bounds = None;
+            self.hit_test.active_press_origin = None;
+        }
+        self.handle_pointer_move_inner(x, y, env, pointer_kind)
+    }
+
+    fn handle_pointer_move_inner(
+        &mut self,
+        x: f32,
+        y: f32,
+        env: &Environment,
+        pointer_kind: PointerKind,
+    ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
         let mut refresh_requested = false;
@@ -664,7 +817,11 @@ impl HydrolysisRenderer {
         }
         let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
         refresh_requested |= gesture_changed;
-        let hover = self.hit_test.sync_hover_targets(point, env, true, at);
+        let hover = if pointer_kind == PointerKind::Mouse {
+            self.hit_test.sync_hover_targets(point, env, true, at)
+        } else {
+            HoverSync::default()
+        };
         if hover.visual_changed {
             self.request_redraw();
         }
@@ -710,12 +867,264 @@ impl HydrolysisRenderer {
         changed
     }
 
+    pub(crate) fn set_keyboard_focus(
+        &mut self,
+        focus: Option<InteractionKey>,
+        visible: bool,
+    ) -> bool {
+        let visible = focus.is_some() && visible;
+        if self.hit_test.keyboard_focus == focus && self.hit_test.keyboard_focus_visible == visible
+        {
+            return false;
+        }
+        if self.hit_test.keyboard_focus != focus {
+            if let Some(binding) = self.hit_test.keyboard_focus_binding.take() {
+                binding.set(false);
+            }
+            self.hit_test.keyboard_focus = focus;
+            self.hit_test.keyboard_focus_binding = self
+                .hit_test
+                .pointer_targets
+                .iter()
+                .filter_map(|target| target.press_slot.as_ref())
+                .find(|slot| {
+                    self.hit_test
+                        .keyboard_focus
+                        .as_ref()
+                        .is_some_and(|focused| &slot.key == focused)
+                })
+                .and_then(|slot| slot.focus_binding.clone());
+            if let Some(binding) = self.hit_test.keyboard_focus_binding.as_ref() {
+                binding.set(true);
+            }
+        }
+        self.hit_test.keyboard_focus_visible = visible;
+        self.request_refresh();
+        true
+    }
+
+    fn keyboard_focus_candidates(&self) -> Vec<(InteractionKey, Option<usize>, usize)> {
+        let modal_active = self
+            .hit_test
+            .pointer_targets
+            .iter()
+            .any(|target| target.modal)
+            || self
+                .text_editing
+                .text_input_targets
+                .iter()
+                .any(|target| target.modal);
+        let mut candidates = Vec::new();
+        for target in &self.hit_test.pointer_targets {
+            let Some(slot) = target.press_slot.as_ref() else {
+                continue;
+            };
+            if (modal_active && !target.modal)
+                || !target.keyboard_focusable
+                || candidates.iter().any(|(key, _, _)| key == &slot.key)
+            {
+                continue;
+            }
+            candidates.push((slot.key.clone(), None, target.order));
+        }
+        for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
+            if (modal_active && !target.modal)
+                || candidates
+                    .iter()
+                    .any(|(key, _, _)| key == &target.interaction_key)
+            {
+                continue;
+            }
+            candidates.push((target.interaction_key.clone(), Some(index), target.order));
+        }
+        candidates.sort_unstable_by_key(|(_, _, order)| *order);
+        candidates
+    }
+
+    fn move_keyboard_focus(&mut self, reverse: bool) -> bool {
+        let candidates = self.keyboard_focus_candidates();
+        if candidates.is_empty() {
+            return self.set_keyboard_focus(None, false);
+        }
+        let current = self
+            .hit_test
+            .keyboard_focus
+            .as_ref()
+            .and_then(|focused| candidates.iter().position(|(key, _, _)| key == focused));
+        let next = if reverse {
+            current.map_or(candidates.len() - 1, |index| {
+                index.checked_sub(1).unwrap_or(candidates.len() - 1)
+            })
+        } else {
+            current.map_or(0, |index| (index + 1) % candidates.len())
+        };
+        let (key, text_input, _) = &candidates[next];
+        let mut changed = self.set_keyboard_focus(Some(key.clone()), true);
+        changed |= self.set_focused_text_input(*text_input);
+        changed
+    }
+
+    pub(crate) fn handle_keyboard_key_down(
+        &mut self,
+        key: &KeyCode,
+        modifiers: Modifiers,
+        env: &Environment,
+    ) -> bool {
+        if matches!(key, KeyCode::Named(value) if value == "Escape")
+            && let Some(modal) = self.hit_test.modal_interaction.clone()
+            && modal.close_on_escape()
+        {
+            modal.handle_escape(env);
+            return true;
+        }
+        if matches!(key, KeyCode::Named(value) if value == "Escape")
+            && let Some(focused) = self.hit_test.keyboard_focus.as_ref()
+            && let Some(action) = self
+                .hit_test
+                .pointer_targets
+                .iter()
+                .rev()
+                .filter_map(|target| target.press_slot.as_ref())
+                .find(|slot| &slot.key == focused)
+                .and_then(|slot| slot.escape_action.clone())
+        {
+            action.call(env);
+            return true;
+        }
+        if matches!(key, KeyCode::Named(value) if value == "Tab")
+            && !(modifiers.control || modifiers.alt || modifiers.super_key)
+        {
+            return self.move_keyboard_focus(modifiers.shift);
+        }
+        let activates = matches!(key, KeyCode::Named(value) if value == "Enter" || value == "Space")
+            || matches!(key, KeyCode::Character(value) if value == " ");
+        let step_forward =
+            matches!(key, KeyCode::Named(value) if value == "ArrowRight" || value == "ArrowUp");
+        let step_backward =
+            matches!(key, KeyCode::Named(value) if value == "ArrowLeft" || value == "ArrowDown");
+        if step_forward || step_backward {
+            let modal_active = self.hit_test.modal_interaction.is_some();
+            let Some(focused) = self.hit_test.keyboard_focus.as_ref() else {
+                return false;
+            };
+            let Some(action) = self
+                .hit_test
+                .pointer_targets
+                .iter()
+                .rev()
+                .find(|target| {
+                    (!modal_active || target.modal)
+                        && target
+                            .press_slot
+                            .as_ref()
+                            .is_some_and(|slot| &slot.key == focused)
+                })
+                .and_then(|target| target.keyboard_step.clone())
+            else {
+                return false;
+            };
+            let changed = (action.borrow_mut())(step_forward);
+            if changed {
+                self.request_refresh();
+            }
+            return true;
+        }
+        if !activates || modifiers.control || modifiers.alt || modifiers.super_key {
+            return false;
+        }
+        let Some(focused) = self.hit_test.keyboard_focus.as_ref() else {
+            return false;
+        };
+        let modal_active = self.hit_test.modal_interaction.is_some();
+        let Some(target) = self
+            .hit_test
+            .pointer_targets
+            .iter()
+            .rev()
+            .find(|target| {
+                (!modal_active || target.modal)
+                    && target
+                        .press_slot
+                        .as_ref()
+                        .is_some_and(|slot| &slot.key == focused)
+            })
+            .cloned()
+        else {
+            return false;
+        };
+        if target.captures_drag {
+            return false;
+        }
+        if self.hit_test.active_keyboard_target.is_some() {
+            return true;
+        }
+        let origin = target.bounds.center();
+        if let Some(slot) = target.press_slot.as_ref() {
+            self.hit_test
+                .interaction
+                .begin_press(slot, origin, self.frame_instant());
+        }
+        if target
+            .interaction
+            .as_ref()
+            .is_some_and(|handles| handles.chrome_state_dependent())
+        {
+            self.request_refresh();
+        } else {
+            self.request_redraw();
+        }
+        self.hit_test.active_keyboard_target = Some(target);
+        let _ = env;
+        true
+    }
+
+    pub(crate) fn handle_keyboard_key_up(&mut self, key: &KeyCode, env: &Environment) -> bool {
+        let activates = matches!(key, KeyCode::Named(value) if value == "Enter" || value == "Space")
+            || matches!(key, KeyCode::Character(value) if value == " ");
+        if !activates {
+            return false;
+        }
+        let Some(target) = self.hit_test.active_keyboard_target.take() else {
+            return false;
+        };
+        let point = target.bounds.center();
+        let action_changed = (target.action.borrow_mut())(self, point, env);
+        let clear = self
+            .hit_test
+            .interaction
+            .clear_all_presses(self.frame_instant());
+        if action_changed || clear.chrome_changed {
+            self.request_refresh();
+        } else if clear.visual_changed {
+            self.request_redraw();
+        }
+        true
+    }
+
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
+        let Some((pointer_id, pointer_kind)) = self.hit_test.active_pointer else {
+            return false;
+        };
+        self.handle_pointer_cancel_with_source(pointer_id, pointer_kind, env)
+    }
+
+    pub fn handle_pointer_cancel_with_source(
+        &mut self,
+        pointer_id: u64,
+        pointer_kind: PointerKind,
+        env: &Environment,
+    ) -> bool {
+        if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
+            return false;
+        }
         let at = self.frame_instant();
         let mut refresh_requested = self.finish_interactive_navigation_pop(true);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.hit_test.active_pointer_target = None;
+        self.hit_test.active_pointer = None;
+        self.hit_test.pending_pointer_press = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         refresh_requested |= self.cancel_active_drag(env);
@@ -807,6 +1216,7 @@ impl HydrolysisRenderer {
         let interaction = press_slot
             .as_ref()
             .and_then(|slot| self.hit_test.interaction.handles_for(slot));
+        let modal = press_slot.as_ref().is_some_and(|slot| slot.modal);
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag,
@@ -815,6 +1225,9 @@ impl HydrolysisRenderer {
             press_slot,
             interaction,
             action,
+            keyboard_step: None,
+            keyboard_focusable: false,
+            modal,
         });
     }
 
@@ -896,12 +1309,13 @@ impl HydrolysisRenderer {
         self.bind_interaction_target_with_focus(key, bounds, env, None, disabled)
     }
 
-    pub(crate) fn bind_focused_interaction_target(
+    pub(crate) fn bind_focused_control_interaction_target(
         &mut self,
         key: InteractionKey,
         bounds: vello::kurbo::Rect,
         env: &Environment,
         focused: bool,
+        disabled: bool,
     ) -> (
         WidgetInteractionState,
         PressSlot,
@@ -912,7 +1326,7 @@ impl HydrolysisRenderer {
             bounds,
             env,
             Some(InteractionFocus::visible(focused)),
-            false,
+            disabled,
         )
     }
 
@@ -928,6 +1342,16 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
+        let keyboard_focused = self.hit_test.keyboard_focus.as_ref() == Some(&key);
+        let focus = if focus.is_some_and(|focus| focus.visible) {
+            focus
+        } else if keyboard_focused {
+            Some(InteractionFocus::visible(
+                self.hit_test.keyboard_focus_visible,
+            ))
+        } else {
+            focus
+        };
         let (hover_slot, hovered) = self.hit_test.interaction.bind_hover(&key);
         if disabled {
             // No hover target is registered for a disabled control, so pointer
@@ -937,7 +1361,7 @@ impl HydrolysisRenderer {
         }
         let motion = widget_theme(env).interaction_motion();
         let now = self.frame_instant();
-        let (state, press_slot, handles) = self.hit_test.interaction.bind_widget_state(
+        let (state, mut press_slot, handles) = self.hit_test.interaction.bind_widget_state(
             &key,
             WidgetInteractionInput {
                 bounds,
@@ -949,6 +1373,21 @@ impl HydrolysisRenderer {
             &mut self.animation_controller,
             now,
         );
+        if let Some(modal) = env
+            .get::<ModalInteraction>()
+            .filter(|modal| modal.is_active())
+        {
+            press_slot.modal = true;
+            self.hit_test.modal_interaction = Some(modal.clone());
+        }
+        if let Some(focus_binding) = env.get::<InteractionFocusBinding>() {
+            press_slot.focus_binding = Some(focus_binding.focused().clone());
+            press_slot.escape_action = focus_binding.escape_action_handle().cloned();
+            if keyboard_focused {
+                focus_binding.focused().set(true);
+                self.hit_test.keyboard_focus_binding = Some(focus_binding.focused().clone());
+            }
+        }
         // Every widget that binds an interaction target draws its hover/focus/press
         // state layers from the sampled state each flush, so its chrome is
         // state-dependent by construction: a press or hover change must schedule a
@@ -975,26 +1414,14 @@ impl HydrolysisRenderer {
     ) where
         F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
     {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let order = self.hit_test.next_hit_test_order();
-        let interaction = self.hit_test.interaction.handles_for(&press_slot);
-        self.hit_test.pointer_targets.push(PointerTarget {
-            bounds,
-            captures_drag: false,
-            depth: self.render_depth,
-            order,
-            press_slot: Some(press_slot),
-            interaction,
-            action: Rc::new(RefCell::new(action)),
-        });
+        self.register_interactive_pointer_target_with_keyboard(bounds, press_slot, true, action);
     }
 
-    pub(crate) fn register_interactive_pointer_drag_target<F>(
+    pub(crate) fn register_interactive_pointer_target_with_keyboard<F>(
         &mut self,
         bounds: vello::kurbo::Rect,
         press_slot: PressSlot,
+        keyboard_focusable: bool,
         action: F,
     ) where
         F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
@@ -1004,6 +1431,37 @@ impl HydrolysisRenderer {
         }
         let order = self.hit_test.next_hit_test_order();
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
+        let modal = press_slot.modal;
+        self.hit_test.pointer_targets.push(PointerTarget {
+            bounds,
+            captures_drag: false,
+            depth: self.render_depth,
+            order,
+            press_slot: Some(press_slot),
+            interaction,
+            action: Rc::new(RefCell::new(action)),
+            keyboard_step: None,
+            keyboard_focusable,
+            modal,
+        });
+    }
+
+    pub(crate) fn register_interactive_pointer_drag_target<F, K>(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        press_slot: PressSlot,
+        action: F,
+        keyboard_step: K,
+    ) where
+        F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
+        K: 'static + FnMut(bool) -> bool,
+    {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        let order = self.hit_test.next_hit_test_order();
+        let interaction = self.hit_test.interaction.handles_for(&press_slot);
+        let modal = press_slot.modal;
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag: true,
@@ -1012,6 +1470,9 @@ impl HydrolysisRenderer {
             press_slot: Some(press_slot),
             interaction,
             action: Rc::new(RefCell::new(action)),
+            keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
+            keyboard_focusable: true,
+            modal,
         });
     }
 

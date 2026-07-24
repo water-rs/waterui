@@ -275,6 +275,9 @@ impl HydrolysisRenderer {
         render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let disabled = env
+            .get::<waterui_core::interaction::Disabled>()
+            .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         #[cfg(feature = "accessibility")]
         if matches!(effect.gesture, Gesture::Tap(_)) && env.get::<AccessibilityRole>().is_some() {
             let mut node = AccessibilityNode::new(
@@ -286,26 +289,74 @@ impl HydrolysisRenderer {
                 node.set_label(label);
             }
             node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            let activation_point = accessibility_activation_point(bounds);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
+            let action_target = if disabled {
+                node.set_disabled();
+                None
+            } else {
+                node.add_action(AccessibilityAction::Click);
+                let activation_point = accessibility_activation_point(bounds);
                 Some(AccessibilityActionTarget::PointerPrimaryClick {
                     point: activation_point,
-                }),
-            );
+                })
+            };
+            let _ = renderer.register_accessibility_node(node, bounds, env, action_target);
         }
         let group_id = renderer.gesture_group_id_for_identity(effect.gesture_group_identity);
         let captured_env = env.clone();
         let action = Rc::clone(&effect.action);
-        let layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
+        let mut layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
             let action_env = captured_env.layered_on(runtime_env);
             action.borrow_mut()(&action_env);
         });
-        renderer.register_gesture_target(bounds, group_id, effect.gesture.clone(), layered_action);
 
+        if matches!(effect.gesture, Gesture::Tap(_))
+            && let Some(style) = env
+                .get::<waterui_backend_core::widget::InteractionStyle>()
+                .cloned()
+        {
+            let interaction_key = InteractionKey::for_rc(&effect.action, 0);
+            let (interaction, press_slot, _) =
+                renderer.bind_control_interaction_target(interaction_key, bounds, env, disabled);
+            Self::render_gesture_content(renderer, env, render_content);
+
+            let color_signal = style.state_layer_color.resolve(env);
+            let color = resolved_color_to_peniko(renderer.read_signal(&color_signal));
+            let interaction = local_interaction_state(interaction, ctx.hit_transform);
+            let theme = crate::widgets::util::widget_theme(env);
+            let mut draw = renderer.draw_context(ctx);
+            theme.draw_interaction_state_layer(
+                &mut draw,
+                style.state_layer_bounds(ctx.bounds),
+                style.state_layer_radii,
+                color,
+                interaction,
+            );
+
+            if !disabled {
+                renderer.register_interactive_pointer_target_with_keyboard(
+                    bounds,
+                    press_slot,
+                    style.keyboard_focusable,
+                    move |_renderer, _point, runtime_env| {
+                        layered_action(runtime_env);
+                        false
+                    },
+                );
+            }
+            return;
+        }
+
+        renderer.register_gesture_target(bounds, group_id, effect.gesture.clone(), layered_action);
+        Self::render_gesture_content(renderer, env, render_content);
+    }
+
+    fn render_gesture_content(
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        #[cfg(not(feature = "accessibility"))]
+        let _ = env;
         #[cfg(feature = "accessibility")]
         if env
             .get::<AccessibilityChildren>()

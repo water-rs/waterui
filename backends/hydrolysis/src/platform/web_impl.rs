@@ -12,8 +12,8 @@ use web_sys::{
 
 use super::{
     CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-    SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, WindowState,
-    WuiWindow, select_hydrolysis_surface_format,
+    PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
+    WindowState, WuiWindow, select_hydrolysis_surface_format,
 };
 
 #[derive(Clone, Copy)]
@@ -302,6 +302,7 @@ impl PlatformWindow for BrowserWindow {
             None => {
                 self.ime_input.set_value("");
                 let _ = self.ime_input.blur();
+                let _ = self.canvas.focus();
             }
         }
     }
@@ -331,6 +332,7 @@ fn find_or_create_canvas(document: &Document) -> HtmlCanvasElement {
         .dyn_into::<HtmlCanvasElement>()
         .expect("hydrolysis web platform: created node is not a canvas");
     canvas.set_id("waterui-canvas");
+    canvas.set_tab_index(0);
     let style = canvas.style();
     style
         .set_property("display", "block")
@@ -460,6 +462,52 @@ fn register_listeners(
         <HtmlInputElement as AsRef<EventTarget>>::as_ref(ime_input).clone();
 
     {
+        let pending_events = pending_events.clone();
+        let redraw_requested = redraw_requested.clone();
+        let schedule_frame = schedule_frame.clone();
+        listeners.push(add_event_listener(
+            &canvas_target,
+            "keydown",
+            move |event| {
+                let event = event
+                    .dyn_into::<KeyboardEvent>()
+                    .expect("hydrolysis web platform: keydown event had unexpected type");
+                if matches!(event.key().as_str(), "Tab" | "Enter" | " ") {
+                    event.prevent_default();
+                }
+                pending_events.borrow_mut().push(InputEvent::Key {
+                    key: map_keyboard_key(&event),
+                    state: KeyState::Pressed,
+                    modifiers: map_modifiers_from_keyboard(&event),
+                });
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
+    }
+
+    {
+        let pending_events = pending_events.clone();
+        let redraw_requested = redraw_requested.clone();
+        let schedule_frame = schedule_frame.clone();
+        listeners.push(add_event_listener(&canvas_target, "keyup", move |event| {
+            let event = event
+                .dyn_into::<KeyboardEvent>()
+                .expect("hydrolysis web platform: keyup event had unexpected type");
+            if matches!(event.key().as_str(), "Tab" | "Enter" | " ") {
+                event.prevent_default();
+            }
+            pending_events.borrow_mut().push(InputEvent::Key {
+                key: map_keyboard_key(&event),
+                state: KeyState::Released,
+                modifiers: map_modifiers_from_keyboard(&event),
+            });
+            redraw_requested.set(true);
+            schedule_frame();
+        }));
+    }
+
+    {
         let browser_window = browser_window.clone();
         let canvas = canvas.clone();
         let pending_events = pending_events.clone();
@@ -504,6 +552,8 @@ fn register_listeners(
                     f64::from(event.client_y()),
                 );
                 pending_events.borrow_mut().push(InputEvent::PointerDown {
+                    id: pointer_id(&event),
+                    kind: pointer_kind(&event),
                     x,
                     y,
                     button: map_pointer_button(event.button()),
@@ -533,6 +583,8 @@ fn register_listeners(
                     f64::from(event.client_y()),
                 );
                 pending_events.borrow_mut().push(InputEvent::PointerUp {
+                    id: pointer_id(&event),
+                    kind: pointer_kind(&event),
                     x,
                     y,
                     button: map_pointer_button(event.button()),
@@ -560,9 +612,12 @@ fn register_listeners(
                     f64::from(event.client_x()),
                     f64::from(event.client_y()),
                 );
-                pending_events
-                    .borrow_mut()
-                    .push(InputEvent::PointerMove { x, y });
+                pending_events.borrow_mut().push(InputEvent::PointerMove {
+                    id: pointer_id(&event),
+                    kind: pointer_kind(&event),
+                    x,
+                    y,
+                });
                 redraw_requested.set(true);
                 schedule_frame();
             },
@@ -576,8 +631,14 @@ fn register_listeners(
         listeners.push(add_event_listener(
             &canvas_target,
             "pointercancel",
-            move |_event| {
-                pending_events.borrow_mut().push(InputEvent::PointerCancel);
+            move |event| {
+                let event = event
+                    .dyn_into::<PointerEvent>()
+                    .expect("hydrolysis web platform: pointercancel event had unexpected type");
+                pending_events.borrow_mut().push(InputEvent::PointerCancel {
+                    id: pointer_id(&event),
+                    kind: pointer_kind(&event),
+                });
                 redraw_requested.set(true);
                 schedule_frame();
             },
@@ -640,8 +701,10 @@ fn register_listeners(
                     }
                     "Tab" => {
                         event.prevent_default();
-                        pending_events.borrow_mut().push(InputEvent::ImeCommit {
-                            text: "\t".to_string(),
+                        pending_events.borrow_mut().push(InputEvent::Key {
+                            key: KeyCode::Named("Tab".to_string()),
+                            state: KeyState::Pressed,
+                            modifiers,
                         });
                     }
                     _ => return,
@@ -806,6 +869,17 @@ fn map_modifiers_from_keyboard(event: &KeyboardEvent) -> Modifiers {
     }
 }
 
+fn map_keyboard_key(event: &KeyboardEvent) -> KeyCode {
+    let key = event.key();
+    if key == "Unidentified" {
+        KeyCode::Unidentified
+    } else if key.chars().count() == 1 {
+        KeyCode::Character(key)
+    } else {
+        KeyCode::Named(key)
+    }
+}
+
 fn map_pointer_button(button: i16) -> PointerButton {
     match button {
         0 => PointerButton::Primary,
@@ -815,6 +889,20 @@ fn map_pointer_button(button: i16) -> PointerButton {
         4 => PointerButton::Forward,
         other if other >= 0 => PointerButton::Other(other as u16),
         _ => PointerButton::Other(u16::MAX),
+    }
+}
+
+fn pointer_id(event: &PointerEvent) -> u64 {
+    u64::try_from(event.pointer_id())
+        .expect("hydrolysis web platform: pointer id must be non-negative")
+}
+
+fn pointer_kind(event: &PointerEvent) -> PointerKind {
+    match event.pointer_type().as_str() {
+        "mouse" => PointerKind::Mouse,
+        "touch" => PointerKind::Touch,
+        "pen" => PointerKind::Pen,
+        kind => panic!("hydrolysis web platform: unsupported pointer type {kind:?}"),
     }
 }
 

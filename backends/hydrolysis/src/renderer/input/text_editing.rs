@@ -44,6 +44,8 @@ pub(crate) struct TextSelectionClickState {
 
 #[derive(Clone)]
 pub(crate) struct TextInputTarget {
+    pub(crate) interaction_key: InteractionKey,
+    pub(crate) modal: bool,
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) cursor_area: vello::kurbo::Rect,
     pub(crate) text_bounds: vello::kurbo::Rect,
@@ -61,6 +63,8 @@ pub(crate) struct TextInputTarget {
 }
 
 pub(crate) struct TextInputTargetRegistration {
+    pub(crate) interaction_key: InteractionKey,
+    pub(crate) modal: bool,
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) cursor_area: vello::kurbo::Rect,
     pub(crate) text_bounds: vello::kurbo::Rect,
@@ -1472,6 +1476,22 @@ impl HydrolysisRenderer {
             "ime disabled handled"
         );
         changed
+    }
+
+    pub fn handle_key_with_env(
+        &mut self,
+        key: &KeyCode,
+        modifiers: Modifiers,
+        env: &Environment,
+    ) -> bool {
+        if self.handle_keyboard_key_down(key, modifiers, env) {
+            return true;
+        }
+        self.handle_key(key, modifiers)
+    }
+
+    pub fn handle_key_release_with_env(&mut self, key: &KeyCode, env: &Environment) -> bool {
+        self.handle_keyboard_key_up(key, env)
     }
 
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {

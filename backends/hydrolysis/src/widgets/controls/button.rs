@@ -5,7 +5,7 @@ use crate::renderer::accessibility_activation_point;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, local_interaction_state, measure_label_intrinsic, measure_view_intrinsic,
-    popup_menu_nodes, transformed_rect,
+    popup_menu_nodes, resolved_color_to_peniko, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -15,7 +15,7 @@ use nami::{Signal, SignalExt};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::ViewExt as _;
-use waterui_backend_core::widget::ButtonMetrics;
+use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
@@ -63,7 +63,9 @@ impl ButtonRenderState {
         }
         let theme = widget_theme(env);
         let style = self.config.style;
-        let color = disabled_aware_label_color(theme, style, &self.config.disabled);
+        let interaction_style = env.get::<InteractionStyle>();
+        let color =
+            disabled_aware_label_color(theme, style, &self.config.disabled, interaction_style);
         let styled = styled_button_label(theme, style, self.config.label.clone());
         let mut subview = RetainedSubview::new(button_label_view(color, AnyView::new(styled)));
         subview.ensure_built(renderer, env);
@@ -162,7 +164,11 @@ pub(crate) fn measure_button_node(
     env: &Environment,
 ) -> ViewDimensions {
     let theme = widget_theme(env);
-    let metrics = theme.button_metrics(render_state.config.style);
+    let metrics = button_metrics(
+        theme,
+        render_state.config.style,
+        env.get::<InteractionStyle>(),
+    );
     let label_size = match &render_state.label_view {
         Some(subview) => subview.measure_built(state, env),
         None => {
@@ -347,6 +353,7 @@ pub(crate) fn render_button_parts(
 ) {
     let theme = widget_theme(env);
     let style = state.borrow().config.style;
+    let interaction_style = env.get::<InteractionStyle>().cloned();
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
     // and this persistent node re-renders the new text.
     {
@@ -369,12 +376,12 @@ pub(crate) fn render_button_parts(
         env,
         disabled,
     );
-    {
+    if interaction_style.is_none() {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style, interaction);
     }
 
-    let metrics = theme.button_metrics(style);
+    let metrics = button_metrics(theme, style, interaction_style.as_ref());
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
     // A degenerate padded rect (a button smaller than its padding) falls back to the
     // full bounds so the label still shows — matching the old dispatch fallback.
@@ -399,7 +406,9 @@ pub(crate) fn render_button_parts(
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
             let mut styled = styled_button_title(theme, style, &state_mut.config.label, env);
-            if let Some(color) = theme.button_label_color(style, disabled) {
+            if let Some(color) =
+                button_label_color(theme, style, disabled, interaction_style.as_ref())
+            {
                 styled = styled_with_default_foreground(styled, color);
             }
             ctx.render_styled_text_single_line_centered(styled, env, label_target);
@@ -409,8 +418,21 @@ pub(crate) fn render_button_parts(
         // Hover/focus/press state layers, drawn fresh each flush from the sampled
         // interaction state (the press/hover animations keep frames pumping).
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
-        let mut draw = ctx.draw_context();
-        theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
+        if let Some(interaction_style) = interaction_style {
+            let color_signal = interaction_style.state_layer_color.resolve(env);
+            let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+            let mut draw = ctx.draw_context();
+            theme.draw_interaction_state_layer(
+                &mut draw,
+                interaction_style.state_layer_bounds(bounds),
+                interaction_style.state_layer_radii,
+                color,
+                interaction,
+            );
+        } else {
+            let mut draw = ctx.draw_context();
+            theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
+        }
     }
 
     // A disabled button registers no tap target: the pointer neither presses
@@ -504,7 +526,7 @@ pub(crate) fn measure_button_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let theme = widget_theme(env);
-    let metrics = theme.button_metrics(button.style);
+    let metrics = button_metrics(theme, button.style, env.get::<InteractionStyle>());
     let label_size = measure_button_label_intrinsic(theme, button.style, &button.label, state, env);
     button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
 }
@@ -541,9 +563,10 @@ fn disabled_aware_label_color(
     theme: &dyn waterui_backend_core::widget::WidgetTheme,
     style: ButtonStyle,
     disabled: &nami::Computed<bool>,
+    interaction_style: Option<&InteractionStyle>,
 ) -> Option<Color> {
-    let enabled_color = theme.button_label_color(style, false);
-    let disabled_color = theme.button_label_color(style, true);
+    let enabled_color = button_label_color(theme, style, false, interaction_style);
+    let disabled_color = button_label_color(theme, style, true, interaction_style);
     match (enabled_color, disabled_color) {
         (None, None) => None,
         (Some(when_false), Some(when_true)) => Some(Color::new(SelectResolvedColor {
@@ -556,6 +579,26 @@ fn disabled_aware_label_color(
              disabled states, or neither (enabled: {enabled_color:?}, disabled: {disabled_color:?})"
         ),
     }
+}
+
+fn button_metrics(
+    theme: &dyn waterui_backend_core::widget::WidgetTheme,
+    style: ButtonStyle,
+    interaction_style: Option<&InteractionStyle>,
+) -> ButtonMetrics {
+    interaction_style.map_or_else(|| theme.button_metrics(style), |style| style.metrics)
+}
+
+fn button_label_color(
+    theme: &dyn waterui_backend_core::widget::WidgetTheme,
+    style: ButtonStyle,
+    disabled: bool,
+    interaction_style: Option<&InteractionStyle>,
+) -> Option<Color> {
+    interaction_style.map_or_else(
+        || theme.button_label_color(style, disabled),
+        |style| style.resolved_label_color(disabled),
+    )
 }
 
 /// A [`Resolvable`] color that follows `condition`: it resolves to

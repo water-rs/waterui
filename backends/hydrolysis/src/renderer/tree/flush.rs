@@ -43,6 +43,17 @@ impl RenderNode {
                 HydrolysisRenderer::render_styled_text(state, scene, ctx, styled, alignment, env);
             }
             RenderNode::Container(container) => {
+                #[cfg(feature = "accessibility")]
+                let group_scope = container.accessibility_child_env.as_ref().map(|_| {
+                    renderer.begin_accessibility_group(
+                        transformed_rect(ctx.hit_transform, ctx.bounds),
+                        env,
+                    )
+                });
+                #[cfg(feature = "accessibility")]
+                let child_env = container.accessibility_child_env.as_ref().unwrap_or(env);
+                #[cfg(not(feature = "accessibility"))]
+                let child_env = env;
                 for (child, rect) in container.children.iter().zip(container.placed.iter()) {
                     let child_ctx = ctx.child(
                         vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
@@ -53,7 +64,11 @@ impl RenderNode {
                             f64::from(rect.height()),
                         ),
                     );
-                    child.flush(renderer, child_ctx, env);
+                    child.flush(renderer, child_ctx, child_env);
+                }
+                #[cfg(feature = "accessibility")]
+                if let Some(group_scope) = group_scope {
+                    renderer.end_accessibility_group(group_scope);
                 }
             }
             RenderNode::Opacity(node) => {

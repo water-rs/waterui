@@ -132,6 +132,10 @@ impl InteractionLayerHandles {
         self.waves.iter().any(|wave| wave.pressing.get())
     }
 
+    pub(crate) const fn touch_delay(&self) -> Duration {
+        self.motion.touch_delay
+    }
+
     /// Whether any wave's press layer should currently read as pressed: an
     /// active press, or a released press still inside the Material minimum
     /// press duration. This gates the RIPPLE only — pressed chrome follows
@@ -311,7 +315,27 @@ impl HydrolysisRenderer {
     /// Applies any deferred press fade-outs and reports whether more
     /// animation frames are needed for pending releases.
     pub(crate) fn flush_interaction_releases(&mut self, now: Instant) -> bool {
-        let mut pending = false;
+        let pending_press_ready = self
+            .hit_test
+            .pending_pointer_press
+            .as_ref()
+            .is_some_and(|press| now >= press.starts_at);
+        if pending_press_ready {
+            let press = self
+                .hit_test
+                .pending_pointer_press
+                .take()
+                .expect("pending pointer press was checked above");
+            self.hit_test
+                .interaction
+                .begin_press(&press.slot, press.origin, now);
+            if press.chrome_state_dependent {
+                self.request_refresh();
+            } else {
+                self.request_redraw();
+            }
+        }
+        let mut pending = self.hit_test.pending_pointer_press.is_some();
         for target in &self.hit_test.pointer_targets {
             if let Some(handles) = &target.interaction {
                 pending |= handles.flush_release(now);
@@ -322,11 +346,12 @@ impl HydrolysisRenderer {
 
     /// Whether any released press is still waiting for its deferred fade-out.
     pub(crate) fn has_pending_interaction_releases(&self, now: Instant) -> bool {
-        self.hit_test.pointer_targets.iter().any(|target| {
-            target
-                .interaction
-                .as_ref()
-                .is_some_and(|handles| handles.has_pending_release(now))
-        })
+        self.hit_test.pending_pointer_press.is_some()
+            || self.hit_test.pointer_targets.iter().any(|target| {
+                target
+                    .interaction
+                    .as_ref()
+                    .is_some_and(|handles| handles.has_pending_release(now))
+            })
     }
 }

@@ -2,14 +2,13 @@
 
 use core::fmt::{self, Debug};
 
+use vello::kurbo::RoundedRectRadii;
 use waterui::accessibility::{AccessibilityChildren, AccessibilityRole, AccessibilityState};
 use waterui::border::Border;
-use waterui::color::Color;
 use waterui::component::hstack;
 use waterui::layout::padding::EdgeInsets;
 use waterui::reactive::SignalExt as _;
 use waterui::shape::{Rectangle, ShapeExt as _, UnevenRoundedRectangle};
-use waterui::widget::condition::when;
 use waterui::{AnyView, Binding, Environment, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, SharedAction, boxed_action};
@@ -17,7 +16,7 @@ use waterui_core::view::TupleViews;
 
 use crate::color::{OnSecondaryContainer, OnSurface, Outline, SecondaryContainer, Surface};
 use crate::icons::CheckmarkIcon;
-use crate::semantics::label_plain_text;
+use crate::semantics::{conditional_color, interaction_style_with_radii, label_plain_text};
 use crate::theme::typography;
 
 const OUTLINED_SEGMENTED_BUTTON_CONTAINER_HEIGHT: f32 = 40.0;
@@ -105,6 +104,16 @@ impl SegmentedButtonShape {
     const fn has_leading_separator(self) -> bool {
         self.top_leading == 0.0 && self.bottom_leading == 0.0
     }
+
+    fn interaction_radii(self) -> RoundedRectRadii {
+        let scale = f64::from(OUTLINED_SEGMENTED_BUTTON_CONTAINER_HEIGHT);
+        RoundedRectRadii::new(
+            f64::from(self.top_leading) * scale,
+            f64::from(self.top_trailing) * scale,
+            f64::from(self.bottom_trailing) * scale,
+            f64::from(self.bottom_leading) * scale,
+        )
+    }
 }
 
 /// A Material Design 3 outlined segmented button.
@@ -185,51 +194,18 @@ where
     fn body(self, _env: &Environment) -> impl View {
         let mut action = self.action;
         let action = SharedAction::new(move |env: Environment| action(&env));
-        let selected_for_state = self.selected.clone();
-        let selected_for_tap = self.selected.clone();
+        let selected_for_view = self.selected.clone();
         let accessibility_state = self
             .selected
             .map(|selected| AccessibilityState::new().selected(selected));
-        let selected_label = self.label.clone();
-        let unselected_label = self.label;
-        let selected_shape = self.shape;
-        let unselected_shape = self.shape;
-        let selected_accessibility_label = self.accessibility_label.clone();
-        let unselected_accessibility_label = self.accessibility_label;
-        let selected_action = action.clone();
-        let unselected_action = action;
-        let selected_tap_state = selected_for_tap.clone();
-        let unselected_tap_state = selected_for_tap;
 
-        when(selected_for_state, move || {
-            segmented_button_view(
-                selected_label.clone(),
-                Some(
-                    CheckmarkIcon::new(
-                        OnSecondaryContainer,
-                        OUTLINED_SEGMENTED_BUTTON_ICON_SIZE,
-                        OUTLINED_SEGMENTED_BUTTON_CHECKMARK_LINE_WIDTH,
-                    )
-                    .container_height(OUTLINED_SEGMENTED_BUTTON_CONTAINER_HEIGHT),
-                ),
-                selected_shape,
-                true,
-                selected_accessibility_label.clone(),
-                selected_tap_state.clone(),
-                selected_action.clone(),
-            )
-        })
-        .otherwise(move || {
-            segmented_button_view(
-                unselected_label.clone(),
-                None::<CheckmarkIcon<OnSecondaryContainer>>,
-                unselected_shape,
-                false,
-                unselected_accessibility_label.clone(),
-                unselected_tap_state.clone(),
-                unselected_action.clone(),
-            )
-        })
+        segmented_button_view(
+            self.label,
+            self.shape,
+            self.accessibility_label,
+            selected_for_view,
+            action,
+        )
         .a11y_state_signal(accessibility_state)
     }
 }
@@ -299,47 +275,38 @@ pub fn outlined_segmented_button_set<Content>(
     OutlinedSegmentedButtonSet::new(content)
 }
 
-fn segmented_button_view<Leading>(
+fn segmented_button_view(
     label: Label,
-    leading: Option<Leading>,
     shape: SegmentedButtonShape,
-    selected: bool,
     accessibility_label: Str,
     selected_state: Binding<bool>,
     action: SharedAction,
-) -> impl View
-where
-    Leading: View + 'static,
-{
-    let foreground: Color = if selected {
-        OnSecondaryContainer.into()
-    } else {
-        OnSurface.into()
-    };
-    let background: Color = if selected {
-        SecondaryContainer.into()
-    } else {
-        Surface.with_opacity(0.0).into()
-    };
+) -> impl View {
+    let foreground = conditional_color(selected_state.clone(), OnSecondaryContainer, OnSurface);
+    let background = conditional_color(
+        selected_state.clone(),
+        SecondaryContainer,
+        Surface.with_opacity(0.0),
+    );
+    let state_layer_color =
+        conditional_color(selected_state.clone(), OnSecondaryContainer, OnSurface);
+    let checkmark_opacity = selected_state.map(|selected| if selected { 1.0 } else { 0.0 });
     let label = label.font(typography::label_large()).foreground(foreground);
-    let inner = match leading {
-        Some(leading) => AnyView::new(
-            hstack((leading, label))
-                .spacing(OUTLINED_SEGMENTED_BUTTON_ICON_LABEL_SPACE)
-                .padding_with(EdgeInsets::new(
-                    0.0,
-                    0.0,
-                    OUTLINED_SEGMENTED_BUTTON_LEADING_SPACE,
-                    OUTLINED_SEGMENTED_BUTTON_TRAILING_SPACE,
-                )),
-        ),
-        None => AnyView::new(hstack((label,)).padding_with(EdgeInsets::new(
+    let checkmark = CheckmarkIcon::new(
+        OnSecondaryContainer,
+        OUTLINED_SEGMENTED_BUTTON_ICON_SIZE,
+        OUTLINED_SEGMENTED_BUTTON_CHECKMARK_LINE_WIDTH,
+    )
+    .container_height(OUTLINED_SEGMENTED_BUTTON_CONTAINER_HEIGHT)
+    .opacity(checkmark_opacity);
+    let inner = hstack((checkmark, label))
+        .spacing(OUTLINED_SEGMENTED_BUTTON_ICON_LABEL_SPACE)
+        .padding_with(EdgeInsets::new(
             0.0,
             0.0,
             OUTLINED_SEGMENTED_BUTTON_LEADING_SPACE,
             OUTLINED_SEGMENTED_BUTTON_TRAILING_SPACE,
-        ))),
-    };
+        ));
     let content = if shape.has_leading_separator() {
         AnyView::new(
             hstack((
@@ -352,7 +319,7 @@ where
             .spacing(0.0),
         )
     } else {
-        inner
+        AnyView::new(inner)
     };
 
     content
@@ -365,6 +332,10 @@ where
         .a11y_label(accessibility_label)
         .a11y_role(AccessibilityRole::Button)
         .a11y_children(AccessibilityChildren::ExcludeDescendants)
+        .install(interaction_style_with_radii(
+            state_layer_color,
+            shape.interaction_radii(),
+        ))
 }
 
 const fn noop(_env: &Environment) {}

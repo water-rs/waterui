@@ -188,7 +188,7 @@ fn normalize_layout_view_with_budget(
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
             .expect("layout normalization failed to downcast Metadata<Environment>");
-        let normalized_content = normalize_layout_view_with_budget(content, &value, next_remaining);
+        let normalized_content = normalize_layout_view_with_budget(content, &value, remaining);
         return AnyView::new(Metadata {
             content: normalized_content,
             value,
@@ -202,7 +202,7 @@ fn normalize_layout_view_with_budget(
                         .downcast::<Metadata<$ty>>()
                         .expect("layout normalization failed to downcast metadata");
                     let normalized_content =
-                        normalize_layout_view_with_budget(content, env, next_remaining);
+                        normalize_layout_view_with_budget(content, env, remaining);
                     return AnyView::new(Metadata {
                         content: normalized_content,
                         value,
@@ -219,7 +219,7 @@ fn normalize_layout_view_with_budget(
                         .downcast::<IgnorableMetadata<$ty>>()
                         .expect("layout normalization failed to downcast ignorable metadata");
                     let normalized_content =
-                        normalize_layout_view_with_budget(content, env, next_remaining);
+                        normalize_layout_view_with_budget(content, env, remaining);
                     return AnyView::new(IgnorableMetadata {
                         content: normalized_content,
                         value,
@@ -285,7 +285,7 @@ fn normalize_layout_view_with_budget(
                         .expect("layout normalization failed to downcast ignorable metadata");
                     let scoped = $scope(env, &value);
                     let normalized_content =
-                        normalize_layout_view_with_budget(content, &scoped, next_remaining);
+                        normalize_layout_view_with_budget(content, &scoped, remaining);
                     return AnyView::new(IgnorableMetadata {
                         content: normalized_content,
                         value,
@@ -307,11 +307,7 @@ fn normalize_layout_view_with_budget(
         let (layout, children) = native.into_inner().into_inner();
         let mut normalized_children = Vec::with_capacity(children.len());
         for child in children {
-            normalized_children.push(normalize_layout_view_with_budget(
-                child,
-                env,
-                next_remaining,
-            ));
+            normalized_children.push(normalize_layout_view_with_budget(child, env, remaining));
         }
         return AnyView::new(Native::new(FixedContainer::from_parts(
             layout,
@@ -328,7 +324,7 @@ fn normalize_layout_view_with_budget(
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
         let (axis, content) = native.into_inner().into_inner();
-        let normalized_content = normalize_layout_view_with_budget(content, env, next_remaining);
+        let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
         return AnyView::new(Native::new(ScrollView::new(axis, normalized_content)));
     }
 
@@ -338,18 +334,17 @@ fn normalize_layout_view_with_budget(
             .expect("layout normalization failed to downcast Native<NavigationView>");
         let mut navigation = native.into_inner();
         navigation.bar.title =
-            normalize_layout_view_with_budget(navigation.bar.title, env, next_remaining);
+            normalize_layout_view_with_budget(navigation.bar.title, env, remaining);
         navigation.bar.subtitle =
-            normalize_layout_view_with_budget(navigation.bar.subtitle, env, next_remaining);
+            normalize_layout_view_with_budget(navigation.bar.subtitle, env, remaining);
         for item in &mut navigation.bar.toolbar.items {
             item.content = normalize_layout_view_with_budget(
                 core::mem::take(&mut item.content),
                 env,
-                next_remaining,
+                remaining,
             );
         }
-        navigation.content =
-            normalize_layout_view_with_budget(navigation.content, env, next_remaining);
+        navigation.content = normalize_layout_view_with_budget(navigation.content, env, remaining);
         return AnyView::new(Native::new(navigation));
     }
 

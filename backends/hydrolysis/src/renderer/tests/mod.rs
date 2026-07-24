@@ -8,6 +8,7 @@ mod retained_scene;
 mod tree;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+use waterui::prelude::text;
 use waterui::{Binding, Color, Computed, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::{ButtonStyle, button};
@@ -21,12 +22,13 @@ use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
-    BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion, ListMetrics,
-    NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
-    ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics, StepperMetrics,
-    TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-    WidgetInteractionState,
+    BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
+    InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
+    PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
+    RadioSelectionMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
+    TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
+use waterui_core::handler::SharedAction;
 
 fn test_renderer() -> HydrolysisRenderer {
     let mut platform =
@@ -46,6 +48,15 @@ fn test_environment() -> Environment {
     crate::testing::install_theme(&mut env);
     env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
     env
+}
+
+#[derive(Clone, Copy)]
+struct RecursivelyErasedView;
+
+impl View for RecursivelyErasedView {
+    fn body(self, _env: &Environment) -> impl View {
+        AnyView::new(self)
+    }
 }
 
 #[derive(Clone)]
@@ -160,7 +171,10 @@ fn text_input_target(
     model: TextInputModel,
     selection: Rc<RefCell<TextSelectionSlot>>,
 ) -> TextInputTarget {
+    let interaction_key = InteractionKey::for_rc(&selection, 0);
     TextInputTarget {
+        interaction_key,
+        modal: false,
         bounds: Rect::ZERO,
         cursor_area: Rect::ZERO,
         text_bounds: Rect::ZERO,
@@ -205,6 +219,27 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
         dimensions.explicit_horizontal(HorizontalAlignment::Leading),
         Some(10.0)
     );
+}
+
+#[test]
+fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() {
+    let env = test_environment();
+    let mut view = AnyView::new(text("Leaf"));
+    for _ in 0..80 {
+        view = AnyView::new(view.opacity(1.0));
+    }
+
+    let normalized = normalize_layout_view(view, &env);
+
+    assert!(normalized.is::<Metadata<Opacity>>());
+}
+
+#[test]
+#[should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")]
+fn layout_normalization_still_rejects_recursive_component_bodies() {
+    let env = test_environment();
+
+    let _ = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
 }
 
 #[test]
@@ -517,6 +552,80 @@ fn capture_root_window<V: waterui_core::View>(
     renderer.finish_rebuild_frame();
 }
 
+#[cfg(feature = "accessibility")]
+#[test]
+fn accessibility_group_owns_preserved_child_semantics() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = vstack((text("First"), text("Second")))
+        .a11y_label("Settings")
+        .a11y_role(AccessibilityRole::Group);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("group render must publish an accessibility tree");
+    let (group_id, group) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Settings"))
+        .expect("group must emit its own labelled node");
+    assert_eq!(group.role(), AccessibilityNodeRole::Group);
+    assert_eq!(group.children().len(), 2);
+    let child_labels = group
+        .children()
+        .iter()
+        .map(|child_id| {
+            update
+                .nodes
+                .iter()
+                .find_map(|(id, node)| (id == child_id).then(|| node.label()))
+                .flatten()
+                .expect("group child must have a text label")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(child_labels, ["First", "Second"]);
+    let root = update
+        .nodes
+        .iter()
+        .find_map(|(id, node)| (*id == ACCESSIBILITY_ROOT_NODE_ID).then_some(node))
+        .expect("accessibility tree must contain its root");
+    assert_eq!(root.children(), &[*group_id]);
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn reactive_hidden_accessibility_group_suppresses_descendants() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let visible = Binding::bool(false);
+    let state = visible.map(|visible| AccessibilityState::new().hidden(!visible));
+    let view = vstack((text("Hidden child"),))
+        .a11y_label("Hidden group")
+        .a11y_role(AccessibilityRole::Group)
+        .a11y_state_signal(state);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("hidden group render must publish an accessibility tree");
+    let (_, group) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Hidden group"))
+        .expect("reactive hidden group must remain represented");
+    assert!(group.is_hidden());
+    assert!(group.children().is_empty());
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Hidden child"))
+    );
+}
+
 #[test]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
     let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
@@ -620,11 +729,211 @@ fn interaction_engine_resolves_focus_state() {
     let key = InteractionKey::for_rc(&owner, 0);
 
     renderer.begin_rebuild_frame();
-    let (state, _, _) =
-        renderer.bind_focused_interaction_target(key, Rect::new(0.0, 0.0, 80.0, 80.0), &env, true);
+    let (state, _, _) = renderer.bind_focused_control_interaction_target(
+        key,
+        Rect::new(0.0, 0.0, 80.0, 80.0),
+        &env,
+        true,
+        false,
+    );
 
     assert!(state.focus_visible);
     assert_eq!(state.focus_progress, 1.0);
+}
+
+#[test]
+fn interactive_pointer_target_activates_on_release_inside() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+    let activations = Rc::new(Cell::new(0));
+    let action_activations = Rc::clone(&activations);
+
+    renderer.begin_rebuild_frame();
+    let (_, press_slot, _) = renderer.bind_interaction_target(key, bounds, &env);
+    renderer.register_interactive_pointer_target(bounds, press_slot, move |_, _, _| {
+        action_activations.set(action_activations.get() + 1);
+        true
+    });
+
+    assert!(renderer.handle_pointer_down(20.0, 20.0, PointerButton::Primary, &env));
+    assert_eq!(activations.get(), 0, "pointer-down must not commit a click");
+    assert!(renderer.handle_pointer_up(20.0, 20.0, PointerButton::Primary, &env));
+    assert_eq!(activations.get(), 1);
+}
+
+#[test]
+fn touch_press_delays_ripple_and_move_cancels_click() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+    let activations = Rc::new(Cell::new(0));
+    let action_activations = Rc::clone(&activations);
+
+    renderer.begin_rebuild_frame();
+    let (_, press_slot, handles) = renderer.bind_interaction_target(key, bounds, &env);
+    renderer.register_interactive_pointer_target(bounds, press_slot, move |_, _, _| {
+        action_activations.set(action_activations.get() + 1);
+        true
+    });
+    let started = renderer.frame_instant();
+
+    assert!(!renderer.handle_pointer_down_with_source(
+        7,
+        PointerKind::Touch,
+        20.0,
+        20.0,
+        PointerButton::Primary,
+        &env,
+    ));
+    assert!(!handles.pressing(), "touch ripple must wait for its delay");
+    renderer.set_frame_instant(
+        started
+            .checked_add(Duration::from_millis(149))
+            .expect("test timestamp overflow"),
+    );
+    assert!(renderer.advance_animations());
+    assert!(!handles.pressing());
+    assert!(!renderer.handle_pointer_move_with_source(7, PointerKind::Touch, 21.0, 20.0, &env,));
+    assert!(!renderer.handle_pointer_up_with_source(
+        7,
+        PointerKind::Touch,
+        21.0,
+        20.0,
+        PointerButton::Primary,
+        &env,
+    ));
+    assert_eq!(activations.get(), 0);
+    assert!(!handles.pressing());
+}
+
+#[test]
+fn keyboard_focus_activates_control_on_key_release() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+    let activations = Rc::new(Cell::new(0));
+    let action_activations = Rc::clone(&activations);
+
+    renderer.begin_rebuild_frame();
+    let (_, press_slot, _) = renderer.bind_interaction_target(key, bounds, &env);
+    renderer.register_interactive_pointer_target(bounds, press_slot, move |_, _, _| {
+        action_activations.set(action_activations.get() + 1);
+        true
+    });
+
+    assert!(renderer.handle_key_with_env(
+        &KeyCode::Named("Tab".to_owned()),
+        Modifiers::default(),
+        &env,
+    ));
+    assert!(renderer.handle_key_with_env(
+        &KeyCode::Named("Enter".to_owned()),
+        Modifiers::default(),
+        &env,
+    ));
+    assert_eq!(activations.get(), 0);
+    assert!(renderer.handle_key_release_with_env(&KeyCode::Named("Enter".to_owned()), &env,));
+    assert_eq!(activations.get(), 1);
+}
+
+#[test]
+fn interaction_focus_binding_tracks_keyboard_focus() {
+    let mut renderer = test_renderer();
+    let mut env = test_environment();
+    let focused = Binding::bool(false);
+    env.insert(InteractionFocusBinding::new(&focused));
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+
+    renderer.begin_rebuild_frame();
+    let (_, press_slot, _) = renderer.bind_interaction_target(key, bounds, &env);
+    renderer.register_interactive_pointer_target(bounds, press_slot, |_, _, _| true);
+
+    assert!(!focused.get());
+    assert!(renderer.handle_key_with_env(
+        &KeyCode::Named("Tab".to_owned()),
+        Modifiers::default(),
+        &env,
+    ));
+    assert!(focused.get());
+    assert!(renderer.set_keyboard_focus(None, false));
+    assert!(!focused.get());
+}
+
+#[test]
+fn modal_scope_traps_keyboard_focus_and_handles_escape() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let mut modal_env = env.clone();
+    let escape_activations = Rc::new(Cell::new(0));
+    let escape_action_activations = Rc::clone(&escape_activations);
+    modal_env.insert(ModalInteraction::new(
+        true,
+        SharedAction::new(move |_: Environment| {
+            escape_action_activations.set(escape_action_activations.get() + 1);
+        }),
+    ));
+    let background_owner = Rc::new(());
+    let background_key = InteractionKey::for_rc(&background_owner, 0);
+    let modal_owner = Rc::new(());
+    let modal_key = InteractionKey::for_rc(&modal_owner, 0);
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+
+    renderer.begin_rebuild_frame();
+    let (_, background_press_slot, _) =
+        renderer.bind_interaction_target(background_key, bounds, &env);
+    renderer.register_interactive_pointer_target(bounds, background_press_slot, |_, _, _| true);
+    let (_, modal_press_slot, _) =
+        renderer.bind_interaction_target(modal_key.clone(), bounds, &modal_env);
+    renderer.register_interactive_pointer_target(bounds, modal_press_slot, |_, _, _| true);
+
+    assert!(renderer.handle_key_with_env(
+        &KeyCode::Named("Tab".to_owned()),
+        Modifiers::default(),
+        &modal_env,
+    ));
+    assert_eq!(renderer.hit_test.keyboard_focus, Some(modal_key));
+    assert!(renderer.handle_key_with_env(
+        &KeyCode::Named("Escape".to_owned()),
+        Modifiers::default(),
+        &modal_env,
+    ));
+    assert_eq!(escape_activations.get(), 1);
+}
+
+#[test]
+fn inactive_modal_scope_does_not_trap_keyboard_focus() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let mut dialog_env = env.clone();
+    let active = Binding::bool(false);
+    dialog_env.insert(
+        ModalInteraction::new(false, SharedAction::new(|_: Environment| {})).active(active.clone()),
+    );
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+
+    renderer.begin_rebuild_frame();
+    let (_, press_slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &dialog_env);
+    assert!(!press_slot.modal);
+    renderer.register_interactive_pointer_target(bounds, press_slot, |_, _, _| true);
+
+    assert!(renderer.handle_key_with_env(
+        &KeyCode::Named("Tab".to_owned()),
+        Modifiers::default(),
+        &dialog_env,
+    ));
+    assert_eq!(renderer.hit_test.keyboard_focus, Some(key));
+    assert!(renderer.hit_test.modal_interaction.is_none());
 }
 
 #[derive(Default)]

@@ -11,7 +11,9 @@ use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
+use waterui_backend_core::widget::ModalInteraction;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_core::interaction::Disabled;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
@@ -133,6 +135,10 @@ pub(crate) fn render_text_field_parts(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
+    let disabled = env
+        .get::<Disabled>()
+        .map(|disabled| disabled.signal().clone())
+        .is_some_and(|disabled| ctx.renderer_mut().read_signal(&disabled));
     ctx.renderer_mut()
         .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();
@@ -194,14 +200,18 @@ pub(crate) fn render_text_field_parts(
         if !value.is_empty() {
             node.set_value(value);
         }
-        node.add_action(AccessibilityAction::Focus);
-        node.add_action(AccessibilityAction::Click);
-        node.add_action(AccessibilityAction::SetValue);
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+        }
         if let Some(node_id) = ctx.renderer_mut().register_accessibility_node(
             node,
             bounds,
             env,
-            Some(AccessibilityActionTarget::TextField {
+            (!disabled).then_some(AccessibilityActionTarget::TextField {
                 value: value_binding.clone(),
                 line_limit,
             }),
@@ -214,11 +224,12 @@ pub(crate) fn render_text_field_parts(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_interaction_target(
-        interaction_key,
+    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
+        interaction_key.clone(),
         transformed_rect(hit_transform, field_rect),
         env,
         is_focused,
+        disabled,
     );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
@@ -367,10 +378,12 @@ pub(crate) fn render_text_field_parts(
         display_layout_height,
     );
     let hit_transform = ctx.hit_transform;
-    ctx.renderer_mut().register_cursor_target(
-        transformed_rect(hit_transform, field_rect),
-        CursorStyle::IBeam,
-    );
+    if !disabled {
+        ctx.renderer_mut().register_cursor_target(
+            transformed_rect(hit_transform, field_rect),
+            CursorStyle::IBeam,
+        );
+    }
     tracing::trace!(
         target: "waterui::hydrolysis::hit_region",
         component = "text_field",
@@ -379,18 +392,24 @@ pub(crate) fn render_text_field_parts(
         cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
         "register text field input region"
     );
-    ctx.renderer_mut()
-        .register_text_input_target(TextInputTargetRegistration {
-            bounds: transformed_rect(hit_transform, field_rect),
-            cursor_area: transformed_rect(hit_transform, cursor_area),
-            text_bounds: transformed_rect(hit_transform, text_bounds),
-            text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
-            content_alpha,
-            layout: committed_layout,
-            purpose: TextInputPurpose::Normal,
-            model: input_model,
-            selection: selection_slot,
-        });
+    if !disabled {
+        ctx.renderer_mut()
+            .register_text_input_target(TextInputTargetRegistration {
+                interaction_key,
+                modal: env
+                    .get::<ModalInteraction>()
+                    .is_some_and(ModalInteraction::is_active),
+                bounds: transformed_rect(hit_transform, field_rect),
+                cursor_area: transformed_rect(hit_transform, cursor_area),
+                text_bounds: transformed_rect(hit_transform, text_bounds),
+                text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
+                content_alpha,
+                layout: committed_layout,
+                purpose: TextInputPurpose::Normal,
+                model: input_model,
+                selection: selection_slot,
+            });
+    }
 }
 
 /// Renders a retained secure-field leaf every flush: secure fields are
@@ -425,6 +444,10 @@ pub(crate) fn render_secure_field_parts(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
+    let disabled = env
+        .get::<Disabled>()
+        .map(|disabled| disabled.signal().clone())
+        .is_some_and(|disabled| ctx.renderer_mut().read_signal(&disabled));
     ctx.renderer_mut()
         .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();
@@ -464,14 +487,18 @@ pub(crate) fn render_secure_field_parts(
             node.set_label(label);
         }
         node.set_value("*".repeat(secure_len));
-        node.add_action(AccessibilityAction::Focus);
-        node.add_action(AccessibilityAction::Click);
-        node.add_action(AccessibilityAction::SetValue);
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+        }
         if let Some(node_id) = ctx.renderer_mut().register_accessibility_node(
             node,
             bounds,
             env,
-            Some(AccessibilityActionTarget::SecureField {
+            (!disabled).then_some(AccessibilityActionTarget::SecureField {
                 value: value_binding.clone(),
             }),
         ) {
@@ -483,11 +510,12 @@ pub(crate) fn render_secure_field_parts(
     let hit_transform = ctx.hit_transform;
     let text_input_index = ctx.renderer_mut().next_text_input_index();
     let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_interaction_target(
-        interaction_key,
+    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
+        interaction_key.clone(),
         transformed_rect(hit_transform, field_rect),
         env,
         is_focused,
+        disabled,
     );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
@@ -618,10 +646,12 @@ pub(crate) fn render_secure_field_parts(
         committed_layout.height(),
     );
     let hit_transform = ctx.hit_transform;
-    ctx.renderer_mut().register_cursor_target(
-        transformed_rect(hit_transform, field_rect),
-        CursorStyle::IBeam,
-    );
+    if !disabled {
+        ctx.renderer_mut().register_cursor_target(
+            transformed_rect(hit_transform, field_rect),
+            CursorStyle::IBeam,
+        );
+    }
     tracing::trace!(
         target: "waterui::hydrolysis::hit_region",
         component = "secure_field",
@@ -630,18 +660,24 @@ pub(crate) fn render_secure_field_parts(
         cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
         "register secure field input region"
     );
-    ctx.renderer_mut()
-        .register_text_input_target(TextInputTargetRegistration {
-            bounds: transformed_rect(hit_transform, field_rect),
-            cursor_area: transformed_rect(hit_transform, cursor_area),
-            text_bounds: transformed_rect(hit_transform, text_bounds),
-            text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
-            content_alpha,
-            layout: committed_layout,
-            purpose: TextInputPurpose::Password,
-            model: input_model,
-            selection: selection_slot,
-        });
+    if !disabled {
+        ctx.renderer_mut()
+            .register_text_input_target(TextInputTargetRegistration {
+                interaction_key,
+                modal: env
+                    .get::<ModalInteraction>()
+                    .is_some_and(ModalInteraction::is_active),
+                bounds: transformed_rect(hit_transform, field_rect),
+                cursor_area: transformed_rect(hit_transform, cursor_area),
+                text_bounds: transformed_rect(hit_transform, text_bounds),
+                text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
+                content_alpha,
+                layout: committed_layout,
+                purpose: TextInputPurpose::Password,
+                model: input_model,
+                selection: selection_slot,
+            });
+    }
 }
 
 /// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring

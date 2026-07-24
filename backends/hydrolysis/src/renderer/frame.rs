@@ -134,11 +134,28 @@ impl HydrolysisRenderer {
     /// in flush order every frame), so after any flush — rebuild or refresh — a
     /// previously focused field may no longer exist. Shared by both frame paths.
     pub(crate) fn validate_focused_text_input_after_flush(&mut self) {
+        let modal_active = self.hit_test.modal_interaction.is_some();
         if matches!(
             self.text_editing.focused_text_input.get(),
             Some(index) if index >= self.text_editing.text_input_targets.len()
+                || (modal_active && !self.text_editing.text_input_targets[index].modal)
         ) {
             self.set_focused_text_input(None);
+        }
+        let keyboard_focus_is_live =
+            self.hit_test.keyboard_focus.as_ref().is_none_or(|focused| {
+                self.hit_test.pointer_targets.iter().any(|target| {
+                    (!modal_active || target.modal)
+                        && target
+                            .press_slot
+                            .as_ref()
+                            .is_some_and(|slot| &slot.key == focused)
+                }) || self.text_editing.text_input_targets.iter().any(|target| {
+                    (!modal_active || target.modal) && &target.interaction_key == focused
+                })
+            });
+        if !keyboard_focus_is_live {
+            self.set_keyboard_focus(None, false);
         }
         if matches!(
             self.text_editing.active_text_selection_drag,
