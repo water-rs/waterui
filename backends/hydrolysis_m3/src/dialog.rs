@@ -7,27 +7,36 @@ use waterui::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView,
     container::FixedContainer, padding::EdgeInsets,
 };
+use waterui::prelude::{PositionExt as _, UnitPoint, absolute};
 use waterui::shape::{RoundedRectangle, ShapeExt as _};
-use waterui::{Environment, Signal, Str, View, ViewExt as _};
+use waterui::signal::IntoComputed;
+use waterui::style::Anchor;
+use waterui::{Computed, Environment, SignalExt as _, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::AnyView;
-use waterui_core::handler::{Handler, boxed_action};
+use waterui_core::handler::{Handler, SharedAction, boxed_action};
 use waterui_core::view::TupleViews;
 
-use crate::color::{OnSurface, OnSurfaceVariant, Primary, SurfaceContainerHigh};
-use crate::theme::typography;
+use crate::ModalInteraction;
+use crate::color::{OnSurface, OnSurfaceVariant, Primary, Scrim, SurfaceContainerHigh};
+use crate::elevation::{MaterialElevationLevel, material_elevation};
+use crate::semantics::{interaction_style, label_plain_text};
+use crate::theme::{motion, typography};
 
 const DIALOG_CONTAINER_MIN_WIDTH: f32 = 280.0;
 const DIALOG_CONTAINER_MAX_WIDTH: f32 = 560.0;
 const DIALOG_CONTAINER_MIN_HEIGHT: f32 = 140.0;
 const DIALOG_CONTAINER_SHAPE: f32 = 28.0;
 const DIALOG_CONTAINER_CLIP_RADIUS: f32 = DIALOG_CONTAINER_SHAPE / DIALOG_CONTAINER_MAX_WIDTH;
+const DIALOG_VIEWPORT_PADDING: f32 = 48.0;
 const DIALOG_CONTENT_PADDING: f32 = 24.0;
+const DIALOG_HEADLINE_BODY_SPACING: f32 = 16.0;
 const DIALOG_CONTENT_BOTTOM_SPACE_WITH_ACTIONS: f32 = 8.0;
 const DIALOG_ACTION_TOP_SPACE: f32 = 16.0;
 const DIALOG_ACTION_TRAILING_SPACE: f32 = 24.0;
 const DIALOG_ACTION_BOTTOM_SPACE: f32 = 24.0;
 const DIALOG_ACTION_SPACING: f32 = 8.0;
+const DIALOG_HIDDEN_OFFSET_Y: f32 = -30.0;
 
 /// A Material Design 3 dialog action button.
 pub struct DialogAction<Action = fn(&Environment)> {
@@ -84,6 +93,7 @@ where
             .a11y_label(accessibility_label)
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
+            .install(interaction_style(Primary, 20.0))
     }
 }
 
@@ -93,6 +103,10 @@ pub struct Dialog<Actions = ()> {
     supporting_text: Label,
     accessibility_label: Str,
     actions: Actions,
+    presented: Computed<bool>,
+    overlay_action: SharedAction,
+    close_on_escape: bool,
+    escape_action: SharedAction,
 }
 
 impl<Actions> Debug for Dialog<Actions> {
@@ -116,6 +130,10 @@ impl Dialog<()> {
             supporting_text,
             accessibility_label,
             actions: (),
+            presented: Computed::constant(true),
+            overlay_action: SharedAction::new(|_: Environment| {}),
+            close_on_escape: false,
+            escape_action: SharedAction::new(|_: Environment| {}),
         }
     }
 }
@@ -129,7 +147,44 @@ impl<Actions> Dialog<Actions> {
             supporting_text: self.supporting_text,
             accessibility_label: self.accessibility_label,
             actions,
+            presented: self.presented,
+            overlay_action: self.overlay_action,
+            close_on_escape: self.close_on_escape,
+            escape_action: self.escape_action,
         }
+    }
+
+    /// Controls whether the dialog is visible and modal.
+    ///
+    /// Keeping a controlled dialog mounted allows its MDUI open and close
+    /// transitions to finish without rebuilding the surrounding view tree.
+    #[must_use]
+    pub fn presented(mut self, presented: impl IntoComputed<bool>) -> Self {
+        self.presented = presented.into_computed();
+        self
+    }
+
+    /// Sets the action emitted when the modal scrim is tapped.
+    #[must_use]
+    pub fn overlay_action<F, Args>(mut self, action: F) -> Self
+    where
+        F: Handler<Args, ()> + 'static,
+    {
+        let mut action = boxed_action(action);
+        self.overlay_action = SharedAction::new(move |env: Environment| action(&env));
+        self
+    }
+
+    /// Enables Escape-key dismissal and sets the emitted action.
+    #[must_use]
+    pub fn escape_action<F, Args>(mut self, action: F) -> Self
+    where
+        F: Handler<Args, ()> + 'static,
+    {
+        let mut action = boxed_action(action);
+        self.close_on_escape = true;
+        self.escape_action = SharedAction::new(move |env: Environment| action(&env));
+        self
     }
 }
 
@@ -138,6 +193,9 @@ where
     Actions: TupleViews + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
+        let presented = self.presented;
+        let modal = ModalInteraction::new(self.close_on_escape, self.escape_action)
+            .active(presented.clone());
         let surface = DialogSurface::new(
             self.headline
                 .font(typography::headline_small())
@@ -150,14 +208,47 @@ where
             },
         )
         .background(RoundedRectangle::new(DIALOG_CONTAINER_CLIP_RADIUS).fill(SurfaceContainerHigh))
+        .background(
+            SurfaceContainerHigh
+                .with_opacity(0.0)
+                .on_tap(|_: Environment| {})
+                .a11y_hidden(true)
+                .install(
+                    interaction_style(SurfaceContainerHigh.with_opacity(0.0), 0.0).pointer_only(),
+                ),
+        )
         .a11y_label(self.accessibility_label)
         .a11y_role(AccessibilityRole::Group);
 
-        waterui::component::hstack((
-            waterui::component::spacer(),
-            surface,
-            waterui::component::spacer(),
-        ))
+        let surface = material_elevation(MaterialElevationLevel::LEVEL3, surface)
+            .opacity(motion::dialog_opacity(presented.clone(), 0.0, 1.0))
+            .offset(
+                0.0,
+                motion::dialog_transform(presented.clone(), DIALOG_HIDDEN_OFFSET_Y, 0.0),
+            )
+            .scale_from(
+                1.0,
+                motion::dialog_transform(presented.clone(), 0.0, 1.0),
+                Anchor::new(0.5, 0.0),
+            )
+            .padding_with(EdgeInsets::all(DIALOG_VIEWPORT_PADDING))
+            .position_in(UnitPoint::CENTER);
+
+        let overlay_action = self.overlay_action;
+        let scrim = Scrim
+            .with_opacity(1.0)
+            .opacity(motion::dialog_opacity(presented.clone(), 0.0, 0.4))
+            .on_tap(move |env: Environment| overlay_action.call(&env))
+            .a11y_hidden(true)
+            .install(interaction_style(Scrim.with_opacity(0.0), 0.0).pointer_only());
+
+        let accessibility_state = presented
+            .map(|presented| waterui::accessibility::AccessibilityState::new().hidden(!presented));
+
+        absolute((scrim, surface))
+            .hittable(presented)
+            .a11y_state_signal(accessibility_state)
+            .install(modal)
     }
 }
 
@@ -221,7 +312,7 @@ impl Layout for DialogSurfaceLayout {
             .height;
         let height = (DIALOG_CONTENT_PADDING
             + headline_size.height
-            + DIALOG_CONTENT_PADDING
+            + DIALOG_HEADLINE_BODY_SPACING
             + supporting_size
             + DIALOG_CONTENT_BOTTOM_SPACE_WITH_ACTIONS
             + DIALOG_ACTION_TOP_SPACE
@@ -253,7 +344,7 @@ impl Layout for DialogSurfaceLayout {
         );
         let supporting_origin = Point::new(
             bounds.x() + DIALOG_CONTENT_PADDING,
-            headline_origin.y + headline_size.height + DIALOG_CONTENT_PADDING,
+            headline_origin.y + headline_size.height + DIALOG_HEADLINE_BODY_SPACING,
         );
         let actions_origin = Point::new(
             bounds.x() + bounds.width() - DIALOG_ACTION_TRAILING_SPACE - action_size.width,
@@ -298,16 +389,6 @@ where
     }
 }
 
-fn label_plain_text(label: &Label) -> Str {
-    label
-        .semantic_text()
-        .clone()
-        .resolve(&Environment::new())
-        .content
-        .get()
-        .to_plain()
-}
-
 const fn noop(_env: &Environment) {}
 
 /// Creates a Material Design 3 dialog.
@@ -328,14 +409,17 @@ mod tests {
         DIALOG_ACTION_BOTTOM_SPACE, DIALOG_ACTION_SPACING, DIALOG_ACTION_TRAILING_SPACE,
         DIALOG_CONTAINER_MAX_WIDTH, DIALOG_CONTAINER_MIN_HEIGHT, DIALOG_CONTAINER_MIN_WIDTH,
         DIALOG_CONTAINER_SHAPE, DIALOG_CONTENT_BOTTOM_SPACE_WITH_ACTIONS, DIALOG_CONTENT_PADDING,
+        DIALOG_HIDDEN_OFFSET_Y, DIALOG_VIEWPORT_PADDING,
     };
 
     #[test]
-    fn dialog_tokens_match_material_web_v0_192() {
+    fn dialog_tokens_match_mdui_2_1_5() {
         assert_eq!(DIALOG_CONTAINER_MIN_WIDTH, 280.0);
         assert_eq!(DIALOG_CONTAINER_MAX_WIDTH, 560.0);
         assert_eq!(DIALOG_CONTAINER_MIN_HEIGHT, 140.0);
         assert_eq!(DIALOG_CONTAINER_SHAPE, 28.0);
+        assert_eq!(DIALOG_VIEWPORT_PADDING, 48.0);
+        assert_eq!(DIALOG_HIDDEN_OFFSET_Y, -30.0);
         assert_eq!(DIALOG_CONTENT_PADDING, 24.0);
         assert_eq!(DIALOG_CONTENT_BOTTOM_SPACE_WITH_ACTIONS, 8.0);
         assert_eq!(DIALOG_ACTION_SPACING, 8.0);

@@ -56,6 +56,12 @@ pub struct CardStyleTokens {
     pub shadow_radius: f32,
     /// Shadow vertical offset.
     pub shadow_offset_y: f32,
+    /// Ambient shadow color.
+    pub ambient_shadow_color: Color,
+    /// Ambient shadow blur radius.
+    pub ambient_shadow_radius: f32,
+    /// Ambient shadow vertical offset.
+    pub ambient_shadow_offset_y: f32,
 }
 
 impl CardTheme {
@@ -131,6 +137,11 @@ where
             Vector::new(0.0, tokens.shadow_offset_y),
             tokens.shadow_radius,
         );
+        let ambient_shadow = Shadow::new(
+            tokens.ambient_shadow_color.clone(),
+            Vector::new(0.0, tokens.ambient_shadow_offset_y),
+            tokens.ambient_shadow_radius,
+        );
         AnyView::new(
             vstack((self.title, self.subtitle, self.content))
                 .spacing(theme.content_spacing)
@@ -142,6 +153,7 @@ where
                     Border::new(tokens.outline_color.clone(), tokens.outline_width)
                         .corner_radius(tokens.corner_radius),
                 )
+                .shadow(ambient_shadow)
                 .shadow(shadow),
         )
     }

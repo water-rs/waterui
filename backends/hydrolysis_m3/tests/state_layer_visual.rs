@@ -7,11 +7,11 @@
 
 use core::time::Duration;
 use hydrolysis_m3::install;
+use waterui::AnyView;
 use waterui::component::{text, vstack};
 use waterui::reactive::binding;
-use waterui::AnyView;
-use waterui_core::dynamic::watch;
 use waterui_controls::button;
+use waterui_core::dynamic::watch;
 use waterui_testing::{OffscreenApp, ui};
 
 fn press_center(app: &mut OffscreenApp, label: &str) -> (f32, f32) {
@@ -129,9 +129,9 @@ fn plain_button_hover_shows_state_layer() {
 #[test]
 #[ignore = "writes visual acceptance PNGs for direct image review"]
 fn ripple_survives_same_frame_structural_patch() {
-    // The chart-demo scenario: the button's action (dispatched on pointer
-    // down) flips a signal that a `watch` subtree rebuilds from in the same
-    // refresh frame. The press ripple on the button must keep animating.
+    // The chart-demo scenario: the button's release action flips a signal that
+    // a `watch` subtree rebuilds from in the same refresh frame. The quick
+    // tap's ripple must keep growing through the structural patch.
     let mode_for_view = binding(false);
     let mut app = ui().viewport(360, 240).theme(install).mount(move || {
         let mode_for_action = mode_for_view.clone();
@@ -152,6 +152,11 @@ fn ripple_survives_same_frame_structural_patch() {
     });
     let (cx, cy) = press_center(&mut app, "Swap");
     assert!(app.semantic_mut().pointer_down_at(cx, cy), "press must hit");
+    assert!(
+        app.semantic_mut().pointer_up_at(cx, cy),
+        "release must activate"
+    );
+    app.query().label("Swapped content").assert_exists();
     std::thread::sleep(Duration::from_millis(80));
     save(&mut app, "patch-press-80ms");
     std::thread::sleep(Duration::from_millis(140));

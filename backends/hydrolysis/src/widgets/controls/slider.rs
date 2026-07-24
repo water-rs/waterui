@@ -379,6 +379,8 @@ pub(crate) fn render_slider_parts(
     }
     let inverse_transform = ctx.hit_transform.inverse();
     let value_epsilon = slider_value_epsilon(span, usable_track);
+    let keyboard_value = value_binding.clone();
+    let keyboard_step = span / 100.0;
     ctx.renderer_mut().register_interactive_pointer_drag_target(
         hit_bounds,
         press_slot,
@@ -391,6 +393,20 @@ pub(crate) fn render_slider_parts(
                 return false;
             }
             value_binding.set(next);
+            true
+        },
+        move |forward| {
+            let current = keyboard_value.get();
+            let delta = if forward {
+                keyboard_step
+            } else {
+                -keyboard_step
+            };
+            let next = (current + delta).clamp(range_start, range_end);
+            if (current - next).abs() <= f64::EPSILON {
+                return false;
+            }
+            keyboard_value.set(next);
             true
         },
     );

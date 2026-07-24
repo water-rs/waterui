@@ -91,7 +91,7 @@ mod tests {
     use waterui::widget::CardStyle;
 
     #[test]
-    fn material_card_tokens_match_material_web_v0_192_cards() {
+    fn material_card_tokens_match_mdui_2_1_5_cards() {
         let theme = crate::layout::card::theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.default_style, CardStyle::Filled);
@@ -99,7 +99,8 @@ mod tests {
         assert_eq!(theme.filled.corner_radius, 12.0);
         assert_eq!(theme.outlined.corner_radius, 12.0);
         assert_eq!(theme.outlined.outline_width, 1.0);
-        assert_eq!(theme.elevated.shadow_radius, 1.0);
+        assert_eq!(theme.elevated.shadow_radius, 1.5);
+        assert_eq!(theme.elevated.shadow_offset_y, 0.5);
         assert_eq!(theme.filled.shadow_radius, 0.0);
         assert_eq!(theme.outlined.shadow_radius, 0.0);
     }

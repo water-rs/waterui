@@ -66,6 +66,7 @@ pub(crate) struct AccessibilityBuilder {
     pub(crate) root_label: String,
     pub(crate) focus: AccessibilityNodeId,
     pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
+    pub(crate) parent_stack: Vec<AccessibilityNodeId>,
     pub(crate) suppression_depth: usize,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
 }
@@ -82,6 +83,7 @@ impl Default for AccessibilityBuilder {
             root_label: String::from("WaterUI Window"),
             focus: ACCESSIBILITY_ROOT_NODE_ID,
             pending_text_input_nodes: VecDeque::new(),
+            parent_stack: Vec::new(),
             suppression_depth: 0,
             pending_tree_update: None,
         }
@@ -104,6 +106,7 @@ impl AccessibilityBuilder {
         self.actions.clear();
         self.next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
         self.pending_text_input_nodes.clear();
+        self.parent_stack.clear();
         self.suppression_depth = 0;
     }
 
@@ -189,10 +192,19 @@ impl AccessibilityBuilder {
         self.apply_state(env, &mut node);
         let node_id = self.next_node_id();
         node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
-        if attach_to_root {
-            self.root_children.push(node_id);
-        }
         self.nodes.push((node_id, node));
+        if attach_to_root {
+            if let Some(parent_id) = self.parent_stack.last().copied() {
+                let parent = self
+                    .nodes
+                    .iter_mut()
+                    .find_map(|(id, node)| (*id == parent_id).then_some(node))
+                    .expect("hydrolysis accessibility parent stack contains an unknown node");
+                parent.push_child(node_id);
+            } else {
+                self.root_children.push(node_id);
+            }
+        }
         if let Some(target) = action_target {
             self.actions.insert(node_id, target);
         }
@@ -217,6 +229,31 @@ impl AccessibilityBuilder {
             focus: self.focus,
         });
     }
+}
+
+#[cfg(feature = "accessibility")]
+pub(crate) struct AccessibilityGroupScope {
+    parent_pushed: bool,
+    suppression_pushed: bool,
+}
+
+#[cfg(feature = "accessibility")]
+pub(crate) fn accessibility_group_child_environment(env: &Environment) -> Option<Environment> {
+    if !matches!(
+        env.get::<AccessibilityRole>(),
+        Some(AccessibilityRole::Group)
+    ) {
+        return None;
+    }
+
+    let mut child_env = env.clone();
+    child_env.remove::<AccessibilityLabel>();
+    child_env.remove::<AccessibilityRole>();
+    child_env.remove::<AccessibilityHidden>();
+    child_env.remove::<AccessibilityChildren>();
+    child_env.remove::<AccessibilityState>();
+    child_env.remove::<AccessibilityStateSignal>();
+    Some(child_env)
 }
 
 impl HydrolysisRenderer {
@@ -396,6 +433,75 @@ impl HydrolysisRenderer {
     #[cfg(feature = "accessibility")]
     pub(crate) fn pop_accessibility_suppression(&mut self) {
         self.accessibility.pop_suppression();
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn begin_accessibility_group(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+    ) -> AccessibilityGroupScope {
+        assert!(
+            matches!(
+                env.get::<AccessibilityRole>(),
+                Some(AccessibilityRole::Group)
+            ),
+            "hydrolysis accessibility group scope requires the Group role"
+        );
+
+        if env
+            .get::<AccessibilityHidden>()
+            .is_some_and(AccessibilityHidden::is_hidden)
+        {
+            self.push_accessibility_suppression();
+            return AccessibilityGroupScope {
+                parent_pushed: false,
+                suppression_pushed: true,
+            };
+        }
+
+        let mut node = AccessibilityNode::new(AccessibilityNodeRole::Group);
+        if let Some(label) = self.resolve_accessibility_label(env, None) {
+            node.set_label(label);
+        }
+        let state_hidden = env
+            .get::<AccessibilityStateSignal>()
+            .is_some_and(|signal| signal.state().get().is_hidden());
+        let excludes_descendants = env
+            .get::<AccessibilityChildren>()
+            .is_some_and(AccessibilityChildren::excludes_descendants);
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            self.push_accessibility_suppression();
+            return AccessibilityGroupScope {
+                parent_pushed: false,
+                suppression_pushed: true,
+            };
+        }
+        let node_id = self
+            .register_accessibility_node(node, bounds, env, None)
+            .expect("positive accessibility group bounds must register a node");
+        self.accessibility.parent_stack.push(node_id);
+        let suppression_pushed = state_hidden || excludes_descendants;
+        if suppression_pushed {
+            self.push_accessibility_suppression();
+        }
+        AccessibilityGroupScope {
+            parent_pushed: true,
+            suppression_pushed,
+        }
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn end_accessibility_group(&mut self, scope: AccessibilityGroupScope) {
+        if scope.suppression_pushed {
+            self.pop_accessibility_suppression();
+        }
+        if scope.parent_pushed {
+            self.accessibility
+                .parent_stack
+                .pop()
+                .expect("hydrolysis accessibility group parent stack underflow");
+        }
     }
 
     #[cfg(feature = "accessibility")]

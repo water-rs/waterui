@@ -5,25 +5,25 @@ use waterui::{Environment, View, ViewExt as _};
 
 use crate::color::Shadow;
 
-const KEY_OPACITY: f32 = 0.30;
-const AMBIENT_OPACITY: f32 = 0.15;
+const KEY_OPACITY: f32 = 0.19;
+const AMBIENT_OPACITY: f32 = 0.039;
 
 const KEY_SHADOWS: [ElevationShadow; 6] = [
     ElevationShadow::new(0.0, 0.0),
-    ElevationShadow::new(1.0, 2.0),
-    ElevationShadow::new(1.0, 2.0),
-    ElevationShadow::new(1.0, 3.0),
-    ElevationShadow::new(2.0, 3.0),
-    ElevationShadow::new(4.0, 4.0),
+    ElevationShadow::new(0.5, 1.5),
+    ElevationShadow::new(0.85, 3.0),
+    ElevationShadow::new(1.25, 5.0),
+    ElevationShadow::new(1.85, 6.25),
+    ElevationShadow::new(2.75, 9.0),
 ];
 
-const AMBIENT_SHADOWS: [ElevationAmbientShadow; 6] = [
-    ElevationAmbientShadow::new(0.0, 0.0, 0.0),
-    ElevationAmbientShadow::new(1.0, 3.0, 1.0),
-    ElevationAmbientShadow::new(2.0, 6.0, 2.0),
-    ElevationAmbientShadow::new(4.0, 8.0, 3.0),
-    ElevationAmbientShadow::new(6.0, 10.0, 4.0),
-    ElevationAmbientShadow::new(8.0, 12.0, 6.0),
+const AMBIENT_SHADOWS: [ElevationShadow; 6] = [
+    ElevationShadow::new(0.0, 0.0),
+    ElevationShadow::new(0.0, 1.0),
+    ElevationShadow::new(0.25, 1.0),
+    ElevationShadow::new(0.3333, 1.5),
+    ElevationShadow::new(0.5, 1.75),
+    ElevationShadow::new(0.25, 3.0),
 ];
 
 /// A Material Design 3 elevation level.
@@ -105,7 +105,7 @@ pub const fn material_elevation<Content>(
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ElevationTokens {
     key: ElevationShadow,
-    ambient: ElevationAmbientShadow,
+    ambient: ElevationShadow,
 }
 
 impl ElevationTokens {
@@ -118,7 +118,7 @@ impl ElevationTokens {
 
     fn key_shadow(self) -> ViewShadow {
         ViewShadow::new(
-            Shadow.with_opacity(KEY_OPACITY).into(),
+            Shadow.with_opacity(self.key.opacity(KEY_OPACITY)).into(),
             Vector::new(0.0, self.key.y),
             self.key.blur,
         )
@@ -126,7 +126,9 @@ impl ElevationTokens {
 
     fn ambient_shadow(self) -> ViewShadow {
         ViewShadow::new(
-            Shadow.with_opacity(AMBIENT_OPACITY).into(),
+            Shadow
+                .with_opacity(self.ambient.opacity(AMBIENT_OPACITY))
+                .into(),
             Vector::new(0.0, self.ambient.y),
             self.ambient.blur,
         )
@@ -143,40 +145,41 @@ impl ElevationShadow {
     const fn new(y: f32, blur: f32) -> Self {
         Self { y, blur }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ElevationAmbientShadow {
-    y: f32,
-    blur: f32,
-    spread: f32,
-}
-
-impl ElevationAmbientShadow {
-    const fn new(y: f32, blur: f32, spread: f32) -> Self {
-        Self { y, blur, spread }
+    const fn opacity(self, opacity: f32) -> f32 {
+        if self.y == 0.0 && self.blur == 0.0 {
+            0.0
+        } else {
+            opacity
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AMBIENT_SHADOWS, KEY_SHADOWS, MaterialElevationLevel};
+    use super::{
+        AMBIENT_OPACITY, AMBIENT_SHADOWS, KEY_OPACITY, KEY_SHADOWS, MaterialElevationLevel,
+    };
 
     #[test]
-    fn elevation_levels_match_material_web_v0_192() {
+    fn elevation_levels_match_mdui_2_1_5() {
+        assert_eq!(KEY_OPACITY, 0.19);
+        assert_eq!(AMBIENT_OPACITY, 0.039);
+        assert_eq!(KEY_SHADOWS[0].opacity(KEY_OPACITY), 0.0);
+        assert_eq!(AMBIENT_SHADOWS[0].opacity(AMBIENT_OPACITY), 0.0);
         assert_eq!(KEY_SHADOWS[0].y, 0.0);
-        assert_eq!(KEY_SHADOWS[1].y, 1.0);
-        assert_eq!(KEY_SHADOWS[2].blur, 2.0);
-        assert_eq!(KEY_SHADOWS[3].blur, 3.0);
-        assert_eq!(KEY_SHADOWS[4].y, 2.0);
-        assert_eq!(KEY_SHADOWS[5].y, 4.0);
+        assert_eq!(KEY_SHADOWS[1].y, 0.5);
+        assert_eq!(KEY_SHADOWS[2].blur, 3.0);
+        assert_eq!(KEY_SHADOWS[3].blur, 5.0);
+        assert_eq!(KEY_SHADOWS[4].y, 1.85);
+        assert_eq!(KEY_SHADOWS[5].y, 2.75);
 
-        assert_eq!(AMBIENT_SHADOWS[0].spread, 0.0);
-        assert_eq!(AMBIENT_SHADOWS[1].blur, 3.0);
-        assert_eq!(AMBIENT_SHADOWS[2].spread, 2.0);
-        assert_eq!(AMBIENT_SHADOWS[3].y, 4.0);
-        assert_eq!(AMBIENT_SHADOWS[4].blur, 10.0);
-        assert_eq!(AMBIENT_SHADOWS[5].spread, 6.0);
+        assert_eq!(AMBIENT_SHADOWS[0].blur, 0.0);
+        assert_eq!(AMBIENT_SHADOWS[1].blur, 1.0);
+        assert_eq!(AMBIENT_SHADOWS[2].y, 0.25);
+        assert_eq!(AMBIENT_SHADOWS[3].y, 0.3333);
+        assert_eq!(AMBIENT_SHADOWS[4].blur, 1.75);
+        assert_eq!(AMBIENT_SHADOWS[5].blur, 3.0);
     }
 
     #[test]

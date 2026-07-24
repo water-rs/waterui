@@ -1,11 +1,15 @@
 use core::time::Duration;
 
 use waterui::animation::Animation;
+use waterui::reactive::watcher::Context;
+use waterui::{Computed, Signal};
 use waterui_backend_core::widget::{
     InteractionMotion, NavigationMotion, ProgressMotion, RadioSelectionMotion, TextCaretMotion,
 };
 
 const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
+const MATERIAL_EMPHASIZED_ACCELERATE: (f32, f32, f32, f32) = (0.3, 0.0, 0.8, 0.15);
+const MATERIAL_EMPHASIZED_DECELERATE: (f32, f32, f32, f32) = (0.05, 0.7, 0.1, 1.0);
 
 /// The MD3 standard easing curve over `duration`.
 const fn material_standard(duration: Duration) -> Animation {
@@ -68,8 +72,34 @@ pub const fn navigation() -> NavigationMotion {
     }
 }
 
-pub const fn navigation_drawer() -> Animation {
-    material_standard(Duration::from_millis(250))
+/// MDUI navigation-drawer translation motion.
+pub fn navigation_drawer(
+    opened: Computed<bool>,
+    closed_value: f32,
+    opened_value: f32,
+) -> impl Signal<Output = f32> {
+    dialog_property(
+        opened,
+        closed_value,
+        opened_value,
+        material_standard(Duration::from_millis(500)),
+        material_standard(Duration::from_millis(200)),
+    )
+}
+
+/// MDUI modal navigation-drawer scrim motion.
+pub fn navigation_drawer_scrim(
+    opened: Computed<bool>,
+    closed_value: f32,
+    opened_value: f32,
+) -> impl Signal<Output = f32> {
+    dialog_property(
+        opened,
+        closed_value,
+        opened_value,
+        Animation::linear(Duration::from_millis(500)),
+        Animation::linear(Duration::from_millis(200)),
+    )
 }
 
 /// Switch value motion, matching the mdui reference: thumb slide, thumb size,
@@ -77,6 +107,110 @@ pub const fn navigation_drawer() -> Animation {
 /// MD3 standard easing (mdui `transition-duration(short4)` + standard curve).
 pub const fn toggle_value() -> Animation {
     material_standard(Duration::from_millis(200))
+}
+
+/// MDUI tooltip scale transition (`short4` with standard easing).
+pub const fn tooltip() -> Animation {
+    material_standard(Duration::from_millis(200))
+}
+
+#[derive(Clone)]
+struct DialogProperty {
+    opened: Computed<bool>,
+    closed_value: f32,
+    opened_value: f32,
+    opening: Animation,
+    closing: Animation,
+}
+
+impl Signal for DialogProperty {
+    type Output = f32;
+    type Guard = <Computed<bool> as Signal>::Guard;
+
+    fn get(&self) -> Self::Output {
+        if self.opened.get() {
+            self.opened_value
+        } else {
+            self.closed_value
+        }
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        let closed_value = self.closed_value;
+        let opened_value = self.opened_value;
+        let opening = self.opening.clone();
+        let closing = self.closing.clone();
+        self.opened.watch(move |context| {
+            let opened = *context.value();
+            watcher(
+                context
+                    .map(|opened| if opened { opened_value } else { closed_value })
+                    .with(if opened {
+                        opening.clone()
+                    } else {
+                        closing.clone()
+                    }),
+            );
+        })
+    }
+}
+
+fn dialog_property(
+    opened: Computed<bool>,
+    closed_value: f32,
+    opened_value: f32,
+    opening: Animation,
+    closing: Animation,
+) -> impl Signal<Output = f32> {
+    DialogProperty {
+        opened,
+        closed_value,
+        opened_value,
+        opening,
+        closing,
+    }
+}
+
+/// MDUI dialog panel transform motion.
+pub fn dialog_transform(
+    opened: Computed<bool>,
+    closed_value: f32,
+    opened_value: f32,
+) -> impl Signal<Output = f32> {
+    dialog_property(
+        opened,
+        closed_value,
+        opened_value,
+        Animation::bezier(
+            Duration::from_millis(400),
+            MATERIAL_EMPHASIZED_DECELERATE.0,
+            MATERIAL_EMPHASIZED_DECELERATE.1,
+            MATERIAL_EMPHASIZED_DECELERATE.2,
+            MATERIAL_EMPHASIZED_DECELERATE.3,
+        ),
+        Animation::bezier(
+            Duration::from_millis(200),
+            MATERIAL_EMPHASIZED_ACCELERATE.0,
+            MATERIAL_EMPHASIZED_ACCELERATE.1,
+            MATERIAL_EMPHASIZED_ACCELERATE.2,
+            MATERIAL_EMPHASIZED_ACCELERATE.3,
+        ),
+    )
+}
+
+/// MDUI dialog opacity motion.
+pub fn dialog_opacity(
+    opened: Computed<bool>,
+    closed_value: f32,
+    opened_value: f32,
+) -> impl Signal<Output = f32> {
+    dialog_property(
+        opened,
+        closed_value,
+        opened_value,
+        Animation::linear(Duration::from_millis(400)),
+        Animation::linear(Duration::from_millis(200)),
+    )
 }
 
 pub const fn radio_selection() -> RadioSelectionMotion {
@@ -90,11 +224,14 @@ pub const fn radio_selection() -> RadioSelectionMotion {
 #[cfg(test)]
 mod tests {
     use super::{
-        interaction, navigation, navigation_drawer, progress, radio_selection, text_caret,
-        toggle_value,
+        dialog_opacity, dialog_transform, interaction, navigation, navigation_drawer,
+        navigation_drawer_scrim, progress, radio_selection, text_caret, toggle_value, tooltip,
     };
     use core::time::Duration;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use waterui::animation::Animation;
+    use waterui::{Binding, Signal, SignalExt as _};
 
     #[test]
     fn material_state_layer_motion_matches_mdui_reference() {
@@ -174,10 +311,55 @@ mod tests {
     }
 
     #[test]
-    fn material_navigation_drawer_motion_matches_material_web_labs() {
+    fn material_navigation_drawer_motion_matches_mdui_2_1_5() {
+        let opened = Binding::bool(false);
+        let transform = navigation_drawer(opened.computed(), -360.0, 0.0);
+        let scrim = navigation_drawer_scrim(opened.computed(), 0.0, 0.4);
+        let transform_updates = Rc::new(RefCell::new(Vec::new()));
+        let scrim_updates = Rc::new(RefCell::new(Vec::new()));
+        let captured_transform_updates = Rc::clone(&transform_updates);
+        let captured_scrim_updates = Rc::clone(&scrim_updates);
+        let _transform_guard = transform.watch(move |context| {
+            captured_transform_updates.borrow_mut().push((
+                *context.value(),
+                context
+                    .metadata()
+                    .try_get::<Animation>()
+                    .expect("drawer transform update must carry animation metadata"),
+            ));
+        });
+        let _scrim_guard = scrim.watch(move |context| {
+            captured_scrim_updates.borrow_mut().push((
+                *context.value(),
+                context
+                    .metadata()
+                    .try_get::<Animation>()
+                    .expect("drawer scrim update must carry animation metadata"),
+            ));
+        });
+
+        opened.set(true);
+        opened.set(false);
+
         assert_eq!(
-            navigation_drawer(),
-            Animation::bezier(Duration::from_millis(250), 0.2, 0.0, 0.0, 1.0)
+            transform_updates.borrow().as_slice(),
+            &[
+                (
+                    0.0,
+                    Animation::bezier(Duration::from_millis(500), 0.2, 0.0, 0.0, 1.0)
+                ),
+                (
+                    -360.0,
+                    Animation::bezier(Duration::from_millis(200), 0.2, 0.0, 0.0, 1.0)
+                ),
+            ]
+        );
+        assert_eq!(
+            scrim_updates.borrow().as_slice(),
+            &[
+                (0.4, Animation::linear(Duration::from_millis(500))),
+                (0.0, Animation::linear(Duration::from_millis(200))),
+            ]
         );
     }
 
@@ -186,6 +368,67 @@ mod tests {
         assert_eq!(
             toggle_value(),
             Animation::bezier(Duration::from_millis(200), 0.2, 0.0, 0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn material_tooltip_motion_matches_mdui_reference() {
+        assert_eq!(
+            tooltip(),
+            Animation::bezier(Duration::from_millis(200), 0.2, 0.0, 0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn material_dialog_motion_selects_mdui_directional_curves() {
+        let opened = Binding::bool(false);
+        let transform = dialog_transform(opened.computed(), 0.0, 1.0);
+        let opacity = dialog_opacity(opened.computed(), 0.0, 1.0);
+        let transform_updates = Rc::new(RefCell::new(Vec::new()));
+        let opacity_updates = Rc::new(RefCell::new(Vec::new()));
+        let captured_transform_updates = Rc::clone(&transform_updates);
+        let captured_opacity_updates = Rc::clone(&opacity_updates);
+        let _transform_guard = transform.watch(move |context| {
+            captured_transform_updates.borrow_mut().push((
+                *context.value(),
+                context
+                    .metadata()
+                    .try_get::<Animation>()
+                    .expect("dialog transform update must carry animation metadata"),
+            ));
+        });
+        let _opacity_guard = opacity.watch(move |context| {
+            captured_opacity_updates.borrow_mut().push((
+                *context.value(),
+                context
+                    .metadata()
+                    .try_get::<Animation>()
+                    .expect("dialog opacity update must carry animation metadata"),
+            ));
+        });
+
+        opened.set(true);
+        opened.set(false);
+
+        assert_eq!(
+            transform_updates.borrow().as_slice(),
+            &[
+                (
+                    1.0,
+                    Animation::bezier(Duration::from_millis(400), 0.05, 0.7, 0.1, 1.0)
+                ),
+                (
+                    0.0,
+                    Animation::bezier(Duration::from_millis(200), 0.3, 0.0, 0.8, 0.15)
+                ),
+            ]
+        );
+        assert_eq!(
+            opacity_updates.borrow().as_slice(),
+            &[
+                (1.0, Animation::linear(Duration::from_millis(400))),
+                (0.0, Animation::linear(Duration::from_millis(200))),
+            ]
         );
     }
 

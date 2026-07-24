@@ -6,18 +6,24 @@ use waterui_core::{Environment, resolve::Resolvable};
 const MATERIAL_TYPEFACE: &str =
     "Roboto, Noto Sans CJK JP, Noto Sans CJK KR, Noto Sans CJK SC, Noto Sans CJK TC, sans-serif";
 
-const fn font(size: f32, weight: FontWeight) -> ResolvedFont {
+const fn font(
+    size: f32,
+    weight: FontWeight,
+    line_height: f32,
+    letter_spacing: f32,
+) -> ResolvedFont {
     ResolvedFont::with_static_family(size, weight, MATERIAL_TYPEFACE)
+        .with_typography_metrics(line_height, letter_spacing)
 }
 
 pub fn settings() -> FontSettings {
     FontSettings::new()
-        .body(font(16.0, FontWeight::Normal))
-        .title(font(22.0, FontWeight::Normal))
-        .headline(font(24.0, FontWeight::Normal))
-        .subheadline(font(16.0, FontWeight::Medium))
-        .caption(font(12.0, FontWeight::Normal))
-        .footnote(font(11.0, FontWeight::Medium))
+        .body(font(16.0, FontWeight::Normal, 24.0, 0.15))
+        .title(font(22.0, FontWeight::Normal, 28.0, 0.0))
+        .headline(font(24.0, FontWeight::Normal, 32.0, 0.0))
+        .subheadline(font(16.0, FontWeight::Medium, 24.0, 0.15))
+        .caption(font(12.0, FontWeight::Normal, 16.0, 0.4))
+        .footnote(font(11.0, FontWeight::Medium, 16.0, 0.5))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -27,7 +33,7 @@ impl Resolvable for LabelLarge {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(14.0, FontWeight::Medium))
+        Computed::constant(font(14.0, FontWeight::Medium, 20.0, 0.1))
     }
 }
 
@@ -42,7 +48,7 @@ impl Resolvable for LabelMedium {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(12.0, FontWeight::Medium))
+        Computed::constant(font(12.0, FontWeight::Medium, 16.0, 0.5))
     }
 }
 
@@ -57,7 +63,7 @@ impl Resolvable for LabelSmall {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(11.0, FontWeight::Medium))
+        Computed::constant(font(11.0, FontWeight::Medium, 16.0, 0.5))
     }
 }
 
@@ -72,7 +78,7 @@ impl Resolvable for BodyLarge {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(16.0, FontWeight::Normal))
+        Computed::constant(font(16.0, FontWeight::Normal, 24.0, 0.15))
     }
 }
 
@@ -87,7 +93,7 @@ impl Resolvable for BodyMedium {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(14.0, FontWeight::Normal))
+        Computed::constant(font(14.0, FontWeight::Normal, 20.0, 0.25))
     }
 }
 
@@ -102,7 +108,7 @@ impl Resolvable for BodySmall {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(12.0, FontWeight::Normal))
+        Computed::constant(font(12.0, FontWeight::Normal, 16.0, 0.4))
     }
 }
 
@@ -117,7 +123,7 @@ impl Resolvable for TitleSmall {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(14.0, FontWeight::Medium))
+        Computed::constant(font(14.0, FontWeight::Medium, 20.0, 0.1))
     }
 }
 
@@ -132,7 +138,7 @@ impl Resolvable for HeadlineSmall {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(24.0, FontWeight::Normal))
+        Computed::constant(font(24.0, FontWeight::Normal, 32.0, 0.0))
     }
 }
 
@@ -160,9 +166,13 @@ mod tests {
         font: waterui::text::font::ResolvedFont,
         expected_size: f32,
         expected_weight: FontWeight,
+        expected_line_height: f32,
+        expected_letter_spacing: f32,
     ) {
         assert_eq!(font.size, expected_size);
         assert_eq!(font.weight, expected_weight);
+        assert_eq!(font.line_height, Some(expected_line_height));
+        assert_eq!(font.letter_spacing, expected_letter_spacing);
         assert_eq!(font.family.as_deref(), Some(MATERIAL_TYPEFACE));
     }
 
@@ -175,77 +185,157 @@ mod tests {
     }
 
     #[test]
-    fn font_slots_match_material_web_v0_192_type_scale() {
+    fn font_slots_match_mdui_2_1_5_type_scale() {
         let mut env = Environment::new();
         waterui::theme::Theme::new()
             .fonts(settings())
             .install(&mut env);
 
-        assert_material_font(Body.resolve(&env).get(), 16.0, FontWeight::Normal);
-        assert_material_font(Title.resolve(&env).get(), 22.0, FontWeight::Normal);
-        assert_material_font(Headline.resolve(&env).get(), 24.0, FontWeight::Normal);
-        assert_material_font(Subheadline.resolve(&env).get(), 16.0, FontWeight::Medium);
-        assert_material_font(Caption.resolve(&env).get(), 12.0, FontWeight::Normal);
-        assert_material_font(Footnote.resolve(&env).get(), 11.0, FontWeight::Medium);
+        assert_material_font(
+            Body.resolve(&env).get(),
+            16.0,
+            FontWeight::Normal,
+            24.0,
+            0.15,
+        );
+        assert_material_font(
+            Title.resolve(&env).get(),
+            22.0,
+            FontWeight::Normal,
+            28.0,
+            0.0,
+        );
+        assert_material_font(
+            Headline.resolve(&env).get(),
+            24.0,
+            FontWeight::Normal,
+            32.0,
+            0.0,
+        );
+        assert_material_font(
+            Subheadline.resolve(&env).get(),
+            16.0,
+            FontWeight::Medium,
+            24.0,
+            0.15,
+        );
+        assert_material_font(
+            Caption.resolve(&env).get(),
+            12.0,
+            FontWeight::Normal,
+            16.0,
+            0.4,
+        );
+        assert_material_font(
+            Footnote.resolve(&env).get(),
+            11.0,
+            FontWeight::Medium,
+            16.0,
+            0.5,
+        );
     }
 
     #[test]
-    fn label_large_matches_material_web_v0_192_label_large() {
+    fn label_large_matches_mdui_2_1_5_label_large() {
         let env = Environment::new();
 
-        assert_material_font(label_large().resolve(&env).get(), 14.0, FontWeight::Medium);
+        assert_material_font(
+            label_large().resolve(&env).get(),
+            14.0,
+            FontWeight::Medium,
+            20.0,
+            0.1,
+        );
     }
 
     #[test]
-    fn label_medium_matches_material_web_v0_192_label_medium() {
+    fn label_medium_matches_mdui_2_1_5_label_medium() {
         let env = Environment::new();
 
-        assert_material_font(label_medium().resolve(&env).get(), 12.0, FontWeight::Medium);
+        assert_material_font(
+            label_medium().resolve(&env).get(),
+            12.0,
+            FontWeight::Medium,
+            16.0,
+            0.5,
+        );
     }
 
     #[test]
-    fn label_small_matches_material_web_v0_192_label_small() {
+    fn label_small_matches_mdui_2_1_5_label_small() {
         let env = Environment::new();
 
-        assert_material_font(label_small().resolve(&env).get(), 11.0, FontWeight::Medium);
+        assert_material_font(
+            label_small().resolve(&env).get(),
+            11.0,
+            FontWeight::Medium,
+            16.0,
+            0.5,
+        );
     }
 
     #[test]
-    fn body_medium_matches_material_web_v0_192_body_medium() {
+    fn body_medium_matches_mdui_2_1_5_body_medium() {
         let env = Environment::new();
 
-        assert_material_font(body_medium().resolve(&env).get(), 14.0, FontWeight::Normal);
+        assert_material_font(
+            body_medium().resolve(&env).get(),
+            14.0,
+            FontWeight::Normal,
+            20.0,
+            0.25,
+        );
     }
 
     #[test]
-    fn body_large_matches_material_web_v0_192_body_large() {
+    fn body_large_matches_mdui_2_1_5_body_large() {
         let env = Environment::new();
 
-        assert_material_font(body_large().resolve(&env).get(), 16.0, FontWeight::Normal);
+        assert_material_font(
+            body_large().resolve(&env).get(),
+            16.0,
+            FontWeight::Normal,
+            24.0,
+            0.15,
+        );
     }
 
     #[test]
-    fn body_small_matches_material_web_v0_192_body_small() {
+    fn body_small_matches_mdui_2_1_5_body_small() {
         let env = Environment::new();
 
-        assert_material_font(body_small().resolve(&env).get(), 12.0, FontWeight::Normal);
+        assert_material_font(
+            body_small().resolve(&env).get(),
+            12.0,
+            FontWeight::Normal,
+            16.0,
+            0.4,
+        );
     }
 
     #[test]
-    fn title_small_matches_material_web_v0_192_title_small() {
+    fn title_small_matches_mdui_2_1_5_title_small() {
         let env = Environment::new();
 
-        assert_material_font(title_small().resolve(&env).get(), 14.0, FontWeight::Medium);
+        assert_material_font(
+            title_small().resolve(&env).get(),
+            14.0,
+            FontWeight::Medium,
+            20.0,
+            0.1,
+        );
     }
 
     #[test]
-    fn headline_small_matches_material_web_v0_192_headline_small() {
+    fn headline_small_matches_mdui_2_1_5_headline_small() {
         let env = Environment::new();
 
         assert_material_font(
             headline_small().resolve(&env).get(),
             24.0,
             FontWeight::Normal,
+            32.0,
+            0.0,
         );
     }
 }

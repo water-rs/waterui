@@ -179,6 +179,8 @@ impl ResolvedTextLayoutInput {
 struct ResolvedFontSpec {
     size: f32,
     weight: TextFontWeight,
+    line_height: Option<f32>,
+    letter_spacing: f32,
     family: Option<String>,
 }
 
@@ -226,6 +228,8 @@ fn font_spec(font: &waterui_text::font::ResolvedFont) -> ResolvedFontSpec {
     ResolvedFontSpec {
         size: font.size,
         weight: font.weight,
+        line_height: font.line_height,
+        letter_spacing: font.letter_spacing,
         family: font.family.as_deref().map(String::from),
     }
 }
@@ -265,6 +269,14 @@ fn build_parley_layout(
     builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
         input.default_font.weight,
     )));
+    if let Some(line_height) = input.default_font.line_height {
+        builder.push_default(parley::StyleProperty::LineHeight(
+            parley::LineHeight::Absolute(line_height),
+        ));
+    }
+    builder.push_default(parley::StyleProperty::LetterSpacing(
+        input.default_font.letter_spacing,
+    ));
     let locale = input
         .locale
         .parse::<parley::Language>()
@@ -303,6 +315,16 @@ fn push_text_style(
     );
     builder.push(
         parley::StyleProperty::FontWeight(parley_font_weight(style.font.weight)),
+        range.clone(),
+    );
+    if let Some(line_height) = style.font.line_height {
+        builder.push(
+            parley::StyleProperty::LineHeight(parley::LineHeight::Absolute(line_height)),
+            range.clone(),
+        );
+    }
+    builder.push(
+        parley::StyleProperty::LetterSpacing(style.font.letter_spacing),
         range.clone(),
     );
     if let Some(family) = &style.font.family {
@@ -385,6 +407,8 @@ fn text_layout_font_cache_key(font: &ResolvedFontSpec) -> TextLayoutFontCacheKey
     TextLayoutFontCacheKey {
         size: font.size.to_bits(),
         weight: text_font_weight_cache_key(font.weight),
+        line_height: font.line_height.map(f32::to_bits),
+        letter_spacing: font.letter_spacing.to_bits(),
         family: font.family.clone(),
     }
 }
@@ -432,6 +456,8 @@ pub(crate) struct TextLayoutSpanCacheKey {
 pub(crate) struct TextLayoutFontCacheKey {
     pub(crate) size: u32,
     pub(crate) weight: u16,
+    pub(crate) line_height: Option<u32>,
+    pub(crate) letter_spacing: u32,
     pub(crate) family: Option<String>,
 }
 

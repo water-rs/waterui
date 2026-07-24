@@ -167,7 +167,7 @@ use crate::engine::{
 };
 use crate::gesture::GestureEngine;
 use crate::platform::{
-    KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
+    KeyCode, Modifiers, PointerButton, PointerKind, TextInputPurpose, TextInputState, TouchPhase,
 };
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;

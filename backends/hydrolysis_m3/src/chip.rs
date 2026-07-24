@@ -5,10 +5,10 @@ use core::marker::PhantomData;
 use waterui::accessibility::{AccessibilityChildren, AccessibilityRole, AccessibilityState};
 use waterui::border::Border;
 use waterui::color::Color;
+use waterui::layout::frame::Frame;
 use waterui::layout::padding::EdgeInsets;
 use waterui::reactive::SignalExt as _;
 use waterui::shape::{Rectangle, RoundedRectangle, ShapeExt as _};
-use waterui::widget::condition::when;
 use waterui::{Binding, Environment, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, SharedAction, boxed_action};
@@ -17,7 +17,7 @@ use crate::color::{
     OnSecondaryContainer, OnSurface, OnSurfaceVariant, Outline, SecondaryContainer, Surface,
 };
 use crate::icons::CheckmarkIcon;
-use crate::semantics::label_plain_text;
+use crate::semantics::{conditional_color, interaction_style, label_plain_text};
 use crate::theme::typography;
 
 const ASSIST_CHIP_CONTAINER_HEIGHT: f32 = 32.0;
@@ -34,7 +34,8 @@ const FILTER_CHIP_SELECTED_OUTLINE_WIDTH: f32 = 0.0;
 const FILTER_CHIP_LEADING_SPACE: f32 = 16.0;
 const FILTER_CHIP_TRAILING_SPACE: f32 = 16.0;
 const FILTER_CHIP_WITH_ICON_LEADING_SPACE: f32 = 8.0;
-const FILTER_CHIP_ICON_LABEL_SPACE: f32 = 8.0;
+const FILTER_CHIP_ICON_LABEL_SPACE: f32 =
+    FILTER_CHIP_LEADING_SPACE - FILTER_CHIP_WITH_ICON_LEADING_SPACE;
 const FILTER_CHIP_ICON_SIZE: f32 = 18.0;
 const FILTER_CHIP_CHECKMARK_LINE_WIDTH: f32 = 2.0;
 const INPUT_CHIP_CONTAINER_HEIGHT: f32 = 32.0;
@@ -127,6 +128,10 @@ where
             .a11y_label(accessibility_label)
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
+            .install(interaction_style(
+                LabelColor::default(),
+                f64::from(ASSIST_CHIP_CONTAINER_SHAPE),
+            ))
     }
 }
 
@@ -266,37 +271,76 @@ where
     fn body(self, _env: &Environment) -> impl View {
         let mut action = self.action;
         let action = SharedAction::new(move |env: Environment| action(&env));
-        let selected_for_state = self.selected.clone();
         let selected_for_tap = self.selected.clone();
         let accessibility_state = self
             .selected
             .map(|selected| AccessibilityState::new().selected(selected));
-        let selected_label = self.label.clone();
-        let unselected_label = self.label.clone();
-        let selected_accessibility_label = self.accessibility_label.clone();
-        let unselected_accessibility_label = self.accessibility_label;
-        let selected_action = action.clone();
-        let unselected_action = action;
-        let selected_tap_state = selected_for_tap.clone();
-        let unselected_tap_state = selected_for_tap;
+        let foreground = conditional_color(
+            self.selected.clone(),
+            OnSecondaryContainer,
+            OnSurfaceVariant,
+        );
+        let background = conditional_color(self.selected.clone(), SecondaryContainer, Surface);
+        let outline = conditional_color(
+            self.selected.clone(),
+            Outline.with_opacity(FILTER_CHIP_SELECTED_OUTLINE_WIDTH),
+            Outline,
+        );
+        let state_layer_color = conditional_color(
+            self.selected.clone(),
+            OnSecondaryContainer,
+            OnSurfaceVariant,
+        );
+        let checkmark_opacity = self
+            .selected
+            .map(|selected| if selected { 1.0 } else { 0.0 });
+        let checkmark_width = self.selected.map(
+            |selected| {
+                if selected { FILTER_CHIP_ICON_SIZE } else { 0.0 }
+            },
+        );
+        let checkmark = Frame::new(
+            CheckmarkIcon::new(
+                OnSecondaryContainer,
+                FILTER_CHIP_ICON_SIZE,
+                FILTER_CHIP_CHECKMARK_LINE_WIDTH,
+            )
+            .container_height(FILTER_CHIP_CONTAINER_HEIGHT)
+            .opacity(checkmark_opacity),
+        )
+        .width(checkmark_width);
 
-        when(selected_for_state, move || {
-            selected_filter_chip_view(
-                selected_label.clone(),
-                selected_accessibility_label.clone(),
-                selected_tap_state.clone(),
-                selected_action.clone(),
-            )
+        waterui::component::hstack((
+            checkmark,
+            self.label
+                .font(typography::label_large())
+                .foreground(foreground),
+        ))
+        .spacing(FILTER_CHIP_ICON_LABEL_SPACE)
+        .height(FILTER_CHIP_CONTAINER_HEIGHT)
+        .padding_with(EdgeInsets::new(
+            0.0,
+            0.0,
+            FILTER_CHIP_WITH_ICON_LEADING_SPACE,
+            FILTER_CHIP_TRAILING_SPACE,
+        ))
+        .background(RoundedRectangle::new(FILTER_CHIP_CONTAINER_CLIP_RADIUS).fill(background))
+        .border_with(
+            Border::new(outline, FILTER_CHIP_UNSELECTED_OUTLINE_WIDTH)
+                .corner_radius(FILTER_CHIP_CONTAINER_SHAPE),
+        )
+        .on_tap(move |env: Environment| {
+            selected_for_tap.set(!selected_for_tap.get());
+            action.call(&env);
         })
-        .otherwise(move || {
-            unselected_filter_chip_view(
-                unselected_label.clone(),
-                unselected_accessibility_label.clone(),
-                unselected_tap_state.clone(),
-                unselected_action.clone(),
-            )
-        })
+        .a11y_label(self.accessibility_label)
+        .a11y_role(AccessibilityRole::Button)
+        .a11y_children(AccessibilityChildren::ExcludeDescendants)
         .a11y_state_signal(accessibility_state)
+        .install(interaction_style(
+            state_layer_color,
+            f64::from(FILTER_CHIP_CONTAINER_SHAPE),
+        ))
     }
 }
 
@@ -320,7 +364,11 @@ where
                 .on_tap(move |env: Environment| action.call(&env))
                 .a11y_label(accessibility_label)
                 .a11y_role(AccessibilityRole::Button)
-                .a11y_children(AccessibilityChildren::ExcludeDescendants),
+                .a11y_children(AccessibilityChildren::ExcludeDescendants)
+                .install(interaction_style(
+                    OnSurfaceVariant,
+                    f64::from(INPUT_CHIP_CONTAINER_SHAPE),
+                )),
             RemoveButton {
                 accessibility_label: remove_accessibility_label,
                 action: remove_action,
@@ -366,75 +414,6 @@ pub fn input_chip(label: impl IntoLabel) -> InputChip {
     InputChip::new(label)
 }
 
-fn selected_filter_chip_view(
-    label: Label,
-    accessibility_label: Str,
-    selected: Binding<bool>,
-    action: SharedAction,
-) -> impl View {
-    waterui::component::hstack((
-        CheckmarkIcon::new(
-            OnSecondaryContainer,
-            FILTER_CHIP_ICON_SIZE,
-            FILTER_CHIP_CHECKMARK_LINE_WIDTH,
-        )
-        .container_height(FILTER_CHIP_CONTAINER_HEIGHT),
-        label
-            .font(typography::label_large())
-            .foreground(OnSecondaryContainer),
-    ))
-    .spacing(FILTER_CHIP_ICON_LABEL_SPACE)
-    .height(FILTER_CHIP_CONTAINER_HEIGHT)
-    .padding_with(EdgeInsets::new(
-        0.0,
-        0.0,
-        FILTER_CHIP_WITH_ICON_LEADING_SPACE,
-        FILTER_CHIP_TRAILING_SPACE,
-    ))
-    .background(RoundedRectangle::new(FILTER_CHIP_CONTAINER_CLIP_RADIUS).fill(SecondaryContainer))
-    .border_with(
-        Border::new(Outline, FILTER_CHIP_SELECTED_OUTLINE_WIDTH)
-            .corner_radius(FILTER_CHIP_CONTAINER_SHAPE),
-    )
-    .on_tap(move |env: Environment| {
-        selected.set(!selected.get());
-        action.call(&env);
-    })
-    .a11y_label(accessibility_label)
-    .a11y_role(AccessibilityRole::Button)
-    .a11y_children(AccessibilityChildren::ExcludeDescendants)
-}
-
-fn unselected_filter_chip_view(
-    label: Label,
-    accessibility_label: Str,
-    selected: Binding<bool>,
-    action: SharedAction,
-) -> impl View {
-    label
-        .font(typography::label_large())
-        .foreground(OnSurfaceVariant)
-        .height(FILTER_CHIP_CONTAINER_HEIGHT)
-        .padding_with(EdgeInsets::new(
-            0.0,
-            0.0,
-            FILTER_CHIP_LEADING_SPACE,
-            FILTER_CHIP_TRAILING_SPACE,
-        ))
-        .background(RoundedRectangle::new(FILTER_CHIP_CONTAINER_CLIP_RADIUS).fill(Surface))
-        .border_with(
-            Border::new(Outline, FILTER_CHIP_UNSELECTED_OUTLINE_WIDTH)
-                .corner_radius(FILTER_CHIP_CONTAINER_SHAPE),
-        )
-        .on_tap(move |env: Environment| {
-            selected.set(!selected.get());
-            action.call(&env);
-        })
-        .a11y_label(accessibility_label)
-        .a11y_role(AccessibilityRole::Button)
-        .a11y_children(AccessibilityChildren::ExcludeDescendants)
-}
-
 struct RemoveButton {
     accessibility_label: Str,
     action: SharedAction,
@@ -450,6 +429,10 @@ impl View for RemoveButton {
             .a11y_label(accessibility_label)
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
+            .install(interaction_style(
+                OnSurfaceVariant,
+                f64::from(INPUT_CHIP_TRAILING_ICON_SIZE * 0.5),
+            ))
     }
 }
 

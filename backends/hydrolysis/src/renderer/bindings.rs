@@ -237,6 +237,8 @@ impl HydrolysisRenderer {
         }
         let order = self.hit_test.next_hit_test_order();
         self.text_editing.text_input_targets.push(TextInputTarget {
+            interaction_key: data.target.interaction_key,
+            modal: data.target.modal,
             bounds: data.target.bounds,
             cursor_area: data.target.cursor_area,
             text_bounds: data.target.text_bounds,

@@ -46,11 +46,12 @@ use waterui::text::font::Font;
 use waterui::theme::{self as waterui_theme, ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
-    InteractionMotion, ListDividerMetrics, ListMetrics, ListRowMetrics, ListTrailingControlMetrics,
-    NavigationMetrics, NavigationMotion, PickerMetrics, PressWave, PressWaves,
-    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
-    TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    InteractionFocusBinding, InteractionMotion, InteractionStyle, ListDividerMetrics, ListMetrics,
+    ListRowMetrics, ListTrailingControlMetrics, ModalInteraction, NavigationMetrics,
+    NavigationMotion, PickerMetrics, PressWave, PressWaves, ProgressIndicatorStyle,
+    ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
+    StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
+    ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -103,7 +104,7 @@ pub use theme::colors::{
     MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
     MaterialContrastLevel, MaterialRoleColor,
 };
-pub use tooltip::{PlainTooltip, RichTooltip, plain_tooltip, rich_tooltip};
+pub use tooltip::{PlainTooltip, RichTooltip, TooltipAnchor, plain_tooltip, rich_tooltip};
 
 #[derive(Debug, Clone)]
 /// Material Design 3 widget theme.
@@ -441,6 +442,17 @@ impl WidgetTheme for MaterialTheme {
         state: WidgetInteractionState,
     ) {
         button::draw_state_layer(&self.colors(), draw, bounds, style, state);
+    }
+
+    fn draw_interaction_state_layer(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        radii: vello::kurbo::RoundedRectRadii,
+        color: vello::peniko::Color,
+        state: WidgetInteractionState,
+    ) {
+        theme::state_layer::draw_bounded(draw, bounds, radii, color, state);
     }
 
     fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics {

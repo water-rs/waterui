@@ -73,6 +73,8 @@ pub fn draw_chrome(
         ButtonStyle::Bordered => {
             let border = if state.disabled {
                 colors.on_surface.peniko_disabled_container()
+            } else if state.focus_visible {
+                colors.primary.peniko()
             } else {
                 colors.outline.peniko()
             };
@@ -150,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn button_metrics_match_material_web_v0_192_tokens() {
+    fn button_metrics_match_mdui_2_1_5_tokens() {
         assert_button_metrics(ButtonStyle::Plain, BUTTON_TEXT_HORIZONTAL_PADDING);
         assert_button_metrics(ButtonStyle::Borderless, BUTTON_TEXT_HORIZONTAL_PADDING);
         assert_button_metrics(ButtonStyle::Automatic, 24.0);
@@ -158,7 +160,8 @@ mod tests {
         assert_button_metrics(ButtonStyle::BorderedProminent, 24.0);
         assert_eq!(BUTTON_MIN_HEIGHT, 40.0);
         assert_eq!(BUTTON_CONTAINER_RADIUS, 20.0);
-        assert_eq!(BUTTON_TEXT_HORIZONTAL_PADDING, 12.0);
+        assert_eq!(BUTTON_MIN_WIDTH, 48.0);
+        assert_eq!(BUTTON_TEXT_HORIZONTAL_PADDING, 24.0);
     }
 
     #[derive(Default)]

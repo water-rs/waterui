@@ -54,7 +54,7 @@ struct InteractionState {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct InteractionFocus {
-    visible: bool,
+    pub(crate) visible: bool,
 }
 
 pub(crate) struct WidgetInteractionInput {
@@ -149,7 +149,12 @@ impl InteractionEngine {
     ) {
         self.active.insert(key.clone());
         let interaction_state = self.states.entry(key.clone()).or_default();
-        let press_slot = PressSlot { key: key.clone() };
+        let press_slot = PressSlot {
+            key: key.clone(),
+            modal: false,
+            focus_binding: None,
+            escape_action: None,
+        };
         let previous = interaction_state.handles.take();
 
         // Inherited press/hover must not migrate to a different widget: a wave
@@ -272,6 +277,9 @@ impl InteractionEngine {
 #[derive(Debug, Clone)]
 pub(crate) struct PressSlot {
     pub(crate) key: InteractionKey,
+    pub(crate) modal: bool,
+    pub(crate) focus_binding: Option<Binding<bool>>,
+    pub(crate) escape_action: Option<SharedAction>,
 }
 
 /// Outcome of releasing all active presses: `visual_changed` replays state
