@@ -9,20 +9,19 @@
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use waterui_backend_core::input::TouchPhase;
 use waterui_core::{AnyView, Environment};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, TouchPhase as WinitTouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::board::HostBoard;
+use crate::board::{HostBoard, PointerSample};
+use crate::frame_cadence::FrameCadence;
 use crate::runtime::DewRuntime;
-
-/// Frame-pump cadence while the window is idle.
-const TICK: Duration = Duration::from_millis(16);
 
 /// Opens a `width` × `height` simulated panel window rendering
 /// `build_root()` until the window is closed.
@@ -56,6 +55,10 @@ pub fn run(
         title: title.into(),
         on_tick: Box::new(on_tick),
         window: None,
+        cadence: FrameCadence::sixty_hz(Instant::now()),
+        cursor: None,
+        mouse_pressed: false,
+        active_touch: None,
     };
     event_loop
         .run_app(&mut app)
@@ -69,6 +72,10 @@ struct SimulatorApp {
     title: String,
     on_tick: Box<dyn FnMut()>,
     window: Option<PanelWindow>,
+    cadence: FrameCadence,
+    cursor: Option<(f64, f64)>,
+    mouse_pressed: bool,
+    active_touch: Option<u64>,
 }
 
 struct PanelWindow {
@@ -77,6 +84,26 @@ struct PanelWindow {
 }
 
 impl SimulatorApp {
+    fn panel_position(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let size = self.window.as_ref()?.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return None;
+        }
+        let panel_x =
+            (x * f64::from(self.width) / f64::from(size.width)).clamp(0.0, f64::from(self.width));
+        let panel_y = (y * f64::from(self.height) / f64::from(size.height))
+            .clamp(0.0, f64::from(self.height));
+        Some((panel_x, panel_y))
+    }
+
+    fn enqueue_pointer(&mut self, phase: TouchPhase, position: (f64, f64)) {
+        self.runtime.board_mut().push_pointer(PointerSample {
+            x: position.0,
+            y: position.1,
+            phase,
+        });
+    }
+
     fn present(&mut self) {
         let Some(panel) = self.window.as_mut() else {
             return;
@@ -133,6 +160,75 @@ impl ApplicationHandler for SimulatorApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => self.present(),
+            WindowEvent::CursorMoved { position, .. } => {
+                let Some(position) = self.panel_position(position.x, position.y) else {
+                    return;
+                };
+                self.cursor = Some(position);
+                if self.mouse_pressed && self.active_touch.is_none() {
+                    self.enqueue_pointer(TouchPhase::Moved, position);
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } if self.active_touch.is_none() => {
+                let Some(position) = self.cursor else {
+                    return;
+                };
+                match state {
+                    ElementState::Pressed if !self.mouse_pressed => {
+                        self.mouse_pressed = true;
+                        self.enqueue_pointer(TouchPhase::Started, position);
+                    }
+                    ElementState::Released if self.mouse_pressed => {
+                        self.mouse_pressed = false;
+                        self.enqueue_pointer(TouchPhase::Ended, position);
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                let accept = match touch.phase {
+                    WinitTouchPhase::Started => self.active_touch.is_none(),
+                    WinitTouchPhase::Moved
+                    | WinitTouchPhase::Ended
+                    | WinitTouchPhase::Cancelled => self.active_touch == Some(touch.id),
+                };
+                if !accept {
+                    return;
+                }
+                let Some(position) = self.panel_position(touch.location.x, touch.location.y) else {
+                    return;
+                };
+                let phase = match touch.phase {
+                    WinitTouchPhase::Started => {
+                        if self.mouse_pressed {
+                            self.mouse_pressed = false;
+                            self.enqueue_pointer(TouchPhase::Cancelled, position);
+                        }
+                        self.active_touch = Some(touch.id);
+                        TouchPhase::Started
+                    }
+                    WinitTouchPhase::Moved => TouchPhase::Moved,
+                    WinitTouchPhase::Ended => {
+                        self.active_touch = None;
+                        TouchPhase::Ended
+                    }
+                    WinitTouchPhase::Cancelled => {
+                        self.active_touch = None;
+                        TouchPhase::Cancelled
+                    }
+                };
+                self.enqueue_pointer(phase, position);
+            }
+            WindowEvent::Focused(false) if self.mouse_pressed => {
+                self.mouse_pressed = false;
+                if let Some(position) = self.cursor {
+                    self.enqueue_pointer(TouchPhase::Cancelled, position);
+                }
+            }
             _ => {}
         }
     }
@@ -144,6 +240,7 @@ impl ApplicationHandler for SimulatorApp {
         {
             panel.window.request_redraw();
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + TICK));
+        let deadline = self.cadence.deadline_after_work(Instant::now());
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }

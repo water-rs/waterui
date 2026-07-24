@@ -15,6 +15,7 @@
 
 use kurbo::{Affine, Rect};
 use nami::Signal;
+use skrifa::prelude::{FontRef, GlyphId, LocationRef, MetadataProvider, Size};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{Font, FontWeight, ResolvedFont};
@@ -30,6 +31,48 @@ use crate::theme;
 pub struct DewState {
     font_cx: parley::FontContext,
     layout_cx: parley::LayoutContext<[u8; 4]>,
+}
+
+/// Per-text-node layout cache keyed by signal revision and width proposal.
+///
+/// Dew confines layout to the main render thread, so the cache stays with the
+/// retained node instead of adding synchronization or global state.
+#[derive(Debug, Default)]
+pub(crate) struct TextLayoutCache {
+    revision: u64,
+    entries: Vec<CachedTextLayout>,
+}
+
+#[derive(Debug)]
+struct CachedTextLayout {
+    max_width: Option<f32>,
+    layout: parley::Layout<[u8; 4]>,
+}
+
+impl TextLayoutCache {
+    pub(crate) fn get_or_build(
+        &mut self,
+        revision: u64,
+        max_width: Option<f32>,
+        build: impl FnOnce() -> parley::Layout<[u8; 4]>,
+    ) -> &parley::Layout<[u8; 4]> {
+        if self.revision != revision {
+            self.entries.clear();
+            self.revision = revision;
+        }
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.max_width == max_width)
+            .unwrap_or_else(|| {
+                self.entries.push(CachedTextLayout {
+                    max_width,
+                    layout: build(),
+                });
+                self.entries.len() - 1
+            });
+        &self.entries[index].layout
+    }
 }
 
 impl core::fmt::Debug for DewState {
@@ -122,13 +165,6 @@ impl DewState {
             parley::AlignmentOptions::default(),
         );
         layout
-    }
-
-    /// Measures plain text at the given width constraint, returning the
-    /// laid-out size in logical pixels.
-    pub(crate) fn measure_plain(&mut self, text: &str, max_width: Option<f32>) -> (f32, f32) {
-        let layout = self.build_plain_layout(text, max_width);
-        (layout.width(), layout.height())
     }
 
     /// Measures styled text through the same span-styled layout used for
@@ -252,25 +288,44 @@ pub(crate) fn emit_text_commands(
             let [red, green, blue, alpha] = glyph_run.style().brush;
             let mut run_x = glyph_run.offset();
             let run_y = glyph_run.baseline();
-            let glyphs: Vec<vello_cpu::Glyph> = glyph_run
+            let font = run.font().clone();
+            let font_size = run.font_size();
+            let font_ref = FontRef::from_index(font.data.as_ref(), font.index)
+                .expect("Dew text layout produced invalid font data");
+            let metrics = font_ref.glyph_metrics(Size::new(font_size), LocationRef::default());
+            let (glyphs, glyph_bounds): (Vec<_>, Vec<_>) = glyph_run
                 .glyphs()
                 .map(|glyph| {
                     let x = run_x + glyph.x;
                     run_x += glyph.advance;
-                    vello_cpu::Glyph {
+                    let positioned = vello_cpu::Glyph {
                         id: glyph.id,
                         x,
                         y: run_y - glyph.y,
-                    }
+                    };
+                    let bounds =
+                        metrics
+                            .bounds(GlyphId::new(glyph.id))
+                            .map_or(layout_bounds, |bounds| {
+                                Rect::new(
+                                    f64::from(positioned.x + bounds.x_min),
+                                    f64::from(positioned.y - bounds.y_max),
+                                    f64::from(positioned.x + bounds.x_max),
+                                    f64::from(positioned.y - bounds.y_min),
+                                )
+                                .inflate(1.0, 1.0)
+                            });
+                    (positioned, bounds)
                 })
-                .collect();
+                .unzip();
             if glyphs.is_empty() {
                 continue;
             }
             list.push(DrawCommand::GlyphRun {
-                font: run.font().clone(),
-                font_size: run.font_size(),
+                font,
+                font_size,
                 glyphs,
+                glyph_bounds,
                 transform,
                 brush: peniko::Color::from_rgba8(red, green, blue, alpha).into(),
                 bounds: layout_bounds,
@@ -389,5 +444,24 @@ mod tests {
             }
         }
         assert_eq!(brushes, vec![[255, 0, 0, 255]]);
+    }
+
+    #[test]
+    fn text_layout_cache_reuses_width_and_invalidates_revision() {
+        use core::cell::Cell;
+
+        let builds = Cell::new(0);
+        let mut cache = TextLayoutCache::default();
+        let build = || {
+            builds.set(builds.get() + 1);
+            parley::Layout::new()
+        };
+
+        cache.get_or_build(0, Some(120.0), build);
+        cache.get_or_build(0, Some(120.0), build);
+        cache.get_or_build(0, Some(80.0), build);
+        cache.get_or_build(1, Some(120.0), build);
+
+        assert_eq!(builds.get(), 3);
     }
 }

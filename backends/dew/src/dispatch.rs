@@ -6,15 +6,16 @@
 //! [`Dynamic`] is the sole structural seam and replaces only its own child node.
 
 use core::any::TypeId;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use kurbo::{Affine, Rect};
-use nami::Signal;
+use nami::{Computed, Signal};
 #[cfg(feature = "progress")]
 use waterui::component::progress::ProgressConfig;
 use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_backend_core::time::Instant;
+use waterui_controls::button::ButtonConfig;
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
@@ -29,10 +30,11 @@ use waterui_layout::Divider;
 use waterui_layout::container::FixedContainer;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_text::TextConfig;
+use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::display_list::DisplayList;
-use crate::text::{DewState, emit_text_commands};
+use crate::pointer::{PointerRouter, PointerTargetHandle};
+use crate::text::{DewState, TextLayoutCache, emit_text_commands};
 use crate::theme;
 use crate::views;
 
@@ -71,6 +73,12 @@ impl RenderContext {
             ),
         }
     }
+
+    /// Bounds transformed into window coordinates for hit testing.
+    #[must_use]
+    pub fn window_bounds(self) -> Rect {
+        self.transform.transform_rect_bbox(self.bounds)
+    }
 }
 
 /// One persistent Dew render-tree node.
@@ -93,6 +101,7 @@ pub struct DewRenderer {
     state: RefCell<DewState>,
     list: DisplayList,
     watch_guards: Vec<Box<dyn core::any::Any>>,
+    pointer: PointerRouter,
     root: Option<Box<dyn DewNode>>,
 }
 
@@ -102,6 +111,7 @@ impl core::fmt::Debug for DewRenderer {
             .debug_struct("DewRenderer")
             .field("list", &self.list)
             .field("watchers", &self.watch_guards.len())
+            .field("pointer", &self.pointer)
             .field("has_root", &self.root.is_some())
             .finish_non_exhaustive()
     }
@@ -122,6 +132,7 @@ impl DewRenderer {
             state: RefCell::new(DewState::default()),
             list: DisplayList::new(),
             watch_guards: Vec::new(),
+            pointer: PointerRouter::default(),
             root: None,
         }
     }
@@ -155,8 +166,10 @@ impl DewRenderer {
             .expect("Dew refresh requires an initialized retained root");
         self.list.clear();
         self.watch_guards.clear();
+        self.pointer.begin_frame();
         root.patch(self);
         root.render(self, RenderContext::root(width, height));
+        self.pointer.finish_frame();
         self.root = Some(root);
         core::mem::take(&mut self.list)
     }
@@ -178,6 +191,18 @@ impl DewRenderer {
 
     pub(crate) const fn state_cell(&self) -> &RefCell<DewState> {
         &self.state
+    }
+
+    pub(crate) fn register_pointer_target(&mut self, bounds: Rect, handler: PointerTargetHandle) {
+        self.pointer.register(bounds, handler);
+    }
+
+    pub(crate) fn handle_pointer(
+        &mut self,
+        sample: crate::board::PointerSample,
+        env: &Environment,
+    ) -> bool {
+        self.pointer.dispatch(sample, env)
     }
 }
 
@@ -254,8 +279,9 @@ pub(crate) fn build_node(
             .downcast::<Native<TextConfig>>()
             .expect("dew TextConfig downcast must match its type id");
         return Box::new(TextNode {
-            config: text.into_inner(),
+            content: WatchedSignal::new(text.into_inner().content, renderer.signals()),
             env: env.clone(),
+            cache: RefCell::new(TextLayoutCache::default()),
         });
     }
     if type_id == TypeId::of::<Str>() {
@@ -263,6 +289,7 @@ pub(crate) fn build_node(
             value: *view
                 .downcast::<Str>()
                 .expect("dew Str downcast must match its type id"),
+            cache: RefCell::new(TextLayoutCache::default()),
         });
     }
     if type_id == TypeId::of::<Native<Spacer>>() {
@@ -280,6 +307,12 @@ pub(crate) fn build_node(
     }
     if type_id == TypeId::of::<Divider>() {
         return views::divider::build(env);
+    }
+    if type_id == TypeId::of::<Native<ButtonConfig>>() {
+        let button = *view
+            .downcast::<Native<ButtonConfig>>()
+            .expect("dew ButtonConfig downcast must match its type id");
+        return views::button::build(button.into_inner(), env);
     }
     if type_id == TypeId::of::<Native<ToggleConfig>>() {
         let toggle = *view
@@ -529,51 +562,107 @@ fn render_color(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedC
 }
 
 struct TextNode {
-    config: TextConfig,
+    content: WatchedSignal<Computed<StyledStr>>,
     env: Environment,
+    cache: RefCell<TextLayoutCache>,
 }
 
 impl DewNode for TextNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
-        let styled = self.config.content.get();
-        let (width, height) = state
-            .borrow_mut()
-            .measure_styled(&styled, &self.env, proposal.width);
-        ViewDimensions::new(Size::new(width, height))
+        let revision = self.content.revision();
+        let mut cache = self.cache.borrow_mut();
+        let layout = cache.get_or_build(revision, proposal.width, || {
+            state.borrow_mut().build_styled_layout(
+                &self.content.get(),
+                &self.env,
+                proposal.width,
+                theme::FOREGROUND,
+            )
+        });
+        ViewDimensions::new(Size::new(layout.width(), layout.height()))
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let styled = renderer.read_signal(&self.config.content);
-        let layout = renderer.state.borrow_mut().build_styled_layout(
-            &styled,
-            &self.env,
-            max_width_from_bounds(ctx.bounds),
-            theme::FOREGROUND,
-        );
+        let revision = self.content.revision();
+        let max_width = max_width_from_bounds(ctx.bounds);
+        let mut cache = self.cache.borrow_mut();
+        let layout = cache.get_or_build(revision, max_width, || {
+            renderer.state.borrow_mut().build_styled_layout(
+                &self.content.get(),
+                &self.env,
+                max_width,
+                theme::FOREGROUND,
+            )
+        });
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
-        emit_text_commands(&mut renderer.list, &layout, transform);
+        emit_text_commands(&mut renderer.list, layout, transform);
     }
 }
 
 struct StrNode {
     value: Str,
+    cache: RefCell<TextLayoutCache>,
 }
 
 impl DewNode for StrNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
-        let (width, height) = state
-            .borrow_mut()
-            .measure_plain(&self.value, proposal.width);
-        ViewDimensions::new(Size::new(width, height))
+        let mut cache = self.cache.borrow_mut();
+        let layout = cache.get_or_build(0, proposal.width, || {
+            state
+                .borrow_mut()
+                .build_plain_layout(&self.value, proposal.width)
+        });
+        ViewDimensions::new(Size::new(layout.width(), layout.height()))
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let layout = renderer
-            .state
-            .borrow_mut()
-            .build_plain_layout(&self.value, max_width_from_bounds(ctx.bounds));
+        let max_width = max_width_from_bounds(ctx.bounds);
+        let mut cache = self.cache.borrow_mut();
+        let layout = cache.get_or_build(0, max_width, || {
+            renderer
+                .state
+                .borrow_mut()
+                .build_plain_layout(&self.value, max_width)
+        });
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
-        emit_text_commands(&mut renderer.list, &layout, transform);
+        emit_text_commands(&mut renderer.list, layout, transform);
+    }
+}
+
+struct WatchedSignal<S: Signal> {
+    signal: S,
+    revision: Rc<Cell<u64>>,
+    _guard: S::Guard,
+}
+
+impl<S: Signal> WatchedSignal<S> {
+    fn new(signal: S, signals: FrameSignals) -> Self {
+        let revision = Rc::new(Cell::new(0u64));
+        let guard = signal.watch({
+            let revision = Rc::clone(&revision);
+            move |_| {
+                revision.set(
+                    revision
+                        .get()
+                        .checked_add(1)
+                        .expect("Dew signal revision overflow"),
+                );
+                signals.request_refresh();
+            }
+        });
+        Self {
+            signal,
+            revision,
+            _guard: guard,
+        }
+    }
+
+    fn get(&self) -> S::Output {
+        self.signal.get()
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision.get()
     }
 }
 

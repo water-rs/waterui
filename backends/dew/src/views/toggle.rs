@@ -3,11 +3,13 @@
 use std::cell::RefCell;
 
 use kurbo::{Circle, Rect, RoundedRect, Stroke};
+use nami::{Binding, Computed, Signal};
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext};
+use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{measure_label, render_label, to_f32};
@@ -33,13 +35,47 @@ fn require_switch_style(style: ToggleStyle) {
 struct ToggleNode {
     config: ToggleConfig,
     env: Environment,
+    pointer: PointerTargetHandle,
+}
+
+struct TogglePointer {
+    toggle: Binding<bool>,
+    disabled: Computed<bool>,
+    armed: bool,
+}
+
+impl PointerHandler for TogglePointer {
+    fn pointer_down(&mut self, _point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+        self.armed = !self.disabled.get();
+        false
+    }
+
+    fn pointer_up(&mut self, point: kurbo::Point, bounds: Rect, _env: &Environment) -> bool {
+        let activate =
+            core::mem::take(&mut self.armed) && bounds.contains(point) && !self.disabled.get();
+        if activate {
+            self.toggle.set(!self.toggle.get());
+        }
+        activate
+    }
+
+    fn pointer_cancel(&mut self, _env: &Environment) -> bool {
+        self.armed = false;
+        false
+    }
 }
 
 pub fn build(config: ToggleConfig, env: &Environment) -> Box<dyn DewNode> {
     require_switch_style(config.style);
+    let pointer = PointerTargetHandle::new(TogglePointer {
+        toggle: config.toggle.clone(),
+        disabled: config.disabled.clone(),
+        armed: false,
+    });
     Box::new(ToggleNode {
         config,
         env: env.clone(),
+        pointer,
     })
 }
 
@@ -50,6 +86,9 @@ impl DewNode for ToggleNode {
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
         render(renderer, ctx, &self.config, &self.env);
+        if !self.config.disabled.get() {
+            renderer.register_pointer_target(ctx.window_bounds(), self.pointer.clone());
+        }
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -65,6 +104,7 @@ fn render(
 ) {
     require_switch_style(config.style);
     let on = renderer.read_signal(&config.toggle);
+    let disabled = renderer.read_signal(&config.disabled);
     let bounds = ctx.bounds;
 
     let track_left = (bounds.x1 - TRACK_WIDTH).max(bounds.x0);
@@ -87,7 +127,13 @@ fn render(
     }
 
     let radius = TRACK_HEIGHT / 2.0;
-    let track_color = if on { theme::ACCENT } else { theme::TRACK };
+    let track_color = if disabled {
+        theme::BORDER
+    } else if on {
+        theme::ACCENT
+    } else {
+        theme::TRACK
+    };
     renderer.list_mut().fill(
         &RoundedRect::from_rect(track, radius),
         ctx.transform,

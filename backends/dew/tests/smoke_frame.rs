@@ -47,7 +47,7 @@ fn demo_scene() -> DisplayList {
 #[test]
 fn full_frame_renders_through_bands() {
     let scheduler = BandScheduler::new(320, 240, 16);
-    let mut painter = Painter::new();
+    let mut painter = Painter::default();
     let mut display = BufferDisplay::new(320, 240);
     let list = demo_scene();
 
@@ -74,7 +74,7 @@ fn full_frame_renders_through_bands() {
 #[test]
 fn partial_update_touches_only_dirty_regions() {
     let scheduler = BandScheduler::new(320, 240, 16);
-    let mut painter = Painter::new();
+    let mut painter = Painter::default();
     let mut display = BufferDisplay::new(320, 240);
 
     // The display still shows nothing (transparent black) outside the

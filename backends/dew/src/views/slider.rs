@@ -1,16 +1,18 @@
 //! Persistent [`SliderConfig`] node.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::ops::RangeInclusive;
+use std::rc::Rc;
 
 use kurbo::{Circle, Rect, RoundedRect, Stroke};
-use nami::{Binding, Computed};
+use nami::{Binding, Computed, Signal};
 use waterui_controls::label::Label;
 use waterui_controls::slider::SliderConfig;
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, build_node};
+use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{child_in_rect, measure_label, render_label, to_f32};
@@ -30,6 +32,59 @@ struct SliderNode {
     value: Binding<f64>,
     disabled: Computed<bool>,
     env: Environment,
+    track: Rc<Cell<Rect>>,
+    pointer: PointerTargetHandle,
+}
+
+struct SliderPointer {
+    range: RangeInclusive<f64>,
+    value: Binding<f64>,
+    disabled: Computed<bool>,
+    track: Rc<Cell<Rect>>,
+}
+
+#[derive(Clone, Copy)]
+struct SliderTrackGeometry {
+    left: f64,
+    right: f64,
+    center_y: f64,
+    fill_x: f64,
+}
+
+impl SliderPointer {
+    fn update(&self, point: kurbo::Point) -> bool {
+        if self.disabled.get() {
+            return false;
+        }
+        let track = self.track.get();
+        assert!(
+            track.width() > 0.0,
+            "dew slider input requires rendered track geometry"
+        );
+        let start = *self.range.start();
+        let end = *self.range.end();
+        let progress = ((point.x - track.x0) / track.width()).clamp(0.0, 1.0);
+        let next = (end - start).mul_add(progress, start);
+        if self.value.get().to_bits() == next.to_bits() {
+            return false;
+        }
+        self.value.set(next);
+        true
+    }
+}
+
+impl PointerHandler for SliderPointer {
+    fn pointer_down(&mut self, point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+        self.update(point)
+    }
+
+    fn pointer_move(&mut self, point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+        self.update(point)
+    }
+
+    fn pointer_up(&mut self, point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+        self.update(point)
+    }
 }
 
 pub fn build(
@@ -38,6 +93,13 @@ pub fn build(
     env: &Environment,
     depth: usize,
 ) -> Box<dyn DewNode> {
+    let track = Rc::new(Cell::new(Rect::ZERO));
+    let pointer = PointerTargetHandle::new(SliderPointer {
+        range: config.range.clone(),
+        value: config.value.clone(),
+        disabled: config.disabled.clone(),
+        track: Rc::clone(&track),
+    });
     Box::new(SliderNode {
         label: config.label,
         min_value_label: build_node(renderer, config.min_value_label, env, depth),
@@ -46,6 +108,8 @@ pub fn build(
         value: config.value,
         disabled: config.disabled,
         env: env.clone(),
+        track,
+        pointer,
     })
 }
 
@@ -89,7 +153,7 @@ impl DewNode for SliderNode {
         let span = range_end - range_start;
         assert!(span > 0.0, "dew slider requires range start < end");
 
-        let _disabled = renderer.read_signal(&self.disabled);
+        let disabled = renderer.read_signal(&self.disabled);
         let label_size = measure_label(renderer.state_cell(), &self.label, &self.env);
         let label_height = if label_size.height > 0.0 {
             f64::from(label_size.height) + ROW_SPACING
@@ -151,40 +215,16 @@ impl DewNode for SliderNode {
             .clamp(range_start, range_end);
         let progress = (clamped - range_start) / span;
         let fill_x = (track_right - track_left).mul_add(progress, track_left);
-        let track_radius = TRACK_HEIGHT / 2.0;
-        let track = Rect::new(
-            track_left,
-            center_y - track_radius,
-            track_right,
-            center_y + track_radius,
-        );
-        renderer.list_mut().fill(
-            &RoundedRect::from_rect(track, track_radius),
-            ctx.transform,
-            theme::TRACK,
-        );
-        let fill = Rect::new(
-            track_left,
-            center_y - track_radius,
-            fill_x,
-            center_y + track_radius,
-        );
-        if fill.width() > 0.0 {
-            renderer.list_mut().fill(
-                &RoundedRect::from_rect(fill, track_radius),
-                ctx.transform,
-                theme::ACCENT,
-            );
-        }
-        let thumb = Circle::new((fill_x, center_y), THUMB_RADIUS);
-        renderer
-            .list_mut()
-            .fill(&thumb, ctx.transform, theme::THUMB);
-        renderer.list_mut().stroke(
-            &thumb,
-            ctx.transform,
-            Stroke::new(THUMB_BORDER),
-            theme::BORDER,
+        self.render_track(
+            renderer,
+            ctx,
+            SliderTrackGeometry {
+                left: track_left,
+                right: track_right,
+                center_y,
+                fill_x,
+            },
+            disabled,
         );
     }
 
@@ -194,5 +234,64 @@ impl DewNode for SliderNode {
 
     fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
         self.min_value_label.patch(renderer) | self.max_value_label.patch(renderer)
+    }
+}
+
+impl SliderNode {
+    fn render_track(
+        &self,
+        renderer: &mut DewRenderer,
+        ctx: RenderContext,
+        geometry: SliderTrackGeometry,
+        disabled: bool,
+    ) {
+        let track_radius = TRACK_HEIGHT / 2.0;
+        let track = Rect::new(
+            geometry.left,
+            geometry.center_y - track_radius,
+            geometry.right,
+            geometry.center_y + track_radius,
+        );
+        let window_track = ctx.transform.transform_rect_bbox(track);
+        self.track.set(window_track);
+        if !disabled {
+            let hit = Rect::new(
+                window_track.x0 - THUMB_RADIUS,
+                window_track.y0 - THUMB_RADIUS,
+                window_track.x1 + THUMB_RADIUS,
+                window_track.y1 + THUMB_RADIUS,
+            );
+            renderer.register_pointer_target(hit, self.pointer.clone());
+        }
+        renderer.list_mut().fill(
+            &RoundedRect::from_rect(track, track_radius),
+            ctx.transform,
+            theme::TRACK,
+        );
+        let fill = Rect::new(
+            geometry.left,
+            geometry.center_y - track_radius,
+            geometry.fill_x,
+            geometry.center_y + track_radius,
+        );
+        renderer
+            .list_mut()
+            .push_clip(ctx.transform.transform_rect_bbox(fill));
+        renderer.list_mut().fill(
+            &RoundedRect::from_rect(track, track_radius),
+            ctx.transform,
+            theme::ACCENT,
+        );
+        renderer.list_mut().pop_clip();
+        let thumb = Circle::new((geometry.fill_x, geometry.center_y), THUMB_RADIUS);
+        renderer
+            .list_mut()
+            .fill(&thumb, ctx.transform, theme::THUMB);
+        renderer.list_mut().stroke(
+            &thumb,
+            ctx.transform,
+            Stroke::new(THUMB_BORDER),
+            theme::BORDER,
+        );
     }
 }

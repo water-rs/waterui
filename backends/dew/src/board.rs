@@ -13,10 +13,14 @@
 //! the engine: it renders into an in-memory framebuffer driven by the system
 //! clock, requiring no cross-compilation or hardware.
 
+use std::collections::VecDeque;
+
+use vello_cpu::RenderSettings;
 use waterui_backend_core::input::TouchPhase;
 use waterui_backend_core::time::Instant;
 
 use crate::display::{BufferDisplay, DisplayFlush};
+use crate::painter::target_render_settings;
 
 /// A pointer/touch sample from the board's input device, in device pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,6 +50,11 @@ pub trait Board {
     /// The current monotonic time, used to advance animations.
     fn now(&self) -> Instant;
 
+    /// CPU rasterization profile for this board.
+    fn render_settings(&self) -> RenderSettings {
+        target_render_settings()
+    }
+
     /// Returns the next pending pointer event, or [`None`] when the board has
     /// no input device or no event is queued.
     fn poll_pointer(&mut self) -> Option<PointerSample> {
@@ -63,6 +72,7 @@ pub trait Board {
 #[derive(Debug, Clone)]
 pub struct HostBoard {
     display: BufferDisplay,
+    pointer_samples: VecDeque<PointerSample>,
 }
 
 impl HostBoard {
@@ -71,6 +81,7 @@ impl HostBoard {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             display: BufferDisplay::new(width, height),
+            pointer_samples: VecDeque::new(),
         }
     }
 
@@ -78,6 +89,11 @@ impl HostBoard {
     #[must_use]
     pub const fn framebuffer(&self) -> &BufferDisplay {
         &self.display
+    }
+
+    /// Enqueues one host pointer sample for the next runtime pump.
+    pub fn push_pointer(&mut self, sample: PointerSample) {
+        self.pointer_samples.push_back(sample);
     }
 }
 
@@ -90,5 +106,9 @@ impl Board for HostBoard {
 
     fn now(&self) -> Instant {
         Instant::now()
+    }
+
+    fn poll_pointer(&mut self) -> Option<PointerSample> {
+        self.pointer_samples.pop_front()
     }
 }

@@ -102,13 +102,15 @@ impl DewNode for ProgressNode {
             track.width().mul_add(fraction, track.x0),
             track.y1,
         );
-        if fill.width() > 0.0 {
-            renderer.list_mut().fill(
-                &RoundedRect::from_rect(fill, radius),
-                ctx.transform,
-                theme::ACCENT,
-            );
-        }
+        renderer
+            .list_mut()
+            .push_clip(ctx.transform.transform_rect_bbox(fill));
+        renderer.list_mut().fill(
+            &RoundedRect::from_rect(track, radius),
+            ctx.transform,
+            theme::ACCENT,
+        );
+        renderer.list_mut().pop_clip();
         let value_label_size = self
             .value_label
             .measure(renderer.state_cell(), ProposalSize::UNSPECIFIED)

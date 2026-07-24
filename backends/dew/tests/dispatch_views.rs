@@ -4,12 +4,36 @@
 //! Run with `--nocapture` to export `/tmp/waterui_dew_views.png` for visual
 //! review.
 
+use core::cell::Cell;
+use std::rc::Rc;
+
 use nami::binding;
 use waterui::prelude::{Color, text, vstack};
+use waterui_backend_core::input::TouchPhase;
+use waterui_controls::button::button;
+use waterui_controls::slider::slider;
+use waterui_controls::stepper::stepper;
+use waterui_controls::toggle::toggle;
 use waterui_core::AnyView;
-use waterui_dew::{DewRuntime, HostBoard, render_view_png};
+use waterui_dew::{DewRuntime, HostBoard, PointerSample, render_view_png};
 
 mod support;
+
+fn click(runtime: &mut DewRuntime<HostBoard>, x: f64, y: f64) {
+    runtime.board_mut().push_pointer(PointerSample {
+        x,
+        y,
+        phase: TouchPhase::Started,
+    });
+    runtime.board_mut().push_pointer(PointerSample {
+        x,
+        y,
+        phase: TouchPhase::Ended,
+    });
+    runtime
+        .pump()
+        .expect("control input must drive one retained refresh");
+}
 
 /// Two stacked colors must split the screen, proving measure → place →
 /// render flows through a real `VStack` layout.
@@ -51,7 +75,9 @@ fn text_renders_visible_glyphs() {
         .board()
         .framebuffer()
         .pixels()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[3] == 255 && px[0] < 128)
         .count();
     assert!(
@@ -87,6 +113,122 @@ fn binding_change_dirties_only_the_text_region() {
             "dirty rect should stay local to the text, got {rect:?}"
         );
     }
+}
+
+#[test]
+fn button_click_invokes_action_once() {
+    let invocations = Rc::new(Cell::new(0));
+    let action_invocations = Rc::clone(&invocations);
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(200, 48),
+        support::test_environment(),
+        16,
+        move || {
+            let action_invocations = Rc::clone(&action_invocations);
+            AnyView::new(button("Purchase").action(move || {
+                action_invocations.set(action_invocations.get() + 1);
+            }))
+        },
+    );
+    runtime.pump().expect("initial frame renders");
+
+    click(&mut runtime, 100.0, 24.0);
+
+    assert_eq!(invocations.get(), 1);
+}
+
+#[test]
+fn disabled_button_ignores_pointer_input() {
+    let invocations = Rc::new(Cell::new(0));
+    let action_invocations = Rc::clone(&invocations);
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(200, 48),
+        support::test_environment(),
+        16,
+        move || {
+            let action_invocations = Rc::clone(&action_invocations);
+            AnyView::new(
+                button("Unavailable")
+                    .action(move || {
+                        action_invocations.set(action_invocations.get() + 1);
+                    })
+                    .disabled(true),
+            )
+        },
+    );
+    runtime.pump().expect("initial frame renders");
+    runtime.board_mut().push_pointer(PointerSample {
+        x: 100.0,
+        y: 24.0,
+        phase: TouchPhase::Started,
+    });
+    runtime.board_mut().push_pointer(PointerSample {
+        x: 100.0,
+        y: 24.0,
+        phase: TouchPhase::Ended,
+    });
+
+    assert!(
+        runtime.pump().is_none(),
+        "disabled control must not request a refresh"
+    );
+    assert_eq!(invocations.get(), 0);
+}
+
+#[test]
+fn toggle_click_updates_binding() {
+    let enabled = binding(false);
+    let enabled_for_root = enabled.clone();
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(200, 48),
+        support::test_environment(),
+        16,
+        move || AnyView::new(toggle("Ready", &enabled_for_root)),
+    );
+    runtime.pump().expect("initial frame renders");
+
+    click(&mut runtime, 180.0, 24.0);
+
+    assert!(enabled.get());
+}
+
+#[test]
+fn slider_drag_maps_pointer_to_range() {
+    let amount = binding(0.0);
+    let amount_for_root = amount.clone();
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(200, 60),
+        support::test_environment(),
+        16,
+        move || AnyView::new(slider("Amount", &amount_for_root).range(0.0..=100.0)),
+    );
+    runtime.pump().expect("initial frame renders");
+
+    click(&mut runtime, 145.0, 42.0);
+
+    assert!(
+        (amount.get() - 75.0).abs() < 0.01,
+        "slider should map the track position to its configured range"
+    );
+}
+
+#[test]
+fn stepper_buttons_apply_step_and_range() {
+    let quantity = binding(3);
+    let quantity_for_root = quantity.clone();
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(200, 60),
+        support::test_environment(),
+        16,
+        move || AnyView::new(stepper("Quantity", &quantity_for_root).range(1..=5).step(2)),
+    );
+    runtime.pump().expect("initial frame renders");
+
+    click(&mut runtime, 186.0, 30.0);
+    assert_eq!(quantity.get(), 5);
+
+    click(&mut runtime, 150.0, 30.0);
+    assert_eq!(quantity.get(), 3);
 }
 
 /// Visual review artifact: a small composed UI.

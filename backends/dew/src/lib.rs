@@ -33,13 +33,20 @@ pub mod compositor;
 pub mod dispatch;
 pub mod display;
 pub mod display_list;
+#[cfg(all(feature = "espidf", target_os = "espidf"))]
+pub mod embedded_executor;
 #[cfg(feature = "embedded-simulator")]
 pub mod embedded_simulator;
 #[cfg(all(feature = "espidf", target_os = "espidf"))]
-pub mod embedded_executor;
-#[cfg(all(feature = "espidf", target_os = "espidf"))]
 pub mod espidf;
+#[cfg(any(
+    test,
+    feature = "embedded-simulator",
+    all(feature = "espidf", target_os = "espidf")
+))]
+pub(crate) mod frame_cadence;
 pub mod painter;
+mod pointer;
 pub mod runtime;
 pub mod text;
 pub mod theme;
@@ -48,7 +55,7 @@ mod views;
 pub use board::{Board, HostBoard, PointerSample};
 pub use compositor::{BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};
-pub use display::{BufferDisplay, DisplayFlush};
+pub use display::{BufferDisplay, DisplayFlush, Rgb565Display, Rgb565Sink};
 pub use display_list::{DisplayList, DrawCommand};
 pub use painter::Painter;
 pub use runtime::{DewRuntime, render_view_png};

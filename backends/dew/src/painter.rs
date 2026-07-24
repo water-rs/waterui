@@ -8,8 +8,8 @@
 //! rasterization only pays for covered pixels, so this is cheap even though
 //! the full scene is replayed.
 
-use kurbo::{Affine, Shape};
-use vello_cpu::{Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
+use kurbo::{Affine, Rect, Shape};
+use vello_cpu::{Image, ImageSource, Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
 
 use crate::compositor::DeviceRegion;
 use crate::display_list::{BEZIER_TOLERANCE, DisplayList, DrawCommand};
@@ -18,16 +18,34 @@ use crate::display_list::{BEZIER_TOLERANCE, DisplayList, DrawCommand};
 /// image registry) that must survive across bands and frames.
 ///
 /// One painter per screen; create it once and reuse it for every region.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Painter {
     resources: Resources,
+    settings: RenderSettings,
+    images: Vec<CachedImage>,
+}
+
+#[derive(Debug)]
+struct CachedImage {
+    data: peniko::ImageData,
+    source: ImageSource,
+}
+
+impl Default for Painter {
+    fn default() -> Self {
+        Self::new(target_render_settings())
+    }
 }
 
 impl Painter {
-    /// Creates a painter with empty caches.
+    /// Creates a painter with empty caches and explicit target settings.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(settings: RenderSettings) -> Self {
+        Self {
+            resources: Resources::new(),
+            settings,
+            images: Vec::new(),
+        }
     }
 
     /// Rasterizes the window-coordinate `list` clipped to `region`,
@@ -36,16 +54,24 @@ impl Painter {
     ///
     /// # Panics
     ///
-    /// Panics when the region exceeds `u16::MAX` in either dimension (far
-    /// beyond any target panel) or when the list contains an image brush,
-    /// which dew does not support yet.
+    /// Panics when the region exceeds `u16::MAX` in either dimension, far
+    /// beyond any target panel.
     #[must_use]
     pub fn rasterize_region(&mut self, list: &DisplayList, region: DeviceRegion) -> Pixmap {
         let width = u16::try_from(region.width).expect("region width exceeds u16::MAX");
         let height = u16::try_from(region.height).expect("region height exceeds u16::MAX");
-        let mut ctx = RenderContext::new_with(width, height, render_settings());
+        let mut ctx = RenderContext::new_with(width, height, self.settings);
         let shift = Affine::translate((-f64::from(region.x), -f64::from(region.y)));
+        let region_bounds = Rect::new(
+            f64::from(region.x),
+            f64::from(region.y),
+            f64::from(region.x + region.width),
+            f64::from(region.y + region.height),
+        );
         for command in list.commands() {
+            if !command.intersects(region_bounds) {
+                continue;
+            }
             let clip = command.clip();
             if let Some(clip) = clip {
                 if clip.width() <= 0.0 || clip.height() <= 0.0 {
@@ -64,7 +90,7 @@ impl Painter {
                     ..
                 } => {
                     ctx.set_transform(shift * *transform);
-                    set_brush(&mut ctx, brush);
+                    self.set_brush(&mut ctx, brush);
                     ctx.fill_path(path);
                 }
                 DrawCommand::StrokePath {
@@ -76,23 +102,36 @@ impl Painter {
                 } => {
                     ctx.set_transform(shift * *transform);
                     ctx.set_stroke(stroke.clone());
-                    set_brush(&mut ctx, brush);
+                    self.set_brush(&mut ctx, brush);
                     ctx.stroke_path(path);
                 }
                 DrawCommand::GlyphRun {
                     font,
                     font_size,
                     glyphs,
+                    glyph_bounds,
                     transform,
                     brush,
                     ..
                 } => {
                     ctx.set_transform(shift * *transform);
-                    set_brush(&mut ctx, brush);
+                    self.set_brush(&mut ctx, brush);
                     ctx.glyph_run(&mut self.resources, font)
                         .font_size(*font_size)
                         .hint(true)
-                        .fill_glyphs(glyphs.iter().copied());
+                        .fill_glyphs(
+                            glyphs
+                                .iter()
+                                .zip(glyph_bounds)
+                                .filter(|(_, bounds)| {
+                                    transform
+                                        .transform_rect_bbox(**bounds)
+                                        .intersect(region_bounds)
+                                        .area()
+                                        > 0.0
+                                })
+                                .map(|(glyph, _)| *glyph),
+                        );
                 }
             }
             if clip.is_some() {
@@ -104,6 +143,34 @@ impl Painter {
         ctx.render_to_pixmap(&mut self.resources, &mut pixmap);
         pixmap
     }
+
+    fn set_brush(&mut self, ctx: &mut RenderContext, brush: &peniko::Brush) {
+        match brush {
+            peniko::Brush::Solid(color) => ctx.set_paint(*color),
+            peniko::Brush::Gradient(gradient) => ctx.set_paint(gradient.clone()),
+            peniko::Brush::Image(image) => {
+                let cached = self
+                    .images
+                    .iter()
+                    .find(|cached| cached.data == image.image)
+                    .map(|cached| cached.source.clone());
+                let source = if let Some(cached) = cached {
+                    cached
+                } else {
+                    let source = ImageSource::from_peniko_image_data(&image.image);
+                    self.images.push(CachedImage {
+                        data: image.image.clone(),
+                        source: source.clone(),
+                    });
+                    source
+                };
+                ctx.set_paint(Image {
+                    image: source,
+                    sampler: image.sampler,
+                });
+            }
+        }
+    }
 }
 
 /// Render settings for this target.
@@ -113,7 +180,7 @@ impl Painter {
 /// `bytemuck` cast panics or `LoadProhibited` faults), so ESP32-S3 builds use
 /// the f32 pipeline, which also maps onto the chip's hardware FPU. All
 /// other targets keep the faster u8 pipeline.
-fn render_settings() -> RenderSettings {
+pub(crate) fn target_render_settings() -> RenderSettings {
     RenderSettings {
         render_mode: if cfg!(target_arch = "xtensa") {
             RenderMode::OptimizeQuality
@@ -124,25 +191,15 @@ fn render_settings() -> RenderSettings {
     }
 }
 
-fn set_brush(ctx: &mut RenderContext, brush: &peniko::Brush) {
-    match brush {
-        peniko::Brush::Solid(color) => ctx.set_paint(*color),
-        peniko::Brush::Gradient(gradient) => ctx.set_paint(gradient.clone()),
-        peniko::Brush::Image(_) => {
-            unimplemented!("dew does not render image brushes yet")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compositor::BandScheduler;
     use kurbo::Rect;
-    use peniko::Color;
+    use peniko::{Color, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
     fn rasterize(list: &DisplayList, region: DeviceRegion) -> Pixmap {
-        Painter::new().rasterize_region(list, region)
+        Painter::default().rasterize_region(list, region)
     }
 
     fn checker_scene() -> DisplayList {
@@ -161,6 +218,26 @@ mod tests {
             &kurbo::Circle::new((44.0, 44.0), 14.0),
             Affine::IDENTITY,
             Color::from_rgb8(60, 200, 120),
+        );
+        list
+    }
+
+    fn image_scene() -> DisplayList {
+        let image = ImageData {
+            data: vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ]
+            .into(),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        };
+        let mut list = DisplayList::new();
+        list.fill(
+            &Rect::new(0.0, 0.0, 2.0, 2.0),
+            Affine::IDENTITY,
+            peniko::Brush::Image(ImageBrush::new(image)),
         );
         list
     }
@@ -244,5 +321,50 @@ mod tests {
                 assert_eq!(band_row, full_row, "band seam mismatch at row {row}");
             }
         }
+    }
+
+    #[test]
+    fn image_brush_matches_across_bands_and_is_converted_once() {
+        let list = image_scene();
+        let full = rasterize(
+            &list,
+            DeviceRegion {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        );
+        let mut painter = Painter::default();
+        let top = painter.rasterize_region(
+            &list,
+            DeviceRegion {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+        );
+        let bottom = painter.rasterize_region(
+            &list,
+            DeviceRegion {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 1,
+            },
+        );
+
+        assert_eq!(
+            [top.data_as_u8_slice(), bottom.data_as_u8_slice()].concat(),
+            full.data_as_u8_slice()
+        );
+        assert_eq!(painter.images.len(), 1);
+        assert_eq!(
+            full.data_as_u8_slice(),
+            [
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ]
+        );
     }
 }
