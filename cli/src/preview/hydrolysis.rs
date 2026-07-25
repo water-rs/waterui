@@ -8,6 +8,7 @@ use crate::build::{BuildOptions, RustLinkage};
 use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::hydrolysis::platform::{
     build_hydrolysis_with_envs_and_features, built_hydrolysis_binary_path,
+    stage_hydrolysis_shared_runtime,
 };
 use crate::platform::TargetPlatform;
 use crate::project::Project;
@@ -155,6 +156,7 @@ pub async fn render_preview_with_hydrolysis(
         &[HYDROLYSIS_PREVIEW_FEATURE],
     )
     .await?;
+    stage_hydrolysis_shared_runtime(&binary_path, TargetPlatform::MacOS).await?;
     run_preview_binary(&project, &binary_path, width, height, output_path, scenario).await
 }
 
@@ -209,6 +211,7 @@ pub async fn test_preview_with_hydrolysis(
         &[HYDROLYSIS_PREVIEW_TEST_FEATURE],
     )
     .await?;
+    stage_hydrolysis_shared_runtime(&binary_path, TargetPlatform::MacOS).await?;
     run_preview_test_binary(&project, &binary_path, width, height, &mode).await
 }
 
