@@ -147,49 +147,147 @@ pub(crate) fn place_lazy_stack_item(
     }
 }
 
-pub(crate) fn sum_cached_or_estimated(extents: &[Option<f64>], estimate: f64) -> f64 {
-    extents
-        .iter()
-        .map(|extent| extent.unwrap_or(estimate))
-        .sum::<f64>()
+/// Main-axis extent index for a virtualized collection.
+///
+/// Unknown items use one stable estimate. Measured items update a Fenwick tree,
+/// so deep viewport resolution and programmatic item jumps never materialize or
+/// linearly scan preceding rows.
+#[derive(Debug, Default)]
+pub(crate) struct VirtualExtentIndex {
+    measured: Vec<Option<f64>>,
+    fenwick: Vec<f64>,
+    estimate: f64,
+    spacing: f64,
 }
 
-pub(crate) fn resolve_visible_index_window(
-    count: usize,
-    start_offset: f64,
-    end_offset: f64,
-    mut extent_at: impl FnMut(usize) -> f64,
-) -> VisibleIndexWindow {
-    if count == 0 {
-        return VisibleIndexWindow {
-            start: 0,
-            end: 0,
-            leading_offset: 0.0,
-        };
+impl VirtualExtentIndex {
+    pub(crate) fn reset(&mut self, count: usize, estimate: f64, spacing: f64) {
+        assert!(
+            estimate.is_finite() && estimate > 0.0,
+            "virtualized item estimate must be finite and positive"
+        );
+        assert!(
+            spacing.is_finite() && spacing >= 0.0,
+            "virtualized item spacing must be finite and non-negative"
+        );
+        self.measured.clear();
+        self.measured.resize(count, None);
+        self.fenwick.clear();
+        self.fenwick.resize(count + 1, 0.0);
+        self.estimate = estimate;
+        self.spacing = spacing;
+        let estimated_stride = estimate + spacing;
+        for index in 1..=count {
+            self.fenwick[index] = estimated_stride * (index & index.wrapping_neg()) as f64;
+        }
     }
 
-    let clamped_start = start_offset.max(0.0);
-    let clamped_end = end_offset.max(clamped_start);
-    let mut index = 0usize;
-    let mut offset = 0.0;
-    while index < count {
-        let extent = extent_at(index);
-        if offset + extent > clamped_start {
-            break;
+    pub(crate) fn matches(&self, count: usize, estimate: f64, spacing: f64) -> bool {
+        self.measured.len() == count && self.estimate == estimate && self.spacing == spacing
+    }
+
+    pub(crate) fn set_measured(&mut self, index: usize, extent: f64) {
+        assert!(
+            extent.is_finite() && extent >= 0.0,
+            "virtualized item extent must be finite and non-negative"
+        );
+        let previous = self.measured[index].unwrap_or(self.estimate);
+        self.measured[index] = Some(extent);
+        let delta = extent - previous;
+        let mut tree_index = index + 1;
+        while tree_index < self.fenwick.len() {
+            self.fenwick[tree_index] += delta;
+            tree_index += tree_index & tree_index.wrapping_neg();
         }
-        offset += extent;
-        index += 1;
     }
-    let start = index.min(count);
-    let leading_offset = offset;
-    while index < count && offset < clamped_end {
-        offset += extent_at(index);
-        index += 1;
+
+    #[must_use]
+    pub(crate) fn measured(&self, index: usize) -> Option<f64> {
+        self.measured[index]
     }
-    VisibleIndexWindow {
-        start,
-        end: index.min(count),
-        leading_offset,
+
+    #[must_use]
+    pub(crate) fn offset_of(&self, index: usize) -> f64 {
+        assert!(
+            index <= self.measured.len(),
+            "virtualized item index {index} exceeds collection length {}",
+            self.measured.len()
+        );
+        self.prefix_sum(index)
+    }
+
+    #[must_use]
+    pub(crate) fn total_extent(&self) -> f64 {
+        let count = self.measured.len();
+        if count == 0 {
+            0.0
+        } else {
+            self.prefix_sum(count) - self.spacing
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn visible_window(&self, start_offset: f64, end_offset: f64) -> VisibleIndexWindow {
+        let count = self.measured.len();
+        if count == 0 {
+            return VisibleIndexWindow {
+                start: 0,
+                end: 0,
+                leading_offset: 0.0,
+            };
+        }
+        let total = self.total_extent();
+        let clamped_start = start_offset.clamp(0.0, total);
+        let clamped_end = end_offset.max(clamped_start).clamp(0.0, total);
+        let start = self.partition_prefix(clamped_start, true).min(count);
+        let end = if clamped_end <= 0.0 || start == count {
+            start
+        } else {
+            self.partition_prefix(clamped_end, false)
+                .saturating_add(1)
+                .min(count)
+                .max(start)
+        };
+        VisibleIndexWindow {
+            start,
+            end,
+            leading_offset: self.prefix_sum(start),
+        }
+    }
+
+    fn prefix_sum(&self, count: usize) -> f64 {
+        let mut index = count;
+        let mut sum = 0.0;
+        while index > 0 {
+            sum += self.fenwick[index];
+            index &= index - 1;
+        }
+        sum
+    }
+
+    /// Returns the largest prefix length whose sum is `< threshold`, or `<=`
+    /// it when `inclusive` is true.
+    fn partition_prefix(&self, threshold: f64, inclusive: bool) -> usize {
+        let mut index = 0usize;
+        let mut sum = 0.0;
+        let mut bit = self.measured.len().next_power_of_two();
+        while bit != 0 {
+            let next = index + bit;
+            if next < self.fenwick.len() {
+                let candidate = sum + self.fenwick[next];
+                let accepted = if inclusive {
+                    candidate <= threshold
+                } else {
+                    candidate < threshold
+                };
+                if accepted {
+                    index = next;
+                    sum = candidate;
+                }
+            }
+            bit >>= 1;
+        }
+        index
     }
 }
 
@@ -256,5 +354,51 @@ pub(crate) fn table_metrics_from_slot(
         column_widths: slot.column_widths.clone(),
         table_width: slot.column_widths.iter().sum(),
         table_height: metrics.header_height + metrics.row_height * slot.max_rows as f64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VirtualExtentIndex;
+
+    #[test]
+    fn deep_window_resolves_without_measuring_preceding_items() {
+        let mut index = VirtualExtentIndex::default();
+        index.reset(100_000, 48.0, 4.0);
+
+        let window = index.visible_window(90_000.0 * 52.0, 90_010.0 * 52.0);
+
+        assert_eq!(window.start, 90_000);
+        assert_eq!(window.end, 90_010);
+        assert_eq!(window.leading_offset, 90_000.0 * 52.0);
+        assert!(index.measured(89_999).is_none());
+    }
+
+    #[test]
+    fn measured_extents_update_offsets_and_visible_window() {
+        let mut index = VirtualExtentIndex::default();
+        index.reset(4, 10.0, 2.0);
+        index.set_measured(0, 20.0);
+        index.set_measured(2, 5.0);
+
+        assert_eq!(index.total_extent(), 51.0);
+        assert_eq!(index.offset_of(1), 22.0);
+        assert_eq!(index.offset_of(3), 41.0);
+        let window = index.visible_window(22.0, 41.0);
+        assert_eq!(window.start, 1);
+        assert_eq!(window.end, 3);
+        assert_eq!(window.leading_offset, 22.0);
+    }
+
+    #[test]
+    fn empty_index_has_an_empty_window() {
+        let mut index = VirtualExtentIndex::default();
+        index.reset(0, 10.0, 0.0);
+
+        let window = index.visible_window(500.0, 600.0);
+
+        assert_eq!(window.start, 0);
+        assert_eq!(window.end, 0);
+        assert_eq!(index.total_extent(), 0.0);
     }
 }

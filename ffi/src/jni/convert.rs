@@ -1219,7 +1219,7 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
     }
 }
 
-/// WuiScrollView -> ScrollStruct(axis, contentPtr)
+/// WuiScrollView -> ScrollStruct(axis, contentPtr, targetXPtr, targetYPtr, generationPtr)
 impl ToJavaStruct for crate::components::layout::WuiScrollView {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1227,10 +1227,13 @@ impl ToJavaStruct for crate::components::layout::WuiScrollView {
             .expect("ScrollStruct class not found");
         env.new_object(
             &class,
-            "(IJ)V",
+            "(IJJJJ)V",
             &[
                 JValue::Int(self.axis as i32),
                 JValue::Long(self.content as jlong),
+                JValue::Long(self.target_x as jlong),
+                JValue::Long(self.target_y as jlong),
+                JValue::Long(self.scroll_generation as jlong),
             ],
         )
         .expect("Failed to create ScrollStruct")
@@ -1480,12 +1483,15 @@ impl ToJavaStruct for crate::components::list::WuiList {
             .expect("ListStruct class not found");
         env.new_object(
             &class,
-            "(JJJJ)V",
+            "(JJJJJJZ)V",
             &[
                 JValue::Long(self.contents as jlong),
                 JValue::Long(self.editing as jlong),
                 JValue::Long(self.on_delete as jlong),
                 JValue::Long(self.on_move as jlong),
+                JValue::Long(self.target_index as jlong),
+                JValue::Long(self.scroll_generation as jlong),
+                JValue::Bool(self.uses_sections.into()),
             ],
         )
         .expect("Failed to create ListStruct")

@@ -202,6 +202,23 @@ spacer().height(16.0)       // fixed space
 let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
 ```
 
+Programmatic scrolling is explicit and repeatable through `ScrollController`.
+`List` targets item indices, while `ScrollView` targets content coordinates:
+
+```rust
+let list_scroll = ScrollController::<usize>::new(0);
+let list = List::for_each(rows, row_view).scroll_controller(&list_scroll);
+list_scroll.scroll_to(50_000);
+
+let content_scroll = ScrollController::<Point>::new(Point::zero());
+let viewport = scroll(lazy_content).scroll_controller(&content_scroll);
+content_scroll.scroll_to(Point::new(0.0, 2_400.0));
+```
+
+`List::for_each` and `ScrollView` containing a lazy stack materialize only the
+visible window, including after a deep programmatic jump. Use `List::content`
+when section markers or heterogeneous static rows are required.
+
 ## Colors
 
 ```rust

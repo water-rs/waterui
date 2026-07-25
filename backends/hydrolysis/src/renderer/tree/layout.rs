@@ -187,6 +187,14 @@ impl RenderNode {
                         f64::from(content_size.height),
                     )
                 };
+                if let Some(controller) = &node.controller {
+                    let generation = renderer.read_signal(&controller.generation());
+                    if generation != node.applied_scroll_generation.get() {
+                        let target = renderer.read_signal(&controller.target());
+                        let _ = handle.scroll_to(f64::from(target.x), f64::from(target.y));
+                        node.applied_scroll_generation.set(generation);
+                    }
+                }
                 node.handle = Some(handle);
                 node.content_size = content_size;
                 node.viewport = size;

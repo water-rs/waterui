@@ -2,6 +2,7 @@ use crate::action::{WuiIndexAction, WuiMoveAction};
 use crate::reactive::WuiComputed;
 use crate::views::WuiAnyViews;
 use crate::{IntoFFI, WuiAnyView, WuiStr};
+use nami::SignalExt;
 use waterui::Str;
 use waterui::component::list::{ListConfig, ListItem, ListSection};
 use waterui::views::ViewsExt;
@@ -109,17 +110,42 @@ pub struct WuiList {
     pub on_delete: *mut WuiIndexAction,
     /// Optional move callback (null if not reorderable).
     pub on_move: *mut WuiMoveAction,
+    /// Optional requested row index (null when uncontrolled).
+    pub target_index: *mut WuiComputed<i32>,
+    /// Optional scroll request generation (null when uncontrolled).
+    pub scroll_generation: *mut WuiComputed<i32>,
+    /// Whether rows carry semantic section markers.
+    pub uses_sections: bool,
 }
 
 impl IntoFFI for ListConfig {
     type FFI = WuiList;
 
     fn into_ffi(self) -> Self::FFI {
+        let (target_index, scroll_generation) = self.scroll_controller.map_or_else(
+            || (core::ptr::null_mut(), core::ptr::null_mut()),
+            |controller| {
+                (
+                    controller
+                        .target()
+                        .map(|index| {
+                            i32::try_from(index)
+                                .expect("list scroll target exceeds the platform index range")
+                        })
+                        .computed()
+                        .into_ffi(),
+                    controller.generation().into_ffi(),
+                )
+            },
+        );
         WuiList {
             contents: self.contents.erase().into_ffi(),
             editing: self.editing.into_ffi(),
             on_delete: self.on_delete.into_ffi(),
             on_move: self.on_move.into_ffi(),
+            target_index,
+            scroll_generation,
+            uses_sections: self.uses_sections,
         }
     }
 }

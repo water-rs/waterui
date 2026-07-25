@@ -164,6 +164,17 @@ impl ScrollHandle {
         }
         state.tick_smooth_scroll(now)
     }
+
+    /// Jumps immediately to an absolute content offset, clamped to the current
+    /// scrollable extents. Any in-flight wheel animation is cancelled.
+    #[must_use]
+    pub fn scroll_to(&self, x: f64, y: f64) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.generation != self.generation {
+            return false;
+        }
+        state.scroll_to(x, y)
+    }
 }
 
 impl ScrollState {
@@ -255,6 +266,29 @@ impl ScrollState {
 
         (self.offset_x - old_x).abs() > SCROLL_EPSILON
             || (self.offset_y - old_y).abs() > SCROLL_EPSILON
+    }
+
+    fn scroll_to(&mut self, x: f64, y: f64) -> bool {
+        let metrics = self.metrics();
+        let old_x = self.offset_x;
+        let old_y = self.offset_y;
+        self.wheel_target_x = None;
+        self.wheel_target_y = None;
+        self.wheel_last_tick = None;
+        match self.axis {
+            Axis::Horizontal => {
+                self.offset_x = clamp_scroll_offset(x, metrics.max_x);
+            }
+            Axis::Vertical => {
+                self.offset_y = clamp_scroll_offset(y, metrics.max_y);
+            }
+            Axis::All => {
+                self.offset_x = clamp_scroll_offset(x, metrics.max_x);
+                self.offset_y = clamp_scroll_offset(y, metrics.max_y);
+            }
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        }
+        value_changed(old_x, self.offset_x) || value_changed(old_y, self.offset_y)
     }
 
     /// Accumulates a discrete wheel tick into the smooth-scroll targets and
@@ -506,5 +540,33 @@ mod tests {
         let rebound = owner.rebind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0);
         assert_eq!(rebound.metrics().offset_y, 0.0);
         assert_eq!(rebound.metrics().max_y, 0.0);
+    }
+
+    #[test]
+    fn absolute_jump_clamps_and_can_repeat_after_manual_scroll() {
+        let handle = vertical_handle();
+        assert!(handle.scroll_to(50.0, 150.0));
+        assert_eq!(handle.metrics().offset_x, 0.0);
+        assert_eq!(handle.metrics().offset_y, 150.0);
+
+        assert!(handle.apply_scroll_delta(0.0, 50.0, false));
+        assert_eq!(handle.metrics().offset_y, 100.0);
+        assert!(handle.scroll_to(0.0, 150.0));
+        assert_eq!(handle.metrics().offset_y, 150.0);
+
+        assert!(handle.scroll_to(0.0, 10_000.0));
+        assert_eq!(handle.metrics().offset_y, 200.0);
+    }
+
+    #[test]
+    fn absolute_jump_cancels_wheel_animation() {
+        let handle = vertical_handle();
+        let start = Instant::now();
+        assert!(handle.apply_scroll_delta(0.0, -2.0, true));
+        let _ = handle.tick_smooth_scroll(start);
+
+        assert!(handle.scroll_to(0.0, 120.0));
+        assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(16)));
+        assert_eq!(handle.metrics().offset_y, 120.0);
     }
 }
