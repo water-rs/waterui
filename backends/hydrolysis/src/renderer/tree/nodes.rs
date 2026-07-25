@@ -356,22 +356,18 @@ pub(super) enum WrapperEffect {
     Focused(Focused),
     /// An `.on_appear`/`.on_disappear` lifecycle hook, made node-owned (the slot
     /// cursor that bound the old dispatch path is gone — the same fix class as the
-    /// `SceneView` Bug 1). Appear fires once at build; disappear fires from this
-    /// effect's [`Drop`] when the node leaves the retained tree (a `Dynamic` /
-    /// collection reconcile that drops the subtree, or app teardown). Flush is a
-    /// passthrough.
-    #[allow(
-        dead_code,
-        reason = "retained only to fire its disappear hook from Drop on structural removal"
-    )]
+    /// `SceneView` Bug 1). Appear fires after the child's first flush; disappear
+    /// fires from this effect's [`Drop`] when the node leaves the retained tree (a
+    /// `Dynamic` / collection reconcile that drops the subtree, or app teardown).
     LifeCycle(LifeCycleEffect),
 }
 
 /// The node-owned state of a lifecycle hook (see [`WrapperEffect::LifeCycle`]).
-/// An appear hook fires at build time and leaves `disappear` empty; a disappear
-/// hook is retained here and fired exactly once when the node is dropped, so
-/// structural removal — not a frame-diff slot cursor — drives disappearance.
+/// An appear hook is consumed after the child's first flush; a disappear hook is
+/// fired exactly once when the node is dropped, so structural presence/removal —
+/// not a frame-diff slot cursor — drives lifecycle events.
 pub(crate) struct LifeCycleEffect {
+    pub(super) appear: Cell<Option<DeferredLifeCycleHook>>,
     pub(super) disappear: Option<DeferredLifeCycleHook>,
 }
 

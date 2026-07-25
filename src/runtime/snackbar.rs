@@ -790,10 +790,10 @@ impl View for StackedSnackbarView {
             theme.ambient_shadow_radius,
         );
 
-        // The appear hook runs while this subtree is dispatched — after the
-        // animated opacity/offset handles bind at their hidden initial values —
-        // so the entrance transitions from hidden to shown. The collection
-        // engine dispatches each snackbar exactly once (keyed by id) and never
+        // The appear hook runs after this subtree's first flush, once the animated
+        // opacity/offset handles have bound their hidden initial values, so the
+        // entrance transitions from hidden to shown. The collection engine
+        // dispatches each snackbar exactly once (keyed by id) and never
         // re-dispatches a surviving one, so this hook fires once naturally: no
         // one-shot latch is needed.
         let entrance_opacity = item.opacity.clone();

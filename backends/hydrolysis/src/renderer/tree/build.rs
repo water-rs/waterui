@@ -641,11 +641,11 @@ impl RenderNode {
         }))
     }
 
-    /// Build a node-owned lifecycle hook wrapper. An appear hook fires its callback
-    /// once now (before the child subtree is built, matching the old dispatch
-    /// order); a disappear hook is retained in the effect and fired from its `Drop`
-    /// when the node leaves the retained tree. No frame-diff slot cursor — structural
-    /// removal alone drives disappearance.
+    /// Build a node-owned lifecycle hook wrapper. An appear hook is retained until
+    /// the child's first flush, so the child has installed its reactive subscriptions
+    /// before the callback can update them. A disappear hook is retained in the
+    /// effect and fired from its `Drop` when the node leaves the retained tree. No
+    /// frame-diff slot cursor — structural presence/removal drives both events.
     fn build_lifecycle(
         hook: LifeCycleHook,
         content: AnyView,
@@ -653,11 +653,12 @@ impl RenderNode {
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
         let effect = match hook.lifecycle() {
-            LifeCycle::Appear => {
-                hook.handle(env);
-                LifeCycleEffect { disappear: None }
-            }
+            LifeCycle::Appear => LifeCycleEffect {
+                appear: Cell::new(Some(DeferredLifeCycleHook::new(hook, env.clone()))),
+                disappear: None,
+            },
             LifeCycle::Disappear => LifeCycleEffect {
+                appear: Cell::new(None),
                 disappear: Some(DeferredLifeCycleHook::new(hook, env.clone())),
             },
             _ => panic!("hydrolysis lifecycle variant is not supported"),
