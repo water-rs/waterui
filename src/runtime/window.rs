@@ -25,7 +25,7 @@ use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
-use waterui_layout::{Point, Rect, Size, stack::zstack};
+use waterui_layout::{Point, Rect, Size};
 use waterui_str::Str;
 
 use crate::{
@@ -83,9 +83,9 @@ pub struct Window {
     /// Explicit minimum content size the window can be resized down to.
     ///
     /// When `None` (the default), the backend derives the minimum from the
-    /// content's own layout: the root view is measured at a zero proposal
-    /// (`ProposalSize::ZERO`), so the window can never be resized smaller than
-    /// its content's minimum — the same negotiation every [`Layout`] container
+    /// content's own layout: each root-view axis is measured independently with
+    /// a zero proposal, so the window can never be resized smaller than its
+    /// content's minimum — the same negotiation every [`Layout`] container
     /// performs on its children, applied at the window boundary.
     ///
     /// Platform support: enforced by desktop backends (hydrolysis/winit,
@@ -99,8 +99,11 @@ pub struct Window {
     pub min_size: Option<Computed<Size>>,
     /// Explicit maximum content size the window can be resized up to.
     ///
-    /// `None` (the default) leaves the window unconstrained. Same platform
-    /// support notes as [`Self::min_size`].
+    /// When `None` (the default), self-drawn desktop backends derive the maximum
+    /// from the content's own layout by measuring each axis with an infinite
+    /// proposal. A layout that accepts infinity leaves that axis unbounded.
+    /// Native backends may require an explicit maximum. Same platform support
+    /// notes as [`Self::min_size`].
     pub max_size: Option<Computed<Size>>,
 }
 
@@ -229,7 +232,10 @@ impl Window {
             let overlay_manager = overlay_manager.clone();
             let snackbar_manager = snackbar_manager.clone();
             AnyView::new(
-                zstack((content.build(), overlay_view.clone(), snackbar_view.clone()))
+                content
+                    .build()
+                    .overlay(overlay_view.clone())
+                    .overlay(snackbar_view.clone())
                     .with(overlay_manager.clone())
                     .with(snackbar_manager.clone())
                     .state(&overlay_manager)
@@ -256,8 +262,8 @@ impl Window {
     /// Set an explicit minimum content size for the window.
     ///
     /// Without one, the backend derives the minimum from the content's layout
-    /// (the root view measured at a zero proposal). See [`Self::min_size`] for
-    /// platform support notes.
+    /// by measuring each axis independently at a zero proposal. See
+    /// [`Self::min_size`] for platform support notes.
     #[must_use]
     pub fn min_size(mut self, size: impl IntoComputed<Size>) -> Self {
         self.min_size = Some(size.into_computed());

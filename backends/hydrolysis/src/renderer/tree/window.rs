@@ -164,7 +164,7 @@ impl HydrolysisRenderer {
         if let Some(mut tree) = self.render_tree.take() {
             tree.patch(self);
             tree.layout(self, env, size);
-            self.refresh_content_min_size(&tree, env);
+            self.refresh_content_size_limits(&tree, env);
             tree.flush(self, ctx, env);
             self.render_tree = Some(tree);
             return;
@@ -172,7 +172,7 @@ impl HydrolysisRenderer {
         self.render_depth = 0;
         let mut node = RenderNode::build(content, env, self);
         node.layout(self, env, size);
-        self.refresh_content_min_size(&node, env);
+        self.refresh_content_size_limits(&node, env);
         node.flush(self, ctx, env);
         self.render_tree = Some(node);
     }
@@ -232,7 +232,7 @@ impl HydrolysisRenderer {
         self.begin_redraw_frame();
         let size = Size::new(bounds.width() as f32, bounds.height() as f32);
         tree.layout(self, env, size);
-        self.refresh_content_min_size(&tree, env);
+        self.refresh_content_size_limits(&tree, env);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
         // The overlay-mode text context menu re-encodes with the frame it floats
@@ -265,40 +265,84 @@ impl HydrolysisRenderer {
         true
     }
 
-    /// Re-measures the window content's minimum size. Runs after every layout
-    /// pass: layout is cheap by construction (text shaping is memoized), and the
-    /// minimum only exists while a tree does.
+    /// Re-measures the window content's per-axis minimum and maximum sizes.
     ///
-    /// Per axis: the tree measured at a zero proposal is the hard minimum, but
-    /// fill-style containers (stacks, frames with only ideal sizes) legitimately
-    /// compress to the proposal, so a non-positive axis falls back to the ideal
-    /// measurement (unspecified proposal) — mirroring the macOS backend's
-    /// `resolvedWindowMinAxis` so both derive the same resize floor.
-    fn refresh_content_min_size(&mut self, tree: &RenderNode, env: &Environment) {
-        let min = tree.measure(&mut self.state, env, ProposalSize::ZERO).size;
-        let ideal = tree
-            .measure(&mut self.state, env, ProposalSize::UNSPECIFIED)
-            .size;
-        let resolve = |min_axis: f32, ideal_axis: f32| {
-            if min_axis.is_finite() && min_axis > 0.0 {
-                min_axis
-            } else if ideal_axis.is_finite() && ideal_axis > 0.0 {
-                ideal_axis
-            } else {
-                0.0
-            }
-        };
-        self.content_min_size = Some(Size::new(
-            resolve(min.width, ideal.width),
-            resolve(min.height, ideal.height),
-        ));
+    /// Each axis is negotiated independently: a zero proposal asks for the hard
+    /// minimum and an infinite proposal asks for the hard maximum. The other axis
+    /// stays unspecified so cross-axis layout does not turn one dimension's
+    /// constraint into the other dimension's result.
+    fn refresh_content_size_limits(&mut self, tree: &RenderNode, env: &Environment) {
+        let min_width = tree
+            .measure(&mut self.state, env, ProposalSize::new(Some(0.0), None))
+            .size
+            .width;
+        let min_height = tree
+            .measure(&mut self.state, env, ProposalSize::new(None, Some(0.0)))
+            .size
+            .height;
+        let max_width = tree
+            .measure(
+                &mut self.state,
+                env,
+                ProposalSize::new(Some(f32::INFINITY), None),
+            )
+            .size
+            .width;
+        let max_height = tree
+            .measure(
+                &mut self.state,
+                env,
+                ProposalSize::new(None, Some(f32::INFINITY)),
+            )
+            .size
+            .height;
+
+        let minimum = Size::new(
+            validated_minimum_axis(min_width, "width"),
+            validated_minimum_axis(min_height, "height"),
+        );
+        let maximum = content_maximum_size(max_width, max_height);
+        if let Some(maximum) = maximum {
+            assert!(
+                maximum.width >= minimum.width && maximum.height >= minimum.height,
+                "hydrolysis window layout reported maximum {maximum:?} below minimum {minimum:?}"
+            );
+        }
+        self.content_size_limits = Some(ContentSizeLimits { minimum, maximum });
     }
 
-    /// The window content's minimum size from the latest layout pass, or `None`
-    /// before the first build. The runner uses it as the default window resize
-    /// floor when the app sets no explicit `Window::min_size`.
+    /// The window content's size limits from the latest layout pass, or `None`
+    /// before the first build.
     #[must_use]
-    pub fn content_min_size(&self) -> Option<Size> {
-        self.content_min_size
+    pub(crate) fn content_size_limits(&self) -> Option<ContentSizeLimits> {
+        self.content_size_limits
     }
+}
+
+fn validated_minimum_axis(value: f32, axis: &str) -> f32 {
+    assert!(
+        value.is_finite() && value >= 0.0,
+        "hydrolysis window layout reported invalid minimum {axis}: {value}"
+    );
+    value
+}
+
+fn validated_maximum_axis(value: f32, axis: &str) -> Option<f32> {
+    assert!(
+        !value.is_nan() && value >= 0.0,
+        "hydrolysis window layout reported invalid maximum {axis}: {value}"
+    );
+    value.is_finite().then_some(value)
+}
+
+fn content_maximum_size(width: f32, height: f32) -> Option<Size> {
+    let width = validated_maximum_axis(width, "width");
+    let height = validated_maximum_axis(height, "height");
+    if width.is_none() && height.is_none() {
+        return None;
+    }
+    Some(Size::new(
+        width.unwrap_or(f32::MAX),
+        height.unwrap_or(f32::MAX),
+    ))
 }
