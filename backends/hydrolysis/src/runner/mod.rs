@@ -64,7 +64,9 @@ use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::readback::readback_texture_rgba8;
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
+use crate::renderer::{
+    HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin, PopupWindowManager,
+};
 use crate::time::Instant;
 
 fn init_main_thread_executors() {
@@ -79,9 +81,18 @@ fn install_native_component_hooks(env: &mut Environment) {
     }));
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
-fn install_window_manager(env: &mut Environment, pending_windows: Rc<RefCell<Vec<Window>>>) {
-    env.insert(WindowManager::new(move |window| {
+#[cfg(not(target_arch = "wasm32"))]
+fn install_headless_window_managers(
+    env: &mut Environment,
+    pending_windows: Rc<RefCell<Vec<Window>>>,
+) {
+    env.insert(WindowManager::new({
+        let pending_windows = Rc::clone(&pending_windows);
+        move |window| {
+            pending_windows.borrow_mut().push(window);
+        }
+    }));
+    env.insert(PopupWindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
     }));
 }
@@ -94,7 +105,7 @@ pub fn run(app: App) {
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
-    install_window_manager(&mut env, Rc::clone(&pending_window_queue));
+    install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),

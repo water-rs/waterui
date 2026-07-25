@@ -858,12 +858,17 @@ mod winit_impl {
         TouchPhase,
     };
 
-    pub struct WinitSurface {
-        _instance: wgpu::Instance,
-        surface: wgpu::Surface<'static>,
+    #[derive(Clone)]
+    pub struct WinitGpuContext {
+        instance: wgpu::Instance,
         adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
+    }
+
+    pub struct WinitSurface {
+        surface: wgpu::Surface<'static>,
+        gpu: WinitGpuContext,
         config: wgpu::SurfaceConfiguration,
     }
 
@@ -876,41 +881,66 @@ mod winit_impl {
     }
 
     impl WinitSurface {
-        pub async fn new(window: Arc<NativeWindow>) -> Self {
-            let instance =
-                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-            let surface = instance
-                .create_surface(window.clone())
-                .expect("hydrolysis winit surface: failed to create surface");
-            let adapter = super::request_hydrolysis_adapter(
-                &instance,
-                Some(&surface),
-                "hydrolysis winit surface",
-                super::AdapterSelection::PRODUCTION,
-            )
-            .await;
+        pub async fn new(
+            window: Arc<NativeWindow>,
+            shared_gpu: Option<&WinitGpuContext>,
+        ) -> (Self, WinitGpuContext) {
+            let (gpu, surface) = match shared_gpu {
+                Some(gpu) => {
+                    let surface = gpu
+                        .instance
+                        .create_surface(window.clone())
+                        .expect("hydrolysis winit surface: failed to create shared surface");
+                    (gpu.clone(), surface)
+                }
+                None => {
+                    let instance =
+                        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+                    let surface = instance
+                        .create_surface(window.clone())
+                        .expect("hydrolysis winit surface: failed to create surface");
+                    let adapter = super::request_hydrolysis_adapter(
+                        &instance,
+                        Some(&surface),
+                        "hydrolysis winit surface",
+                        super::AdapterSelection::PRODUCTION,
+                    )
+                    .await;
 
-            super::ensure_compute_capable_adapter(
-                &adapter,
-                "hydrolysis winit surface",
-                "failed to find compute-capable wgpu adapter",
-            );
-            let required_limits = super::required_device_limits(&adapter);
-            let required_features =
-                waterui_graphics::shared_context::required_media_features(adapter.features());
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("hydrolysis-winit-device"),
-                    required_features,
-                    required_limits,
-                    memory_hints: wgpu::MemoryHints::Performance,
-                    experimental_features: wgpu::ExperimentalFeatures::default(),
-                    trace: wgpu::Trace::default(),
-                })
-                .await
-                .expect("hydrolysis winit surface: failed to request device");
+                    super::ensure_compute_capable_adapter(
+                        &adapter,
+                        "hydrolysis winit surface",
+                        "failed to find compute-capable wgpu adapter",
+                    );
+                    let required_limits = super::required_device_limits(&adapter);
+                    let required_features =
+                        waterui_graphics::shared_context::required_media_features(
+                            adapter.features(),
+                        );
+                    let (device, queue) = adapter
+                        .request_device(&wgpu::DeviceDescriptor {
+                            label: Some("hydrolysis-winit-device"),
+                            required_features,
+                            required_limits,
+                            memory_hints: wgpu::MemoryHints::Performance,
+                            experimental_features: wgpu::ExperimentalFeatures::default(),
+                            trace: wgpu::Trace::default(),
+                        })
+                        .await
+                        .expect("hydrolysis winit surface: failed to request device");
+                    (
+                        WinitGpuContext {
+                            instance,
+                            adapter,
+                            device,
+                            queue,
+                        },
+                        surface,
+                    )
+                }
+            };
 
-            let caps = surface.get_capabilities(&adapter);
+            let caps = surface.get_capabilities(&gpu.adapter);
             let format = super::select_hydrolysis_surface_format(&caps);
             let alpha_mode = caps
                 .alpha_modes
@@ -935,30 +965,30 @@ mod winit_impl {
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };
-            surface.configure(&device, &config);
+            surface.configure(&gpu.device, &config);
 
-            Self {
-                _instance: instance,
-                surface,
-                adapter,
-                device,
-                queue,
-                config,
-            }
+            (
+                Self {
+                    surface,
+                    gpu: gpu.clone(),
+                    config,
+                },
+                gpu,
+            )
         }
     }
 
     impl SurfaceProvider for WinitSurface {
         fn adapter(&self) -> &wgpu::Adapter {
-            &self.adapter
+            &self.gpu.adapter
         }
 
         fn device(&self) -> &wgpu::Device {
-            &self.device
+            &self.gpu.device
         }
 
         fn queue(&self) -> &wgpu::Queue {
-            &self.queue
+            &self.gpu.queue
         }
 
         fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
@@ -989,7 +1019,7 @@ mod winit_impl {
         fn resize(&mut self, width: u32, height: u32) {
             self.config.width = width.max(1);
             self.config.height = height.max(1);
-            self.surface.configure(&self.device, &self.config);
+            self.surface.configure(&self.gpu.device, &self.config);
         }
     }
 
@@ -1018,20 +1048,32 @@ mod winit_impl {
 
     impl WinitWindow {
         pub async fn new(window: Arc<NativeWindow>) -> Self {
-            let surface = WinitSurface::new(window.clone()).await;
-            Self {
-                #[cfg(target_os = "macos")]
-                frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(&window),
-                window,
-                surface,
-                pending_surface_size: None,
-                pending_events: Vec::new(),
-                pointer_position: (0.0, 0.0),
-                modifiers: Modifiers::default(),
-                applied_text_input_state: None,
-                current_cursor_style: CursorStyle::Arrow,
-                applied_size_limits: None,
-            }
+            Self::new_with_shared_gpu(window, None).await.0
+        }
+
+        pub async fn new_with_shared_gpu(
+            window: Arc<NativeWindow>,
+            shared_gpu: Option<&WinitGpuContext>,
+        ) -> (Self, WinitGpuContext) {
+            let (surface, gpu) = WinitSurface::new(window.clone(), shared_gpu).await;
+            (
+                Self {
+                    #[cfg(target_os = "macos")]
+                    frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(
+                        &window,
+                    ),
+                    window,
+                    surface,
+                    pending_surface_size: None,
+                    pending_events: Vec::new(),
+                    pointer_position: (0.0, 0.0),
+                    modifiers: Modifiers::default(),
+                    applied_text_input_state: None,
+                    current_cursor_style: CursorStyle::Arrow,
+                    applied_size_limits: None,
+                },
+                gpu,
+            )
         }
 
         #[must_use]
@@ -1523,6 +1565,7 @@ mod winit_impl {
         }
     }
 
+    pub use WinitGpuContext as ExportedWinitGpuContext;
     pub use WinitWindow as ExportedWinitWindow;
 
     #[cfg(test)]
@@ -1592,6 +1635,9 @@ mod winit_impl {
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+
+#[cfg(feature = "winit")]
+pub(crate) use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
 
 #[cfg(feature = "winit")]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;

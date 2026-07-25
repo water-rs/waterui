@@ -110,7 +110,7 @@ use waterui::navigation::{
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
 use waterui::widget::Divider;
-use waterui::window::{Window, WindowManager, WindowState, WindowStyle};
+use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_canvas::Canvas;
 use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};
 use waterui_controls::label::Label as SemanticLabel;

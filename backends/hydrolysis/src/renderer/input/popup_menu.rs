@@ -16,6 +16,25 @@ use waterui_layout::spacer::spacer;
 use waterui_layout::stack::hstack;
 use waterui_text::text;
 
+/// Backend-private presentation service for transient popup windows.
+///
+/// Keeping popup presentation separate from the public
+/// [`waterui::window::WindowManager`] lets
+/// the desktop runner mount menus without activating them while ordinary
+/// application windows retain their normal focus behavior.
+#[derive(Clone)]
+pub(crate) struct PopupWindowManager(Rc<dyn Fn(Window)>);
+
+impl PopupWindowManager {
+    pub(crate) fn new(show: impl Fn(Window) + 'static) -> Self {
+        Self(Rc::new(show))
+    }
+
+    pub(crate) fn show(&self, window: Window) {
+        (self.0)(window);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ContextMenuTarget {
     pub(crate) bounds: vello::kurbo::Rect,
@@ -222,9 +241,9 @@ pub(crate) fn popup_menu_window(
                                 metrics,
                             );
                             group.push(child_state);
-                            env.get::<WindowManager>()
+                            env.get::<PopupWindowManager>()
                                 .expect(
-                                    "hydrolysis popup menus require WindowManager in environment",
+                                    "hydrolysis popup menus require PopupWindowManager in environment",
                                 )
                                 .show(window);
                         },
@@ -654,8 +673,8 @@ impl HydrolysisRenderer {
         let popup_origin = popup_window_origin(origin, env);
         let (window, state) = popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics);
         group.push(state);
-        env.get::<WindowManager>()
-            .expect("hydrolysis popup menus require WindowManager in environment")
+        env.get::<PopupWindowManager>()
+            .expect("hydrolysis popup menus require PopupWindowManager in environment")
             .show(window);
         self.popup_menu.active_popup_menu_group = Some(group);
         true
@@ -686,8 +705,8 @@ impl HydrolysisRenderer {
             metrics,
         );
         group.push(state);
-        env.get::<WindowManager>()
-            .expect("hydrolysis picker menus require WindowManager in environment")
+        env.get::<PopupWindowManager>()
+            .expect("hydrolysis picker menus require PopupWindowManager in environment")
             .show(window);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.request_refresh();
@@ -713,8 +732,8 @@ impl HydrolysisRenderer {
             group.clone(),
         );
         group.push(state);
-        env.get::<WindowManager>()
-            .expect("hydrolysis color picker requires WindowManager in environment")
+        env.get::<PopupWindowManager>()
+            .expect("hydrolysis color picker requires PopupWindowManager in environment")
             .show(window);
         self.popup_menu.active_popup_menu_group = Some(group);
         true
@@ -733,8 +752,8 @@ impl HydrolysisRenderer {
         let popup_origin = popup_window_origin(origin, env);
         let (window, state) = date_picker_window(value, range, ty, popup_origin, group.clone());
         group.push(state);
-        env.get::<WindowManager>()
-            .expect("hydrolysis date picker requires WindowManager in environment")
+        env.get::<PopupWindowManager>()
+            .expect("hydrolysis date picker requires PopupWindowManager in environment")
             .show(window);
         self.popup_menu.active_popup_menu_group = Some(group);
         true
