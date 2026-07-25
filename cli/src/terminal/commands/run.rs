@@ -498,19 +498,19 @@ fn ensure_run_backend_ready(project: &Project, backend: TargetBackend) -> Result
 
     match backend {
         TargetBackend::Apple if project.apple_backend().is_none() => {
-            bail!("Apple backend is not configured. Run `water backend add apple`.")
+            bail!("Apple backend is not configured. Run `water backend add apple`.");
         }
         TargetBackend::Android if project.android_backend().is_none() => {
-            bail!("Android backend is not configured. Run `water backend add android`.")
+            bail!("Android backend is not configured. Run `water backend add android`.");
         }
         TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
-            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
+            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.");
         }
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
-            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
         }
         TargetBackend::Dew if project.esp32_backend().is_none() => {
-            bail!("ESP32 backend is not configured. Run `water backend add esp32`.")
+            bail!("ESP32 backend is not configured. Run `water backend add esp32`.");
         }
         _ => Ok(()),
     }
@@ -538,8 +538,7 @@ async fn ensure_generated_run_backend(
             .await
         }
         TargetBackend::Hydrolysis if project.is_playground() => {
-            let needs_reinit = project.hydrolysis_backend().is_none()
-                || HydrolysisBackend::requires_regeneration(&project)?;
+            let needs_reinit = HydrolysisBackend::requires_regeneration(&project)?;
             ensure_generated_run_backend_impl::<HydrolysisBackend>(
                 project_path,
                 project,
@@ -830,7 +829,7 @@ fn resolve_android_abi(
             Ok(Some(emu.expected_abi()))
         }
         (TargetBackend::Android, _) => {
-            bail!("Internal error: Android backend requires an Android device")
+            bail!("Internal error: Android backend requires an Android device");
         }
         _ => Ok(None),
     }
@@ -970,7 +969,7 @@ async fn check_toolchain_for_backend(
                 | TargetPlatform::Web
                 | TargetPlatform::Esp32s3
                 | TargetPlatform::Esp32c3 => {
-                    bail!("Internal error: Apple backend is not supported on {platform:?}")
+                    bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
             toolchain_checks::check_apple(sdk).await?;
@@ -1092,10 +1091,10 @@ async fn find_device(
             Ok(SelectedDevice::Local(Local))
         }
         TargetPlatform::Web => {
-            bail!("web platform does not use the device pipeline")
+            bail!("web platform does not use the device pipeline");
         }
         TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 => {
-            bail!("esp32 platform does not use the device pipeline")
+            bail!("esp32 platform does not use the device pipeline");
         }
     }
 }
@@ -1264,7 +1263,7 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> Resul
             } else {
                 error!("Application crashed: {msg}");
             }
-            bail!("application crashed")
+            bail!("application crashed");
         }
         None => Ok(true),
     }

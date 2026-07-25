@@ -114,7 +114,9 @@ async fn apple_deployment_target(
         TargetPlatform::IOS | TargetPlatform::IOSSimulator => {
             ("IPHONEOS_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET")
         }
-        other => bail!("Platform {other:?} does not have an Apple deployment target"),
+        other => {
+            bail!("Platform {other:?} does not have an Apple deployment target");
+        }
     };
     let project_file = project
         .backend_path::<AppleBackend>()
@@ -137,11 +139,15 @@ fn unique_xcode_build_setting(contents: &str, key: &str) -> eyre::Result<String>
         .collect::<BTreeSet<_>>();
     match values.len() {
         1 => Ok(values.into_iter().next().expect("one build setting value")),
-        0 => bail!("Xcode project does not define {key}"),
-        _ => bail!(
-            "Xcode project defines conflicting {key} values: {}",
-            values.into_iter().collect::<Vec<_>>().join(", ")
-        ),
+        0 => {
+            bail!("Xcode project does not define {key}");
+        }
+        _ => {
+            bail!(
+                "Xcode project defines conflicting {key} values: {}",
+                values.into_iter().collect::<Vec<_>>().join(", ")
+            );
+        }
     }
 }
 

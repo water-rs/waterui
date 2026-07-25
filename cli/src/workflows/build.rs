@@ -1,12 +1,14 @@
 //! Build system
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{self, bail};
+use color_eyre::eyre::{self, Context as _, bail};
 use futures::StreamExt as _;
+use sha2::Digest as _;
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
 
@@ -60,6 +62,120 @@ pub enum RustLinkage {
     Static,
     /// Link the application and loadable modules against one shared `WaterUI` runtime.
     SharedRuntime,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRuntimeNode {
+    features: Vec<String>,
+    dependencies: Vec<String>,
+}
+
+/// Resolve a stable fingerprint for the shared `WaterUI` runtime selected by a Cargo build.
+///
+/// The fingerprint includes the complete resolved dependency subtree rooted at
+/// `waterui-dylib`, its unified feature set, and the build target. Projects with
+/// the same runtime graph can therefore share Cargo artifacts without allowing
+/// incompatible runtime variants to overwrite each other.
+///
+/// # Errors
+/// Returns an error when Cargo metadata cannot be resolved or does not contain
+/// exactly one active `waterui-dylib` package and its complete dependency graph.
+pub async fn shared_rust_runtime_fingerprint(
+    manifest_path: &Path,
+    build_features: &[String],
+    triple: &Triple,
+) -> eyre::Result<String> {
+    let manifest_path = manifest_path.to_path_buf();
+    let build_features = build_features.to_vec();
+    let target = triple.to_string();
+    let metadata_target = target.clone();
+    let metadata = unblock(move || {
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
+            .manifest_path(&manifest_path)
+            .features(cargo_metadata::CargoOpt::SomeFeatures(build_features))
+            .other_options(vec!["--filter-platform".to_string(), metadata_target]);
+        command.exec()
+    })
+    .await
+    .wrap_err("Failed to resolve Cargo metadata for the shared WaterUI runtime")?;
+
+    let resolve = metadata.resolve.as_ref().ok_or_else(|| {
+        eyre::eyre!("Cargo metadata omitted the dependency graph for the shared WaterUI runtime")
+    })?;
+    let active_package_ids = resolve
+        .nodes
+        .iter()
+        .map(|node| node.id.to_string())
+        .collect::<BTreeSet<_>>();
+    let runtime_ids = metadata
+        .packages
+        .iter()
+        .filter(|package| package.name == "waterui-dylib")
+        .map(|package| package.id.to_string())
+        .filter(|id| active_package_ids.contains(id))
+        .collect::<Vec<_>>();
+    let runtime_id = match runtime_ids.as_slice() {
+        [runtime_id] => runtime_id,
+        [] => {
+            bail!("Development feature did not resolve an active `waterui-dylib` package");
+        }
+        _ => {
+            bail!(
+                "Development feature resolved multiple `waterui-dylib` packages; the shared runtime must be unique"
+            );
+        }
+    };
+
+    let graph = resolve
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.to_string(),
+                ResolvedRuntimeNode {
+                    features: node.features.iter().map(ToString::to_string).collect(),
+                    dependencies: node.dependencies.iter().map(ToString::to_string).collect(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    fingerprint_resolved_runtime_graph(runtime_id, &target, &graph)
+}
+
+fn fingerprint_resolved_runtime_graph(
+    runtime_id: &str,
+    target: &str,
+    graph: &BTreeMap<String, ResolvedRuntimeNode>,
+) -> eyre::Result<String> {
+    let mut pending = vec![runtime_id.to_string()];
+    let mut visited = BTreeSet::new();
+    let mut units = Vec::new();
+
+    while let Some(package_id) = pending.pop() {
+        if !visited.insert(package_id.clone()) {
+            continue;
+        }
+        let node = graph.get(&package_id).ok_or_else(|| {
+            eyre::eyre!("Cargo metadata omitted runtime dependency node `{package_id}`")
+        })?;
+        let mut features = node.features.clone();
+        features.sort_unstable();
+        features.dedup();
+        units.push(format!("{package_id}|{}", features.join(",")));
+        pending.extend(node.dependencies.iter().cloned());
+    }
+
+    units.sort_unstable();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(target.as_bytes());
+    hasher.update(b"\n");
+    for unit in units {
+        hasher.update(unit.as_bytes());
+        hasher.update(b"\n");
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Configure a Cargo command for the selected Rust linkage model.
@@ -222,19 +338,23 @@ fn resolve_rust_standard_library_in(libdir: &Path, triple: &Triple) -> eyre::Res
     matches.sort_unstable();
     match matches.as_slice() {
         [path] => Ok(path.clone()),
-        [] => bail!(
-            "Rust target libdir {} contains no dynamic standard library for {triple}",
-            libdir.display()
-        ),
-        _ => bail!(
-            "Rust target libdir {} contains multiple dynamic standard libraries for {triple}: {}",
-            libdir.display(),
-            matches
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        [] => {
+            bail!(
+                "Rust target libdir {} contains no dynamic standard library for {triple}",
+                libdir.display()
+            );
+        }
+        _ => {
+            bail!(
+                "Rust target libdir {} contains multiple dynamic standard libraries for {triple}: {}",
+                libdir.display(),
+                matches
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
     }
 }
 
@@ -808,9 +928,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BuildOptions, RustDynamicLibraries, RustLinkage, dynamic_library_file_name,
-        lib_extension_for_triple, resolve_rust_standard_library_in,
+        BuildOptions, ResolvedRuntimeNode, RustDynamicLibraries, RustLinkage,
+        dynamic_library_file_name, fingerprint_resolved_runtime_graph, lib_extension_for_triple,
+        resolve_rust_standard_library_in,
     };
+    use std::collections::BTreeMap;
 
     fn triple(value: &str) -> Triple {
         value.parse().expect("test target triple must parse")
@@ -860,6 +982,101 @@ mod tests {
         );
         assert!(BuildOptions::development(true).is_release());
         assert!(BuildOptions::packaging(true).is_release());
+    }
+
+    #[test]
+    fn shared_runtime_fingerprint_ignores_unrelated_application_nodes() {
+        let runtime = "path+file:///waterui/utils/dylib#waterui-dylib@0.2.1";
+        let internal = "path+file:///waterui/src#waterui-internal@0.2.1";
+        let app = "path+file:///apps/menu#menu-example@0.1.0";
+        let mut graph = BTreeMap::from([
+            (
+                runtime.to_string(),
+                ResolvedRuntimeNode {
+                    features: vec!["gpu".to_string(), "assets".to_string()],
+                    dependencies: vec![internal.to_string()],
+                },
+            ),
+            (
+                internal.to_string(),
+                ResolvedRuntimeNode {
+                    features: vec!["gpu".to_string()],
+                    dependencies: Vec::new(),
+                },
+            ),
+        ]);
+        let expected = fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &graph)
+            .expect("runtime fingerprint");
+        graph.insert(
+            app.to_string(),
+            ResolvedRuntimeNode {
+                features: vec!["dev".to_string()],
+                dependencies: vec![runtime.to_string()],
+            },
+        );
+
+        assert_eq!(
+            fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &graph)
+                .expect("runtime fingerprint with unrelated app"),
+            expected
+        );
+    }
+
+    #[test]
+    fn shared_runtime_fingerprint_separates_features_dependencies_and_targets() {
+        let runtime = "registry+https://github.com/rust-lang/crates.io-index#waterui-dylib@0.2.1";
+        let dependency = "registry+https://github.com/rust-lang/crates.io-index#wgpu@29.0.4";
+        let graph = BTreeMap::from([
+            (
+                runtime.to_string(),
+                ResolvedRuntimeNode {
+                    features: vec!["gpu".to_string()],
+                    dependencies: vec![dependency.to_string()],
+                },
+            ),
+            (
+                dependency.to_string(),
+                ResolvedRuntimeNode {
+                    features: Vec::new(),
+                    dependencies: Vec::new(),
+                },
+            ),
+        ]);
+        let base = fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &graph)
+            .expect("base runtime fingerprint");
+        assert_ne!(
+            fingerprint_resolved_runtime_graph(runtime, "x86_64-unknown-linux-gnu", &graph)
+                .expect("target runtime fingerprint"),
+            base
+        );
+
+        let mut changed_features = graph.clone();
+        changed_features
+            .get_mut(runtime)
+            .expect("runtime node")
+            .features
+            .push("media".to_string());
+        assert_ne!(
+            fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &changed_features)
+                .expect("feature runtime fingerprint"),
+            base
+        );
+
+        let mut changed_dependency = graph;
+        changed_dependency
+            .get_mut(dependency)
+            .expect("dependency node")
+            .features
+            .push("metal".to_string());
+        assert_ne!(
+            fingerprint_resolved_runtime_graph(
+                runtime,
+                "aarch64-apple-darwin",
+                &changed_dependency
+            )
+            .expect("dependency runtime fingerprint"),
+            base
+        );
     }
 
     #[test]

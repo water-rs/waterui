@@ -128,7 +128,7 @@ impl Backend for AndroidBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
-        debug_assert!(platform == TargetPlatform::Android);
+        debug_assert_eq!(platform, TargetPlatform::Android);
         AndroidPlatform::arm64().build(project, options).await
     }
 
@@ -138,7 +138,7 @@ impl Backend for AndroidBackend {
         platform: TargetPlatform,
         options: PackageOptions,
     ) -> eyre::Result<Artifact> {
-        debug_assert!(platform == TargetPlatform::Android);
+        debug_assert_eq!(platform, TargetPlatform::Android);
         AndroidPlatform::package_with_abis(project, options, &[AndroidAbi::Arm64V8a]).await
     }
 

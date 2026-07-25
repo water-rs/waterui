@@ -340,7 +340,7 @@ pub async fn run_esp32(
                 chip_id = chip.id(),
                 qemu = chip.qemu_binary(),
                 machine = chip.qemu_machine(),
-            )
+            );
         }
     }
 }

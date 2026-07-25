@@ -77,7 +77,7 @@ impl PreviewAppClient {
 
         bail!(
             "Could not connect to a matching registered preview app. Launch a new preview support app for the current runtime."
-        )
+        );
     }
 
     /// Try to connect to a running preview app.
@@ -106,7 +106,7 @@ impl PreviewAppClient {
             "Could not connect to preview app. Make sure it is running.\nThe preview app listens on ports {}..={}.",
             config.port_start,
             config.ports().end()
-        )
+        );
     }
 
     async fn connect_on_port(
@@ -414,7 +414,9 @@ impl PreviewAppClient {
         let response = self.request(AppRequest::Shutdown).await?;
         match response {
             waterui_preview_protocol::PreviewResponse::Shutdown => Ok(()),
-            other => bail!("Protocol error: unexpected response to Shutdown: {other:?}"),
+            other => {
+                bail!("Protocol error: unexpected response to Shutdown: {other:?}");
+            }
         }
     }
 
@@ -422,7 +424,9 @@ impl PreviewAppClient {
         let response = self.request(AppRequest::HasDylib { id }).await?;
         match response {
             waterui_preview_protocol::PreviewResponse::HasDylib { present } => Ok(present),
-            other => bail!("Protocol error: unexpected response to HasDylib: {other:?}"),
+            other => {
+                bail!("Protocol error: unexpected response to HasDylib: {other:?}");
+            }
         }
     }
 

@@ -73,5 +73,5 @@ async fn remove_dir_all_retry(path: &Path) -> Result<()> {
         }
     }
 
-    bail!("Failed to remove support app directory after retries")
+    bail!("Failed to remove support app directory after retries");
 }

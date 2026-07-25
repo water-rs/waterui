@@ -20,9 +20,9 @@ waterui-gtk-version = "0.1.0"
 waterui-preview-version = "0.1.0"
 android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-apple-backend-commit = "eac3fce655ab1c0df51aaeb3182503bb3a568422"
+apple-backend-commit = "b4d162edf7797c599b3401c808c39dc11fea97c7"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-commit = "4d6137a460213e410baf11270f10e9a8e7653362"
+android-backend-commit = "f18d381a672565bdac8e65404d14dde0f518afc4"
 
 [[bin]]
 name = "water"
