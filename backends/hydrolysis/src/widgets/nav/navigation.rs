@@ -1542,8 +1542,7 @@ pub(crate) fn render_navigation_stack_parts(
             (
                 transition.style.clone(),
                 transition.direction,
-                transition.progress(now),
-                transition_motion.pushpop_parallax_factor,
+                transition.eased_progress(now, transition_motion),
                 transition.from_scene.clone(),
                 transition.to_scene.clone(),
             )
@@ -1568,8 +1567,7 @@ pub(crate) fn render_navigation_stack_parts(
             .get_mut(&slot_key)
             .expect("Hydrolysis navigation slot missing");
         slot.interactive_pop.as_mut().map(|interactive| {
-            let (progress, completed, cancelled) =
-                interactive.sample(now, transition_motion.transition_duration);
+            let (progress, completed, cancelled) = interactive.sample(now, transition_motion);
             (
                 progress,
                 completed,
@@ -1583,9 +1581,9 @@ pub(crate) fn render_navigation_stack_parts(
     if let Some((progress, completed, cancelled, from_scene, to_scene)) = interactive_frame {
         ctx.draw_navigation_transition(
             transition_style.clone(),
+            transition_motion,
             NavigationTransitionDirection::Pop,
             progress,
-            transition_motion.pushpop_parallax_factor,
             &from_scene,
             &to_scene,
         );
@@ -1612,14 +1610,12 @@ pub(crate) fn render_navigation_stack_parts(
                 .clone();
             controller.request_pop(1);
         }
-    } else if let Some((style, direction, progress, parallax_factor, from_scene, to_scene)) =
-        transition_frame
-    {
+    } else if let Some((style, direction, progress, from_scene, to_scene)) = transition_frame {
         ctx.draw_navigation_transition(
             style,
+            transition_motion,
             direction,
             progress,
-            parallax_factor,
             &from_scene,
             &to_scene,
         );

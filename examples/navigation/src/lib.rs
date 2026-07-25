@@ -6,6 +6,7 @@ use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant}
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui_icons_material_icon as mdi;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Topic {
@@ -134,7 +135,10 @@ fn topics_section(items: Vec<Topic>) -> impl View {
 fn topic_row(topic: Topic) -> impl View {
     let route = Route::Topic(topic.clone());
     vstack((
-        NavigationLink::value(label(topic.title).icon(text(">")).trailing(), route),
+        NavigationLink::value(
+            label(topic.title).icon(mdi::chevron_right()).trailing(),
+            route,
+        ),
         text(topic.description)
             .caption()
             .foreground(MutedForeground),
@@ -149,7 +153,7 @@ fn settings_section(notifications: Binding<bool>, dark_mode: Binding<bool>) -> i
         Divider,
         spacer_min(16.0),
         NavigationLink::value(
-            label("Settings").icon(text(">")).trailing(),
+            label("Settings").icon(mdi::chevron_right()).trailing(),
             Route::Settings,
         ),
     ))
@@ -174,7 +178,7 @@ fn detail_view(topic: Topic, counter: Binding<i32>) -> NavigationView {
             .background(SurfaceVariant),
             spacer_min(24.0),
             NavigationLink::value(
-                label("Go Deeper").icon(text(">")).trailing(),
+                label("Go Deeper").icon(mdi::chevron_right()).trailing(),
                 Route::Nested(topic.clone()),
             ),
         ))
@@ -190,7 +194,9 @@ fn nested_detail_view(topic: Topic) -> NavigationView {
         text!("You navigated from: {title}", title = topic.title).body(),
         spacer_min(24.0),
         NavigationLink::value(
-            label("Go Even Deeper").icon(text(">")).trailing(),
+            label("Go Even Deeper")
+                .icon(mdi::chevron_right())
+                .trailing(),
             Route::Deepest,
         ),
     ))
@@ -250,10 +256,15 @@ fn toggle_row(title: &'static str, subtitle: &'static str, value: &Binding<bool>
 
 fn settings_links() -> impl View {
     vstack((
-        NavigationLink::value(label("About").icon(text(">")).trailing(), Route::About),
+        NavigationLink::value(
+            label("About").icon(mdi::chevron_right()).trailing(),
+            Route::About,
+        ),
         Divider,
         NavigationLink::value(
-            label("Privacy Policy").icon(text(">")).trailing(),
+            label("Privacy Policy")
+                .icon(mdi::chevron_right())
+                .trailing(),
             Route::Privacy,
         ),
     ))

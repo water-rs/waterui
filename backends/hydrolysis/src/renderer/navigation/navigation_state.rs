@@ -4,6 +4,7 @@ use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
 };
+use waterui_backend_core::widget::NavigationMotion;
 use waterui_core::id::Id;
 
 const ROOT_NAVIGATION_IDENTITY: u64 = 0;
@@ -246,7 +247,7 @@ impl NavigationInteractivePop {
         };
     }
 
-    pub(crate) fn sample(&mut self, now: Instant, duration: Duration) -> (f64, bool, bool) {
+    pub(crate) fn sample(&mut self, now: Instant, motion: NavigationMotion) -> (f64, bool, bool) {
         match self.phase {
             NavigationInteractivePopPhase::Dragging => (self.progress, false, false),
             NavigationInteractivePopPhase::Completing {
@@ -255,8 +256,9 @@ impl NavigationInteractivePop {
             } => {
                 let remaining = 1.0 - initial_progress;
                 let elapsed = now.saturating_duration_since(started_at).as_secs_f64();
-                let span = (duration.as_secs_f64() * remaining).max(f64::EPSILON);
-                self.progress = initial_progress + remaining * (elapsed / span).clamp(0.0, 1.0);
+                let span = (motion.transition_duration.as_secs_f64() * remaining).max(f64::EPSILON);
+                let cycle = (elapsed / span).clamp(0.0, 1.0);
+                self.progress = initial_progress + remaining * eased_progress(cycle, motion);
                 (self.progress, self.progress >= 1.0, false)
             }
             NavigationInteractivePopPhase::Cancelling {
@@ -264,8 +266,10 @@ impl NavigationInteractivePop {
                 initial_progress,
             } => {
                 let elapsed = now.saturating_duration_since(started_at).as_secs_f64();
-                let span = (duration.as_secs_f64() * initial_progress).max(f64::EPSILON);
-                self.progress = initial_progress * (1.0 - elapsed / span).clamp(0.0, 1.0);
+                let span =
+                    (motion.transition_duration.as_secs_f64() * initial_progress).max(f64::EPSILON);
+                let cycle = (elapsed / span).clamp(0.0, 1.0);
+                self.progress = initial_progress * (1.0 - eased_progress(cycle, motion));
                 (self.progress, false, self.progress <= 0.0)
             }
         }
@@ -300,9 +304,23 @@ impl NavigationTransitionState {
         (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0)
     }
 
+    pub(crate) fn eased_progress(&self, now: Instant, motion: NavigationMotion) -> f64 {
+        eased_progress(self.progress(now), motion)
+    }
+
     pub(crate) fn is_active(&self, now: Instant) -> bool {
         self.progress(now) < 1.0
     }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
+    f64::from(
+        motion
+            .transition_easing
+            .ease(progress as f32)
+            .clamp(0.0, 1.0),
+    )
 }
 
 impl CustomNavigationController for HydroNavigationController {
@@ -646,5 +664,72 @@ impl HydrolysisRenderer {
         if let Some(transaction_id) = transaction_id {
             let _ = controller.transition_completed(transaction_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NavigationCapturedScene, NavigationInteractivePop};
+    use std::time::{Duration, Instant};
+    use waterui_backend_core::widget::NavigationMotion;
+    use waterui_core::EasingCurve;
+
+    fn material_navigation_motion() -> NavigationMotion {
+        NavigationMotion {
+            transition_duration: Duration::from_millis(450),
+            transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
+            shared_axis_slide_distance: 30.0,
+            fade_through_threshold: 0.35,
+        }
+    }
+
+    #[test]
+    fn interactive_completion_uses_emphasized_easing_after_direct_manipulation() {
+        let started_at = Instant::now();
+        let mut pop = NavigationInteractivePop::new(
+            0.0,
+            100.0,
+            NavigationCapturedScene::default(),
+            NavigationCapturedScene::default(),
+        );
+        assert!(pop.update(60.0));
+        pop.finish(started_at, false);
+
+        let (progress, completed, cancelled) = pop.sample(
+            started_at + Duration::from_millis(90),
+            material_navigation_motion(),
+        );
+
+        assert!(
+            progress > 0.8,
+            "emphasized easing must advance beyond linear progress"
+        );
+        assert!(!completed);
+        assert!(!cancelled);
+    }
+
+    #[test]
+    fn interactive_cancellation_uses_emphasized_easing_toward_origin() {
+        let started_at = Instant::now();
+        let mut pop = NavigationInteractivePop::new(
+            0.0,
+            100.0,
+            NavigationCapturedScene::default(),
+            NavigationCapturedScene::default(),
+        );
+        assert!(pop.update(40.0));
+        pop.finish(started_at, false);
+
+        let (progress, completed, cancelled) = pop.sample(
+            started_at + Duration::from_millis(90),
+            material_navigation_motion(),
+        );
+
+        assert!(
+            progress < 0.2,
+            "emphasized easing must retreat beyond linear progress"
+        );
+        assert!(!completed);
+        assert!(!cancelled);
     }
 }
