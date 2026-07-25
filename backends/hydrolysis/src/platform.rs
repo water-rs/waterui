@@ -284,10 +284,10 @@ pub trait PlatformWindow {
     fn apply_properties(&mut self, window: &WuiWindow);
     /// Applies the window's effective content-size limits (logical units).
     ///
-    /// `min` is the explicit `Window::min_size` when set, otherwise the content's
-    /// measured layout minimum; `max` is the explicit `Window::max_size`. Targets
-    /// without per-window runtime size limits (offscreen surfaces, web canvases,
-    /// fixed embedded displays) keep this default no-op.
+    /// Explicit `Window::min_size`/`max_size` values take precedence; otherwise
+    /// each limit comes from the content's layout negotiation. Targets without
+    /// per-window runtime size limits (offscreen surfaces, web canvases, fixed
+    /// embedded displays) keep this default no-op.
     fn set_size_limits(
         &mut self,
         min: Option<waterui_core::layout::Size>,
