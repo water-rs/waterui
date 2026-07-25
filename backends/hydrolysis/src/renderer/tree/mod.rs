@@ -9,15 +9,13 @@
 //! - [`RenderNode::patch`] applies pending structural changes first: a
 //!   `Dynamic` host rebuilds only its own child subtree and a collection
 //!   reconciles membership by id — never a whole-window rebuild.
-//! - [`RenderNode::layout`] then runs a FULL re-layout: it re-reads signals,
+//! - A geometry refresh runs [`RenderNode::layout`]: it re-reads signals,
 //!   re-measures, and re-places the subtree, caching each container's child
-//!   frames. Full layout every frame is cheap by construction — the only heavy
-//!   work, text shaping, is memoized in the persistent content-keyed text
-//!   cache, so a reactive value change that alters a leaf's size reflows its
-//!   ancestors with no `body()` rebuild.
-//! - [`RenderNode::flush`] re-encodes the subtree into the renderer's scene
-//!   from the cached placements, re-reading the live signals so reactive
-//!   content stays current without touching the tree's structure.
+//!   frames. A reactive value change that alters a leaf's size therefore reflows
+//!   its ancestors with no `body()` rebuild.
+//! - [`RenderNode::flush`] re-encodes the subtree into the renderer's scene from
+//!   the cached placements. Steady-state visual animation frames run only this
+//!   step; they do not repeat layout or window-size-limit negotiation.
 //!
 //! This is the architecture validated by `tests::perf_full_rebuild`: a
 //! geometry-static flush of a 160-row screen is ~tens of microseconds (the

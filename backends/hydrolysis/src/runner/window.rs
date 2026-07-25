@@ -49,16 +49,18 @@ pub(super) fn probe_accessibility_runtime() -> bool {
 
 /// The work scheduled for the next pump of a window.
 ///
-/// There is exactly one kind of scheduled work: refresh the window's retained render
-/// tree (apply pending `Dynamic`/collection patches, re-read every reactive input, run
-/// full layout, re-encode the vello scene). The tree itself is built from the app's
-/// `body()` exactly once — the first pump with no retained tree builds it; every later
-/// request, whatever its trigger (input, animation, reactive change, resize, scroll,
-/// accessibility action), is satisfied by refreshing that same tree.
+/// The retained tree distinguishes a visual re-encode from a layout refresh. A
+/// transform/opacity animation only re-samples animated values and re-encodes the
+/// scene; reactive content, structural patches, and resize also run layout.
+///
+/// `Refresh` has precedence over `Reencode`, so a geometry-affecting update can
+/// never be lost when it races with an animation tick.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum FrameMode {
     /// Nothing scheduled.
     Idle,
+    /// Re-sample visual state and re-encode the retained tree without layout.
+    Reencode,
     /// Refresh the retained window tree on the next pump (building it first if this
     /// renderer has not built it yet).
     Refresh,
@@ -67,6 +69,10 @@ pub(super) enum FrameMode {
 impl FrameMode {
     pub(super) const fn is_pending(self) -> bool {
         !matches!(self, FrameMode::Idle)
+    }
+
+    pub(super) const fn needs_layout(self) -> bool {
+        matches!(self, FrameMode::Refresh)
     }
 }
 
@@ -106,6 +112,14 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
         self.mode = FrameMode::Refresh;
     }
 
+    /// Schedules a visual-only retained-tree re-encode unless a layout refresh is
+    /// already pending.
+    pub(super) fn request_reencode(&mut self) {
+        if matches!(self.mode, FrameMode::Idle) {
+            self.mode = FrameMode::Reencode;
+        }
+    }
+
     pub(super) fn clear_frame_mode(&mut self) {
         self.mode = FrameMode::Idle;
     }
@@ -139,9 +153,9 @@ pub(super) fn schedule_animation_update<P: PlatformWindow>(
     if !animations_active {
         return;
     }
-    // Every animated scalar is re-sampled in the render tree's node flush, so a
-    // refresh re-encodes the active animation with no rebuild or re-measure.
-    runtime.request_refresh();
+    // Every animated scalar is re-sampled in the render tree's node flush. Its
+    // geometry is layout-transparent, so animation ticks must not re-run layout.
+    runtime.request_reencode();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,7 +181,7 @@ pub struct FramePhases {
     pub input: Duration,
     /// Time spent advancing animations and invalidation clocks.
     pub animation: Duration,
-    /// Time spent rebuilding scene/layout state.
+    /// Time spent updating the retained scene, including refresh and re-encode work.
     pub rebuild: Duration,
     /// Time spent building the root WaterUI view value during scene rebuild.
     pub build_content: Duration,
@@ -252,9 +266,9 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     runtime.platform.request_redraw();
 }
 
-/// Wakes the platform window after a scroll event. Scrolling re-composites at the new
-/// offset via a refresh; the render tree's `ScrollNode` re-reads its handle's offset on
-/// each flush.
+/// Wakes the platform window after a discrete scroll event. Wheel steps can affect
+/// lazy-stack visibility, so they refresh layout; smooth inertial ticks use the
+/// visual-only path once that refresh establishes the latest placements.
 pub(super) fn schedule_scroll_refresh<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     changed: bool,
@@ -369,8 +383,34 @@ fn refresh_window_scene<P: PlatformWindow>(
     }
 }
 
+/// Re-encodes the retained window tree without patching or layout. This is the
+/// steady-state animation path: transforms, opacity, navigation motion, and smooth
+/// scroll offsets are sampled against placements computed by the latest refresh.
+fn reencode_window_scene<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    phases: &mut FramePhases,
+) {
+    let reencode_started_at = Instant::now();
+    let scale_factor = runtime.platform.scale_factor();
+    let (width, height) = runtime.platform.surface().size();
+    let bounds = create_bounds(width, height, scale_factor);
+    let transform = vello::kurbo::Affine::scale(scale_factor);
+    let encoded = runtime.renderer.reencode_window_tree(
+        env,
+        bounds,
+        transform,
+        vello::kurbo::Affine::IDENTITY,
+    );
+    assert!(
+        encoded,
+        "hydrolysis runner: retained render tree vanished during visual re-encode"
+    );
+    phases.scene_dispatch += reencode_started_at.elapsed();
+}
+
 /// Builds the retained window tree from the app's `body()`. Runs exactly once per
-/// renderer lifetime — every later frame refreshes the retained tree instead.
+/// renderer lifetime — every later frame updates the retained tree instead.
 fn build_window_scene<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -411,8 +451,8 @@ fn build_window_scene<P: PlatformWindow>(
 }
 
 /// One pump of the window's retained render tree: builds the tree from the app's
-/// `body()` on the very first pump, then satisfies every scheduled refresh by
-/// re-reading reactive values, re-running layout, and re-encoding the scene.
+/// `body()` on the first pump, then either refreshes geometry-affecting state or
+/// performs a visual-only re-encode.
 ///
 /// Returns whether the tree was built this pump, the number of build passes (0 or 1,
 /// kept for frame diagnostics), and the phase timing breakdown.
@@ -441,11 +481,9 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
     }
 
     let mut built = false;
-    if runtime.mode.is_pending() {
-        if runtime.renderer.has_render_tree() {
-            refresh_window_scene(runtime, env, &mut phases);
-            runtime.clear_frame_mode();
-        } else {
+    match runtime.mode {
+        FrameMode::Idle => {}
+        FrameMode::Reencode | FrameMode::Refresh if !runtime.renderer.has_render_tree() => {
             build_window_scene(
                 runtime,
                 env,
@@ -477,6 +515,14 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
             if refresh_after_build {
                 refresh_window_scene(runtime, env, &mut phases);
             }
+        }
+        FrameMode::Reencode => {
+            reencode_window_scene(runtime, env, &mut phases);
+            runtime.clear_frame_mode();
+        }
+        FrameMode::Refresh => {
+            refresh_window_scene(runtime, env, &mut phases);
+            runtime.clear_frame_mode();
         }
     }
     if runtime.renderer.take_next_frame_rebuild_request() {
@@ -520,12 +566,21 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
         let (width, height) = runtime.platform.surface().size();
         let bounds = create_bounds(width, height, scale_factor);
         let transform = vello::kurbo::Affine::scale(scale_factor);
-        let flushed = runtime.renderer.flush_window_tree(
-            env,
-            bounds,
-            transform,
-            vello::kurbo::Affine::IDENTITY,
-        );
+        let flushed = if runtime.mode.needs_layout() || runtime.renderer.has_patch_request() {
+            runtime.renderer.flush_window_tree(
+                env,
+                bounds,
+                transform,
+                vello::kurbo::Affine::IDENTITY,
+            )
+        } else {
+            runtime.renderer.reencode_window_tree(
+                env,
+                bounds,
+                transform,
+                vello::kurbo::Affine::IDENTITY,
+            )
+        };
         assert!(
             flushed,
             "hydrolysis runner: retained render tree vanished during semantics pump"
@@ -1057,13 +1112,13 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
     if runtime.renderer.handle_gesture_tick(now, env) {
-        runtime.request_refresh();
+        runtime.request_reencode();
     }
     // Smoothed wheel scrolling eases offsets toward their targets per frame;
-    // while any scroll view is still gliding, keep refreshing on the redraw
+    // while any scroll view is still gliding, keep re-encoding on the redraw
     // cadence.
     if runtime.renderer.tick_smooth_scrolls(now) {
-        runtime.request_refresh();
+        runtime.request_reencode();
     }
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
@@ -1084,7 +1139,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         // Game-engine mode: keep presenting every display refresh while the window is
         // visible. The redraw is delivered through the AutoVsync-gated present, so this
         // paces to the monitor refresh rather than spinning the CPU.
-        runtime.request_refresh();
+        runtime.request_reencode();
         runtime.platform.request_redraw();
     }
     if runtime.renderer.take_rebuild_request() {

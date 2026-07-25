@@ -1,6 +1,7 @@
 //! The window-level entry points: build-or-patch the retained window tree
 //! ([`HydrolysisRenderer::capture_window_tree`]) and the per-frame refresh
-//! pump ([`HydrolysisRenderer::flush_window_tree`]), plus [`RenderNode::patch`].
+//! pumps ([`HydrolysisRenderer::flush_window_tree`] and
+//! [`HydrolysisRenderer::reencode_window_tree`]), plus [`RenderNode::patch`].
 
 use super::*;
 
@@ -129,6 +130,12 @@ impl RenderNode {
     }
 }
 
+#[derive(Clone, Copy)]
+enum WindowTreeUpdate {
+    Reencode,
+    Refresh,
+}
+
 impl HydrolysisRenderer {
     /// Build the retained tree before its first sized frame. Embedded GPU hosts
     /// use this during async setup so every statically reachable `GpuSurface`
@@ -180,9 +187,8 @@ impl HydrolysisRenderer {
         self.render_tree = Some(node);
     }
 
-    /// Re-flush the retained window tree without rebuilding it — the cheap
-    /// per-frame path for a geometry-static frame (animation, scroll, re-present).
-    /// Layout is reused from the last build. Returns `false` if no tree is built.
+    /// Apply pending structural changes, run layout, and re-encode the retained
+    /// window tree without rebuilding it. Returns `false` if no tree is built.
     pub fn flush_window_tree(
         &mut self,
         env: &Environment,
@@ -190,65 +196,94 @@ impl HydrolysisRenderer {
         transform: vello::kurbo::Affine,
         hit_transform: vello::kurbo::Affine,
     ) -> bool {
+        self.update_window_tree(
+            env,
+            bounds,
+            transform,
+            hit_transform,
+            WindowTreeUpdate::Refresh,
+        )
+    }
+
+    /// Re-encode the retained window tree without patching or layout.
+    ///
+    /// Animated opacity and transforms are layout-transparent. Once their target
+    /// change has passed through a normal refresh, subsequent animation ticks only
+    /// need to sample the animation controller and emit the scene at the placements
+    /// already cached on the retained nodes.
+    pub fn reencode_window_tree(
+        &mut self,
+        env: &Environment,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        hit_transform: vello::kurbo::Affine,
+    ) -> bool {
+        self.update_window_tree(
+            env,
+            bounds,
+            transform,
+            hit_transform,
+            WindowTreeUpdate::Reencode,
+        )
+    }
+
+    fn update_window_tree(
+        &mut self,
+        env: &Environment,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        hit_transform: vello::kurbo::Affine,
+        update: WindowTreeUpdate,
+    ) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
         };
-        // Track the live window bounds every flush: resize reaches this path (the
-        // build path only runs once at startup), and text-context-menu clamping /
+        // Track the live window bounds every frame: text-context-menu clamping and
         // effect-rect checks read the stored bounds.
         self.set_window_bounds(bounds);
-        // Roll over this frame's Retain watcher guards exactly like the rebuild path:
-        // a full re-flush re-reads (re-subscribes) every reactive input, so last
-        // frame's guards must move current -> previous (dropped next frame) instead of
-        // accumulating. `patch` may build new `Dynamic` subtrees that subscribe, so
-        // this precedes it.
+        // Roll over this frame's Retain watcher guards exactly like the build path:
+        // every re-encode re-reads and re-subscribes reactive visual inputs.
         self.lifecycle.begin_rebuild_frame();
-        // Reset frame-bound input registrations. Scroll, list, and table state
-        // are owned by their semantic retained nodes.
+        // Reset frame-bound input registrations. Scroll, list, and table state are
+        // owned by their semantic retained nodes.
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
-        // Apply any pending reactive Dynamic content changes incrementally
-        // (rebuild only the affected child subtrees). `structural_change` is true
-        // when a `Dynamic`/collection added or removed a subtree this frame — the
-        // only time the signal/node-identity-keyed animation slots or the
-        // `Dynamic`-dimension measurement cache can hold entries for now-gone nodes,
-        // so prune them only then (clear-active before the flush re-binds the live
-        // ones, drop-unbound after). A geometry-static or pure-value refresh removes
-        // nothing, so it skips this and leaves in-flight animations untouched.
-        // Fold in a structural patch a widget-owned sub-view applied during the
-        // previous frame's flush (mid-flush, past that frame's bookkeeping
-        // window): this frame runs the prune cycle for its dropped subtrees.
-        let structural_change = self.take_subview_structural_change() | tree.patch(self);
+        // Only a refresh consumes structural work. A visual re-encode leaves it
+        // pending so the runner's rebuild request promotes the next pump to Refresh.
+        let structural_change = match update {
+            WindowTreeUpdate::Reencode => false,
+            WindowTreeUpdate::Refresh => {
+                // Fold in a structural patch a widget-owned sub-view applied during
+                // the previous frame's flush (mid-flush, past that frame's
+                // bookkeeping window).
+                self.take_subview_structural_change() | tree.patch(self)
+            }
+        };
         if structural_change {
             self.animation_controller.begin_rebuild_frame();
         }
-        // Then run FULL layout every frame. Layout is cheap by construction: the only
-        // heavy work — text shaping — is memoized in the persistent, content-keyed
-        // text cache, and containers just recompute `place()` arithmetic over cached
-        // child measurements. Always relaying out lets a reactive value change that
-        // alters a leaf's size (text content, a widget's intrinsic size) reflow its
-        // ancestors through this same cheap pump, with no `body()` rebuild and no
-        // reset-and-redispatch flash. `begin_redraw_frame` (below) cleared the
-        // per-frame `stable_ptr` view-dimension cache so this measure pass is sound.
         self.reset_scene();
         self.begin_redraw_frame();
-        let size = Size::new(bounds.width() as f32, bounds.height() as f32);
-        tree.layout(self, env, size);
-        self.refresh_content_size_limits(&tree, env);
+        if matches!(update, WindowTreeUpdate::Refresh) {
+            // Geometry-affecting reactive values must reflow the retained tree and
+            // renegotiate content-derived window limits.
+            let size = Size::new(bounds.width() as f32, bounds.height() as f32);
+            tree.layout(self, env, size);
+            self.refresh_content_size_limits(&tree, env);
+        }
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
         // The overlay-mode text context menu re-encodes with the frame it floats
-        // over; only drawing it on the one-time build path left it visible for a
-        // single frame.
+        // over; drawing it only on the one-time build path would leave it visible
+        // for a single frame.
         self.render_active_text_context_menu_overlay(env, transform);
         self.flush_vello_scene_layer();
         self.hit_test.finish_rebuild_frame();
         self.navigation.finish_rebuild_frame();
         if structural_change {
-            // Drop animation slots + `Dynamic`-dimension cache entries for subtrees
-            // the patch removed: the flush above re-bound every live animation, so
-            // anything still unbound belongs to a gone node.
+            // The flush re-bound every live animation. Drop slots and cached
+            // Dynamic measurements belonging to subtrees removed by the patch.
             self.animation_controller
                 .finish_rebuild_frame_with_inactive_slot_retention(false);
             let live_dynamics = tree.collect_dynamic_identities();
@@ -257,10 +292,8 @@ impl HydrolysisRenderer {
                 .retain_dynamic_identities(|identity| live_dynamics.contains(&identity));
         }
         self.lifecycle.finish_rebuild_frame();
-        // A reactive value change can remove the focused field; drop focus/drag that
-        // now points past the re-emitted text-input targets, then republish the a11y
-        // tree so a value/label change is reflected on this cheap path (parity with
-        // the rebuild path's `finish_rebuild_frame`).
+        // Drop focus or drag targets that are no longer emitted, then publish the
+        // refreshed accessibility tree.
         self.validate_focused_text_input_after_flush();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
