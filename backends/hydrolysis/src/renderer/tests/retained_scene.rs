@@ -13,6 +13,8 @@
 //! re-measure) on every frame. That is the regression this refactor eliminates.
 
 use core::time::Duration;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use waterui::animation::Animation;
@@ -26,12 +28,14 @@ use waterui_layout::stack::{VStack, vstack, zstack};
 use nami::collection::List;
 use waterui::graphics::Color;
 use waterui_core::dynamic::watch;
+use waterui_core::layout::{Layout, ProposalSize, Rect, Size, SubView};
 use waterui_core::views::ForEach;
 use waterui_graphics::color::signal_color;
 use waterui_layout::AbsoluteLayout;
 use waterui_layout::collection_transition::collection_transition;
 use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
+use waterui_layout::stack::ZStackLayout;
 
 use super::test_environment;
 use crate::HeadlessRuntime;
@@ -99,6 +103,28 @@ fn transform_in_scroll(value: &Binding<f32>) -> AnyView {
         .with(Animation::linear(Duration::from_millis(1_000)));
     let header = ().size(80.0, 80.0).scale(animated.clone(), animated);
     AnyView::new(scroll(vstack((header, padding_list()))))
+}
+
+#[derive(Debug, Clone)]
+struct CountingLayout {
+    inner: ZStackLayout,
+    place_calls: Rc<Cell<u32>>,
+}
+
+impl Layout for CountingLayout {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        self.inner.size_that_fits(proposal, children)
+    }
+
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        self.place_calls.set(
+            self.place_calls
+                .get()
+                .checked_add(1)
+                .expect("counting layout place-call counter overflow"),
+        );
+        self.inner.place(bounds, children)
+    }
 }
 
 /// Pumps one initial structural frame, triggers an animation by moving `value`,
@@ -449,6 +475,51 @@ fn transform_in_scroll_never_rebuilds() {
     assert_eq!(
         metrics.measurement_misses, 0,
         "animated transform inside scroll must not re-measure: {metrics:?}"
+    );
+}
+
+#[test]
+fn steady_state_transform_animation_does_not_run_layout() {
+    use waterui_layout::container::FixedContainer;
+
+    let value = Binding::f32(1.0);
+    let place_calls = Rc::new(Cell::new(0));
+    let builder = {
+        let value = value.clone();
+        let place_calls = Rc::clone(&place_calls);
+        AnyViewBuilder::<AnyView>::new(move || {
+            let animated = value.with(Animation::linear(Duration::from_millis(1_000)));
+            AnyView::new(FixedContainer::new(
+                CountingLayout {
+                    inner: ZStackLayout::default(),
+                    place_calls: Rc::clone(&place_calls),
+                },
+                (().size(80.0, 80.0).scale(animated.clone(), animated),),
+            ))
+        })
+    };
+    let env = test_environment();
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 400, 640);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    value.set(0.25);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let calls_after_target_refresh = place_calls.get();
+
+    for frame in 2..=PARAMETRIC_FRAMES {
+        let at = start + Duration::from_millis(u64::from(frame) * 16);
+        let result = runtime.pump_at(false, at);
+        assert_eq!(
+            result.profile.counters.rebuild_iterations, 0,
+            "steady-state animation frame must retain the tree"
+        );
+    }
+
+    assert_eq!(
+        place_calls.get(),
+        calls_after_target_refresh,
+        "steady-state transform ticks must re-encode cached placements without layout"
     );
 }
 

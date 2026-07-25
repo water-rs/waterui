@@ -246,6 +246,33 @@ pub async fn built_hydrolysis_binary_path(
     );
 }
 
+/// Stage the shared `WaterUI` runtime and Rust standard library next to a raw
+/// Hydrolysis development binary.
+///
+/// Packaged applications stage these libraries in their platform runtime
+/// directory. Preview and test binaries execute directly from Cargo's profile
+/// directory, whose `@loader_path`/`$ORIGIN` entry resolves this adjacent copy.
+///
+/// # Errors
+/// Returns an error if the binary has no parent directory or the required shared
+/// libraries cannot be resolved and staged.
+pub(crate) async fn stage_hydrolysis_shared_runtime(
+    binary_path: &Path,
+    platform: TargetPlatform,
+) -> eyre::Result<()> {
+    if !is_hydrolysis_native_platform(platform) {
+        bail!("Hydrolysis shared runtime can only be staged for macOS, Linux, and Windows");
+    }
+    let runtime_dir = binary_path.parent().ok_or_else(|| {
+        eyre::eyre!(
+            "Hydrolysis binary path has no output directory: {}",
+            binary_path.display()
+        )
+    })?;
+    let libraries = RustDynamicLibraries::resolve(runtime_dir, &platform.triple()).await?;
+    synchronize_shared_runtime(runtime_dir, Some(&libraries), &platform.triple()).await
+}
+
 /// Clean Cargo build artifacts for hydrolysis.
 ///
 /// # Errors

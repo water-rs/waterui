@@ -1,8 +1,8 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
     RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
-    handle_input_events, pump_window_semantics, schedule_redraw_or_refresh,
-    schedule_scroll_refresh, surface_error_requires_reconfigure,
+    handle_input_events, pump_window_semantics, schedule_animation_update,
+    schedule_redraw_or_refresh, schedule_scroll_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
     InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError, SurfaceFrame, SurfaceProvider,
@@ -54,6 +54,28 @@ fn changed_scroll_input_schedules_frame_and_wakes_platform_window() {
     assert!(
         runtime.platform.take_redraw_request(),
         "scroll input must wake the platform event loop for the next frame"
+    );
+}
+
+#[test]
+fn animation_ticks_schedule_reencode_and_refresh_keeps_precedence() {
+    let mut runtime = test_runtime_window();
+    runtime.clear_frame_mode();
+
+    schedule_animation_update(&mut runtime, true);
+
+    assert!(runtime.mode.is_pending());
+    assert!(
+        !runtime.mode.needs_layout(),
+        "a steady-state animation tick must not schedule layout"
+    );
+
+    runtime.request_refresh();
+    schedule_animation_update(&mut runtime, true);
+
+    assert!(
+        runtime.mode.needs_layout(),
+        "a pending geometry refresh must not be downgraded by an animation tick"
     );
 }
 
