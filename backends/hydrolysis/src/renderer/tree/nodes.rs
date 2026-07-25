@@ -107,6 +107,41 @@ impl RetainedSubview {
         node.measure(state, env, proposal).size
     }
 
+    /// Patch and measure a retained sub-view under a proposal, returning its
+    /// stretch contract alongside the dimensions. Lazy stacks use this for
+    /// visible items so a connected `Dynamic` is measured through the retained
+    /// node that owns its current content, rather than by re-measuring the
+    /// already-connected source view.
+    pub(crate) fn patch_and_measure(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> (Size, StretchAxis) {
+        self.ensure_built(renderer, env);
+        let Some(node) = &mut self.node else {
+            return (Size::zero(), StretchAxis::None);
+        };
+        Self::patch_built(node, renderer);
+        (
+            node.measure(&mut renderer.state, env, proposal).size,
+            node.stretch(),
+        )
+    }
+
+    /// Stretch contract of an already-built retained sub-view.
+    pub(crate) fn stretch_axis(&self) -> StretchAxis {
+        self.node
+            .as_ref()
+            .map_or(StretchAxis::None, RenderNode::stretch)
+    }
+
+    fn collect_dynamic_identities_into(&self, out: &mut Vec<usize>) {
+        if let Some(node) = &self.node {
+            node.collect_dynamic_identities_into(out);
+        }
+    }
+
     /// Apply pending reactive structural changes (`Dynamic` content, collection
     /// membership) inside a built sub-view tree. The window refresh pump only
     /// patches the window's own node tree — a widget-owned sub-view is its own
@@ -277,6 +312,18 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
         self.entries
             .entry(key)
             .or_insert_with(|| RetainedSubview::new(build()))
+    }
+
+    /// Look up an already-retained item without marking it visible this frame.
+    pub(crate) fn get(&self, key: &K) -> Option<&RetainedSubview> {
+        self.entries.get(key)
+    }
+
+    /// Add every connected `Dynamic` owned by a visible retained item.
+    pub(crate) fn collect_dynamic_identities_into(&self, out: &mut Vec<usize>) {
+        for entry in self.entries.values() {
+            entry.collect_dynamic_identities_into(out);
+        }
     }
 
     /// Evict every sub-view not touched this frame (items scrolled out of view).

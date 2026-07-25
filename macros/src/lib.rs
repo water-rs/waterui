@@ -28,7 +28,7 @@ mod view_builder;
 /// text!("{slot}", slot = local_var)
 /// ```
 ///
-/// The flow-markdown-e2e example's `_text` clone aliases at the top of its
+/// The flow-markdown example's `_text` clone aliases at the top of its
 /// section function are the canonical workaround for this constraint, and
 /// are intentionally preserved.
 pub fn text(input: TokenStream) -> TokenStream {

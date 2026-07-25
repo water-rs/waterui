@@ -88,7 +88,7 @@ impl RenderNode {
         out
     }
 
-    fn collect_dynamic_identities_into(&self, out: &mut Vec<usize>) {
+    pub(super) fn collect_dynamic_identities_into(&self, out: &mut Vec<usize>) {
         match self {
             RenderNode::Dynamic(node) => {
                 out.push(node.source.identity());
@@ -120,8 +120,11 @@ impl RenderNode {
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
             | RenderNode::GpuSurface(_)
-            | RenderNode::LazyStack(_)
             | RenderNode::Widget(_) => {}
+            RenderNode::LazyStack(node) => node
+                .item_cache
+                .borrow()
+                .collect_dynamic_identities_into(out),
         }
     }
 }

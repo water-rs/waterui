@@ -1,4 +1,4 @@
-//! FlowMarkdown end-to-end playground.
+//! Flow Markdown playground.
 use std::time::Duration;
 
 use waterui::animation::Animation;
@@ -54,7 +54,7 @@ fn normalized_document_index(index: i32) -> usize {
     let count = MARKDOWN_DOCUMENTS.len();
     assert!(
         (count != 0),
-        "flow-markdown-e2e requires at least one markdown document"
+        "flow-markdown example requires at least one markdown document"
     );
 
     index.rem_euclid(count as i32) as usize
@@ -119,7 +119,7 @@ fn start_character_stream(
         .collect();
     assert!(
         !(char_end_offsets.is_empty()),
-        "flow-markdown-e2e markdown document must not be empty"
+        "flow-markdown example markdown document must not be empty"
     );
 
     spawn_local(async move {
@@ -282,7 +282,7 @@ pub fn demo() -> impl View {
 
     scroll(
         vstack((
-            text("FlowMarkdown E2E").title(),
+            text("Flow Markdown").title(),
             text!(
                 "Document: {document_title} ({document_number}/{document_total})",
                 document_title = document_title_text,

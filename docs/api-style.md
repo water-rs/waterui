@@ -129,7 +129,7 @@ button("Prev doc")
 ```
 
 `Binding<T>: Clone` is cheap (Arc bump), so deriving `Clone` on the wrapper
-is virtually free. The canonical example is `flow-markdown-e2e`'s
+is virtually free. The canonical example is `flow-markdown`'s
 `StreamControl`.
 
 Hard rule: do not stack 4+ `State<Binding<T>>` parameters in one action.
@@ -173,7 +173,7 @@ text!("{slot}", slot = local_var)
 Do **not** "fix" `text!` to take arbitrary expressions. Doing so silently
 breaks translation extraction (which can no longer find the slot keys) and
 locale reactivity. The `_text` clone aliases at the top of section
-functions in `examples/flow-markdown-e2e/src/lib.rs` are the canonical
+functions in `examples/flow_markdown/src/lib.rs` are the canonical
 workaround for this constraint.
 
 ---

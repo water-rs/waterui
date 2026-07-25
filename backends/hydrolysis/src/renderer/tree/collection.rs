@@ -528,6 +528,14 @@ impl LazyStackNode {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
+    fn item_proposal(&self, cross: f64) -> ProposalSize {
+        match &self.axis {
+            LazyStackAxisConfig::Vertical { .. } => ProposalSize::new(Some(cross as f32), None),
+            LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(None, Some(cross as f32)),
+        }
+    }
+
     /// Measures item `index` under the given cross-axis extent, returning its
     /// measured size and stretch axis (both needed to place it).
     fn measure_item(
@@ -536,6 +544,18 @@ impl LazyStackNode {
         index: usize,
         cross: f64,
     ) -> (Size, StretchAxis) {
+        let id = self
+            .views
+            .get_id(index)
+            .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+        let proposal = self.item_proposal(cross);
+        if let Some(item) = self.item_cache.borrow().get(&id) {
+            return (
+                item.measure_built_with_proposal(state, &self.env, proposal),
+                item.stretch_axis(),
+            );
+        }
+
         let view = self
             .views
             .get_view(index)
@@ -543,11 +563,6 @@ impl LazyStackNode {
         let view = normalize_layout_view(view, &self.env);
         let bound = RefCell::new(&mut *state);
         let subview = HydroSubview::from_view(&view, &bound, &self.env);
-        #[allow(clippy::cast_possible_truncation)]
-        let proposal = match &self.axis {
-            LazyStackAxisConfig::Vertical { .. } => ProposalSize::new(Some(cross as f32), None),
-            LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(None, Some(cross as f32)),
-        };
         (subview.measure(proposal).size, subview.stretch_axis())
     }
 
@@ -643,17 +658,30 @@ impl LazyStackNode {
         });
         let mut cursor = window.leading_offset;
         for index in window.start..window.end {
-            let (size, stretch) = self.measure_item(&mut renderer.state, index, cross);
+            let id = self
+                .views
+                .get_id(index)
+                .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+            let proposal = self.item_proposal(cross);
+            let (size, stretch) = {
+                let env = &self.env;
+                let views = &self.views;
+                let mut cache = self.item_cache.borrow_mut();
+                cache
+                    .entry(id, || {
+                        let view = views.get_view(index).unwrap_or_else(|| {
+                            panic!("hydrolysis LazyStack failed to materialize item {index}")
+                        });
+                        normalize_layout_view(view, env)
+                    })
+                    .patch_and_measure(renderer, env, proposal)
+            };
             let child_rect = place_lazy_stack_item(&self.axis, stretch, size, ctx.bounds, cursor);
             let extent = match &self.axis {
                 LazyStackAxisConfig::Vertical { .. } => child_rect.height(),
                 LazyStackAxisConfig::Horizontal { .. } => child_rect.width(),
             };
             self.item_extents.borrow_mut()[index] = Some(extent);
-            let id = self
-                .views
-                .get_id(index)
-                .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             {
                 let env = &self.env;
                 let views = &self.views;
