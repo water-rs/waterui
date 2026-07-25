@@ -180,19 +180,19 @@ fn resolve_and_validate_backend(args: &Args) -> Result<TargetBackend> {
 fn ensure_backend_configured(project: &Project, backend: TargetBackend) -> Result<()> {
     match backend {
         TargetBackend::Apple if project.apple_backend().is_none() => {
-            bail!("Apple backend is not configured. Run `water backend add apple`.")
+            bail!("Apple backend is not configured. Run `water backend add apple`.");
         }
         TargetBackend::Android if project.android_backend().is_none() => {
-            bail!("Android backend is not configured. Run `water backend add android`.")
+            bail!("Android backend is not configured. Run `water backend add android`.");
         }
         TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
-            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
+            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.");
         }
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
-            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
         }
         TargetBackend::Dew if project.esp32_backend().is_none() => {
-            bail!("ESP32 backend is not configured. Run `water backend add esp32`.")
+            bail!("ESP32 backend is not configured. Run `water backend add esp32`.");
         }
         _ => Ok(()),
     }
@@ -457,7 +457,7 @@ async fn check_toolchain_for_backend(
                 | TargetPlatform::Windows
                 | TargetPlatform::Esp32s3
                 | TargetPlatform::Esp32c3 => {
-                    bail!("Internal error: Apple backend is not supported on {platform:?}")
+                    bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
             toolchain_checks::check_apple(sdk).await?;
@@ -506,7 +506,7 @@ async fn build_for_apple(
             bail!(
                 "iOS physical devices only support arm64, not {:?}",
                 target_arch
-            )
+            );
         }
         (TargetPlatform::IosSimulator, None | Some(TargetArch::Arm64 | TargetArch::X86_64)) => {
             build_rust_lib(project, LibTargetPlatform::IOSSimulator, options).await
@@ -515,13 +515,13 @@ async fn build_for_apple(
             bail!(
                 "iOS Simulator only supports arm64 or x86_64, not {:?}",
                 target_arch
-            )
+            );
         }
         (TargetPlatform::Macos, None | Some(TargetArch::Arm64 | TargetArch::X86_64)) => {
             build_rust_lib(project, LibTargetPlatform::MacOS, options).await
         }
         (TargetPlatform::Macos, Some(target_arch)) => {
-            bail!("macOS only supports arm64 or x86_64, not {:?}", target_arch)
+            bail!("macOS only supports arm64 or x86_64, not {:?}", target_arch);
         }
         (
             TargetPlatform::Android
@@ -534,7 +534,7 @@ async fn build_for_apple(
             bail!(
                 "Internal error: invalid Apple backend platform {:?}",
                 platform
-            )
+            );
         }
     }
 }

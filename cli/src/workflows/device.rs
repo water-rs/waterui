@@ -689,9 +689,9 @@ impl Device for Local {
         "Local Machine"
     }
 
-    async fn launch(&self) -> eyre::Result<()> {
+    fn launch(&self) -> impl Future<Output = eyre::Result<()>> + Send {
         // No-op - local machine is always "launched"
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
     async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
@@ -710,9 +710,9 @@ impl Device for Local {
         }
     }
 
-    async fn scan() -> eyre::Result<Vec<Self>> {
+    fn scan() -> impl Future<Output = eyre::Result<Vec<Self>>> + Send {
         // Local machine is always available - just return a single instance
-        Ok(vec![Self])
+        std::future::ready(Ok(vec![Self]))
     }
 }
 

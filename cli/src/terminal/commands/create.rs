@@ -351,7 +351,7 @@ fn parse_backends(backends: &[String]) -> Result<Vec<Backend>> {
         bail!(
             "Unknown backend(s): {}. Valid values: apple, android, gtk4, hydrolysis, esp32",
             invalid.join(", ")
-        )
+        );
     }
 }
 

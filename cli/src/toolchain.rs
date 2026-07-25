@@ -121,22 +121,15 @@ pub trait Toolchain: Send + Sync {
 impl Installation for Infallible {
     type Error = Self;
 
-    async fn install(&self) -> Result<(), Self::Error> {
-        unreachable!()
-    }
-}
-
-impl Toolchain for Infallible {
-    type Installation = Self;
-
-    async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        unreachable!()
+    fn install(&self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::poll_fn(|_| {
+            unreachable!("an Infallible installation plan cannot be constructed")
+        })
     }
 }
 
 macro_rules! tuples {
     ($macro:ident) => {
-        $macro!();
         $macro!(T0);
         $macro!(T0, T1);
         $macro!(T0, T1, T2);
@@ -172,6 +165,14 @@ macro_rules! impl_installations {
             }
         }
     };
+}
+
+impl Installation for () {
+    type Error = eyre::Report;
+
+    fn install(&self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
+    }
 }
 
 tuples!(impl_installations);
@@ -214,9 +215,16 @@ macro_rules! impl_toolchains {
     };
 }
 
+impl Toolchain for () {
+    type Installation = ();
+
+    fn check(&self) -> impl Future<Output = Result<(), ToolchainError<Self::Installation>>> + Send {
+        std::future::ready(Ok(()))
+    }
+}
+
 macro_rules! tuples_idx {
     ($macro:ident) => {
-        $macro!();
         $macro!((0, T0));
         $macro!((0, T0), (1, T1));
         $macro!((0, T0), (1, T1), (2, T2));
