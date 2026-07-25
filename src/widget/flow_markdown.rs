@@ -2039,7 +2039,7 @@ mod tests {
         let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), ReactiveList::new());
         let mut markdown = String::new();
         let chunks = [
-            "# FlowMarkdown E2E\n\nStreaming response starts here.\n\n",
+            "# Flow Markdown\n\nStreaming response starts here.\n\n",
             "## Highlights\n\n- Tail append updates\n- Typewriter reveal\n\n",
             "| Metric | Value |\n| --- | --- |\n| Throughput | 128 tok/s |\n",
             "| Latency | 42 ms |\n\n```rust\nfn answer() -> i32 {\n    42\n}\n```\n\n",

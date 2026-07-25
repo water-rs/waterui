@@ -11,13 +11,14 @@
 use core::time::Duration;
 use std::time::Instant;
 
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_core::{AnyView, Dynamic};
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::VStack;
 
 use waterui::ViewExt as _;
+use waterui::component::text;
 
 use super::test_environment;
 use crate::HeadlessRuntime;
@@ -92,5 +93,31 @@ fn lazy_scroll_cost_is_independent_of_total_rows() {
     assert!(
         large.scroll_misses <= small.scroll_misses * 2 + 64,
         "scroll cost scaled with total rows (virtualization regression): {small:?} vs {large:?}"
+    );
+}
+
+#[test]
+fn visible_lazy_item_remeasures_connected_dynamic_through_retained_node() {
+    let (handler, dynamic) = Dynamic::new();
+    handler.set(text("initial"));
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        let dynamic = dynamic.clone();
+        AnyView::new(scroll(VStack::for_each(
+            vec![SelfId::new(0_u64)],
+            move |_| dynamic.clone(),
+        )))
+    });
+    let env = test_environment();
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WINDOW_WIDTH, WINDOW_HEIGHT);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    handler.set(text("updated dynamic row"));
+    let updated = runtime.pump_at(false, start + Duration::from_millis(16));
+
+    assert_eq!(
+        updated.profile.counters.rebuild_iterations, 0,
+        "a connected Dynamic inside a visible lazy item must patch and remeasure through \
+         its retained node without rebuilding the window"
     );
 }
