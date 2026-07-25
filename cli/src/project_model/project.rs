@@ -168,6 +168,28 @@ impl Project {
             .join(format!("{backend_name}-{project_fingerprint}")))
     }
 
+    /// Get a shared-runtime target directory for compatible backend builds.
+    ///
+    /// Projects that resolve to the same Cargo target directory and the same
+    /// runtime dependency fingerprint reuse one backend target. The runtime
+    /// fingerprint must represent the complete runtime dependency graph so
+    /// incompatible feature or dependency variants remain isolated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the project target directory.
+    pub async fn shared_backend_target_dir(
+        &self,
+        backend_name: &str,
+        runtime_fingerprint: &str,
+    ) -> eyre::Result<PathBuf> {
+        Ok(self
+            .target_dir()
+            .await?
+            .join("water-backends")
+            .join(format!("{backend_name}-runtime-{runtime_fingerprint}")))
+    }
+
     /// Get the backends configured for the project.
     #[must_use]
     pub const fn backends(&self) -> &Backends {

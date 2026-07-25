@@ -622,7 +622,7 @@ async fn find_file_recursive(dir: &Path, filename: &str) -> eyre::Result<PathBuf
                 return Ok(entry.into_path());
             }
         }
-        eyre::bail!("File '{}' not found in {}", filename, dir.display())
+        eyre::bail!("File '{}' not found in {}", filename, dir.display());
     })
     .await
 }

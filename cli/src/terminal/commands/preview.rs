@@ -707,7 +707,9 @@ fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewSc
         "pointer_up" => HydrolysisPreviewEventKind::PointerUp,
         "pointer_cancel" => HydrolysisPreviewEventKind::PointerCancel,
         "scroll" | "wheel" => HydrolysisPreviewEventKind::Scroll,
-        other => bail!("unsupported Hydrolysis preview scenario event kind `{other}`"),
+        other => {
+            bail!("unsupported Hydrolysis preview scenario event kind `{other}`");
+        }
     };
     let button = event
         .button
@@ -716,19 +718,25 @@ fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewSc
             "primary" => Ok(HydrolysisPreviewPointerButton::Primary),
             "secondary" => Ok(HydrolysisPreviewPointerButton::Secondary),
             "middle" => Ok(HydrolysisPreviewPointerButton::Middle),
-            other => bail!("unsupported Hydrolysis preview pointer button `{other}`"),
+            other => {
+                bail!("unsupported Hydrolysis preview pointer button `{other}`");
+            }
         })
         .transpose()?
         .unwrap_or_default();
     let needs_point = !matches!(kind, HydrolysisPreviewEventKind::PointerCancel);
     let x = match event.x {
         Some(x) => x,
-        None if needs_point => bail!("Hydrolysis preview scenario event requires x coordinate"),
+        None if needs_point => {
+            bail!("Hydrolysis preview scenario event requires x coordinate");
+        }
         None => 0.0,
     };
     let y = match event.y {
         Some(y) => y,
-        None if needs_point => bail!("Hydrolysis preview scenario event requires y coordinate"),
+        None if needs_point => {
+            bail!("Hydrolysis preview scenario event requires y coordinate");
+        }
         None => 0.0,
     };
     let dx = event.dx.unwrap_or(0.0);
@@ -771,8 +779,12 @@ async fn resolve_test_targets(
     all: bool,
 ) -> Result<Vec<PreviewTarget>> {
     match (all, target) {
-        (true, Some(_)) => bail!("`--all` cannot be combined with an explicit preview target."),
-        (true, None) if force_expression => bail!("`--all` cannot be combined with `--expr`."),
+        (true, Some(_)) => {
+            bail!("`--all` cannot be combined with an explicit preview target.");
+        }
+        (true, None) if force_expression => {
+            bail!("`--all` cannot be combined with `--expr`.");
+        }
         (true, None) => discover_preview_targets(project_path, crate_name).await,
         (false, Some(target)) => {
             if force_expression {
@@ -783,7 +795,9 @@ async fn resolve_test_targets(
                 Ok(vec![resolve_preview_target(crate_name, target, false)])
             }
         }
-        (false, None) => bail!("preview test/perf requires a target or `--all`."),
+        (false, None) => {
+            bail!("preview test/perf requires a target or `--all`.");
+        }
     }
 }
 
@@ -888,7 +902,7 @@ async fn load_automation_body(
 ) -> Result<String> {
     match (code, code_file) {
         (Some(_), Some(_)) => {
-            bail!("{command_name} accepts either `--code` or `--code-file`, not both.")
+            bail!("{command_name} accepts either `--code` or `--code-file`, not both.");
         }
         (Some(code), None) => Ok(code.to_string()),
         (None, Some(path)) => smol::fs::read_to_string(path).await.map_err(Into::into),
@@ -2228,9 +2242,11 @@ fn resolve_hydrolysis_preview_theme(
         (CliPreviewBackend::Hydrolysis, None) => {
             bail!(
                 "Hydrolysis preview requires an explicit theme package. Pass `--theme material3`."
-            )
+            );
         }
-        (_, Some(_)) => bail!("`--theme` is only supported with `--backend hydrolysis`."),
+        (_, Some(_)) => {
+            bail!("`--theme` is only supported with `--backend hydrolysis`.");
+        }
         (_, None) => Ok(None),
     }
 }
@@ -2245,7 +2261,7 @@ async fn check_toolchain_for_backend(
                 CliPreviewPlatform::Ios => waterui_cli::apple::toolchain::AppleSdk::IosSimulator,
                 CliPreviewPlatform::Macos => waterui_cli::apple::toolchain::AppleSdk::Macos,
                 CliPreviewPlatform::Android => {
-                    bail!("Internal error: Apple preview backend is not supported on android")
+                    bail!("Internal error: Apple preview backend is not supported on android");
                 }
             };
             toolchain_checks::check_apple(sdk).await?;
@@ -2291,9 +2307,11 @@ async fn render_with_symbol(
     {
         Ok(data) => Ok(data),
         Err(AppError::SymbolNotFound(_)) => {
-            bail!("{}", missing_preview_symbol_message(function_path, symbol))
+            bail!("{}", missing_preview_symbol_message(function_path, symbol));
         }
-        Err(err) => bail!("Preview app error: {err}"),
+        Err(err) => {
+            bail!("Preview app error: {err}");
+        }
     }
 }
 

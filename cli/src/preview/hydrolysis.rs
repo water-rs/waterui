@@ -4,10 +4,10 @@ use askama::Template;
 use color_eyre::eyre::{Context as _, Result, bail};
 
 use crate::backend::reinit_backend;
-use crate::build::BuildOptions;
+use crate::build::{BuildOptions, RustLinkage};
 use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::hydrolysis::platform::{
-    build_hydrolysis_with_envs_and_args, built_hydrolysis_binary_path,
+    build_hydrolysis_with_envs_and_features, built_hydrolysis_binary_path,
 };
 use crate::platform::TargetPlatform;
 use crate::project::Project;
@@ -138,16 +138,23 @@ pub async fn render_preview_with_hydrolysis(
     if let Some(sccache_path) = sccache_path {
         build_options = build_options.with_sccache(sccache_path);
     }
-    build_hydrolysis_with_envs_and_args(
+    build_hydrolysis_with_envs_and_features(
         &project,
         TargetPlatform::MacOS,
         build_options,
         &[],
-        &["--features", HYDROLYSIS_PREVIEW_FEATURE],
+        &[HYDROLYSIS_PREVIEW_FEATURE],
     )
     .await?;
 
-    let binary_path = built_hydrolysis_binary_path(&project, "debug").await?;
+    let binary_path = built_hydrolysis_binary_path(
+        &project,
+        TargetPlatform::MacOS,
+        "debug",
+        RustLinkage::SharedRuntime,
+        &[HYDROLYSIS_PREVIEW_FEATURE],
+    )
+    .await?;
     run_preview_binary(&project, &binary_path, width, height, output_path, scenario).await
 }
 
@@ -185,16 +192,23 @@ pub async fn test_preview_with_hydrolysis(
     if let Some(sccache_path) = sccache_path {
         build_options = build_options.with_sccache(sccache_path);
     }
-    build_hydrolysis_with_envs_and_args(
+    build_hydrolysis_with_envs_and_features(
         &project,
         TargetPlatform::MacOS,
         build_options,
         &[],
-        &["--features", HYDROLYSIS_PREVIEW_TEST_FEATURE],
+        &[HYDROLYSIS_PREVIEW_TEST_FEATURE],
     )
     .await?;
 
-    let binary_path = built_hydrolysis_binary_path(&project, "debug").await?;
+    let binary_path = built_hydrolysis_binary_path(
+        &project,
+        TargetPlatform::MacOS,
+        "debug",
+        RustLinkage::SharedRuntime,
+        &[HYDROLYSIS_PREVIEW_TEST_FEATURE],
+    )
+    .await?;
     run_preview_test_binary(&project, &binary_path, width, height, &mode).await
 }
 
@@ -219,14 +233,8 @@ async fn stage_preview_resources(project: &Project, theme: HydrolysisPreviewThem
 
 async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project> {
     let mut project = Project::open(project_path).await?;
-    if project.hydrolysis_backend().is_none() {
-        if !project.is_playground() {
-            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
-        }
-
-        reinit_backend::<HydrolysisBackend>(&project).await?;
-        project = Project::open(project_path).await?;
-        return Ok(project);
+    if project.hydrolysis_backend().is_none() && !project.is_playground() {
+        bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
     }
 
     if HydrolysisBackend::requires_regeneration(&project)? {

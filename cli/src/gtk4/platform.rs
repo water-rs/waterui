@@ -209,7 +209,7 @@ fn ensure_linux_host() -> eyre::Result<()> {
     if cfg!(target_os = "linux") {
         Ok(())
     } else {
-        bail!("GTK4 backend is only supported on Linux hosts")
+        bail!("GTK4 backend is only supported on Linux hosts");
     }
 }
 

@@ -742,15 +742,17 @@ async fn build_preview_session_from_launch(
                 runtime_fingerprint: expected_fingerprint,
             })
         }
-        ConnectionWaitResult::Crashed(message) => bail!(
-            "Preview app crashed:
+        ConnectionWaitResult::Crashed(message) => {
+            bail!(
+                "Preview app crashed:
 {message}"
-        ),
+            );
+        }
         ConnectionWaitResult::Exited => {
             bail!(
                 "Preview app exited unexpectedly.
 Check the app logs for more information."
-            )
+            );
         }
         ConnectionWaitResult::Timeout => {
             bail!(
@@ -763,7 +765,7 @@ Possible causes:
 Try running with WATERUI_CRASH_DEBUG=1 for more details.",
                 tcp_config.port_start,
                 tcp_config.ports().end()
-            )
+            );
         }
     }
 }
