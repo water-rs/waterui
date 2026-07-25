@@ -13,7 +13,7 @@ use waterui::{Binding, Color, Computed, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::slider::slider;
-use waterui_controls::toggle::ToggleStyle;
+use waterui_controls::toggle::{ToggleStyle, toggle};
 use waterui_form::picker::PickerStyle;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
@@ -145,6 +145,101 @@ fn toggle_progress_subscribes_before_reading_its_snapshot() {
     assert_eq!(progress, 0.0);
     assert!(!selected);
     assert!(signal.subscribed.get());
+}
+
+#[test]
+fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let enabled = Binding::bool(false);
+    let bounds = Rect::new(0.0, 0.0, 160.0, 40.0);
+
+    capture_root_window(
+        &mut renderer,
+        toggle("Enable Feature", &enabled),
+        &env,
+        bounds,
+    );
+
+    let label_target = renderer
+        .hit_test
+        .pointer_targets
+        .iter()
+        .find(|target| target.interaction.is_none())
+        .expect("labeled toggle must register a visual-free label activation target")
+        .clone();
+    let switch_target = renderer
+        .hit_test
+        .pointer_targets
+        .iter()
+        .find(|target| target.interaction.is_some())
+        .expect("labeled toggle must register a visual switch target")
+        .clone();
+    let switch_interaction = switch_target
+        .interaction
+        .as_ref()
+        .expect("switch target interaction was checked")
+        .clone();
+
+    assert!(!label_target.keyboard_focusable);
+    assert!(switch_target.keyboard_focusable);
+    assert_eq!(label_target.bounds, bounds);
+    assert!(
+        switch_target.bounds.width() < label_target.bounds.width(),
+        "switch visual feedback must be scoped to the control bounds"
+    );
+
+    let label_point = Point::new(10.0, 20.0);
+    assert!(label_target.bounds.contains(label_point));
+    assert!(!switch_target.bounds.contains(label_point));
+    for expected in [true, false, true, false] {
+        let _ = renderer.handle_pointer_down(
+            label_point.x as f32,
+            label_point.y as f32,
+            PointerButton::Primary,
+            &env,
+        );
+        assert!(
+            !switch_interaction.pressing(),
+            "label press must not set the switch's pressed chrome"
+        );
+        assert!(
+            switch_interaction
+                .sample_waves(renderer.frame_instant())
+                .is_empty(),
+            "label press must not spawn a switch ripple"
+        );
+        let _ = renderer.handle_pointer_up(
+            label_point.x as f32,
+            label_point.y as f32,
+            PointerButton::Primary,
+            &env,
+        );
+        assert_eq!(enabled.get(), expected);
+    }
+
+    let switch_point = Point::new(
+        (switch_target.bounds.x0 + switch_target.bounds.x1) * 0.5,
+        (switch_target.bounds.y0 + switch_target.bounds.y1) * 0.5,
+    );
+    let _ = renderer.handle_pointer_down(
+        switch_point.x as f32,
+        switch_point.y as f32,
+        PointerButton::Primary,
+        &env,
+    );
+    assert!(
+        switch_interaction.pressing(),
+        "switch press must retain its local pressed chrome"
+    );
+    assert_eq!(
+        switch_interaction
+            .sample_waves(renderer.frame_instant())
+            .latest()
+            .and_then(|wave| wave.origin),
+        Some(switch_point),
+        "switch ripple must originate inside the switch control"
+    );
 }
 
 fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {

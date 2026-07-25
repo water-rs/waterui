@@ -1,8 +1,8 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_label_intrinsic, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, InteractionKey, RenderContext,
+    WidgetRenderContext, measure_label_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -144,7 +144,8 @@ pub(crate) fn render_toggle_parts(
     state: &Rc<RefCell<ToggleRenderState>>,
     env: &Environment,
 ) {
-    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let visual_interaction_key = InteractionKey::for_rc(state, 0);
+    let activation_interaction_key = InteractionKey::for_rc(state, 1);
     let theme = widget_theme(env);
     let mut state = state.borrow_mut();
     let style = state.config.style;
@@ -188,10 +189,11 @@ pub(crate) fn render_toggle_parts(
         ctx.renderer_mut()
             .resolve_toggle_progress(&binding, theme.toggle_value_animation())
     };
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+    let visual_hit_bounds = transformed_rect(ctx.hit_transform, control_bounds);
+    let activation_hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
-        interaction_key,
-        hit_bounds,
+        visual_interaction_key.clone(),
+        visual_hit_bounds,
         env,
         disabled,
     );
@@ -233,18 +235,43 @@ pub(crate) fn render_toggle_parts(
     if disabled {
         return;
     }
-    // Toggle the value through the retained binding so the node and the dispatch
-    // path register equivalent tap targets.
+    // Keep the label row as an activation target without attaching it to the
+    // switch's visual interaction. An associated mdui label toggles the switch
+    // but does not originate a switch ripple or pressed thumb from the label's
+    // distant pointer coordinate.
     let binding = state.config.toggle.clone();
+    if label_bounds.width() > 0.0 {
+        let mut activation_press_slot = press_slot.clone();
+        activation_press_slot.key = activation_interaction_key;
+        ctx.renderer_mut()
+            .register_interactive_pointer_target_with_keyboard(
+                activation_hit_bounds,
+                activation_press_slot,
+                false,
+                toggle_binding_action(binding.clone(), visual_interaction_key.clone()),
+            );
+    }
+    // Register the visual control last so it wins hit testing where the full-row
+    // activation target overlaps it.
     ctx.renderer_mut().register_interactive_pointer_target(
-        hit_bounds,
+        visual_hit_bounds,
         press_slot,
-        move |_renderer, _point, _env| {
-            let next = !binding.get();
-            binding.set(next);
-            true
-        },
+        toggle_binding_action(binding, visual_interaction_key),
     );
+}
+
+fn toggle_binding_action(
+    binding: nami::Binding<bool>,
+    visual_interaction_key: InteractionKey,
+) -> impl FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool {
+    move |renderer, _point, _env| {
+        // A pointer press on the non-focusable label target temporarily owns an
+        // interaction-only key. Restore semantic keyboard focus to the switch
+        // itself when the label activates it.
+        renderer.set_keyboard_focus(Some(visual_interaction_key.clone()), false);
+        binding.set(!binding.get());
+        true
+    }
 }
 
 pub(crate) fn measure_toggle_intrinsic(
