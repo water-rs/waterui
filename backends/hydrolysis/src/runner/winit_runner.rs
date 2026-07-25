@@ -32,18 +32,40 @@ use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::platform::wayland::EventLoopExtWayland;
 use winit::window::{Window as NativeWindow, WindowId};
 
-use crate::platform::{PlatformWindow, WinitWindow};
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
+use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
+use crate::renderer::{
+    HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin, PopupWindowManager,
+};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
 
-#[derive(Debug)]
 enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
     AccessKit(AccessKitEvent),
+}
+
+struct PendingWindow {
+    window: Window,
+    activates: bool,
+}
+
+impl PendingWindow {
+    fn application(window: Window) -> Self {
+        Self {
+            window,
+            activates: true,
+        }
+    }
+
+    fn popup(window: Window) -> Self {
+        Self {
+            window,
+            activates: false,
+        }
+    }
 }
 
 impl From<AccessKitEvent> for RunnerEvent {
@@ -122,7 +144,19 @@ pub fn run(app: App) {
         let pending_window_queue = Rc::clone(&pending_window_queue);
         let event_proxy = event_proxy.clone();
         move |window| {
-            pending_window_queue.borrow_mut().push(window);
+            pending_window_queue
+                .borrow_mut()
+                .push(PendingWindow::application(window));
+            let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
+        }
+    }));
+    env.insert(PopupWindowManager::new({
+        let pending_window_queue = Rc::clone(&pending_window_queue);
+        let event_proxy = event_proxy.clone();
+        move |window| {
+            pending_window_queue
+                .borrow_mut()
+                .push(PendingWindow::popup(window));
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
     }));
@@ -131,9 +165,13 @@ pub fn run(app: App) {
     ));
     let mut runner = WinitRunner {
         env,
-        pending_windows: windows,
+        pending_windows: windows
+            .into_iter()
+            .map(PendingWindow::application)
+            .collect(),
         pending_window_queue,
         windows: HashMap::new(),
+        gpu_context: None,
         accesskit_adapters: HashMap::new(),
         last_accessibility_updates: HashMap::new(),
         accessibility_enabled: super::probe_accessibility_runtime(),
@@ -151,15 +189,38 @@ pub fn run(app: App) {
 
 struct WinitRunner {
     env: Environment,
-    pending_windows: Vec<Window>,
-    pending_window_queue: Rc<RefCell<Vec<Window>>>,
+    pending_windows: Vec<PendingWindow>,
+    pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
     windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
+    gpu_context: Option<WinitGpuContext>,
     accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
     last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
     accessibility_enabled: bool,
     local_runnable_rx: mpsc::Receiver<Runnable>,
     event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
     render_diagnostics_config: RenderDiagnosticsConfig,
+}
+
+fn native_window_attributes(
+    window: &Window,
+    env: &Environment,
+    activates: bool,
+) -> winit::window::WindowAttributes {
+    let frame = window.frame.get();
+    NativeWindow::default_attributes()
+        .with_title(window.title.get().as_str())
+        .with_resizable(window.resizable)
+        .with_visible(false)
+        .with_active(activates)
+        .with_transparent(super::window_requires_transparency(window, env))
+        .with_decorations(!matches!(
+            window.style,
+            waterui::window::WindowStyle::Borderless
+        ))
+        .with_inner_size(winit::dpi::LogicalSize::new(
+            frame.width() as f64,
+            frame.height() as f64,
+        ))
 }
 
 impl WinitRunner {
@@ -198,29 +259,23 @@ impl WinitRunner {
     fn create_runtime_window(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window: Window,
+        pending: PendingWindow,
     ) -> (RuntimeWindow<WinitWindow>, Option<AccessKitAdapter>) {
-        let frame = window.frame.get();
-        let attributes = NativeWindow::default_attributes()
-            .with_title(window.title.get().as_str())
-            .with_resizable(window.resizable)
-            .with_visible(false)
-            .with_transparent(super::window_requires_transparency(&window, &self.env))
-            .with_decorations(!matches!(
-                window.style,
-                waterui::window::WindowStyle::Borderless
-            ))
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                frame.width() as f64,
-                frame.height() as f64,
-            ));
+        let PendingWindow { window, activates } = pending;
+        let attributes = native_window_attributes(&window, &self.env, activates);
 
         let native_window = Arc::new(
             event_loop
                 .create_window(attributes)
                 .expect("hydrolysis runner: failed to create winit window"),
         );
-        let mut platform = pollster::block_on(WinitWindow::new(native_window));
+        let (mut platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
+            native_window,
+            self.gpu_context.as_ref(),
+        ));
+        if self.gpu_context.is_none() {
+            self.gpu_context = Some(gpu_context);
+        }
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
@@ -261,12 +316,8 @@ impl WinitRunner {
             );
             None
         };
-        let should_focus = !matches!(
-            runtime.window.style,
-            waterui::window::WindowStyle::Borderless
-        );
         runtime.platform.native_window().set_visible(true);
-        if should_focus {
+        if activates {
             runtime.platform.native_window().focus_window();
         }
         (runtime, adapter)
@@ -275,8 +326,8 @@ impl WinitRunner {
     fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
         let mut pending = mem::take(&mut self.pending_windows);
         pending.extend(self.pending_window_queue.borrow_mut().drain(..));
-        for window in pending {
-            let (runtime, adapter) = self.create_runtime_window(event_loop, window);
+        for pending in pending {
+            let (runtime, adapter) = self.create_runtime_window(event_loop, pending);
             let id = runtime.platform.id();
             self.windows.insert(id, runtime);
             if let Some(adapter) = adapter {
@@ -487,5 +538,21 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_window_attributes;
+    use waterui::window::{Window, WindowState};
+    use waterui_core::{Environment, binding};
+
+    #[test]
+    fn popup_window_attributes_do_not_activate() {
+        let window = Window::new("", binding(WindowState::Normal), || ());
+        let env = Environment::new();
+
+        assert!(native_window_attributes(&window, &env, true).active);
+        assert!(!native_window_attributes(&window, &env, false).active);
     }
 }

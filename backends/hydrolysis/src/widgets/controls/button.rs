@@ -207,6 +207,8 @@ pub(crate) fn render_button_node(
 /// `Label`/`TitleOnly`, which is rendered as styled text fresh each frame like a
 /// button); the `items`/`accessibility_label` signals are kept and read through
 /// `read_signal`.
+const MENU_TRIGGER_STYLE: ButtonStyle = ButtonStyle::Automatic;
+
 pub(crate) struct MenuRenderState {
     /// The build-time decision of how to render the label.
     label: MenuLabel,
@@ -250,7 +252,7 @@ impl MenuRenderState {
     /// path's `button_label_view`).
     pub(crate) fn prebuild_label(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
         if let MenuLabel::View(subview) = &mut self.label {
-            let color = widget_theme(env).button_label_color(ButtonStyle::Borderless, false);
+            let color = widget_theme(env).button_label_color(MENU_TRIGGER_STYLE, false);
             subview.map_source(|view| button_label_view(color, view));
             subview.ensure_built(renderer, env);
         }
@@ -317,10 +319,10 @@ pub(crate) fn measure_menu_node(
     env: &Environment,
 ) -> ViewDimensions {
     let theme = widget_theme(env);
-    let metrics = theme.button_metrics(ButtonStyle::Borderless);
+    let metrics = theme.button_metrics(MENU_TRIGGER_STYLE);
     let label_size = match &state.label {
         MenuLabel::Title(label) => {
-            let styled = styled_button_title(theme, ButtonStyle::Borderless, label, env);
+            let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
             HydrolysisRenderer::measure_text_intrinsic_size(hydro, styled, env)
         }
         MenuLabel::View(subview) => subview.measure_built(hydro, env),
@@ -461,7 +463,7 @@ pub(crate) fn render_menu_parts(
     env: &Environment,
 ) {
     let theme = widget_theme(env);
-    let style = ButtonStyle::Borderless;
+    let style = MENU_TRIGGER_STYLE;
     let bounds = ctx.bounds;
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -537,11 +539,11 @@ pub(crate) fn measure_menu_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let theme = widget_theme(env);
-    let metrics = theme.button_metrics(ButtonStyle::Borderless);
+    let metrics = theme.button_metrics(MENU_TRIGGER_STYLE);
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
         && matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
     {
-        let styled = styled_button_title(theme, ButtonStyle::Borderless, label, env);
+        let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     } else {
         measure_view_intrinsic(&menu.label, state, env)
@@ -690,5 +692,16 @@ fn styled_button_label(
         label.font(font)
     } else {
         label
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MENU_TRIGGER_STYLE;
+    use waterui_controls::button::ButtonStyle;
+
+    #[test]
+    fn menu_trigger_uses_material_default_button_style() {
+        assert_eq!(MENU_TRIGGER_STYLE, ButtonStyle::Automatic);
     }
 }
