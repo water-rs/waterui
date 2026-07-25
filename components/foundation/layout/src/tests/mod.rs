@@ -377,6 +377,31 @@ fn test_hstack_with_flexible_text() {
 }
 
 #[test]
+fn hstack_intrinsic_round_trip_does_not_spuriously_wrap_text() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(6.0),
+    };
+    let mut title = FlexibleTextView::new(111.068_21, 20.0);
+    let mut icon = FixedSizeView {
+        size: Size::new(10.973_763, 20.0),
+    };
+    let children: Vec<&dyn SubView> = vec![&mut title, &mut icon];
+    let intrinsic = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+
+    let rects = layout.place(
+        Rect::new(Point::zero(), Size::new(intrinsic.width, 40.0)),
+        &children,
+    );
+
+    assert_eq!(
+        rects[0].height(),
+        20.0,
+        "an intrinsic-size HStack must not wrap text due only to f32 round-trip noise"
+    );
+}
+
+#[test]
 fn test_hstack_empty() {
     let layout = HStackLayout::default();
     let children: Vec<&dyn SubView> = vec![];

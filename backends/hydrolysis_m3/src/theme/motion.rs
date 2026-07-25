@@ -6,6 +6,9 @@ use waterui::{Computed, Signal};
 use waterui_backend_core::widget::{
     InteractionMotion, NavigationMotion, ProgressMotion, RadioSelectionMotion, TextCaretMotion,
 };
+use waterui_core::EasingCurve;
+
+use super::dimensions::NAVIGATION_SHARED_AXIS_SLIDE_DISTANCE;
 
 const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
 const MATERIAL_EMPHASIZED_ACCELERATE: (f32, f32, f32, f32) = (0.3, 0.0, 0.8, 0.15);
@@ -67,8 +70,10 @@ pub const fn text_caret() -> TextCaretMotion {
 
 pub const fn navigation() -> NavigationMotion {
     NavigationMotion {
-        transition_duration: Duration::from_millis(250),
-        pushpop_parallax_factor: 0.35,
+        transition_duration: Duration::from_millis(450),
+        transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
+        shared_axis_slide_distance: NAVIGATION_SHARED_AXIS_SLIDE_DISTANCE,
+        fade_through_threshold: 0.35,
     }
 }
 
@@ -232,6 +237,7 @@ mod tests {
     use std::rc::Rc;
     use waterui::animation::Animation;
     use waterui::{Binding, Signal, SignalExt as _};
+    use waterui_core::EasingCurve;
 
     #[test]
     fn material_state_layer_motion_matches_mdui_reference() {
@@ -303,11 +309,16 @@ mod tests {
     }
 
     #[test]
-    fn material_navigation_motion_uses_hydrolysis_transition_engine_policy() {
+    fn material_navigation_motion_matches_shared_axis_and_mdui_tokens() {
         let motion = navigation();
 
-        assert_eq!(motion.transition_duration, Duration::from_millis(250));
-        assert_eq!(motion.pushpop_parallax_factor, 0.35);
+        assert_eq!(motion.transition_duration, Duration::from_millis(450));
+        assert_eq!(
+            motion.transition_easing,
+            EasingCurve::bezier(0.2, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(motion.shared_axis_slide_distance, 30.0);
+        assert_eq!(motion.fade_through_threshold, 0.35);
     }
 
     #[test]

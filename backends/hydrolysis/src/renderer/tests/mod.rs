@@ -28,6 +28,7 @@ use waterui_backend_core::widget::{
     RadioSelectionMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
     TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
+use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -1097,8 +1098,10 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn navigation_motion(&self) -> NavigationMotion {
         NavigationMotion {
-            transition_duration: Duration::from_millis(250),
-            pushpop_parallax_factor: 0.35,
+            transition_duration: Duration::from_millis(450),
+            transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
+            shared_axis_slide_distance: 30.0,
+            fade_through_threshold: 0.35,
         }
     }
 

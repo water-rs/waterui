@@ -163,6 +163,14 @@ fn hstack_stretch_allocations(
 /// labels stay readable even when the row cannot possibly fit.
 const MIN_COMPRESSED_WIDTH: f32 = 20.0;
 
+/// Returns whether `total` exceeds `available` by more than the accumulated
+/// rounding error of measuring and then reconstructing the same row width.
+fn exceeds_available_width(total: f32, available: f32, terms: usize) -> bool {
+    let magnitude = total.abs().max(available.abs()).max(1.0);
+    let rounding_tolerance = f32::EPSILON * magnitude * terms.max(1) as f32;
+    total - available > rounding_tolerance
+}
+
 /// Fairly compresses non-stretching children into `available` width by
 /// clamping them to a common cap (water-filling): the cap is the largest `T`
 /// with `Σ min(wᵢ, T) ≤ available`, so the widest children absorb the deficit
@@ -183,7 +191,9 @@ fn compress_children_evenly(
         .iter()
         .map(|&idx| measurements[idx].size().width)
         .sum();
-    if compress_indices.is_empty() || total <= available {
+    if compress_indices.is_empty()
+        || !exceeds_available_width(total, available, compress_indices.len())
+    {
         return;
     }
 
