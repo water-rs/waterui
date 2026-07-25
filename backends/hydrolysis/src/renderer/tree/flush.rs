@@ -229,10 +229,15 @@ impl RenderNode {
                             node.child.flush(r, ctx, child_env);
                         });
                     }
-                    WrapperEffect::LifeCycle(_) => {
-                        // Appear already fired at build; disappear fires from the
-                        // effect's `Drop`. Flush is a plain passthrough.
+                    WrapperEffect::LifeCycle(effect) => {
+                        // Flush the child first so reactive animation handles bind
+                        // their initial values before an appear callback changes the
+                        // target. Consuming the hook makes this a one-time event on
+                        // the retained node; disappear still fires from `Drop`.
                         node.child.flush(renderer, ctx, child_env);
+                        if let Some(hook) = effect.appear.take() {
+                            hook.call();
+                        }
                     }
                 }
             }

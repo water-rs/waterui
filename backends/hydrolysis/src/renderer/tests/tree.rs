@@ -6,8 +6,8 @@ use nami::Computed;
 use vello::kurbo::{Affine, Rect};
 use waterui::ViewExt as _;
 use waterui_controls::button::button;
-use waterui_core::AnyView;
 use waterui_core::layout::{HorizontalAlignment, Size};
+use waterui_core::{AnimationExt as _, AnyView};
 use waterui_layout::stack::{VStackLayout, vstack};
 use waterui_text::styled::StyledStr;
 
@@ -980,12 +980,12 @@ fn render_tree_grid_snapshot() {
 }
 
 /// Lifecycle hooks are node-owned on the retained tree: `.on_appear` fires once
-/// when its wrapper node is built, and `.on_disappear` fires from the node's
-/// `Drop` when the retained tree is torn down. Structural presence/removal drives
-/// the hooks — there is no frame-diff slot cursor (the same fix class as Bug 1),
-/// and the disappear hook must not fire while the node is still retained.
+/// after the child's first flush, and `.on_disappear` fires from the node's `Drop`
+/// when the retained tree is torn down. Structural presence/removal drives the
+/// hooks — there is no frame-diff slot cursor (the same fix class as Bug 1), and
+/// the disappear hook must not fire while the node is still retained.
 #[test]
-fn lifecycle_hooks_fire_on_build_and_drop() {
+fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {
     use core::cell::Cell;
     use std::rc::Rc;
 
@@ -1005,14 +1005,27 @@ fn lifecycle_hooks_fire_on_build_and_drop() {
     let mut renderer = test_renderer();
     let bounds = Rect::new(0.0, 0.0, 200.0, 120.0);
 
+    renderer.prepare_window_tree(view, &env);
+    assert!(
+        !appeared.get(),
+        "building the retained node must not fire on_appear before its child is flushed"
+    );
+
+    renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.set_window_bounds(bounds);
-    renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
+    renderer.capture_window_tree(
+        AnyView::new(()),
+        &env,
+        bounds,
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
     renderer.finish_rebuild_frame();
 
     assert!(
         appeared.get(),
-        "on_appear must fire when the lifecycle wrapper node is built"
+        "on_appear must fire after the lifecycle wrapper's child first flushes"
     );
     assert!(
         !disappeared.get(),
@@ -1025,6 +1038,69 @@ fn lifecycle_hooks_fire_on_build_and_drop() {
     assert!(
         disappeared.get(),
         "on_disappear must fire when the retained tree (the lifecycle node) is dropped"
+    );
+}
+
+/// A Snackbar-style entrance keeps its hidden target through the first animated
+/// signal sample, then changes that target from `on_appear`. This must create an
+/// active animation instead of binding the already-settled value on the first
+/// frame and popping directly to the final state.
+#[test]
+fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
+    use core::time::Duration;
+    use std::time::Instant;
+    use waterui::animation::Animation;
+    use waterui::reactive::binding;
+
+    let opacity = binding(0.0f32);
+    let opacity_for_appear = opacity.clone();
+    let view = AnyView::new(
+        ().size(40.0, 40.0)
+            .on_appear(move || opacity_for_appear.set(1.0))
+            .opacity(
+                opacity
+                    .clone()
+                    .with_animation(Animation::linear(Duration::from_millis(250))),
+            ),
+    );
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 120.0, 120.0);
+    let start = Instant::now();
+    renderer.set_frame_instant(start);
+    renderer.prepare_window_tree(view, &env);
+
+    assert_eq!(
+        opacity.get(),
+        0.0,
+        "the entrance target must remain hidden until the child first flushes"
+    );
+    assert!(
+        !renderer.animations_active(),
+        "building alone must not start an entrance animation"
+    );
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.set_window_bounds(bounds);
+    renderer.capture_window_tree(
+        AnyView::new(()),
+        &env,
+        bounds,
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+
+    assert_eq!(
+        opacity.get(),
+        1.0,
+        "on_appear must update the entrance target after the initial sample"
+    );
+    assert!(
+        renderer.animations_active(),
+        "the post-bind target update must leave the entrance animation active"
     );
 }
 
