@@ -214,12 +214,7 @@ impl HeadlessRuntime {
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
-        env.insert(WindowManager::new({
-            let pending_window_queue = Rc::clone(&pending_window_queue);
-            move |window| {
-                pending_window_queue.borrow_mut().push(window);
-            }
-        }));
+        install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
