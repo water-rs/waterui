@@ -5,6 +5,7 @@ use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use nami::signal::IntoComputed;
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
+use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
 use waterui_core::plugin::Plugin;
@@ -495,10 +496,15 @@ pub struct TextCaretMotion {
 /// Motion policy for backend-rendered navigation transitions.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavigationMotion {
-    /// Duration for push, pop, and fade transitions.
+    /// Duration for a complete navigation transition.
     pub transition_duration: Duration,
-    /// Parallax factor for the outgoing scene in push/pop transitions.
-    pub pushpop_parallax_factor: f64,
+    /// Easing applied to programmatic navigation progress.
+    pub transition_easing: EasingCurve,
+    /// Absolute travel distance for the Material shared-axis X pattern.
+    pub shared_axis_slide_distance: f64,
+    /// Progress at which the outgoing layer has faded out and the incoming
+    /// layer begins fading in.
+    pub fade_through_threshold: f32,
 }
 
 /// Toggle layout metrics.

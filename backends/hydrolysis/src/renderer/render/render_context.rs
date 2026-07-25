@@ -5,6 +5,7 @@ use crate::renderer::navigation::{
     NavigationCapturedScene, NavigationTransitionFrame, draw_navigation_transition,
 };
 use waterui::navigation::{AnyNavigationTransition, NavigationTransitionDirection};
+use waterui_backend_core::widget::NavigationMotion;
 use waterui_core::Environment;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
@@ -165,9 +166,9 @@ impl<'a> WidgetRenderContext<'a> {
     pub(crate) fn draw_navigation_transition(
         &mut self,
         style: AnyNavigationTransition,
+        motion: NavigationMotion,
         direction: NavigationTransitionDirection,
         progress: f64,
-        _pushpop_parallax_factor: f64,
         from_scene: &NavigationCapturedScene,
         to_scene: &NavigationCapturedScene,
     ) {
@@ -176,6 +177,7 @@ impl<'a> WidgetRenderContext<'a> {
             transform: self.transform,
             bounds: self.bounds,
             style,
+            motion,
             direction,
             progress,
             from_scene,
