@@ -27,6 +27,7 @@ impl GtkComponent for Native<ListConfig> {
         let contents = config.contents;
         let on_delete = config.on_delete.map(Rc::new);
         let editing = config.editing;
+        let scroll_controller = config.scroll_controller;
         let env = env.clone();
 
         // Create the scrolled container
@@ -57,13 +58,16 @@ impl GtkComponent for Native<ListConfig> {
                     return;
                 };
                 let id = list_item_id(list_item);
-                let index = (0..contents.len().get())
-                    .find(|index| {
-                        contents
-                            .get_id(*index)
-                            .is_some_and(|candidate| i32::from(*candidate) == id)
-                    })
-                    .expect("GTK List model ID must exist in WaterUI contents");
+                let index = usize::try_from(list_item.position())
+                    .expect("GTK List position must fit in usize");
+                let current_id = contents
+                    .get_id(index)
+                    .expect("GTK List position must exist in WaterUI contents");
+                assert_eq!(
+                    i32::from(*current_id),
+                    id,
+                    "GTK List model position must match WaterUI contents"
+                );
                 let Some(item) = contents.get_view(index) else {
                     list_item.set_child(Option::<&Widget>::None);
                     return;
@@ -88,14 +92,21 @@ impl GtkComponent for Native<ListConfig> {
                     let env_clone = env.clone();
                     let on_delete = on_delete.clone();
                     let contents = contents.clone();
+                    let list_item = list_item.downgrade();
                     delete_btn.connect_clicked(move |_| {
-                        let current_index = (0..contents.len().get())
-                            .find(|index| {
-                                contents
-                                    .get_id(*index)
-                                    .is_some_and(|candidate| i32::from(*candidate) == id)
-                            })
-                            .expect("GTK deleted List row ID must still exist");
+                        let list_item = list_item
+                            .upgrade()
+                            .expect("GTK deleted List row must remain bound while visible");
+                        let current_index = usize::try_from(list_item.position())
+                            .expect("GTK List position must fit in usize");
+                        let current_id = contents
+                            .get_id(current_index)
+                            .expect("GTK deleted List row must still exist");
+                        assert_eq!(
+                            i32::from(*current_id),
+                            id,
+                            "GTK deleted List row identity changed before its action"
+                        );
                         on_delete(&env_clone, current_index);
                     });
 
@@ -151,7 +162,27 @@ impl GtkComponent for Native<ListConfig> {
                 });
             }
         });
-        store_watcher_guards(&list_view, vec![contents_guard]);
+        let mut guards = vec![contents_guard];
+        if let Some(controller) = scroll_controller {
+            let target = controller.target();
+            let contents = contents.clone();
+            let list_view_for_scroll = list_view.clone();
+            guards.push(controller.generation().watch(move |_| {
+                let index = target.get();
+                let len = contents.len().get();
+                assert!(
+                    index < len,
+                    "List scroll target {index} exceeds collection length {len}"
+                );
+                let index =
+                    u32::try_from(index).expect("List scroll target exceeds the GTK index range");
+                let list_view = list_view_for_scroll.clone();
+                glib::idle_add_local_once(move || {
+                    list_view.scroll_to(index, gtk4::ListScrollFlags::NONE, None);
+                });
+            }));
+        }
+        store_watcher_guards(&list_view, guards);
 
         scrolled_window.set_child(Some(&list_view));
         scrolled_window.upcast()

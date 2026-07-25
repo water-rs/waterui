@@ -323,9 +323,14 @@ fn normalize_layout_view_with_budget(
         let native = *view
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
-        let (axis, content) = native.into_inner().into_inner();
+        let (axis, content, controller) = native.into_inner().into_inner();
         let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
-        return AnyView::new(Native::new(ScrollView::new(axis, normalized_content)));
+        let scroll = ScrollView::new(axis, normalized_content);
+        let scroll = match controller {
+            Some(controller) => scroll.scroll_controller(&controller),
+            None => scroll,
+        };
+        return AnyView::new(Native::new(scroll));
     }
 
     if view.is::<Native<NavigationView>>() {

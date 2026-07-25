@@ -488,6 +488,8 @@ pub(crate) struct OffsetNode {
 pub(crate) struct ScrollNode {
     pub(super) axis: ScrollAxis,
     pub(super) child: RenderNode,
+    pub(super) controller: Option<ScrollController<Point>>,
+    pub(super) applied_scroll_generation: Cell<i32>,
     /// Scroll handle bound at layout (offset persists across frames; scroll
     /// events mutate it via the registered scroll target).
     pub(super) handle: Option<ScrollHandle>,
