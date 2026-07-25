@@ -455,7 +455,7 @@ impl core::fmt::Debug for SnackbarManager {
 impl SnackbarManager {
     /// Creates a new snackbar manager and returns the overlay view.
     ///
-    /// The returned view should be placed in a `ZStack` above the main content.
+    /// The returned view should be placed in a window overlay above the main content.
     /// This is automatically done by `Window::new()`.
     ///
     /// # Returns

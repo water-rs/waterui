@@ -101,12 +101,10 @@ impl<'a> NodeSubView<'a> {
         {
             dimensions.size.width = dimensions.size.width.max(width);
         }
-        if self.stretch.stretches_vertical() {
-            if let Some(height) = proposal.height {
-                dimensions.size.height = dimensions.size.height.max(height);
-            }
-        } else if let Some(height) = proposal.height {
-            dimensions.size.height = dimensions.size.height.min(height);
+        if self.stretch.stretches_vertical()
+            && let Some(height) = proposal.height
+        {
+            dimensions.size.height = dimensions.size.height.max(height);
         }
         dimensions
     }

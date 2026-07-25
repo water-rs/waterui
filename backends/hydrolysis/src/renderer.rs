@@ -191,6 +191,12 @@ pub(crate) use input::{
     text_editing,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ContentSizeLimits {
+    pub(crate) minimum: LayoutSize,
+    pub(crate) maximum: Option<LayoutSize>,
+}
+
 /// Core hydrolysis renderer state.
 pub struct HydrolysisRenderer {
     state: HydroState,
@@ -243,11 +249,10 @@ pub struct HydrolysisRenderer {
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
     /// rebuild and re-flushed each frame. `None` before the first build.
     render_tree: Option<RenderNode>,
-    /// The window content's minimum size — the retained tree measured at a zero
-    /// proposal — refreshed on every layout pass. The runner feeds it to the
-    /// platform window as the default resize floor when the app sets no explicit
-    /// `Window::min_size`.
-    content_min_size: Option<waterui_core::layout::Size>,
+    /// The window content's per-axis minimum and maximum sizes, refreshed on
+    /// every layout pass. The runner feeds these to the platform window whenever
+    /// the app does not set explicit limits.
+    content_size_limits: Option<ContentSizeLimits>,
     /// Set when a widget-owned [`RetainedSubview`] applied a structural patch
     /// (a `Dynamic` swap or a collection membership reconcile) during a flush.
     /// The subview patch runs mid-flush — after the window pump's structural
@@ -348,7 +353,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
-            content_min_size: None,
+            content_size_limits: None,
             subview_structural_change: false,
         }
     }

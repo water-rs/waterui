@@ -114,19 +114,21 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
 /// Applies the window's effective content-size limits to the platform window:
 /// the explicit `Window::min_size`/`max_size` signals when set (read through the
 /// renderer so a change schedules a frame), with the content's measured layout
-/// minimum as the default resize floor.
+/// limits as the defaults.
 pub(super) fn apply_window_size_limits<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+    let content_limits = runtime.renderer.content_size_limits();
     let explicit_min = runtime
         .window
         .min_size
         .clone()
         .map(|signal| runtime.renderer.read_signal(&signal));
-    let max = runtime
+    let explicit_max = runtime
         .window
         .max_size
         .clone()
         .map(|signal| runtime.renderer.read_signal(&signal));
-    let min = explicit_min.or_else(|| runtime.renderer.content_min_size());
+    let min = explicit_min.or_else(|| content_limits.map(|limits| limits.minimum));
+    let max = explicit_max.or_else(|| content_limits.and_then(|limits| limits.maximum));
     runtime.platform.set_size_limits(min, max);
 }
 
@@ -307,6 +309,31 @@ pub(super) fn render_window<P: PlatformWindow>(
     drain_local_tasks: &mut dyn FnMut() -> bool,
 ) {
     let _ = render_window_with_capture(runtime, env, false, drain_local_tasks);
+}
+
+pub(super) const fn surface_error_requires_reconfigure(
+    error: crate::platform::SurfaceError,
+) -> bool {
+    matches!(
+        error,
+        crate::platform::SurfaceError::Lost | crate::platform::SurfaceError::Outdated
+    )
+}
+
+pub(super) fn acquire_surface_frame(
+    surface: &mut dyn crate::platform::SurfaceProvider,
+) -> Result<crate::platform::SurfaceFrame, crate::platform::SurfaceError> {
+    match surface.acquire() {
+        Err(error) if surface_error_requires_reconfigure(error) => {
+            // Lost/outdated means the swap chain itself is invalid. Reconfigure
+            // at the current physical size and retry once in this same frame so
+            // live resize does not expose a stale or empty buffer.
+            let (width, height) = surface.size();
+            surface.resize(width, height);
+            surface.acquire()
+        }
+        result => result,
+    }
 }
 
 /// Refreshes the retained window tree in place: apply pending `Dynamic` patches,
@@ -553,7 +580,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         let (width, height) = surface.size();
         let format = surface.format();
         let acquire_started_at = Instant::now();
-        let frame = match surface.acquire() {
+        let frame = match acquire_surface_frame(surface) {
             Ok(frame) => frame,
             Err(
                 crate::platform::SurfaceError::Lost

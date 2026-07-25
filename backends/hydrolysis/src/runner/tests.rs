@@ -1,9 +1,12 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, schedule_redraw_or_refresh,
-    schedule_scroll_refresh,
+    RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
+    handle_input_events, pump_window_semantics, schedule_redraw_or_refresh,
+    schedule_scroll_refresh, surface_error_requires_reconfigure,
 };
-use crate::platform::PlatformWindow as _;
+use crate::platform::{
+    InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError, SurfaceFrame, SurfaceProvider,
+};
 use crate::renderer::HydrolysisRenderer;
 use core::time::Duration;
 use std::time::Instant;
@@ -55,6 +58,26 @@ fn changed_scroll_input_schedules_frame_and_wakes_platform_window() {
 }
 
 #[test]
+fn only_invalid_swap_chains_require_surface_reconfiguration() {
+    assert!(surface_error_requires_reconfigure(SurfaceError::Lost));
+    assert!(surface_error_requires_reconfigure(SurfaceError::Outdated));
+    assert!(!surface_error_requires_reconfigure(SurfaceError::Timeout));
+    assert!(!surface_error_requires_reconfigure(SurfaceError::Occluded));
+}
+
+#[test]
+fn invalid_swap_chain_is_reconfigured_and_retried_in_the_same_frame() {
+    let mut surface = RecoveringSurface::new(SurfaceError::Outdated);
+
+    let frame = acquire_surface_frame(&mut surface)
+        .expect("surface acquisition must recover after reconfiguration");
+
+    assert_eq!(surface.acquire_count, 2);
+    assert_eq!(surface.resize_count, 1);
+    surface.present(frame);
+}
+
+#[test]
 fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
     let mut runtime = test_runtime_window();
     let now = Instant::now();
@@ -83,17 +106,22 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
 }
 
 /// The window's effective size limits reach the platform: the content's
-/// measured minimum is the default resize floor, and an explicit
-/// `Window::min_size`/`max_size` overrides it.
+/// measured minimum and maximum are the defaults, and explicit limits override
+/// them.
 #[test]
 fn window_size_limits_reach_the_platform_window() {
     use waterui_core::layout::Size;
     use waterui_layout::frame::Frame;
 
-    // Content with a hard 200x100 minimum: the derived window minimum must be
-    // at least that big (an ideal-sized frame compresses at a zero proposal,
-    // so only min constraints establish a resize floor).
-    let content = || Frame::new(()).min_width(200.0).min_height(100.0);
+    // Content with hard limits must pass both ends of the layout negotiation to
+    // the platform window.
+    let content = || {
+        Frame::new(())
+            .min_width(200.0)
+            .min_height(100.0)
+            .max_width(640.0)
+            .max_height(480.0)
+    };
     let window = Window::new("", binding(WindowState::Normal), content);
     let mut runtime = runtime_window_for(window);
     let env = Environment::new();
@@ -102,12 +130,8 @@ fn window_size_limits_reach_the_platform_window() {
         .platform
         .applied_size_limits()
         .expect("runner must apply size limits on the pump");
-    let min = min.expect("content-derived minimum must exist after a build");
-    assert!(
-        min.width >= 200.0 && min.height >= 100.0,
-        "derived minimum {min:?} must cover the content's fixed frame"
-    );
-    assert_eq!(max, None, "no explicit maximum leaves the window unbounded");
+    assert_eq!(min, Some(Size::new(200.0, 100.0)));
+    assert_eq!(max, Some(Size::new(640.0, 480.0)));
 
     // Explicit limits override the derived minimum.
     let window = Window::new("", binding(WindowState::Normal), content)
@@ -121,6 +145,83 @@ fn window_size_limits_reach_the_platform_window() {
         .expect("runner must apply size limits on the pump");
     assert_eq!(min, Some(Size::new(300.0, 150.0)));
     assert_eq!(max, Some(Size::new(640.0, 480.0)));
+}
+
+#[test]
+fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
+    use waterui_core::layout::{Layout, ProposalSize, Rect, Size, SubView};
+    use waterui_layout::container::FixedContainer;
+
+    #[derive(Debug)]
+    struct IdealOnlyLayout;
+
+    impl Layout for IdealOnlyLayout {
+        fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+            Size::new(
+                proposal.width.unwrap_or(500.0),
+                proposal.height.unwrap_or(400.0),
+            )
+        }
+
+        fn place(&self, _bounds: Rect, _children: &[&dyn SubView]) -> Vec<Rect> {
+            Vec::new()
+        }
+    }
+
+    let window = Window::new("", binding(WindowState::Normal), || {
+        FixedContainer::new(IdealOnlyLayout, ())
+    });
+    let mut runtime = runtime_window_for(window);
+    let _ = super::pump_window_semantics(&mut runtime, &Environment::new());
+    let (min, _) = runtime
+        .platform
+        .applied_size_limits()
+        .expect("runner must apply size limits on the pump");
+
+    assert_eq!(
+        min.expect("content-derived minimum must exist").width,
+        0.0,
+        "a valid zero minimum must not fall back to the content's ideal width"
+    );
+}
+
+#[test]
+fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
+    use std::{cell::Cell, rc::Rc};
+
+    let build_count = Rc::new(Cell::new(0));
+    let window = Window::new("", binding(WindowState::Normal), {
+        let build_count = Rc::clone(&build_count);
+        move || build_count.set(build_count.get() + 1)
+    });
+    let mut runtime = runtime_window_for(window);
+    let env = Environment::new();
+    let _ = pump_window_semantics(&mut runtime, &env);
+    assert_eq!(build_count.get(), 1);
+
+    runtime.platform.push_event(InputEvent::Resize {
+        width: 960,
+        height: 720,
+    });
+    runtime.platform.push_event(InputEvent::Resize {
+        width: 320,
+        height: 240,
+    });
+    runtime.platform.push_event(InputEvent::Resize {
+        width: 640,
+        height: 480,
+    });
+    let _ = handle_input_events(&mut runtime, &env);
+    let _ = pump_window_semantics(&mut runtime, &env);
+
+    assert_eq!(
+        build_count.get(),
+        1,
+        "resize must retain the existing view tree"
+    );
+    assert_eq!(runtime.platform.surface().size(), (640, 480));
+    assert_eq!(runtime.window.frame.get().width(), 640.0);
+    assert_eq!(runtime.window.frame.get().height(), 480.0);
 }
 
 fn runtime_window_for(window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
@@ -162,4 +263,64 @@ fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
             slow_frame_threshold_override: None,
         },
     )
+}
+
+struct RecoveringSurface {
+    inner: OffscreenSurface,
+    first_error: Option<SurfaceError>,
+    acquire_count: usize,
+    resize_count: usize,
+}
+
+impl RecoveringSurface {
+    fn new(first_error: SurfaceError) -> Self {
+        Self {
+            inner: pollster::block_on(OffscreenSurface::new_for_tests(
+                16,
+                16,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )),
+            first_error: Some(first_error),
+            acquire_count: 0,
+            resize_count: 0,
+        }
+    }
+}
+
+impl SurfaceProvider for RecoveringSurface {
+    fn adapter(&self) -> &wgpu::Adapter {
+        self.inner.adapter()
+    }
+
+    fn device(&self) -> &wgpu::Device {
+        self.inner.device()
+    }
+
+    fn queue(&self) -> &wgpu::Queue {
+        self.inner.queue()
+    }
+
+    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+        self.acquire_count += 1;
+        self.first_error
+            .take()
+            .map_or_else(|| self.inner.acquire(), Err)
+    }
+
+    fn present(&mut self, frame: SurfaceFrame) {
+        self.inner.present(frame);
+    }
+
+    fn size(&self) -> (u32, u32) {
+        self.inner.size()
+    }
+
+    fn format(&self) -> wgpu::TextureFormat {
+        self.inner.format()
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.resize_count += 1;
+        self.inner.resize(width, height);
+    }
 }
