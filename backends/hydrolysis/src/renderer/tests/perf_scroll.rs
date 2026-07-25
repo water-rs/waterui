@@ -9,15 +9,19 @@
 //! scale with the total — which these tests fail on.
 
 use core::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_core::layout::Point;
 use waterui_core::{AnyView, Dynamic};
-use waterui_layout::scroll::scroll;
-use waterui_layout::stack::VStack;
+use waterui_layout::scroll::{ScrollController, scroll};
+use waterui_layout::stack::{VStack, vstack};
 
 use waterui::ViewExt as _;
+use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 
 use super::test_environment;
@@ -93,6 +97,108 @@ fn lazy_scroll_cost_is_independent_of_total_rows() {
     assert!(
         large.scroll_misses <= small.scroll_misses * 2 + 64,
         "scroll cost scaled with total rows (virtualization regression): {small:?} vs {large:?}"
+    );
+}
+
+#[test]
+fn coordinate_jump_over_lazy_stack_materializes_only_the_target_window() {
+    const ROWS: usize = 100_000;
+    const TARGET_ROW: usize = 90_000;
+
+    let materialized = Arc::new(AtomicUsize::new(0));
+    let controller = ScrollController::new(Point::zero());
+    let builder = {
+        let materialized = Arc::clone(&materialized);
+        let controller = controller.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
+            let materialized = Arc::clone(&materialized);
+            AnyView::new(
+                scroll(VStack::for_each(rows, move |_| {
+                    materialized.fetch_add(1, Ordering::Relaxed);
+                    ().size(360.0, ROW_HEIGHT)
+                }))
+                .scroll_controller(&controller),
+            )
+        })
+    };
+    let env = test_environment();
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WINDOW_WIDTH, WINDOW_HEIGHT);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    let initial_materialized = materialized.load(Ordering::Relaxed);
+
+    controller.scroll_to(Point::new(0.0, TARGET_ROW as f32 * ROW_HEIGHT));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let jump_materialized = materialized.load(Ordering::Relaxed) - initial_materialized;
+
+    assert!(
+        initial_materialized < 64,
+        "initial lazy viewport materialized {initial_materialized} rows"
+    );
+    assert!(
+        jump_materialized < 64,
+        "deep coordinate jump materialized {jump_materialized} rows instead of one viewport"
+    );
+}
+
+#[test]
+fn indexed_list_jump_materializes_only_the_target_window() {
+    const ROWS: usize = 100_000;
+    const TARGET_ROW: usize = 90_000;
+
+    let materialized = Arc::new(AtomicUsize::new(0));
+    let controller = ScrollController::new(0usize);
+    let builder = {
+        let materialized = Arc::clone(&materialized);
+        let controller = controller.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
+            let materialized = Arc::clone(&materialized);
+            AnyView::new(
+                List::for_each(rows, move |row| {
+                    let index = row.into_inner();
+                    materialized.fetch_add(1, Ordering::Relaxed);
+                    let label = if index == TARGET_ROW {
+                        "Target row"
+                    } else {
+                        "Dataset row"
+                    };
+                    ListItem::new(vstack((text(label),)).size(360.0, ROW_HEIGHT))
+                })
+                .scroll_controller(&controller),
+            )
+        })
+    };
+    let env = test_environment();
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WINDOW_WIDTH, WINDOW_HEIGHT);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    let initial_materialized = materialized.load(Ordering::Relaxed);
+
+    controller.scroll_to(TARGET_ROW);
+    let jumped = runtime.pump_at(false, start + Duration::from_millis(16));
+    let settled = runtime.pump_at(false, start + Duration::from_millis(32));
+    #[cfg(not(feature = "accessibility"))]
+    let _ = (jumped, settled);
+    let jump_materialized = materialized.load(Ordering::Relaxed) - initial_materialized;
+
+    assert!(
+        initial_materialized < 128,
+        "initial List viewport materialized {initial_materialized} rows"
+    );
+    assert!(
+        jump_materialized < 128,
+        "indexed List jump materialized {jump_materialized} rows instead of one viewport"
+    );
+    #[cfg(feature = "accessibility")]
+    assert!(
+        [jumped.tree_update, settled.tree_update]
+            .into_iter()
+            .flatten()
+            .flat_map(|update| update.nodes)
+            .any(|(_, node)| node.label() == Some("Target row")),
+        "the indexed target row must intersect the settled viewport"
     );
 }
 

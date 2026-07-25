@@ -1,12 +1,12 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, VisibleSubviewCache,
-    WidgetRenderContext, local_interaction_state, materialize_list_item, materialize_list_row,
-    measure_list_intrinsic, measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
+    WidgetRenderContext, local_interaction_state, materialize_list_item, measure_list_intrinsic,
+    measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
 };
 use crate::scroll::ScrollHandle;
 #[cfg(feature = "accessibility")]
@@ -20,12 +20,20 @@ use waterui_core::views::Views;
 use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
-use crate::renderer::lazy::{resolve_visible_index_window, sum_cached_or_estimated};
+use crate::renderer::lazy::VirtualExtentIndex;
 use crate::widgets::{draw_scroll_indicators, widget_theme};
+use nami::watcher::BoxWatcherGuard;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
 type ListItemId = SelfId<RawId>;
+
+#[derive(Clone, Copy)]
+struct ListViewportAnchor {
+    id: ListItemId,
+    index: usize,
+    offset_within_row: f64,
+}
 
 /// Retained state for a list `Widget` node: the consumed config plus a per-widget
 /// cache of the visible rows' content sub-views, keyed by stable row id. Only the
@@ -35,27 +43,84 @@ pub(crate) struct ListRenderState {
     pub(crate) config: ListConfig,
     /// Estimated/measured row extents belong to this list, not to its render
     /// position in a backend-global slot array.
-    row_extents: RefCell<Vec<Option<f64>>>,
+    extent_index: RefCell<VirtualExtentIndex>,
     /// The scroll offset belongs to this semantic list node.
     scroll: RefCell<Option<ScrollHandle>>,
     /// Content sub-views for the rows currently in view, keyed by stable row id so a
     /// steady scroll reuses each visible row's node (keeping its reactive content
     /// live) and only builds rows entering the window.
     item_cache: RefCell<VisibleSubviewCache<ListItemId>>,
+    /// A membership change invalidates index-based extents, including reorder
+    /// operations whose collection length stays unchanged.
+    rows_dirty: Rc<Cell<bool>>,
+    /// Last programmatic scroll generation applied to this semantic list.
+    applied_scroll_generation: Cell<i32>,
+    /// A requested index stays pending until its measured row intersects the
+    /// concrete viewport. This is required when estimated and measured row
+    /// heights differ, especially for a jump to the final row.
+    pending_scroll: Cell<Option<(i32, usize)>>,
+    /// Stable top-row identity and intra-row offset from the previous frame.
+    /// Membership changes use this anchor so delete/move operations do not
+    /// visibly jump the viewport.
+    viewport_anchor: Cell<Option<ListViewportAnchor>>,
+    /// Concrete offset resolved from `viewport_anchor` after an extent reset.
+    pending_membership_offset: Cell<Option<f64>>,
+    /// A backend move action keeps the viewport's index fixed for the next
+    /// membership reconcile so the moved row visibly changes position.
+    preserve_anchor_index_once: Cell<bool>,
+    /// Collection membership watcher.
+    _guard: BoxWatcherGuard,
 }
 
 impl ListRenderState {
-    pub(crate) fn from_config(config: ListConfig) -> Self {
+    pub(crate) fn from_config(config: ListConfig, renderer: &HydrolysisRenderer) -> Self {
+        let rows_dirty = Rc::new(Cell::new(true));
+        let rows_dirty_for_watch = Rc::clone(&rows_dirty);
+        let signals = renderer.frame_signals();
+        let guard = config.contents.watch(.., move |_change| {
+            rows_dirty_for_watch.set(true);
+            signals.request_refresh();
+        });
         Self {
             config,
-            row_extents: RefCell::new(Vec::new()),
+            extent_index: RefCell::new(VirtualExtentIndex::default()),
             scroll: RefCell::new(None),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
+            rows_dirty,
+            applied_scroll_generation: Cell::new(0),
+            pending_scroll: Cell::new(None),
+            viewport_anchor: Cell::new(None),
+            pending_membership_offset: Cell::new(None),
+            preserve_anchor_index_once: Cell::new(false),
+            _guard: guard,
         }
     }
 
-    fn prepare_rows(&self, len: usize) {
-        self.row_extents.borrow_mut().resize(len, None);
+    fn prepare_rows(&self, len: usize, estimate: f64) {
+        let dirty = self.rows_dirty.replace(false);
+        if dirty || !self.extent_index.borrow().matches(len, estimate, 0.0) {
+            self.extent_index.borrow_mut().reset(len, estimate, 0.0);
+            let preserve_anchor_index = self.preserve_anchor_index_once.replace(false);
+            let membership_offset = self.viewport_anchor.get().and_then(|anchor| {
+                if len == 0 {
+                    return None;
+                }
+                let index = if preserve_anchor_index {
+                    anchor.index.min(len - 1)
+                } else if self.config.contents.get_id(anchor.index) == Some(anchor.id) {
+                    anchor.index
+                } else {
+                    (0..len)
+                        .find(|index| self.config.contents.get_id(*index) == Some(anchor.id))
+                        .unwrap_or_else(|| anchor.index.min(len - 1))
+                };
+                Some(
+                    self.extent_index.borrow().offset_of(index)
+                        + anchor.offset_within_row.min(estimate),
+                )
+            });
+            self.pending_membership_offset.set(membership_offset);
+        }
     }
 
     fn bind_scroll(
@@ -85,6 +150,79 @@ impl ListRenderState {
             handle
         }
     }
+
+    fn apply_scroll_request(
+        &self,
+        renderer: &mut HydrolysisRenderer,
+        handle: &ScrollHandle,
+        row_count: usize,
+    ) {
+        let Some(controller) = &self.config.scroll_controller else {
+            return;
+        };
+        let generation = renderer.read_signal(&controller.generation());
+        if generation != self.applied_scroll_generation.get()
+            && self
+                .pending_scroll
+                .get()
+                .is_none_or(|(pending_generation, _)| pending_generation != generation)
+        {
+            let index = renderer.read_signal(&controller.target());
+            assert!(
+                index < row_count,
+                "List scroll target {index} exceeds collection length {row_count}"
+            );
+            self.pending_scroll.set(Some((generation, index)));
+        }
+        let Some((pending_generation, index)) = self.pending_scroll.get() else {
+            return;
+        };
+        assert!(
+            index < row_count,
+            "List scroll target {index} exceeds collection length {row_count}"
+        );
+        let offset = self.extent_index.borrow().offset_of(index);
+        let _ = handle.scroll_to(0.0, offset);
+        let extent_index = self.extent_index.borrow();
+        let Some(extent) = extent_index.measured(index) else {
+            return;
+        };
+        let metrics = handle.metrics();
+        let row_start = extent_index.offset_of(index);
+        let row_end = row_start + extent;
+        let viewport_end = metrics.offset_y + metrics.viewport_height;
+        if row_end > metrics.offset_y && row_start < viewport_end {
+            self.applied_scroll_generation.set(pending_generation);
+            self.pending_scroll.set(None);
+        }
+    }
+
+    fn apply_membership_anchor(&self, handle: &ScrollHandle) {
+        if let Some(offset) = self.pending_membership_offset.take() {
+            let _ = handle.scroll_to(0.0, offset);
+        }
+    }
+
+    fn record_viewport_anchor(&self, metrics: crate::scroll::ScrollMetrics, row_count: usize) {
+        let window = self
+            .extent_index
+            .borrow()
+            .visible_window(metrics.offset_y, metrics.offset_y + metrics.viewport_height);
+        if window.start >= row_count {
+            self.viewport_anchor.set(None);
+            return;
+        }
+        let id = self
+            .config
+            .contents
+            .get_id(window.start)
+            .unwrap_or_else(|| panic!("hydrolysis List item {} has no stable id", window.start));
+        self.viewport_anchor.set(Some(ListViewportAnchor {
+            id,
+            index: window.start,
+            offset_within_row: (metrics.offset_y - window.leading_offset).max(0.0),
+        }));
+    }
 }
 
 impl HydroNativeView for Native<ListConfig> {
@@ -104,33 +242,24 @@ pub(crate) fn list_accessibility(
     let list = &state.config;
     let row_count_signal = list.contents.len();
     let row_count = renderer.read_signal(&row_count_signal);
-    state.prepare_rows(row_count);
-    let viewport = ctx.bounds;
     let list_metrics = crate::widgets::widget_theme(env).list_metrics();
-    let content_height = sum_cached_or_estimated(
-        &state.row_extents.borrow(),
-        list_metrics.one_line_row_height,
-    )
-    .max(viewport.height());
+    state.prepare_rows(row_count, list_metrics.one_line_row_height);
+    let viewport = ctx.bounds;
+    let content_height = state
+        .extent_index
+        .borrow()
+        .total_extent()
+        .max(viewport.height());
     let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
+    state.apply_membership_anchor(&handle);
+    state.apply_scroll_request(renderer, &handle, row_count);
     #[cfg(feature = "accessibility")]
     {
         let metrics = handle.metrics();
-        let window = resolve_visible_index_window(
-            row_count,
-            metrics.offset_y,
-            metrics.offset_y + viewport.height(),
-            |index| {
-                let cached_extent = state.row_extents.borrow()[index];
-                if let Some(extent) = cached_extent {
-                    return extent;
-                }
-                let (_item, extent) =
-                    materialize_list_row(&list.contents, index, renderer.state_mut(), env);
-                state.row_extents.borrow_mut()[index] = Some(extent);
-                extent
-            },
-        );
+        let window = state
+            .extent_index
+            .borrow()
+            .visible_window(metrics.offset_y, metrics.offset_y + viewport.height());
         let mut list_node = AccessibilityNode::new(
             renderer.resolve_accessibility_role(env, AccessibilityNodeRole::List),
         );
@@ -148,13 +277,13 @@ pub(crate) fn list_accessibility(
             let row_env = env.clone();
             let item = materialize_list_item(&list.contents, index, &row_env);
             let row_height = {
-                let cached_extent = state.row_extents.borrow()[index];
+                let cached_extent = state.extent_index.borrow().measured(index);
                 if let Some(extent) = cached_extent {
                     extent
                 } else {
                     let extent =
                         measure_list_item_row_height(&item, renderer.state_mut(), &row_env);
-                    state.row_extents.borrow_mut()[index] = Some(extent);
+                    state.extent_index.borrow_mut().set_measured(index, extent);
                     extent
                 }
             };
@@ -247,38 +376,36 @@ pub(crate) fn render_list_parts(
     };
     let editing = ctx.renderer_mut().read_signal(&editing);
     let row_count = ctx.renderer_mut().read_signal(&row_count_signal);
-    state.borrow().prepare_rows(row_count);
+    let list_metrics = widget_theme(env).list_metrics();
+    state
+        .borrow()
+        .prepare_rows(row_count, list_metrics.one_line_row_height);
 
     let viewport = ctx.bounds;
-    let list_metrics = widget_theme(env).list_metrics();
-    let content_height = sum_cached_or_estimated(
-        &state.borrow().row_extents.borrow(),
-        list_metrics.one_line_row_height,
-    )
-    .max(viewport.height());
+    let content_height = state
+        .borrow()
+        .extent_index
+        .borrow()
+        .total_extent()
+        .max(viewport.height());
     let handle = state
         .borrow()
         .bind_scroll(viewport.width(), viewport.height(), content_height);
-    let metrics = handle.metrics();
+    state.borrow().apply_membership_anchor(&handle);
+    state
+        .borrow()
+        .apply_scroll_request(ctx.renderer_mut(), &handle, row_count);
+    let mut metrics = handle.metrics();
     let needs_viewport_clip = metrics.max_y > 0.0;
     if needs_viewport_clip {
         ctx.push_layer_rect(1.0, viewport);
     }
 
-    let window = resolve_visible_index_window(
-        row_count,
-        metrics.offset_y,
-        metrics.offset_y + viewport.height(),
-        |index| {
-            let cached_extent = state.borrow().row_extents.borrow()[index];
-            if let Some(extent) = cached_extent {
-                return extent;
-            }
-            let (_item, extent) = materialize_list_row(&contents, index, ctx.state_mut(), env);
-            state.borrow().row_extents.borrow_mut()[index] = Some(extent);
-            extent
-        },
-    );
+    let window = state
+        .borrow()
+        .extent_index
+        .borrow()
+        .visible_window(metrics.offset_y, metrics.offset_y + viewport.height());
     // The delete/move handlers (`Option<Box<dyn Fn>>`) stay owned by the retained
     // config; per-row tap targets invoke them through the shared cell so they are
     // reused every flush instead of being consumed.
@@ -299,12 +426,16 @@ pub(crate) fn render_list_parts(
             .checked_mul(3)
             .expect("hydrolysis List interaction identity overflow");
         let row_height = {
-            let cached_extent = state.borrow().row_extents.borrow()[index];
+            let cached_extent = state.borrow().extent_index.borrow().measured(index);
             if let Some(extent) = cached_extent {
                 extent
             } else {
                 let extent = measure_list_item_row_height(&item, ctx.state_mut(), &row_env);
-                state.borrow().row_extents.borrow_mut()[index] = Some(extent);
+                state
+                    .borrow()
+                    .extent_index
+                    .borrow_mut()
+                    .set_measured(index, extent);
                 extent
             }
         };
@@ -382,12 +513,17 @@ pub(crate) fn render_list_parts(
             }
             if let Some((hit_bounds, _, press_slot)) = up_interaction {
                 let state = Rc::clone(state);
+                let action_env = row_env.clone();
                 ctx.renderer_mut().register_interactive_pointer_target(
                     hit_bounds,
                     press_slot,
-                    move |_renderer, _point, env| {
+                    move |_renderer, _point, _env| {
+                        state.borrow().preserve_anchor_index_once.set(true);
                         if let Some(action) = state.borrow().config.on_move.as_ref() {
-                            (action)(env, Move::new(index, index - 1));
+                            (action)(&action_env, Move::new(index, index - 1));
+                        }
+                        if !state.borrow().rows_dirty.get() {
+                            state.borrow().preserve_anchor_index_once.set(false);
                         }
                         true
                     },
@@ -395,12 +531,17 @@ pub(crate) fn render_list_parts(
             }
             if let Some((hit_bounds, _, press_slot)) = down_interaction {
                 let state = Rc::clone(state);
+                let action_env = row_env.clone();
                 ctx.renderer_mut().register_interactive_pointer_target(
                     hit_bounds,
                     press_slot,
-                    move |_renderer, _point, env| {
+                    move |_renderer, _point, _env| {
+                        state.borrow().preserve_anchor_index_once.set(true);
                         if let Some(action) = state.borrow().config.on_move.as_ref() {
-                            (action)(env, Move::new(index, index + 1));
+                            (action)(&action_env, Move::new(index, index + 1));
+                        }
+                        if !state.borrow().rows_dirty.get() {
+                            state.borrow().preserve_anchor_index_once.set(false);
                         }
                         true
                     },
@@ -435,12 +576,13 @@ pub(crate) fn render_list_parts(
                 );
             }
             let state = Rc::clone(state);
+            let action_env = row_env.clone();
             ctx.renderer_mut().register_interactive_pointer_target(
                 delete_hit_bounds,
                 delete_press_slot,
-                move |_renderer, _point, env| {
+                move |_renderer, _point, _env| {
                     if let Some(action) = state.borrow().config.on_delete.as_ref() {
-                        (action)(env, index);
+                        (action)(&action_env, index);
                     }
                     true
                 },
@@ -487,6 +629,25 @@ pub(crate) fn render_list_parts(
     }
     // Evict content sub-views for rows no longer in the visible window.
     state.borrow().item_cache.borrow_mut().end_frame();
+
+    if state.borrow().pending_scroll.get().is_some() {
+        let content_height = state
+            .borrow()
+            .extent_index
+            .borrow()
+            .total_extent()
+            .max(viewport.height());
+        let rebound =
+            state
+                .borrow()
+                .bind_scroll(viewport.width(), viewport.height(), content_height);
+        state
+            .borrow()
+            .apply_scroll_request(ctx.renderer_mut(), &rebound, row_count);
+        metrics = rebound.metrics();
+        ctx.renderer_mut().frame_signals().request_refresh();
+    }
+    state.borrow().record_viewport_anchor(metrics, row_count);
 
     if needs_viewport_clip {
         ctx.pop_layer();

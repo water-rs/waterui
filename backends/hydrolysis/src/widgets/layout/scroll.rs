@@ -14,7 +14,7 @@ use crate::widgets::widget_theme;
 
 impl HydroNativeView for Native<ScrollView> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
-        let (_axis, content) = view.as_inner().as_parts();
+        let (_axis, content, _controller) = view.as_inner().as_parts();
         measure_view_intrinsic(content, state, env)
     }
 }

@@ -172,9 +172,9 @@ pub(crate) struct LazyStackNode {
     pub(super) views: AnyViews<AnyView>,
     /// Environment captured at build, used to materialize and style items.
     pub(super) env: Environment,
-    /// Per-index main-axis extent cache, persisting across flushes so a steady
-    /// scroll only measures items entering the visible window.
-    pub(super) item_extents: RefCell<Vec<Option<f64>>>,
+    /// Indexed measured/estimated extents. Deep jumps resolve through its
+    /// Fenwick tree without materializing preceding items.
+    pub(super) extent_index: RefCell<VirtualExtentIndex>,
     /// Retained node sub-views for the items currently in the visible window, keyed
     /// by stable id so a steady scroll reuses each visible item's node (keeping its
     /// reactive content live) and only builds items entering the window.
@@ -182,6 +182,9 @@ pub(crate) struct LazyStackNode {
     /// Estimated extent for not-yet-measured items, seeded from the first measure;
     /// used to size the scroll content without measuring the whole collection.
     pub(super) estimate: Cell<f64>,
+    /// Membership changes reset index-based measurements, including moves that
+    /// preserve the collection length.
+    pub(super) dirty: Rc<Cell<bool>>,
     /// Stable allocation whose address is this collection's patch dirty-key,
     /// owned so the key cannot be reused by another allocation while it lives.
     pub(super) _dirty_key: Rc<()>,
@@ -581,21 +584,27 @@ impl LazyStackNode {
         let (size, _) = self.measure_item(state, 0, cross);
         let extent = self.main_extent(size);
         self.estimate.set(extent.max(1.0));
-        self.item_extents.borrow_mut()[0] = Some(extent);
+        self.prepare_extent_index(self.views.len().get());
+        self.extent_index.borrow_mut().set_measured(0, extent);
     }
 
-    /// Total content extent along the main axis: cached extents where known,
-    /// estimated elsewhere, plus inter-item spacing.
-    fn content_main_extent(&self, count: usize) -> f64 {
-        let extents = self.item_extents.borrow();
-        let sum = sum_cached_or_estimated(&extents, self.estimate.get());
-        sum + self.spacing() * count.saturating_sub(1) as f64
+    fn prepare_extent_index(&self, count: usize) {
+        let estimate = self.estimate.get();
+        if count == 0 || estimate <= 0.0 {
+            return;
+        }
+        let spacing = self.spacing();
+        let dirty = self.dirty.replace(false);
+        if dirty || !self.extent_index.borrow().matches(count, estimate, spacing) {
+            self.extent_index
+                .borrow_mut()
+                .reset(count, estimate, spacing);
+        }
     }
 
     #[allow(clippy::cast_possible_truncation)]
     pub(super) fn measure(&self, state: &mut HydroState, proposal: ProposalSize) -> ViewDimensions {
         let count = self.views.len().get();
-        self.item_extents.borrow_mut().resize(count, None);
         if count == 0 {
             return ViewDimensions::new(Size::zero());
         }
@@ -604,7 +613,8 @@ impl LazyStackNode {
             LazyStackAxisConfig::Horizontal { .. } => proposal.height.unwrap_or(0.0),
         };
         self.ensure_estimate(state, f64::from(cross));
-        let main = self.content_main_extent(count) as f32;
+        self.prepare_extent_index(count);
+        let main = self.extent_index.borrow().total_extent() as f32;
         let size = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => Size::new(cross, main),
             LazyStackAxisConfig::Horizontal { .. } => Size::new(main, cross),
@@ -621,7 +631,6 @@ impl LazyStackNode {
         _env: &Environment,
     ) {
         let count = self.views.len().get();
-        self.item_extents.borrow_mut().resize(count, None);
         if count == 0 {
             return;
         }
@@ -630,6 +639,7 @@ impl LazyStackNode {
             LazyStackAxisConfig::Horizontal { .. } => ctx.bounds.height(),
         };
         self.ensure_estimate(&mut renderer.state, cross);
+        self.prepare_extent_index(count);
         self.item_cache.borrow_mut().begin_frame();
         let visible = renderer
             .lazy
@@ -642,20 +652,10 @@ impl LazyStackNode {
             LazyStackAxisConfig::Horizontal { .. } => (visible.x0, visible.x1),
         };
         let spacing = self.spacing();
-        let window = resolve_visible_index_window(count, visible_start, visible_end, |index| {
-            let cached = self.item_extents.borrow()[index];
-            let extent = cached.unwrap_or_else(|| {
-                let (size, _) = self.measure_item(&mut renderer.state, index, cross);
-                let extent = self.main_extent(size);
-                self.item_extents.borrow_mut()[index] = Some(extent);
-                extent
-            });
-            if index + 1 < count {
-                extent + spacing
-            } else {
-                extent
-            }
-        });
+        let window = self
+            .extent_index
+            .borrow()
+            .visible_window(visible_start, visible_end);
         let mut cursor = window.leading_offset;
         for index in window.start..window.end {
             let id = self
@@ -681,7 +681,7 @@ impl LazyStackNode {
                 LazyStackAxisConfig::Vertical { .. } => child_rect.height(),
                 LazyStackAxisConfig::Horizontal { .. } => child_rect.width(),
             };
-            self.item_extents.borrow_mut()[index] = Some(extent);
+            self.extent_index.borrow_mut().set_measured(index, extent);
             {
                 let env = &self.env;
                 let views = &self.views;

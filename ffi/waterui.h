@@ -2942,6 +2942,9 @@ typedef struct WuiArray_WuiRect {
 typedef struct WuiScrollView {
   enum WuiAxis axis;
   struct WuiAnyView *content;
+  WuiComputed_f32 *target_x;
+  WuiComputed_f32 *target_y;
+  WuiComputed_i32 *scroll_generation;
 } WuiScrollView;
 
 /**
@@ -2994,6 +2997,18 @@ typedef struct WuiList {
    * Optional move callback (null if not reorderable).
    */
   struct WuiMoveAction *on_move;
+  /**
+   * Optional requested row index (null when uncontrolled).
+   */
+  WuiComputed_i32 *target_index;
+  /**
+   * Optional scroll request generation (null when uncontrolled).
+   */
+  WuiComputed_i32 *scroll_generation;
+  /**
+   * Whether rows carry semantic section markers.
+   */
+  bool uses_sections;
 } WuiList;
 
 typedef struct WuiTable {

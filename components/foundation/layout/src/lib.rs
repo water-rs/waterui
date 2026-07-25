@@ -1,7 +1,10 @@
 #![no_std]
 #![cfg_attr(
     test,
-    allow(clippy::float_cmp, reason = "tests assert exact layout geometry values")
+    allow(
+        clippy::float_cmp,
+        reason = "tests assert exact layout geometry values"
+    )
 )]
 //! Layout building blocks for `WaterUI`.
 //!
@@ -53,15 +56,15 @@ pub mod measure;
 mod modifiers;
 
 pub use collections::{grid, scroll};
-pub use measure::measure_children;
 pub use containers::{absolute, collection_transition, container, divider, frame, spacer};
+pub use measure::measure_children;
 pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
 
 pub use divider::Divider;
 pub use spacer::{Spacer, spacer};
 pub mod stack;
 
-pub use scroll::{ScrollView, scroll};
+pub use scroll::{ScrollController, ScrollView, scroll};
 
 pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
 pub use collection_transition::{CollectionTransition, collection_transition};

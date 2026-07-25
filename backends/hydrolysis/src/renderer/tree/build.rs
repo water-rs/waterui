@@ -420,11 +420,13 @@ impl RenderNode {
         };
         let view = match view.downcast::<Native<ScrollView>>() {
             Ok(scroll) => {
-                let (axis, content) = (*scroll).into_inner().into_inner();
+                let (axis, content, controller) = (*scroll).into_inner().into_inner();
                 let content = normalize_layout_view(content, env);
                 return RenderNode::Scroll(Box::new(ScrollNode {
                     axis,
                     child: RenderNode::build(content, env, renderer),
+                    controller,
+                    applied_scroll_generation: Cell::new(0),
                     handle: None,
                     content_size: Size::zero(),
                     viewport: Size::zero(),
@@ -537,7 +539,7 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<ListConfig>>() {
-            Ok(list) => return RenderNode::build_list((*list).into_inner(), env),
+            Ok(list) => return RenderNode::build_list((*list).into_inner(), env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<TableConfig>>() {
@@ -742,20 +744,24 @@ impl RenderNode {
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
         let dirty_key = Rc::new(());
+        let dirty = Rc::new(Cell::new(true));
         let key = Rc::as_ptr(&dirty_key) as usize;
         let signals = renderer.signals.clone();
+        let dirty_for_watch = Rc::clone(&dirty);
         let guard = views.watch(.., move |_changed| {
             // Membership changed: request a fine-grained refresh; the flush re-reads
             // the collection length/items and re-resolves the visible window.
+            dirty_for_watch.set(true);
             signals.mark_collection_dirty(key, 0);
         });
         RenderNode::LazyStack(Box::new(LazyStackNode {
             axis,
             views,
             env: env.clone(),
-            item_extents: RefCell::new(Vec::new()),
+            extent_index: RefCell::new(VirtualExtentIndex::default()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
             estimate: Cell::new(0.0),
+            dirty,
             _dirty_key: dirty_key,
             _guard: guard,
         }))

@@ -55,13 +55,16 @@ impl GtkComponent for Native<LazyContainer> {
         factory.connect_bind(move |_, item| {
             let list_item = item.downcast_ref::<gtk4::ListItem>().unwrap();
             let id = list_item_id(list_item);
-            let index = (0..contents_clone.len().get())
-                .find(|index| {
-                    contents_clone
-                        .get_id(*index)
-                        .is_some_and(|candidate| i32::from(*candidate) == id)
-                })
-                .expect("GTK LazyContainer model ID must exist in WaterUI contents");
+            let index = usize::try_from(list_item.position())
+                .expect("GTK LazyContainer position must fit in usize");
+            let current_id = contents_clone
+                .get_id(index)
+                .expect("GTK LazyContainer position must exist in WaterUI contents");
+            assert_eq!(
+                i32::from(*current_id),
+                id,
+                "GTK LazyContainer model position must match WaterUI contents"
+            );
 
             // Reconstruct view lazily
             if let Some(view) = contents_clone.get_view(index) {

@@ -760,17 +760,6 @@ pub(crate) fn measure_list_item_row_height(
     (f64::from(intrinsic.height) + metrics.vertical_inset * 2.0).max(metrics.one_line_row_height)
 }
 
-pub(crate) fn materialize_list_row(
-    contents: &impl Views<View = ListItem>,
-    index: usize,
-    state: &mut HydroState,
-    env: &Environment,
-) -> (ListItem, f64) {
-    let item = materialize_list_item(contents, index, env);
-    let row_height = measure_list_item_row_height(&item, state, env);
-    (item, row_height)
-}
-
 pub(crate) fn measure_progress_intrinsic(
     progress: &ProgressConfig,
     _state: &mut HydroState,

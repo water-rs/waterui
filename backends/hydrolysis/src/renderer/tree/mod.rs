@@ -64,8 +64,7 @@ use subview::*;
 
 use super::*;
 use crate::renderer::lazy::{
-    LazyStackAxisConfig, lazy_stack_axis_config, place_lazy_stack_item,
-    resolve_visible_index_window, sum_cached_or_estimated,
+    LazyStackAxisConfig, VirtualExtentIndex, lazy_stack_axis_config, place_lazy_stack_item,
 };
 use crate::scroll::ScrollHandle;
 use core::cell::Cell;
@@ -73,9 +72,9 @@ use nami::Computed;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::MainThreadBound;
 use waterui_core::id::{Id as RawId, SelfId};
-use waterui_core::layout::{Rect, Size};
+use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::views::{AnyViews, Views};
-use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
+use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
 type CollectionItemId = SelfId<RawId>;

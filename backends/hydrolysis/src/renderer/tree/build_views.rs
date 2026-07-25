@@ -96,10 +96,14 @@ impl RenderNode {
     /// a changing collection length stay live; the `LazyListController` row-extent
     /// cache (keyed by body-order cursor slot) persists across frames. Stretches to
     /// fill the proposal (`StretchAxis::Both`, read from the config).
-    pub(super) fn build_list(config: ListConfig, env: &Environment) -> RenderNode {
+    pub(super) fn build_list(
+        config: ListConfig,
+        env: &Environment,
+        renderer: &HydrolysisRenderer,
+    ) -> RenderNode {
         use crate::widgets::layout::list::ListRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = Rc::new(RefCell::new(ListRenderState::from_config(config)));
+        let state = Rc::new(RefCell::new(ListRenderState::from_config(config, renderer)));
         Self::build_widget(state, stretch, env)
     }
 

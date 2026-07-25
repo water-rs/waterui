@@ -1,7 +1,7 @@
 use crate::components::text::WuiHorizontalAlignment;
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use core::ffi::c_void;
-use nami::Signal;
+use nami::{Signal, SignalExt};
 use waterui_layout::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
     VerticalAlignment, ViewDimensions,
@@ -657,15 +657,38 @@ into_ffi! {Axis, non_exhaustive,
 pub struct WuiScrollView {
     pub axis: WuiAxis,
     pub content: *mut WuiAnyView, // Pointer to the content view
+    pub target_x: *mut crate::reactive::WuiComputed<f32>,
+    pub target_y: *mut crate::reactive::WuiComputed<f32>,
+    pub scroll_generation: *mut crate::reactive::WuiComputed<i32>,
 }
 
 impl IntoFFI for ScrollView {
     type FFI = WuiScrollView;
     fn into_ffi(self) -> Self::FFI {
-        let (axis, content) = self.into_inner();
+        let (axis, content, controller) = self.into_inner();
+        let (target_x, target_y, scroll_generation) = controller.map_or_else(
+            || {
+                (
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+            },
+            |controller| {
+                let target = controller.target();
+                (
+                    target.clone().map(|point| point.x).computed().into_ffi(),
+                    target.map(|point| point.y).computed().into_ffi(),
+                    controller.generation().into_ffi(),
+                )
+            },
+        );
         WuiScrollView {
             axis: axis.into_ffi(),
             content: content.into_ffi(),
+            target_x,
+            target_y,
+            scroll_generation,
         }
     }
 }

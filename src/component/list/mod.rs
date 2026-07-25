@@ -19,8 +19,10 @@ use waterui_core::{
     AnyView, Environment, Native, NativeView, View,
     handler::{AnyViewBuilder, Handler, shared_action},
     id::Identifiable,
+    impl_extractor,
     layout::StretchAxis,
 };
+use waterui_layout::scroll::ScrollController;
 
 mod content;
 mod section;
@@ -42,6 +44,9 @@ pub struct ListDelete(pub usize);
 /// Per-row move payload injected into list move handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ListMove(pub Move);
+
+impl_extractor!(ListDelete);
+impl_extractor!(ListMove);
 
 impl Move {
     /// Creates a new move operation.
@@ -79,6 +84,10 @@ pub struct ListConfig {
     pub on_delete: Option<OnDelete>,
     /// Optional callback when items are moved/reordered.
     pub on_move: Option<OnMove>,
+    /// Optional programmatic item-index scroll controller.
+    pub scroll_controller: Option<ScrollController<usize>>,
+    /// Whether rows carry semantic section markers.
+    pub uses_sections: bool,
 }
 
 impl_debug!(ListConfig);
@@ -91,7 +100,10 @@ impl NativeView for ListConfig {
 
 /// A component that displays items in a list format.
 #[derive(Debug)]
-pub struct List<V: Views<View = ListItem> = AnyViews<ListItem>>(V);
+pub struct List<V: Views<View = ListItem> = AnyViews<ListItem>> {
+    contents: V,
+    uses_sections: bool,
+}
 
 impl<V> List<V>
 where
@@ -99,7 +111,10 @@ where
 {
     /// Creates a new list with the specified contents.
     pub const fn new(contents: V) -> Self {
-        Self(contents)
+        Self {
+            contents,
+            uses_sections: true,
+        }
     }
 
     /// Enables edit mode with the given reactive signal.
@@ -108,10 +123,12 @@ where
     #[must_use]
     pub fn editing(self, editing: impl IntoComputed<bool>) -> ListBuilder<V> {
         ListBuilder {
-            contents: self.0,
+            contents: self.contents,
             editing: editing.into_computed(),
             on_delete: None,
             on_move: None,
+            scroll_controller: None,
+            uses_sections: self.uses_sections,
         }
     }
 
@@ -122,10 +139,12 @@ where
         H: Handler<Args, ()>,
     {
         ListBuilder {
-            contents: self.0,
+            contents: self.contents,
             editing: Computed::new(false),
             on_delete: Some(list_delete_action(on_delete)),
             on_move: None,
+            scroll_controller: None,
+            uses_sections: self.uses_sections,
         }
     }
 
@@ -136,10 +155,25 @@ where
         H: Handler<Args, ()>,
     {
         ListBuilder {
-            contents: self.0,
+            contents: self.contents,
             editing: Computed::new(false),
             on_delete: None,
             on_move: Some(list_move_action(on_move)),
+            scroll_controller: None,
+            uses_sections: self.uses_sections,
+        }
+    }
+
+    /// Connects a controller that jumps the list to a requested item index.
+    #[must_use]
+    pub fn scroll_controller(self, controller: &ScrollController<usize>) -> ListBuilder<V> {
+        ListBuilder {
+            contents: self.contents,
+            editing: Computed::new(false),
+            on_delete: None,
+            on_move: None,
+            scroll_controller: Some(controller.clone()),
+            uses_sections: self.uses_sections,
         }
     }
 }
@@ -150,9 +184,16 @@ where
     C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> ListItem,
 {
-    /// Creates a new list by iterating over a collection and generating items.
+    /// Creates a lazy list over an identity-keyed reactive collection.
+    ///
+    /// Renderers request only rows in the visible viewport. Programmatic jumps
+    /// through [`ScrollController`] therefore do not materialize preceding rows.
+    /// Use [`List::content`] instead when rows carry semantic section markers.
     pub const fn for_each(data: C, generator: F) -> Self {
-        Self(ForEach::new(data, generator))
+        Self {
+            contents: ForEach::new(data, generator),
+            uses_sections: false,
+        }
     }
 }
 
@@ -169,7 +210,10 @@ impl List<BuiltViews> {
     pub fn content(content: impl ListContent) -> Self {
         let mut sink = ListItemSink::new();
         content.collect_items(&mut sink);
-        Self(BuiltViews::new(sink))
+        Self {
+            contents: BuiltViews::new(sink),
+            uses_sections: true,
+        }
     }
 }
 
@@ -235,10 +279,12 @@ where
 
     fn config(self) -> Self::Config {
         ListConfig {
-            contents: SharedAnyViews::new(self.0),
+            contents: SharedAnyViews::new(self.contents),
             editing: Computed::new(false),
             on_delete: None,
             on_move: None,
+            scroll_controller: None,
+            uses_sections: self.uses_sections,
         }
     }
 }
@@ -247,7 +293,10 @@ impl ViewConfiguration for ListConfig {
     type View = List<SharedAnyViews<ListItem>>;
 
     fn render(self) -> Self::View {
-        List::new(self.contents)
+        List {
+            contents: self.contents,
+            uses_sections: self.uses_sections,
+        }
     }
 }
 
@@ -286,6 +335,8 @@ pub struct ListBuilder<V: Views<View = ListItem>> {
     editing: Computed<bool>,
     on_delete: Option<OnDelete>,
     on_move: Option<OnMove>,
+    scroll_controller: Option<ScrollController<usize>>,
+    uses_sections: bool,
 }
 
 impl<V: Views<View = ListItem>> core::fmt::Debug for ListBuilder<V> {
@@ -324,6 +375,13 @@ where
         self.on_move = Some(list_move_action(on_move));
         self
     }
+
+    /// Connects a controller that jumps the list to a requested item index.
+    #[must_use]
+    pub fn scroll_controller(mut self, controller: &ScrollController<usize>) -> Self {
+        self.scroll_controller = Some(controller.clone());
+        self
+    }
 }
 
 impl<V> ConfigurableView for ListBuilder<V>
@@ -338,6 +396,8 @@ where
             editing: self.editing,
             on_delete: self.on_delete,
             on_move: self.on_move,
+            scroll_controller: self.scroll_controller,
+            uses_sections: self.uses_sections,
         }
     }
 }
