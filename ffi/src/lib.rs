@@ -152,8 +152,6 @@ macro_rules! export {
                 vm: *mut core::ffi::c_void,
                 _reserved: *mut core::ffi::c_void,
             ) -> i32 {
-                // Initialize Android context (ndk_context)
-                unsafe { $crate::__android_init(vm) };
                 // Initialize JNI module (cached classes, JavaVM reference)
                 // Note: We use __jni_init which is conditionally defined based on
                 // the android-jni feature in waterui-ffi crate (not the calling crate).
@@ -266,14 +264,6 @@ unsafe fn __init_impl() {
     init_local_executor(waterui::task::monitored_local_executor(
         native_executor::NativeExecutor::new(),
     ));
-}
-
-#[cfg(target_os = "android")]
-pub unsafe fn __android_init(vm: *mut core::ffi::c_void) {
-    tracing::debug!("Initializing Android context for WaterUI FFI");
-    unsafe {
-        ndk_context::initialize_android_context(vm, core::ptr::null_mut());
-    }
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.

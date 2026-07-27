@@ -14,11 +14,11 @@ use alloc::vec::Vec;
 #[cfg(target_os = "android")]
 use core::ffi::c_void;
 
-use jni::JNIEnv;
-use jni::objects::{GlobalRef, JClass, JObject, JObjectArray, JValue};
+use jni::objects::{Global, JClass, JObject, JObjectArray, JValue};
 #[cfg(target_os = "android")]
 use jni::sys::jboolean;
 use jni::sys::{jfloat, jint, jintArray, jlong, jobject, jobjectArray};
+use jni::{Env, EnvUnowned, jni_sig, jni_str};
 use nami::SignalExt;
 use std::sync::Arc;
 use waterui_layout::{
@@ -42,7 +42,7 @@ struct AndroidNativeWindow {
 #[cfg(target_os = "android")]
 impl AndroidNativeWindow {
     unsafe fn from_surface(env: *mut jni::sys::JNIEnv, surface: jobject) -> Option<Self> {
-        let ptr = unsafe { ndk_sys::ANativeWindow_fromSurface(env, surface) };
+        let ptr = unsafe { ndk_sys::ANativeWindow_fromSurface(env.cast(), surface.cast()) };
         (!ptr.is_null()).then_some(Self { ptr })
     }
 
@@ -77,7 +77,7 @@ fn require_native_window(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callAction<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
     env_ptr: jlong,
@@ -89,7 +89,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callAction<'local
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callSharedAction<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
     env_ptr: jlong,
@@ -101,19 +101,21 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callSharedAction<
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gestureFromPtr<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     gesture_ptr: jlong,
 ) -> jobject {
     use crate::jni::convert::jlong_to_ptr;
     let gesture = unsafe { jlong_to_ptr::<crate::gesture::WuiGesture>(gesture_ptr) };
     let gesture = unsafe { &*gesture };
-    crate::jni::convert::struct_to_java(&mut env, gesture).into_raw()
+    super::with_env(&mut env, |env| {
+        crate::jni::convert::struct_to_java(env, gesture).into_raw()
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropGesture<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     gesture_ptr: jlong,
 ) {
@@ -124,7 +126,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropGesture<'loca
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callIndexAction<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
     env_ptr: jlong,
@@ -137,7 +139,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callIndexAction<'
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callMoveAction<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
     env_ptr: jlong,
@@ -164,8 +166,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callMoveAction<'l
 struct JniSubView {
     /// VM capability captured from the JNI call that created this proxy.
     jvm: Arc<jni::JavaVM>,
-    /// Global reference to the Java SubViewStruct object
-    subview_ref: GlobalRef,
+    /// Global reference to the Java SubViewStruct object.
+    subview_ref: Global<JObject<'static>>,
     /// Stretch axis for layout
     stretch_axis: StretchAxis,
     /// Layout priority
@@ -174,26 +176,22 @@ struct JniSubView {
 
 impl SubView for JniSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        // Attach to JVM (may already be attached on main thread)
-        let mut env = self
-            .jvm
-            .attach_current_thread()
-            .expect("Failed to attach to JVM");
-
-        let width = proposal.width.unwrap_or(f32::NAN);
-        let height = proposal.height.unwrap_or(f32::NAN);
-
-        let dimensions_obj = env
-            .call_method(
-                &self.subview_ref,
-                "measureForLayout",
-                "(FF)Ldev/waterui/android/runtime/ViewDimensionsStruct;",
-                &[JValue::Float(width), JValue::Float(height)],
-            )
-            .expect("measureForLayout call failed")
-            .l()
-            .expect("measureForLayout should return object");
-        extract_view_dimensions(&mut env, &dimensions_obj)
+        super::with_attached_env(&self.jvm, |env| {
+            let width = proposal.width.unwrap_or(f32::NAN);
+            let height = proposal.height.unwrap_or(f32::NAN);
+            let dimensions_obj = env
+                .call_method(
+                    &self.subview_ref,
+                    jni_str!("measureForLayout"),
+                    jni_sig!("(FF)Ldev/waterui/android/runtime/ViewDimensionsStruct;"),
+                    &[JValue::Float(width), JValue::Float(height)],
+                )
+                .expect("measureForLayout call failed")
+                .l()
+                .expect("measureForLayout should return object");
+            extract_view_dimensions(env, &dimensions_obj)
+        })
+        .expect("Failed to attach to JVM")
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -212,23 +210,23 @@ impl SubView for JniSubView {
 }
 
 fn horizontal_alignment_to_java<'local>(
-    env: &mut JNIEnv<'local>,
+    env: &mut Env<'local>,
     alignment: HorizontalAlignment,
 ) -> JObject<'local> {
     let class = env
-        .find_class("dev/waterui/android/runtime/HorizontalAlignment")
+        .find_class(jni_str!("dev/waterui/android/runtime/HorizontalAlignment"))
         .expect("HorizontalAlignment class");
     let field_name = if alignment == HorizontalAlignment::Leading {
-        "LEADING"
+        jni_str!("LEADING")
     } else if alignment == HorizontalAlignment::Trailing {
-        "TRAILING"
+        jni_str!("TRAILING")
     } else {
-        "CENTER"
+        jni_str!("CENTER")
     };
     env.get_static_field(
         &class,
         field_name,
-        "Ldev/waterui/android/runtime/HorizontalAlignment;",
+        jni_sig!("Ldev/waterui/android/runtime/HorizontalAlignment;"),
     )
     .expect("HorizontalAlignment enum value")
     .l()
@@ -236,36 +234,36 @@ fn horizontal_alignment_to_java<'local>(
 }
 
 fn vertical_alignment_to_java<'local>(
-    env: &mut JNIEnv<'local>,
+    env: &mut Env<'local>,
     alignment: VerticalAlignment,
 ) -> JObject<'local> {
     let class = env
-        .find_class("dev/waterui/android/runtime/VerticalAlignment")
+        .find_class(jni_str!("dev/waterui/android/runtime/VerticalAlignment"))
         .expect("VerticalAlignment class");
     let field_name = if alignment == VerticalAlignment::Top {
-        "TOP"
+        jni_str!("TOP")
     } else if alignment == VerticalAlignment::Bottom {
-        "BOTTOM"
+        jni_str!("BOTTOM")
     } else if alignment == VerticalAlignment::FirstBaseline {
-        "FIRST_BASELINE"
+        jni_str!("FIRST_BASELINE")
     } else if alignment == VerticalAlignment::LastBaseline {
-        "LAST_BASELINE"
+        jni_str!("LAST_BASELINE")
     } else {
-        "CENTER"
+        jni_str!("CENTER")
     };
     env.get_static_field(
         &class,
         field_name,
-        "Ldev/waterui/android/runtime/VerticalAlignment;",
+        jni_sig!("Ldev/waterui/android/runtime/VerticalAlignment;"),
     )
     .expect("VerticalAlignment enum value")
     .l()
     .expect("vertical alignment is object")
 }
 
-fn extract_horizontal_alignment(env: &mut JNIEnv, alignment: &JObject) -> HorizontalAlignment {
+fn extract_horizontal_alignment(env: &mut Env, alignment: &JObject) -> HorizontalAlignment {
     let ordinal = env
-        .call_method(alignment, "ordinal", "()I", &[])
+        .call_method(alignment, jni_str!("ordinal"), jni_sig!("()I"), &[])
         .expect("horizontal alignment ordinal()")
         .i()
         .expect("horizontal alignment ordinal is int");
@@ -277,9 +275,9 @@ fn extract_horizontal_alignment(env: &mut JNIEnv, alignment: &JObject) -> Horizo
     }
 }
 
-fn extract_vertical_alignment(env: &mut JNIEnv, alignment: &JObject) -> VerticalAlignment {
+fn extract_vertical_alignment(env: &mut Env, alignment: &JObject) -> VerticalAlignment {
     let ordinal = env
-        .call_method(alignment, "ordinal", "()I", &[])
+        .call_method(alignment, jni_str!("ordinal"), jni_sig!("()I"), &[])
         .expect("vertical alignment ordinal()")
         .i()
         .expect("vertical alignment ordinal is int");
@@ -293,60 +291,64 @@ fn extract_vertical_alignment(env: &mut JNIEnv, alignment: &JObject) -> Vertical
     }
 }
 
-fn size_to_java<'local>(env: &mut JNIEnv<'local>, size: Size) -> JObject<'local> {
+fn size_to_java<'local>(env: &mut Env<'local>, size: Size) -> JObject<'local> {
     let class = env
-        .find_class("dev/waterui/android/runtime/SizeStruct")
+        .find_class(jni_str!("dev/waterui/android/runtime/SizeStruct"))
         .expect("SizeStruct class");
     env.new_object(
         &class,
-        "(FF)V",
+        jni_sig!("(FF)V"),
         &[JValue::Float(size.width), JValue::Float(size.height)],
     )
     .expect("create SizeStruct")
 }
 
 fn horizontal_guide_to_java<'local>(
-    env: &mut JNIEnv<'local>,
+    env: &mut Env<'local>,
     alignment: HorizontalAlignment,
     value: f32,
 ) -> JObject<'local> {
     let class = env
-        .find_class("dev/waterui/android/runtime/HorizontalGuideStruct")
+        .find_class(jni_str!(
+            "dev/waterui/android/runtime/HorizontalGuideStruct"
+        ))
         .expect("HorizontalGuideStruct class");
     let alignment = horizontal_alignment_to_java(env, alignment);
     env.new_object(
         &class,
-        "(Ldev/waterui/android/runtime/HorizontalAlignment;F)V",
+        jni_sig!("(Ldev/waterui/android/runtime/HorizontalAlignment;F)V"),
         &[JValue::Object(&alignment), JValue::Float(value)],
     )
     .expect("create HorizontalGuideStruct")
 }
 
 fn vertical_guide_to_java<'local>(
-    env: &mut JNIEnv<'local>,
+    env: &mut Env<'local>,
     alignment: VerticalAlignment,
     value: f32,
 ) -> JObject<'local> {
     let class = env
-        .find_class("dev/waterui/android/runtime/VerticalGuideStruct")
+        .find_class(jni_str!("dev/waterui/android/runtime/VerticalGuideStruct"))
         .expect("VerticalGuideStruct class");
     let alignment = vertical_alignment_to_java(env, alignment);
     env.new_object(
         &class,
-        "(Ldev/waterui/android/runtime/VerticalAlignment;F)V",
+        jni_sig!("(Ldev/waterui/android/runtime/VerticalAlignment;F)V"),
         &[JValue::Object(&alignment), JValue::Float(value)],
     )
     .expect("create VerticalGuideStruct")
 }
 
 fn view_dimensions_to_java<'local>(
-    env: &mut JNIEnv<'local>,
+    env: &mut Env<'local>,
     dimensions: &ViewDimensions,
 ) -> JObject<'local> {
     let size = size_to_java(env, dimensions.size);
 
     let horizontal_class = env
-        .find_class("dev/waterui/android/runtime/HorizontalGuideStruct")
+        .find_class(jni_str!(
+            "dev/waterui/android/runtime/HorizontalGuideStruct"
+        ))
         .expect("HorizontalGuideStruct class");
     let horizontal_guides: Vec<_> = dimensions
         .explicit_horizontal_guides()
@@ -354,18 +356,19 @@ fn view_dimensions_to_java<'local>(
         .collect();
     let horizontal_array = env
         .new_object_array(
-            horizontal_guides.len() as i32,
+            super::array_len(horizontal_guides.len()),
             &horizontal_class,
             JObject::null(),
         )
         .expect("create HorizontalGuideStruct array");
     for (index, guide) in horizontal_guides.iter().enumerate() {
-        env.set_object_array_element(&horizontal_array, index as i32, guide)
+        horizontal_array
+            .set_element(env, index, guide)
             .expect("set horizontal guide element");
     }
 
     let vertical_class = env
-        .find_class("dev/waterui/android/runtime/VerticalGuideStruct")
+        .find_class(jni_str!("dev/waterui/android/runtime/VerticalGuideStruct"))
         .expect("VerticalGuideStruct class");
     let vertical_guides: Vec<_> = dimensions
         .explicit_vertical_guides()
@@ -373,48 +376,45 @@ fn view_dimensions_to_java<'local>(
         .collect();
     let vertical_array = env
         .new_object_array(
-            vertical_guides.len() as i32,
+            super::array_len(vertical_guides.len()),
             &vertical_class,
             JObject::null(),
         )
         .expect("create VerticalGuideStruct array");
     for (index, guide) in vertical_guides.iter().enumerate() {
-        env.set_object_array_element(&vertical_array, index as i32, guide)
+        vertical_array
+            .set_element(env, index, guide)
             .expect("set vertical guide element");
     }
 
     let dimensions_class = env
-        .find_class("dev/waterui/android/runtime/ViewDimensionsStruct")
+        .find_class(jni_str!("dev/waterui/android/runtime/ViewDimensionsStruct"))
         .expect("ViewDimensionsStruct class");
-    env.new_object(
-        &dimensions_class,
-        "(Ldev/waterui/android/runtime/SizeStruct;[Ldev/waterui/android/runtime/HorizontalGuideStruct;[Ldev/waterui/android/runtime/VerticalGuideStruct;)V",
-        &[
-            JValue::Object(&size),
-            JValue::Object(&JObject::from(horizontal_array)),
-            JValue::Object(&JObject::from(vertical_array)),
-        ],
-    )
+    env.new_object(&dimensions_class, jni_sig!("(Ldev/waterui/android/runtime/SizeStruct;[Ldev/waterui/android/runtime/HorizontalGuideStruct;[Ldev/waterui/android/runtime/VerticalGuideStruct;)V"), &[
+        JValue::Object(&size),
+        JValue::Object(&JObject::from(horizontal_array)),
+        JValue::Object(&JObject::from(vertical_array)),
+    ],)
     .expect("create ViewDimensionsStruct")
 }
 
-fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimensions {
+fn extract_view_dimensions(env: &mut Env, dimensions: &JObject) -> ViewDimensions {
     let size_obj = env
         .get_field(
             dimensions,
-            "size",
-            "Ldev/waterui/android/runtime/SizeStruct;",
+            jni_str!("size"),
+            jni_sig!("Ldev/waterui/android/runtime/SizeStruct;"),
         )
         .expect("ViewDimensionsStruct.size")
         .l()
         .expect("size is object");
     let width = env
-        .get_field(&size_obj, "width", "F")
+        .get_field(&size_obj, jni_str!("width"), jni_sig!("F"))
         .expect("SizeStruct.width")
         .f()
         .expect("width is float");
     let height = env
-        .get_field(&size_obj, "height", "F")
+        .get_field(&size_obj, jni_str!("height"), jni_sig!("F"))
         .expect("SizeStruct.height")
         .f()
         .expect("height is float");
@@ -423,31 +423,33 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
     let horizontal_array = env
         .get_field(
             dimensions,
-            "horizontalGuides",
-            "[Ldev/waterui/android/runtime/HorizontalGuideStruct;",
+            jni_str!("horizontalGuides"),
+            jni_sig!("[Ldev/waterui/android/runtime/HorizontalGuideStruct;"),
         )
         .expect("ViewDimensionsStruct.horizontalGuides")
         .l()
         .expect("horizontalGuides is object");
-    let horizontal_array = JObjectArray::from(horizontal_array);
-    let horizontal_len = env
-        .get_array_length(&horizontal_array)
+    let horizontal_array = env
+        .cast_local::<JObjectArray>(horizontal_array)
+        .expect("horizontalGuides must be an object array");
+    let horizontal_len = horizontal_array
+        .len(env)
         .expect("horizontal guide array length");
     for index in 0..horizontal_len {
-        let guide = env
-            .get_object_array_element(&horizontal_array, index)
+        let guide = horizontal_array
+            .get_element(env, index)
             .expect("horizontal guide element");
         let alignment_obj = env
             .get_field(
                 &guide,
-                "alignment",
-                "Ldev/waterui/android/runtime/HorizontalAlignment;",
+                jni_str!("alignment"),
+                jni_sig!("Ldev/waterui/android/runtime/HorizontalAlignment;"),
             )
             .expect("HorizontalGuideStruct.alignment")
             .l()
             .expect("alignment is object");
         let value = env
-            .get_field(&guide, "value", "F")
+            .get_field(&guide, jni_str!("value"), jni_sig!("F"))
             .expect("HorizontalGuideStruct.value")
             .f()
             .expect("value is float");
@@ -457,31 +459,33 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
     let vertical_array = env
         .get_field(
             dimensions,
-            "verticalGuides",
-            "[Ldev/waterui/android/runtime/VerticalGuideStruct;",
+            jni_str!("verticalGuides"),
+            jni_sig!("[Ldev/waterui/android/runtime/VerticalGuideStruct;"),
         )
         .expect("ViewDimensionsStruct.verticalGuides")
         .l()
         .expect("verticalGuides is object");
-    let vertical_array = JObjectArray::from(vertical_array);
-    let vertical_len = env
-        .get_array_length(&vertical_array)
+    let vertical_array = env
+        .cast_local::<JObjectArray>(vertical_array)
+        .expect("verticalGuides must be an object array");
+    let vertical_len = vertical_array
+        .len(env)
         .expect("vertical guide array length");
     for index in 0..vertical_len {
-        let guide = env
-            .get_object_array_element(&vertical_array, index)
+        let guide = vertical_array
+            .get_element(env, index)
             .expect("vertical guide element");
         let alignment_obj = env
             .get_field(
                 &guide,
-                "alignment",
-                "Ldev/waterui/android/runtime/VerticalAlignment;",
+                jni_str!("alignment"),
+                jni_sig!("Ldev/waterui/android/runtime/VerticalAlignment;"),
             )
             .expect("VerticalGuideStruct.alignment")
             .l()
             .expect("alignment is object");
         let value = env
-            .get_field(&guide, "value", "F")
+            .get_field(&guide, jni_str!("value"), jni_sig!("F"))
             .expect("VerticalGuideStruct.value")
             .f()
             .expect("value is float");
@@ -492,14 +496,14 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
 }
 
 /// Extract ProposalStruct from Java object
-fn extract_proposal(env: &mut JNIEnv, proposal: &JObject) -> ProposalSize {
+fn extract_proposal(env: &mut Env, proposal: &JObject) -> ProposalSize {
     let width = env
-        .get_field(proposal, "width", "F")
+        .get_field(proposal, jni_str!("width"), jni_sig!("F"))
         .expect("ProposalStruct.width")
         .f()
         .expect("width is float");
     let height = env
-        .get_field(proposal, "height", "F")
+        .get_field(proposal, jni_str!("height"), jni_sig!("F"))
         .expect("ProposalStruct.height")
         .f()
         .expect("height is float");
@@ -515,24 +519,24 @@ fn extract_proposal(env: &mut JNIEnv, proposal: &JObject) -> ProposalSize {
 }
 
 /// Extract RectStruct from Java object
-fn extract_rect(env: &mut JNIEnv, rect: &JObject) -> Rect {
+fn extract_rect(env: &mut Env, rect: &JObject) -> Rect {
     let x = env
-        .get_field(rect, "x", "F")
+        .get_field(rect, jni_str!("x"), jni_sig!("F"))
         .expect("RectStruct.x")
         .f()
         .expect("x is float");
     let y = env
-        .get_field(rect, "y", "F")
+        .get_field(rect, jni_str!("y"), jni_sig!("F"))
         .expect("RectStruct.y")
         .f()
         .expect("y is float");
     let width = env
-        .get_field(rect, "width", "F")
+        .get_field(rect, jni_str!("width"), jni_sig!("F"))
         .expect("RectStruct.width")
         .f()
         .expect("width is float");
     let height = env
-        .get_field(rect, "height", "F")
+        .get_field(rect, jni_str!("height"), jni_sig!("F"))
         .expect("RectStruct.height")
         .f()
         .expect("height is float");
@@ -554,40 +558,38 @@ fn stretch_axis_from_ordinal(ordinal: i32) -> StretchAxis {
 }
 
 /// Extract SubViewStruct array and create JniSubView wrappers
-fn extract_subviews(env: &mut JNIEnv, subviews_array: jobjectArray) -> Vec<JniSubView> {
-    let array_obj = unsafe { jni::objects::JObjectArray::from_raw(subviews_array) };
-    let len = env.get_array_length(&array_obj).expect("get array length");
+fn extract_subviews(env: &mut Env, subviews_array: jobjectArray) -> Vec<JniSubView> {
+    let array_obj = unsafe { JObjectArray::<JObject>::from_raw(env, subviews_array) };
+    let len = array_obj.len(env).expect("get array length");
 
-    let mut result = Vec::with_capacity(len as usize);
+    let mut result = Vec::with_capacity(len);
     let jvm = Arc::new(
         env.get_java_vm()
             .expect("SubView extraction failed to access JavaVM"),
     );
 
     for i in 0..len {
-        let subview_obj = env
-            .get_object_array_element(&array_obj, i)
-            .expect("get array element");
+        let subview_obj = array_obj.get_element(env, i).expect("get array element");
 
         // Get stretchAxis enum ordinal
         let stretch_axis_obj = env
             .get_field(
                 &subview_obj,
-                "stretchAxis",
-                "Ldev/waterui/android/runtime/StretchAxis;",
+                jni_str!("stretchAxis"),
+                jni_sig!("Ldev/waterui/android/runtime/StretchAxis;"),
             )
             .expect("SubViewStruct.stretchAxis")
             .l()
             .expect("stretchAxis is object");
         let stretch_ordinal = env
-            .call_method(&stretch_axis_obj, "ordinal", "()I", &[])
+            .call_method(&stretch_axis_obj, jni_str!("ordinal"), jni_sig!("()I"), &[])
             .expect("ordinal()")
             .i()
             .expect("ordinal is int");
 
         // Get priority
         let priority = env
-            .get_field(&subview_obj, "priority", "I")
+            .get_field(&subview_obj, jni_str!("priority"), jni_sig!("I"))
             .expect("SubViewStruct.priority")
             .i()
             .expect("priority is int");
@@ -609,18 +611,22 @@ fn extract_subviews(env: &mut JNIEnv, subviews_array: jobjectArray) -> Vec<JniSu
 #[cfg(target_os = "android")]
 struct AndroidLayoutInvalidationTarget {
     jvm: jni::JavaVM,
-    owner: GlobalRef,
+    owner: Global<JObject<'static>>,
 }
 
 #[cfg(target_os = "android")]
 unsafe extern "C" fn invalidate_android_layout(context: *mut c_void) {
     let target = unsafe { &*(context as *const AndroidLayoutInvalidationTarget) };
-    let mut env = target
-        .jvm
-        .attach_current_thread()
-        .expect("layout invalidation failed to attach to JVM");
-    env.call_method(&target.owner, "requestLayout", "()V", &[])
+    super::with_attached_env(&target.jvm, |env| {
+        env.call_method(
+            &target.owner,
+            jni_str!("requestLayout"),
+            jni_sig!("()V"),
+            &[],
+        )
         .expect("layout invalidation failed to request native layout");
+    })
+    .expect("layout invalidation failed to attach to JVM");
 }
 
 #[cfg(target_os = "android")]
@@ -635,34 +641,36 @@ unsafe extern "C" fn drop_android_layout_invalidation_target(context: *mut c_voi
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatchInvalidation<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
     owner: JObject<'local>,
 ) -> jlong {
-    let target = Box::new(AndroidLayoutInvalidationTarget {
-        jvm: env
-            .get_java_vm()
-            .expect("layoutWatchInvalidation failed to access JavaVM"),
-        owner: env
-            .new_global_ref(owner)
-            .expect("layoutWatchInvalidation failed to retain owner view"),
-    });
-    let context = Box::into_raw(target).cast::<c_void>();
-    unsafe {
-        crate::components::layout::waterui_layout_watch_invalidation(
-            layout_ptr as *const WuiLayout,
-            context,
-            invalidate_android_layout,
-            drop_android_layout_invalidation_target,
-        ) as jlong
-    }
+    super::with_env(&mut env, |env| {
+        let target = Box::new(AndroidLayoutInvalidationTarget {
+            jvm: env
+                .get_java_vm()
+                .expect("layoutWatchInvalidation failed to access JavaVM"),
+            owner: env
+                .new_global_ref(owner)
+                .expect("layoutWatchInvalidation failed to retain owner view"),
+        });
+        let context = Box::into_raw(target).cast::<c_void>();
+        unsafe {
+            crate::components::layout::waterui_layout_watch_invalidation(
+                layout_ptr as *const WuiLayout,
+                context,
+                invalidate_android_layout,
+                drop_android_layout_invalidation_target,
+            ) as jlong
+        }
+    })
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatcherDrop<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     watcher_ptr: jlong,
 ) {
@@ -675,104 +683,95 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatcherDrop
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
     proposal: JObject<'local>,
     subviews: jobjectArray,
 ) -> jobject {
-    let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
-    let proposal = extract_proposal(&mut env, &proposal);
-    let jni_subviews = extract_subviews(&mut env, subviews);
-    let subview_refs: Vec<&dyn SubView> = jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-    let dimensions = measure_layout(layout, proposal, &subview_refs);
-    view_dimensions_to_java(&mut env, &dimensions).into_raw()
+    super::with_env(&mut env, |env| {
+        let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
+        let proposal = extract_proposal(env, &proposal);
+        let jni_subviews = extract_subviews(env, subviews);
+        let subview_refs: Vec<&dyn SubView> =
+            jni_subviews.iter().map(|s| s as &dyn SubView).collect();
+        let dimensions = measure_layout(layout, proposal, &subview_refs);
+        view_dimensions_to_java(env, &dimensions).into_raw()
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFits<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
     proposal: JObject<'local>,
     subviews: jobjectArray,
 ) -> jobject {
-    let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
-    let proposal = extract_proposal(&mut env, &proposal);
-
-    let jni_subviews = extract_subviews(&mut env, subviews);
-
-    // Create trait object references
-    let subview_refs: Vec<&dyn SubView> = jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-
-    let size = layout.size_that_fits(proposal, &subview_refs);
-
-    // Create SizeStruct result
-    let class = env
-        .find_class("dev/waterui/android/runtime/SizeStruct")
-        .expect("SizeStruct class");
-    let result = env
-        .new_object(
-            &class,
-            "(FF)V",
+    super::with_env(&mut env, |env| {
+        let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
+        let proposal = extract_proposal(env, &proposal);
+        let jni_subviews = extract_subviews(env, subviews);
+        let subview_refs: Vec<&dyn SubView> =
+            jni_subviews.iter().map(|s| s as &dyn SubView).collect();
+        let size = layout.size_that_fits(proposal, &subview_refs);
+        env.new_object(
+            jni_str!("dev/waterui/android/runtime/SizeStruct"),
+            jni_sig!("(FF)V"),
             &[JValue::Float(size.width), JValue::Float(size.height)],
         )
-        .expect("create SizeStruct");
-
-    result.into_raw()
+        .expect("create SizeStruct")
+        .into_raw()
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
     bounds: JObject<'local>,
     subviews: jobjectArray,
 ) -> jobjectArray {
-    let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
-    let bounds = extract_rect(&mut env, &bounds);
+    super::with_env(&mut env, |env| {
+        let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
+        let bounds = extract_rect(env, &bounds);
+        let jni_subviews = extract_subviews(env, subviews);
+        let subview_refs: Vec<&dyn SubView> =
+            jni_subviews.iter().map(|s| s as &dyn SubView).collect();
+        let rects = layout.place(bounds, &subview_refs);
+        let rect_class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/RectStruct"))
+            .expect("RectStruct class");
+        let result_array = env
+            .new_object_array(super::array_len(rects.len()), &rect_class, JObject::null())
+            .expect("create RectStruct array");
 
-    let jni_subviews = extract_subviews(&mut env, subviews);
+        for (i, rect) in rects.iter().enumerate() {
+            let rect_obj = env
+                .new_object(
+                    &rect_class,
+                    jni_sig!("(FFFF)V"),
+                    &[
+                        JValue::Float(rect.x()),
+                        JValue::Float(rect.y()),
+                        JValue::Float(rect.width()),
+                        JValue::Float(rect.height()),
+                    ],
+                )
+                .expect("create RectStruct");
+            result_array
+                .set_element(env, i, rect_obj)
+                .expect("set array element");
+        }
 
-    // Create trait object references
-    let subview_refs: Vec<&dyn SubView> = jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-
-    let rects = layout.place(bounds, &subview_refs);
-
-    // Create RectStruct array result
-    let rect_class = env
-        .find_class("dev/waterui/android/runtime/RectStruct")
-        .expect("RectStruct class");
-
-    let result_array = env
-        .new_object_array(rects.len() as i32, &rect_class, JObject::null())
-        .expect("create RectStruct array");
-
-    for (i, rect) in rects.iter().enumerate() {
-        let rect_obj = env
-            .new_object(
-                &rect_class,
-                "(FFFF)V",
-                &[
-                    JValue::Float(rect.x()),
-                    JValue::Float(rect.y()),
-                    JValue::Float(rect.width()),
-                    JValue::Float(rect.height()),
-                ],
-            )
-            .expect("create RectStruct");
-
-        env.set_object_array_element(&result_array, i as i32, rect_obj)
-            .expect("set array element");
-    }
-
-    result_array.into_raw()
+        result_array.into_raw()
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackAxis<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
 ) -> jint {
@@ -784,7 +783,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackAx
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackSpacing<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
 ) -> jfloat {
@@ -797,7 +796,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackSp
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackHorizontalAlignment<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
 ) -> jint {
@@ -812,7 +811,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackHo
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackVerticalAlignment<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
 ) -> jint {
@@ -858,7 +857,7 @@ fn font_slot(slot: jint) -> crate::theme::WuiFontSlot {
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     slot: jint,
@@ -873,7 +872,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallFont<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     slot: jint,
@@ -887,7 +886,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallFont<
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColorScheme<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     signal_ptr: jlong,
@@ -899,7 +898,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColor<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     slot: jint,
@@ -911,7 +910,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColor<'local
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeFont<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     slot: jint,
@@ -923,7 +922,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeFont<'local>
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
 ) -> jlong {
@@ -939,7 +938,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurationPacked<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
 ) -> jlong {
@@ -963,7 +962,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindD
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams12Packed<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
 ) -> jlong {
@@ -983,7 +982,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParam
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams34Packed<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
 ) -> jlong {
@@ -1006,7 +1005,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParam
 
 struct AnyViewsWatchData {
     jvm: jni::JavaVM,
-    callback: GlobalRef,
+    callback: Global<JObject<'static>>,
 }
 
 unsafe extern "C" fn anyviews_watch_call(
@@ -1020,23 +1019,22 @@ unsafe extern "C" fn anyviews_watch_call(
 
     let watcher_data = unsafe { &*(data as *const AnyViewsWatchData) };
 
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("anyviews_watch_call: failed to attach current thread to JVM");
-    let ids = env
-        .new_int_array(values.len() as jint)
-        .expect("anyviews_watch_call: failed to allocate callback IDs");
-    env.set_int_array_region(&ids, 0, &values)
-        .expect("anyviews_watch_call: failed to write callback IDs");
-    let ids = JObject::from(ids);
-    env.call_method(
-        &watcher_data.callback,
-        "onChanged",
-        "([I)V",
-        &[JValue::Object(&ids)],
-    )
-    .expect("anyviews_watch_call: NativeAnyViewsWatcher.onChanged failed");
+    super::with_attached_env(&watcher_data.jvm, |env| {
+        let ids = env
+            .new_int_array(values.len())
+            .expect("anyviews_watch_call: failed to allocate callback IDs");
+        ids.set_region(env, 0, &values)
+            .expect("anyviews_watch_call: failed to write callback IDs");
+        let ids = JObject::from(ids);
+        env.call_method(
+            &watcher_data.callback,
+            jni_str!("onChanged"),
+            jni_sig!("([I)V"),
+            &[JValue::Object(&ids)],
+        )
+        .expect("anyviews_watch_call: NativeAnyViewsWatcher.onChanged failed");
+    })
+    .expect("anyviews_watch_call: failed to attach current thread to JVM");
 }
 
 unsafe extern "C" fn anyviews_watch_drop(data: *mut ()) {
@@ -1047,7 +1045,7 @@ unsafe extern "C" fn anyviews_watch_drop(data: *mut ()) {
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
 ) -> jint {
@@ -1057,35 +1055,34 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'loca
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInRange<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
     start: jint,
     end: jint,
 ) -> jintArray {
-    let anyviews = unsafe { crate::borrow_ffi(handle as *const crate::views::WuiAnyViews) };
-
-    let start = start as usize;
-    let end = end as usize;
-
-    let ids = unsafe {
-        crate::views::waterui_anyviews_get_ids_in_range(anyviews as *const _, start, end)
-    };
-    let rust_ids: Vec<waterui_core::id::Id> = unsafe { crate::IntoRust::into_rust(ids) };
-    let values: Vec<jint> = rust_ids.into_iter().map(i32::from).collect();
-
-    let array = env
-        .new_int_array(values.len() as jint)
-        .expect("anyViewsGetIdsInRange: failed to allocate jintArray");
-    env.set_int_array_region(&array, 0, &values)
-        .expect("anyViewsGetIdsInRange: failed to write ids into jintArray");
-
-    array.into_raw()
+    super::with_env(&mut env, |env| {
+        let anyviews = unsafe { crate::borrow_ffi(handle as *const crate::views::WuiAnyViews) };
+        let start = start as usize;
+        let end = end as usize;
+        let ids = unsafe {
+            crate::views::waterui_anyviews_get_ids_in_range(anyviews as *const _, start, end)
+        };
+        let rust_ids: Vec<waterui_core::id::Id> = unsafe { crate::IntoRust::into_rust(ids) };
+        let values: Vec<jint> = rust_ids.into_iter().map(i32::from).collect();
+        let array = env
+            .new_int_array(values.len())
+            .expect("anyViewsGetIdsInRange: failed to allocate jintArray");
+        array
+            .set_region(env, 0, &values)
+            .expect("anyViewsGetIdsInRange: failed to write ids into jintArray");
+        array.into_raw()
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetView<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
     index: jint,
@@ -1096,7 +1093,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetView<'
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatch<'local>(
-    env: JNIEnv<'local>,
+    env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
     callback: JObject<'local>,
@@ -1105,35 +1102,34 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatch<'lo
 }
 
 fn any_views_watch_range<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     handle: jlong,
     start: jint,
     end: jint,
     callback: JObject<'local>,
 ) -> jlong {
-    let jvm = env
-        .get_java_vm()
-        .expect("WatcherJni.anyViewsWatchRange failed to access JavaVM");
-    let callback = env
-        .new_global_ref(&callback)
-        .expect("WatcherJni.anyViewsWatchRange failed to create callback GlobalRef");
-
-    let data = Box::new(AnyViewsWatchData { jvm, callback });
-    let data_ptr = Box::into_raw(data) as *mut ();
-    let anyviews = handle as *mut crate::views::WuiAnyViews as *const crate::views::WuiAnyViews;
-    let start = start as usize;
-    let end = end as usize;
-    let watcher = unsafe {
-        crate::views::waterui_anyviews_watch_range(
-            anyviews,
-            start,
-            end,
-            data_ptr,
-            anyviews_watch_call,
-            anyviews_watch_drop,
-        )
-    };
-    watcher as jlong
+    super::with_env(&mut env, |env| {
+        let jvm = env
+            .get_java_vm()
+            .expect("WatcherJni.anyViewsWatchRange failed to access JavaVM");
+        let callback = env
+            .new_global_ref(&callback)
+            .expect("WatcherJni.anyViewsWatchRange failed to create callback global reference");
+        let data = Box::new(AnyViewsWatchData { jvm, callback });
+        let data_ptr = Box::into_raw(data) as *mut ();
+        let anyviews = handle as *mut crate::views::WuiAnyViews as *const crate::views::WuiAnyViews;
+        let watcher = unsafe {
+            crate::views::waterui_anyviews_watch_range(
+                anyviews,
+                start as usize,
+                end as usize,
+                data_ptr,
+                anyviews_watch_call,
+                anyviews_watch_drop,
+            )
+        };
+        watcher as jlong
+    })
 }
 
 // ============================================================================
@@ -1144,7 +1140,7 @@ fn any_views_watch_range<'local>(
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorFromLinearRgbaHeadroom<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     red: jfloat,
     green: jfloat,
@@ -1160,7 +1156,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorFromLinearRg
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveColor<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     color_ptr: jlong,
     env_ptr: jlong,
@@ -1176,7 +1172,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveColor<'loc
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveFont<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     font_ptr: jlong,
     env_ptr: jlong,
@@ -1193,7 +1189,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveFont<'loca
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callLifecycleHook<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
     env_ptr: jlong,
@@ -1205,7 +1201,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callLifecycleHook
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropLifecycleHook<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
 ) {
@@ -1215,7 +1211,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropLifecycleHook
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnEvent<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
     env_ptr: jlong,
@@ -1227,7 +1223,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnEvent<'loca
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnHoverEvent<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
     env_ptr: jlong,
@@ -1241,7 +1237,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnHoverEvent<
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropOnEvent<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
 ) {
@@ -1255,7 +1251,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropOnEvent<'loca
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropRetain<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     retain_ptr: jlong,
 ) {
@@ -1326,7 +1322,7 @@ fn resolved_system_font(size: jfloat, weight: jint) -> ResolvedFont {
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveColorSchemeState<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     scheme: jint,
 ) -> jlong {
@@ -1340,7 +1336,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveCol
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSchemeStateToComputed<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jlong {
@@ -1353,7 +1349,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSche
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSchemeStateSet<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     scheme: jint,
@@ -1366,7 +1362,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSche
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColorSchemeState<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) {
@@ -1376,7 +1372,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColor
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveColorState<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     argb: jint,
 ) -> jlong {
@@ -1390,7 +1386,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveCol
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStateToComputed<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jlong {
@@ -1401,7 +1397,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStat
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStateSet<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     argb: jint,
@@ -1412,7 +1408,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStat
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColorState<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) {
@@ -1422,7 +1418,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColor
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveFontState<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     size: jfloat,
     weight: jint,
@@ -1437,7 +1433,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveFon
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontStateToComputed<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jlong {
@@ -1447,7 +1443,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontState
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontStateSet<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     size: jfloat,
@@ -1459,7 +1455,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontState
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveFontState<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) {
@@ -1473,7 +1469,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveFontS
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeHandle<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     webview_ptr: jlong,
 ) -> jlong {
@@ -1489,11 +1485,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeHand
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView<'local>(
-    mut _env: JNIEnv<'local>,
+    mut _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle_ptr: jlong,
 ) -> jobject {
-    crate::jni::webview_bridge::webview_native_view(&mut _env, handle_ptr)
+    super::with_env(&mut _env, |env| {
+        crate::jni::webview_bridge::webview_native_view(env, handle_ptr)
+    })
 }
 
 // ============================================================================
@@ -1505,14 +1503,18 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostAttach<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     bridge_ptr: jlong,
     host: JObject<'local>,
 ) {
-    let bridge = unsafe { &*(bridge_ptr as *const waterui_video_gpu::AndroidVideoSurfaceBridge) };
-    unsafe { bridge.attach_host(&mut env, &host) }
-        .unwrap_or_else(|error| panic!("WatcherJni.androidVideoSurfaceHostAttach failed: {error}"));
+    super::with_env(&mut env, |env| {
+        let bridge =
+            unsafe { &*(bridge_ptr as *const waterui_video_gpu::AndroidVideoSurfaceBridge) };
+        unsafe { bridge.attach_host(env, &host) }.unwrap_or_else(|error| {
+            panic!("WatcherJni.androidVideoSurfaceHostAttach failed: {error}")
+        });
+    });
 }
 
 #[cfg(target_os = "android")]
@@ -1520,7 +1522,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfa
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostDrop<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     bridge_ptr: jlong,
 ) {
@@ -1536,7 +1538,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfa
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostSurfaceDestroyed<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     bridge_ptr: jlong,
 ) {
@@ -1559,18 +1561,22 @@ struct JniGpuSurfaceState {
 #[cfg(target_os = "android")]
 struct AndroidGpuSurfaceRedrawTarget {
     jvm: jni::JavaVM,
-    owner: GlobalRef,
+    owner: Global<JObject<'static>>,
 }
 
 #[cfg(target_os = "android")]
 unsafe extern "C" fn wake_android_gpu_surface(context: *mut c_void) {
     let target = unsafe { &*(context as *const AndroidGpuSurfaceRedrawTarget) };
-    let mut env = target
-        .jvm
-        .attach_current_thread()
-        .expect("GpuSurface redraw callback failed to attach to JVM");
-    env.call_method(&target.owner, "requestNativeRedraw", "()V", &[])
+    super::with_attached_env(&target.jvm, |env| {
+        env.call_method(
+            &target.owner,
+            jni_str!("requestNativeRedraw"),
+            jni_sig!("()V"),
+            &[],
+        )
         .expect("GpuSurface redraw callback failed to call requestNativeRedraw");
+    })
+    .expect("GpuSurface redraw callback failed to attach to JVM");
 }
 
 #[cfg(target_os = "android")]
@@ -1581,7 +1587,7 @@ unsafe extern "C" fn drop_android_gpu_surface_redraw_target(context: *mut c_void
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     owner: JObject<'local>,
     renderer_ptr: jlong,
@@ -1589,68 +1595,69 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<
     picture_in_picture_host_id: jlong,
     wui_env_ptr: jlong,
 ) -> jlong {
-    let mut wui_surface = crate::components::gpu_surface::WuiGpuSurface {
-        surface: renderer_ptr as *mut c_void,
-        has_picture_in_picture_host_id: has_picture_in_picture_host_id != 0,
-        picture_in_picture_host_id: picture_in_picture_host_id as u64,
-    };
-
-    let state = unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_create(
-            &mut wui_surface,
-            wui_env_ptr as *const crate::WuiEnv,
-        )
-    };
-
-    let redraw_target = Box::new(AndroidGpuSurfaceRedrawTarget {
-        jvm: env
-            .get_java_vm()
-            .expect("WatcherJni.gpuSurfaceCreate failed to access JavaVM"),
-        owner: env
-            .new_global_ref(owner)
-            .expect("WatcherJni.gpuSurfaceCreate failed to retain owner view"),
-    });
-    let redraw_context = Box::into_raw(redraw_target).cast::<c_void>();
-    unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_set_redraw_callback(
+    super::with_env(&mut env, |env| {
+        let mut wui_surface = crate::components::gpu_surface::WuiGpuSurface {
+            surface: renderer_ptr as *mut c_void,
+            has_picture_in_picture_host_id,
+            picture_in_picture_host_id: picture_in_picture_host_id as u64,
+        };
+        let state = unsafe {
+            crate::components::gpu_surface::waterui_gpu_surface_create(
+                &mut wui_surface,
+                wui_env_ptr as *const crate::WuiEnv,
+            )
+        };
+        let redraw_target = Box::new(AndroidGpuSurfaceRedrawTarget {
+            jvm: env
+                .get_java_vm()
+                .expect("WatcherJni.gpuSurfaceCreate failed to access JavaVM"),
+            owner: env
+                .new_global_ref(owner)
+                .expect("WatcherJni.gpuSurfaceCreate failed to retain owner view"),
+        });
+        let redraw_context = Box::into_raw(redraw_target).cast::<c_void>();
+        unsafe {
+            crate::components::gpu_surface::waterui_gpu_surface_set_redraw_callback(
+                state,
+                redraw_context,
+                wake_android_gpu_surface,
+                drop_android_gpu_surface_redraw_target,
+            );
+        }
+        let wrapper = Box::new(JniGpuSurfaceState {
             state,
-            redraw_context,
-            wake_android_gpu_surface,
-            drop_android_gpu_surface_redraw_target,
-        );
-    }
-
-    let wrapper = Box::new(JniGpuSurfaceState {
-        state,
-        window: None,
-    });
-    Box::into_raw(wrapper) as jlong
+            window: None,
+        });
+        Box::into_raw(wrapper) as jlong
+    })
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceMeasure<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     width: jfloat,
     height: jfloat,
 ) -> jobject {
-    let state_ptr = state_ptr as *mut JniGpuSurfaceState;
-    let wrapper = unsafe { &*state_ptr };
-    let proposal = ProposalSize {
-        width: width.is_finite().then_some(width),
-        height: height.is_finite().then_some(height),
-    };
-    let dimensions =
-        unsafe { crate::components::gpu_surface::measure_state(&*wrapper.state, proposal) };
-    view_dimensions_to_java(&mut env, &dimensions).into_raw()
+    super::with_env(&mut env, |env| {
+        let state_ptr = state_ptr as *mut JniGpuSurfaceState;
+        let wrapper = unsafe { &*state_ptr };
+        let proposal = ProposalSize {
+            width: width.is_finite().then_some(width),
+            height: height.is_finite().then_some(height),
+        };
+        let dimensions =
+            unsafe { crate::components::gpu_surface::measure_state(&*wrapper.state, proposal) };
+        view_dimensions_to_java(env, &dimensions).into_raw()
+    })
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriority<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jint {
@@ -1662,7 +1669,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriorit
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jboolean {
@@ -1670,13 +1677,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady
     let wrapper = unsafe { &*state_ptr };
     let ready =
         unsafe { crate::components::gpu_surface::waterui_gpu_surface_is_ready(wrapper.state) };
-    jboolean::from(ready)
+    ready
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     surface: JObject<'local>,
@@ -1684,34 +1691,34 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<
     height: jint,
     prefers_hdr: jboolean,
 ) {
-    let state_ptr = state_ptr as *mut JniGpuSurfaceState;
-    let wrapper = unsafe { &mut *state_ptr };
-    assert!(
-        wrapper.window.is_none(),
-        "WatcherJni.gpuSurfaceAttach called while a native surface is already attached"
-    );
-
-    let env_ptr = env.get_native_interface();
-    let window = require_native_window(
-        unsafe { AndroidNativeWindow::from_surface(env_ptr, surface.as_raw()) },
-        "gpuSurfaceAttach",
-    );
-    unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_attach(
-            wrapper.state,
-            window.as_void_ptr(),
-            width as u32,
-            height as u32,
-            prefers_hdr != 0,
+    super::with_env(&mut env, |env| {
+        let state_ptr = state_ptr as *mut JniGpuSurfaceState;
+        let wrapper = unsafe { &mut *state_ptr };
+        assert!(
+            wrapper.window.is_none(),
+            "WatcherJni.gpuSurfaceAttach called while a native surface is already attached"
         );
-    }
-    wrapper.window = Some(window);
+        let window = require_native_window(
+            unsafe { AndroidNativeWindow::from_surface(env.get_raw(), surface.as_raw()) },
+            "gpuSurfaceAttach",
+        );
+        unsafe {
+            crate::components::gpu_surface::waterui_gpu_surface_attach(
+                wrapper.state,
+                window.as_void_ptr(),
+                width as u32,
+                height as u32,
+                prefers_hdr,
+            );
+        }
+        wrapper.window = Some(window);
+    });
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) {
@@ -1730,7 +1737,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     width: jint,
@@ -1745,13 +1752,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
             height as u32,
         )
     };
-    jboolean::from(needs_redraw)
+    needs_redraw
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
     has_position: jboolean,
@@ -1774,22 +1781,22 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInpu
 
     let input = crate::components::gpu_surface::WuiGpuSurfaceInput {
         pointer: crate::components::gpu_surface::WuiPointerState {
-            has_position: has_position != 0,
+            has_position,
             x,
             y,
-            has_hit: has_hit != 0,
+            has_hit,
             hit_x,
             hit_y,
         },
         gesture: crate::components::gpu_surface::WuiGestureState {
-            active: gesture_active != 0,
+            active: gesture_active,
             pinch_scale,
-            has_pinch_center: has_pinch_center != 0,
+            has_pinch_center,
             pinch_center_x,
             pinch_center_y,
             pan_offset_x,
             pan_offset_y,
-            double_tap: double_tap != 0,
+            double_tap,
         },
     };
 
@@ -1801,7 +1808,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInpu
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) {

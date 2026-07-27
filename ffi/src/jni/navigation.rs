@@ -8,24 +8,21 @@ extern crate alloc;
 extern crate std;
 
 use alloc::boxed::Box;
-use jni::JNIEnv;
-use jni::objects::{GlobalRef, JClass, JObject, JValue};
+use jni::objects::{Global, JClass, JObject, JValue};
 use jni::sys::{jboolean, jint, jlong, jobject};
+use jni::{Env, EnvUnowned, jni_sig, jni_str};
 use std::sync::Arc;
 
 /// Data for the JNI navigation controller callback.
 struct JniNavigationCallbackData {
     jvm: Arc<jni::JavaVM>,
-    callback: GlobalRef,
+    callback: Global<JObject<'static>>,
 }
 
 impl JniNavigationCallbackData {
-    fn with_env<R>(&self, f: impl FnOnce(&mut JNIEnv) -> R) -> R {
-        let mut env = self
-            .jvm
-            .attach_current_thread()
-            .expect("navigation callback failed to attach its JVM thread");
-        f(&mut env)
+    fn with_env<R>(&self, f: impl FnOnce(&mut Env) -> R) -> R {
+        super::with_attached_env(&self.jvm, f)
+            .expect("navigation callback failed to attach its JVM thread")
     }
 }
 
@@ -37,29 +34,25 @@ unsafe extern "C" fn jni_navigation_apply(
     let data = unsafe { &*(data as *const JniNavigationCallbackData) };
     data.with_env(|env| {
         let view_class = env
-            .find_class("dev/waterui/android/runtime/NavigationViewStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/NavigationViewStruct"))
             .expect("NavigationViewStruct class not found");
         let inserted = env
             .new_object_array(
-                i32::try_from(transaction.inserted.len())
-                    .expect("navigation insertion count must fit Java Int"),
+                super::array_len(transaction.inserted.len()),
                 view_class,
                 JObject::null(),
             )
             .expect("failed to allocate navigation transaction destination array");
         for (index, view) in transaction.inserted.iter().enumerate() {
             let view = crate::jni::convert::struct_to_java(env, view);
-            env.set_object_array_element(
-                &inserted,
-                i32::try_from(index).expect("navigation destination index must fit Java Int"),
-                view,
-            )
-            .expect("failed to insert navigation transaction destination");
+            inserted
+                .set_element(env, index, view)
+                .expect("failed to insert navigation transaction destination");
         }
         env.call_method(
             data.callback.as_obj(),
-            "onApply",
-            "(JII[Ldev/waterui/android/runtime/NavigationViewStruct;)V",
+            jni_str!("onApply"),
+            jni_sig!("(JII[Ldev/waterui/android/runtime/NavigationViewStruct;)V"),
             &[
                 JValue::Long(transaction.id as jlong),
                 JValue::Int(
@@ -92,32 +85,32 @@ unsafe extern "C" fn jni_navigation_drop(data: *mut ()) {
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigationController<
     'local,
 >(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     callback: JObject<'local>,
 ) {
-    let global_callback = env
-        .new_global_ref(callback)
-        .expect("Failed to create global ref for navigation callback");
-
-    let data = Box::new(JniNavigationCallbackData {
-        jvm: Arc::new(
-            env.get_java_vm()
-                .expect("navigation controller failed to access JavaVM"),
-        ),
-        callback: global_callback,
+    super::with_env(&mut env, |env| {
+        let global_callback = env
+            .new_global_ref(callback)
+            .expect("Failed to create global ref for navigation callback");
+        let data = Box::new(JniNavigationCallbackData {
+            jvm: Arc::new(
+                env.get_java_vm()
+                    .expect("navigation controller failed to access JavaVM"),
+            ),
+            callback: global_callback,
+        });
+        let data_ptr = Box::into_raw(data) as *mut ();
+        unsafe {
+            crate::components::navigation::waterui_env_install_navigation_controller(
+                env_ptr as *mut crate::WuiEnv,
+                data_ptr,
+                jni_navigation_apply,
+                jni_navigation_drop,
+            )
+        }
     });
-    let data_ptr = Box::into_raw(data) as *mut ();
-
-    unsafe {
-        crate::components::navigation::waterui_env_install_navigation_controller(
-            env_ptr as *mut crate::WuiEnv,
-            data_ptr,
-            jni_navigation_apply,
-            jni_navigation_drop,
-        )
-    }
 }
 
 /// Checks if the environment has a navigation controller installed.
@@ -125,22 +118,18 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigat
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envHasNavigationController<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
 ) -> jboolean {
     let wui_env = env_ptr as *const crate::WuiEnv;
-    if unsafe { crate::components::navigation::waterui_env_has_navigation_controller(wui_env) } {
-        1
-    } else {
-        0
-    }
+    unsafe { crate::components::navigation::waterui_env_has_navigation_controller(wui_env) }
 }
 
 /// Requests a user/system pop before Android begins a non-interactive transition.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationRequestPop<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     count: jint,
@@ -159,7 +148,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationRequest
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationCompleteNativePop<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     count: jint,
@@ -178,7 +167,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationComplet
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCompleted<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     id: jlong,
@@ -188,11 +177,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransit
     let controller = env
         .get::<waterui_navigation::NavigationController>()
         .expect("Android completed navigation transaction without an installed controller");
-    if controller.transition_completed(id) {
-        1
-    } else {
-        0
-    }
+    controller.transition_completed(id)
 }
 
 /// Acknowledges cancellation of the current Android transaction.
@@ -200,7 +185,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransit
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCancelled<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
     id: jlong,
@@ -210,11 +195,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransit
     let controller = env
         .get::<waterui_navigation::NavigationController>()
         .expect("Android cancelled navigation transaction without an installed controller");
-    if controller.transition_cancelled(id) {
-        1
-    } else {
-        0
-    }
+    controller.transition_cancelled(id)
 }
 
 // ============================================================================
@@ -224,7 +205,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransit
 /// Extracts the NavigationView content from a tab.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     content_ptr: jlong,
     env_ptr: jlong,
@@ -234,7 +215,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local
     let content = content_ptr as *mut WuiTabContent;
     let wui_env = env_ptr as *const crate::WuiEnv;
     let nav_view = unsafe { crate::components::navigation::waterui_tab_content(content, wui_env) };
-    crate::jni::convert::struct_to_java(&mut env, &nav_view).into_raw()
+    super::with_env(&mut env, |env| {
+        crate::jni::convert::struct_to_java(env, &nav_view).into_raw()
+    })
 }
 
 /// Resolves split detail content from a selected identifier.
@@ -242,7 +225,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDetailContent<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     detail_ptr: jlong,
     selected_id: jint,
@@ -259,5 +242,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDe
             wui_env,
         )
     };
-    crate::jni::convert::struct_to_java(&mut env, &nav_view).into_raw()
+    super::with_env(&mut env, |env| {
+        crate::jni::convert::struct_to_java(env, &nav_view).into_raw()
+    })
 }

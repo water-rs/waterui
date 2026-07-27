@@ -87,7 +87,7 @@ val buildRustTasks = if (skipRustBuild) {
 }
 
 // Umbrella task that builds all targets
-val buildRustLibraries by tasks.registering {
+val buildRustLibraries = tasks.register("buildRustLibraries") {
     description = "Build WaterUI Rust libraries for all Android targets"
     group = "build"
     if (!skipRustBuild) {
@@ -113,7 +113,7 @@ android {
 
     defaultConfig {
         applicationId = "{{ ctx.bundle_identifier }}"
-        minSdk = 24
+        minSdk = {{ ctx.android_min_api_level() }}
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
@@ -143,7 +143,7 @@ android {
     }
     sourceSets {
         getByName("main") {
-            jniLibs.srcDir("src/main/jniLibs")
+            jniLibs.directories.add("src/main/jniLibs")
         }
     }
     packaging {

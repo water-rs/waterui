@@ -1989,6 +1989,8 @@ async fn verify_android_platform_tools_executable(
 }
 
 fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
+    use super::ANDROID_MIN_API_LEVEL;
+
     let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
     let entries = std::fs::read_dir(&prebuilt_dir).ok()?;
     let mut candidates = entries
@@ -1999,11 +2001,15 @@ fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
     candidates.sort();
 
     for candidate in candidates {
-        let clang = candidate.join("bin").join(if cfg!(target_os = "windows") {
-            "aarch64-linux-android24-clang.cmd"
-        } else {
-            "aarch64-linux-android24-clang"
-        });
+        let executable = format!(
+            "aarch64-linux-android{ANDROID_MIN_API_LEVEL}-clang{}",
+            if cfg!(target_os = "windows") {
+                ".cmd"
+            } else {
+                ""
+            }
+        );
+        let clang = candidate.join("bin").join(executable);
         if clang.exists() {
             return Some(clang);
         }

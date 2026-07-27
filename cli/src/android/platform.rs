@@ -19,11 +19,14 @@ use std::str::FromStr;
 
 use crate::{
     android::{
+        ANDROID_MIN_API_LEVEL,
         backend::AndroidBackend,
         toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
     },
     assets::{self, ResolvedFont},
-    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{
+        BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage, shared_rust_runtime_fingerprint,
+    },
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
@@ -31,8 +34,6 @@ use crate::{
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::copy_file,
 };
-
-const ANDROID_MIN_API_LEVEL: u32 = 24;
 
 fn gradle_cmd(gradlew: &Path, backend_path: &Path, task: &str) -> smol::process::Command {
     let mut cmd = smol::process::Command::new(gradlew);
@@ -393,7 +394,21 @@ impl AndroidPlatform {
         let abi = self.abi();
         let triple = self.triple();
         let build_context = resolve_android_build_context(abi, &triple).await?;
-        let build = configure_android_rust_build(project, &triple, &build_context, &options)?;
+        let mut build = configure_android_rust_build(project, &triple, &build_context, &options)?;
+        if options.linkage() == RustLinkage::SharedRuntime {
+            let build_features = vec!["waterui-ffi/android-jni".to_string(), "dev".to_string()];
+            let fingerprint = shared_rust_runtime_fingerprint(
+                &project.ffi_crate_path().join("Cargo.toml"),
+                &build_features,
+                &triple,
+            )
+            .await?;
+            build = build.with_target_dir(
+                project
+                    .shared_backend_target_dir("android", &fingerprint)
+                    .await?,
+            );
+        }
 
         let lib_dir = build.build_lib(options.is_release()).await?;
         copy_android_build_outputs(project, &options, abi, &build_context.ndk_path, &lib_dir)

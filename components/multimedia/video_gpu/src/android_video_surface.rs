@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
 use jni::{
-    JNIEnv, JavaVM,
-    objects::{GlobalRef, JObject},
+    Env, JavaVM, jni_sig, jni_str,
+    objects::{Global, JObject, JValue, JValueOwned},
 };
 use waterkit_video::{
     AndroidDrmContext, AndroidPlaybackContext, AndroidProtectedSurface, AndroidVideoSurface,
@@ -82,7 +82,7 @@ impl AndroidVideoSurfaceBridge {
     #[doc(hidden)]
     pub unsafe fn attach_host(
         &self,
-        env: &mut JNIEnv<'_>,
+        env: &mut Env<'_>,
         host: &JObject<'_>,
     ) -> Result<(), VideoError> {
         let vm = env
@@ -149,7 +149,7 @@ impl AndroidVideoSurfaceReceiver {
 
 pub struct AndroidVideoSurfacePort {
     vm: Arc<JavaVM>,
-    host: GlobalRef,
+    host: Global<JObject<'static>>,
     lifecycle: Receiver<AndroidVideoSurfaceLifecycle>,
 }
 
@@ -167,20 +167,30 @@ impl std::fmt::Debug for AndroidVideoSurfacePort {
     }
 }
 
+#[derive(Debug)]
+struct AttachedSurfaceError(VideoError);
+
+impl std::fmt::Display for AttachedSurfaceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for AttachedSurfaceError {}
+
+impl From<jni::errors::Error> for AttachedSurfaceError {
+    fn from(error: jni::errors::Error) -> Self {
+        Self(VideoError::Platform(error.to_string()))
+    }
+}
+
 impl AndroidVideoSurfacePort {
     pub(crate) fn playback_context(&self) -> Result<AndroidPlaybackContext, VideoError> {
-        let mut env = self.vm.attach_current_thread().map_err(|error| {
-            VideoError::Platform(format!("attach Android media context thread: {error}"))
-        })?;
-        unsafe { AndroidPlaybackContext::from_jni(&mut env) }
+        self.with_env(|env| unsafe { AndroidPlaybackContext::from_jni(env) })
     }
 
     pub(crate) fn drm_context(&self) -> Result<AndroidDrmContext, VideoError> {
-        let mut env = self
-            .vm
-            .attach_current_thread()
-            .map_err(|error| VideoError::Platform(format!("attach Android DRM thread: {error}")))?;
-        unsafe { AndroidDrmContext::from_jni(&mut env) }
+        self.with_env(|env| unsafe { AndroidDrmContext::from_jni(env) })
     }
 
     pub(crate) fn acquire_protected(&self) -> Result<AndroidProtectedSurface, VideoError> {
@@ -194,26 +204,25 @@ impl AndroidVideoSurfacePort {
 
     fn acquire(&self, secure: bool) -> Result<AndroidVideoSurface, VideoError> {
         self.discard_prior_surface_destruction()?;
-        let mut env = self.vm.attach_current_thread().map_err(|error| {
-            VideoError::Platform(format!("attach Android video surface thread: {error}"))
-        })?;
-        let surface = env
-            .call_method(
-                &self.host,
-                "acquireVideoSurface",
-                "(Z)Landroid/view/Surface;",
-                &[jni::objects::JValue::Bool(u8::from(secure))],
-            )
-            .and_then(jni::objects::JValueGen::l)
-            .map_err(|error| {
-                VideoError::Platform(format!("acquire Android video Surface: {error}"))
-            })?;
-        if surface.is_null() {
-            return Err(VideoError::Platform(String::from(
-                "Android video surface host returned a null Surface",
-            )));
-        }
-        unsafe { AndroidVideoSurface::from_jni(&mut env, &surface) }
+        self.with_env(|env| {
+            let surface = env
+                .call_method(
+                    &self.host,
+                    jni_str!("acquireVideoSurface"),
+                    jni_sig!("(Z)Landroid/view/Surface;"),
+                    &[JValue::Bool(secure)],
+                )
+                .and_then(JValueOwned::l)
+                .map_err(|error| {
+                    VideoError::Platform(format!("acquire Android video Surface: {error}"))
+                })?;
+            if surface.is_null() {
+                return Err(VideoError::Platform(String::from(
+                    "Android video surface host returned a null Surface",
+                )));
+            }
+            unsafe { AndroidVideoSurface::from_jni(env, &surface) }
+        })
     }
 
     pub(crate) fn poll_lifecycle(&self) -> Option<AndroidVideoSurfaceLifecycle> {
@@ -234,14 +243,27 @@ impl AndroidVideoSurfacePort {
     }
 
     pub(crate) fn deactivate(&self) -> Result<(), VideoError> {
-        let mut env = self.vm.attach_current_thread().map_err(|error| {
-            VideoError::Platform(format!("attach Android video surface thread: {error}"))
-        })?;
-        env.call_method(&self.host, "deactivateVideoSurface", "()V", &[])
+        self.with_env(|env| {
+            env.call_method(
+                &self.host,
+                jni_str!("deactivateVideoSurface"),
+                jni_sig!("()V"),
+                &[],
+            )
             .map_err(|error| {
                 VideoError::Platform(format!("deactivate Android video Surface: {error}"))
             })?;
-        Ok(())
+            Ok(())
+        })
+    }
+
+    fn with_env<T>(
+        &self,
+        operation: impl FnOnce(&mut Env<'_>) -> Result<T, VideoError>,
+    ) -> Result<T, VideoError> {
+        self.vm
+            .attach_current_thread(|env| operation(env).map_err(AttachedSurfaceError))
+            .map_err(|error| error.0)
     }
 
     fn discard_prior_surface_destruction(&self) -> Result<(), VideoError> {
