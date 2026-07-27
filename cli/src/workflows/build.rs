@@ -363,6 +363,8 @@ fn resolve_rust_standard_library_in(libdir: &Path, triple: &Triple) -> eyre::Res
 pub struct RustBuild {
     path: PathBuf,
     triple: Triple,
+    /// Explicit Cargo target directory for cross-project artifact reuse.
+    target_dir: Option<PathBuf>,
     /// Optional path to sccache for compilation caching.
     sccache_path: Option<PathBuf>,
     /// Cargo features to enable.
@@ -486,12 +488,20 @@ impl RustBuild {
         Self {
             path: path.as_ref().to_path_buf(),
             triple,
+            target_dir: None,
             sccache_path: None,
             features: Vec::new(),
             crate_type_override: None,
             rustc_flags: Vec::new(),
             envs: Vec::new(),
         }
+    }
+
+    /// Use an explicit Cargo target directory.
+    #[must_use]
+    pub fn with_target_dir(mut self, target_dir: impl Into<PathBuf>) -> Self {
+        self.target_dir = Some(target_dir.into());
+        self
     }
 
     /// Set the sccache path for compilation caching.
@@ -728,6 +738,10 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
 
+        if let Some(target_dir) = &self.target_dir {
+            cmd = cmd.arg("--target-dir").arg(target_dir);
+        }
+
         // Apply extra environment variables (caller-provided values override defaults).
         for (key, value) in &self.envs {
             cmd.env(key, value);
@@ -795,6 +809,10 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
     }
 
     async fn target_directory(&self) -> Result<PathBuf, RustBuildError> {
+        if let Some(target_dir) = &self.target_dir {
+            return Ok(target_dir.clone());
+        }
+
         let build_path = self.path.clone();
         let metadata = unblock(move || {
             cargo_metadata::MetadataCommand::new()

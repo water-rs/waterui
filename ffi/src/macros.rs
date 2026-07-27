@@ -94,8 +94,10 @@ macro_rules! ffi_view {
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
             ) -> $crate::jni::jobject {
-                let type_id = $crate::WuiTypeId::of::<waterui_core::Native<$view>>();
-                $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
+                $crate::jni::with_env(&mut env, |env| {
+                    let type_id = $crate::WuiTypeId::of::<waterui_core::Native<$view>>();
+                    $crate::jni::type_id_to_java(env, type_id).into_raw()
+                })
             }
 
             /// # Safety
@@ -111,13 +113,13 @@ macro_rules! ffi_view {
                 view_ptr: $crate::jni::jlong,
             ) -> $crate::jni::jobject {
                 use $crate::jni::convert::jlong_to_ptr_mut;
-                unsafe {
+                $crate::jni::with_env(&mut env, |env| unsafe {
                     let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
                     let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
                     let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
                     let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(view);
-                    $crate::jni::convert::struct_to_java(&mut env, &ffi_struct).into_raw()
-                }
+                    $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                })
             }
         }
     };
@@ -183,8 +185,10 @@ macro_rules! ffi_metadata {
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
             ) -> $crate::jni::jobject {
-                let type_id = $crate::WuiTypeId::of::<waterui_core::Metadata<$ty>>();
-                $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
+                $crate::jni::with_env(&mut env, |env| {
+                    let type_id = $crate::WuiTypeId::of::<waterui_core::Metadata<$ty>>();
+                    $crate::jni::type_id_to_java(env, type_id).into_raw()
+                })
             }
 
             #[cfg(all(feature = "android-jni", $jni_force))]
@@ -199,13 +203,13 @@ macro_rules! ffi_metadata {
                 view_ptr: $crate::jni::jlong,
             ) -> $crate::jni::jobject {
                 use $crate::jni::convert::jlong_to_ptr_mut;
-                unsafe {
+                $crate::jni::with_env(&mut env, |env| unsafe {
                     let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
                     let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
                     let metadata = *any.downcast_unchecked::<waterui_core::Metadata<$ty>>();
                     let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
-                    $crate::jni::convert::struct_to_java(&mut env, &ffi_struct).into_raw()
-                }
+                    $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                })
             }
         }
     };
@@ -263,8 +267,10 @@ macro_rules! ffi_ignorable_metadata {
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
             ) -> $crate::jni::jobject {
-                let type_id = $crate::WuiTypeId::of::<waterui_core::IgnorableMetadata<$ty>>();
-                $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
+                $crate::jni::with_env(&mut env, |env| {
+                    let type_id = $crate::WuiTypeId::of::<waterui_core::IgnorableMetadata<$ty>>();
+                    $crate::jni::type_id_to_java(env, type_id).into_raw()
+                })
             }
 
             #[cfg(feature = "android-jni")]
@@ -279,13 +285,13 @@ macro_rules! ffi_ignorable_metadata {
                 view_ptr: $crate::jni::jlong,
             ) -> $crate::jni::jobject {
                 use $crate::jni::convert::jlong_to_ptr_mut;
-                unsafe {
+                $crate::jni::with_env(&mut env, |env| unsafe {
                     let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
                     let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
                     let metadata = *any.downcast_unchecked::<waterui_core::IgnorableMetadata<$ty>>();
                     let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
-                    $crate::jni::convert::struct_to_java(&mut env, &ffi_struct).into_raw()
-                }
+                    $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                })
             }
         }
     };

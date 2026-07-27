@@ -57,21 +57,18 @@ impl fmt::Debug for SharedGpuContext {
 
 impl SharedGpuContext {
     async fn new() -> Result<Self, SharedContextError> {
-        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_descriptor.backends = wgpu::Backends::all();
-        let instance = wgpu::Instance::new(instance_descriptor);
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|_| SharedContextError::NoAdapter)?;
+        let (instance, adapter) = request_instance_and_adapter().await?;
+        let adapter_info = adapter.get_info();
+        tracing::debug!(
+            name = %adapter_info.name,
+            backend = ?adapter_info.backend,
+            device_type = ?adapter_info.device_type,
+            "selected WaterUI GPU adapter"
+        );
 
         let adapter_features = adapter.features();
         let required_features = required_media_features(adapter_features);
-        let required_limits = wgpu::Limits::default().using_resolution(adapter.limits());
+        let required_limits = required_device_limits(&adapter.limits());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("WaterUI GPU runtime device"),
@@ -104,6 +101,48 @@ impl SharedGpuContext {
     pub fn submission_completion_driver(&self) -> GpuSubmissionCompletionDriver {
         self.submission_completion_driver.clone()
     }
+}
+
+async fn request_adapter(
+    instance: &wgpu::Instance,
+) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
+    instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+}
+
+#[cfg(target_os = "android")]
+async fn request_instance_and_adapter()
+-> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::VULKAN.with_env();
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = request_adapter(&instance)
+        .await
+        .map_err(|_| SharedContextError::NoAdapter)?;
+    Ok((instance, adapter))
+}
+
+#[cfg(not(target_os = "android"))]
+async fn request_instance_and_adapter()
+-> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::all();
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = request_adapter(&instance)
+        .await
+        .map_err(|_| SharedContextError::NoAdapter)?;
+    Ok((instance, adapter))
+}
+
+fn required_device_limits(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits::default()
+        .or_worse_values_from(adapter_limits)
+        .using_resolution(adapter_limits.clone())
 }
 
 /// Returns the adapter features required by `WaterUI`'s GPU media pipeline.
@@ -164,6 +203,34 @@ impl GpuRuntime {
     #[must_use]
     pub fn context(&self) -> &SharedGpuContext {
         self.context.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::required_device_limits;
+
+    #[test]
+    fn device_limits_clamp_compute_capabilities_to_adapter() {
+        let mut adapter_limits = wgpu::Limits::default();
+        adapter_limits.max_texture_dimension_2d = 16_384;
+        adapter_limits.max_compute_workgroup_storage_size = 0;
+        adapter_limits.max_compute_invocations_per_workgroup = 0;
+        adapter_limits.max_compute_workgroup_size_x = 0;
+        adapter_limits.max_compute_workgroup_size_y = 0;
+        adapter_limits.max_compute_workgroup_size_z = 0;
+        adapter_limits.max_compute_workgroups_per_dimension = 0;
+
+        let required = required_device_limits(&adapter_limits);
+
+        assert_eq!(required.max_texture_dimension_2d, 16_384);
+        assert_eq!(required.max_compute_workgroup_storage_size, 0);
+        assert_eq!(required.max_compute_invocations_per_workgroup, 0);
+        assert_eq!(required.max_compute_workgroup_size_x, 0);
+        assert_eq!(required.max_compute_workgroup_size_y, 0);
+        assert_eq!(required.max_compute_workgroup_size_z, 0);
+        assert_eq!(required.max_compute_workgroups_per_dimension, 0);
+        assert!(required.check_limits(&adapter_limits));
     }
 }
 

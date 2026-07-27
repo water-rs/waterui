@@ -14,7 +14,7 @@ struct Uniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> samples: array<f32>;
+@group(0) @binding(1) var samples: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -36,7 +36,7 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 
 // Catmull-Rom Cubic Spline Interpolation
 fn get_sample(t: f32) -> f32 {
-    let len = f32(arrayLength(&samples));
+    let len = f32(textureDimensions(samples).x);
     let idx_f = t * (len - 1.0);
     let i = u32(idx_f);
     let f = fract(idx_f);
@@ -46,10 +46,10 @@ fn get_sample(t: f32) -> f32 {
     let i2 = min(i + 1u, u32(len - 1.0));
     let i3 = min(i + 2u, u32(len - 1.0));
 
-    let s0 = samples[i0];
-    let s1 = samples[i1];
-    let s2 = samples[i2];
-    let s3 = samples[i3];
+    let s0 = textureLoad(samples, vec2<i32>(i32(i0), 0), 0).r;
+    let s1 = textureLoad(samples, vec2<i32>(i32(i1), 0), 0).r;
+    let s2 = textureLoad(samples, vec2<i32>(i32(i2), 0), 0).r;
+    let s3 = textureLoad(samples, vec2<i32>(i32(i3), 0), 0).r;
 
     let t2 = f * f;
     let t3 = t2 * f;

@@ -8,25 +8,24 @@ extern crate std;
 
 use alloc::vec::Vec;
 use alloc::{boxed::Box, string::String};
-use jni::JNIEnv;
 use jni::objects::{JCharArray, JObject, JString, JValue};
 use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
+use jni::{Env as JNIEnv, jni_sig, jni_str};
 
 /// Copies a Java string through its UTF-16 representation without lossy replacement.
 pub(crate) fn string_from_java<'local>(env: &mut JNIEnv<'local>, java: &JString<'local>) -> String {
     let chars = env
-        .call_method(java, "toCharArray", "()[C", &[])
+        .call_method(java, jni_str!("toCharArray"), jni_sig!("()[C"), &[])
         .expect("Java String.toCharArray failed")
         .l()
         .expect("String.toCharArray returned a non-array value");
-    let chars: &JCharArray<'local> = (&chars).into();
-    let len = usize::try_from(
-        env.get_array_length(chars)
-            .expect("failed to read Java string length"),
-    )
-    .expect("Java string length must fit usize");
+    let chars = env
+        .cast_local::<JCharArray>(chars)
+        .expect("String.toCharArray returned a non-char-array value");
+    let len = chars.len(env).expect("failed to read Java string length");
     let mut utf16 = alloc::vec![0; len];
-    env.get_char_array_region(chars, 0, &mut utf16)
+    chars
+        .get_region(env, 0, &mut utf16)
         .expect("failed to copy Java string");
     String::from_utf16(&utf16).expect("Java string contains an unpaired UTF-16 surrogate")
 }
@@ -62,10 +61,10 @@ pub trait JniPrimitive: Sized + 'static {
 impl JniPrimitive for bool {
     type Jni = jboolean;
     fn to_jni(self) -> Self::Jni {
-        if self { 1 } else { 0 }
+        self
     }
     fn from_jni(val: Self::Jni) -> Self {
-        val != 0
+        val
     }
 }
 
@@ -151,11 +150,11 @@ use crate::{WuiEnv, WuiMetadata};
 impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataEnvStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataEnvStruct"))
             .expect("MetadataEnvStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value as jlong),
@@ -169,11 +168,13 @@ impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
 impl ToJavaStruct for WuiMetadata<crate::id::WuiId> {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataNavigationTransitionStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataNavigationTransitionStruct"
+            ))
             .expect("MetadataNavigationTransitionStruct class not found");
         env.new_object(
             &class,
-            "(JI)V",
+            jni_sig!("(JI)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Int(self.value.inner),
@@ -188,10 +189,14 @@ impl ToJavaStruct for WuiMetadata<crate::id::WuiId> {
 impl ToJavaStruct for crate::WuiMetadataSecure {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataSecureStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataSecureStruct"))
             .expect("MetadataSecureStruct class not found");
-        env.new_object(&class, "(J)V", &[JValue::Long(self.content as jlong)])
-            .expect("Failed to create MetadataSecureStruct")
+        env.new_object(
+            &class,
+            jni_sig!("(J)V"),
+            &[JValue::Long(self.content as jlong)],
+        )
+        .expect("Failed to create MetadataSecureStruct")
     }
 }
 
@@ -199,11 +204,13 @@ impl ToJavaStruct for crate::WuiMetadataSecure {
 impl ToJavaStruct for crate::WuiMetadataLifecycleHook {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataLifecycleHookStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataLifecycleHookStruct"
+            ))
             .expect("MetadataLifecycleHookStruct class not found");
         env.new_object(
             &class,
-            "(JIJ)V",
+            jni_sig!("(JIJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Int(self.value.lifecycle as i32),
@@ -298,7 +305,7 @@ fn gesture_data_to_java<'local>(
 
     env.new_object(
         gesture_data_class,
-        "(IIFFFJJ)V",
+        jni_sig!("(IIFFFJJ)V"),
         &[
             JValue::Int(tap_count),
             JValue::Int(long_press_duration),
@@ -315,16 +322,16 @@ fn gesture_data_to_java<'local>(
 impl ToJavaStruct for crate::gesture::WuiGesture {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let gesture_data_class = env
-            .find_class("dev/waterui/android/runtime/GestureDataStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/GestureDataStruct"))
             .expect("GestureDataStruct class not found");
         let class = env
-            .find_class("dev/waterui/android/runtime/GestureStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/GestureStruct"))
             .expect("GestureStruct class not found");
         let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(self);
         let gesture_data = gesture_data_to_java(env, &gesture_data_class, self);
         env.new_object(
             &class,
-            "(ILdev/waterui/android/runtime/GestureDataStruct;)V",
+            jni_sig!("(ILdev/waterui/android/runtime/GestureDataStruct;)V"),
             &[JValue::Int(gesture_type), JValue::Object(&gesture_data)],
         )
         .expect("Failed to create GestureStruct")
@@ -335,17 +342,19 @@ impl ToJavaStruct for crate::WuiMetadataGesture {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         // Create GestureDataStruct first based on gesture type
         let gesture_data_class = env
-            .find_class("dev/waterui/android/runtime/GestureDataStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/GestureDataStruct"))
             .expect("GestureDataStruct class not found");
         let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(&self.value.gesture);
         let gesture_data = gesture_data_to_java(env, &gesture_data_class, &self.value.gesture);
 
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataGestureStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataGestureStruct"
+            ))
             .expect("MetadataGestureStruct class not found");
         env.new_object(
             &class,
-            "(JILdev/waterui/android/runtime/GestureDataStruct;J)V",
+            jni_sig!("(JILdev/waterui/android/runtime/GestureDataStruct;J)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Int(gesture_type),
@@ -361,11 +370,13 @@ impl ToJavaStruct for crate::WuiMetadataGesture {
 impl ToJavaStruct for crate::WuiMetadataOnEvent {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataOnEventStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataOnEventStruct"
+            ))
             .expect("MetadataOnEventStruct class not found");
         env.new_object(
             &class,
-            "(JIJ)V",
+            jni_sig!("(JIJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Int(self.value.event as i32),
@@ -380,11 +391,11 @@ impl ToJavaStruct for crate::WuiMetadataOnEvent {
 impl ToJavaStruct for crate::WuiMetadataCursor {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataCursorStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataCursorStruct"))
             .expect("MetadataCursorStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.style as jlong),
@@ -398,11 +409,11 @@ impl ToJavaStruct for crate::WuiMetadataCursor {
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataShadowStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataShadowStruct"))
             .expect("MetadataShadowStruct class not found");
         env.new_object(
             &class,
-            "(JJFFF)V",
+            jni_sig!("(JJFFF)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.color as jlong),
@@ -419,7 +430,7 @@ impl ToJavaStruct for crate::WuiMetadataShadow {
 impl ToJavaStruct for crate::WuiMetadataBorder {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataBorderStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataBorderStruct"))
             .expect("MetadataBorderStruct class not found");
         // Pack edges into a bitmask: top=1, bottom=2, leading=4, trailing=8
         let edges_bits = (if self.value.edges.top { 1i32 } else { 0 })
@@ -428,7 +439,7 @@ impl ToJavaStruct for crate::WuiMetadataBorder {
             | (if self.value.edges.trailing { 8i32 } else { 0 });
         env.new_object(
             &class,
-            "(JJFFI)V",
+            jni_sig!("(JJFFI)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.color as jlong),
@@ -445,11 +456,11 @@ impl ToJavaStruct for crate::WuiMetadataBorder {
 impl ToJavaStruct for crate::WuiMetadataScale {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataScaleStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataScaleStruct"))
             .expect("MetadataScaleStruct class not found");
         env.new_object(
             &class,
-            "(JJJFF)V",
+            jni_sig!("(JJJFF)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.x as jlong),
@@ -466,11 +477,13 @@ impl ToJavaStruct for crate::WuiMetadataScale {
 impl ToJavaStruct for crate::WuiMetadataRotation {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataRotationStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataRotationStruct"
+            ))
             .expect("MetadataRotationStruct class not found");
         env.new_object(
             &class,
-            "(JJFF)V",
+            jni_sig!("(JJFF)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.angle as jlong),
@@ -486,11 +499,11 @@ impl ToJavaStruct for crate::WuiMetadataRotation {
 impl ToJavaStruct for crate::WuiMetadataOffset {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataOffsetStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataOffsetStruct"))
             .expect("MetadataOffsetStruct class not found");
         env.new_object(
             &class,
-            "(JJJ)V",
+            jni_sig!("(JJJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.x as jlong),
@@ -505,11 +518,13 @@ impl ToJavaStruct for crate::WuiMetadataOffset {
 impl ToJavaStruct for crate::WuiMetadataOpacity {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataOpacityStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataOpacityStruct"
+            ))
             .expect("MetadataOpacityStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.value as jlong),
@@ -523,11 +538,13 @@ impl ToJavaStruct for crate::WuiMetadataOpacity {
 impl ToJavaStruct for crate::WuiMetadataFocused {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataFocusedStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataFocusedStruct"
+            ))
             .expect("MetadataFocusedStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.binding as jlong),
@@ -541,17 +558,19 @@ impl ToJavaStruct for crate::WuiMetadataFocused {
 impl ToJavaStruct for crate::WuiMetadataIgnoreSafeArea {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataIgnoreSafeAreaStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataIgnoreSafeAreaStruct"
+            ))
             .expect("MetadataIgnoreSafeAreaStruct class not found");
         env.new_object(
             &class,
-            "(JZZZZ)V",
+            jni_sig!("(JZZZZ)V"),
             &[
                 JValue::Long(self.content as jlong),
-                JValue::Bool(if self.value.edges.top { 1 } else { 0 }),
-                JValue::Bool(if self.value.edges.bottom { 1 } else { 0 }),
-                JValue::Bool(if self.value.edges.leading { 1 } else { 0 }),
-                JValue::Bool(if self.value.edges.trailing { 1 } else { 0 }),
+                JValue::Bool(self.value.edges.top),
+                JValue::Bool(self.value.edges.bottom),
+                JValue::Bool(self.value.edges.leading),
+                JValue::Bool(self.value.edges.trailing),
             ],
         )
         .expect("Failed to create MetadataIgnoreSafeAreaStruct")
@@ -562,12 +581,12 @@ impl ToJavaStruct for crate::WuiMetadataIgnoreSafeArea {
 impl ToJavaStruct for crate::WuiMetadataRetain {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataRetainStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MetadataRetainStruct"))
             .expect("MetadataRetainStruct class not found");
         let retain_ptr = self.value.opaque_ptr() as jlong;
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(retain_ptr),
@@ -583,26 +602,33 @@ impl ToJavaStruct for crate::WuiMetadataClipShape {
         // Create PathCommandStruct array
         let commands = self.value.commands.as_slice();
         let path_command_class = env
-            .find_class("dev/waterui/android/runtime/PathCommandStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/PathCommandStruct"))
             .expect("PathCommandStruct class not found");
 
         let java_array = env
-            .new_object_array(commands.len() as i32, &path_command_class, JObject::null())
+            .new_object_array(
+                super::array_len(commands.len()),
+                &path_command_class,
+                JObject::null(),
+            )
             .expect("Failed to create PathCommandStruct array");
 
         for (i, cmd) in commands.iter().enumerate() {
             let path_cmd = create_path_command_struct(env, cmd);
-            env.set_object_array_element(&java_array, i as i32, &path_cmd)
+            java_array
+                .set_element(env, i, &path_cmd)
                 .expect("Failed to set path command element");
         }
 
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataClipShapeStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataClipShapeStruct"
+            ))
             .expect("MetadataClipShapeStruct class not found");
         let object = env
             .new_object(
                 &class,
-                "(J[Ldev/waterui/android/runtime/PathCommandStruct;)V",
+                jni_sig!("(J[Ldev/waterui/android/runtime/PathCommandStruct;)V"),
                 &[
                     JValue::Long(self.content as jlong),
                     JValue::Object(&java_array),
@@ -618,11 +644,13 @@ impl ToJavaStruct for crate::WuiMetadataClipShape {
 impl ToJavaStruct for crate::WuiMetadataContextMenu {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataContextMenuStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataContextMenuStruct"
+            ))
             .expect("MetadataContextMenuStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.items as jlong),
@@ -636,11 +664,13 @@ impl ToJavaStruct for crate::WuiMetadataContextMenu {
 impl ToJavaStruct for crate::WuiMetadataHittable {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataHittableStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataHittableStruct"
+            ))
             .expect("MetadataHittableStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.enabled as jlong),
@@ -655,10 +685,16 @@ impl ToJavaStruct for crate::WuiMetadataHittable {
 impl ToJavaStruct for crate::WuiMetadata<crate::WuiDynamicRangeMarker> {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MetadataDynamicRangeStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataDynamicRangeStruct"
+            ))
             .expect("MetadataDynamicRangeStruct class not found");
-        env.new_object(&class, "(J)V", &[JValue::Long(self.content as jlong)])
-            .expect("Failed to create MetadataDynamicRangeStruct")
+        env.new_object(
+            &class,
+            jni_sig!("(J)V"),
+            &[JValue::Long(self.content as jlong)],
+        )
+        .expect("Failed to create MetadataDynamicRangeStruct")
     }
 }
 
@@ -666,11 +702,13 @@ impl ToJavaStruct for crate::WuiMetadata<crate::WuiDynamicRangeMarker> {
 impl ToJavaStruct for crate::components::media::video::WuiAndroidVideoSurfaceHost {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/AndroidVideoSurfaceHostStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/AndroidVideoSurfaceHostStruct"
+            ))
             .expect("AndroidVideoSurfaceHostStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.bridge as jlong),
@@ -686,7 +724,7 @@ fn create_path_command_struct<'local>(
     cmd: &crate::WuiPathCommand,
 ) -> JObject<'local> {
     let class = env
-        .find_class("dev/waterui/android/runtime/PathCommandStruct")
+        .find_class(jni_str!("dev/waterui/android/runtime/PathCommandStruct"))
         .expect("PathCommandStruct class not found");
 
     // Extract values based on the command type
@@ -728,7 +766,7 @@ fn create_path_command_struct<'local>(
 
     env.new_object(
         &class,
-        "(IFFFFFFFFFFFF)V",
+        jni_sig!("(IFFFFFFFFFFFF)V"),
         &[
             JValue::Int(tag),
             JValue::Float(x),
@@ -761,10 +799,14 @@ impl ToJavaStruct for crate::WuiStr {
             .expect("Failed to create plain text string");
 
         let class = env
-            .find_class("dev/waterui/android/runtime/PlainStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/PlainStruct"))
             .expect("PlainStruct class not found");
-        env.new_object(&class, "(Ljava/lang/String;)V", &[JValue::Object(&text)])
-            .expect("Failed to create PlainStruct")
+        env.new_object(
+            &class,
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&text)],
+        )
+        .expect("Failed to create PlainStruct")
     }
 }
 
@@ -772,11 +814,11 @@ impl ToJavaStruct for crate::WuiStr {
 impl ToJavaStruct for crate::color::WuiResolvedColor {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ResolvedColorStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ResolvedColorStruct"))
             .expect("ResolvedColorStruct class not found");
         env.new_object(
             &class,
-            "(FFFFF)V",
+            jni_sig!("(FFFFF)V"),
             &[
                 JValue::Float(self.red),
                 JValue::Float(self.green),
@@ -793,7 +835,9 @@ impl ToJavaStruct for crate::color::WuiResolvedColor {
 impl ToJavaStruct for crate::gradient::WuiResolvedGradientStop {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ResolvedGradientStopStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/ResolvedGradientStopStruct"
+            ))
             .expect("ResolvedGradientStopStruct class not found");
         let color = crate::color::WuiResolvedColor {
             red: self.color.red,
@@ -805,7 +849,7 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradientStop {
         let java_color = color.to_java_struct(env);
         env.new_object(
             &class,
-            "(FLdev/waterui/android/runtime/ResolvedColorStruct;)V",
+            jni_sig!("(FLdev/waterui/android/runtime/ResolvedColorStruct;)V"),
             &[JValue::Float(self.position), JValue::Object(&java_color)],
         )
         .expect("Failed to create ResolvedGradientStopStruct")
@@ -816,25 +860,34 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradientStop {
 impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let stop_class = env
-            .find_class("dev/waterui/android/runtime/ResolvedGradientStopStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/ResolvedGradientStopStruct"
+            ))
             .expect("ResolvedGradientStopStruct class not found");
         let stop_array = env
-            .new_object_array(self.stops.len() as i32, &stop_class, JObject::null())
+            .new_object_array(
+                super::array_len(self.stops.len()),
+                &stop_class,
+                JObject::null(),
+            )
             .expect("Failed to create ResolvedGradientStopStruct array");
 
         for (index, stop) in self.stops.as_slice().iter().enumerate() {
             let java_stop = stop.to_java_struct(env);
-            env.set_object_array_element(&stop_array, index as i32, &java_stop)
+            stop_array
+                .set_element(env, index, &java_stop)
                 .expect("Failed to set ResolvedGradientStopStruct array element");
         }
 
         let class = env
-            .find_class("dev/waterui/android/runtime/ResolvedGradientStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/ResolvedGradientStruct"
+            ))
             .expect("ResolvedGradientStruct class not found");
         let object = env
             .new_object(
                 &class,
-                "(I[Ldev/waterui/android/runtime/ResolvedGradientStopStruct;FFFFFF)V",
+                jni_sig!("(I[Ldev/waterui/android/runtime/ResolvedGradientStopStruct;FFFFFF)V"),
                 &[
                     JValue::Int(self.gradient_type as i32),
                     JValue::Object(&stop_array),
@@ -856,11 +909,11 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
 impl ToJavaStruct for crate::shape::WuiShapeKind {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ShapeKindStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ShapeKindStruct"))
             .expect("ShapeKindStruct class not found");
         env.new_object(
             &class,
-            "(IFFFF)V",
+            jni_sig!("(IFFFF)V"),
             &[
                 JValue::Int(self.tag),
                 JValue::Float(self.top_left),
@@ -877,31 +930,32 @@ impl ToJavaStruct for crate::shape::WuiShapeKind {
 impl ToJavaStruct for crate::shape::WuiResolvedShape {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let command_class = env
-            .find_class("dev/waterui/android/runtime/PathCommandStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/PathCommandStruct"))
             .expect("PathCommandStruct class not found");
         let command_array = env
-            .new_object_array(self.commands.len() as i32, &command_class, JObject::null())
+            .new_object_array(
+                super::array_len(self.commands.len()),
+                &command_class,
+                JObject::null(),
+            )
             .expect("Failed to create PathCommandStruct array");
 
         for (index, cmd) in self.commands.as_slice().iter().enumerate() {
             let java_cmd = create_path_command_struct(env, cmd);
-            env.set_object_array_element(&command_array, index as i32, &java_cmd)
+            command_array
+                .set_element(env, index, &java_cmd)
                 .expect("Failed to set PathCommandStruct array element");
         }
 
         let java_kind = self.kind.to_java_struct(env);
         let class = env
-            .find_class("dev/waterui/android/runtime/ResolvedShapeStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ResolvedShapeStruct"))
             .expect("ResolvedShapeStruct class not found");
-        let object = env.new_object(
-            &class,
-            "(Ldev/waterui/android/runtime/ShapeKindStruct;[Ldev/waterui/android/runtime/PathCommandStruct;J)V",
-            &[
-                JValue::Object(&java_kind),
-                JValue::Object(&command_array),
-                JValue::Long(self.fill as jlong),
-            ],
-        )
+        let object = env.new_object(&class, jni_sig!("(Ldev/waterui/android/runtime/ShapeKindStruct;[Ldev/waterui/android/runtime/PathCommandStruct;J)V"), &[
+            JValue::Object(&java_kind),
+            JValue::Object(&command_array),
+            JValue::Long(self.fill as jlong),
+        ],)
         .expect("Failed to create ResolvedShapeStruct");
         unsafe { consume_ffi_array(&self.commands) };
         object
@@ -912,11 +966,11 @@ impl ToJavaStruct for crate::shape::WuiResolvedShape {
 impl ToJavaStruct for crate::components::text::WuiText {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/TextStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/TextStruct"))
             .expect("TextStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.paragraph_alignment as jlong),
@@ -935,11 +989,11 @@ impl ToJavaStruct for crate::components::text::WuiText {
 impl ToJavaStruct for crate::components::button::WuiButton {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ButtonStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ButtonStruct"))
             .expect("ButtonStruct class not found");
         env.new_object(
             &class,
-            "(JJIJJ)V",
+            jni_sig!("(JJIJJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.action as jlong),
@@ -957,11 +1011,11 @@ impl ToJavaStruct for crate::components::button::WuiButton {
 impl ToJavaStruct for crate::components::form::WuiTextField {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/TextFieldStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/TextFieldStruct"))
             .expect("TextFieldStruct class not found");
         env.new_object(
             &class,
-            "(JJJJJIJ)V",
+            jni_sig!("(JJJJJIJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -980,11 +1034,11 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
 impl ToJavaStruct for crate::components::form::WuiSecureField {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/SecureFieldStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/SecureFieldStruct"))
             .expect("SecureFieldStruct class not found");
         env.new_object(
             &class,
-            "(JJJ)V",
+            jni_sig!("(JJJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -999,11 +1053,11 @@ impl ToJavaStruct for crate::components::form::WuiSecureField {
 impl ToJavaStruct for crate::components::form::WuiToggle {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ToggleStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ToggleStruct"))
             .expect("ToggleStruct class not found");
         env.new_object(
             &class,
-            "(JJJIJ)V",
+            jni_sig!("(JJJIJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -1020,11 +1074,11 @@ impl ToJavaStruct for crate::components::form::WuiToggle {
 impl ToJavaStruct for crate::components::form::WuiSlider {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/SliderStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/SliderStruct"))
             .expect("SliderStruct class not found");
         env.new_object(
             &class,
-            "(JJJJDDJJ)V",
+            jni_sig!("(JJJJDDJJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -1044,11 +1098,11 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
 impl ToJavaStruct for crate::components::form::WuiStepper {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/StepperStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/StepperStruct"))
             .expect("StepperStruct class not found");
         env.new_object(
             &class,
-            "(JJJJJII)V",
+            jni_sig!("(JJJJJII)V"),
             &[
                 JValue::Long(self.value as jlong),
                 JValue::Long(self.step as jlong),
@@ -1067,17 +1121,17 @@ impl ToJavaStruct for crate::components::form::WuiStepper {
 impl ToJavaStruct for crate::components::form::WuiColorPicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ColorPickerStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ColorPickerStruct"))
             .expect("ColorPickerStruct class not found");
         env.new_object(
             &class,
-            "(JJJZZ)V",
+            jni_sig!("(JJJZZ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
                 JValue::Long(self.value as jlong),
-                JValue::Bool(if self.support_alpha { 1 } else { 0 }),
-                JValue::Bool(if self.support_hdr { 1 } else { 0 }),
+                JValue::Bool(self.support_alpha),
+                JValue::Bool(self.support_hdr),
             ],
         )
         .expect("Failed to create ColorPickerStruct")
@@ -1088,11 +1142,11 @@ impl ToJavaStruct for crate::components::form::WuiColorPicker {
 impl ToJavaStruct for crate::components::form::WuiPicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/PickerStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/PickerStruct"))
             .expect("PickerStruct class not found");
         env.new_object(
             &class,
-            "(JJI)V",
+            jni_sig!("(JJI)V"),
             &[
                 JValue::Long(self.items as jlong),
                 JValue::Long(self.selection as jlong),
@@ -1106,11 +1160,11 @@ impl ToJavaStruct for crate::components::form::WuiPicker {
 impl ToJavaStruct for crate::components::form::WuiPickerItem {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/PickerItemStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/PickerItemStruct"))
             .expect("PickerItemStruct class not found");
         env.new_object(
             &class,
-            "(IJ)V",
+            jni_sig!("(IJ)V"),
             &[
                 JValue::Int(self.tag.inner),
                 JValue::Long(self.label as jlong),
@@ -1124,15 +1178,15 @@ impl ToJavaStruct for crate::components::form::WuiPickerItem {
 impl ToJavaStruct for crate::components::form::WuiDatePicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/DatePickerStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/DatePickerStruct"))
             .expect("DatePickerStruct class not found");
         let date_time_class = env
-            .find_class("dev/waterui/android/runtime/DateTimeStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/DateTimeStruct"))
             .expect("DateTimeStruct class not found");
         let start = env
             .new_object(
                 &date_time_class,
-                "(IIIIII)V",
+                jni_sig!("(IIIIII)V"),
                 &[
                     JValue::Int(self.range.start.year),
                     JValue::Int(self.range.start.month as i32),
@@ -1146,7 +1200,7 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
         let end = env
             .new_object(
                 &date_time_class,
-                "(IIIIII)V",
+                jni_sig!("(IIIIII)V"),
                 &[
                     JValue::Int(self.range.end.year),
                     JValue::Int(self.range.end.month as i32),
@@ -1157,18 +1211,14 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
                 ],
             )
             .expect("Failed to create DateTimeStruct for range end");
-        env.new_object(
-            &class,
-            "(JJJLdev/waterui/android/runtime/DateTimeStruct;Ldev/waterui/android/runtime/DateTimeStruct;I)V",
-            &[
-                JValue::Long(self.label.view as jlong),
-                JValue::Long(self.label.accessibility_label as jlong),
-                JValue::Long(self.value as jlong),
-                JValue::Object(&start),
-                JValue::Object(&end),
-                JValue::Int(self.ty as i32),
-            ],
-        )
+        env.new_object(&class, jni_sig!("(JJJLdev/waterui/android/runtime/DateTimeStruct;Ldev/waterui/android/runtime/DateTimeStruct;I)V"), &[
+            JValue::Long(self.label.view as jlong),
+            JValue::Long(self.label.accessibility_label as jlong),
+            JValue::Long(self.value as jlong),
+            JValue::Object(&start),
+            JValue::Object(&end),
+            JValue::Int(self.ty as i32),
+        ],)
         .expect("Failed to create DatePickerStruct")
     }
 }
@@ -1176,15 +1226,17 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
 impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MultiDatePickerStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MultiDatePickerStruct"
+            ))
             .expect("MultiDatePickerStruct class not found");
         let date_class = env
-            .find_class("dev/waterui/android/runtime/DateStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/DateStruct"))
             .expect("DateStruct class not found");
         let start = env
             .new_object(
                 &date_class,
-                "(III)V",
+                jni_sig!("(III)V"),
                 &[
                     JValue::Int(self.range.start.year),
                     JValue::Int(self.range.start.month as i32),
@@ -1195,7 +1247,7 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
         let end = env
             .new_object(
                 &date_class,
-                "(III)V",
+                jni_sig!("(III)V"),
                 &[
                     JValue::Int(self.range.end.year),
                     JValue::Int(self.range.end.month as i32),
@@ -1203,18 +1255,14 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
                 ],
             )
             .expect("Failed to create DateStruct for range end");
-        env.new_object(
-            &class,
-            "(JJJLdev/waterui/android/runtime/DateStruct;Ldev/waterui/android/runtime/DateStruct;J)V",
-            &[
-                JValue::Long(self.label.view as jlong),
-                JValue::Long(self.label.accessibility_label as jlong),
-                JValue::Long(self.value as jlong),
-                JValue::Object(&start),
-                JValue::Object(&end),
-                JValue::Long(self.decorated as jlong),
-            ],
-        )
+        env.new_object(&class, jni_sig!("(JJJLdev/waterui/android/runtime/DateStruct;Ldev/waterui/android/runtime/DateStruct;J)V"), &[
+            JValue::Long(self.label.view as jlong),
+            JValue::Long(self.label.accessibility_label as jlong),
+            JValue::Long(self.value as jlong),
+            JValue::Object(&start),
+            JValue::Object(&end),
+            JValue::Long(self.decorated as jlong),
+        ],)
         .expect("Failed to create MultiDatePickerStruct")
     }
 }
@@ -1223,11 +1271,11 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
 impl ToJavaStruct for crate::components::layout::WuiScrollView {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ScrollStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ScrollStruct"))
             .expect("ScrollStruct class not found");
         env.new_object(
             &class,
-            "(IJJJJ)V",
+            jni_sig!("(IJJJJ)V"),
             &[
                 JValue::Int(self.axis as i32),
                 JValue::Long(self.content as jlong),
@@ -1246,19 +1294,20 @@ impl ToJavaStruct for crate::components::layout::WuiFixedContainer {
         // Create the long array for child pointers
         let children = self.contents.as_slice();
         let java_array = env
-            .new_long_array(children.len() as i32)
+            .new_long_array(children.len())
             .expect("Failed to create long array");
         let child_ptrs: Vec<i64> = children.iter().map(|p| *p as jlong).collect();
-        env.set_long_array_region(&java_array, 0, &child_ptrs)
+        java_array
+            .set_region(env, 0, &child_ptrs)
             .expect("Failed to set long array region");
 
         let class = env
-            .find_class("dev/waterui/android/runtime/FixedContainerStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/FixedContainerStruct"))
             .expect("FixedContainerStruct class not found");
         let object = env
             .new_object(
                 &class,
-                "(J[J)V",
+                jni_sig!("(J[J)V"),
                 &[
                     JValue::Long(self.layout as jlong),
                     JValue::Object(&java_array),
@@ -1270,21 +1319,23 @@ impl ToJavaStruct for crate::components::layout::WuiFixedContainer {
     }
 }
 
-/// WuiContainer -> ContainerStruct(layoutPtr, contentsPtr)
+/// WuiContainer -> LayoutContainerStruct(layoutPtr, contentsPtr)
 impl ToJavaStruct for crate::components::layout::WuiContainer {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ContainerStruct")
-            .expect("ContainerStruct class not found");
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/LayoutContainerStruct"
+            ))
+            .expect("LayoutContainerStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.layout as jlong),
                 JValue::Long(self.contents as jlong),
             ],
         )
-        .expect("Failed to create ContainerStruct")
+        .expect("Failed to create LayoutContainerStruct")
     }
 }
 
@@ -1298,11 +1349,13 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
         };
         let toolbar_items = self.bar.toolbar.as_slice();
         let toolbar_item_class = env
-            .find_class("dev/waterui/android/runtime/NavigationToolbarItemStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/NavigationToolbarItemStruct"
+            ))
             .expect("NavigationToolbarItemStruct class not found");
         let toolbar = env
             .new_object_array(
-                toolbar_items.len() as i32,
+                super::array_len(toolbar_items.len()),
                 &toolbar_item_class,
                 JObject::null(),
             )
@@ -1311,42 +1364,38 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
             let item = env
                 .new_object(
                     &toolbar_item_class,
-                    "(IJ)V",
+                    jni_sig!("(IJ)V"),
                     &[
                         JValue::Int(item.placement as i32),
                         JValue::Long(item.content as jlong),
                     ],
                 )
                 .expect("Failed to create NavigationToolbarItemStruct");
-            env.set_object_array_element(&toolbar, index as i32, item)
+            toolbar
+                .set_element(env, index, item)
                 .expect("Failed to set navigation toolbar item");
         }
         let bar_class = env
-            .find_class("dev/waterui/android/runtime/BarStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/BarStruct"))
             .expect("BarStruct class not found");
-        let bar = env
-            .new_object(
-                &bar_class,
-                "(JJ[Ldev/waterui/android/runtime/NavigationToolbarItemStruct;Ldev/waterui/android/runtime/NavigationSearchStruct;JJI)V",
-                &[
-                    JValue::Long(self.bar.title as jlong),
-                    JValue::Long(self.bar.subtitle as jlong),
-                    JValue::Object(&toolbar),
-                    JValue::Object(&search),
-                    JValue::Long(self.bar.color as jlong),
-                    JValue::Long(self.bar.hidden as jlong),
-                    JValue::Int(self.bar.display_mode as i32),
-                ],
-            )
+        let bar = env.new_object(&bar_class, jni_sig!("(JJ[Ldev/waterui/android/runtime/NavigationToolbarItemStruct;Ldev/waterui/android/runtime/NavigationSearchStruct;JJI)V"), &[
+            JValue::Long(self.bar.title as jlong),
+            JValue::Long(self.bar.subtitle as jlong),
+            JValue::Object(&toolbar),
+            JValue::Object(&search),
+            JValue::Long(self.bar.color as jlong),
+            JValue::Long(self.bar.hidden as jlong),
+            JValue::Int(self.bar.display_mode as i32),
+        ],)
             .expect("Failed to create BarStruct");
         unsafe { consume_ffi_array(&self.bar.toolbar) };
 
         let class = env
-            .find_class("dev/waterui/android/runtime/NavigationViewStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/NavigationViewStruct"))
             .expect("NavigationViewStruct class not found");
         env.new_object(
             &class,
-            "(Ldev/waterui/android/runtime/BarStruct;JJJJJJ)V",
+            jni_sig!("(Ldev/waterui/android/runtime/BarStruct;JJJJJJ)V"),
             &[
                 JValue::Object(&bar),
                 JValue::Long(self.content as jlong),
@@ -1365,11 +1414,13 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
 impl ToJavaStruct for crate::components::navigation::WuiNavigationSearch {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/NavigationSearchStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/NavigationSearchStruct"
+            ))
             .expect("NavigationSearchStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            jni_sig!("(JJ)V"),
             &[
                 JValue::Long(self.text as jlong),
                 JValue::Long(self.prompt as jlong),
@@ -1383,11 +1434,13 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationSearch {
 impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/NavigationStackStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/NavigationStackStruct"
+            ))
             .expect("NavigationStackStruct class not found");
         env.new_object(
             &class,
-            "(JII)V",
+            jni_sig!("(JII)V"),
             &[
                 JValue::Long(self.root as jlong),
                 JValue::Int(self.transition.kind as i32),
@@ -1402,11 +1455,13 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
 impl ToJavaStruct for crate::components::navigation::WuiNavigationSplitLayout {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/SplitNavigationContainerStruct")
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/SplitNavigationContainerStruct"
+            ))
             .expect("SplitNavigationContainerStruct class not found");
         env.new_object(
             &class,
-            "(JJJJJJJFFFI)V",
+            jni_sig!("(JJJJJJJFFFI)V"),
             &[
                 JValue::Long(self.sidebar as jlong),
                 JValue::Long(self.placeholder as jlong),
@@ -1431,18 +1486,18 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
         // Create array of TabStruct
         let tabs = self.tabs.as_slice();
         let tab_class = env
-            .find_class("dev/waterui/android/runtime/TabStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/TabStruct"))
             .expect("TabStruct class not found");
 
         let java_array = env
-            .new_object_array(tabs.len() as i32, &tab_class, JObject::null())
+            .new_object_array(super::array_len(tabs.len()), &tab_class, JObject::null())
             .expect("Failed to create TabStruct array");
 
         for (i, tab) in tabs.iter().enumerate() {
             let tab_obj = env
                 .new_object(
                     &tab_class,
-                    "(JJJJJ)V",
+                    jni_sig!("(JJJJJ)V"),
                     &[
                         JValue::Long(tab.id as jlong),
                         JValue::Long(tab.label as jlong),
@@ -1452,17 +1507,18 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
                     ],
                 )
                 .expect("Failed to create TabStruct");
-            env.set_object_array_element(&java_array, i as i32, &tab_obj)
+            java_array
+                .set_element(env, i, &tab_obj)
                 .expect("Failed to set tab element");
         }
 
         let class = env
-            .find_class("dev/waterui/android/runtime/TabsStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/TabsStruct"))
             .expect("TabsStruct class not found");
         let object = env
             .new_object(
                 &class,
-                "(J[Ldev/waterui/android/runtime/TabStruct;I)V",
+                jni_sig!("(J[Ldev/waterui/android/runtime/TabStruct;I)V"),
                 &[
                     JValue::Long(self.selection as jlong),
                     JValue::Object(&java_array),
@@ -1479,11 +1535,11 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
 impl ToJavaStruct for crate::components::list::WuiList {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ListStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ListStruct"))
             .expect("ListStruct class not found");
         env.new_object(
             &class,
-            "(JJJJJJZ)V",
+            jni_sig!("(JJJJJJZ)V"),
             &[
                 JValue::Long(self.contents as jlong),
                 JValue::Long(self.editing as jlong),
@@ -1520,11 +1576,11 @@ impl ToJavaStruct for crate::components::list::WuiListItem {
                 .into()
         };
         let class = env
-            .find_class("dev/waterui/android/runtime/ListItemStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ListItemStruct"))
             .expect("ListItemStruct class not found");
         env.new_object(
             &class,
-            "(JJLjava/lang/String;Ljava/lang/String;)V",
+            jni_sig!("(JJLjava/lang/String;Ljava/lang/String;)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.deletable as jlong),
@@ -1540,11 +1596,11 @@ impl ToJavaStruct for crate::components::list::WuiListItem {
 impl ToJavaStruct for crate::components::progress::WuiProgress {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/ProgressStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/ProgressStruct"))
             .expect("ProgressStruct class not found");
         env.new_object(
             &class,
-            "(JJJIZ)V",
+            jni_sig!("(JJJIZ)V"),
             &[
                 JValue::Long(self.label as jlong),
                 JValue::Long(self.value_label as jlong),
@@ -1563,20 +1619,16 @@ impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
         let preference =
             unsafe { crate::components::gpu_surface::waterui_gpu_surface_hdr_preference(self) };
         let class = env
-            .find_class("dev/waterui/android/runtime/GpuSurfaceStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/GpuSurfaceStruct"))
             .expect("GpuSurfaceStruct class not found");
         env.new_object(
             &class,
-            "(JZZZJ)V",
+            jni_sig!("(JZZZJ)V"),
             &[
                 JValue::Long(self.surface as jlong),
-                JValue::Bool(if preference.has_preference { 1 } else { 0 }),
-                JValue::Bool(if preference.prefers_hdr { 1 } else { 0 }),
-                JValue::Bool(if self.has_picture_in_picture_host_id {
-                    1
-                } else {
-                    0
-                }),
+                JValue::Bool(preference.has_preference),
+                JValue::Bool(preference.prefers_hdr),
+                JValue::Bool(self.has_picture_in_picture_host_id),
                 JValue::Long(self.picture_in_picture_host_id as jlong),
             ],
         )
@@ -1588,9 +1640,9 @@ impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
 impl ToJavaStruct for *mut crate::components::webview::WuiWebView {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/WebViewStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/WebViewStruct"))
             .expect("WebViewStruct class not found");
-        env.new_object(&class, "(J)V", &[JValue::Long(*self as jlong)])
+        env.new_object(&class, jni_sig!("(J)V"), &[JValue::Long(*self as jlong)])
             .expect("Failed to create WebViewStruct")
     }
 }
@@ -1599,9 +1651,9 @@ impl ToJavaStruct for *mut crate::components::webview::WuiWebView {
 impl ToJavaStruct for *mut crate::components::dynamic::WuiDynamic {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/DynamicStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/DynamicStruct"))
             .expect("DynamicStruct class not found");
-        env.new_object(&class, "(J)V", &[JValue::Long(*self as jlong)])
+        env.new_object(&class, jni_sig!("(J)V"), &[JValue::Long(*self as jlong)])
             .expect("Failed to create DynamicStruct")
     }
 }
@@ -1610,11 +1662,11 @@ impl ToJavaStruct for *mut crate::components::dynamic::WuiDynamic {
 impl ToJavaStruct for crate::WuiMenu {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class("dev/waterui/android/runtime/MenuStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MenuStruct"))
             .expect("MenuStruct class not found");
         env.new_object(
             &class,
-            "(JJJ)V",
+            jni_sig!("(JJJ)V"),
             &[
                 JValue::Long(self.label as jlong),
                 JValue::Long(self.items as jlong),
@@ -1661,11 +1713,11 @@ impl ToJavaStruct for crate::WuiMenuItem {
         };
 
         let class = env
-            .find_class("dev/waterui/android/runtime/MenuItemStruct")
+            .find_class(jni_str!("dev/waterui/android/runtime/MenuItemStruct"))
             .expect("MenuItemStruct class not found");
         env.new_object(
             &class,
-            "(IJJJJLjava/lang/String;ZZZZJ)V",
+            jni_sig!("(IJJJJLjava/lang/String;ZZZZJ)V"),
             &[
                 JValue::Int(self.tag as jint),
                 JValue::Long(label_ptr),
@@ -1673,10 +1725,10 @@ impl ToJavaStruct for crate::WuiMenuItem {
                 JValue::Long(self.disabled as jlong),
                 JValue::Long(self.selected as jlong),
                 JValue::Object(&key_equivalent),
-                JValue::Bool(if command { 1 } else { 0 }),
-                JValue::Bool(if shift { 1 } else { 0 }),
-                JValue::Bool(if option { 1 } else { 0 }),
-                JValue::Bool(if control { 1 } else { 0 }),
+                JValue::Bool(command),
+                JValue::Bool(shift),
+                JValue::Bool(option),
+                JValue::Bool(control),
                 JValue::Long(self.items as jlong),
             ],
         )

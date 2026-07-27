@@ -9,16 +9,80 @@
 //! The visualizer captures audio from the device microphone and renders
 //! a stylized waveform display with customizable visual effects.
 
+use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::shape::{Rectangle, ShapeExt};
 use waterui_visualizer::{AudioCapture, Waveform, WaveformTheme};
 
 #[preview]
 pub fn demo() -> impl View {
+    let permission_granted = Binding::container(false);
+    let permission_status = Binding::container(Str::from_static(
+        "Microphone access is required to start the live waveform.",
+    ));
+    let prompt_granted = permission_granted.clone();
+    let prompt_status = permission_status.clone();
+
+    Dynamic::watch(permission_granted, move |granted| {
+        if granted {
+            AnyView::new(visualizer())
+        } else {
+            AnyView::new(microphone_permission_prompt(
+                prompt_granted.clone(),
+                prompt_status.clone(),
+            ))
+        }
+    })
+}
+
+fn microphone_permission_prompt(
+    permission_granted: Binding<bool>,
+    permission_status: Binding<Str>,
+) -> impl View {
+    zstack((
+        Rectangle.fill(Srgb::BLACK),
+        vstack((
+            text("WaterUI Audio Visualizer")
+                .title()
+                .bold()
+                .foreground(Srgb::WHITE),
+            text!("{permission_status}").foreground(Srgb::WHITE),
+            button("Enable Microphone")
+                .action_async(
+                    |State(granted): State<Binding<bool>>,
+                     State(status): State<Binding<Str>>| async move {
+                        if check(Permission::Microphone).await == PermissionStatus::Granted {
+                            granted.set(true);
+                            return;
+                        }
+                        match request(Permission::Microphone).await {
+                            Ok(PermissionStatus::Granted) => granted.set(true),
+                            Ok(_) => status.set(Str::from_static(
+                                "Approve the system permission dialog, then tap Enable Microphone again.",
+                            )),
+                            Err(error) => {
+                                status.set(
+                                    format!("Microphone permission request failed: {error}").into(),
+                                );
+                            }
+                        }
+                    },
+                )
+                .state(&permission_granted)
+                .state(&permission_status),
+        ))
+        .spacing(16.0)
+        .padding_with(24.0),
+    ))
+    .ignore_safe_area(EdgeSet::ALL)
+}
+
+fn visualizer() -> impl View {
     // State for theme (directly as Binding<WaveformTheme>)
     let theme = binding(WaveformTheme::cyber());
 
@@ -101,6 +165,7 @@ pub fn demo() -> impl View {
     zstack((waveform, controls_overlay)).ignore_safe_area(EdgeSet::ALL)
 }
 
-pub fn app(env: Environment) -> App {
+pub fn app(mut env: Environment) -> App {
+    env.install(Theme::new().color_scheme(ColorScheme::Dark));
     App::new(demo, env)
 }

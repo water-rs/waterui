@@ -86,9 +86,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallLocaleT
     env_ptr: crate::jni::jlong,
     locale_tag: crate::jni::jni::objects::JString<'local>,
 ) {
-    let locale_tag = crate::jni::convert::string_from_java(&mut jni_env, &locale_tag);
-    let env = unsafe { crate::borrow_ffi_mut(env_ptr as *mut WuiEnv) };
-    install_locale_tag(env, &locale_tag);
+    crate::jni::with_env(&mut jni_env, |jni_env| {
+        let locale_tag = crate::jni::convert::string_from_java(jni_env, &locale_tag);
+        let env = unsafe { crate::borrow_ffi_mut(env_ptr as *mut WuiEnv) };
+        install_locale_tag(env, &locale_tag);
+    });
 }
 
 #[cfg(test)]
