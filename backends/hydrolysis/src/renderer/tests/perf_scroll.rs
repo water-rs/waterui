@@ -20,9 +20,13 @@ use waterui_core::{AnyView, Dynamic};
 use waterui_layout::scroll::{ScrollController, scroll};
 use waterui_layout::stack::{VStack, vstack};
 
+#[cfg(feature = "accessibility")]
+use waterui::Binding;
+use waterui::Str;
 use waterui::ViewExt as _;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
+use waterui::prelude::{FlowAnimationPreset, flow_markdown};
 
 use super::test_environment;
 use crate::HeadlessRuntime;
@@ -225,5 +229,113 @@ fn visible_lazy_item_remeasures_connected_dynamic_through_retained_node() {
         updated.profile.counters.rebuild_iterations, 0,
         "a connected Dynamic inside a visible lazy item must patch and remeasure through \
          its retained node without rebuilding the window"
+    );
+    #[cfg(feature = "accessibility")]
+    assert!(
+        updated
+            .tree_update
+            .into_iter()
+            .flat_map(|update| update.nodes)
+            .any(|(_, node)| node.label() == Some("updated dynamic row")),
+        "the patched lazy item must lay out and publish its replacement subtree"
+    );
+}
+
+#[test]
+fn flow_markdown_blocks_reconnect_after_lazy_eviction() {
+    let markdown = (0..64)
+        .map(|index| {
+            format!(
+                "# Section {index}\n\nParagraph {index} keeps the document tall enough to recycle blocks.\n\n"
+            )
+        })
+        .collect::<String>();
+    let controller = ScrollController::new(Point::zero());
+    let builder = {
+        let controller = controller.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                scroll(
+                    flow_markdown(Str::from(markdown.clone())).preset(FlowAnimationPreset::None),
+                )
+                .scroll_controller(&controller),
+            )
+        })
+    };
+    let env = test_environment();
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WINDOW_WIDTH, WINDOW_HEIGHT);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    controller.scroll_to(Point::new(0.0, 3_000.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    controller.scroll_to(Point::zero());
+    let returned = runtime.pump_at(false, start + Duration::from_millis(32));
+    #[cfg(not(feature = "accessibility"))]
+    let _ = returned;
+
+    #[cfg(feature = "accessibility")]
+    assert!(
+        returned
+            .tree_update
+            .into_iter()
+            .flat_map(|update| update.nodes)
+            .any(|(_, node)| node.label() == Some("Section 0")),
+        "a FlowMarkdown block rematerialized after lazy eviction must reconnect with fresh retained content"
+    );
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn flow_markdown_append_preserves_user_scroll_offset() {
+    fn scroll_y(result: crate::HeadlessPumpResult) -> f64 {
+        result
+            .tree_update
+            .expect("FlowMarkdown pump must publish an accessibility update")
+            .nodes
+            .into_iter()
+            .find_map(|(_, node)| node.scroll_y())
+            .expect("FlowMarkdown scroll view must publish its vertical offset")
+    }
+
+    let initial = (0..64)
+        .map(|index| {
+            format!(
+                "# Section {index}\n\nParagraph {index} keeps the document tall enough to retain a user offset.\n\n"
+            )
+        })
+        .collect::<String>();
+    let source = Binding::container(Str::from(initial.clone()));
+    let builder = {
+        let source = source.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(scroll(
+                flow_markdown(source.clone()).preset(FlowAnimationPreset::None),
+            ))
+        })
+    };
+    let env = test_environment();
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WINDOW_WIDTH, WINDOW_HEIGHT);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    runtime.push_input_event(InputEvent::Scroll {
+        x: WINDOW_WIDTH as f32 / 2.0,
+        y: WINDOW_HEIGHT as f32 / 2.0,
+        dx: 0.0,
+        dy: -120.0,
+        is_line_delta: false,
+    });
+    let before_append = scroll_y(runtime.pump_at(false, start + Duration::from_millis(16)));
+    assert!(
+        before_append > 0.0,
+        "the physical scroll input must establish a non-zero user offset"
+    );
+
+    source.set(Str::from(format!("{initial}\n\nAppended tail block.")));
+    let after_append = scroll_y(runtime.pump_at(false, start + Duration::from_millis(32)));
+    assert_eq!(
+        before_append, after_append,
+        "incremental FlowMarkdown growth must not reset the user's scroll offset"
     );
 }

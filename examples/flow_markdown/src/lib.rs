@@ -280,134 +280,129 @@ pub fn demo() -> impl View {
     let flow_cps_text = flow_cps.clone();
     let flow_fade_label_text = flow_fade_label.clone();
 
-    scroll(
-        vstack((
-            text("Flow Markdown").title(),
-            text!(
-                "Document: {document_title} ({document_number}/{document_total})",
-                document_title = document_title_text,
-                document_number = document_number_text,
-                document_total = document_total
-            )
-            .sub_headline(),
-            text!(
-                "LLM output progress: {char_progress}/{document_char_count} chars",
-                char_progress = char_progress_text,
-                document_char_count = document_char_count_text
-            )
-            .caption(),
-            text!(
-                "LLM stream speed: {stream_speed} chars/s | stream: {stream_status}",
-                stream_status = stream_status_text,
-                stream_speed = stream_speed_text
-            )
-            .caption(),
-            hstack((
-                button("Prev doc")
-                    .action(|State(c): State<StreamControl>| {
-                        cancel_stream(&c.streaming, &c.stream_revision);
-                        c.document_index.set(c.document_index.get() - 1);
-                        reset_stream(&c.markdown, &c.char_progress);
-                    })
-                    .state(&control)
-                    .width(PRIMARY_CONTROL_WIDTH),
-                button("Next doc")
-                    .action(|State(c): State<StreamControl>| {
-                        cancel_stream(&c.streaming, &c.stream_revision);
-                        c.document_index.set(c.document_index.get() + 1);
-                        reset_stream(&c.markdown, &c.char_progress);
-                    })
-                    .state(&control)
-                    .width(WIDE_CONTROL_WIDTH),
-                button("Start stream")
-                    .bordered_prominent()
-                    .action(|State(c): State<StreamControl>| {
-                        start_character_stream(
-                            c.markdown.clone(),
-                            c.char_progress.clone(),
-                            c.stream_revision.clone(),
-                            c.streaming.clone(),
-                            c.document_index.clone(),
-                            c.stream_cps.clone(),
-                        );
-                    })
-                    .state(&control)
-                    .width(PRIMARY_CONTROL_WIDTH),
-                button("Load full")
-                    .action(|State(c): State<StreamControl>| {
-                        load_full_document(
-                            &c.markdown,
-                            &c.char_progress,
-                            &c.stream_revision,
-                            &c.streaming,
-                            c.document_index.get(),
-                        );
-                    })
-                    .state(&control)
-                    .width(PRIMARY_CONTROL_WIDTH),
-                button("Reset")
-                    .action(|State(c): State<StreamControl>| {
-                        cancel_stream(&c.streaming, &c.stream_revision);
-                        reset_stream(&c.markdown, &c.char_progress);
-                    })
-                    .state(&control)
-                    .width(PRIMARY_CONTROL_WIDTH),
-            ))
-            .spacing(8.0),
-            text!(
-                "Flow animation preset: {preset} | token reveal CPS: {cps} | token fade: {fade_label}",
-                preset = flow_preset_text,
-                cps = flow_cps_text,
-                fade_label = flow_fade_label_text
-            )
-            .caption(),
-            hstack((
-                button("LLM CPS -")
-                    .action(|State(cps): State<Binding<i32>>| {
-                        cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                    })
-                    .state(&stream_cps)
-                    .width(WIDE_CONTROL_WIDTH),
-                button("LLM CPS +")
-                    .action(|State(cps): State<Binding<i32>>| {
-                        cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                    })
-                    .state(&stream_cps)
-                    .width(WIDE_CONTROL_WIDTH),
-                button("Preset")
-                    .action(|State(preset): State<Binding<i32>>| {
-                        preset.set((preset.get() + 1).rem_euclid(3));
-                    })
-                    .state(&animation_preset)
-                    .width(SECONDARY_CONTROL_WIDTH),
-                button("CPS -")
-                    .action(|State(cps): State<Binding<i32>>| {
-                        cps.set((cps.get() - 8).clamp(8, 256));
-                    })
-                    .state(&animation_cps)
-                    .width(SECONDARY_CONTROL_WIDTH),
-                button("CPS +")
-                    .action(|State(cps): State<Binding<i32>>| {
-                        cps.set((cps.get() + 8).clamp(8, 256));
-                    })
-                    .state(&animation_cps)
-                    .width(SECONDARY_CONTROL_WIDTH),
-                button(text!("{token_fade_label}"))
-                    .action(|State(enabled): State<Binding<bool>>| {
-                        enabled.set(!enabled.get());
-                    })
-                    .state(&token_fade_enabled)
-                    .width(TOKEN_CONTROL_WIDTH),
-            ))
-            .spacing(8.0),
-            Divider,
-            flow_markdown(markdown)
-                .configuration(flow_config)
-                .padding()
-                .border(Grey, 1.0),
+    vstack((
+        text("Flow Markdown").title(),
+        text!(
+            "Document: {document_title} ({document_number}/{document_total})",
+            document_title = document_title_text,
+            document_number = document_number_text,
+            document_total = document_total
+        )
+        .sub_headline(),
+        text!(
+            "LLM output progress: {char_progress}/{document_char_count} chars",
+            char_progress = char_progress_text,
+            document_char_count = document_char_count_text
+        )
+        .caption(),
+        text!(
+            "LLM stream speed: {stream_speed} chars/s | stream: {stream_status}",
+            stream_status = stream_status_text,
+            stream_speed = stream_speed_text
+        )
+        .caption(),
+        hstack((
+            button("Prev doc")
+                .action(|State(c): State<StreamControl>| {
+                    cancel_stream(&c.streaming, &c.stream_revision);
+                    c.document_index.set(c.document_index.get() - 1);
+                    reset_stream(&c.markdown, &c.char_progress);
+                })
+                .state(&control)
+                .width(PRIMARY_CONTROL_WIDTH),
+            button("Next doc")
+                .action(|State(c): State<StreamControl>| {
+                    cancel_stream(&c.streaming, &c.stream_revision);
+                    c.document_index.set(c.document_index.get() + 1);
+                    reset_stream(&c.markdown, &c.char_progress);
+                })
+                .state(&control)
+                .width(WIDE_CONTROL_WIDTH),
+            button("Start stream")
+                .bordered_prominent()
+                .action(|State(c): State<StreamControl>| {
+                    start_character_stream(
+                        c.markdown.clone(),
+                        c.char_progress.clone(),
+                        c.stream_revision.clone(),
+                        c.streaming.clone(),
+                        c.document_index.clone(),
+                        c.stream_cps.clone(),
+                    );
+                })
+                .state(&control)
+                .width(PRIMARY_CONTROL_WIDTH),
+            button("Load full")
+                .action(|State(c): State<StreamControl>| {
+                    load_full_document(
+                        &c.markdown,
+                        &c.char_progress,
+                        &c.stream_revision,
+                        &c.streaming,
+                        c.document_index.get(),
+                    );
+                })
+                .state(&control)
+                .width(PRIMARY_CONTROL_WIDTH),
+            button("Reset")
+                .action(|State(c): State<StreamControl>| {
+                    cancel_stream(&c.streaming, &c.stream_revision);
+                    reset_stream(&c.markdown, &c.char_progress);
+                })
+                .state(&control)
+                .width(PRIMARY_CONTROL_WIDTH),
         ))
-        .padding(),
-    )
+        .spacing(8.0),
+        text!(
+            "Flow animation preset: {preset} | token reveal CPS: {cps} | token fade: {fade_label}",
+            preset = flow_preset_text,
+            cps = flow_cps_text,
+            fade_label = flow_fade_label_text
+        )
+        .caption(),
+        hstack((
+            button("LLM CPS -")
+                .action(|State(cps): State<Binding<i32>>| {
+                    cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+                })
+                .state(&stream_cps)
+                .width(WIDE_CONTROL_WIDTH),
+            button("LLM CPS +")
+                .action(|State(cps): State<Binding<i32>>| {
+                    cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+                })
+                .state(&stream_cps)
+                .width(WIDE_CONTROL_WIDTH),
+            button("Preset")
+                .action(|State(preset): State<Binding<i32>>| {
+                    preset.set((preset.get() + 1).rem_euclid(3));
+                })
+                .state(&animation_preset)
+                .width(SECONDARY_CONTROL_WIDTH),
+            button("CPS -")
+                .action(|State(cps): State<Binding<i32>>| {
+                    cps.set((cps.get() - 8).clamp(8, 256));
+                })
+                .state(&animation_cps)
+                .width(SECONDARY_CONTROL_WIDTH),
+            button("CPS +")
+                .action(|State(cps): State<Binding<i32>>| {
+                    cps.set((cps.get() + 8).clamp(8, 256));
+                })
+                .state(&animation_cps)
+                .width(SECONDARY_CONTROL_WIDTH),
+            button(text!("{token_fade_label}"))
+                .action(|State(enabled): State<Binding<bool>>| {
+                    enabled.set(!enabled.get());
+                })
+                .state(&token_fade_enabled)
+                .width(TOKEN_CONTROL_WIDTH),
+        ))
+        .spacing(8.0),
+        Divider,
+        scroll(flow_markdown(markdown).configuration(flow_config).padding()).border(Grey, 1.0),
+    ))
+    .padding()
 }
 
 pub fn app(env: Environment) -> App {

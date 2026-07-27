@@ -17,6 +17,9 @@ pub(crate) struct RetainedSubview {
     node: Option<RenderNode>,
     /// The size the node was last laid out at, so layout re-runs only on a change.
     laid_out: Size,
+    /// A structural patch replaced content inside the retained node, so the new
+    /// subtree must be laid out even when its outer rect did not change.
+    needs_layout: bool,
     /// The default spoken accessibility label extracted from the source view once,
     /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
     /// node owns the source after build, so the per-frame a11y path reads this.
@@ -29,6 +32,7 @@ impl RetainedSubview {
             source: Some(source),
             node: None,
             laid_out: Size::zero(),
+            needs_layout: true,
             default_a11y_label: None,
         }
     }
@@ -122,7 +126,7 @@ impl RetainedSubview {
         let Some(node) = &mut self.node else {
             return (Size::zero(), StretchAxis::None);
         };
-        Self::patch_built(node, renderer);
+        self.needs_layout |= Self::patch_built(node, renderer);
         (
             node.measure(&mut renderer.state, env, proposal).size,
             node.stretch(),
@@ -158,6 +162,18 @@ impl RetainedSubview {
         structural
     }
 
+    /// Applies a pending structural update while the owning window tree is already
+    /// inside its normal pre-layout patch pass.
+    ///
+    /// Unlike [`Self::patch_built`], this does not carry the change into another
+    /// frame: the parent tree's current patch result already owns the structural
+    /// bookkeeping and will lay out the updated child immediately.
+    fn patch_for_parent(&mut self, renderer: &mut HydrolysisRenderer) -> bool {
+        let structural = self.node.as_mut().is_some_and(|node| node.patch(renderer));
+        self.needs_layout |= structural;
+        structural
+    }
+
     /// Build (once), patch, lay out (when the rect size or the structure
     /// changed), and flush the sub-view at `rect` under `env`. A zero-area rect
     /// renders nothing, matching the dispatch path's empty-rect guard.
@@ -178,9 +194,11 @@ impl RetainedSubview {
         let structural = Self::patch_built(node, renderer);
         #[allow(clippy::cast_possible_truncation)]
         let size = Size::new(rect.width() as f32, rect.height() as f32);
-        if structural || size != self.laid_out {
+        self.needs_layout |= structural;
+        if self.needs_layout || size != self.laid_out {
             node.layout(renderer, env, size);
             self.laid_out = size;
+            self.needs_layout = false;
         }
         let child_ctx = ctx.child(
             vello::kurbo::Affine::translate((rect.x0, rect.y0)),
@@ -210,9 +228,11 @@ impl RetainedSubview {
             return;
         };
         let structural = Self::patch_built(node, renderer);
-        if structural || size != self.laid_out {
+        self.needs_layout |= structural;
+        if self.needs_layout || size != self.laid_out {
             node.layout(renderer, env, size);
             self.laid_out = size;
+            self.needs_layout = false;
         }
         node.flush(renderer, ctx, env);
     }
@@ -236,9 +256,11 @@ impl RetainedSubview {
             return NavigationCapturedScene::default();
         };
         let structural = Self::patch_built(node, renderer);
-        if structural || size != self.laid_out {
+        self.needs_layout |= structural;
+        if self.needs_layout || size != self.laid_out {
             node.layout(renderer, env, size);
             self.laid_out = size;
+            self.needs_layout = false;
         }
         let local_ctx = RenderContext::with_transforms(
             vello::kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
@@ -317,6 +339,14 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
     /// Look up an already-retained item without marking it visible this frame.
     pub(crate) fn get(&self, key: &K) -> Option<&RetainedSubview> {
         self.entries.get(key)
+    }
+
+    /// Patches every currently retained (therefore visible) item before its
+    /// virtualized parent is measured.
+    pub(crate) fn patch_for_parent(&mut self, renderer: &mut HydrolysisRenderer) -> bool {
+        self.entries.values_mut().fold(false, |changed, entry| {
+            entry.patch_for_parent(renderer) | changed
+        })
     }
 
     /// Add every connected `Dynamic` owned by a visible retained item.

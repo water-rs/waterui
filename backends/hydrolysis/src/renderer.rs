@@ -33,7 +33,7 @@ mod render;
 mod retained;
 mod signals;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod tree;
 mod views;
 

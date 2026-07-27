@@ -760,6 +760,7 @@ impl RenderNode {
             env: env.clone(),
             extent_index: RefCell::new(VirtualExtentIndex::default()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
+            visible_range: RefCell::new(0..0),
             estimate: Cell::new(0.0),
             dirty,
             _dirty_key: dirty_key,

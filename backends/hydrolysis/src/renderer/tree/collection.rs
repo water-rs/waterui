@@ -179,6 +179,10 @@ pub(crate) struct LazyStackNode {
     /// by stable id so a steady scroll reuses each visible item's node (keeping its
     /// reactive content live) and only builds items entering the window.
     pub(super) item_cache: RefCell<VisibleSubviewCache<CollectionItemId>>,
+    /// Index range materialized by the previous flush. Those retained items are
+    /// the only rows that need exact pre-layout remeasurement on a reactive
+    /// height change; all other rows keep their virtual estimate.
+    pub(super) visible_range: RefCell<Range<usize>>,
     /// Estimated extent for not-yet-measured items, seeded from the first measure;
     /// used to size the scroll content without measuring the whole collection.
     pub(super) estimate: Cell<f64>,
@@ -524,6 +528,12 @@ fn place_on_axis(rect: Rect, axis: TransitionAxis, main_position: f32) -> Rect {
 }
 
 impl LazyStackNode {
+    /// Applies structural updates owned by the currently visible retained items
+    /// before the parent scroll view measures this stack.
+    pub(super) fn patch_visible(&self, renderer: &mut HydrolysisRenderer) -> bool {
+        self.item_cache.borrow_mut().patch_for_parent(renderer)
+    }
+
     fn spacing(&self) -> f64 {
         match &self.axis {
             LazyStackAxisConfig::Vertical { spacing, .. }
@@ -602,6 +612,27 @@ impl LazyStackNode {
         }
     }
 
+    /// Re-measures the last visible window after its retained children were
+    /// patched. This makes a reactive row-height change part of the same parent
+    /// layout pass instead of discovering it later during flush.
+    fn refresh_visible_extents(&self, state: &mut HydroState, count: usize, cross: f64) {
+        let visible = self.visible_range.borrow().clone();
+        let cache = self.item_cache.borrow();
+        for index in visible.start.min(count)..visible.end.min(count) {
+            let id = self
+                .views
+                .get_id(index)
+                .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+            let Some(item) = cache.get(&id) else {
+                continue;
+            };
+            let proposal = self.item_proposal(cross);
+            let size = item.measure_built_with_proposal(state, &self.env, proposal);
+            let extent = self.main_extent(size);
+            self.extent_index.borrow_mut().set_measured(index, extent);
+        }
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     pub(super) fn measure(&self, state: &mut HydroState, proposal: ProposalSize) -> ViewDimensions {
         let count = self.views.len().get();
@@ -614,6 +645,7 @@ impl LazyStackNode {
         };
         self.ensure_estimate(state, f64::from(cross));
         self.prepare_extent_index(count);
+        self.refresh_visible_extents(state, count, f64::from(cross));
         let main = self.extent_index.borrow().total_extent() as f32;
         let size = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => Size::new(cross, main),
@@ -656,6 +688,7 @@ impl LazyStackNode {
             .extent_index
             .borrow()
             .visible_window(visible_start, visible_end);
+        *self.visible_range.borrow_mut() = window.start..window.end;
         let mut cursor = window.leading_offset;
         for index in window.start..window.end {
             let id = self

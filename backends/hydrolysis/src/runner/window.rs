@@ -833,6 +833,53 @@ pub(super) fn runtime_window_origin<P: PlatformWindow>(
     }
 }
 
+/// Brings the retained hit-test geometry up to date before queued input is
+/// dispatched.
+///
+/// Reactive layout and platform input are delivered independently. If a scroll
+/// wheel event arrives while a Dynamic/lazy item size refresh is pending, using
+/// the previous frame's scroll extent can incorrectly reject the event at
+/// `max_y == 0`. This preflight patches and lays out the retained tree without
+/// presenting it; the already-pending render still presents the refreshed scene
+/// normally after input has been applied.
+fn refresh_pending_input_geometry<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+) {
+    let geometry_pending = runtime.mode.needs_layout()
+        || runtime.renderer.has_patch_request()
+        || runtime.renderer.has_rebuild_request();
+    if !geometry_pending || !runtime.renderer.has_render_tree() {
+        return;
+    }
+
+    runtime.request_refresh();
+    let scale_factor = runtime.platform.scale_factor();
+    let (width, height, adapter, device, queue) = {
+        let surface = runtime.platform.surface();
+        let (width, height) = surface.size();
+        (
+            width,
+            height,
+            surface.adapter().clone(),
+            surface.device().clone(),
+            surface.queue().clone(),
+        )
+    };
+    runtime
+        .renderer
+        .set_frame_resources(&adapter, &device, &queue);
+    let bounds = create_bounds(width, height, scale_factor);
+    let transform = vello::kurbo::Affine::scale(scale_factor);
+    assert!(
+        runtime
+            .renderer
+            .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY,),
+        "hydrolysis input geometry refresh lost the retained window tree"
+    );
+    apply_window_size_limits(runtime);
+}
+
 pub(super) fn handle_input_events_with<P, F>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -843,7 +890,11 @@ where
     F: Fn(&RuntimeWindow<P>, &Environment) -> Environment,
 {
     let mut should_close = runtime.window.state.get() == waterui::window::WindowState::Closed;
-    for event in runtime.platform.drain_events() {
+    let events = runtime.platform.drain_events();
+    if !events.is_empty() {
+        refresh_pending_input_geometry(runtime, env);
+    }
+    for event in events {
         match event {
             InputEvent::CloseRequested => {
                 runtime

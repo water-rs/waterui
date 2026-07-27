@@ -246,6 +246,56 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
     assert_eq!(runtime.window.frame.get().height(), 480.0);
 }
 
+#[test]
+fn pending_lazy_height_refresh_precedes_scroll_input() {
+    use waterui::ViewExt as _;
+    use waterui_core::dynamic::watch;
+    use waterui_core::id::SelfId;
+    use waterui_layout::scroll::scroll;
+    use waterui_layout::stack::VStack;
+
+    let expanded = binding(false);
+    let expanded_for_view = expanded.clone();
+    let rows = vec![SelfId::new(0usize)];
+    let window = Window::new("", binding(WindowState::Normal), move || {
+        let expanded = expanded_for_view.clone();
+        scroll(VStack::for_each(rows.clone(), move |_| {
+            let expanded = expanded.clone();
+            watch(expanded, |expanded| {
+                ().size(800.0, if expanded { 1_200.0 } else { 200.0 })
+            })
+        }))
+    });
+    let mut runtime = runtime_window_for(window);
+    let env = crate::renderer::tests::test_environment();
+    let _ = pump_window_semantics(&mut runtime, &env);
+
+    expanded.set(true);
+    runtime.platform.push_event(InputEvent::Scroll {
+        x: 400.0,
+        y: 300.0,
+        dx: 0.0,
+        dy: -4.0,
+        is_line_delta: false,
+    });
+    let _ = handle_input_events(&mut runtime, &env);
+
+    let metrics = runtime
+        .renderer
+        .scroll_metrics_at(400.0, 300.0)
+        .expect("scroll target must remain registered after the input geometry refresh");
+    assert!(
+        metrics.max_y > 8.0,
+        "expanded lazy item must update the scroll extent before input dispatch: {metrics:?}"
+    );
+    assert!(
+        runtime
+            .renderer
+            .handle_scroll(400.0, 300.0, 0.0, -4.0, false),
+        "scroll input must see a Dynamic lazy item's latest height before the pending frame is presented"
+    );
+}
+
 fn runtime_window_for(window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);

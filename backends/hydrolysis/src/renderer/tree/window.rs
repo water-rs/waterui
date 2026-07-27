@@ -70,12 +70,13 @@ impl RenderNode {
             // A GpuSurface owns its runtime and re-renders every flush; like a
             // self-drawn scene it has no structural patch.
             | RenderNode::GpuSurface(_)
-            // A lazy stack re-reads its collection length and items every flush, so a
-            // membership change needs no structural patch — only a scheduled refresh,
-            // which its watcher requests. A widget leaf likewise re-dispatches from
-            // its live config every flush, so it needs no structural patch.
-            | RenderNode::LazyStack(_)
+            // A widget leaf re-dispatches from its live config every flush, so it
+            // needs no structural patch.
             | RenderNode::Widget(_) => false,
+            // A lazy stack keeps only visible item subtrees. Patch those retained
+            // items before parent layout so a Dynamic row-height change updates the
+            // scroll extent in the same refresh instead of one frame later.
+            RenderNode::LazyStack(node) => node.patch_visible(renderer),
         }
     }
 

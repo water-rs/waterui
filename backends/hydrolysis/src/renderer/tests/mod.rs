@@ -40,7 +40,7 @@ fn test_renderer() -> HydrolysisRenderer {
     renderer
 }
 
-fn test_environment() -> Environment {
+pub(crate) fn test_environment() -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
         native_executor::NativeExecutor::new(),

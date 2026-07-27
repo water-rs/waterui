@@ -68,6 +68,7 @@ use crate::renderer::lazy::{
 };
 use crate::scroll::ScrollHandle;
 use core::cell::Cell;
+use core::ops::Range;
 use nami::Computed;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::MainThreadBound;
