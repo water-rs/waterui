@@ -36,7 +36,7 @@ fn sample_image_path() -> String {
 
 fn sample_video_url() -> Url {
     Url::from_file_path_str(format!(
-        "{}/tests/fixtures/missing-video.mp4",
+        "{}/tests/fixtures/live-photo-motion.mp4",
         env!("CARGO_MANIFEST_DIR")
     ))
 }
@@ -170,4 +170,81 @@ fn live_photo_exposes_still_image_accessibility_before_activation() {
         .mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");
+}
+
+#[test]
+fn live_photo_long_press_plays_motion_once_and_recovers() {
+    let sample_path = sample_image_path();
+    let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
+    let mut app = ui()
+        .environment(themed_environment())
+        .viewport(180, 140)
+        .theme(|_: &mut Environment| {})
+        .mount(move || {
+            LivePhoto::new(source.clone())
+                .activation_duration_ms(40)
+                .size(120.0, 80.0)
+        });
+
+    let initial_still = app.expect_exists(Selector::default().role(Role::IMAGE));
+    assert_eq!(
+        app.wait_for(
+            &[initial_still],
+            WaitOptions::new(Duration::from_millis(750)),
+        ),
+        WaitResult::Completed,
+        "the live photo must expose its initial still image"
+    );
+    let bounds = app.query().role(Role::IMAGE).single().bounds();
+    assert!(
+        (bounds.width() - 120.0).abs() < 0.5 && (bounds.height() - 80.0).abs() < 0.5,
+        "the live photo still must fill its proposed 120x80 bounds, got {bounds:?}"
+    );
+    let (center_x, center_y) = bounds.center();
+
+    assert!(app.tap_at(center_x, center_y));
+    app.query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .assert_not_exists();
+
+    assert!(
+        app.pointer_down_at(center_x, center_y),
+        "a held press must be dispatched to the live photo"
+    );
+    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    assert_eq!(
+        app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
+        WaitResult::Completed,
+        "holding past the activation duration must mount live photo motion"
+    );
+    let _ = app.pointer_up_at(center_x, center_y);
+
+    let motion_gone =
+        app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    assert_eq!(
+        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(2))),
+        WaitResult::Completed,
+        "completed motion playback must return to the still photo"
+    );
+    app.query().role(Role::IMAGE).assert_exists();
+
+    let bounds = app.query().role(Role::IMAGE).single().bounds();
+    let (center_x, center_y) = bounds.center();
+    assert!(app.pointer_down_at(center_x, center_y));
+    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    assert_eq!(
+        app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
+        WaitResult::Completed,
+        "live photo must support replay after returning to its still image"
+    );
+    let _ = app.pointer_up_at(center_x, center_y);
+    let motion_gone =
+        app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    assert_eq!(
+        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(2))),
+        WaitResult::Completed,
+        "replayed motion must also stop after one pass"
+    );
+    app.query().role(Role::IMAGE).assert_exists();
 }

@@ -242,7 +242,8 @@ All processing operations run on background threads via `blocking::unblock` to p
 - `Photo`: Uses `AsyncImage` with URLSession for loading
 - `Video`: Uses `AVPlayerLayer` directly for custom UIs
 - `VideoPlayer`: Uses `AVPlayerViewController` (iOS/tvOS) or `AVPlayerView` (macOS)
-- `LivePhoto`: Uses `PHLivePhotoView`
+- `LivePhoto`: Composed in Rust from `Photo`, long-press gesture, and raw `Video`
+- Live Photo picking: Uses `PHPickerViewController` and returns the paired still and motion resources
 - `MediaPicker`: Uses `PHPickerViewController` with `PHImageManager` for loading
 
 ### Android
@@ -250,5 +251,6 @@ All processing operations run on background threads via `blocking::unblock` to p
 - `Photo`: Uses Coil image loading library
 - `Video`: Uses WaterUI Rust video pipeline (`GpuSurface` + `waterkit-codec`)
 - `VideoPlayer`: Uses WaterUI Rust player controls and rendering pipeline
-- `LivePhoto`: Maps to Motion Photos via MediaStore
+- `LivePhoto`: Uses the same Rust-side photo/gesture/video composition
+- Live Photo picking: Extracts the embedded motion resource from Android Motion Photos
 - `MediaPicker`: Uses `ActivityResultContracts.PickVisualMedia` with ContentResolver

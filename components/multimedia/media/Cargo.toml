@@ -16,6 +16,7 @@ waterui-core.workspace = true
 waterui-macros.workspace = true
 waterui-url.workspace = true
 waterui-image.workspace = true
+waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-video.workspace = true

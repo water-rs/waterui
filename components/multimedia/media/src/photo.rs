@@ -99,6 +99,13 @@ impl Photo {
         Self::new(Url::from_file_path_str(path.into()))
     }
 
+    /// Allows the decoded image to stretch to the bounds proposed by its parent.
+    #[must_use]
+    pub fn resizable(mut self) -> Self {
+        self.content = self.content.resizable();
+        self
+    }
+
     /// Sets the event handler for the photo.
     ///
     /// The handler shares the [`Handler`](waterui_core::handler::Handler)

@@ -8,7 +8,7 @@
 //! - [`Photo`]: Display static images with customizable placeholders
 //! - [`Video`]: Video sources that can be used with [`VideoPlayer`]
 //! - [`VideoPlayer`]: Video playback with reactive volume control
-//! - [`LivePhoto`]: Apple Live Photo display with image and video components
+//! - [`LivePhoto`]: Live media display with paired still and motion resources
 //! - [`Media`]: Unified enum for different media types
 //!
 //! ## Features
@@ -56,8 +56,8 @@ extern crate alloc;
 
 /// Live Photo components and types.
 ///
-/// This module provides the [`LivePhoto`] component for displaying Apple Live Photos,
-/// which consist of both an image and a video component.
+/// This module provides the [`LivePhoto`] component for displaying paired still
+/// and motion resources, including Apple Live Photos and Android Motion Photos.
 pub mod live;
 /// Photo components and types.
 ///
