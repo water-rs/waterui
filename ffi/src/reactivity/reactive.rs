@@ -291,7 +291,8 @@ macro_rules! ffi_computed {
                 use alloc::rc::Rc;
                 use $crate::IntoFFI;
 
-                let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(&mut env, &watcher);
+                $crate::jni::with_env(&mut env, |env| {
+                let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(env, &watcher);
 
                 // Cast function pointers
                 let call_fn: unsafe extern "C" fn(*mut (), $ffi, *mut $crate::reactive::WuiWatcherMetadata) =
@@ -331,6 +332,7 @@ macro_rules! ffi_computed {
                 // Return the guard as a pointer
                 let guard_box = Box::new($crate::reactive::WuiWatcherGuard(Box::new(guard)));
                 Box::into_raw(guard_box) as $crate::jni::jlong
+                })
             }
 
             $crate::ffi_watcher!($ty, $ffi, $ident);
@@ -483,7 +485,8 @@ macro_rules! ffi_binding {
                 use alloc::rc::Rc;
                 use $crate::IntoFFI;
 
-                let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(&mut env, &watcher);
+                $crate::jni::with_env(&mut env, |env| {
+                let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(env, &watcher);
 
                 // Cast function pointers
                 let call_fn: unsafe extern "C" fn(*mut (), $ffi, *mut $crate::reactive::WuiWatcherMetadata) =
@@ -523,6 +526,7 @@ macro_rules! ffi_binding {
                 // Return the guard as a pointer
                 let guard_box = Box::new($crate::reactive::WuiWatcherGuard(Box::new(guard)));
                 Box::into_raw(guard_box) as $crate::jni::jlong
+                })
             }
         }
     };

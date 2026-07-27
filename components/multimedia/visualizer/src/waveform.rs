@@ -258,7 +258,7 @@ struct WaveformRenderer {
     capture: AudioCapture,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
-    samples_buffer: Option<wgpu::Buffer>,
+    samples_texture: Option<wgpu::Texture>,
     bind_group: Option<wgpu::BindGroup>,
     smoothed_samples: Box<[f32; SAMPLES_COUNT]>,
     uniform_data: UniformBuffer<Vec<u8>>,
@@ -271,7 +271,7 @@ impl WaveformRenderer {
             capture,
             pipeline: None,
             uniform_buffer: None,
-            samples_buffer: None,
+            samples_texture: None,
             bind_group: None,
             smoothed_samples: Box::new([0.0; SAMPLES_COUNT]),
             uniform_data: UniformBuffer::new(Vec::new()),
@@ -305,14 +305,23 @@ impl GpuView for WaveformRenderer {
             mapped_at_creation: false,
         });
 
-        let samples_size = u64::try_from(SAMPLES_COUNT * std::mem::size_of::<f32>())
-            .expect("waveform sample buffer size must fit into u64");
-        let samples_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Audio Samples Buffer"),
-            size: samples_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        let sample_count =
+            u32::try_from(SAMPLES_COUNT).expect("waveform sample count must fit into u32");
+        let samples_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Audio Samples Texture"),
+            size: wgpu::Extent3d {
+                width: sample_count,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
+        let samples_view = samples_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // 3. Create Bind Group Layout and Pipeline
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -329,14 +338,14 @@ impl GpuView for WaveformRenderer {
                     },
                     count: None,
                 },
-                // Samples (Storage Buffer)
+                // Samples
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -395,14 +404,14 @@ impl GpuView for WaveformRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: samples_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&samples_view),
                 },
             ],
         });
 
         self.pipeline = Some(render_pipeline);
         self.uniform_buffer = Some(uniform_buffer);
-        self.samples_buffer = Some(samples_buffer);
+        self.samples_texture = Some(samples_texture);
         self.bind_group = Some(bind_group);
     }
 
@@ -419,10 +428,10 @@ impl GpuView for WaveformRenderer {
             .uniform_buffer
             .as_ref()
             .expect("waveform uniform buffer must exist before render");
-        let samples_buffer = self
-            .samples_buffer
+        let samples_texture = self
+            .samples_texture
             .as_ref()
-            .expect("waveform samples buffer must exist before render");
+            .expect("waveform samples texture must exist before render");
 
         let config = self.config.get();
 
@@ -434,10 +443,18 @@ impl GpuView for WaveformRenderer {
                 *smoothed += (*sample - *smoothed) * smoothing_factor;
             }
         }
-        frame.queue.write_buffer(
-            samples_buffer,
-            0,
+        frame.queue.write_texture(
+            samples_texture.as_image_copy(),
             bytemuck::cast_slice(self.smoothed_samples.as_slice()),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(
+                    u32::try_from(SAMPLES_COUNT * std::mem::size_of::<f32>())
+                        .expect("waveform sample row size must fit into u32"),
+                ),
+                rows_per_image: Some(1),
+            },
+            samples_texture.size(),
         );
 
         // 2. Update Uniforms using encase

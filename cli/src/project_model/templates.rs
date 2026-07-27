@@ -362,6 +362,15 @@ impl TemplateContext {
     }
 
     #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "Askama invokes template context values through instance methods"
+    )]
+    pub const fn android_min_api_level(&self) -> u32 {
+        crate::android::ANDROID_MIN_API_LEVEL
+    }
+
+    #[must_use]
     pub fn android_backend_path(&self) -> String {
         if self.use_remote_dev_backend {
             return String::new();
@@ -761,6 +770,7 @@ define_scaffold_templates! {
     AndroidGradleAppTemplate => (Android, "src/templates/android/app/build.gradle.kts.tpl"),
     AndroidManifestTemplate => (Android, "src/templates/android/app/src/main/AndroidManifest.xml.tpl"),
     AndroidMainActivityTemplate => (Android, "src/templates/android/app/src/main/java/MainActivity.kt.tpl"),
+    AndroidApplicationTemplate => (Android, "src/templates/android/app/src/main/java/WaterUiApplication.kt.tpl"),
     AndroidStringsTemplate => (Android, "src/templates/android/app/src/main/res/values/strings.xml.tpl"),
     AndroidSettingsTemplate => (Android, "src/templates/android/settings.gradle.kts.tpl"),
     FfiLibTemplate => (Ffi, "src/templates/ffi/src/lib.rs.tpl"),
@@ -1034,30 +1044,6 @@ mod tests {
     }
 
     #[test]
-    fn android_main_activity_forwards_user_leave_hint_to_runtime_callback() {
-        let ctx = app_ctx();
-        let template = embedded::ANDROID
-            .get_file("app/src/main/java/MainActivity.kt.tpl")
-            .expect("android main activity template must exist")
-            .contents_utf8()
-            .expect("android main activity template must be utf-8");
-
-        let rendered = render_scaffold_template(
-            TemplateNamespace::Android,
-            std::path::Path::new("app/src/main/java/MainActivity.kt.tpl"),
-            template,
-            &ctx,
-        )
-        .expect("android activity render");
-
-        assert!(rendered.contains(
-            "import dev.waterui.android.runtime.notifyVideoPictureInPictureUserLeaveHint"
-        ));
-        assert!(rendered.contains("override fun onUserLeaveHint()"));
-        assert!(rendered.contains("notifyVideoPictureInPictureUserLeaveHint(this)"));
-    }
-
-    #[test]
     fn android_build_gradle_uses_embedded_remote_backend_commit() {
         let ctx = app_ctx();
         let template = embedded::ANDROID
@@ -1074,10 +1060,76 @@ mod tests {
         )
         .expect("android build.gradle render");
 
+        assert!(rendered.contains("minSdk = 26"));
         assert!(rendered.contains(&jitpack_dependency_coordinate(
             ANDROID_BACKEND.repository_url,
             ANDROID_BACKEND.commit,
         )));
+    }
+
+    #[test]
+    fn android_activity_installs_edge_to_edge_and_leases_activity_context() {
+        let ctx = app_ctx();
+        let activity_template = embedded::ANDROID
+            .get_file("app/src/main/java/MainActivity.kt.tpl")
+            .expect("android MainActivity template must exist")
+            .contents_utf8()
+            .expect("android MainActivity template must be utf-8");
+
+        let activity = render_scaffold_template(
+            TemplateNamespace::Android,
+            std::path::Path::new("app/src/main/java/MainActivity.kt.tpl"),
+            activity_template,
+            &ctx,
+        )
+        .expect("android MainActivity render");
+
+        assert!(activity.contains("enableEdgeToEdge()"));
+        assert!(activity.contains("waterUiApplication.acquireRuntime(this)"));
+        assert!(activity.contains("androidRuntimeLease.close()"));
+        assert!(activity.contains("val reportActivityFinished = !isChangingConfigurations"));
+        assert!(activity.contains("reportActivityFinished && releasedActiveRuntime"));
+        assert!(activity.contains("WATERUI_ACTIVITY_FINISHED"));
+
+        let application_template = embedded::ANDROID
+            .get_file("app/src/main/java/WaterUiApplication.kt.tpl")
+            .expect("android WaterUiApplication template must exist")
+            .contents_utf8()
+            .expect("android WaterUiApplication template must be utf-8");
+        let application = render_scaffold_template(
+            TemplateNamespace::Android,
+            std::path::Path::new("app/src/main/java/WaterUiApplication.kt.tpl"),
+            application_template,
+            &ctx,
+        )
+        .expect("android WaterUiApplication render");
+
+        assert!(application.starts_with("package com.example.test"));
+        assert!(application.contains("activeRuntime?.let { previous ->"));
+        assert!(application.contains("releaseWaterUiRuntime(previous.owner)"));
+        assert!(application.contains("bootstrapWaterUiRuntime(activity)"));
+        assert!(application.contains("if (runtime.generation != generation) return false"));
+        assert!(application.contains("return application.releaseRuntime(generation)"));
+        assert!(application.contains("Application(), WaterUiRuntimeOwner"));
+        assert!(application.contains("processEnvironment = WuiEnvironment.create()"));
+        assert!(application.contains("createWaterUiEnvironment(): WuiEnvironment"));
+        assert!(application.contains("}.clone()"));
+
+        let manifest_template = embedded::ANDROID
+            .get_file("app/src/main/AndroidManifest.xml.tpl")
+            .expect("android manifest template must exist")
+            .contents_utf8()
+            .expect("android manifest template must be utf-8");
+        let manifest = render_scaffold_template(
+            TemplateNamespace::Android,
+            std::path::Path::new("app/src/main/AndroidManifest.xml.tpl"),
+            manifest_template,
+            &ctx,
+        )
+        .expect("android manifest render");
+
+        assert!(manifest.contains("android:name=\".WaterUiApplication\""));
+        assert!(manifest.contains("android:launchMode=\"singleTask\""));
     }
 
     #[test]

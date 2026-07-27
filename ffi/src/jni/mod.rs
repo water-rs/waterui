@@ -19,9 +19,9 @@ pub use convert::JniPrimitive;
 
 // Re-export jni types needed by macros
 pub use jni;
-pub use jni::objects::{GlobalRef, JClass, JObject, JValue};
+pub use jni::objects::{Global, JClass, JObject, JValue};
 pub use jni::sys::{JNI_VERSION_1_6, jboolean, jdouble, jfloat, jint, jlong, jobject};
-pub use jni::{JNIEnv, JavaVM};
+pub use jni::{Env, EnvUnowned as JNIEnv, JavaVM, jni_sig, jni_str};
 
 /// Returns the JNI version supported by this module.
 ///
@@ -32,17 +32,43 @@ pub unsafe fn init(_vm: *mut jni::sys::JavaVM) -> jint {
     tracing::debug!("WaterUI JNI module initialized");
     JNI_VERSION_1_6
 }
+
+/// Runs one JNI native entrypoint against its borrowed environment and maps
+/// panics or JNI failures to a Java runtime exception.
+pub fn with_env<'local, T: Default>(
+    env: &mut JNIEnv<'local>,
+    operation: impl FnOnce(&mut Env<'local>) -> T,
+) -> T {
+    use jni::errors::ThrowRuntimeExAndDefault;
+
+    env.with_env(|env| -> jni::errors::Result<T> { Ok(operation(env)) })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Attaches the current Rust thread to a JVM for the duration of one operation.
+pub fn with_attached_env<T>(
+    vm: &JavaVM,
+    operation: impl FnOnce(&mut Env<'_>) -> T,
+) -> jni::errors::Result<T> {
+    vm.attach_current_thread(|env| -> jni::errors::Result<T> { Ok(operation(env)) })
+}
+
+/// Converts a Rust collection length to the signed width required by JNI arrays.
+pub fn array_len(len: usize) -> jint {
+    jint::try_from(len).expect("JNI array length exceeds jint capacity")
+}
+
 /// Convert a WuiTypeId to a Java TypeIdStruct object.
 pub fn type_id_to_java<'local>(
-    env: &mut JNIEnv<'local>,
+    env: &mut Env<'local>,
     type_id: crate::WuiTypeId,
 ) -> JObject<'local> {
     // TypeIdStruct is (low, high) to match Kotlin WuiTypeId(low, high).
     let low = type_id.low as jlong;
     let high = type_id.high as jlong;
     env.new_object(
-        "dev/waterui/android/runtime/TypeIdStruct",
-        "(JJ)V",
+        jni_str!("dev/waterui/android/runtime/TypeIdStruct"),
+        jni_sig!("(JJ)V"),
         &[JValue::Long(low), JValue::Long(high)],
     )
     .expect("Failed to create TypeIdStruct")
@@ -52,19 +78,19 @@ pub fn type_id_to_java<'local>(
 ///
 /// This function is used by the generated JNI watch functions in `ffi_computed!`
 /// and `ffi_binding!` macros to extract the watcher callback pointers.
-pub fn extract_watcher_struct(env: &mut JNIEnv, watcher: &JObject) -> (jlong, jlong, jlong) {
+pub fn extract_watcher_struct(env: &mut Env<'_>, watcher: &JObject) -> (jlong, jlong, jlong) {
     let data_ptr = env
-        .get_field(watcher, "dataPtr", "J")
+        .get_field(watcher, jni_str!("dataPtr"), jni_sig!("J"))
         .expect("Failed to get dataPtr")
         .j()
         .expect("dataPtr is not a long");
     let call_ptr = env
-        .get_field(watcher, "callPtr", "J")
+        .get_field(watcher, jni_str!("callPtr"), jni_sig!("J"))
         .expect("Failed to get callPtr")
         .j()
         .expect("callPtr is not a long");
     let drop_ptr = env
-        .get_field(watcher, "dropPtr", "J")
+        .get_field(watcher, jni_str!("dropPtr"), jni_sig!("J"))
         .expect("Failed to get dropPtr")
         .j()
         .expect("dropPtr is not a long");

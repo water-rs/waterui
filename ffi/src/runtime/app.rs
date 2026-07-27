@@ -7,10 +7,6 @@ use crate::{WuiAnyView, window::OwnedFfiHandle};
 #[cfg(feature = "android-jni")]
 use core::ffi::c_void;
 
-/// JNI constructor descriptor for `AppStruct(contentPtr, envPtr)`.
-#[cfg(feature = "android-jni")]
-pub(crate) const ANDROID_APP_STRUCT_DESCRIPTOR: &str = "(JJ)V";
-
 /// FFI-compatible representation of an application.
 ///
 /// This struct is returned by value from `waterui_app()`.

@@ -12,9 +12,9 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::string::ToString;
 
-use jni::objects::{GlobalRef, JObject, JString, JValue};
+use jni::objects::{Global, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong, jobject};
-use jni::{JNIEnv, JavaVM};
+use jni::{Env, EnvUnowned, JavaVM, jni_sig, jni_str};
 
 use crate::closure::WuiFn;
 use crate::components::webview::{
@@ -29,33 +29,27 @@ use std::{collections::HashMap, sync::Arc};
 
 pub struct AndroidWebViewHandle {
     jvm: Arc<JavaVM>,
-    pub wrapper: GlobalRef,
+    pub wrapper: Global<JObject<'static>>,
     pub event_callback: Option<Rc<WuiFn<WuiWebViewEvent>>>,
     pub handlers: HashMap<String, Rc<WuiFn<WuiWebViewMessage>>>,
 }
 
 impl AndroidWebViewHandle {
-    fn with_env<R>(&self, f: impl FnOnce(&mut JNIEnv) -> R) -> R {
-        let mut env = self
-            .jvm
-            .attach_current_thread()
-            .expect("AndroidWebViewHandle failed to attach its JVM thread");
-        f(&mut env)
+    fn with_env<R>(&self, f: impl FnOnce(&mut Env) -> R) -> R {
+        super::with_attached_env(&self.jvm, f)
+            .expect("AndroidWebViewHandle failed to attach its JVM thread")
     }
 }
 
 struct AndroidWebViewFactory {
     jvm: Arc<JavaVM>,
-    factory: GlobalRef,
+    factory: Global<JObject<'static>>,
 }
 
 impl AndroidWebViewFactory {
-    fn with_env<R>(&self, f: impl FnOnce(&mut JNIEnv) -> R) -> R {
-        let mut env = self
-            .jvm
-            .attach_current_thread()
-            .expect("AndroidWebViewFactory failed to attach its JVM thread");
-        f(&mut env)
+    fn with_env<R>(&self, f: impl FnOnce(&mut Env) -> R) -> R {
+        super::with_attached_env(&self.jvm, f)
+            .expect("AndroidWebViewFactory failed to attach its JVM thread")
     }
 
     fn create_webview(&self) -> WuiWebViewHandle {
@@ -63,8 +57,8 @@ impl AndroidWebViewFactory {
             let wrapper_obj = env
                 .call_method(
                     &self.factory,
-                    "create",
-                    "()Ldev/waterui/android/components/WebViewWrapper;",
+                    jni_str!("create"),
+                    jni_sig!("()Ldev/waterui/android/components/WebViewWrapper;"),
                     &[],
                 )
                 .expect("Android WebViewFactory.create failed")
@@ -118,7 +112,7 @@ fn wui_str_to_string(s: WuiStr) -> String {
     s.as_str().to_string()
 }
 
-fn java_string<'local>(env: &mut JNIEnv<'local>, s: &str) -> JString<'local> {
+fn java_string<'local>(env: &mut Env<'local>, s: &str) -> JString<'local> {
     env.new_string(s).expect("Failed to create Java string")
 }
 
@@ -129,7 +123,7 @@ fn java_string<'local>(env: &mut JNIEnv<'local>, s: &str) -> JString<'local> {
 unsafe extern "C" fn webview_go_back(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     handle.with_env(|env| {
-        env.call_method(&handle.wrapper, "goBack", "()V", &[])
+        env.call_method(&handle.wrapper, jni_str!("goBack"), jni_sig!("()V"), &[])
             .expect("webview_go_back: failed to call WebViewWrapper.goBack()");
     });
 }
@@ -137,7 +131,7 @@ unsafe extern "C" fn webview_go_back(data: *mut ()) {
 unsafe extern "C" fn webview_go_forward(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     handle.with_env(|env| {
-        env.call_method(&handle.wrapper, "goForward", "()V", &[])
+        env.call_method(&handle.wrapper, jni_str!("goForward"), jni_sig!("()V"), &[])
             .expect("webview_go_forward: failed to call WebViewWrapper.goForward()");
     });
 }
@@ -149,8 +143,8 @@ unsafe extern "C" fn webview_go_to(data: *mut (), url: WuiStr) {
         let jurl = java_string(env, &url);
         env.call_method(
             &handle.wrapper,
-            "goTo",
-            "(Ljava/lang/String;)V",
+            jni_str!("goTo"),
+            jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&jurl)],
         )
         .expect("webview_go_to: failed to call WebViewWrapper.goTo(String)");
@@ -160,7 +154,7 @@ unsafe extern "C" fn webview_go_to(data: *mut (), url: WuiStr) {
 unsafe extern "C" fn webview_stop(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     handle.with_env(|env| {
-        env.call_method(&handle.wrapper, "stop", "()V", &[])
+        env.call_method(&handle.wrapper, jni_str!("stop"), jni_sig!("()V"), &[])
             .expect("webview_stop: failed to call WebViewWrapper.stop()");
     });
 }
@@ -168,7 +162,7 @@ unsafe extern "C" fn webview_stop(data: *mut ()) {
 unsafe extern "C" fn webview_refresh(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     handle.with_env(|env| {
-        env.call_method(&handle.wrapper, "refresh", "()V", &[])
+        env.call_method(&handle.wrapper, jni_str!("refresh"), jni_sig!("()V"), &[])
             .expect("webview_refresh: failed to call WebViewWrapper.refresh()");
     });
 }
@@ -176,7 +170,7 @@ unsafe extern "C" fn webview_refresh(data: *mut ()) {
 unsafe extern "C" fn webview_can_go_back(data: *const ()) -> bool {
     let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
-        env.call_method(&handle.wrapper, "canGoBack", "()Z", &[])
+        env.call_method(&handle.wrapper, jni_str!("canGoBack"), jni_sig!("()Z"), &[])
             .expect("webview_can_go_back: failed to call WebViewWrapper.canGoBack()")
             .z()
             .expect("webview_can_go_back: canGoBack() did not return boolean")
@@ -186,10 +180,15 @@ unsafe extern "C" fn webview_can_go_back(data: *const ()) -> bool {
 unsafe extern "C" fn webview_can_go_forward(data: *const ()) -> bool {
     let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
-        env.call_method(&handle.wrapper, "canGoForward", "()Z", &[])
-            .expect("webview_can_go_forward: failed to call WebViewWrapper.canGoForward()")
-            .z()
-            .expect("webview_can_go_forward: canGoForward() did not return boolean")
+        env.call_method(
+            &handle.wrapper,
+            jni_str!("canGoForward"),
+            jni_sig!("()Z"),
+            &[],
+        )
+        .expect("webview_can_go_forward: failed to call WebViewWrapper.canGoForward()")
+        .z()
+        .expect("webview_can_go_forward: canGoForward() did not return boolean")
     })
 }
 
@@ -200,8 +199,8 @@ unsafe extern "C" fn webview_set_user_agent(data: *mut (), user_agent: WuiStr) {
         let jua = java_string(env, &ua);
         env.call_method(
             &handle.wrapper,
-            "setUserAgent",
-            "(Ljava/lang/String;)V",
+            jni_str!("setUserAgent"),
+            jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&jua)],
         )
         .expect("webview_set_user_agent: failed to call WebViewWrapper.setUserAgent(String)");
@@ -213,8 +212,8 @@ unsafe extern "C" fn webview_set_redirects_enabled(data: *mut (), enabled: *mut 
     handle.with_env(|env| {
         env.call_method(
             &handle.wrapper,
-            "setRedirectsEnabled",
-            "(J)V",
+            jni_str!("setRedirectsEnabled"),
+            jni_sig!("(J)V"),
             &[JValue::Long(enabled as jlong)],
         )
         .expect(
@@ -234,8 +233,8 @@ unsafe extern "C" fn webview_inject_script(
         let jscript = java_string(env, &script);
         env.call_method(
             &handle.wrapper,
-            "injectScript",
-            "(Ljava/lang/String;I)V",
+            jni_str!("injectScript"),
+            jni_sig!("(Ljava/lang/String;I)V"),
             &[JValue::Object(&jscript), JValue::Int(time as jint)],
         )
         .expect("webview_inject_script: failed to call WebViewWrapper.injectScript(String, int)");
@@ -246,20 +245,21 @@ unsafe extern "C" fn webview_watch(data: *mut (), callback: WuiFn<WuiWebViewEven
     let handle = unsafe { &mut *data.cast::<AndroidWebViewHandle>() };
     handle.event_callback = Some(Rc::new(callback));
     let handle_ptr = handle as *mut AndroidWebViewHandle as jlong;
-    let wrapper = handle.wrapper.clone();
 
     handle.with_env(|env| {
         let cb_class = env
-            .find_class("dev/waterui/android/components/NativeWebViewEventCallback")
+            .find_class(jni_str!(
+                "dev/waterui/android/components/NativeWebViewEventCallback"
+            ))
             .expect("NativeWebViewEventCallback class not found");
         let cb_obj = env
-            .new_object(cb_class, "(J)V", &[JValue::Long(handle_ptr)])
+            .new_object(cb_class, jni_sig!("(J)V"), &[JValue::Long(handle_ptr)])
             .expect("Failed to create NativeWebViewEventCallback");
 
         env.call_method(
-            &wrapper,
-            "setEventCallback",
-            "(Ldev/waterui/android/components/WebViewEventCallback;)V",
+            &handle.wrapper,
+            jni_str!("setEventCallback"),
+            jni_sig!("(Ldev/waterui/android/components/WebViewEventCallback;)V"),
             &[JValue::Object(&cb_obj)],
         )
         .expect("webview_watch: failed to call WebViewWrapper.setEventCallback(callback)");
@@ -275,14 +275,13 @@ unsafe extern "C" fn webview_add_handler(
     let name = wui_str_to_string(name);
     handle.handlers.insert(name.clone(), Rc::new(handler));
     let handle_ptr = handle as *mut AndroidWebViewHandle as jlong;
-    let wrapper = handle.wrapper.clone();
 
     handle.with_env(|env| {
         let jname = java_string(env, &name);
         env.call_method(
-            &wrapper,
-            "addHandler",
-            "(Ljava/lang/String;J)V",
+            &handle.wrapper,
+            jni_str!("addHandler"),
+            jni_sig!("(Ljava/lang/String;J)V"),
             &[JValue::Object(&jname), JValue::Long(handle_ptr)],
         )
         .expect("webview_add_handler: failed to call WebViewWrapper.addHandler(String, long)");
@@ -297,8 +296,8 @@ unsafe extern "C" fn webview_remove_handler(data: *mut (), name: WuiStr) {
         let jname = java_string(env, &name);
         env.call_method(
             &handle.wrapper,
-            "removeHandler",
-            "(Ljava/lang/String;)V",
+            jni_str!("removeHandler"),
+            jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&jname)],
         )
         .expect("webview_remove_handler: failed to call WebViewWrapper.removeHandler(String)");
@@ -314,8 +313,8 @@ unsafe extern "C" fn webview_set_cookie(data: *mut (), cookie: WuiStr) {
         let jcookie = java_string(env, &cookie);
         env.call_method(
             &handle.wrapper,
-            "setCookie",
-            "(Ljava/lang/String;)V",
+            jni_str!("setCookie"),
+            jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&jcookie)],
         )
         .expect("webview_set_cookie: failed to call WebViewWrapper.setCookie(String)");
@@ -328,8 +327,8 @@ unsafe extern "C" fn webview_get_cookies(data: *const (), callback: WuiStringCal
     handle.with_env(|env| {
         env.call_method(
             &handle.wrapper,
-            "getCookies",
-            "(JJ)V",
+            jni_str!("getCookies"),
+            jni_sig!("(JJ)V"),
             &[JValue::Long(callback.data as jlong), JValue::Long(call_ptr)],
         )
         .expect("webview_get_cookies: failed to call getCookies(callback)");
@@ -348,8 +347,8 @@ unsafe extern "C" fn webview_run_javascript(
         let jscript = java_string(env, &script);
         env.call_method(
             &handle.wrapper,
-            "runJavaScript",
-            "(Ljava/lang/String;JJ)V",
+            jni_str!("runJavaScript"),
+            jni_sig!("(Ljava/lang/String;JJ)V"),
             &[
                 JValue::Object(&jscript),
                 JValue::Long(callback.data as jlong),
@@ -366,12 +365,12 @@ unsafe extern "C" fn webview_drop(data: *mut ()) {
     handle.with_env(|env| {
         env.call_method(
             &handle.wrapper,
-            "setEventCallback",
-            "(Ldev/waterui/android/components/WebViewEventCallback;)V",
+            jni_str!("setEventCallback"),
+            jni_sig!("(Ldev/waterui/android/components/WebViewEventCallback;)V"),
             &[JValue::Object(&JObject::null())],
         )
         .expect("webview_drop: failed to clear WebViewWrapper event callback");
-        env.call_method(&handle.wrapper, "release", "()V", &[])
+        env.call_method(&handle.wrapper, jni_str!("release"), jni_sig!("()V"), &[])
             .expect("webview_drop: failed to call WebViewWrapper.release()");
     });
 
@@ -386,7 +385,7 @@ unsafe extern "C" fn webview_drop(data: *mut ()) {
 ///
 /// `wui_env` must point to a live WaterUI environment owned by the caller.
 pub unsafe fn install_android_webview_controller(
-    env: &JNIEnv,
+    env: &Env,
     wui_env: *mut crate::WuiEnv,
     factory: JObject,
 ) {
@@ -403,12 +402,12 @@ pub unsafe fn install_android_webview_controller(
     env.0.insert(controller);
 }
 
-pub fn webview_native_view<'local>(env: &mut JNIEnv<'local>, handle_ptr: jlong) -> jobject {
+pub fn webview_native_view<'local>(env: &mut Env<'local>, handle_ptr: jlong) -> jobject {
     let handle = unsafe { &*(handle_ptr as *mut AndroidWebViewHandle) };
     env.call_method(
         &handle.wrapper,
-        "getWebView",
-        "()Landroid/webkit/WebView;",
+        jni_str!("getWebView"),
+        jni_sig!("()Landroid/webkit/WebView;"),
         &[],
     )
     .expect("webview_native_view: failed to call WebViewWrapper.getWebView()")
@@ -428,7 +427,7 @@ type StringCallbackFn = unsafe extern "C" fn(*mut (), WuiStr);
 pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeCompleteCookies<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _this: JObject<'local>,
     callback_data: jlong,
     callback_fn: jlong,
@@ -436,23 +435,24 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
 ) {
     let call: StringCallbackFn =
         unsafe { core::mem::transmute::<usize, StringCallbackFn>(callback_fn as usize) };
-    let text: std::string::String = env
-        .get_string(&result)
-        .expect("WebViewWrapper.nativeCompleteCookies: result")
-        .into();
-    unsafe {
-        call(
-            callback_data as *mut (),
-            waterui::Str::from(text).into_ffi(),
-        );
-    }
+    super::with_env(&mut env, |env| {
+        let text = result
+            .try_to_string(env)
+            .expect("WebViewWrapper.nativeCompleteCookies: result");
+        unsafe {
+            call(
+                callback_data as *mut (),
+                waterui::Str::from(text).into_ffi(),
+            );
+        }
+    });
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeCompleteJsResult<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _this: JObject<'local>,
     callback_data: jlong,
     callback_fn: jlong,
@@ -462,20 +462,20 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
     let call: JsCallbackFn =
         unsafe { core::mem::transmute::<usize, JsCallbackFn>(callback_fn as usize) };
 
-    let text: std::string::String = env
-        .get_string(&result)
-        .expect("WebViewWrapper.nativeCompleteJsResult: result")
-        .into();
-    let wui_str = waterui::Str::from(text).into_ffi();
-
-    unsafe {
-        call(callback_data as *mut (), success != 0, wui_str);
-    }
+    super::with_env(&mut env, |env| {
+        let text = result
+            .try_to_string(env)
+            .expect("WebViewWrapper.nativeCompleteJsResult: result");
+        let wui_str = waterui::Str::from(text).into_ffi();
+        unsafe {
+            call(callback_data as *mut (), success, wui_str);
+        }
+    });
 }
 
 struct ReplyCtx {
     jvm: Arc<JavaVM>,
-    wrapper: GlobalRef,
+    wrapper: Global<JObject<'static>>,
     request_id: String,
 }
 
@@ -484,92 +484,78 @@ unsafe extern "C" fn reply_call(data: *mut (), success: bool, payload_b64: WuiSt
     let payload: waterui::Str = unsafe { payload_b64.into_rust() };
     let payload = payload.as_str().to_string();
 
-    let mut env = ctx
-        .jvm
-        .attach_current_thread()
-        .expect("WebView reply failed to attach its JVM thread");
-    {
-        let env = &mut env;
+    super::with_attached_env(&ctx.jvm, |env| {
         let jreq = java_string(env, &ctx.request_id);
         let jpayload = java_string(env, &payload);
         env.call_method(
             &ctx.wrapper,
-            "resolveMessage",
-            "(Ljava/lang/String;ZLjava/lang/String;)V",
+            jni_str!("resolveMessage"),
+            jni_sig!("(Ljava/lang/String;ZLjava/lang/String;)V"),
             &[
                 JValue::Object(&jreq),
-                JValue::Bool(if success { 1 } else { 0 }),
+                JValue::Bool(success),
                 JValue::Object(&jpayload),
             ],
         )
         .expect(
             "reply_call: failed to call WebViewWrapper.resolveMessage(String, boolean, String)",
         );
-    }
+    })
+    .expect("WebView reply failed to attach its JVM thread");
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeOnMessage<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _this: JObject<'local>,
     native_ptr: jlong,
     name: JString<'local>,
     request_id: JString<'local>,
     payload_base64: JString<'local>,
 ) {
-    let name: std::string::String = env
-        .get_string(&name)
-        .expect("webview.native_on_message received an invalid name string")
-        .into();
-    let request_id: std::string::String = env
-        .get_string(&request_id)
-        .expect("webview.native_on_message received an invalid requestId string")
-        .into();
-    let payload_base64: std::string::String = env
-        .get_string(&payload_base64)
-        .expect("webview.native_on_message received an invalid payload string")
-        .into();
-
-    let (handler, jvm, wrapper) =
-        {
-            let handle = unsafe { &*(native_ptr as *const AndroidWebViewHandle) };
-            (
-                Rc::clone(handle.handlers.get(&name).unwrap_or_else(|| {
-                    panic!("webview.native_on_message missing handler '{name}'")
-                })),
-                Arc::clone(&handle.jvm),
-                handle.wrapper.clone(),
-            )
+    super::with_env(&mut env, |env| {
+        let name = name
+            .try_to_string(env)
+            .expect("webview.native_on_message received an invalid name string");
+        let request_id = request_id
+            .try_to_string(env)
+            .expect("webview.native_on_message received an invalid requestId string");
+        let payload_base64 = payload_base64
+            .try_to_string(env)
+            .expect("webview.native_on_message received an invalid payload string");
+        let handle = unsafe { &*(native_ptr as *const AndroidWebViewHandle) };
+        let handler = Rc::clone(
+            handle
+                .handlers
+                .get(&name)
+                .unwrap_or_else(|| panic!("webview.native_on_message missing handler '{name}'")),
+        );
+        let reply_ctx = Box::new(ReplyCtx {
+            jvm: Arc::clone(&handle.jvm),
+            wrapper: env
+                .new_global_ref(handle.wrapper.as_obj())
+                .expect("webview.native_on_message failed to clone wrapper ref"),
+            request_id,
+        });
+        let reply_ctx_ptr = Box::into_raw(reply_ctx) as *mut ();
+        let msg = WuiWebViewMessage {
+            payload_base64: waterui::Str::from(payload_base64).into_ffi(),
+            reply: WuiJsCallback {
+                data: reply_ctx_ptr,
+                call: reply_call,
+            },
         };
-
-    let reply_wrapper = env
-        .new_global_ref(wrapper.as_obj())
-        .expect("webview.native_on_message failed to clone wrapper ref");
-    let reply_ctx = Box::new(ReplyCtx {
-        jvm,
-        wrapper: reply_wrapper,
-        request_id,
+        handler.call(msg);
     });
-    let reply_ctx_ptr = Box::into_raw(reply_ctx) as *mut ();
-
-    let msg = WuiWebViewMessage {
-        payload_base64: waterui::Str::from(payload_base64).into_ffi(),
-        reply: WuiJsCallback {
-            data: reply_ctx_ptr,
-            call: reply_call,
-        },
-    };
-
-    handler.call(msg);
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCallback_nativeOnEvent<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _this: JObject<'local>,
     native_ptr: jlong,
     event_type: jint,
@@ -597,54 +583,55 @@ pub extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCal
         _ => panic!("webview.native_on_event received unknown event type {event_type}"),
     };
 
-    fn take_java_string(env: &mut JNIEnv, value: &JString, field: &'static str) -> *mut WuiStr {
-        let value: std::string::String = env
-            .get_string(value)
-            .unwrap_or_else(|_| panic!("webview.native_on_event requires {field}"))
-            .into();
+    fn take_java_string(env: &mut Env, value: &JString, field: &'static str) -> *mut WuiStr {
+        let value = value
+            .try_to_string(env)
+            .unwrap_or_else(|_| panic!("webview.native_on_event requires {field}"));
         Box::into_raw(Box::new(waterui::Str::from(value).into_ffi()))
     }
 
-    let (url, url2, message) = match event_type {
-        WuiWebViewEventType::WillNavigate => (
-            take_java_string(&mut env, &url, "url"),
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-        ),
-        WuiWebViewEventType::Redirect => (
-            take_java_string(&mut env, &url, "url"),
-            take_java_string(&mut env, &url2, "url2"),
-            core::ptr::null_mut(),
-        ),
-        WuiWebViewEventType::SslError => (
-            take_java_string(&mut env, &url, "url"),
-            core::ptr::null_mut(),
-            take_java_string(&mut env, &message, "message"),
-        ),
-        WuiWebViewEventType::Error => (
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-            take_java_string(&mut env, &message, "message"),
-        ),
-        WuiWebViewEventType::Loading
-        | WuiWebViewEventType::Loaded
-        | WuiWebViewEventType::StateChanged => (
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-        ),
-        WuiWebViewEventType::None => panic!("Android WebView cannot emit the None event type"),
-    };
+    super::with_env(&mut env, |env| {
+        let (url, url2, message) = match event_type {
+            WuiWebViewEventType::WillNavigate => (
+                take_java_string(env, &url, "url"),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            ),
+            WuiWebViewEventType::Redirect => (
+                take_java_string(env, &url, "url"),
+                take_java_string(env, &url2, "url2"),
+                core::ptr::null_mut(),
+            ),
+            WuiWebViewEventType::SslError => (
+                take_java_string(env, &url, "url"),
+                core::ptr::null_mut(),
+                take_java_string(env, &message, "message"),
+            ),
+            WuiWebViewEventType::Error => (
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                take_java_string(env, &message, "message"),
+            ),
+            WuiWebViewEventType::Loading
+            | WuiWebViewEventType::Loaded
+            | WuiWebViewEventType::StateChanged => (
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            ),
+            WuiWebViewEventType::None => panic!("Android WebView cannot emit the None event type"),
+        };
 
-    let event = WuiWebViewEvent {
-        event_type,
-        url,
-        url2,
-        message,
-        progress,
-        can_go_back: can_go_back != 0,
-        can_go_forward: can_go_forward != 0,
-    };
+        let event = WuiWebViewEvent {
+            event_type,
+            url,
+            url2,
+            message,
+            progress,
+            can_go_back,
+            can_go_forward,
+        };
 
-    callback.call(event);
+        callback.call(event);
+    });
 }

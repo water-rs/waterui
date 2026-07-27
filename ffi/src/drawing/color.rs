@@ -67,11 +67,10 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorId<'local>(
     mut env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
 ) -> crate::jni::jobject {
-    crate::jni::type_id_to_java(
-        &mut env,
-        crate::WuiTypeId::of::<waterui_core::Native<Color>>(),
-    )
-    .into_raw()
+    crate::jni::with_env(&mut env, |env| {
+        crate::jni::type_id_to_java(env, crate::WuiTypeId::of::<waterui_core::Native<Color>>())
+            .into_raw()
+    })
 }
 
 /// Consumes a semantic color view and returns its owned resolvable color handle.

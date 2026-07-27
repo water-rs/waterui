@@ -96,6 +96,9 @@ fn toggle_editing(State(state): State<DemoState>) {
 }
 
 fn content(state: DemoState) -> impl View {
+    let edit_label = state
+        .editing
+        .map(|editing| if editing { "Done" } else { "Edit" });
     let list = List::for_each(state.records.clone(), record_row)
         .editing(state.editing.clone())
         .on_delete(delete_record)
@@ -115,12 +118,16 @@ fn content(state: DemoState) -> impl View {
                 button("Top").bordered().action(jump_top),
                 button("Middle").bordered().action(jump_middle),
                 button("Last").bordered().action(jump_last),
-                button("Edit").bordered().action(toggle_editing),
+                button(text!("{edit_label}"))
+                    .bordered_prominent()
+                    .action(toggle_editing),
             ))
             .spacing(8.0),
-            text("Jumping to the final row must not construct the preceding 99,999 row views.")
-                .caption()
-                .foreground(MutedForeground),
+            text(
+                "Animated jumps and the draggable scrollbar keep only viewport rows materialized.",
+            )
+            .caption()
+            .foreground(MutedForeground),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(8.0)

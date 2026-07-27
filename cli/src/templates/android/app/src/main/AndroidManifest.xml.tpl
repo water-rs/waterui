@@ -7,6 +7,7 @@
 
     <application
         android:allowBackup="true"
+        android:name=".WaterUiApplication"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:resizeableActivity="true"
@@ -17,6 +18,7 @@
             android:name=".MainActivity"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:exported="true"
+            android:launchMode="singleTask"
             android:supportsPictureInPicture="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
