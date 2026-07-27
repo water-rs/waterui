@@ -173,7 +173,7 @@ impl View for FlowMarkdown {
             }
         });
 
-        let content = VStack::for_each(blocks, |block: FlowBlockSlot| block.dynamic)
+        let content = VStack::for_each(blocks, |block: FlowBlockSlot| block.content.view())
             .alignment(HorizontalAlignment::Leading);
         Metadata::new(
             content,
@@ -382,8 +382,7 @@ struct FlowUpdate {
 #[derive(Clone)]
 struct FlowBlockSlot {
     identity: u64,
-    handler: DynamicHandler,
-    dynamic: Dynamic,
+    content: FlowBlockContent,
 }
 
 impl Identifiable for FlowBlockSlot {
@@ -391,6 +390,103 @@ impl Identifiable for FlowBlockSlot {
 
     fn id(&self) -> Self::Id {
         self.identity
+    }
+}
+
+#[derive(Clone)]
+struct FlowBlockRender {
+    block: FlowBlock,
+    remaining: usize,
+    enforce_budget: bool,
+    config: FlowMarkdownConfig,
+}
+
+impl FlowBlockRender {
+    fn view(self) -> AnyView {
+        let mut remaining = self.remaining;
+        build_flow_block_view(
+            &self.block,
+            &mut remaining,
+            self.enforce_budget,
+            &self.config,
+        )
+    }
+}
+
+#[derive(Clone)]
+struct FlowBlockContent(Rc<RefCell<FlowBlockContentState>>);
+
+struct FlowBlockContentState {
+    current: FlowBlockRender,
+    subscribers: HashMap<u64, DynamicHandler>,
+    next_subscriber_identity: u64,
+}
+
+impl FlowBlockContent {
+    fn new(current: FlowBlockRender) -> Self {
+        Self(Rc::new(RefCell::new(FlowBlockContentState {
+            current,
+            subscribers: HashMap::new(),
+            next_subscriber_identity: 1,
+        })))
+    }
+
+    fn set_with_metadata(&self, current: &FlowBlockRender, metadata: &WatcherMetadata) {
+        let subscribers = {
+            let mut state = self.0.borrow_mut();
+            state.current = current.clone();
+            state.subscribers.values().cloned().collect::<Vec<_>>()
+        };
+        for subscriber in subscribers {
+            subscriber.set_with_metadata(current.clone().view(), metadata.clone());
+        }
+    }
+
+    fn view(&self) -> impl View + use<> {
+        let current = self.0.borrow().current.clone();
+        let (handler, dynamic) = Dynamic::new();
+        handler.set(current.view());
+        let identity = {
+            let mut state = self.0.borrow_mut();
+            let identity = state.next_subscriber_identity;
+            state.next_subscriber_identity = state
+                .next_subscriber_identity
+                .checked_add(1)
+                .expect("FlowMarkdown block subscriber identity exhausted");
+            let previous = state.subscribers.insert(identity, handler);
+            assert!(
+                previous.is_none(),
+                "FlowMarkdown block subscriber identity reused"
+            );
+            identity
+        };
+        Metadata::new(
+            dynamic,
+            Retain::new(FlowBlockSubscription {
+                content: self.clone(),
+                identity,
+            }),
+        )
+    }
+}
+
+struct FlowBlockSubscription {
+    content: FlowBlockContent,
+    identity: u64,
+}
+
+impl Drop for FlowBlockSubscription {
+    fn drop(&mut self) {
+        let removed = self
+            .content
+            .0
+            .borrow_mut()
+            .subscribers
+            .remove(&self.identity);
+        assert!(
+            removed.is_some(),
+            "FlowMarkdown block subscriber disappeared before its retained view"
+        );
     }
 }
 
@@ -402,7 +498,7 @@ struct FlowMarkdownState {
     source_end_point: Point,
     blocks: Vec<FlowBlock>,
     slots: ReactiveList<FlowBlockSlot>,
-    rendered_blocks: HashMap<u64, (usize, u64)>,
+    rendered_blocks: HashMap<u64, (usize, u64, usize)>,
     next_block_identity: u64,
     configuration_revision: u64,
     typewriter_visible_chars: usize,
@@ -437,6 +533,33 @@ impl FlowMarkdownState {
         }
     }
 
+    fn previous_block_indexes(&self) -> (HashMap<(usize, usize), FlowBlock>, HashMap<usize, u64>) {
+        let by_range = self
+            .blocks
+            .iter()
+            .cloned()
+            .map(|block| ((block.range.start, block.range.end), block))
+            .collect();
+        let identity_by_start = self
+            .blocks
+            .iter()
+            .map(|block| (block.range.start, block.identity))
+            .collect();
+        (by_range, identity_by_start)
+    }
+
+    fn reused_or_new_block_identity(
+        &mut self,
+        incremental: bool,
+        start: usize,
+        previous_identity_by_start: &HashMap<usize, u64>,
+    ) -> u64 {
+        if incremental && let Some(identity) = previous_identity_by_start.get(&start) {
+            return *identity;
+        }
+        self.allocate_block_identity()
+    }
+
     fn recompute(&mut self, markdown: &str, upstream_metadata: WatcherMetadata) -> FlowUpdate {
         let previous_len = self.source.len();
         let is_append_only = markdown.starts_with(&self.source);
@@ -468,12 +591,7 @@ impl FlowMarkdownState {
         let mut changed_kinds = HashSet::new();
         let mut blocks = Vec::new();
         let ranges = collect_block_ranges(&next_tree, markdown.len());
-        let previous_map: HashMap<(usize, usize), FlowBlock> = self
-            .blocks
-            .iter()
-            .cloned()
-            .map(|b| ((b.range.start, b.range.end), b))
-            .collect();
+        let (previous_map, previous_identity_by_start) = self.previous_block_indexes();
 
         for block in ranges {
             let key = (block.range.start, block.range.end);
@@ -498,7 +616,11 @@ impl FlowMarkdownState {
                 self.config.table_policy,
                 self.config.max_pending_bytes,
             );
-            parsed.identity = self.allocate_block_identity();
+            parsed.identity = self.reused_or_new_block_identity(
+                should_incremental,
+                block.range.start,
+                &previous_identity_by_start,
+            );
             changed_kinds.insert(parsed.kind);
             blocks.push(parsed);
         }
@@ -624,29 +746,23 @@ impl FlowMarkdownState {
             } else {
                 remaining
             };
-            let render_key = (render_budget, self.configuration_revision);
+            let render_key = (render_budget, self.configuration_revision, block.range.end);
 
+            let render = FlowBlockRender {
+                block: block.clone(),
+                remaining,
+                enforce_budget,
+                config: self.config.clone(),
+            };
             let slot = existing_slots
                 .get(&block.identity)
                 .cloned()
-                .unwrap_or_else(|| {
-                    let (handler, dynamic) = Dynamic::new();
-                    FlowBlockSlot {
-                        identity: block.identity,
-                        handler,
-                        dynamic,
-                    }
+                .unwrap_or_else(|| FlowBlockSlot {
+                    identity: block.identity,
+                    content: FlowBlockContent::new(render.clone()),
                 });
             if self.rendered_blocks.get(&block.identity) != Some(&render_key) {
-                let mut render_remaining = remaining;
-                let view = build_flow_block_view(
-                    block,
-                    &mut render_remaining,
-                    enforce_budget,
-                    &self.config,
-                );
-                debug_assert_eq!(render_remaining, next_remaining);
-                slot.handler.set_with_metadata(view, metadata.clone());
+                slot.content.set_with_metadata(&render, &metadata);
             }
             remaining = next_remaining;
             next_rendered.insert(block.identity, render_key);
@@ -2090,7 +2206,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_append_preserves_unchanged_block_identity() {
+    fn incremental_append_preserves_stable_block_identities() {
         let slots = ReactiveList::new();
         let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), slots.clone());
         state.recompute(
@@ -2116,7 +2232,7 @@ mod tests {
         assert_eq!(before.len(), 2);
         assert_eq!(after_append.len(), 2);
         assert_eq!(before[0], after_append[0]);
-        assert_ne!(before[1], after_append[1]);
+        assert_eq!(before[1], after_append[1]);
 
         let run = update
             .typewriter

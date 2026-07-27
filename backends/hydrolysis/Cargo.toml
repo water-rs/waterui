@@ -97,6 +97,7 @@ web-sys = { version = "0.3", optional = true, features = [
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+waterui = { path = "../..", default-features = false, features = ["flow-markdown", "gpu"] }
 
 [features]
 default = []

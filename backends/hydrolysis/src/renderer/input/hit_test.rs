@@ -1175,6 +1175,17 @@ impl HydrolysisRenderer {
         false
     }
 
+    #[cfg(test)]
+    pub(crate) fn scroll_metrics_at(&self, x: f32, y: f32) -> Option<crate::scroll::ScrollMetrics> {
+        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test
+            .scroll_targets
+            .iter()
+            .rev()
+            .find(|target| target.bounds.contains(point))
+            .map(|target| target.handle.metrics())
+    }
+
     pub(crate) fn register_pointer_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
