@@ -2,17 +2,25 @@
 //!
 //! This module provides media selection functionality through `MediaPicker`.
 
-use alloc::{string::ToString, vec::Vec};
+use alloc::vec::Vec;
 
+#[cfg(feature = "std")]
+use alloc::string::ToString;
+#[cfg(feature = "std")]
+use std::path::Path;
 use waterui_controls::{IntoLabel, button};
+#[cfg(feature = "std")]
+use waterui_core::Signal;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Binding, Computed, Environment, Signal, View, reactive::impl_constant};
+use waterui_core::{Binding, Computed, Environment, View, reactive::impl_constant};
 use waterui_text::{Text, text};
 
 #[cfg(feature = "std")]
 use waterkit_dialog::{LoadedMedia, MediaType, PhotoPicker as KitPhotoPicker};
 
-use crate::{Media, live::LivePhotoSource, url::Url};
+use crate::Media;
+#[cfg(feature = "std")]
+use crate::{live::LivePhotoSource, url::Url};
 
 /// A media picker view that lets users select photos, videos, or live media.
 ///
@@ -64,11 +72,15 @@ where
     Label: IntoLabel + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
+        #[cfg(feature = "std")]
         let selection = self.selection.clone();
+        #[cfg(feature = "std")]
         let filter = self.filter.clone();
 
         button(self.label).action_async(move || {
+            #[cfg(feature = "std")]
             let selection = selection.clone();
+            #[cfg(feature = "std")]
             let filter = filter.clone();
             async move {
                 #[cfg(feature = "std")]
@@ -145,12 +157,17 @@ fn media_from_loaded_selection(loaded: LoadedMedia) -> Media {
         }
         LoadedMedia::LivePhoto(live_photo) => {
             let (image, video) = live_photo.into_parts();
-            Media::LivePhoto(LivePhotoSource::new(
-                Url::from_file_path_str(image.to_string_lossy().to_string()),
-                Url::from_file_path_str(video.to_string_lossy().to_string()),
-            ))
+            live_photo_from_paths(&image, &video)
         }
     }
+}
+
+#[cfg(feature = "std")]
+fn live_photo_from_paths(image: &Path, video: &Path) -> Media {
+    Media::LivePhoto(LivePhotoSource::new(
+        Url::from_file_path_str(image.to_string_lossy().to_string()),
+        Url::from_file_path_str(video.to_string_lossy().to_string()),
+    ))
 }
 
 #[cfg(feature = "std")]
@@ -202,3 +219,49 @@ pub enum MediaFilter {
 }
 
 impl_constant!(MediaFilter);
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use std::path::PathBuf;
+
+    use waterkit_dialog::MediaType;
+
+    use super::{MediaFilter, live_photo_from_paths, media_type_from_filter};
+    use crate::{Media, Url, live::LivePhotoSource};
+
+    #[test]
+    fn live_photo_selection_preserves_paired_resources() {
+        let image = PathBuf::from("waterui-live-photo.heic");
+        let video = PathBuf::from("waterui-live-photo.mov");
+
+        assert_eq!(
+            live_photo_from_paths(&image, &video),
+            Media::LivePhoto(LivePhotoSource::new(
+                Url::from_file_path_str(image.to_string_lossy().to_string()),
+                Url::from_file_path_str(video.to_string_lossy().to_string()),
+            ))
+        );
+    }
+
+    #[test]
+    fn live_photo_filters_request_paired_media() {
+        assert_eq!(
+            media_type_from_filter(&MediaFilter::LivePhoto),
+            MediaType::LivePhoto
+        );
+        assert_eq!(
+            media_type_from_filter(&MediaFilter::Any(vec![
+                MediaFilter::Image,
+                MediaFilter::LivePhoto,
+            ])),
+            MediaType::LivePhoto
+        );
+        assert_eq!(
+            media_type_from_filter(&MediaFilter::All(vec![
+                MediaFilter::Video,
+                MediaFilter::LivePhoto,
+            ])),
+            MediaType::LivePhoto
+        );
+    }
+}
