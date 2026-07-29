@@ -147,6 +147,25 @@ fn progress_editor() -> impl View {
 
 Use reactive collections with `ForEach` or `List` when membership changes. `watch` is reserved for an intentional structural replacement; it is not the routine way to update text, control values, styles, or collection items.
 
+Field-backed collection identity can be derived:
+
+```rust
+use waterui::Identifiable;
+
+#[derive(Clone, Identifiable)]
+struct Contact {
+    #[id]
+    id: u64,
+    name: &'static str,
+}
+
+let contact = Contact {
+    id: 42,
+    name: "Ada",
+};
+assert_eq!(contact.id(), 42);
+```
+
 ### Environment carries application context
 
 `Environment` propagates themes, locale data, services, and backend capabilities through the tree:

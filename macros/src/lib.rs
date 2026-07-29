@@ -9,6 +9,7 @@ use proc_macro2::Span;
 use quote::quote;
 use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
+mod identifiable;
 mod locale;
 mod view_builder;
 
@@ -53,6 +54,41 @@ pub fn view(input: TokenStream) -> TokenStream {
 /// can return different concrete `View` types under a shared `impl View`.
 pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
     view_builder::expand_attribute(args, &input)
+}
+
+/// Derives `Identifiable` using a struct field as the stable identifier.
+///
+/// Mark exactly one named or tuple field with `#[id]`.
+///
+/// The generated implementation clones the identifier when
+/// `Identifiable::id` is called, so the field type must implement `Hash`,
+/// `Ord`, and `Clone`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use waterui::Identifiable;
+///
+/// #[derive(Clone, Identifiable)]
+/// struct Contact {
+///     #[id]
+///     id: u64,
+///     name: String,
+/// }
+///
+/// #[derive(Clone, Identifiable)]
+/// struct Article {
+///     #[id]
+///     slug: String,
+///     title: String,
+/// }
+/// ```
+#[proc_macro_derive(Identifiable, attributes(id))]
+pub fn derive_identifiable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    identifiable::expand(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 /// Derives the `FormBuilder` trait for structs, enabling automatic form generation.
