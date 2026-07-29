@@ -1,132 +1,295 @@
+#[cfg(hydrolysis_linux_wpe_webview)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
+#[cfg(hydrolysis_linux_wpe_webview)]
+use std::time::Instant;
 
-use nami::SignalExt;
-use waterui::ViewExt as _;
-use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
+use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment};
-use waterui_graphics::Gradient;
-use waterui_graphics::color::Srgb;
-use waterui_layout::stack::{vstack, zstack};
-use waterui_text::Text;
-use waterui_webview::{WebView, WebViewEvent};
+#[cfg(hydrolysis_linux_wpe_webview)]
+use waterui_graphics::gpu_surface::GpuSurface;
+use waterui_webview::WebView;
 
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, WidgetRenderContext,
-    measure_view_dimensions_with_proposal, measure_view_intrinsic, normalize_view_for_render,
-};
+#[cfg(hydrolysis_macos_system_webview)]
+mod macos;
 
-const WEBVIEW_SURFACE_HEIGHT: f32 = 184.0;
+#[cfg(hydrolysis_linux_wpe_webview)]
+use crate::platform::{KeyCode, Modifiers, NativeKey, PointerButton};
+#[cfg(hydrolysis_linux_wpe_webview)]
+use crate::renderer::BrowserInputHandler;
+#[cfg(hydrolysis_linux_wpe_webview)]
+use crate::renderer::{EmbeddedGpuSurfaceRuntime, GpuSurfaceSource};
+use crate::renderer::{HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext};
 
-fn webview_surface_label(env: &Environment) -> String {
-    env.get::<AccessibilityLabel>()
-        .map(|label| label.as_str().as_str().to_owned())
-        .unwrap_or_else(|| String::from("WebView"))
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_MODIFIER_CONTROL: u32 = 1 << 0;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_MODIFIER_SHIFT: u32 = 1 << 1;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_MODIFIER_ALT: u32 = 1 << 2;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_MODIFIER_META: u32 = 1 << 3;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_BUTTON_PRIMARY: u32 = 1 << 8;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_BUTTON_MIDDLE: u32 = 1 << 9;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_BUTTON_SECONDARY: u32 = 1 << 10;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_BUTTON_BACK: u32 = 1 << 11;
+#[cfg(hydrolysis_linux_wpe_webview)]
+const WPE_BUTTON_FORWARD: u32 = 1 << 12;
+
+#[cfg(hydrolysis_linux_wpe_webview)]
+struct WpeInputHandler {
+    page: waterui_browser_wpe::WpePage,
+    modifiers: Cell<u32>,
+    buttons: Cell<u32>,
+    last_pointer: Cell<Option<vello::kurbo::Point>>,
+    started_at: Instant,
 }
 
-fn webview_status_text(event: WebViewEvent) -> String {
-    match event {
-        WebViewEvent::None => String::from("Status: Idle"),
-        WebViewEvent::WillNavigate { url } => format!("Status: Navigating to {url}"),
-        WebViewEvent::Loading { progress } => {
-            format!("Status: Loading {:.0}%", f64::from(progress) * 100.0)
+#[cfg(hydrolysis_linux_wpe_webview)]
+impl WpeInputHandler {
+    fn new(page: waterui_browser_wpe::WpePage) -> Self {
+        Self {
+            page,
+            modifiers: Cell::new(0),
+            buttons: Cell::new(0),
+            last_pointer: Cell::new(None),
+            started_at: Instant::now(),
         }
-        WebViewEvent::Loaded => String::from("Status: Loaded"),
-        WebViewEvent::Redirect { from, to } => format!("Status: Redirect {from} -> {to}"),
-        WebViewEvent::Error(error) => format!("Status: Error {error}"),
-        WebViewEvent::StateChanged { .. } => unreachable!(
-            "WebView::event() should filter internal StateChanged updates before Hydrolysis render"
-        ),
+    }
+
+    fn time_ms(&self) -> u32 {
+        let range = u128::from(u32::MAX) + 1;
+        u32::try_from(self.started_at.elapsed().as_millis() % range)
+            .expect("WPE timestamp modulo u32 must fit")
+    }
+
+    fn event_modifiers(&self) -> u32 {
+        self.modifiers.get() | self.buttons.get()
+    }
+
+    fn button(button: PointerButton) -> (waterui_browser_wpe::PointerButton, u32) {
+        match button {
+            PointerButton::Primary => (
+                waterui_browser_wpe::PointerButton::Primary,
+                WPE_BUTTON_PRIMARY,
+            ),
+            PointerButton::Middle => (
+                waterui_browser_wpe::PointerButton::Middle,
+                WPE_BUTTON_MIDDLE,
+            ),
+            PointerButton::Secondary => (
+                waterui_browser_wpe::PointerButton::Secondary,
+                WPE_BUTTON_SECONDARY,
+            ),
+            PointerButton::Back => (waterui_browser_wpe::PointerButton::Back, WPE_BUTTON_BACK),
+            PointerButton::Forward => (
+                waterui_browser_wpe::PointerButton::Forward,
+                WPE_BUTTON_FORWARD,
+            ),
+            PointerButton::Other(value) => {
+                panic!("WPE does not support pointer button {value}")
+            }
+        }
     }
 }
 
-fn webview_content(view: &WebView, surface_label: &str, env: &Environment) -> AnyView {
-    let status = Text::display(view.event().map(webview_status_text));
-    let navigation = Text::display(
-        view.can_go_back()
-            .zip(&view.can_go_forward())
-            .map(|(back, forward)| format!("Navigation: back={back} forward={forward}")),
-    );
+#[cfg(hydrolysis_linux_wpe_webview)]
+impl BrowserInputHandler for WpeInputHandler {
+    fn set_focus(&self, focused: bool) {
+        self.page.set_focus(focused);
+    }
 
-    normalize_view_for_render(
-        AnyView::new(vstack((zstack((
-            Gradient::linear(
-                vec![
-                    (0.0, Srgb::new(0.12, 0.14, 0.20).resolve()),
-                    (1.0, Srgb::new(0.22, 0.29, 0.40).resolve()),
-                ],
-                [0.0, 0.0],
-                [1.0, 1.0],
-            )
-            .height(WEBVIEW_SURFACE_HEIGHT)
-            .a11y_role(AccessibilityRole::Group)
-            .a11y_label(surface_label.to_owned()),
-            vstack((Text::new("Hydrolysis WebView"), status, navigation))
-                .spacing(8.0)
-                .padding_with(16.0),
-        )),))),
-        env,
-    )
+    fn set_modifiers(&self, modifiers: Modifiers) {
+        let mut value = 0;
+        if modifiers.control {
+            value |= WPE_MODIFIER_CONTROL;
+        }
+        if modifiers.shift {
+            value |= WPE_MODIFIER_SHIFT;
+        }
+        if modifiers.alt {
+            value |= WPE_MODIFIER_ALT;
+        }
+        if modifiers.super_key {
+            value |= WPE_MODIFIER_META;
+        }
+        self.modifiers.set(value);
+    }
+
+    fn pointer_move(&self, position: vello::kurbo::Point) {
+        let previous = self.last_pointer.replace(Some(position));
+        let delta = previous.map_or((0.0, 0.0), |previous| {
+            (position.x - previous.x, position.y - previous.y)
+        });
+        self.page.pointer_move(
+            position.x,
+            position.y,
+            delta.0,
+            delta.1,
+            self.event_modifiers(),
+            self.time_ms(),
+        );
+    }
+
+    fn pointer_button(&self, pressed: bool, button: PointerButton, position: vello::kurbo::Point) {
+        let (button, mask) = Self::button(button);
+        let buttons = if pressed {
+            self.buttons.get() | mask
+        } else {
+            self.buttons.get() & !mask
+        };
+        self.buttons.set(buttons);
+        self.page.pointer_button(
+            pressed,
+            button,
+            position.x,
+            position.y,
+            self.event_modifiers(),
+            self.time_ms(),
+        );
+    }
+
+    fn scroll(
+        &self,
+        position: vello::kurbo::Point,
+        delta_x: f32,
+        delta_y: f32,
+        is_line_delta: bool,
+    ) {
+        self.page.scroll(
+            position.x,
+            position.y,
+            f64::from(delta_x),
+            f64::from(delta_y),
+            !is_line_delta,
+            false,
+            self.event_modifiers(),
+            self.time_ms(),
+        );
+    }
+
+    fn key(&self, pressed: bool, _key: &KeyCode, native: Option<NativeKey>) {
+        let native = native.expect("WPE keyboard input requires Linux XKB key metadata");
+        self.page.key(
+            pressed,
+            native.keycode,
+            native.keyval,
+            self.event_modifiers(),
+            self.time_ms(),
+        );
+    }
+
+    fn text_input(&self, _text: &str) {}
+
+    fn commit_text(&self, text: &str) {
+        for character in text.chars() {
+            let keyval = xkeysym::Keysym::from_char(character).raw();
+            self.page
+                .key(true, 0, keyval, self.event_modifiers(), self.time_ms());
+            self.page
+                .key(false, 0, keyval, self.event_modifiers(), self.time_ms());
+        }
+    }
 }
 
-/// Environment with the webview's own accessibility label/role removed, so the
-/// inner content's render-driven a11y emits the surface label rather than inheriting
-/// the outer wrapper's. The webview a11y is render-driven, so the inner content owns it.
-fn webview_render_env(env: &Environment) -> Environment {
-    let mut render_env = env.clone();
-    render_env.remove::<AccessibilityLabel>();
-    render_env.remove::<AccessibilityRole>();
-    render_env
-}
-
-/// The retained render state of a webview: the composed content (a `vstack` of a
-/// gradient surface plus reactive status/navigation `Text`s built from the view's
-/// `event`/`can_go_back`/`can_go_forward` signals) is a move-only `AnyView`, so the
-/// persistent `Widget` node holds it as a [`RetainedSubview`] built once and
-/// re-flushed each frame. The status/navigation reactivity is carried by the inner
-/// `Text` nodes, which become live `Dynamic`/`Text` nodes inside the sub-view — a
-/// navigation or load event updates without rebuilding the node. The source
-/// [`WebView`] remains owned by the state because it owns the reactive URL watcher
-/// and native handle for exactly the retained node's lifetime.
+/// Retains the semantic WebView and its selected native engine for the node lifetime.
 pub(crate) struct WebViewRenderState {
     _source: WebView,
-    /// The scoped environment the content was built under (webview a11y label/role
-    /// removed), reused at flush so the inner render-driven a11y matches the build.
-    render_env: Environment,
-    content: RetainedSubview,
+    #[cfg(hydrolysis_macos_system_webview)]
+    native: macos::MacSystemWebViewHandle,
+    #[cfg(hydrolysis_linux_wpe_webview)]
+    gpu: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
+    #[cfg(hydrolysis_linux_wpe_webview)]
+    viewport: waterui_browser_wpe::WpeViewport,
+    #[cfg(hydrolysis_linux_wpe_webview)]
+    input: Rc<WpeInputHandler>,
+    #[cfg(hydrolysis_cef_webview)]
+    cef: crate::widgets::platform::browser_cef::CefSurfaceRenderState,
 }
 
 impl WebViewRenderState {
+    #[cfg(hydrolysis_macos_system_webview)]
     pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
-        let render_env = webview_render_env(env);
-        let surface_label = webview_surface_label(env);
-        let content = webview_content(&view, &surface_label, &render_env);
+        let _ = env;
+        let native = view
+            .handle()
+            .downcast_ref::<macos::MacSystemWebViewHandle>()
+            .unwrap_or_else(|| {
+                panic!("Hydrolysis macOS WebView handle does not use the selected system backend")
+            })
+            .clone();
         Self {
             _source: view,
-            render_env,
-            content: RetainedSubview::new(content),
+            native,
         }
     }
 
-    /// Eagerly build the content sub-view (the measure path has only `&mut
-    /// HydroState`, no renderer, so it must be built before then).
+    #[cfg(hydrolysis_linux_wpe_webview)]
+    pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
+        let handle = view
+            .handle()
+            .downcast_ref::<waterui_browser_wpe::WpeWebViewHandle>()
+            .unwrap_or_else(|| {
+                panic!("Hydrolysis Linux WebView handle does not use the selected WPE backend")
+            });
+        let viewport = waterui_browser_wpe::WpeViewport::new();
+        let surface = GpuSurface::new(waterui_browser_wpe::WpeGpuView::with_external_input(
+            handle.page().clone(),
+            viewport.clone(),
+        ));
+        let input = Rc::new(WpeInputHandler::new(handle.page().clone()));
+        Self {
+            _source: view,
+            gpu: Rc::new(RefCell::new(EmbeddedGpuSurfaceRuntime::new(surface, env))),
+            viewport,
+            input,
+        }
+    }
+
+    #[cfg(hydrolysis_cef_webview)]
+    pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
+        let page = view
+            .handle()
+            .downcast_ref::<waterui_browser_cef::CefWebViewHandle>()
+            .unwrap_or_else(|| {
+                panic!("Hydrolysis WebView handle does not use the selected CEF backend")
+            })
+            .page()
+            .clone();
+        Self {
+            _source: view,
+            cef: crate::widgets::platform::browser_cef::CefSurfaceRenderState::new(page, env),
+        }
+    }
+
+    #[cfg(not(any(
+        hydrolysis_macos_system_webview,
+        hydrolysis_linux_wpe_webview,
+        hydrolysis_cef_webview
+    )))]
+    pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
+        let _ = (view, env);
+        panic!("Hydrolysis WebView was linked without a selected WebView engine feature")
+    }
+
     pub(crate) fn prebuild(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
-        let _ = env;
-        let render_env = self.render_env.clone();
-        self.content.ensure_built(renderer, &render_env);
+        #[cfg(hydrolysis_linux_wpe_webview)]
+        renderer.register_node_gpu_surface(Rc::clone(&self.gpu));
+        #[cfg(hydrolysis_cef_webview)]
+        self.cef.prebuild(renderer);
+        let _ = (renderer, env);
     }
 }
 
 impl HydroNativeView for WebView {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
-        let render_env = webview_render_env(env);
-        let surface_label = webview_surface_label(env);
-        measure_view_intrinsic(
-            &webview_content(view, &surface_label, &render_env),
-            state,
-            &render_env,
-        )
+        let _ = (state, view, env);
+        LayoutSize::zero()
     }
 
     fn dimensions(
@@ -135,14 +298,11 @@ impl HydroNativeView for WebView {
         env: &Environment,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        let render_env = webview_render_env(env);
-        let surface_label = webview_surface_label(env);
-        measure_view_dimensions_with_proposal(
-            &webview_content(view, &surface_label, &render_env),
-            proposal,
-            state,
-            &render_env,
-        )
+        let _ = (state, view, env);
+        ViewDimensions::new(LayoutSize::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        ))
     }
 }
 
@@ -154,12 +314,11 @@ pub(crate) fn measure_webview_node(
     hydro: &mut HydroState,
     _env: &Environment,
 ) -> ViewDimensions {
-    let render_env = state.render_env.clone();
-    ViewDimensions::new(
-        state
-            .content
-            .measure_built_with_proposal(hydro, &render_env, proposal),
-    )
+    let _ = (state, hydro);
+    ViewDimensions::new(LayoutSize::new(
+        proposal.width.unwrap_or(0.0),
+        proposal.height.unwrap_or(0.0),
+    ))
 }
 
 /// Renders a retained webview leaf every flush: flushes the composed content
@@ -170,19 +329,70 @@ pub(crate) fn render_webview_node(
     state: &Rc<RefCell<WebViewRenderState>>,
     env: &Environment,
 ) {
-    render_webview_parts(ctx, state, env);
+    #[cfg(hydrolysis_macos_system_webview)]
+    {
+        let _ = env;
+        let bounds = ctx.bounds;
+        let transform = ctx.render_context().transform;
+        let native = state.borrow().native.native_view();
+        ctx.renderer_mut()
+            .record_native_view_layer(native, transform, bounds);
+    }
+    #[cfg(hydrolysis_linux_wpe_webview)]
+    {
+        let _ = env;
+        let bounds = ctx.bounds;
+        let transform = ctx.render_context().transform;
+        let hit_transform = ctx.hit_transform;
+        let state = state.borrow();
+        state
+            .viewport
+            .set_scale(transform.determinant().abs().sqrt());
+        let gpu = Rc::clone(&state.gpu);
+        let input: Rc<dyn BrowserInputHandler> = state.input.clone();
+        drop(state);
+        let renderer = ctx.renderer_mut();
+        renderer.register_browser_input_target(bounds, hit_transform, input);
+        renderer.push_gpu_surface_layer(GpuSurfaceSource::Owned(gpu), transform, bounds);
+    }
+    #[cfg(hydrolysis_cef_webview)]
+    {
+        let _ = env;
+        let bounds = ctx.bounds;
+        let transform = ctx.render_context().transform;
+        let hit_transform = ctx.hit_transform;
+        state
+            .borrow()
+            .cef
+            .render(ctx.renderer_mut(), bounds, transform, hit_transform);
+    }
+    #[cfg(not(any(
+        hydrolysis_macos_system_webview,
+        hydrolysis_linux_wpe_webview,
+        hydrolysis_cef_webview
+    )))]
+    {
+        let _ = (ctx, state, env);
+        panic!("Hydrolysis WebView has no selected rendering engine")
+    }
 }
 
-pub(crate) fn render_webview_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<WebViewRenderState>>,
-    _env: &Environment,
-) {
-    let bounds = ctx.bounds;
-    let render_ctx = ctx.render_context();
-    let mut state = state.borrow_mut();
-    let render_env = state.render_env.clone();
-    state
-        .content
-        .flush_in_rect(ctx.renderer_mut(), render_ctx, &render_env, bounds);
+#[cfg(hydrolysis_macos_system_webview)]
+pub(crate) fn install_controller(env: &mut Environment) {
+    macos::install(env);
 }
+
+#[cfg(hydrolysis_linux_wpe_webview)]
+pub(crate) fn install_controller(env: &mut Environment) {
+    use waterui_webview::WebViewController;
+
+    let controller = waterui_browser_wpe::WpeController::packaged();
+    env.insert(WebViewController::new(controller));
+}
+
+#[cfg(not(any(
+    hydrolysis_macos_system_webview,
+    hydrolysis_linux_wpe_webview,
+    hydrolysis_cef_webview
+)))]
+pub(crate) fn install_controller(_env: &mut Environment) {}

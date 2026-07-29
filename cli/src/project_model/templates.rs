@@ -17,6 +17,7 @@ use askama::Template;
 use include_dir::{Dir, include_dir};
 use smol::fs;
 
+use crate::project::WebViewBackend;
 use crate::project_types::{BundleIdentifier, CrateName, RustIdent};
 
 /// Normalize a path to use forward slashes for config files (Cargo.toml, Xcode projects, etc.)
@@ -156,6 +157,27 @@ impl Default for Esp32TemplateEntry {
     }
 }
 
+/// Browser features rendered into a generated backend manifest.
+#[derive(Debug, Clone, Copy)]
+pub struct BrowserTemplateContext {
+    /// Standard `WebView` engine selected by `Water.toml`.
+    pub webview_backend: WebViewBackend,
+    /// Whether the packaged application links the standard `WebView` component.
+    pub webview_enabled: bool,
+    /// Whether the packaged application links the independent Chromium component.
+    pub chromium_enabled: bool,
+}
+
+impl BrowserTemplateContext {
+    const fn new(webview_backend: WebViewBackend) -> Self {
+        Self {
+            webview_backend,
+            webview_enabled: false,
+            chromium_enabled: false,
+        }
+    }
+}
+
 /// Context for rendering templates with type-safe substitutions.
 #[derive(Debug, Clone)]
 pub struct TemplateContext {
@@ -175,6 +197,8 @@ pub struct TemplateContext {
     pub use_remote_dev_backend: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
+    /// Browser engine and component selections for generated backend manifests.
+    pub browser: BrowserTemplateContext,
     /// Path to the backend project being scaffolded.
     ///
     /// This may be relative to the project root or an absolute cache path.
@@ -218,6 +242,7 @@ impl TemplateContext {
                 .map(|path| path.join("backends/android")),
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
+            browser: BrowserTemplateContext::new(WebViewBackend::Default),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -247,6 +272,7 @@ impl TemplateContext {
             android_backend_path: None,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            browser: BrowserTemplateContext::new(manifest.webview_backend),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -283,6 +309,7 @@ impl TemplateContext {
             android_backend_path,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
+            browser: BrowserTemplateContext::new(WebViewBackend::Default),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -308,6 +335,26 @@ impl TemplateContext {
     pub fn with_project_root_path(mut self, path: PathBuf) -> Self {
         self.project_root_path = Some(path);
         self
+    }
+
+    /// Set whether the application runtime graph links `waterui-webview`.
+    #[must_use]
+    pub const fn with_webview_enabled(mut self, enabled: bool) -> Self {
+        self.browser.webview_enabled = enabled;
+        self
+    }
+
+    /// Set whether the application runtime graph links `waterui-chromium`.
+    #[must_use]
+    pub const fn with_chromium_enabled(mut self, enabled: bool) -> Self {
+        self.browser.chromium_enabled = enabled;
+        self
+    }
+
+    fn webview_backend_feature(&self) -> Option<&'static str> {
+        self.browser
+            .webview_enabled
+            .then_some(self.browser.webview_backend.cargo_feature())
     }
 
     /// Set the exact `WaterUI` feature set used by a preview support runtime.
@@ -791,10 +838,12 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANDROID_BACKEND, APPLE_BACKEND, Esp32TemplateEntry, GTK_BACKEND_VERSION, PREVIEW_VERSION,
-        TemplateContext, TemplateNamespace, embedded, jitpack_dependency_coordinate,
-        normalize_path_for_config, preview_ffi, render_scaffold_template,
+        ANDROID_BACKEND, APPLE_BACKEND, BrowserTemplateContext, Esp32TemplateEntry,
+        GTK_BACKEND_VERSION, PREVIEW_VERSION, TemplateContext, TemplateNamespace, embedded,
+        jitpack_dependency_coordinate, normalize_path_for_config, preview_ffi,
+        render_scaffold_template,
     };
+    use crate::project::WebViewBackend;
     use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -815,6 +864,7 @@ mod tests {
             android_backend_path: None,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
+            browser: BrowserTemplateContext::new(WebViewBackend::Default),
             backend_project_path,
             project_root_path,
             android_permissions: Vec::new(),
@@ -1147,6 +1197,57 @@ mod tests {
         let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("gtk4 Cargo.toml should be written");
         assert!(cargo_toml.contains(&format!("version = \"{GTK_BACKEND_VERSION}\"")));
+        assert!(!cargo_toml.contains("webview-default"));
+    }
+
+    #[test]
+    fn generated_native_backends_only_select_webview_when_linked() {
+        let mut gtk_ctx = app_ctx().with_webview_enabled(true);
+        gtk_ctx.browser.webview_backend = WebViewBackend::Wpe;
+        let tempdir = tempdir().expect("temporary gtk webview scaffold dir");
+        smol::block_on(crate::templates::gtk4::scaffold(
+            tempdir.path(),
+            &gtk_ctx,
+            "waterui-test-gtk",
+        ))
+        .expect("gtk4 webview scaffold should succeed");
+        let gtk_manifest = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
+            .expect("gtk4 Cargo.toml should be written");
+        assert!(gtk_manifest.contains("features = [\"webview-wpe\"]"));
+
+        let mut hydrolysis_ctx = app_ctx().with_webview_enabled(true);
+        hydrolysis_ctx.browser.webview_backend = WebViewBackend::Cef;
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
+            &hydrolysis_ctx,
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("Cargo.toml"))
+                .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+        })
+        .expect("hydrolysis Cargo.toml output should exist");
+        let manifest = cargo_toml
+            .parse::<toml::Table>()
+            .expect("hydrolysis Cargo.toml should parse");
+        let features =
+            manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"]["hydrolysis"]
+                ["features"]
+                .as_array()
+                .expect("hydrolysis dependency features should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
+        assert_eq!(features, ["winit", "webview-cef"]);
+        assert_eq!(manifest["package"]["autobins"].as_bool(), Some(false));
+        let bins = manifest["bin"]
+            .as_array()
+            .expect("CEF Hydrolysis manifest should declare binaries");
+        assert!(bins.iter().any(|bin| {
+            bin["name"].as_str() == Some("waterui-cef-helper")
+                && bin["path"].as_str() == Some("src/bin/waterui-cef-helper.rs")
+        }));
     }
 
     #[test]
@@ -1615,6 +1716,16 @@ async fn write_native_backend_bin_cargo_toml(
     package_name: &str,
     dependencies: &[NativeBackendDependencySpec<'_>],
 ) -> io::Result<()> {
+    let toml_string = render_native_backend_bin_cargo_toml(ctx, package_name, dependencies)?;
+    fs::create_dir_all(base_dir).await?;
+    write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await
+}
+
+fn render_native_backend_bin_cargo_toml(
+    ctx: &TemplateContext,
+    package_name: &str,
+    dependencies: &[NativeBackendDependencySpec<'_>],
+) -> io::Result<String> {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
 
     let mut manifest = Manifest::<()>::default();
@@ -1665,11 +1776,8 @@ async fn write_native_backend_bin_cargo_toml(
 
     manifest.workspace = Some(Workspace::default());
 
-    let toml_string = toml::to_string_pretty(&manifest)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    fs::create_dir_all(base_dir).await?;
-    write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
-    Ok(())
+    toml::to_string_pretty(&manifest)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn dependency_path(path: &Path) -> SupportDependencyValue {
@@ -1690,6 +1798,8 @@ fn dependency_version(version: &str) -> SupportDependencyValue {
 struct GeneratedCargoManifest<T> {
     package: GeneratedPackageSection,
     lib: GeneratedLibSection,
+    #[serde(rename = "bin", skip_serializing_if = "Vec::is_empty", default)]
+    bins: Vec<GeneratedBinSection>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, T>,
@@ -1703,6 +1813,8 @@ struct GeneratedPackageSection {
     name: String,
     version: String,
     edition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    autobins: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     authors: Vec<String>,
 }
@@ -1711,6 +1823,12 @@ struct GeneratedPackageSection {
 struct GeneratedLibSection {
     #[serde(rename = "crate-type")]
     crate_type: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct GeneratedBinSection {
+    name: String,
+    path: String,
 }
 
 #[derive(serde::Serialize)]
@@ -1788,6 +1906,7 @@ fn generated_package(name: &str, authors: Vec<String>) -> GeneratedPackageSectio
         name: name.to_string(),
         version: "0.1.0".to_string(),
         edition: "2024".to_string(),
+        autobins: None,
         authors,
     }
 }
@@ -1941,16 +2060,54 @@ pub mod gtk4 {
         scaffold_dir(TemplateNamespace::Gtk4, &embedded::GTK4, base_dir, ctx).await
     }
 
+    /// Every file `scaffold` would write, without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if template or Cargo manifest rendering fails.
+    pub fn rendered_outputs(
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
+        let mut outputs = super::render_dir_outputs(TemplateNamespace::Gtk4, &embedded::GTK4, ctx)?;
+        let mut features = ctx
+            .webview_backend_feature()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if ctx.browser.chromium_enabled {
+            features.push("chromium");
+        }
+        let dependencies = [NativeBackendDependencySpec::new(
+            "waterui-gtk",
+            GTK_BACKEND_VERSION,
+            &features,
+            Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
+        )];
+        outputs.push((
+            std::path::PathBuf::from("Cargo.toml"),
+            super::render_native_backend_bin_cargo_toml(ctx, package_name, &dependencies)?
+                .into_bytes(),
+        ));
+        Ok(outputs)
+    }
+
     /// Generate `GTK4` `Cargo.toml` programmatically using the `cargo_toml` crate.
     async fn generate_cargo_toml(
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
+        let mut features = ctx
+            .webview_backend_feature()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if ctx.browser.chromium_enabled {
+            features.push("chromium");
+        }
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
             GTK_BACKEND_VERSION,
-            &[],
+            &features,
             Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
         )];
         write_native_backend_bin_cargo_toml(base_dir, ctx, package_name, &dependencies).await
@@ -1960,10 +2117,11 @@ pub mod gtk4 {
 /// Hydrolysis backend templates.
 pub mod hydrolysis {
     use super::{
-        GeneratedCargoManifest, GeneratedDependencyDetail, GeneratedDependencyValue,
-        GeneratedTargetSection, GeneratedWorkspaceSection, HYDROLYSIS_VERSION,
-        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
-        TemplateNamespace, WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
+        GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
+        GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
+        HYDROLYSIS_VERSION, NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path,
+        TemplateContext, TemplateNamespace, WATERUI_VERSION, embedded, io, scaffold_dir,
+        write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -2011,9 +2169,22 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> GeneratedCargoManifest<GeneratedDependencyValue> {
+        let mut package = super::generated_package(package_name, Vec::new());
+        package.autobins = Some(false);
+        let mut bins = vec![GeneratedBinSection {
+            name: package_name.to_string(),
+            path: "src/main.rs".to_string(),
+        }];
+        if requires_cef(ctx) {
+            bins.push(GeneratedBinSection {
+                name: "waterui-cef-helper".to_string(),
+                path: "src/bin/waterui-cef-helper.rs".to_string(),
+            });
+        }
         GeneratedCargoManifest {
-            package: super::generated_package(package_name, Vec::new()),
+            package,
             lib: super::generated_lib(&["cdylib", "rlib"]),
+            bins,
             features: BTreeMap::from([
                 ("waterui-preview-mode".to_string(), Vec::new()),
                 ("waterui-preview-test-mode".to_string(), Vec::new()),
@@ -2022,6 +2193,10 @@ pub mod hydrolysis {
             target: cargo_target_dependencies(ctx),
             workspace: GeneratedWorkspaceSection {},
         }
+    }
+
+    fn requires_cef(ctx: &TemplateContext) -> bool {
+        ctx.browser.chromium_enabled || ctx.webview_backend_feature() == Some("webview-cef")
     }
 
     async fn generate_cargo_toml(
@@ -2088,6 +2263,11 @@ pub mod hydrolysis {
     fn native_target_dependencies(
         ctx: &TemplateContext,
     ) -> BTreeMap<String, GeneratedDependencyValue> {
+        let mut hydrolysis_features = vec!["winit"];
+        hydrolysis_features.extend(ctx.webview_backend_feature());
+        if ctx.browser.chromium_enabled {
+            hydrolysis_features.push("chromium");
+        }
         BTreeMap::from([
             (
                 "hydrolysis".to_string(),
@@ -2097,7 +2277,7 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
                             HYDROLYSIS_VERSION,
-                            &["winit"],
+                            &hydrolysis_features,
                             Some(NativeBackendDependencyPathKind::BackendsSubdir(
                                 "hydrolysis",
                             )),
@@ -2445,6 +2625,7 @@ pub mod root {
         let manifest = GeneratedCargoManifest {
             package: super::generated_package(ctx.crate_name.as_str(), vec![ctx.author.clone()]),
             lib: super::generated_lib(&["lib"]),
+            bins: Vec::new(),
             features: BTreeMap::from([(
                 "dev".to_string(),
                 vec!["waterui/dynamic_linking".to_string()],
@@ -2475,12 +2656,7 @@ pub mod root {
             GeneratedTargetSection {
                 dependencies: BTreeMap::from([(
                     "waterui".to_string(),
-                    waterui_dependency.with_features(&[
-                        "assets",
-                        "media",
-                        "webview",
-                        "flow-markdown",
-                    ]),
+                    waterui_dependency.with_features(&["assets", "media", "flow-markdown"]),
                 )]),
             },
         )])

@@ -112,6 +112,8 @@ use waterui::theme;
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_canvas::Canvas;
+#[cfg(feature = "chromium")]
+use waterui_chromium::ChromiumView;
 use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};
 use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
@@ -158,6 +160,7 @@ use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, S
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
+#[cfg(hydrolysis_webview)]
 use waterui_webview::WebView;
 
 use crate::animation::{AnimatedScalarHandle, AnimationController, AnimationKey};

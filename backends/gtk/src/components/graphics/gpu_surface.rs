@@ -846,7 +846,7 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
     area.add_controller(zoom);
 }
 
-fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
+pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
     tracing::debug!("[gtk-gpu] create GLArea widget");
     let area = gtk4::GLArea::new();
     area.set_hexpand(true);

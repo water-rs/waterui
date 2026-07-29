@@ -123,6 +123,9 @@ waterui-ffi = { version = "0.2.1", path = "ffi" }
 waterui-layout = { version = "0.2.2", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.2.1", path = "components/foundation/navigation" }
 waterui-webview = { version = "0.2.0", path = "components/platform/webview" }
+waterui-chromium = { version = "0.1.0", path = "components/platform/chromium" }
+waterui-browser-cef = { version = "0.1.0", path = "components/platform/browser-cef" }
+waterui-browser-wpe = { version = "0.1.0", path = "components/platform/browser-wpe", default-features = false }
 waterui-icon = { version = "0.2.0", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.1.0", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.1.0", path = "components/icon/material" }
@@ -211,7 +214,7 @@ waterui-internal = { path = "src", default-features = false }
 waterui-dylib = { path = "utils/dylib", optional = true, default-features = false }
 
 [features]
-default = ["gpu", "assets", "media", "webview", "flow-markdown"]
+default = ["gpu", "assets", "media", "flow-markdown"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disable it to cross-compile a lean
 # WaterUI app for embedded targets without the GPU stack.

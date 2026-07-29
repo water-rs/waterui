@@ -57,10 +57,17 @@ impl_widget_behavior!(
     crate::widgets::visual::map::render_map_node,
     crate::widgets::visual::map::measure_map_node
 );
+#[cfg(hydrolysis_webview)]
 impl_widget_behavior!(
     crate::widgets::platform::webview::WebViewRenderState,
     crate::widgets::platform::webview::render_webview_node,
     crate::widgets::platform::webview::measure_webview_node
+);
+#[cfg(feature = "chromium")]
+impl_widget_behavior!(
+    crate::widgets::platform::chromium::ChromiumRenderState,
+    crate::widgets::platform::chromium::render_chromium_node,
+    crate::widgets::platform::chromium::measure_chromium_node
 );
 impl_widget_behavior!(
     Spacer,
@@ -247,6 +254,7 @@ impl RenderNode {
     /// `Text` nodes, which become live `Dynamic`/`Text` nodes, so a navigation or load
     /// event updates without rebuilding the node. A11y is render-driven (the inner
     /// content's own dispatch emits it). Stretches to fill the proposal.
+    #[cfg(hydrolysis_webview)]
     pub(super) fn build_webview(
         webview: WebView,
         env: &Environment,
@@ -258,6 +266,19 @@ impl RenderNode {
         state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
         Self::build_widget(state, stretch, env)
+    }
+
+    #[cfg(feature = "chromium")]
+    pub(super) fn build_chromium(
+        chromium: ChromiumView,
+        env: &Environment,
+        renderer: &mut HydrolysisRenderer,
+    ) -> RenderNode {
+        use crate::widgets::platform::chromium::ChromiumRenderState;
+        let stretch = waterui_core::View::stretch_axis(&chromium);
+        let state = ChromiumRenderState::from_view(chromium, env);
+        state.prebuild(renderer);
+        Self::build_widget(Rc::new(RefCell::new(state)), stretch, env)
     }
 
     /// Build a persistent spacer node: a no-op render with zero intrinsic; it

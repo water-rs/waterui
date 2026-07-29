@@ -25,6 +25,8 @@ use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::prelude::Divider;
 use waterui::style::{Offset, Rotation, Scale};
 use waterui_backend_core::ViewDispatcher;
+#[cfg(feature = "chromium")]
+use waterui_chromium::ChromiumView;
 use waterui_controls::button::ButtonConfig;
 use waterui_controls::menu::ResolvedMenu;
 use waterui_controls::slider::SliderConfig;
@@ -60,6 +62,12 @@ use waterui_navigation::{
 };
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::TextConfig;
+#[cfg(any(
+    feature = "webview-default",
+    feature = "webview-system",
+    feature = "webview-wpe",
+    feature = "webview-cef"
+))]
 use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
@@ -826,6 +834,14 @@ impl GtkRenderer {
         Self::register_native::<ColorPickerConfig>(dispatcher);
         Self::register_native::<ResolvedMenu>(dispatcher);
         Self::register_native::<SystemIcon>(dispatcher);
+        #[cfg(feature = "chromium")]
+        Self::register::<ChromiumView>(dispatcher);
+        #[cfg(any(
+            feature = "webview-default",
+            feature = "webview-system",
+            feature = "webview-wpe",
+            feature = "webview-cef"
+        ))]
         Self::register_native::<WebView>(dispatcher);
         Self::register_native::<Color>(dispatcher);
         Self::register_native::<ResolvedColor>(dispatcher);

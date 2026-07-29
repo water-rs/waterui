@@ -12,7 +12,7 @@ use crate::{
     hydrolysis::platform::{
         build_hydrolysis, clean_hydrolysis, is_hydrolysis_platform, package_hydrolysis,
     },
-    platform::{PackageOptions, TargetPlatform},
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
@@ -56,9 +56,9 @@ impl HydrolysisBackend {
     /// # Errors
     ///
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
-    pub fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
+    pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let backend_dir = project.backend_path::<Self>();
-        let ctx = Self::template_context(project);
+        let ctx = Self::template_context(project).await?;
         let outputs = templates::hydrolysis::rendered_outputs(
             &ctx,
             &project.hydrolysis_backend_crate_name(),
@@ -80,7 +80,7 @@ impl HydrolysisBackend {
 
     /// The template context the CLI manages this backend with; regeneration
     /// compares the backend on disk against exactly this rendering.
-    fn template_context(project: &Project) -> TemplateContext {
+    async fn template_context(project: &Project) -> eyre::Result<TemplateContext> {
         let manifest = project.manifest();
         let app_name = manifest
             .package
@@ -88,9 +88,13 @@ impl HydrolysisBackend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
-            .with_backend_project_path(project.backend_path::<Self>())
-            .with_project_root_path(project.root().to_path_buf())
+        Ok(
+            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
+                .with_backend_project_path(project.backend_path::<Self>())
+                .with_project_root_path(project.root().to_path_buf())
+                .with_webview_enabled(project.links_runtime_package("waterui-webview").await?)
+                .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?),
+        )
     }
 }
 
@@ -114,7 +118,9 @@ impl Backend for HydrolysisBackend {
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let project_path = default_hydrolysis_project_path();
-        let ctx = Self::template_context(project);
+        let ctx = Self::template_context(project)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
 
         templates::hydrolysis::scaffold(
             &project.backend_path::<Self>(),
@@ -137,6 +143,9 @@ impl Backend for HydrolysisBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
+        project
+            .browser_runtime_plan(platform, TargetBackend::Hydrolysis)
+            .await?;
         build_hydrolysis(project, platform, options).await
     }
 

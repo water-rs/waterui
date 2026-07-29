@@ -8,7 +8,7 @@ use crate::{
     backend::Backend,
     build::BuildOptions,
     device::Artifact,
-    platform::{PackageOptions, TargetPlatform},
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::Project,
     project_types::CrateName,
     templates::{self, TemplateContext},
@@ -173,6 +173,9 @@ impl Backend for AppleBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
+        project
+            .browser_runtime_plan(platform, TargetBackend::Apple)
+            .await?;
         build_rust_lib(project, platform, options).await
     }
 

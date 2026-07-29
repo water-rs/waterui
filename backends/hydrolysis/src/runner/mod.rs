@@ -86,6 +86,10 @@ fn install_native_component_hooks(env: &mut Environment) {
     if env.get::<Hook<MapConfig>>().is_none() && !semantic_native_map {
         waterui_map_gpu::install(env);
     }
+    #[cfg(all(hydrolysis_webview, not(hydrolysis_cef_webview)))]
+    crate::widgets::platform::webview::install_controller(env);
+    #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]
+    crate::widgets::platform::browser_cef::install_runtime(env);
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));

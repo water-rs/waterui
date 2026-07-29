@@ -38,3 +38,19 @@ pub use runner::{
     FrameCounters, FramePhases, FrameProfile, HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot,
 };
 pub use view_renderer::HydrolysisViewRenderer;
+
+/// Executes the process as a packaged CEF subprocess helper.
+///
+/// # Panics
+///
+/// Panics when this backend was built without a CEF-backed browser component,
+/// or when the process was not launched with a Chromium subprocess type.
+#[must_use]
+pub fn run_browser_subprocess() -> i32 {
+    #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]
+    {
+        return waterui_browser_cef::run_packaged_subprocess();
+    }
+    #[cfg(not(any(hydrolysis_cef_webview, feature = "chromium")))]
+    panic!("this Hydrolysis backend was built without a CEF browser component")
+}

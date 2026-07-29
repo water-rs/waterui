@@ -33,6 +33,7 @@ pub struct Project {
     manifest: Manifest,
     crate_name: CrateName,
     target_dir_future: Shared<BoxFuture<'static, Result<PathBuf, String>>>,
+    linked_packages: Arc<async_lock::OnceCell<Result<BTreeMap<String, String>, String>>>,
     managed_backends_root: PathBuf,
 }
 
@@ -100,6 +101,10 @@ impl Project {
         run_options: RunOptions,
     ) -> Result<Running, FailToRun> {
         let abi = device.android_abi();
+
+        self.browser_runtime_plan(TargetPlatform::Android, TargetBackend::Android)
+            .await
+            .map_err(FailToRun::Build)?;
 
         AndroidPlatform::clean_jni_libs(self)
             .await
@@ -332,6 +337,96 @@ impl Project {
     #[must_use]
     pub const fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// Get the `WebView` engine selection declared in `Water.toml`.
+    #[must_use]
+    pub const fn webview_backend(&self) -> WebViewBackend {
+        self.manifest.webview_backend
+    }
+
+    /// Returns whether the packaged application links `package_name`.
+    ///
+    /// Development-only and build-only dependencies are excluded because they
+    /// do not become part of the packaged application. The resolved graph is
+    /// cached so backend regeneration and scaffolding share one Cargo metadata
+    /// resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph or
+    /// omits a package referenced by that graph.
+    pub async fn links_runtime_package(&self, package_name: &str) -> eyre::Result<bool> {
+        let project_root = self.root.clone();
+        let target_dir_future = self.target_dir_future.clone();
+        let packages = self
+            .linked_packages
+            .get_or_init(|| async move {
+                target_dir_future.await?;
+                resolve_linked_runtime_packages(project_root)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+        match packages {
+            Ok(packages) => Ok(packages.contains_key(package_name)),
+            Err(error) => Err(eyre::eyre!(error.clone())),
+        }
+    }
+
+    /// Resolve and validate the standard `WebView` engine for a build.
+    ///
+    /// Returns `None` when the application does not link `waterui-webview`, so
+    /// engine configuration alone never adds an engine runtime to the package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot be resolved or when the
+    /// configured engine is unsupported for the requested platform and renderer.
+    pub async fn resolved_webview_backend(
+        &self,
+        platform: TargetPlatform,
+        renderer: TargetBackend,
+    ) -> eyre::Result<Option<ResolvedWebViewBackend>> {
+        if !self.links_runtime_package("waterui-webview").await? {
+            return Ok(None);
+        }
+        self.webview_backend()
+            .resolve(platform, renderer)
+            .map(Some)
+            .map_err(Into::into)
+    }
+
+    /// Resolves and validates every embedded browser runtime linked by the application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when standard `WebView` or Chromium is unsupported for
+    /// the requested platform and renderer.
+    pub async fn browser_runtime_plan(
+        &self,
+        platform: TargetPlatform,
+        renderer: TargetBackend,
+    ) -> eyre::Result<BrowserRuntimePlan> {
+        let webview = self.resolved_webview_backend(platform, renderer).await?;
+        let chromium = self.links_runtime_package("waterui-chromium").await?;
+        if chromium
+            && !matches!(
+                (platform, renderer),
+                (
+                    TargetPlatform::MacOS | TargetPlatform::Windows,
+                    TargetBackend::Hydrolysis
+                ) | (
+                    TargetPlatform::Linux,
+                    TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+                )
+            )
+        {
+            eyre::bail!(
+                "waterui-chromium is unsupported for platform {platform:?} with renderer {renderer:?}"
+            );
+        }
+        Ok(BrowserRuntimePlan { webview, chromium })
     }
 
     /// Get the bundle identifier of the project.
@@ -660,6 +755,7 @@ impl Project {
                 accessory: false,
             },
             backends,
+            webview_backend: WebViewBackend::Default,
             waterui_path: options
                 .waterui_path
                 .as_ref()
@@ -689,6 +785,7 @@ impl Project {
             manifest,
             crate_name,
             target_dir_future,
+            linked_packages: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         })
     }
@@ -1017,6 +1114,7 @@ impl Project {
             manifest,
             crate_name,
             target_dir_future,
+            linked_packages: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         };
 
@@ -1138,9 +1236,71 @@ async fn get_target_dir(current_dir: &Path) -> Result<PathBuf, cargo_metadata::E
     Ok(target_dir.to_path_buf())
 }
 
+async fn resolve_linked_runtime_packages(
+    project_root: PathBuf,
+) -> eyre::Result<BTreeMap<String, String>> {
+    let manifest_path = project_root.join("Cargo.toml");
+    let metadata_manifest = manifest_path.clone();
+    let metadata = unblock(move || {
+        cargo_metadata::MetadataCommand::new()
+            .no_deps()
+            .manifest_path(metadata_manifest)
+            .exec()
+    })
+    .await?;
+    let application_manifest = std::fs::canonicalize(&manifest_path)?;
+    let root = metadata
+        .packages
+        .iter()
+        .find(|package| package.manifest_path.as_std_path() == application_manifest)
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Cargo metadata omitted the application package at {}",
+                application_manifest.display()
+            )
+        })?;
+    let package_spec = root.id.to_string();
+    let output = Command::new("cargo")
+        .arg("tree")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--package")
+        .arg(package_spec)
+        .arg("--edges")
+        .arg("normal")
+        .arg("--prefix")
+        .arg("none")
+        .arg("--format")
+        .arg("{p}")
+        .current_dir(&project_root)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(eyre::eyre!(
+            "failed to resolve runtime dependency graph for {}: {}",
+            manifest_path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let mut linked = BTreeMap::new();
+    let tree = String::from_utf8(output.stdout)
+        .map_err(|error| eyre::eyre!("Cargo runtime dependency graph is not UTF-8: {error}"))?;
+    for package in tree.lines() {
+        let name = package
+            .split_ascii_whitespace()
+            .next()
+            .ok_or_else(|| eyre::eyre!("Cargo emitted an empty runtime dependency entry"))?;
+        linked.insert(name.to_string(), package.to_string());
+    }
+
+    Ok(linked)
+}
+
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1153,7 +1313,7 @@ use crate::{
     backend::{Backend, Backends},
     build::BuildOptions,
     device::{Artifact, Device, FailToRun, RunOptions, Running},
-    platform::{PackageOptions, TargetPlatform},
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project_types::{BundleIdentifier, CrateName, PermissionKey},
     templates::{self, TemplateContext},
     utils::command,
@@ -1167,6 +1327,9 @@ pub struct Manifest {
     /// Backend configurations for various platforms.
     #[serde(default, skip_serializing_if = "Backends::is_empty")]
     pub backends: Backends,
+    /// Web engine selected for the standard `WebView` component.
+    #[serde(default, skip_serializing_if = "WebViewBackend::is_default")]
+    pub webview_backend: WebViewBackend,
     /// Path to local `WaterUI` repository for dev mode.
     /// When set, all backends will use this path instead of the published versions.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1266,12 +1429,168 @@ impl Manifest {
         Self {
             package,
             backends: Backends::default(),
+            webview_backend: WebViewBackend::Default,
             waterui_path: None,
             permissions: BTreeMap::default(),
             app: None,
             theme: None,
         }
     }
+}
+
+/// Web engine selection persisted in `Water.toml`.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WebViewBackend {
+    /// Use the platform default: bundled WPE on Linux and the system engine elsewhere.
+    #[default]
+    Default,
+    /// Use the platform-provided system `WebView`.
+    System,
+    /// Use `WaterUI`'s bundled WPE `WebKit` runtime.
+    Wpe,
+    /// Use `WaterUI`'s bundled Chromium Embedded Framework runtime.
+    Cef,
+}
+
+impl WebViewBackend {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde skip_serializing_if requires a shared-reference predicate"
+    )]
+    const fn is_default(value: &Self) -> bool {
+        matches!(value, Self::Default)
+    }
+
+    /// Cargo feature used by generated native backends for this selection.
+    #[must_use]
+    pub const fn cargo_feature(self) -> &'static str {
+        match self {
+            Self::Default => "webview-default",
+            Self::System => "webview-system",
+            Self::Wpe => "webview-wpe",
+            Self::Cef => "webview-cef",
+        }
+    }
+
+    /// Resolve this configuration to a concrete engine for a platform and renderer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected engine cannot be composed by the requested renderer.
+    pub fn resolve(
+        self,
+        platform: TargetPlatform,
+        renderer: TargetBackend,
+    ) -> Result<ResolvedWebViewBackend, UnsupportedWebViewBackend> {
+        let resolved = match self {
+            Self::Default if platform == TargetPlatform::Linux => ResolvedWebViewBackend::Wpe,
+            Self::Default | Self::System => ResolvedWebViewBackend::System,
+            Self::Wpe => ResolvedWebViewBackend::Wpe,
+            Self::Cef => ResolvedWebViewBackend::Cef,
+        };
+
+        if resolved.supports(platform, renderer) {
+            Ok(resolved)
+        } else {
+            Err(UnsupportedWebViewBackend {
+                configured: self,
+                resolved,
+                platform,
+                renderer,
+            })
+        }
+    }
+}
+
+/// Concrete engine chosen after applying platform defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedWebViewBackend {
+    /// Platform-provided `WebView`.
+    System,
+    /// Bundled WPE `WebKit` runtime.
+    Wpe,
+    /// Bundled Chromium Embedded Framework runtime.
+    Cef,
+}
+
+/// Browser engines that must be staged for one resolved application graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrowserRuntimePlan {
+    /// Standard `WebView` engine, when `waterui-webview` is linked.
+    pub webview: Option<ResolvedWebViewBackend>,
+    /// Whether the independent full Chromium component is linked.
+    pub chromium: bool,
+}
+
+impl BrowserRuntimePlan {
+    /// Returns whether this application requires a packaged CEF runtime and
+    /// subprocess helper.
+    #[must_use]
+    pub const fn requires_cef(self) -> bool {
+        self.chromium || matches!(self.webview, Some(ResolvedWebViewBackend::Cef))
+    }
+}
+
+impl ResolvedWebViewBackend {
+    /// Return whether this engine can be hosted by a platform and renderer pair.
+    #[must_use]
+    pub const fn supports(self, platform: TargetPlatform, renderer: TargetBackend) -> bool {
+        match self {
+            Self::System => matches!(
+                (platform, renderer),
+                (
+                    TargetPlatform::MacOS,
+                    TargetBackend::Apple | TargetBackend::Hydrolysis
+                ) | (
+                    TargetPlatform::IOS
+                        | TargetPlatform::IOSSimulator
+                        | TargetPlatform::VisionOS
+                        | TargetPlatform::VisionOSSimulator,
+                    TargetBackend::Apple
+                ) | (TargetPlatform::Android, TargetBackend::Android)
+                    | (TargetPlatform::Linux, TargetBackend::Gtk4)
+                    | (TargetPlatform::Web, TargetBackend::Hydrolysis)
+            ),
+            Self::Wpe => {
+                matches!(platform, TargetPlatform::Linux)
+                    && matches!(renderer, TargetBackend::Gtk4 | TargetBackend::Hydrolysis)
+            }
+            Self::Cef => matches!(
+                (platform, renderer),
+                (
+                    TargetPlatform::MacOS | TargetPlatform::Windows,
+                    TargetBackend::Hydrolysis
+                ) | (
+                    TargetPlatform::Linux,
+                    TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+                )
+            ),
+        }
+    }
+
+    /// Stable lowercase name used for Cargo features, runtime manifests, and diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Wpe => "wpe",
+            Self::Cef => "cef",
+        }
+    }
+}
+
+/// Error returned for an unsupported `WebView` engine/platform/renderer combination.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "webview_backend={configured:?} resolves to {resolved:?}, which is unsupported for \
+     platform {platform:?} with renderer {renderer:?}"
+)]
+pub struct UnsupportedWebViewBackend {
+    configured: WebViewBackend,
+    resolved: ResolvedWebViewBackend,
+    platform: TargetPlatform,
+    renderer: TargetBackend,
 }
 
 /// App-specific configuration in `Water.toml`.
@@ -1340,4 +1659,119 @@ pub enum PackageType {
     /// A playground project for quick experimentation.
     /// Platform projects are created in a temporary directory.
     Playground,
+}
+
+#[cfg(test)]
+mod webview_backend_tests {
+    use std::path::Path;
+
+    use super::{
+        Manifest, ResolvedWebViewBackend, TargetBackend, TargetPlatform, WebViewBackend,
+        resolve_linked_runtime_packages,
+    };
+
+    const MANIFEST_PREFIX: &str = r#"
+[package]
+type = "app"
+name = "WebView Test"
+bundle_identifier = "dev.waterui.test.webview"
+"#;
+
+    #[test]
+    fn manifest_defaults_to_platform_webview_selection() {
+        let manifest: Manifest =
+            toml::from_str(MANIFEST_PREFIX).expect("manifest without webview_backend must parse");
+
+        assert_eq!(manifest.webview_backend, WebViewBackend::Default);
+        assert_eq!(
+            manifest
+                .webview_backend
+                .resolve(TargetPlatform::Linux, TargetBackend::Gtk4)
+                .expect("Linux GTK default must resolve"),
+            ResolvedWebViewBackend::Wpe
+        );
+        assert_eq!(
+            manifest
+                .webview_backend
+                .resolve(TargetPlatform::MacOS, TargetBackend::Hydrolysis)
+                .expect("macOS Hydrolysis default must resolve"),
+            ResolvedWebViewBackend::System
+        );
+    }
+
+    #[test]
+    fn manifest_parses_every_explicit_webview_backend() {
+        for (name, expected) in [
+            ("default", WebViewBackend::Default),
+            ("system", WebViewBackend::System),
+            ("wpe", WebViewBackend::Wpe),
+            ("cef", WebViewBackend::Cef),
+        ] {
+            let source = format!("webview_backend = \"{name}\"\n{MANIFEST_PREFIX}");
+            let manifest: Manifest =
+                toml::from_str(&source).expect("explicit webview backend must parse");
+            assert_eq!(manifest.webview_backend, expected);
+        }
+    }
+
+    #[test]
+    fn unsupported_webview_combinations_fail_before_build() {
+        assert!(
+            WebViewBackend::System
+                .resolve(TargetPlatform::Linux, TargetBackend::Hydrolysis)
+                .is_err()
+        );
+        assert!(
+            WebViewBackend::Wpe
+                .resolve(TargetPlatform::MacOS, TargetBackend::Hydrolysis)
+                .is_err()
+        );
+        assert!(
+            WebViewBackend::Cef
+                .resolve(TargetPlatform::Android, TargetBackend::Android)
+                .is_err()
+        );
+        assert!(
+            WebViewBackend::Cef
+                .resolve(TargetPlatform::MacOS, TargetBackend::Apple)
+                .is_err()
+        );
+        assert!(
+            WebViewBackend::System
+                .resolve(TargetPlatform::Windows, TargetBackend::Hydrolysis)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_graph_is_scoped_to_the_selected_application() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CLI crate must be inside the WaterUI repository");
+        let chromium = smol::block_on(resolve_linked_runtime_packages(
+            repository.join("examples/chromium"),
+        ))
+        .expect("Chromium example runtime graph must resolve");
+        assert!(
+            chromium.contains_key("waterui-chromium"),
+            "Chromium example graph: {chromium:#?}"
+        );
+        assert!(
+            !chromium.contains_key("waterui-webview"),
+            "Chromium example graph: {chromium:#?}"
+        );
+
+        let webview = smol::block_on(resolve_linked_runtime_packages(
+            repository.join("examples/webview"),
+        ))
+        .expect("WebView example runtime graph must resolve");
+        assert!(
+            webview.contains_key("waterui-webview"),
+            "WebView example graph: {webview:#?}"
+        );
+        assert!(
+            !webview.contains_key("waterui-chromium"),
+            "WebView example graph: {webview:#?}"
+        );
+    }
 }

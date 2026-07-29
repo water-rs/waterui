@@ -10,6 +10,8 @@ mod text_service;
 mod view_helpers;
 
 pub use compositor::HydrolysisRenderTarget;
+#[cfg(hydrolysis_macos_system_webview)]
+pub(crate) use compositor::NativeViewLayer;
 #[cfg(test)]
 pub(crate) use compositor::take_gpu_surface_redraw_request;
 pub(crate) use compositor::{

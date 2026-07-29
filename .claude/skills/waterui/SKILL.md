@@ -50,8 +50,8 @@ fn main() -> impl View {
     vstack((
         text!("Count: {count}").headline(),
         button("+1")
-            .with_state(&count)
-            .action(|c| *c.get_mut() += 1),
+            .action(|State(count): State<Binding<i32>>| count.set(count.get() + 1))
+            .state(&count),
     ))
 }
 ```
@@ -137,29 +137,41 @@ Photo::new(url)
 
 ## Event Handlers
 
-**IMPORTANT: Always use `.with_state()` - never clone bindings manually!**
+**IMPORTANT: Inject handler state with `.state()` after `.action()` or
+`.action_async()`; never clone bindings just to capture them. `State<T>` extracts
+the injected value from the action environment.**
 
 ```rust
-// Single state - receives Binding directly
+// Single state
 button("Click")
-    .with_state(&count)
-    .action(|c| *c.get_mut() += 1)
+    .action(|State(count): State<Binding<i32>>| count.set(count.get() + 1))
+    .state(&count)
 
-// Multiple states → nested tuple (((a, b), c), d)
+// Multiple states are separate typed extractor parameters
 button("Reset")
-    .with_state(&x)
-    .with_state(&y)
-    .action(|(x, y)| { x.set(0); y.set(0); })
+    .action(
+        |State(x): State<Binding<i32>>, State(y): State<Binding<i32>>| {
+            x.set(0);
+            y.set(0);
+        },
+    )
+    .state(&x)
+    .state(&y)
 
 // Four states example
 button("Submit")
-    .with_state(&url)
-    .with_state(&blur)
-    .with_state(&status)
-    .with_state(&handler)
-    .action(|(((url, blur), status), handler)| {
-        // Use all four bindings
-    })
+    .action(
+        |State(url): State<Binding<Str>>,
+         State(blur): State<Binding<f64>>,
+         State(status): State<Binding<String>>,
+         State(handler): State<DynamicHandler>| {
+            // Use all four injected values
+        },
+    )
+    .state(&url)
+    .state(&blur)
+    .state(&status)
+    .state(&handler)
 
 // Async
 button("Load").action_async(|_| async { fetch().await })
@@ -387,7 +399,11 @@ List::for_each(&items, |item| item_view(item))
 // Static layout from slice/array via FromIterator
 fn tab_buttons(tabs: &[Tab], selected: &Binding<Tab>) -> HStack<(Vec<AnyView>,)> {
     tabs.iter()
-        .map(|&tab| button(tab.label()).with_state(selected).action(move |s| s.set(tab)))
+        .map(|&tab| {
+            button(tab.label())
+                .action(move |State(selected): State<Binding<Tab>>| selected.set(tab))
+                .state(selected)
+        })
         .collect()
 }
 
@@ -416,29 +432,34 @@ struct Settings { name: String, volume: f64 }
 form(&settings_binding)
 
 // Dynamic view for URL changes (Photo with reactive blur)
-let url_input = Binding::container(initial_photo_url);
+let url_input: Binding<Str> = Binding::container(initial_photo_url);
 let blur = Binding::f64(0.0);
-let status = Binding::container(String::from("Loading..."));
+let status: Binding<String> = Binding::container(String::from("Loading..."));
 let (handler, photo_view) = Dynamic::new();
 
 // Load button - only Dynamic for URL change, blur is reactive
 button("Load")
-    .with_state(&url_input)
-    .with_state(&blur)
-    .with_state(&status)
-    .with_state(&handler)
-    .action(|(((url, blur), status), handler)| {
-        let photo = Photo::new(url.get())
-            .on_event({
-                let status = status.clone();
-                move |event| match event {
-                    PhotoEvent::Loaded => status.set(String::from("Loaded")),
-                    PhotoEvent::Error(msg) => status.set(format!("Error: {msg}")),
-                }
-            })
-            .blur(blur.clone());  // Pass binding for reactive blur!
-        handler.set(photo);
-    });
+    .action(
+        |State(url): State<Binding<Str>>,
+         State(blur): State<Binding<f64>>,
+         State(status): State<Binding<String>>,
+         State(handler): State<DynamicHandler>| {
+            let photo = Photo::new(url.get())
+                .on_event({
+                    let status = status.clone();
+                    move |event| match event {
+                        PhotoEvent::Loaded => status.set(String::from("Loaded")),
+                        PhotoEvent::Error(msg) => status.set(format!("Error: {msg}")),
+                    }
+                })
+                .blur(blur.clone());  // Pass binding for reactive blur!
+            handler.set(photo);
+        },
+    )
+    .state(&url_input)
+    .state(&blur)
+    .state(&status)
+    .state(&handler);
 
 vstack((
     text!("{status}"),
@@ -521,14 +542,17 @@ ForEach::new(rows.clone(), |row| row_view(row))
 Only reach for `watch` for a genuinely one-off structural swap with no signal-aware
 API and no collection — check those three first.
 
-**No manual `.clone()` for button states** - use `.with_state()`:
+**No manual `.clone()` for button states** - inject with `.state()` after
+configuring the action:
 ```rust
 // WRONG
 let count_clone = count.clone();
 button("Click").action(move || count_clone.set(...))
 
 // CORRECT
-button("Click").with_state(&count).action(|c| c.set(...))
+button("Click")
+    .action(|State(count): State<Binding<i32>>| count.set(...))
+    .state(&count)
 ```
 
 **Two-param transforms:**

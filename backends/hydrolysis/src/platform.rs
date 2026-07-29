@@ -39,6 +39,15 @@ pub enum KeyCode {
     Unidentified,
 }
 
+/// Platform-native key metadata retained for embedded browser engines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeKey {
+    /// Native hardware keycode.
+    pub keycode: u32,
+    /// Platform keysym or virtual-key value.
+    pub keyval: u32,
+}
+
 /// Active key modifiers snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modifiers {
@@ -129,9 +138,11 @@ pub enum InputEvent {
     },
     Key {
         key: KeyCode,
+        native: Option<NativeKey>,
         state: KeyState,
         modifiers: Modifiers,
     },
+    ModifiersChanged(Modifiers),
     ImePreedit {
         text: String,
     },
@@ -287,7 +298,7 @@ pub trait SurfaceProvider {
 }
 
 /// Window abstraction consumed by hydrolysis runner.
-pub trait PlatformWindow {
+pub trait PlatformWindow: 'static {
     fn surface(&mut self) -> &mut dyn SurfaceProvider;
     fn apply_properties(&mut self, window: &WuiWindow);
     /// Applies the window's effective content-size limits (logical units).
@@ -851,10 +862,28 @@ mod macos_display_link;
 
 #[cfg(feature = "winit")]
 mod winit_impl {
+    #[cfg(hydrolysis_macos_system_webview)]
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     use nami::Signal;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2::{MainThreadMarker, rc::Retained};
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_app_kit::NSView;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_core_graphics::CGPath;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_quartz_core::{CAMetalLayer, CAShapeLayer};
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_web_kit::WKWebView;
     use waterui::window::WindowState;
+    #[cfg(target_os = "linux")]
+    use winit::platform::scancode::PhysicalKeyExtScancode as _;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::{
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
         event::{
@@ -869,9 +898,9 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-        PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-        TextInputState, TouchPhase,
+        CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, NativeKey, PlatformWindow,
+        PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider,
+        TextInputPurpose, TextInputState, TouchPhase,
     };
 
     #[derive(Clone)]
@@ -897,6 +926,44 @@ mod winit_impl {
     }
 
     impl WinitSurface {
+        fn from_surface(
+            surface: wgpu::Surface<'static>,
+            gpu: WinitGpuContext,
+            width: u32,
+            height: u32,
+        ) -> Self {
+            let caps = surface.get_capabilities(&gpu.adapter);
+            let format = super::select_hydrolysis_surface_format(&caps);
+            let alpha_mode = caps
+                .alpha_modes
+                .iter()
+                .copied()
+                .find(|mode| {
+                    matches!(
+                        mode,
+                        wgpu::CompositeAlphaMode::PreMultiplied
+                            | wgpu::CompositeAlphaMode::PostMultiplied
+                    )
+                })
+                .unwrap_or(caps.alpha_modes[0]);
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width: width.max(1),
+                height: height.max(1),
+                present_mode: wgpu::PresentMode::AutoVsync,
+                alpha_mode,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            surface.configure(&gpu.device, &config);
+            Self {
+                surface,
+                gpu,
+                config,
+            }
+        }
+
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
@@ -956,41 +1023,29 @@ mod winit_impl {
                 }
             };
 
-            let caps = surface.get_capabilities(&gpu.adapter);
-            let format = super::select_hydrolysis_surface_format(&caps);
-            let alpha_mode = caps
-                .alpha_modes
-                .iter()
-                .copied()
-                .find(|mode| {
-                    matches!(
-                        mode,
-                        wgpu::CompositeAlphaMode::PreMultiplied
-                            | wgpu::CompositeAlphaMode::PostMultiplied
-                    )
-                })
-                .unwrap_or(caps.alpha_modes[0]);
             let size = window.inner_size();
-            let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                width: size.width.max(1),
-                height: size.height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
-                alpha_mode,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-            };
-            surface.configure(&gpu.device, &config);
-
             (
-                Self {
-                    surface,
-                    gpu: gpu.clone(),
-                    config,
-                },
+                Self::from_surface(surface, gpu.clone(), size.width, size.height),
                 gpu,
             )
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        fn for_core_animation_layer(
+            layer: &CAMetalLayer,
+            gpu: &WinitGpuContext,
+            width: u32,
+            height: u32,
+        ) -> Self {
+            let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(
+                std::ptr::from_ref(layer).cast_mut().cast(),
+            );
+            let surface = unsafe {
+                gpu.instance
+                    .create_surface_unsafe(target)
+                    .expect("Hydrolysis failed to create a Metal overlay surface")
+            };
+            Self::from_surface(surface, gpu.clone(), width, height)
         }
     }
 
@@ -1039,6 +1094,372 @@ mod winit_impl {
         }
     }
 
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct MacOverlaySurface {
+        layer: Retained<CAMetalLayer>,
+        surface: WinitSurface,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct MacNativeViewHost {
+        web_view: Retained<WKWebView>,
+        container: Retained<NSView>,
+        rounded_clip_views: Vec<Retained<NSView>>,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl MacNativeViewHost {
+        fn new(web_view: Retained<WKWebView>, root_view: &NSView) -> Self {
+            let mtm = MainThreadMarker::new()
+                .expect("Hydrolysis hybrid composition must run on the AppKit main thread");
+            let container = NSView::new(mtm);
+            container.setWantsLayer(true);
+            container
+                .layer()
+                .expect("Hydrolysis native WebView container must have a Core Animation layer")
+                .setMasksToBounds(true);
+            container.addSubview(&web_view);
+            root_view.addSubview(&container);
+            Self {
+                web_view,
+                container,
+                rounded_clip_views: Vec::new(),
+            }
+        }
+
+        fn set_rounded_clip_count(&mut self, count: usize) {
+            if self.rounded_clip_views.len() == count {
+                return;
+            }
+            self.web_view.removeFromSuperview();
+            for clip_view in self.rounded_clip_views.drain(..) {
+                clip_view.removeFromSuperview();
+            }
+
+            let mtm = MainThreadMarker::new()
+                .expect("Hydrolysis hybrid composition must run on the AppKit main thread");
+            for _ in 0..count {
+                let clip_view = NSView::new(mtm);
+                clip_view.setWantsLayer(true);
+                clip_view
+                    .layer()
+                    .expect("Hydrolysis rounded clip view must have a Core Animation layer")
+                    .setMasksToBounds(true);
+                self.rounded_clip_views.push(clip_view);
+            }
+
+            let mut parent: &NSView = &self.container;
+            for clip_view in &self.rounded_clip_views {
+                parent.addSubview(clip_view);
+                parent = clip_view;
+            }
+            parent.addSubview(&self.web_view);
+        }
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    #[derive(Clone, Copy)]
+    struct MacRoundedClip {
+        rect: vello::kurbo::Rect,
+        corner_width: f64,
+        corner_height: f64,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    fn assert_axis_aligned_positive(transform: vello::kurbo::Affine, operation: &str) -> [f64; 6] {
+        let coefficients = transform.as_coeffs();
+        let epsilon = f64::EPSILON * 64.0;
+        assert!(
+            coefficients[1].abs() <= epsilon && coefficients[2].abs() <= epsilon,
+            "Hydrolysis native WebView {operation} requires an axis-aligned transform"
+        );
+        assert!(
+            coefficients[0].is_finite()
+                && coefficients[3].is_finite()
+                && coefficients[0] > 0.0
+                && coefficients[3] > 0.0,
+            "Hydrolysis native WebView {operation} requires positive finite axis scales"
+        );
+        coefficients
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    fn appkit_root_rect(
+        physical_rect: vello::kurbo::Rect,
+        logical_height: f64,
+        scale_factor: f64,
+        flipped: bool,
+    ) -> NSRect {
+        let x = physical_rect.x0 / scale_factor;
+        let y_from_top = physical_rect.y0 / scale_factor;
+        let width = physical_rect.width() / scale_factor;
+        let height = physical_rect.height() / scale_factor;
+        let y = if flipped {
+            y_from_top
+        } else {
+            logical_height - y_from_top - height
+        };
+        NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct MacHybridCompositor {
+        gpu: WinitGpuContext,
+        native_views: HashMap<usize, MacNativeViewHost>,
+        overlays: Vec<MacOverlaySurface>,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl core::fmt::Debug for MacHybridCompositor {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter
+                .debug_struct("MacHybridCompositor")
+                .field("native_view_count", &self.native_views.len())
+                .field("overlay_count", &self.overlays.len())
+                .finish_non_exhaustive()
+        }
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl MacHybridCompositor {
+        fn new(gpu: WinitGpuContext) -> Self {
+            Self {
+                gpu,
+                native_views: HashMap::new(),
+                overlays: Vec::new(),
+            }
+        }
+
+        fn root_view(window: &NativeWindow) -> &NSView {
+            let handle = window
+                .window_handle()
+                .expect("Hydrolysis macOS window must expose an AppKit handle");
+            let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                panic!("Hydrolysis macOS window returned a non-AppKit handle");
+            };
+            unsafe { appkit.ns_view.cast::<NSView>().as_ref() }
+        }
+
+        fn sync(
+            &mut self,
+            window: &NativeWindow,
+            native_views: &[crate::renderer::NativeViewLayer],
+            physical_width: u32,
+            physical_height: u32,
+            scale_factor: f64,
+        ) {
+            assert!(
+                scale_factor.is_finite() && scale_factor > 0.0,
+                "Hydrolysis hybrid composition received invalid scale factor {scale_factor}"
+            );
+            let root_view = Self::root_view(window);
+            root_view.setWantsLayer(true);
+            let root_layer = root_view
+                .layer()
+                .expect("Hydrolysis macOS root view must have a Core Animation layer");
+            let logical_height = f64::from(physical_height) / scale_factor;
+            let mut active = HashSet::new();
+
+            for (index, placement) in native_views.iter().enumerate() {
+                let id = Retained::as_ptr(&placement.view) as usize;
+                active.insert(id);
+                let coefficients = placement.transform.as_coeffs();
+                let epsilon = f64::EPSILON * 64.0;
+                assert!(
+                    coefficients[1].abs() <= epsilon && coefficients[2].abs() <= epsilon,
+                    "Hydrolysis native WebView currently requires an axis-aligned transform"
+                );
+                assert!(
+                    coefficients[0].is_finite()
+                        && coefficients[3].is_finite()
+                        && coefficients[0] > 0.0
+                        && coefficients[3] > 0.0,
+                    "Hydrolysis native WebView requires positive finite axis scales"
+                );
+                let transformed = placement.transform.transform_rect_bbox(placement.bounds);
+                let mut opacity = 1.0f32;
+                let mut visible = transformed;
+                let mut rounded_clips = Vec::new();
+                for active_layer in &placement.active_layers {
+                    assert!(
+                        active_layer.alpha.is_finite() && (0.0..=1.0).contains(&active_layer.alpha),
+                        "Hydrolysis native WebView received invalid layer opacity {}",
+                        active_layer.alpha
+                    );
+                    opacity *= active_layer.alpha;
+                    match &active_layer.shape {
+                        crate::renderer::LayerShape::Rect(rect) => {
+                            assert_axis_aligned_positive(
+                                active_layer.transform,
+                                "rectangular clipping",
+                            );
+                            let clip = active_layer.transform.transform_rect_bbox(*rect);
+                            visible = visible.intersect(clip);
+                        }
+                        crate::renderer::LayerShape::RoundedRect {
+                            rect,
+                            corner_width,
+                            corner_height,
+                            ..
+                        } => {
+                            let clip_transform = active_layer.transform;
+                            let clip_coefficients =
+                                assert_axis_aligned_positive(clip_transform, "rounded clipping");
+                            let clip = clip_transform.transform_rect_bbox(*rect);
+                            visible = visible.intersect(clip);
+                            rounded_clips.push(MacRoundedClip {
+                                rect: clip,
+                                corner_width: corner_width * clip_coefficients[0],
+                                corner_height: corner_height * clip_coefficients[3],
+                            });
+                        }
+                        crate::renderer::LayerShape::Path(_) => {
+                            panic!(
+                                "Hydrolysis native WebView does not support non-rectangular path masks"
+                            )
+                        }
+                    }
+                }
+                let host = self
+                    .native_views
+                    .entry(id)
+                    .or_insert_with(|| MacNativeViewHost::new(placement.view.clone(), root_view));
+                host.set_rounded_clip_count(rounded_clips.len());
+
+                let container_frame =
+                    appkit_root_rect(visible, logical_height, scale_factor, root_view.isFlipped());
+                let web_view_frame = appkit_root_rect(
+                    transformed,
+                    logical_height,
+                    scale_factor,
+                    root_view.isFlipped(),
+                );
+                host.container.setFrame(container_frame);
+                host.container
+                    .setHidden(visible.is_zero_area() || opacity == 0.0);
+                let local_bounds = NSRect::new(
+                    NSPoint::ZERO,
+                    NSSize::new(container_frame.size.width, container_frame.size.height),
+                );
+                let web_view_local_frame = NSRect::new(
+                    NSPoint::new(
+                        web_view_frame.origin.x - container_frame.origin.x,
+                        web_view_frame.origin.y - container_frame.origin.y,
+                    ),
+                    web_view_frame.size,
+                );
+                host.web_view.setFrame(web_view_local_frame);
+                host.web_view.setWantsLayer(true);
+
+                for (clip_view, rounded_clip) in host.rounded_clip_views.iter().zip(&rounded_clips)
+                {
+                    clip_view.setFrame(local_bounds);
+                    let clip_layer = clip_view
+                        .layer()
+                        .expect("Hydrolysis rounded clip view must have a Core Animation layer");
+                    let clip_root_frame = appkit_root_rect(
+                        rounded_clip.rect,
+                        logical_height,
+                        scale_factor,
+                        root_view.isFlipped(),
+                    );
+                    let clip_local_rect = NSRect::new(
+                        NSPoint::new(
+                            clip_root_frame.origin.x - container_frame.origin.x,
+                            clip_root_frame.origin.y - container_frame.origin.y,
+                        ),
+                        clip_root_frame.size,
+                    );
+                    let mask = CAShapeLayer::layer();
+                    mask.setFrame(local_bounds);
+                    let path = unsafe {
+                        CGPath::with_rounded_rect(
+                            clip_local_rect,
+                            rounded_clip.corner_width / scale_factor,
+                            rounded_clip.corner_height / scale_factor,
+                            core::ptr::null(),
+                        )
+                    };
+                    mask.setPath(Some(&path));
+                    unsafe {
+                        clip_layer.setMask(Some(&mask));
+                    }
+                }
+
+                let container_layer = host
+                    .container
+                    .layer()
+                    .expect("Hydrolysis native WebView container must have a Core Animation layer");
+                container_layer.setOpacity(opacity);
+                container_layer.setZPosition((index * 2 + 1) as f64);
+            }
+
+            self.native_views.retain(|id, host| {
+                if active.contains(id) {
+                    true
+                } else {
+                    host.container.removeFromSuperview();
+                    false
+                }
+            });
+
+            while self.overlays.len() < native_views.len() {
+                let layer = CAMetalLayer::layer();
+                layer.setOpaque(false);
+                layer.setFramebufferOnly(false);
+                root_layer.addSublayer(&layer);
+                let surface = WinitSurface::for_core_animation_layer(
+                    &layer,
+                    &self.gpu,
+                    physical_width,
+                    physical_height,
+                );
+                self.overlays.push(MacOverlaySurface { layer, surface });
+            }
+            while self.overlays.len() > native_views.len() {
+                let overlay = self
+                    .overlays
+                    .pop()
+                    .expect("Hydrolysis overlay count changed during removal");
+                overlay.layer.removeFromSuperlayer();
+            }
+
+            let logical_width = f64::from(physical_width) / scale_factor;
+            for (index, overlay) in self.overlays.iter_mut().enumerate() {
+                overlay.layer.setFrame(NSRect::new(
+                    NSPoint::ZERO,
+                    NSSize::new(logical_width, logical_height),
+                ));
+                overlay.layer.setContentsScale(scale_factor);
+                overlay.layer.setDrawableSize(NSSize::new(
+                    f64::from(physical_width),
+                    f64::from(physical_height),
+                ));
+                overlay.layer.setZPosition((index * 2 + 2) as f64);
+                overlay.surface.resize(physical_width, physical_height);
+            }
+        }
+
+        fn clear(&mut self) {
+            for (_, host) in self.native_views.drain() {
+                host.container.removeFromSuperview();
+            }
+            for overlay in self.overlays.drain(..) {
+                overlay.layer.removeFromSuperlayer();
+            }
+        }
+
+        fn overlay_surface(&mut self, index: usize) -> &mut WinitSurface {
+            &mut self
+                .overlays
+                .get_mut(index)
+                .unwrap_or_else(|| {
+                    panic!("Hydrolysis requested missing hybrid overlay surface {index}")
+                })
+                .surface
+        }
+    }
+
     #[derive(Debug)]
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
@@ -1060,6 +1481,8 @@ mod winit_impl {
         /// macOS 14.
         #[cfg(target_os = "macos")]
         frame_rate_demand: Option<super::macos_display_link::FrameRateDemandLink>,
+        #[cfg(hydrolysis_macos_system_webview)]
+        hybrid_compositor: MacHybridCompositor,
     }
 
     impl WinitWindow {
@@ -1078,6 +1501,8 @@ mod winit_impl {
                     frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(
                         &window,
                     ),
+                    #[cfg(hydrolysis_macos_system_webview)]
+                    hybrid_compositor: MacHybridCompositor::new(gpu.clone()),
                     window,
                     surface,
                     pending_surface_size: None,
@@ -1100,6 +1525,32 @@ mod winit_impl {
         #[must_use]
         pub fn native_window(&self) -> &NativeWindow {
             self.window.as_ref()
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        pub(crate) fn sync_hybrid_composition(
+            &mut self,
+            native_views: &[crate::renderer::NativeViewLayer],
+            physical_width: u32,
+            physical_height: u32,
+        ) {
+            self.hybrid_compositor.sync(
+                &self.window,
+                native_views,
+                physical_width,
+                physical_height,
+                self.window.scale_factor(),
+            );
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        pub(crate) fn clear_hybrid_composition(&mut self) {
+            self.hybrid_compositor.clear();
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        pub(crate) fn hybrid_overlay_surface(&mut self, index: usize) -> &mut dyn SurfaceProvider {
+            self.hybrid_compositor.overlay_surface(index)
         }
 
         pub fn handle_window_event(&mut self, event: &WindowEvent) {
@@ -1260,6 +1711,8 @@ mod winit_impl {
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
                     self.modifiers = modifiers.state().into();
+                    self.pending_events
+                        .push(InputEvent::ModifiersChanged(self.modifiers));
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == ElementState::Pressed
@@ -1284,6 +1737,7 @@ mod winit_impl {
                     );
                     self.pending_events.push(InputEvent::Key {
                         key: map_key_event(event, self.modifiers),
+                        native: native_key_event(event),
                         state: match event.state {
                             ElementState::Pressed => KeyState::Pressed,
                             ElementState::Released => KeyState::Released,
@@ -1566,6 +2020,67 @@ mod winit_impl {
             return KeyCode::Unidentified;
         }
         map_key(&event.logical_key)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn native_key_event(event: &KeyEvent) -> Option<NativeKey> {
+        let keycode = event
+            .physical_key
+            .to_scancode()
+            .checked_add(8)
+            .expect("Linux XKB keycode overflow");
+        Some(NativeKey {
+            keycode,
+            keyval: linux_keysym(&event.logical_key),
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn native_key_event(_event: &KeyEvent) -> Option<NativeKey> {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_keysym(key: &Key) -> u32 {
+        use xkeysym::{Keysym, key as xk};
+
+        match key {
+            Key::Character(value) => value
+                .chars()
+                .next()
+                .map_or(xk::NoSymbol, |character| Keysym::from_char(character).raw()),
+            Key::Named(value) => match value {
+                winit::keyboard::NamedKey::Backspace => xk::BackSpace,
+                winit::keyboard::NamedKey::Tab => xk::Tab,
+                winit::keyboard::NamedKey::Enter => xk::Return,
+                winit::keyboard::NamedKey::Escape => xk::Escape,
+                winit::keyboard::NamedKey::Space => xk::space,
+                winit::keyboard::NamedKey::Home => xk::Home,
+                winit::keyboard::NamedKey::End => xk::End,
+                winit::keyboard::NamedKey::PageUp => xk::Page_Up,
+                winit::keyboard::NamedKey::PageDown => xk::Page_Down,
+                winit::keyboard::NamedKey::ArrowLeft => xk::Left,
+                winit::keyboard::NamedKey::ArrowUp => xk::Up,
+                winit::keyboard::NamedKey::ArrowRight => xk::Right,
+                winit::keyboard::NamedKey::ArrowDown => xk::Down,
+                winit::keyboard::NamedKey::Insert => xk::Insert,
+                winit::keyboard::NamedKey::Delete => xk::Delete,
+                winit::keyboard::NamedKey::F1 => xk::F1,
+                winit::keyboard::NamedKey::F2 => xk::F2,
+                winit::keyboard::NamedKey::F3 => xk::F3,
+                winit::keyboard::NamedKey::F4 => xk::F4,
+                winit::keyboard::NamedKey::F5 => xk::F5,
+                winit::keyboard::NamedKey::F6 => xk::F6,
+                winit::keyboard::NamedKey::F7 => xk::F7,
+                winit::keyboard::NamedKey::F8 => xk::F8,
+                winit::keyboard::NamedKey::F9 => xk::F9,
+                winit::keyboard::NamedKey::F10 => xk::F10,
+                winit::keyboard::NamedKey::F11 => xk::F11,
+                winit::keyboard::NamedKey::F12 => xk::F12,
+                _ => xk::NoSymbol,
+            },
+            _ => xk::NoSymbol,
+        }
     }
 
     fn keyboard_text_payload(event: &KeyEvent) -> Option<String> {

@@ -1,0 +1,10 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Chromium and CDP Example"
+bundle_identifier = "dev.waterui.examples.chromium"
+
+[permissions.internet]
+enable = true
+description = "Required to load the WaterUI website in visible and headless Chromium"

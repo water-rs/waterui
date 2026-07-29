@@ -477,6 +477,7 @@ fn register_listeners(
                 }
                 pending_events.borrow_mut().push(InputEvent::Key {
                     key: map_keyboard_key(&event),
+                    native: None,
                     state: KeyState::Pressed,
                     modifiers: map_modifiers_from_keyboard(&event),
                 });
@@ -499,6 +500,7 @@ fn register_listeners(
             }
             pending_events.borrow_mut().push(InputEvent::Key {
                 key: map_keyboard_key(&event),
+                native: None,
                 state: KeyState::Released,
                 modifiers: map_modifiers_from_keyboard(&event),
             });
@@ -689,6 +691,7 @@ fn register_listeners(
                         event.prevent_default();
                         pending_events.borrow_mut().push(InputEvent::Key {
                             key: KeyCode::Named("Backspace".to_string()),
+                            native: None,
                             state: KeyState::Pressed,
                             modifiers,
                         });
@@ -703,6 +706,7 @@ fn register_listeners(
                         event.prevent_default();
                         pending_events.borrow_mut().push(InputEvent::Key {
                             key: KeyCode::Named("Tab".to_string()),
+                            native: None,
                             state: KeyState::Pressed,
                             modifiers,
                         });

@@ -16,5 +16,12 @@ pub use layout::{
     container, divider, fixed_container_widget, lazy_container, list, scroll_view, spacer,
 };
 pub use nav::{menu, navigation, tabs};
-pub use platform::{dynamic, system_icon, webview};
+#[cfg(any(
+    feature = "webview-default",
+    feature = "webview-system",
+    feature = "webview-wpe",
+    feature = "webview-cef"
+))]
+pub use platform::webview;
+pub use platform::{dynamic, system_icon};
 pub use typography::text;

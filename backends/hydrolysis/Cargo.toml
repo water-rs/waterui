@@ -26,7 +26,9 @@ waterui-shape.workspace = true
 waterui-video-gpu.workspace = true
 waterui-map.workspace = true
 waterui-map-gpu.workspace = true
-waterui-webview.workspace = true
+waterui-webview = { workspace = true, optional = true }
+waterui-chromium = { workspace = true, optional = true }
+waterui-browser-cef = { workspace = true, optional = true }
 waterui-layout = { workspace = true, features = ["parallel"] }
 waterui-controls.workspace = true
 waterui-form.workspace = true
@@ -55,20 +57,65 @@ waterui-build-support.workspace = true
 # platform/macos_display_link.rs). All of these are already in winit's own
 # dependency graph.
 [target.'cfg(target_os = "macos")'.dependencies]
+base64 = { version = "0.22", optional = true }
+block2 = { version = "0.6", optional = true }
+cookie = { version = "0.18", optional = true }
+futures = { workspace = true, optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSAnimation",
     "NSResponder",
     "NSView",
     "objc2-quartz-core",
 ] }
+objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
 objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSArray",
+    "NSData",
+    "NSDate",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    "NSHTTPCookie",
+    "NSObject",
     "NSRunLoop",
     "NSString",
+    "NSURL",
+    "NSURLRequest",
+    "NSURLResponse",
 ] }
 objc2-quartz-core = { version = "0.3", optional = true, features = [
+    "CALayer",
     "CADisplayLink",
     "CAFrameRateRange",
+    "CAMetalLayer",
+    "CAShapeLayer",
+    "objc2-core-graphics",
 ] }
+objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "objc2-core-foundation",
+    "WKBackForwardList",
+    "WKHTTPCookieStore",
+    "WKNavigation",
+    "WKNavigationAction",
+    "WKNavigationDelegate",
+    "WKNavigationResponse",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKUserContentController",
+    "WKUserScript",
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKWebsiteDataStore",
+] }
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+waterui-browser-wpe = { workspace = true, optional = true }
+xkeysym = "0.2.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
@@ -104,12 +151,48 @@ waterui = { path = "../..", default-features = false, features = ["flow-markdown
 default = []
 accessibility = ["dep:accesskit"]
 testing = []
+webview-default = [
+    "dep:waterui-webview",
+    "dep:waterui-browser-wpe",
+    "waterui-browser-wpe/webview",
+    "dep:base64",
+    "dep:block2",
+    "dep:cookie",
+    "dep:futures",
+    "dep:objc2-web-kit",
+    "dep:serde_json",
+]
+webview-system = [
+    "dep:waterui-webview",
+    "dep:base64",
+    "dep:block2",
+    "dep:cookie",
+    "dep:futures",
+    "dep:objc2-web-kit",
+    "dep:serde_json",
+]
+webview-wpe = [
+    "dep:waterui-webview",
+    "dep:waterui-browser-wpe",
+    "waterui-browser-wpe/webview",
+]
+webview-cef = [
+    "dep:waterui-webview",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef/webview",
+]
+chromium = [
+    "dep:waterui-chromium",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef/chromium",
+]
 winit = [
     "accessibility",
     "dep:winit",
     "dep:accesskit_winit",
     "dep:objc2",
     "dep:objc2-app-kit",
+    "dep:objc2-core-graphics",
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
 ]
