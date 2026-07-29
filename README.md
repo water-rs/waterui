@@ -147,9 +147,12 @@ fn progress_editor() -> impl View {
 
 Use reactive collections with `ForEach` or `List` when membership changes. `watch` is reserved for an intentional structural replacement; it is not the routine way to update text, control values, styles, or collection items.
 
-Field-backed collection identity can be derived:
+Field-backed collection identity can be derived. For a fixed set of items, pass
+an array directly instead of allocating a `Vec`:
 
 ```rust
+use waterui::prelude::theme_color::MutedForeground;
+use waterui::prelude::*;
 use waterui::Identifiable;
 
 #[derive(Clone, Identifiable)]
@@ -157,13 +160,38 @@ struct Contact {
     #[id]
     id: u64,
     name: &'static str,
+    role: &'static str,
 }
 
-let contact = Contact {
-    id: 42,
-    name: "Ada",
-};
-assert_eq!(contact.id(), 42);
+fn contacts() -> impl View {
+    let contacts = [
+        Contact {
+            id: 1,
+            name: "Alice Chen",
+            role: "Software Engineer",
+        },
+        Contact {
+            id: 2,
+            name: "Bob Smith",
+            role: "Product Manager",
+        },
+        Contact {
+            id: 3,
+            name: "Carol Williams",
+            role: "Designer",
+        },
+    ];
+
+    List::for_each(contacts, |contact| {
+        ListItem::new(
+            vstack((
+                text(contact.name).headline(),
+                text(contact.role).sub_headline().foreground(MutedForeground),
+            ))
+            .padding_with(EdgeInsets::symmetric(12.0, 16.0)),
+        )
+    })
+}
 ```
 
 ### Environment carries application context
