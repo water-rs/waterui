@@ -47,7 +47,7 @@ Automatically implements the `FormBuilder` trait for structs, generating form UI
 | `f32`, `f64`                 | `Slider`      | Slider (0.0-1.0 range)                   |
 | `Color`                      | `ColorPicker` | Color selection widget                   |
 
-**Example from `/Users/lexoliu/Coding/waterui/examples/form/src/lib.rs`:**
+**Example from `examples/form/src/lib.rs`:**
 
 ```rust
 use waterui::prelude::*;
@@ -98,7 +98,7 @@ Convenience attribute macro that combines multiple common derives for form struc
 #[derive(Default, Clone, Debug, FormBuilder, Project)]
 ```
 
-**Example from `/Users/lexoliu/Coding/waterui/examples/form/src/lib.rs`:**
+**Example from `examples/form/src/lib.rs`:**
 
 ```rust
 #[form]
@@ -354,7 +354,7 @@ cargo expand --package waterui-macros
 
 # Test in a real project
 cargo install --path cli
-water create --playground --name macro-test
+water create macro-test --mode playground
 # Add #[form] to a struct and run
 water run --platform ios
 ```

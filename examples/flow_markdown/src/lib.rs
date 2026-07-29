@@ -305,7 +305,7 @@ pub fn demo() -> impl View {
             button("Prev doc")
                 .action(|State(c): State<StreamControl>| {
                     cancel_stream(&c.streaming, &c.stream_revision);
-                    c.document_index.set(c.document_index.get() - 1);
+                    *c.document_index.get_mut() -= 1;
                     reset_stream(&c.markdown, &c.char_progress);
                 })
                 .state(&control)
@@ -313,7 +313,7 @@ pub fn demo() -> impl View {
             button("Next doc")
                 .action(|State(c): State<StreamControl>| {
                     cancel_stream(&c.streaming, &c.stream_revision);
-                    c.document_index.set(c.document_index.get() + 1);
+                    *c.document_index.get_mut() += 1;
                     reset_stream(&c.markdown, &c.char_progress);
                 })
                 .state(&control)
@@ -363,31 +363,36 @@ pub fn demo() -> impl View {
         hstack((
             button("LLM CPS -")
                 .action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+                    let mut cps = cps.get_mut();
+                    *cps = (*cps - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX);
                 })
                 .state(&stream_cps)
                 .width(WIDE_CONTROL_WIDTH),
             button("LLM CPS +")
                 .action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+                    let mut cps = cps.get_mut();
+                    *cps = (*cps + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX);
                 })
                 .state(&stream_cps)
                 .width(WIDE_CONTROL_WIDTH),
             button("Preset")
                 .action(|State(preset): State<Binding<i32>>| {
-                    preset.set((preset.get() + 1).rem_euclid(3));
+                    let mut preset = preset.get_mut();
+                    *preset = (*preset + 1).rem_euclid(3);
                 })
                 .state(&animation_preset)
                 .width(SECONDARY_CONTROL_WIDTH),
             button("CPS -")
                 .action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() - 8).clamp(8, 256));
+                    let mut cps = cps.get_mut();
+                    *cps = (*cps - 8).clamp(8, 256);
                 })
                 .state(&animation_cps)
                 .width(SECONDARY_CONTROL_WIDTH),
             button("CPS +")
                 .action(|State(cps): State<Binding<i32>>| {
-                    cps.set((cps.get() + 8).clamp(8, 256));
+                    let mut cps = cps.get_mut();
+                    *cps = (*cps + 8).clamp(8, 256);
                 })
                 .state(&animation_cps)
                 .width(SECONDARY_CONTROL_WIDTH),

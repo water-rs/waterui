@@ -8,7 +8,7 @@ use core::{
 use std::{
     backtrace::Backtrace,
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -92,41 +92,6 @@ pub trait RuntimeProbe: Send + Sync + 'static {
     fn on_poll_sample(&self, sample: &TaskPollSample);
 }
 
-static EXTRA_RUNTIME_PROBES: OnceLock<Mutex<Vec<Arc<dyn RuntimeProbe>>>> = OnceLock::new();
-
-fn global_runtime_probes() -> &'static Mutex<Vec<Arc<dyn RuntimeProbe>>> {
-    EXTRA_RUNTIME_PROBES.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn snapshot_runtime_probes() -> Vec<Arc<dyn RuntimeProbe>> {
-    let guard = match global_runtime_probes().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.clone()
-}
-
-/// Registers an additional runtime probe.
-///
-/// Registered probes are attached to all monitored local executors created
-/// after registration.
-pub fn install_runtime_probe(probe: Arc<dyn RuntimeProbe>) {
-    let mut guard = match global_runtime_probes().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.push(probe);
-}
-
-#[cfg(test)]
-fn clear_runtime_probes_for_tests() {
-    let mut guard = match global_runtime_probes().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.clear();
-}
-
 /// A local executor wrapper that instruments per-poll main-thread occupancy.
 ///
 /// The wrapper measures each `poll()` slice of spawned futures and emits
@@ -156,9 +121,23 @@ where
     /// Creates a monitored executor with custom thresholds.
     #[must_use]
     pub fn with_config(inner: E, config: MainThreadStallProbeConfig) -> Self {
+        Self::with_config_and_probes(inner, config, [])
+    }
+
+    /// Creates a monitored executor with custom thresholds and additional
+    /// explicitly owned runtime probes.
+    #[must_use]
+    pub fn with_config_and_probes(
+        inner: E,
+        config: MainThreadStallProbeConfig,
+        probes: impl IntoIterator<Item = Arc<dyn RuntimeProbe>>,
+    ) -> Self {
         let refresh_hz = detect_max_refresh_rate_hz();
         let frame_budget = Duration::from_secs_f64(1.0 / refresh_hz.max(1.0));
-        let probes: Vec<Arc<dyn RuntimeProbe>> = vec![Arc::new(MainThreadStallProbe::new(config))];
+        let probes =
+            core::iter::once(Arc::new(MainThreadStallProbe::new(config)) as Arc<dyn RuntimeProbe>)
+                .chain(probes)
+                .collect();
 
         Self {
             inner,
@@ -211,6 +190,22 @@ where
     MonitoredLocalExecutor::with_config(inner, config)
 }
 
+/// Wraps a local executor with explicitly owned runtime probes.
+#[must_use]
+pub fn monitored_local_executor_with_probes<E>(
+    inner: E,
+    probes: impl IntoIterator<Item = Arc<dyn RuntimeProbe>>,
+) -> MonitoredLocalExecutor<E>
+where
+    E: LocalExecutor,
+{
+    MonitoredLocalExecutor::with_config_and_probes(
+        inner,
+        MainThreadStallProbeConfig::default(),
+        probes,
+    )
+}
+
 struct GuardedFuture<F> {
     inner: F,
     task_type: &'static str,
@@ -241,9 +236,6 @@ where
             refresh_hz: this.state.refresh_hz,
         };
         for probe in &this.state.probes {
-            probe.on_poll_sample(&sample);
-        }
-        for probe in snapshot_runtime_probes() {
             probe.on_poll_sample(&sample);
         }
 
@@ -426,9 +418,7 @@ mod tests {
     use executor_core::LocalExecutor;
 
     use super::{LogLevel, MainThreadStallProbeConfig, classify_level};
-    use super::{
-        RuntimeProbe, TaskPollSample, clear_runtime_probes_for_tests, install_runtime_probe,
-    };
+    use super::{RuntimeProbe, TaskPollSample};
 
     #[derive(Debug, Clone, Copy)]
     struct PollOnceExecutor;
@@ -506,15 +496,16 @@ mod tests {
     }
 
     #[test]
-    fn installed_runtime_probe_is_attached_to_new_executor() {
-        clear_runtime_probes_for_tests();
+    fn explicit_runtime_probe_is_attached_to_executor() {
         let hits = Arc::new(AtomicUsize::new(0));
-        install_runtime_probe(Arc::new(CountingProbe(Arc::clone(&hits))));
-
-        let executor = super::MonitoredLocalExecutor::new(PollOnceExecutor);
+        let probe = Arc::new(CountingProbe(Arc::clone(&hits))) as Arc<dyn RuntimeProbe>;
+        let executor = super::MonitoredLocalExecutor::with_config_and_probes(
+            PollOnceExecutor,
+            MainThreadStallProbeConfig::default(),
+            [probe],
+        );
         executor.spawn_local(async {});
 
         assert!(hits.load(Ordering::Relaxed) >= 1);
-        clear_runtime_probes_for_tests();
     }
 }

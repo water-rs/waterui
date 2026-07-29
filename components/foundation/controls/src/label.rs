@@ -602,12 +602,7 @@ impl View for Label {
             panic!("Label::effective_display_mode must resolve Automatic before rendering");
         }
 
-        let Self {
-            content,
-            accessibility_text: _,
-            accessibility_label: _,
-            ..
-        } = self;
+        let Self { content, .. } = self;
         match content {
             LabelContent::Semantic {
                 text,

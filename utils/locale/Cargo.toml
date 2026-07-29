@@ -15,7 +15,6 @@ categories = ["internationalization", "localization"]
 waterui-core.workspace = true
 waterui-str.workspace = true
 nami.workspace = true
-anyhow = "1.0"
 
 # ICU4X for locale handling
 icu_locale = "2.2"

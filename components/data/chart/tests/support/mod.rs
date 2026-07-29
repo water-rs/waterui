@@ -355,7 +355,11 @@ pub fn bubble_hit_location(data: &[BubblePoint], index: usize) -> (f32, f32) {
 pub fn candlestick_hit_location(data: &[Candle], index: usize) -> (f32, f32) {
     let bounds = normalize_bounds(DataBounds::from_candles(data).with_padding(0.05));
     let candle = data[index];
-    normalized_plot_point(bounds, candle.timestamp, (candle.open + candle.close) * 0.5)
+    normalized_plot_point(
+        bounds,
+        candle.timestamp,
+        f32::midpoint(candle.open, candle.close),
+    )
 }
 
 pub fn depth_hit_location(data: &DepthData, side: DepthSide, index: usize) -> (f32, f32) {
@@ -380,7 +384,7 @@ pub fn pie_hit_location(data: &[DataPoint], index: usize, inner_radius: f32) -> 
     let plot_height = CHART_HEIGHT * PIE_PADDING_RATIO.mul_add(-2.0, 1.0);
     let outer_radius = plot_width.min(plot_height) * 0.45;
     let inner_radius = outer_radius * inner_radius;
-    let mid_radius = (inner_radius + outer_radius) * 0.5;
+    let mid_radius = f32::midpoint(inner_radius, outer_radius);
     let center_x = CHART_WIDTH * 0.5;
     let center_y = CHART_HEIGHT * 0.5;
 

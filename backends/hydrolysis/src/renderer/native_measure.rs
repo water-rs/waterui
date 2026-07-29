@@ -19,6 +19,20 @@ pub(crate) trait HydroNativeView: View + Sized + 'static {
     }
 }
 
+pub(crate) fn unsupported_system_icon(icon: &SystemIcon) -> ! {
+    panic!(
+        "SystemIcon `{}` is unsupported on Hydrolysis because self-drawn backends have no \
+         OS-supplied icon catalog; use a packaged WaterUI icon crate",
+        icon.name.as_str()
+    )
+}
+
+impl HydroNativeView for Native<SystemIcon> {
+    fn intrinsic(_state: &mut HydroState, view: &Self, _env: &Environment) -> LayoutSize {
+        unsupported_system_icon(view.as_inner())
+    }
+}
+
 pub(crate) fn dimensions_for_native<V: HydroNativeView>(
     view: &AnyView,
     proposal: ProposalSize,

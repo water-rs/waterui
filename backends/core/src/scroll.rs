@@ -338,10 +338,10 @@ impl ScrollState {
         self.wheel_last_tick = Some(now);
         let blend = 1.0 - (-dt / WHEEL_SMOOTHING_TAU).exp();
         if let Some(target) = self.wheel_target_x {
-            self.offset_x += (target - self.offset_x) * blend;
+            self.offset_x = (target - self.offset_x).mul_add(blend, self.offset_x);
         }
         if let Some(target) = self.wheel_target_y {
-            self.offset_y += (target - self.offset_y) * blend;
+            self.offset_y = (target - self.offset_y).mul_add(blend, self.offset_y);
         }
         self.settle_reached_wheel_targets();
         if self.wheel_target_x.is_none() && self.wheel_target_y.is_none() {

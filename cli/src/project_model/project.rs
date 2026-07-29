@@ -522,7 +522,7 @@ pub enum FailToCreateProject {
 pub struct CreateOptions {
     /// Application display name (e.g., "Water Example").
     pub name: String,
-    /// Bundle identifier (e.g., "com.example.waterexample").
+    /// Bundle identifier (e.g., "dev.waterui.waterexample").
     pub bundle_identifier: BundleIdentifier,
     /// Package type for the project.
     pub package_type: PackageType,
@@ -1304,7 +1304,7 @@ pub struct Package {
     pub package_type: PackageType,
     /// Human-readable name of the application (e.g., "Water Demo").
     pub name: String,
-    /// Bundle identifier for the application (e.g., "com.example.waterdemo").
+    /// Bundle identifier for the application (e.g., "dev.waterui.waterdemo").
     pub bundle_identifier: BundleIdentifier,
     /// Path to assets directory relative to project root. Defaults to "assets".
     #[serde(

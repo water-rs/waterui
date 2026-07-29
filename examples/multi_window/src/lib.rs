@@ -13,7 +13,7 @@ use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::window::{Window, WindowState, WindowStyle, conditional_window};
+use waterui::window::{Window, WindowPresentation, WindowState, WindowStyle, conditional_window};
 
 #[preview]
 pub fn demo() -> impl View {
@@ -25,6 +25,11 @@ pub fn demo() -> impl View {
     let frosted_state = binding::<WindowState>(WindowState::default());
     let transparent_state = binding::<WindowState>(WindowState::default());
     let ultra_thin_state = binding::<WindowState>(WindowState::default());
+    let standard_window = WindowPresentation::new(&standard_state);
+    let borderless_window = WindowPresentation::new(&borderless_state);
+    let frosted_window = WindowPresentation::new(&frosted_state);
+    let transparent_window = WindowPresentation::new(&transparent_state);
+    let ultra_thin_window = WindowPresentation::new(&ultra_thin_state);
 
     // Use zstack so the invisible window triggers don't affect scroll layout
     zstack((
@@ -83,11 +88,11 @@ pub fn demo() -> impl View {
             .padding_with(EdgeInsets::all(20.0)),
         ),
         // Conditionally render windows based on state (invisible triggers)
-        conditional_window(&standard_state, create_standard_window),
-        conditional_window(&borderless_state, create_borderless_window),
-        conditional_window(&frosted_state, create_frosted_window),
-        conditional_window(&transparent_state, create_transparent_window),
-        conditional_window(&ultra_thin_state, create_ultra_thin_window),
+        conditional_window(&standard_window, create_standard_window),
+        conditional_window(&borderless_window, create_borderless_window),
+        conditional_window(&frosted_window, create_frosted_window),
+        conditional_window(&transparent_window, create_transparent_window),
+        conditional_window(&ultra_thin_window, create_ultra_thin_window),
     ))
 }
 

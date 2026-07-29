@@ -466,9 +466,11 @@ fn vstack_places_state_wrapped_button_at_intrinsic_width() {
 #[test]
 fn floating_button_measurement_uses_style_tokens() {
     let env = test_environment();
-    let mut floating_style = FloatingStyle::default();
-    floating_style.minimum_width = 37.0;
-    floating_style.minimum_height = 41.0;
+    let floating_style = FloatingStyle {
+        minimum_width: 37.0,
+        minimum_height: 41.0,
+        ..FloatingStyle::default()
+    };
 
     let mut renderer = test_renderer();
     capture_root_window(
@@ -498,7 +500,7 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         .label_style(LabelDisplayMode::IconOnly)
         .plain()
         .action(|waterui::State(value): waterui::State<Binding<f64>>| {
-            value.set(value.get() * 0.5);
+            *value.get_mut() *= 0.5;
         })
         .state(&zoom)
         .size(48.0, 48.0);
@@ -506,7 +508,7 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         .label_style(LabelDisplayMode::IconOnly)
         .plain()
         .action(|waterui::State(value): waterui::State<Binding<f64>>| {
-            value.set(value.get() * 2.0);
+            *value.get_mut() *= 2.0;
         })
         .state(&zoom)
         .size(48.0, 48.0);

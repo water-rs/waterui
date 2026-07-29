@@ -34,6 +34,7 @@ waterui-graphics = { workspace = true, optional = true }
 waterui-layout.workspace = true
 waterui-text = { workspace = true, optional = true }
 nami.workspace = true
+num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
 kurbo.workspace = true
 peniko.workspace = true

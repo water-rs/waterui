@@ -48,13 +48,19 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
         let req_h = (rect.height().round() as i32 - margin_v).max(0);
         let (width_request, height_request) = resolve_size_request(widget, *axis, req_w, req_h);
         if layout_debug_enabled() {
-            eprintln!(
-                "[gtk-layout] placer.place type={} axis={axis:?} req=({req_w},{req_h}) applied=({width_request},{height_request}) rect=({}, {}, {}, {})",
-                widget.type_().name(),
-                rect.x(),
-                rect.y(),
-                rect.width(),
-                rect.height()
+            tracing::debug!(
+                target: "waterui::gtk::layout",
+                widget_type = %widget.type_().name(),
+                axis = ?axis,
+                requested_width = req_w,
+                requested_height = req_h,
+                applied_width = width_request,
+                applied_height = height_request,
+                x = rect.x(),
+                y = rect.y(),
+                width = rect.width(),
+                height = rect.height(),
+                "Placed GTK layout child"
             );
         }
         let mut already_in_container = false;
@@ -99,13 +105,19 @@ pub fn update_positions(container: &Fixed, rects: &[Rect], children: &[(Widget, 
         let req_h = (rect.height().round() as i32 - margin_v).max(0);
         let (width_request, height_request) = resolve_size_request(widget, *axis, req_w, req_h);
         if layout_debug_enabled() {
-            eprintln!(
-                "[gtk-layout] placer.update type={} axis={axis:?} req=({req_w},{req_h}) applied=({width_request},{height_request}) rect=({}, {}, {}, {})",
-                widget.type_().name(),
-                rect.x(),
-                rect.y(),
-                rect.width(),
-                rect.height()
+            tracing::debug!(
+                target: "waterui::gtk::layout",
+                widget_type = %widget.type_().name(),
+                axis = ?axis,
+                requested_width = req_w,
+                requested_height = req_h,
+                applied_width = width_request,
+                applied_height = height_request,
+                x = rect.x(),
+                y = rect.y(),
+                width = rect.width(),
+                height = rect.height(),
+                "Updated GTK layout child position"
             );
         }
 

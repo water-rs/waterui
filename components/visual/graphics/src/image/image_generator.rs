@@ -540,6 +540,13 @@ mod tests {
         };
         let image = pollster::block_on(generator.generate(&runtime()));
         let first = &image.rgba8()[..4];
-        assert!(image.rgba8().chunks_exact(4).any(|px| px != first));
+        assert!(
+            image
+                .rgba8()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|px| px != first)
+        );
     }
 }

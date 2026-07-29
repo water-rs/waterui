@@ -72,14 +72,6 @@ pub struct Window {
     /// Use this to create transparent or frosted glass windows.
     /// Notice that it may not be supported on all platforms.
     pub background: WindowBackground,
-    /// Whether the window continuously re-renders every display refresh while
-    /// visible (game-engine mode) instead of rendering only when state changes.
-    ///
-    /// Enables sustained high-refresh output (e.g. 120fps) for animation-heavy or
-    /// game-like content, paced to the monitor's refresh rate. Costs power, so it
-    /// defaults to `false`. Honored by self-drawn renderers (hydrolysis); native
-    /// backends drive their own display link.
-    pub continuous_render: bool,
     /// Explicit minimum content size the window can be resized down to.
     ///
     /// When `None` (the default), the backend derives the minimum from the
@@ -253,7 +245,6 @@ impl Window {
             toolbar: None,
             style: WindowStyle::default(),
             background: WindowBackground::default(),
-            continuous_render: false,
             min_size: None,
             max_size: None,
         }
@@ -302,19 +293,6 @@ impl Window {
     #[must_use]
     pub const fn style(mut self, style: WindowStyle) -> Self {
         self.style = style;
-        self
-    }
-
-    /// Enable continuous (game-engine) rendering.
-    ///
-    /// When enabled, a self-drawn renderer re-renders the window every display
-    /// refresh while it is visible, paced to the monitor's refresh rate, instead of
-    /// rendering only when reactive state changes. Use for animation-heavy or
-    /// game-like content that wants sustained high-refresh output (e.g. 120fps).
-    /// Costs power, so it defaults to `false`.
-    #[must_use]
-    pub const fn continuous_render(mut self, continuous: bool) -> Self {
-        self.continuous_render = continuous;
         self
     }
 
@@ -401,34 +379,54 @@ impl View for Window {
     }
 }
 
+/// Owns the explicit presentation state for a conditionally created window.
+///
+/// Keep this value at the same semantic level as the window's [`WindowState`]
+/// binding. Its retained `presented` binding prevents unrelated state changes
+/// such as Normal → Minimized from creating duplicate native windows.
+#[derive(Debug, Clone)]
+pub struct WindowPresentation {
+    state: Binding<WindowState>,
+    presented: Binding<bool>,
+}
+
+impl WindowPresentation {
+    /// Creates presentation state for a window controlled by `state`.
+    #[must_use]
+    pub fn new(state: &Binding<WindowState>) -> Self {
+        Self {
+            state: state.clone(),
+            presented: Binding::container(false),
+        }
+    }
+
+    /// Returns the window-state binding controlled by this presentation.
+    #[must_use]
+    pub fn state(&self) -> Binding<WindowState> {
+        self.state.clone()
+    }
+}
+
 /// Shows a window only once per "open" cycle.
 ///
-/// This helper avoids accidentally creating multiple native windows when the bound
-/// [`WindowState`] changes (e.g. Normal → Minimized), which would re-run `Window`'s
-/// `View::body()` and call `show()` again.
-///
-/// The window is shown when `state` transitions from `Closed` to any other state.
-/// When `state` becomes `Closed` again (either programmatically or via the native
-/// close button updating the binding), the helper resets and a subsequent open will
-/// create a new window.
-pub fn conditional_window<F>(state: &Binding<WindowState>, creator: F) -> impl View + use<F>
+/// The window is shown when the presentation's state transitions from
+/// [`WindowState::Closed`] to any other state. Closing the window resets the
+/// retained presentation binding so a subsequent open creates a new native
+/// window.
+pub fn conditional_window<F>(presentation: &WindowPresentation, creator: F) -> impl View + use<F>
 where
     F: Fn(Binding<WindowState>) -> Window + 'static,
 {
-    use core::cell::Cell;
-    use std::rc::Rc;
-
-    let shown = Rc::new(Cell::new(false));
-    let creator = Rc::new(creator);
-    let state = state.clone();
+    let state = presentation.state.clone();
+    let presented = presentation.presented.clone();
 
     Dynamic::watch(state.clone(), move |s| {
         if s == WindowState::Closed {
-            shown.set(false);
+            presented.set(false);
             AnyView::new(())
-        } else if !shown.get() {
-            shown.set(true);
-            AnyView::new((creator.as_ref())(state.clone()))
+        } else if !presented.get() {
+            presented.set(true);
+            AnyView::new(creator(state.clone()))
         } else {
             AnyView::new(())
         }

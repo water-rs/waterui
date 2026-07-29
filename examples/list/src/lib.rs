@@ -59,7 +59,7 @@ fn record_row(record: Record) -> ListItem {
 
 fn delete_record(ListDelete(index): ListDelete, State(state): State<DemoState>) {
     let _ = state.records.remove(index);
-    state.remaining.set(state.remaining.get() - 1);
+    *state.remaining.get_mut() -= 1;
 }
 
 fn move_record(ListMove(movement): ListMove, State(state): State<DemoState>) {

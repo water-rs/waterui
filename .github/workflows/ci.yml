@@ -34,6 +34,7 @@ jobs:
         with:
           shared-key: ci-ubuntu
       - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   coverage:

@@ -384,8 +384,9 @@ impl Snackbar {
 ///
 /// Cloning an `ActiveSnackbar` shares those bindings by reference count, so the
 /// snapshots the manager reflows from all refer to the same animated state.
-#[derive(Clone)]
+#[derive(Clone, crate::Identifiable)]
 struct ActiveSnackbar {
+    #[id]
     id: u64,
     snackbar: Snackbar,
     /// 0 hidden → 1 shown; drives the fade.
@@ -399,14 +400,6 @@ struct ActiveSnackbar {
     stack_offset: Binding<f32>,
     /// Whether this presentation is running its dismissal fade.
     dismissing: Rc<Cell<bool>>,
-}
-
-impl Identifiable for ActiveSnackbar {
-    type Id = u64;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
 }
 
 /// Internal state for the snackbar manager.

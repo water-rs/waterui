@@ -35,13 +35,13 @@ jobs:
           set -euo pipefail
 
           git fetch --force --tags origin
-          CLI_TAG="$(git tag --points-at HEAD | grep '^cli-v' | sort -V | tail -n 1 || true)"
+          CLI_TAG="$(git tag --points-at HEAD | grep '^waterui-cli-v' | sort -V | tail -n 1 || true)"
 
           echo "cli_tag=${CLI_TAG}" >> "$GITHUB_OUTPUT"
           if [[ -n "${CLI_TAG}" ]]; then
             echo "Detected CLI tag: ${CLI_TAG}"
           else
-            echo "No cli-v* tag found on HEAD."
+            echo "No waterui-cli-v* tag found on HEAD."
           fi
 
   build-cli:

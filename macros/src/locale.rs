@@ -24,7 +24,7 @@ fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
     }
 
     match crate_name("waterui") {
-        Ok(FoundCrate::Itself) => Ok(quote!(::waterui)),
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
             Ok(quote!(::#ident))
@@ -745,6 +745,18 @@ fn locale_match_condition(locale_code: &str) -> TokenStream2 {
         .map(|variant| LitStr::new(variant.as_str(), Span::call_site()))
         .collect::<Vec<_>>();
     let variant_count = variants.len();
+    let variants_match = if variants.is_empty() {
+        quote! { locale_key.id().variants.is_empty() }
+    } else {
+        quote! {
+            locale_key
+                .id()
+                .variants
+                .iter()
+                .map(|variant| variant.as_str())
+                .eq([#(#variants),*].into_iter())
+        }
+    };
 
     let script_match = script.map_or_else(
         || quote! { locale_key.id().script.is_none() },
@@ -768,12 +780,7 @@ fn locale_match_condition(locale_code: &str) -> TokenStream2 {
             && #script_match
             && #region_match
             && locale_key.id().variants.len() == #variant_count
-            && locale_key
-                .id()
-                .variants
-                .iter()
-                .map(|variant| variant.as_str())
-                .eq([#(#variants),*].into_iter())
+            && #variants_match
     }
 }
 

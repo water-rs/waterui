@@ -7,5 +7,6 @@ mod runtime_guard;
 
 pub use runtime_guard::{
     MainThreadStallProbeConfig, MonitoredLocalExecutor, RuntimeProbe, TaskPollSample,
-    install_runtime_probe, monitored_local_executor, monitored_local_executor_with_config,
+    monitored_local_executor, monitored_local_executor_with_config,
+    monitored_local_executor_with_probes,
 };

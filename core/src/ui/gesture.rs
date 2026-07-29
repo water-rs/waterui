@@ -441,7 +441,7 @@ impl GestureObserver {
     /// ```rust,ignore
     /// GestureObserver::new(
     ///     TapGesture::repeat(2),
-    ///     |State(counter): State<Binding<i32>>| counter.set(counter.get() + 1),
+    ///     |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     /// )
     /// ```
     #[must_use]

@@ -40,8 +40,8 @@ enum Fruit {
 }
 
 impl Fruit {
-    fn all() -> Vec<(Self, &'static str)> {
-        vec![
+    const fn all() -> [(Self, &'static str); 5] {
+        [
             (Self::Apple, "Apple"),
             (Self::Banana, "Banana"),
             (Self::Cherry, "Cherry"),

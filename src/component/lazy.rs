@@ -86,7 +86,7 @@ impl Lazy {
     /// # Example
     ///
     /// ```ignore
-    /// let items = vec![Item::new(1, "First"), Item::new(2, "Second")];
+    /// let items = [Item::new(1, "First"), Item::new(2, "Second")];
     /// let list = Lazy::for_each(items, |item| text(item.name));
     /// ```
     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View

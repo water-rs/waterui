@@ -9,7 +9,6 @@ use waterui::{Binding, Str};
 use waterui_controls::{
     Menu, TextField, Toggle, button, label, slider::slider, stepper::stepper, toggle,
 };
-use waterui_icon::system_icon;
 use waterui_testing::{Role, Selector};
 
 use support::{control_shell, mount_view};
@@ -31,7 +30,7 @@ fn button_tap_triggers_action() {
         control_shell(vstack((
             button("Increment")
                 .action(|waterui::State(count): waterui::State<Binding<i32>>| {
-                    count.set(count.get() + 1);
+                    *count.get_mut() += 1;
                 })
                 .state(&count_for_view),
             waterui::text!("count:{count_for_view}").foreground(Srgb::WHITE),
@@ -278,13 +277,7 @@ fn text_field_focus_updates_ui_focus() {
 
 #[test]
 fn icon_only_label_preserves_button_accessible_name() {
-    let mut app = mount_view(|| {
-        control_shell(button(
-            label("Search")
-                .system_icon(system_icon::search())
-                .icon_only(),
-        ))
-    });
+    let mut app = mount_view(|| control_shell(button(label("Search").icon(()).icon_only())));
 
     app.query()
         .role(Role::BUTTON)
@@ -296,7 +289,7 @@ fn icon_only_label_preserves_button_accessible_name() {
 fn menu_button_exposes_accessible_name() {
     let mut app = mount_view(|| {
         control_shell(Menu::new(
-            label("Actions").system_icon(system_icon::search()),
+            label("Actions").icon(()),
             (
                 button("Refresh").action(|| {}),
                 Menu::new("Advanced", (button("Archive").action(|| {}),)),
@@ -434,7 +427,7 @@ fn disabled_button_ignores_action() {
         control_shell(
             button("Submit")
                 .action(|waterui::State(count): waterui::State<Binding<i32>>| {
-                    count.set(count.get() + 1);
+                    *count.get_mut() += 1;
                 })
                 .disabled(true)
                 .state(&count_for_view),

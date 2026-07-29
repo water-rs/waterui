@@ -49,39 +49,25 @@ impl SidebarDestination {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Identifiable)]
 struct SidebarRow {
+    #[id]
     id: u32,
     dest: SidebarDestination,
     count: i32,
 }
 
-impl Identifiable for SidebarRow {
-    type Id = u32;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Identifiable)]
 struct ReminderRow {
+    #[id]
     id: u64,
     title: &'static str,
     subtitle: Option<&'static str>,
     flagged: bool,
 }
 
-impl Identifiable for ReminderRow {
-    type Id = u64;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-}
-
-fn sidebar_rows() -> Vec<SidebarRow> {
-    vec![
+fn sidebar_rows() -> [SidebarRow; 5] {
+    [
         SidebarRow {
             id: 1,
             dest: SidebarDestination::Today,
@@ -110,10 +96,10 @@ fn sidebar_rows() -> Vec<SidebarRow> {
     ]
 }
 
-fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow>) {
+fn reminders_for(dest: SidebarDestination) -> (&'static [ReminderRow], &'static [ReminderRow]) {
     match dest {
         SidebarDestination::Today => (
-            vec![
+            &[
                 ReminderRow {
                     id: 1,
                     title: "Call dentist",
@@ -127,7 +113,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
                     flagged: true,
                 },
             ],
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 3,
                 title: "Pick up package",
                 subtitle: Some("Tomorrow 10:00 AM"),
@@ -135,13 +121,13 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
             }],
         ),
         SidebarDestination::Scheduled => (
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 4,
                 title: "Book flight",
                 subtitle: Some("Fri"),
                 flagged: false,
             }],
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 5,
                 title: "Pay utilities",
                 subtitle: Some("Next week"),
@@ -149,7 +135,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
             }],
         ),
         SidebarDestination::All => (
-            vec![
+            &[
                 ReminderRow {
                     id: 6,
                     title: "Plan weekend",
@@ -163,7 +149,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
                     flagged: true,
                 },
             ],
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 8,
                 title: "Refactor split navigation chrome",
                 subtitle: Some("Cross-platform"),
@@ -171,16 +157,16 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
             }],
         ),
         SidebarDestination::Flagged => (
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 9,
                 title: "Prepare demo",
                 subtitle: Some("High priority"),
                 flagged: true,
             }],
-            vec![],
+            &[],
         ),
         SidebarDestination::Completed => (
-            vec![
+            &[
                 ReminderRow {
                     id: 10,
                     title: "Submit timesheet",
@@ -194,7 +180,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
                     flagged: false,
                 },
             ],
-            vec![],
+            &[],
         ),
     }
 }
@@ -220,14 +206,10 @@ fn reminder_matches_query(reminder: &ReminderRow, query: &str) -> bool {
     title_matches || subtitle_matches
 }
 
-fn filter_reminders(rows: Vec<ReminderRow>, normalized_query: Option<&str>) -> Vec<ReminderRow> {
-    match normalized_query {
-        Some(query) => rows
-            .into_iter()
-            .filter(|row| reminder_matches_query(row, query))
-            .collect(),
-        None => rows,
-    }
+fn matching_reminder_count(rows: &[ReminderRow], normalized_query: &str) -> usize {
+    rows.iter()
+        .filter(|row| reminder_matches_query(row, normalized_query))
+        .count()
 }
 
 #[preview]
@@ -279,8 +261,8 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
             let count = query.map(move |query| {
                 if let Some(query) = query.as_deref() {
                     let (today_rows, upcoming_rows) = reminders_for(dest);
-                    filter_reminders(today_rows, Some(query)).len() as i32
-                        + filter_reminders(upcoming_rows, Some(query)).len() as i32
+                    matching_reminder_count(today_rows, query) as i32
+                        + matching_reminder_count(upcoming_rows, query) as i32
                 } else {
                     row.count
                 }
@@ -359,7 +341,7 @@ fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
         .computed()
 }
 
-fn section_visible(search: Binding<Str>, rows: Vec<ReminderRow>) -> Computed<bool> {
+fn section_visible(search: Binding<Str>, rows: &'static [ReminderRow]) -> Computed<bool> {
     search
         .map(move |query| {
             let normalized_query = normalized_search_query(&query);
@@ -375,10 +357,10 @@ fn section_visible(search: Binding<Str>, rows: Vec<ReminderRow>) -> Computed<boo
 
 fn reminder_section(
     title: &'static str,
-    rows: Vec<ReminderRow>,
+    rows: &'static [ReminderRow],
     search: Binding<Str>,
 ) -> impl View {
-    let visible = section_visible(search.clone(), rows.clone());
+    let visible = section_visible(search.clone(), rows);
     vstack((
         text(title)
             .caption()

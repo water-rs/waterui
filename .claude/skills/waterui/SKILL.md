@@ -51,7 +51,7 @@ fn main() -> impl View {
         text!("Count: {count}").headline(),
         button("+1")
             .with_state(&count)
-            .action(|c| c.set(c.get() + 1)),
+            .action(|c| *c.get_mut() += 1),
     ))
 }
 ```
@@ -143,7 +143,7 @@ Photo::new(url)
 // Single state - receives Binding directly
 button("Click")
     .with_state(&count)
-    .action(|c| c.set(c.get() + 1))
+    .action(|c| *c.get_mut() += 1)
 
 // Multiple states → nested tuple (((a, b), c), d)
 button("Reset")
