@@ -103,6 +103,12 @@ pub(crate) struct ScrollTarget {
     pub(crate) handle: crate::scroll::ScrollHandle,
 }
 
+#[derive(Clone)]
+pub(crate) struct TrackpadPanTarget {
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) action: TrackpadPanAction,
+}
+
 /// Outcome of synchronizing hover targets against a pointer position.
 ///
 /// `visual_changed` means a replayable state layer's target changed (a redraw
@@ -120,6 +126,7 @@ pub(crate) type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub(crate) type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
 pub(crate) type HoverMoveAction = Rc<RefCell<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>>;
 pub(crate) type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
+pub(crate) type TrackpadPanAction = Rc<RefCell<dyn FnMut(f32, f32, TouchPhase) -> bool>>;
 
 #[derive(Default)]
 pub(crate) struct HitTestState {
@@ -143,6 +150,7 @@ pub(crate) struct HitTestState {
     pub(crate) active_press_bounds: Option<vello::kurbo::Rect>,
     pub(crate) active_press_origin: Option<vello::kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
+    pub(crate) trackpad_pan_targets: Vec<TrackpadPanTarget>,
     pub(crate) hit_test_opacity: f32,
     pub(crate) hit_test_order: usize,
 }
@@ -155,6 +163,7 @@ impl HitTestState {
         self.drop_targets.clear();
         self.context_menu_targets.clear();
         self.scroll_targets.clear();
+        self.trackpad_pan_targets.clear();
         self.modal_interaction = None;
     }
 
@@ -1186,6 +1195,23 @@ impl HydrolysisRenderer {
             .map(|target| target.handle.metrics())
     }
 
+    pub fn handle_trackpad_pan(
+        &mut self,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        phase: TouchPhase,
+    ) -> bool {
+        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        for target in self.hit_test.trackpad_pan_targets.iter_mut().rev() {
+            if target.bounds.contains(point) {
+                return (target.action.borrow_mut())(dx, dy, phase);
+            }
+        }
+        self.handle_scroll(x, y, dx, dy, false)
+    }
+
     pub(crate) fn register_pointer_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
@@ -1605,6 +1631,19 @@ impl HydrolysisRenderer {
             bounds,
             action: Rc::new(RefCell::new(action)),
             handle,
+        });
+    }
+
+    pub(crate) fn register_trackpad_pan_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(f32, f32, TouchPhase) -> bool,
+    {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        self.hit_test.trackpad_pan_targets.push(TrackpadPanTarget {
+            bounds,
+            action: Rc::new(RefCell::new(action)),
         });
     }
 

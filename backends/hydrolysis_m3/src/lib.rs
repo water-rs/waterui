@@ -257,6 +257,7 @@ pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
     theme::typography::install_defaults(env);
     env.insert(colors);
     env.insert(card::theme(&colors));
+    env.insert(fab::theme());
     env.insert(snackbar::theme(&colors));
     env.insert(Box::new(MaterialTheme::with_colors(colors)) as Box<dyn WidgetTheme>);
 }
@@ -357,6 +358,7 @@ fn install_dynamic_defaults(
         dark,
     ));
     env.insert(card::theme(&initial));
+    env.insert(fab::theme());
     env.insert(snackbar::theme(&initial));
     env.insert(
         Box::new(MaterialTheme::with_color_schemes(light, dark, scheme)) as Box<dyn WidgetTheme>,

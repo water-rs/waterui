@@ -38,6 +38,7 @@ use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
+use waterui_map::MapConfig;
 
 mod diagnostics;
 mod fonts;
@@ -76,6 +77,13 @@ fn init_main_thread_executors() {
 
 fn install_native_component_hooks(env: &mut Environment) {
     waterui_video_gpu::install(env);
+    #[cfg(any(test, feature = "testing"))]
+    let semantic_native_map = env.get::<crate::testing::SemanticNativeMap>().is_some();
+    #[cfg(not(any(test, feature = "testing")))]
+    let semantic_native_map = false;
+    if env.get::<Hook<MapConfig>>().is_none() && !semantic_native_map {
+        waterui_map_gpu::install(env);
+    }
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));

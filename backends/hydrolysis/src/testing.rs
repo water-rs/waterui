@@ -7,12 +7,16 @@ use waterui::{
     theme::{ColorScheme, ColorSettings, FontSettings, Theme},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SemanticNativeMap;
+
 fn color(rgb: u32) -> ResolvedColor {
     ResolvedColor::from_srgb(Srgb::from_u32(rgb))
 }
 
 /// Installs every theme token required by Hydrolysis rendering.
 pub fn install_theme(env: &mut Environment) {
+    env.insert(SemanticNativeMap);
     Theme::new()
         .color_scheme(ColorScheme::Light)
         .colors(

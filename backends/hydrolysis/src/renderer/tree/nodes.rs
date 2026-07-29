@@ -604,6 +604,11 @@ impl GpuSurfaceNode {
             ctx.transform,
             ctx.bounds,
         );
+        let runtime = Rc::clone(&self.runtime);
+        renderer.register_trackpad_pan_target(
+            transformed_rect(ctx.hit_transform, ctx.bounds),
+            move |dx, dy, phase| runtime.borrow_mut().handle_trackpad_pan(dx, dy, phase),
+        );
     }
 }
 

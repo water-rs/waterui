@@ -6,6 +6,7 @@ use waterui::Color;
 use waterui::View;
 use waterui::ViewExt;
 use waterui::env::Environment;
+use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
 use waterui_graphics::{
     EffectRenderer, FilterViewExt as _, GpuContext, GpuFrame, GpuRuntime, GpuSurface, GpuView,
@@ -144,6 +145,25 @@ impl View for GpuSurfaceOpacityView {
 }
 
 #[derive(Clone)]
+struct GpuSurfaceUnderVelloOverlayView;
+
+impl View for GpuSurfaceUnderVelloOverlayView {
+    fn body(self, _env: &Environment) -> impl View {
+        zstack((
+            GpuSurface::new(SolidClearRenderer {
+                color: wgpu::Color {
+                    r: 0.9,
+                    g: 0.3,
+                    b: 0.2,
+                    a: 1.0,
+                },
+            }),
+            Color::srgb_hex("#2563EB").size(12.0, 12.0),
+        ))
+    }
+}
+
+#[derive(Clone)]
 struct TransparentGpuSurfaceOpacityView {
     calls: Rc<Cell<u32>>,
 }
@@ -274,6 +294,28 @@ fn hydrolysis_ext_renders_gpu_surface_inside_opacity_layer() {
     assert!(
         alpha > 90 && alpha < 180,
         "expected partially transparent output alpha, got {alpha}"
+    );
+}
+
+#[test]
+fn hydrolysis_ext_preserves_gpu_surface_under_vello_overlay() {
+    let mut env = Environment::new();
+    let view = GpuSurfaceUnderVelloOverlayView.hydrolysis();
+
+    let runtime = gpu_runtime();
+    let output = pollster::block_on(view.render_offscreen(
+        &runtime,
+        OffscreenRenderConfig::new(
+            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
+        ),
+        &mut env,
+    ))
+    .expect("hydrolysis extension offscreen render failed");
+
+    assert_eq!(
+        &output.rgba8[..4],
+        &[243, 149, 124, 255],
+        "a later transparent Vello layer must preserve the underlying GPU surface"
     );
 }
 

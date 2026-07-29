@@ -58,6 +58,16 @@ impl SceneView {
     pub fn into_content(self) -> Box<dyn SceneContent> {
         self.content
     }
+
+    /// Converts this scene directly into a GPU surface.
+    ///
+    /// This is primarily useful for offscreen rendering and visual tests. Normal
+    /// view composition should return `SceneView` so a self-drawn backend can
+    /// merge its commands directly into the parent scene.
+    #[must_use]
+    pub fn into_gpu_surface(self) -> GpuSurface {
+        GpuSurface::new(SceneSurfaceRenderer::new(self.content))
+    }
 }
 
 impl NativeView for SceneView {
@@ -71,7 +81,7 @@ impl View for SceneView {
         if env.get::<SceneViewMergeToParent>().is_some() {
             AnyView::new(Native::new(self))
         } else {
-            AnyView::new(GpuSurface::new(SceneSurfaceRenderer::new(self.content)))
+            AnyView::new(self.into_gpu_surface())
         }
     }
 

@@ -10,6 +10,8 @@ mod text_service;
 mod view_helpers;
 
 pub use compositor::HydrolysisRenderTarget;
+#[cfg(test)]
+pub(crate) use compositor::take_gpu_surface_redraw_request;
 pub(crate) use compositor::{
     ActiveSceneLayer, Compositor, EmbeddedGpuSurfaceRuntime, GpuSurfaceLayer, GpuSurfaceSource,
     LayerShape, RenderLayer,

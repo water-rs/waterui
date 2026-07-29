@@ -42,6 +42,24 @@ fn changed_rebuild_input_wakes_platform_window() {
 }
 
 #[test]
+fn changed_reactive_input_refreshes_retained_tree() {
+    let mut runtime = test_runtime_window();
+    runtime.clear_frame_mode();
+    runtime.renderer.request_refresh();
+
+    schedule_redraw_or_refresh(&mut runtime, true);
+
+    assert!(
+        runtime.mode.needs_layout(),
+        "a pending reactive patch must be sampled before presenting the next frame"
+    );
+    assert!(
+        runtime.platform.take_redraw_request(),
+        "reactive input must wake the platform event loop"
+    );
+}
+
+#[test]
 fn changed_scroll_input_schedules_frame_and_wakes_platform_window() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();

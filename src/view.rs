@@ -57,9 +57,10 @@ use crate::{
 };
 use crate::{
     component::{badge::Badge, focus::Focused},
+    floating::Floating,
     prelude::Shadow,
     shape::{ClipShape, Shape},
-    style::{Anchor, Offset, Rotation, Scale},
+    style::{Anchor, FloatingStyle, Offset, Rotation, Scale},
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
@@ -732,6 +733,20 @@ pub trait ViewExt: View + Sized {
     /// Applies a shadow effect to this view.
     fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
         Metadata::new(self, shadow.into())
+    }
+
+    /// Promotes this view to a themed floating surface with elevation.
+    ///
+    /// Floating presentation is an attribute: applying it to a semantic button
+    /// preserves the button's identity while changing its container, state-layer
+    /// geometry, and elevation.
+    fn floating(self) -> Floating<Self> {
+        Floating::new(self)
+    }
+
+    /// Promotes this view with explicit floating-surface theme tokens.
+    fn floating_with(self, style: FloatingStyle) -> Floating<Self> {
+        Floating::with_style(self, style)
     }
 
     /// Applies a border around this view.

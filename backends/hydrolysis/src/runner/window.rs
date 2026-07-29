@@ -92,9 +92,12 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     pub(super) fn new(
         window: Window,
         platform: P,
-        renderer: HydrolysisRenderer,
+        mut renderer: HydrolysisRenderer,
         render_diagnostics_config: RenderDiagnosticsConfig,
     ) -> Self {
+        if let Some(handle) = platform.gpu_surface_redraw_handle() {
+            renderer.set_host_redraw_handle(handle);
+        }
         Self {
             window,
             platform,
@@ -248,9 +251,9 @@ impl FrameProfile {
     }
 }
 
-/// Wakes the platform window after an input event: a change the renderer flagged as
-/// structural (its rebuild request) refreshes the retained tree; anything else only
-/// re-presents the existing scene.
+/// Wakes the platform window after an input event: structural rebuilds and pending
+/// reactive patches refresh the retained tree; purely visual changes re-present the
+/// existing scene.
 pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     changed: bool,
@@ -258,7 +261,7 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     if !changed {
         return;
     }
-    if runtime.renderer.take_rebuild_request() {
+    if runtime.renderer.take_rebuild_request() || runtime.renderer.has_patch_request() {
         runtime.request_refresh();
     } else {
         runtime.renderer.request_redraw();
@@ -1032,6 +1035,28 @@ where
                     "runner dispatched input event"
                 );
                 schedule_scroll_refresh(runtime, changed);
+            }
+            InputEvent::TrackpadPan {
+                x,
+                y,
+                dx,
+                dy,
+                phase,
+            } => {
+                runtime.pointer_position = Some((x, y));
+                let changed = runtime.renderer.handle_trackpad_pan(x, y, dx, dy, phase);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "trackpad_pan",
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    ?phase,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Magnification { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));

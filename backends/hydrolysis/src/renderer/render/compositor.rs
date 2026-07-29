@@ -1,9 +1,9 @@
 use super::*;
 use core::num::NonZeroU32;
+use shaderloom::CompiledShader;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use shaderloom::CompiledShader;
 
 const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/gpu_surface_compositor.rs"));
@@ -126,6 +126,8 @@ pub(crate) struct EmbeddedGpuSurfaceRuntime {
     output_size: (u32, u32),
     output_texture: Option<wgpu::Texture>,
     output_view: Option<wgpu::TextureView>,
+    gesture: GestureState,
+    trackpad_pan_ending: bool,
     redraw_handle: RedrawHandle,
     start_time: Instant,
     last_frame_time: Instant,
@@ -179,6 +181,14 @@ pub(crate) struct PreparedGpuSurfaceLayer {
     pub(crate) view: wgpu::TextureView,
     pub(crate) uniform_bytes: [u8; 80],
     pub(crate) needs_redraw: bool,
+}
+
+pub(crate) fn take_gpu_surface_redraw_request(
+    frame_requested_redraw: bool,
+    redraw_handle: &RedrawHandle,
+) -> bool {
+    let external_redraw_requested = redraw_handle.take_dirty();
+    frame_requested_redraw || external_redraw_requested
 }
 
 pub struct HydrolysisRenderTarget<'a> {
@@ -421,6 +431,8 @@ impl EmbeddedGpuSurfaceRuntime {
             output_size: (1, 1),
             output_texture: None,
             output_view: None,
+            gesture: GestureState::new(),
+            trackpad_pan_ending: false,
             redraw_handle: RedrawHandle::new(),
             start_time: now,
             last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
@@ -429,6 +441,47 @@ impl EmbeddedGpuSurfaceRuntime {
 
     pub(crate) fn take_external_redraw_request(&self) -> bool {
         self.redraw_handle.take_dirty()
+    }
+
+    pub(crate) fn handle_trackpad_pan(&mut self, dx: f32, dy: f32, phase: TouchPhase) -> bool {
+        match phase {
+            TouchPhase::Started => {
+                self.gesture.pan_offset = waterui_core::layout::Point::new(dx, dy);
+                self.gesture.active = true;
+                self.trackpad_pan_ending = false;
+            }
+            TouchPhase::Moved => {
+                if !self.gesture.active {
+                    self.gesture.pan_offset = waterui_core::layout::Point::zero();
+                    self.gesture.active = true;
+                }
+                self.trackpad_pan_ending = false;
+                self.gesture.pan_offset.x += dx;
+                self.gesture.pan_offset.y += dy;
+            }
+            TouchPhase::Ended => {
+                if !self.gesture.active {
+                    self.gesture.pan_offset = waterui_core::layout::Point::zero();
+                    self.gesture.active = true;
+                }
+                self.gesture.pan_offset.x += dx;
+                self.gesture.pan_offset.y += dy;
+                self.trackpad_pan_ending = true;
+            }
+            TouchPhase::Cancelled => {
+                self.trackpad_pan_ending = self.gesture.active;
+            }
+        }
+        self.redraw_handle.request_redraw();
+        true
+    }
+
+    fn finish_trackpad_pan_frame(&mut self) {
+        if self.trackpad_pan_ending {
+            self.trackpad_pan_ending = false;
+            self.gesture.active = false;
+            self.redraw_handle.request_redraw();
+        }
     }
 
     pub(crate) fn prepare_layer(
@@ -477,7 +530,7 @@ impl EmbeddedGpuSurfaceRuntime {
             layer_width,
             layer_height,
             PointerState::default(),
-            GestureState::new(),
+            self.gesture,
             elapsed,
             delta,
         );
@@ -489,7 +542,11 @@ impl EmbeddedGpuSurfaceRuntime {
             .as_mut()
             .expect("hydrolysis embedded GpuSurface missing after setup")
             .render(&mut frame);
-        let needs_redraw = frame.was_redraw_requested() || self.redraw_handle.take_dirty();
+        let frame_requested_redraw = frame.was_redraw_requested();
+        drop(frame);
+        self.finish_trackpad_pan_frame();
+        let needs_redraw =
+            take_gpu_surface_redraw_request(frame_requested_redraw, &self.redraw_handle);
         let corners = [
             point_to_clip(top_left, target.width, target.height),
             point_to_clip(top_right, target.width, target.height),
@@ -520,7 +577,7 @@ impl EmbeddedGpuSurfaceRuntime {
             target.width,
             target.height,
             PointerState::default(),
-            GestureState::new(),
+            self.gesture,
             elapsed,
             delta,
         );
@@ -532,7 +589,10 @@ impl EmbeddedGpuSurfaceRuntime {
             .as_mut()
             .expect("hydrolysis embedded GpuSurface missing after setup")
             .render(&mut frame);
-        frame.was_redraw_requested() || self.redraw_handle.take_dirty()
+        let frame_requested_redraw = frame.was_redraw_requested();
+        drop(frame);
+        self.finish_trackpad_pan_frame();
+        take_gpu_surface_redraw_request(frame_requested_redraw, &self.redraw_handle)
     }
 
     async fn setup(
@@ -1086,6 +1146,12 @@ impl HydrolysisRenderer {
             };
             match layer {
                 RenderLayer::Vello(scene) => {
+                    tracing::trace!(
+                        layer_index,
+                        paths = scene.encoding().n_paths,
+                        segments = scene.encoding().n_path_segments,
+                        "compositing Hydrolysis Vello layer"
+                    );
                     let view = match encoded_vello[layer_index].take() {
                         Some(view) => view,
                         None => self.render_vello_layer_to_texture(
@@ -1118,6 +1184,12 @@ impl HydrolysisRenderer {
                 // `Send` onto every user renderer. Vello layers get their
                 // parallelism in `encode_vello_layers_parallel` instead.
                 RenderLayer::GpuSurface(layer) => {
+                    tracing::trace!(
+                        layer_index,
+                        bounds = ?layer.bounds,
+                        transform = ?layer.transform,
+                        "compositing Hydrolysis GPU surface layer"
+                    );
                     let embedded_target = EmbeddedLayerTarget {
                         width: target.width,
                         height: target.height,
@@ -1186,5 +1258,44 @@ impl HydrolysisRenderer {
         if needs_redraw {
             self.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct GestureProbe;
+
+    impl waterui_graphics::GpuView for GestureProbe {
+        async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
+
+        fn render(&mut self, _frame: &mut GpuFrame) {}
+    }
+
+    #[test]
+    fn trackpad_pan_reaches_one_active_frame_before_settling() {
+        let mut runtime =
+            EmbeddedGpuSurfaceRuntime::new(GpuSurface::new(GestureProbe), &Environment::new());
+
+        assert!(runtime.handle_trackpad_pan(3.0, -2.0, TouchPhase::Started));
+        assert!(runtime.handle_trackpad_pan(24.0, -12.0, TouchPhase::Moved));
+        assert_eq!(
+            runtime.gesture.pan_offset,
+            waterui_core::layout::Point::new(27.0, -14.0)
+        );
+        assert!(runtime.gesture.active);
+
+        assert!(runtime.handle_trackpad_pan(2.0, -1.0, TouchPhase::Ended));
+        assert_eq!(
+            runtime.gesture.pan_offset,
+            waterui_core::layout::Point::new(29.0, -15.0)
+        );
+        assert!(runtime.gesture.active);
+        assert!(runtime.trackpad_pan_ending);
+
+        runtime.finish_trackpad_pan_frame();
+        assert!(!runtime.gesture.active);
+        assert!(!runtime.trackpad_pan_ending);
     }
 }
