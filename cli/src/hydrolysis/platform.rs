@@ -467,13 +467,8 @@ async fn package_hydrolysis_macos(
         &platform.triple(),
     )
     .await?;
-    browser_runtime::stage(
-        runtime_plan,
-        platform,
-        profile_directory,
-        &app_path.join("Contents/MacOS"),
-    )
-    .await?;
+    browser_runtime::stage_macos_app(runtime_plan, profile_directory, &app_path.join("Contents"))
+        .await?;
     if runtime_plan.requires_cef() {
         let helper_binary = binary_path
             .parent()

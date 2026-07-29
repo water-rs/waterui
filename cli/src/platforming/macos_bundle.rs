@@ -139,7 +139,12 @@ pub async fn sign_macos_app(
         let mut framework_paths = Vec::new();
         while let Some(entry) = entries.next().await {
             let path = entry?.path();
-            if path.is_file() || path.extension().and_then(std::ffi::OsStr::to_str) == Some("app") {
+            if path.is_file()
+                || matches!(
+                    path.extension().and_then(std::ffi::OsStr::to_str),
+                    Some("app" | "framework")
+                )
+            {
                 framework_paths.push(path);
             }
         }
