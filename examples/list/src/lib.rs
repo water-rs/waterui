@@ -14,17 +14,10 @@ use waterui::reactive::collection::List as ReactiveList;
 
 const DATASET_SIZE: usize = 100_000;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Identifiable)]
 struct Record {
+    #[id]
     id: u64,
-}
-
-impl Identifiable for Record {
-    type Id = u64;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
 }
 
 #[derive(Clone)]
