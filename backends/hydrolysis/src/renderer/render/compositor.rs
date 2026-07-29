@@ -1,5 +1,9 @@
 use super::*;
 use core::num::NonZeroU32;
+#[cfg(hydrolysis_macos_system_webview)]
+use objc2::rc::Retained;
+#[cfg(hydrolysis_macos_system_webview)]
+use objc2_web_kit::WKWebView;
 use shaderloom::CompiledShader;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -144,6 +148,33 @@ struct EmbeddedGpuSurfaceSetup {
 #[derive(Clone)]
 pub(crate) enum LayerShape {
     Rect(vello::kurbo::Rect),
+    RoundedRect {
+        path: vello::kurbo::BezPath,
+        #[cfg_attr(
+            not(hydrolysis_macos_system_webview),
+            expect(
+                dead_code,
+                reason = "rounded geometry is consumed by macOS native-view clipping"
+            )
+        )]
+        rect: vello::kurbo::Rect,
+        #[cfg_attr(
+            not(hydrolysis_macos_system_webview),
+            expect(
+                dead_code,
+                reason = "rounded geometry is consumed by macOS native-view clipping"
+            )
+        )]
+        corner_width: f64,
+        #[cfg_attr(
+            not(hydrolysis_macos_system_webview),
+            expect(
+                dead_code,
+                reason = "rounded geometry is consumed by macOS native-view clipping"
+            )
+        )]
+        corner_height: f64,
+    },
     Path(vello::kurbo::BezPath),
 }
 
@@ -172,9 +203,32 @@ pub(crate) struct GpuSurfaceLayer {
     pub(crate) direct_to_target: bool,
 }
 
+#[cfg(hydrolysis_macos_system_webview)]
+#[derive(Clone)]
+pub(crate) struct NativeViewLayer {
+    pub(crate) view: Retained<WKWebView>,
+    pub(crate) transform: vello::kurbo::Affine,
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) active_layers: Vec<ActiveSceneLayer>,
+}
+
 pub(crate) enum RenderLayer {
     Vello(vello::Scene),
     GpuSurface(GpuSurfaceLayer),
+    #[cfg(hydrolysis_macos_system_webview)]
+    NativeView(NativeViewLayer),
+}
+
+#[cfg(hydrolysis_macos_system_webview)]
+pub(crate) struct HybridRenderSegment {
+    layers: Vec<RenderLayer>,
+}
+
+#[cfg(hydrolysis_macos_system_webview)]
+pub(crate) struct HybridComposition {
+    pub(crate) segments: Vec<HybridRenderSegment>,
+    pub(crate) native_views: Vec<NativeViewLayer>,
+    pub(crate) transient_scene: Option<vello::Scene>,
 }
 
 pub(crate) struct PreparedGpuSurfaceLayer {
@@ -239,7 +293,7 @@ impl ActiveSceneLayer {
                     rect,
                 );
             }
-            LayerShape::Path(path) => {
+            LayerShape::RoundedRect { path, .. } | LayerShape::Path(path) => {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -782,6 +836,102 @@ fn write_f32(bytes: &mut [u8], offset: usize, value: f32) {
 }
 
 impl HydrolysisRenderer {
+    #[cfg(hydrolysis_macos_system_webview)]
+    pub(crate) fn take_hybrid_composition(&mut self) -> Option<HybridComposition> {
+        self.flush_vello_scene_layer();
+        if !self
+            .compositor
+            .render_layers
+            .iter()
+            .any(|layer| matches!(layer, RenderLayer::NativeView(_)))
+        {
+            return None;
+        }
+
+        let mut segments = vec![HybridRenderSegment { layers: Vec::new() }];
+        let mut native_views = Vec::new();
+        for layer in core::mem::take(&mut self.compositor.render_layers) {
+            match layer {
+                RenderLayer::NativeView(layer) => {
+                    native_views.push(layer);
+                    segments.push(HybridRenderSegment { layers: Vec::new() });
+                }
+                layer => segments
+                    .last_mut()
+                    .expect("Hydrolysis hybrid composition must have a render segment")
+                    .layers
+                    .push(layer),
+            }
+        }
+        assert!(
+            segments.len() == native_views.len() + 1,
+            "Hydrolysis hybrid composition segment count must bracket every native view"
+        );
+        Some(HybridComposition {
+            segments,
+            native_views,
+            transient_scene: self.transient_scene.take(),
+        })
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    pub(crate) fn render_hybrid_segment_to_surface(
+        &mut self,
+        segment: &mut HybridRenderSegment,
+        transient_scene: Option<vello::Scene>,
+        target: HydrolysisRenderTarget<'_>,
+    ) {
+        assert!(
+            self.compositor.render_layers.is_empty(),
+            "Hydrolysis hybrid composition cannot render over retained layers"
+        );
+        assert!(
+            self.transient_scene.is_none(),
+            "Hydrolysis hybrid composition cannot replace a transient scene"
+        );
+        self.compositor.render_layers = core::mem::take(&mut segment.layers);
+        self.transient_scene = transient_scene;
+        self.render_scene_to_surface(target);
+        segment.layers = core::mem::take(&mut self.compositor.render_layers);
+        assert!(
+            self.transient_scene.is_none(),
+            "Hydrolysis hybrid segment left a transient scene unconsumed"
+        );
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    pub(crate) fn restore_hybrid_composition(&mut self, composition: HybridComposition) {
+        let HybridComposition {
+            segments,
+            native_views,
+            transient_scene,
+        } = composition;
+        assert!(
+            transient_scene.is_none(),
+            "Hydrolysis hybrid composition restored before rendering its transient scene"
+        );
+        assert!(
+            segments.len() == native_views.len() + 1,
+            "Hydrolysis hybrid composition segment count changed during rendering"
+        );
+        let segment_count = segments.len();
+        let mut native_views = native_views.into_iter();
+        let mut layers = Vec::new();
+        for (index, segment) in segments.into_iter().enumerate() {
+            layers.extend(segment.layers);
+            if index + 1 < segment_count
+                && let Some(native_view) = native_views.next()
+            {
+                layers.push(RenderLayer::NativeView(native_view));
+            }
+        }
+        assert!(
+            native_views.next().is_none(),
+            "Hydrolysis hybrid composition did not restore every native view"
+        );
+        self.compositor.render_layers = layers;
+    }
+
     fn embedded_gpu_surface_setup(
         &self,
         adapter: &wgpu::Adapter,
@@ -1121,6 +1271,10 @@ impl HydrolysisRenderer {
                 .filter_map(|(index, layer)| match layer {
                     RenderLayer::Vello(scene) => Some((index, scene)),
                     RenderLayer::GpuSurface(_) => None,
+                    #[cfg(hydrolysis_macos_system_webview)]
+                    RenderLayer::NativeView(_) => {
+                        panic!("Hydrolysis native views require hybrid window composition")
+                    }
                 })
                 .collect();
             if vello_scenes.len() > 1 {
@@ -1244,6 +1398,10 @@ impl HydrolysisRenderer {
                         },
                     );
                     is_first_layer = false;
+                }
+                #[cfg(hydrolysis_macos_system_webview)]
+                RenderLayer::NativeView(_) => {
+                    panic!("Hydrolysis native views require hybrid window composition")
                 }
             }
         }

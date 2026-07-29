@@ -531,11 +531,7 @@ async fn ensure_generated_run_backend(
 ) -> Result<Project> {
     match backend {
         TargetBackend::Gtk4 if project.is_playground() => {
-            let needs_reinit = project.gtk4_backend().is_none()
-                || !project
-                    .backend_path::<Gtk4Backend>()
-                    .join("Cargo.toml")
-                    .exists();
+            let needs_reinit = Gtk4Backend::requires_regeneration(&project).await?;
             ensure_generated_run_backend_impl::<Gtk4Backend>(
                 shell,
                 project_path,
@@ -547,7 +543,7 @@ async fn ensure_generated_run_backend(
             .await
         }
         TargetBackend::Hydrolysis if project.is_playground() => {
-            let needs_reinit = HydrolysisBackend::requires_regeneration(&project)?;
+            let needs_reinit = HydrolysisBackend::requires_regeneration(&project).await?;
             ensure_generated_run_backend_impl::<HydrolysisBackend>(
                 shell,
                 project_path,

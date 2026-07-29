@@ -16,8 +16,12 @@ use smol::{
 use target_lexicon::Triple;
 use tracing::info;
 
+#[cfg(target_os = "macos")]
+use crate::macos_bundle::package_cef_helper_app;
+#[cfg(target_os = "macos")]
+use crate::project::BrowserRuntimePlan;
 use crate::{
-    assets,
+    assets, browser_runtime,
     build::{
         BuildOptions, RustDynamicLibraries, RustLinkage, configure_cargo_linkage,
         shared_rust_runtime_fingerprint,
@@ -358,6 +362,15 @@ pub async fn package_hydrolysis(
     };
     let final_binary_path =
         built_hydrolysis_binary_path(project, platform, profile, linkage, &[]).await?;
+    let profile_directory = final_binary_path.parent().ok_or_else(|| {
+        eyre::eyre!(
+            "Hydrolysis binary path has no profile directory: {}",
+            final_binary_path.display()
+        )
+    })?;
+    let runtime_plan = project
+        .browser_runtime_plan(platform, crate::platform::TargetBackend::Hydrolysis)
+        .await?;
     let shared_libraries = if options.uses_shared_rust_runtime() {
         let lib_dir = final_binary_path.parent().ok_or_else(|| {
             eyre::eyre!(
@@ -371,14 +384,19 @@ pub async fn package_hydrolysis(
     };
 
     #[cfg(target_os = "macos")]
-    if platform == TargetPlatform::MacOS {
-        return package_hydrolysis_macos_app(
-            project,
-            &backend_path,
-            &final_binary_path,
-            shared_libraries.as_ref(),
-        )
-        .await;
+    {
+        if platform == TargetPlatform::MacOS {
+            return package_hydrolysis_macos(
+                project,
+                platform,
+                &backend_path,
+                &final_binary_path,
+                profile_directory,
+                runtime_plan,
+                shared_libraries.as_ref(),
+            )
+            .await;
+        }
     }
 
     let runtime_dir = final_binary_path.parent().ok_or_else(|| {
@@ -388,6 +406,7 @@ pub async fn package_hydrolysis(
         )
     })?;
     synchronize_shared_runtime(runtime_dir, shared_libraries.as_ref(), &platform.triple()).await?;
+    browser_runtime::stage(runtime_plan, platform, profile_directory, runtime_dir).await?;
 
     Ok(Artifact::new(
         project.bundle_identifier(),
@@ -396,10 +415,13 @@ pub async fn package_hydrolysis(
 }
 
 #[cfg(target_os = "macos")]
-async fn package_hydrolysis_macos_app(
+async fn package_hydrolysis_macos(
     project: &Project,
+    platform: TargetPlatform,
     backend_path: &Path,
     binary_path: &Path,
+    profile_directory: &Path,
+    runtime_plan: BrowserRuntimePlan,
     shared_libraries: Option<&RustDynamicLibraries>,
 ) -> eyre::Result<Artifact> {
     let app_name = project
@@ -407,7 +429,7 @@ async fn package_hydrolysis_macos_app(
         .package
         .name
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .filter(|character| character.is_alphanumeric() || *character == ' ')
         .collect::<String>();
     let app_name = if app_name.is_empty() {
         "WaterUIHydrolysis".to_string()
@@ -442,9 +464,29 @@ async fn package_hydrolysis_macos_app(
     synchronize_shared_runtime(
         &app_path.join("Contents/Frameworks"),
         shared_libraries,
-        &TargetPlatform::MacOS.triple(),
+        &platform.triple(),
     )
     .await?;
+    browser_runtime::stage(
+        runtime_plan,
+        platform,
+        profile_directory,
+        &app_path.join("Contents/MacOS"),
+    )
+    .await?;
+    if runtime_plan.requires_cef() {
+        let helper_binary = binary_path
+            .parent()
+            .expect("Hydrolysis application binary must have a profile directory")
+            .join("waterui-cef-helper");
+        let _helper_apps = package_cef_helper_app(
+            &app_path,
+            binary_path,
+            &helper_binary,
+            project.bundle_identifier(),
+        )
+        .await?;
+    }
     sign_app(
         &app_path,
         project.bundle_identifier(),

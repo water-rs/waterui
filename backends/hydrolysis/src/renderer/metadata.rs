@@ -14,7 +14,27 @@ impl HydrolysisRenderer {
         render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
         let clip_path = path_commands_to_path(value.commands(), ctx.bounds);
-        renderer.push_layer_path(1.0, ctx.transform, clip_path);
+        if let Some(regular_clip) = regular_clip_shape(value.commands(), ctx.bounds) {
+            match regular_clip {
+                RegularClipShape::Rect(rect) => {
+                    renderer.push_layer_rect(1.0, ctx.transform, rect);
+                }
+                RegularClipShape::RoundedRect {
+                    rect,
+                    corner_width,
+                    corner_height,
+                } => renderer.push_layer_rounded_rect(
+                    1.0,
+                    ctx.transform,
+                    clip_path,
+                    rect,
+                    corner_width,
+                    corner_height,
+                ),
+            }
+        } else {
+            renderer.push_layer_path(1.0, ctx.transform, clip_path);
+        }
         render_content(renderer);
         renderer.pop_layer();
     }
@@ -463,5 +483,231 @@ impl HydrolysisRenderer {
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         renderer.register_drop_destination_handles(bounds, handles, env);
         render_content(renderer);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RegularClipShape {
+    Rect(vello::kurbo::Rect),
+    RoundedRect {
+        rect: vello::kurbo::Rect,
+        corner_width: f64,
+        corner_height: f64,
+    },
+}
+
+fn regular_clip_shape(
+    commands: &[PathCommand],
+    bounds: vello::kurbo::Rect,
+) -> Option<RegularClipShape> {
+    regular_rect(commands, bounds).or_else(|| regular_rounded_rect(commands, bounds))
+}
+
+fn regular_rect(commands: &[PathCommand], bounds: vello::kurbo::Rect) -> Option<RegularClipShape> {
+    let [
+        PathCommand::MoveTo { x: x0, y: y0 },
+        PathCommand::LineTo { x: x1, y: top_y },
+        PathCommand::LineTo { x: right_x, y: y1 },
+        PathCommand::LineTo {
+            x: left_x,
+            y: bottom_y,
+        },
+        PathCommand::Close,
+    ] = commands
+    else {
+        return None;
+    };
+    if !approx_eq(*y0, *top_y)
+        || !approx_eq(*x1, *right_x)
+        || !approx_eq(*y1, *bottom_y)
+        || !approx_eq(*x0, *left_x)
+        || !valid_rect(*x0, *y0, *x1, *y1)
+    {
+        return None;
+    }
+    Some(RegularClipShape::Rect(resolve_normalized_rect(
+        *x0, *y0, *x1, *y1, bounds,
+    )))
+}
+
+#[allow(clippy::too_many_lines)]
+fn regular_rounded_rect(
+    commands: &[PathCommand],
+    bounds: vello::kurbo::Rect,
+) -> Option<RegularClipShape> {
+    let [
+        PathCommand::MoveTo { x: start_x, y: y0 },
+        PathCommand::LineTo {
+            x: top_end_x,
+            y: top_y,
+        },
+        PathCommand::Arc {
+            cx: top_right_cx,
+            cy: top_right_cy,
+            rx,
+            ry,
+            start: top_right_start,
+            sweep: top_right_sweep,
+        },
+        PathCommand::LineTo {
+            x: x1,
+            y: right_end_y,
+        },
+        PathCommand::Arc {
+            cx: bottom_right_cx,
+            cy: bottom_right_cy,
+            rx: bottom_right_rx,
+            ry: bottom_right_ry,
+            start: bottom_right_start,
+            sweep: bottom_right_sweep,
+        },
+        PathCommand::LineTo {
+            x: bottom_end_x,
+            y: y1,
+        },
+        PathCommand::Arc {
+            cx: bottom_left_cx,
+            cy: bottom_left_cy,
+            rx: bottom_left_rx,
+            ry: bottom_left_ry,
+            start: bottom_left_start,
+            sweep: bottom_left_sweep,
+        },
+        PathCommand::LineTo {
+            x: x0,
+            y: left_end_y,
+        },
+        PathCommand::Arc {
+            cx: top_left_cx,
+            cy: top_left_cy,
+            rx: top_left_rx,
+            ry: top_left_ry,
+            start: top_left_start,
+            sweep: top_left_sweep,
+        },
+        PathCommand::Close,
+    ] = commands
+    else {
+        return None;
+    };
+
+    let quarter_turn = core::f32::consts::FRAC_PI_2;
+    let uniform_radii = [*bottom_right_rx, *bottom_left_rx, *top_left_rx]
+        .into_iter()
+        .all(|radius| approx_eq(radius, *rx))
+        && [*bottom_right_ry, *bottom_left_ry, *top_left_ry]
+            .into_iter()
+            .all(|radius| approx_eq(radius, *ry));
+    let geometry_matches = approx_eq(*top_y, *y0)
+        && approx_eq(*start_x, *x0 + *rx)
+        && approx_eq(*top_end_x, *x1 - *rx)
+        && approx_eq(*top_right_cx, *x1 - *rx)
+        && approx_eq(*top_right_cy, *y0 + *ry)
+        && approx_eq(*right_end_y, *y1 - *ry)
+        && approx_eq(*bottom_right_cx, *x1 - *rx)
+        && approx_eq(*bottom_right_cy, *y1 - *ry)
+        && approx_eq(*bottom_end_x, *x0 + *rx)
+        && approx_eq(*bottom_left_cx, *x0 + *rx)
+        && approx_eq(*bottom_left_cy, *y1 - *ry)
+        && approx_eq(*left_end_y, *y0 + *ry)
+        && approx_eq(*top_left_cx, *x0 + *rx)
+        && approx_eq(*top_left_cy, *y0 + *ry);
+    let angles_match = approx_eq(*top_right_start, -quarter_turn)
+        && approx_eq(*top_right_sweep, quarter_turn)
+        && approx_eq(*bottom_right_start, 0.0)
+        && approx_eq(*bottom_right_sweep, quarter_turn)
+        && approx_eq(*bottom_left_start, quarter_turn)
+        && approx_eq(*bottom_left_sweep, quarter_turn)
+        && approx_eq(*top_left_start, core::f32::consts::PI)
+        && approx_eq(*top_left_sweep, quarter_turn);
+    if !uniform_radii
+        || !geometry_matches
+        || !angles_match
+        || !valid_rect(*x0, *y0, *x1, *y1)
+        || !rx.is_finite()
+        || !ry.is_finite()
+        || *rx < 0.0
+        || *ry < 0.0
+    {
+        return None;
+    }
+
+    Some(RegularClipShape::RoundedRect {
+        rect: resolve_normalized_rect(*x0, *y0, *x1, *y1, bounds),
+        corner_width: f64::from(*rx) * bounds.width(),
+        corner_height: f64::from(*ry) * bounds.height(),
+    })
+}
+
+fn resolve_normalized_rect(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    bounds: vello::kurbo::Rect,
+) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        f64::from(x0) * bounds.width(),
+        f64::from(y0) * bounds.height(),
+        f64::from(x1) * bounds.width(),
+        f64::from(y1) * bounds.height(),
+    )
+}
+
+fn valid_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+    [x0, y0, x1, y1].into_iter().all(f32::is_finite) && x0 <= x1 && y0 <= y1
+}
+
+fn approx_eq(left: f32, right: f32) -> bool {
+    (left - right).abs() <= f32::EPSILON * 64.0
+}
+
+#[cfg(test)]
+mod regular_clip_tests {
+    use waterui_shape::{Path, Rectangle, RoundedRectangle, Shape as _, UnevenRoundedRectangle};
+
+    use super::*;
+
+    const BOUNDS: vello::kurbo::Rect = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 100.0);
+
+    #[test]
+    fn recognizes_axis_aligned_rectangle() {
+        assert_eq!(
+            regular_clip_shape(&Rectangle.path(), BOUNDS),
+            Some(RegularClipShape::Rect(BOUNDS))
+        );
+    }
+
+    #[test]
+    fn recognizes_uniform_rounded_rectangle() {
+        let Some(RegularClipShape::RoundedRect {
+            rect,
+            corner_width,
+            corner_height,
+        }) = regular_clip_shape(&RoundedRectangle::new(0.1).path(), BOUNDS)
+        else {
+            panic!("uniform rounded rectangle must use the regular clip route");
+        };
+        assert_eq!(rect, BOUNDS);
+        assert!((corner_width - 20.0).abs() < 1.0e-5);
+        assert!((corner_height - 10.0).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn leaves_uneven_and_custom_paths_on_the_path_mask_route() {
+        assert_eq!(
+            regular_clip_shape(
+                &UnevenRoundedRectangle::new(0.1, 0.2, 0.3, 0.4).path(),
+                BOUNDS,
+            ),
+            None
+        );
+        let triangle = Path::new()
+            .move_to(0.5, 0.0)
+            .line_to(1.0, 1.0)
+            .line_to(0.0, 1.0)
+            .close();
+        let triangle_commands: Vec<_> = triangle.path().collect();
+        assert_eq!(regular_clip_shape(&triangle_commands, BOUNDS), None);
     }
 }

@@ -1,0 +1,75 @@
+[package]
+name = "waterui-browser-cef"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+build = "build.rs"
+readme = "../../../../README.md"
+repository.workspace = true
+description = "Shared CEF runtime for WaterUI WebView and Chromium components"
+keywords = ["cef", "chromium", "webview", "browser", "waterui"]
+categories = ["gui", "web-programming"]
+
+[features]
+default = ["cef-runtime"]
+cef-runtime = ["cef/sandbox", "cef-dll-sys/sandbox"]
+compile-only = ["cef/dox", "cef-dll-sys/dox"]
+chromium = ["dep:async-channel", "dep:base64", "dep:waterui-chromium"]
+webview = ["dep:cookie", "dep:waterui-str", "dep:waterui-webview"]
+
+[dependencies]
+async-channel = { version = "2.5", optional = true }
+base64 = { version = "0.22", optional = true }
+cef = { version = "=150.2.1", default-features = false }
+cef-dll-sys = { version = "=150.2.1", default-features = false }
+cookie = { version = "0.18.1", optional = true }
+dirs.workspace = true
+futures.workspace = true
+num-traits = "0.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+thiserror.workspace = true
+waterui-chromium = { workspace = true, optional = true }
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-str = { workspace = true, optional = true }
+waterui-url.workspace = true
+waterui-webview = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libloading = "0.9"
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-io-surface = "0.3"
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
+    "MTLAllocation",
+    "MTLDevice",
+    "MTLPixelFormat",
+    "MTLResource",
+    "MTLTexture",
+    "objc2-io-surface",
+] }
+wgpu.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+waterui-browser-wpe.workspace = true
+wgpu.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu.workspace = true
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D12",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+cc = "1.2"
+
+[package.metadata.cargo-machete]
+ignored = ["cc", "cef-dll-sys"]
+
+[lints]
+workspace = true

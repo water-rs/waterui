@@ -1,0 +1,230 @@
+use std::ffi::c_void;
+use std::ptr::NonNull;
+use std::rc::Rc;
+
+use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
+use num_traits::ToPrimitive as _;
+use objc2_core_foundation::CFRetained;
+use objc2_io_surface::IOSurfaceRef;
+use objc2_metal::{
+    MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureType,
+    MTLTextureUsage,
+};
+use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
+
+use super::CefViewport;
+use super::presenter::{OwnedFrameMailbox, TexturePresenter, copy_source_texture};
+use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
+
+struct RetainedIoSurface {
+    surface: CFRetained<IOSurfaceRef>,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+}
+
+impl RetainedIoSurface {
+    unsafe fn retain(frame: &AcceleratedPaintInfo) -> Self {
+        let size = &frame.extra.coded_size;
+        let width = u32::try_from(size.width).expect("CEF IOSurface width must be positive");
+        let height = u32::try_from(size.height).expect("CEF IOSurface height must be positive");
+        let pointer = NonNull::new(frame.shared_texture_io_surface.cast::<IOSurfaceRef>())
+            .expect("CEF accelerated paint returned a null IOSurface");
+        let surface = unsafe { CFRetained::retain(pointer) };
+        let format = if frame.format == ColorType::BGRA_8888 {
+            wgpu::TextureFormat::Bgra8Unorm
+        } else if frame.format == ColorType::RGBA_8888 {
+            wgpu::TextureFormat::Rgba8Unorm
+        } else {
+            panic!("CEF returned unsupported macOS accelerated color format")
+        };
+        Self {
+            surface,
+            width,
+            height,
+            format,
+        }
+    }
+
+    fn pointer(&self) -> *mut c_void {
+        let surface: &IOSurfaceRef = &self.surface;
+        std::ptr::from_ref(surface).cast_mut().cast()
+    }
+}
+
+struct MacFrameSink {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    mailbox: Rc<OwnedFrameMailbox>,
+}
+
+impl AcceleratedFrameSink for MacFrameSink {
+    fn import(
+        &self,
+        element: PaintElementType,
+        _dirty_rects: &[Rect],
+        frame: &AcceleratedPaintInfo,
+    ) {
+        let surface = unsafe { RetainedIoSurface::retain(frame) };
+        let source = import_iosurface(
+            &self.device,
+            surface.pointer(),
+            surface.width,
+            surface.height,
+            surface.format,
+        );
+        let owned = copy_source_texture(
+            &self.device,
+            &self.queue,
+            &source,
+            source.size(),
+            surface.format,
+        );
+        self.mailbox.publish(element, owned);
+    }
+
+    fn set_popup_rect(&self, rect: Option<CefPopupRect>) {
+        self.mailbox.set_popup_rect(rect);
+    }
+}
+
+pub(super) struct CefGpuView {
+    page: CefPageHandle,
+    viewport: CefViewport,
+    mailbox: Rc<OwnedFrameMailbox>,
+    presenter: Option<TexturePresenter>,
+}
+
+impl CefGpuView {
+    pub(super) fn new(page: CefPageHandle, viewport: CefViewport) -> Self {
+        Self {
+            page,
+            viewport,
+            mailbox: Rc::new(OwnedFrameMailbox::new()),
+            presenter: None,
+        }
+    }
+}
+
+impl GpuView for CefGpuView {
+    #[expect(
+        clippy::future_not_send,
+        reason = "CEF, Metal, and WaterUI view state are confined to the UI thread"
+    )]
+    async fn setup(&mut self, context: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+        assert_eq!(
+            context.adapter.get_info().backend,
+            wgpu::Backend::Metal,
+            "CEF IOSurface composition requires WaterUI's Metal backend"
+        );
+        let redraw = context.redraw_handle.clone();
+        self.mailbox
+            .set_waker(Rc::new(move || redraw.request_redraw()));
+        self.page.set_frame_sink(MacFrameSink {
+            device: context.device.clone(),
+            queue: context.queue.clone(),
+            mailbox: Rc::clone(&self.mailbox),
+        });
+        self.presenter = Some(TexturePresenter::new(context));
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        self.page.pump();
+        let scale = self.viewport.scale();
+        let logical_width = (f64::from(frame.width) / scale).round().max(1.0);
+        let logical_height = (f64::from(frame.height) / scale).round().max(1.0);
+        self.page.set_viewport(
+            logical_width
+                .to_u32()
+                .expect("CEF logical width exceeds u32"),
+            logical_height
+                .to_u32()
+                .expect("CEF logical height exceeds u32"),
+            scale.to_f32().expect("CEF scale exceeds f32"),
+        );
+        let presenter = self
+            .presenter
+            .as_mut()
+            .expect("CEF GPU view rendered before setup");
+        if let Some(texture) = self.mailbox.take_view() {
+            presenter.set_source(texture);
+        }
+        if let Some(texture) = self.mailbox.take_popup() {
+            presenter.set_popup_source(texture);
+        }
+        presenter.set_popup_rect(self.mailbox.popup_rect());
+        presenter.render(frame, scale);
+    }
+}
+
+fn import_iosurface(
+    device: &wgpu::Device,
+    handle: *mut c_void,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    let descriptor = wgpu::TextureDescriptor {
+        label: Some("waterui_cef_iosurface"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    };
+    let metal_format = match format {
+        wgpu::TextureFormat::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
+        _ => panic!("CEF IOSurface has unsupported wgpu format {format:?}"),
+    };
+    let hal_texture = objc2::rc::autoreleasepool(|_| {
+        let hal_device = unsafe {
+            device
+                .as_hal::<wgpu::hal::api::Metal>()
+                .expect("CEF IOSurface requires a Metal device")
+        };
+        let raw_device = hal_device.raw_device();
+        let metal_descriptor = MTLTextureDescriptor::new();
+        unsafe {
+            metal_descriptor.setWidth(width.to_usize().expect("CEF IOSurface width exceeds usize"));
+            metal_descriptor.setHeight(
+                height
+                    .to_usize()
+                    .expect("CEF IOSurface height exceeds usize"),
+            );
+        }
+        metal_descriptor.setTextureType(MTLTextureType::Type2D);
+        metal_descriptor.setPixelFormat(metal_format);
+        metal_descriptor.setUsage(MTLTextureUsage::ShaderRead);
+        metal_descriptor.setStorageMode(if raw_device.hasUnifiedMemory() {
+            MTLStorageMode::Shared
+        } else {
+            MTLStorageMode::Managed
+        });
+        let surface = unsafe { &*handle.cast::<IOSurfaceRef>() };
+        let texture = raw_device
+            .newTextureWithDescriptor_iosurface_plane(&metal_descriptor, surface, 0)
+            .expect("Metal rejected CEF IOSurface import");
+        unsafe {
+            <wgpu::hal::api::Metal as wgpu::hal::Api>::Device::texture_from_raw(
+                texture,
+                descriptor.format,
+                MTLTextureType::Type2D,
+                1,
+                1,
+                wgpu::hal::CopyExtent {
+                    width,
+                    height,
+                    depth: 1,
+                },
+            )
+        }
+    });
+    unsafe { device.create_texture_from_hal::<wgpu::hal::api::Metal>(hal_texture, &descriptor) }
+}

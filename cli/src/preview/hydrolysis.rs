@@ -240,7 +240,7 @@ async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project>
         bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
     }
 
-    if HydrolysisBackend::requires_regeneration(&project)? {
+    if HydrolysisBackend::requires_regeneration(&project).await? {
         reinit_backend::<HydrolysisBackend>(&project).await?;
         project = Project::open(project_path).await?;
     }

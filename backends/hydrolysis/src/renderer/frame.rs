@@ -265,6 +265,35 @@ impl HydrolysisRenderer {
         });
     }
 
+    pub(super) fn push_layer_rounded_rect(
+        &mut self,
+        alpha: f32,
+        transform: vello::kurbo::Affine,
+        path: vello::kurbo::BezPath,
+        rect: vello::kurbo::Rect,
+        corner_width: f64,
+        corner_height: f64,
+    ) {
+        self.record_clip_layer_push();
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &path,
+        );
+        self.compositor.active_scene_layers.push(ActiveSceneLayer {
+            alpha,
+            transform,
+            shape: LayerShape::RoundedRect {
+                path,
+                rect,
+                corner_width,
+                corner_height,
+            },
+        });
+    }
+
     pub(crate) fn pop_layer(&mut self) {
         self.scene.pop_layer();
         self.compositor
@@ -310,6 +339,24 @@ impl HydrolysisRenderer {
         for layer in &self.compositor.active_scene_layers {
             layer.push_to_scene(&mut self.scene);
         }
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    pub(crate) fn record_native_view_layer(
+        &mut self,
+        view: objc2::rc::Retained<objc2_web_kit::WKWebView>,
+        transform: vello::kurbo::Affine,
+        bounds: vello::kurbo::Rect,
+    ) {
+        self.flush_vello_scene_layer();
+        self.compositor
+            .render_layers
+            .push(RenderLayer::NativeView(NativeViewLayer {
+                view,
+                transform,
+                bounds,
+                active_layers: self.compositor.active_scene_layers.clone(),
+            }));
     }
 
     /// The shared frame-trigger handle for closures that outlive a borrow of

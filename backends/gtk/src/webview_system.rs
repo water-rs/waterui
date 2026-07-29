@@ -8,6 +8,8 @@
     allow(dead_code, unused_imports)
 )]
 
+//! System WebKitGTK implementation selected by `webview-system`.
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

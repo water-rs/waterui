@@ -1,0 +1,56 @@
+[package]
+name = "waterui-browser-wpe"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "Bundled WPE WebKit runtime for WaterUI on Linux"
+keywords = ["wpe", "webkit", "webview", "browser", "waterui"]
+categories = ["gui", "web-programming"]
+
+[dependencies]
+cookie = { version = "0.18.1", optional = true }
+futures = { workspace = true, optional = true }
+libc = "0.2"
+libloading = "0.9"
+nami = { workspace = true, optional = true }
+num-traits = "0.2"
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+waterui-core.workspace = true
+waterui-str = { workspace = true, optional = true }
+waterui-url = { workspace = true, optional = true }
+waterui-webview = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = "0.38"
+glow = "0.17"
+waterui-graphics = { workspace = true, features = ["gpu"] }
+wgpu.workspace = true
+
+[dev-dependencies]
+base64 = "0.22"
+pollster.workspace = true
+
+[[example]]
+name = "runtime_smoke"
+required-features = ["runtime-smoke"]
+
+[features]
+default = ["webview"]
+runtime-smoke = ["webview"]
+webview = [
+    "dep:cookie",
+    "dep:futures",
+    "dep:nami",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:waterui-str",
+    "dep:waterui-url",
+    "dep:waterui-webview",
+]
+
+[lints]
+workspace = true

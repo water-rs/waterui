@@ -247,6 +247,7 @@ impl A11yDriver for HydrolysisA11yDriver {
             .expect("waterui-testing key_press requested before runtime initialization");
         runtime.push_input_event(InputEvent::Key {
             key,
+            native: None,
             state: KeyState::Pressed,
             modifiers,
         });

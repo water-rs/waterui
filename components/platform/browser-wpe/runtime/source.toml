@@ -1,0 +1,6 @@
+version = "2.52.5"
+source_url = "https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz"
+source_sha256 = "bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b"
+released = "2026-07-13T00:00:00Z"
+maximum_glibc = "2.35"
+smoke_timeout_seconds = "60"

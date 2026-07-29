@@ -130,6 +130,9 @@ pub(crate) type TrackpadPanAction = Rc<RefCell<dyn FnMut(f32, f32, TouchPhase) -
 
 #[derive(Default)]
 pub(crate) struct HitTestState {
+    pub(crate) browser_targets: Vec<BrowserInputTarget>,
+    pub(crate) active_browser_target: Option<BrowserInputTarget>,
+    pub(crate) focused_browser: Option<Rc<dyn BrowserInputHandler>>,
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) active_pointer_target: Option<PointerTarget>,
     pub(crate) active_pointer: Option<(u64, PointerKind)>,
@@ -157,6 +160,7 @@ pub(crate) struct HitTestState {
 
 impl HitTestState {
     pub(crate) fn reset_scene(&mut self) {
+        self.browser_targets.clear();
         self.pointer_targets.clear();
         self.cursor_targets.clear();
         self.hover_targets.clear();
@@ -522,6 +526,34 @@ impl HydrolysisRenderer {
             let target = &self.text_editing.text_input_targets[index];
             Self::target_hit_priority(target.depth, target.order, index)
         });
+        if let Some((target, local_position)) =
+            self.browser_target_wins_at(point, top_pointer_priority, focused_priority)
+        {
+            if self
+                .hit_test
+                .focused_browser
+                .as_ref()
+                .is_none_or(|focused| !Rc::ptr_eq(focused, &target.handler))
+            {
+                if let Some(focused) = self
+                    .hit_test
+                    .focused_browser
+                    .replace(target.handler.clone())
+                {
+                    focused.set_focus(false);
+                }
+                target.handler.set_focus(true);
+                self.set_focused_text_input(None);
+                self.set_keyboard_focus(None, false);
+            }
+            target.handler.pointer_move(local_position);
+            target.handler.pointer_button(true, button, local_position);
+            self.hit_test.active_browser_target = Some(target);
+            return true;
+        }
+        if let Some(focused) = self.hit_test.focused_browser.take() {
+            focused.set_focus(false);
+        }
         let focus_wins = matches!(
             (focused_priority, top_pointer_priority),
             (Some(focus_priority), Some(pointer_priority)) if focus_priority > pointer_priority
@@ -709,13 +741,26 @@ impl HydrolysisRenderer {
         pointer_kind: PointerKind,
         x: f32,
         y: f32,
-        _button: PointerButton,
+        button: PointerButton,
         env: &Environment,
     ) -> bool {
         if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
             return false;
         }
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        if let Some(target) = self.hit_test.active_browser_target.take() {
+            let position = target.local_position(point).unwrap_or_else(|| {
+                let local = target.inverse_transform * point;
+                vello::kurbo::Point::new(
+                    local.x - target.local_bounds.x0,
+                    local.y - target.local_bounds.y0,
+                )
+            });
+            target.handler.pointer_move(position);
+            target.handler.pointer_button(false, button, position);
+            self.hit_test.active_pointer = None;
+            return true;
+        }
         let at = self.frame_instant();
         let mut changed = self.handle_pointer_move_inner(x, y, env, pointer_kind);
         if let Some(pending) = self.hit_test.pending_pointer_press.take() {
@@ -808,6 +853,9 @@ impl HydrolysisRenderer {
         pointer_kind: PointerKind,
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        if self.handle_browser_pointer_move(point) {
+            return true;
+        }
         let at = self.frame_instant();
         let mut refresh_requested = false;
         let mut drag_changed = false;
@@ -1132,6 +1180,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_pointer_target = None;
+        self.hit_test.active_browser_target = None;
         self.hit_test.active_pointer = None;
         self.hit_test.pending_pointer_press = None;
         self.hit_test.active_press_bounds = None;
@@ -1171,6 +1220,9 @@ impl HydrolysisRenderer {
 
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        if self.handle_browser_scroll(point, dx, dy, is_line_delta) {
+            return true;
+        }
         for target in self.hit_test.scroll_targets.iter_mut().rev() {
             if target.bounds.contains(point) {
                 let changed = (target.action.borrow_mut())(dx, dy, is_line_delta);
