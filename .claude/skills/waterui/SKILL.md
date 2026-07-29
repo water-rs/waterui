@@ -291,12 +291,19 @@ diffs by `Identifiable` id, so adding/removing one item updates precisely instea
 rebuilding the whole subtree.
 
 ```rust
-#[derive(Clone)]
-struct Row { id: u64, title: Str }
-impl Identifiable for Row { type Id = u64; fn id(&self) -> u64 { self.id } }
+#[derive(Clone, Identifiable)]
+struct Row {
+    #[id]
+    id: u64,
+    title: Str,
+}
 
-// Scrolling list
-List::for_each(&rows, |row| ListItem::new(text(row.title)))
+// A fixed collection stays on the stack.
+let rows = [
+    Row { id: 1, title: "First".into() },
+    Row { id: 2, title: "Second".into() },
+];
+List::for_each(rows, |row| ListItem::new(text(row.title)))
 
 // Reactive collection backed by nami's List<T> (push/remove updates the UI)
 let rows = nami::collection::List::<Row>::new();
@@ -304,8 +311,11 @@ rows.push(Row { id: 1, title: "Hello".into() });
 ForEach::new(rows.clone(), |row| text(row.title))
 ```
 
-A fixed, known set is just a tuple stack (`vstack((a, b, c))`) or `.collect()` from a
-slice — no collection type needed.
+A fixed, known set is an array (`[a, b, c]`) or a tuple stack
+(`vstack((a, b, c))`). Pass an array directly when an API accepts it through
+`Collection`, `IntoIterator`, or another generic collection trait. Do not allocate
+with `vec!` unless the collection has a runtime-dependent length, needs mutation,
+or the API specifically requires a `Vec`.
 
 ## Snackbars (transient bottom/top messages)
 
