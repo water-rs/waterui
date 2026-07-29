@@ -115,9 +115,58 @@ jobs:
             target/distrib/*${{ matrix.target }}*.zip*
             target/distrib/*${{ matrix.target }}*-dist-manifest.json
 
+  browser-runtime-wpe:
+    name: Build WPE runtime ${{ matrix.architecture }}
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-22.04
+          - architecture: aarch64
+            runner: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: browser-runtime-${{ matrix.architecture }}
+
+      - name: Build self-contained WPE runtime
+        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
+
+      - name: Upload WPE runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-runtime-wpe-${{ matrix.architecture }}
+          if-no-files-found: error
+          path: |
+            runtime-artifacts/*.zip
+            runtime-artifacts/*.artifact.json
+
+      - name: Upload WPE validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-validation-wpe-${{ matrix.architecture }}
+          if-no-files-found: error
+          path: |
+            runtime-artifacts/wpe-smoke-*.json
+            runtime-artifacts/wpe-smoke-*.png
+
   release:
     name: Upload Release Assets
-    needs: [check, build]
+    needs: [check, build, browser-runtime-wpe]
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -131,11 +180,31 @@ jobs:
         with:
           tool: cargo-dist@${{ env.DIST_VERSION }}
 
-      - name: Download all artifacts
+      - name: Download CLI artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: artifacts-*
           path: target/distrib
           merge-multiple: true
+
+      - name: Download browser runtime artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: browser-runtime-wpe-*
+          path: target/distrib
+          merge-multiple: true
+
+      - name: Generate browser runtime manifest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          python3 components/platform/browser-wpe/runtime/generate-manifest.py \
+            --base-url "$BASE_URL" \
+            --output target/distrib/browser-runtime-manifest.json \
+            target/distrib/*.artifact.json
+          find target/distrib -maxdepth 1 -name '*.artifact.json' -delete
 
       - name: Build global release artifacts
         run: dist build --tag "${{ needs.check.outputs.tag }}" --artifacts=global
@@ -149,6 +218,7 @@ jobs:
             target/distrib/*.zip
             target/distrib/*.sha256
             target/distrib/sha256.sum
+            target/distrib/browser-runtime-manifest.json
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@v4

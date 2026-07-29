@@ -23,6 +23,16 @@
 
 #[cfg(target_os = "linux")]
 pub mod app;
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "webview-cef", feature = "chromium")
+))]
+mod browser_cef;
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "webview-wpe", feature = "webview-cef", feature = "chromium")
+))]
+mod browser_input;
 #[cfg(target_os = "linux")]
 pub mod component;
 #[cfg(target_os = "linux")]
@@ -33,7 +43,33 @@ pub mod layout;
 pub mod renderer;
 #[cfg(target_os = "linux")]
 pub mod util;
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    target_os = "linux",
+    feature = "webview-system",
+    any(feature = "webview-wpe", feature = "webview-cef")
+))]
+compile_error!("GTK WebView selects exactly one of `system`, `wpe`, or `cef`");
+#[cfg(all(target_os = "linux", feature = "webview-wpe", feature = "webview-cef"))]
+compile_error!("GTK WebView selects exactly one of `system`, `wpe`, or `cef`");
+
+#[cfg(all(target_os = "linux", feature = "webview-system"))]
+#[path = "webview_system.rs"]
+pub mod webview;
+#[cfg(all(
+    target_os = "linux",
+    feature = "webview-wpe",
+    not(feature = "webview-system"),
+    not(feature = "webview-cef")
+))]
+#[path = "webview_wpe.rs"]
+pub mod webview;
+#[cfg(all(
+    target_os = "linux",
+    feature = "webview-cef",
+    not(feature = "webview-system"),
+    not(feature = "webview-wpe")
+))]
+#[path = "webview_cef.rs"]
 pub mod webview;
 #[cfg(target_os = "linux")]
 pub mod window;

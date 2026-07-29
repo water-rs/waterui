@@ -206,12 +206,7 @@ async fn ensure_generated_backend_ready(
     backend: TargetBackend,
 ) -> Result<Project> {
     match backend {
-        TargetBackend::Gtk4
-            if !project
-                .backend_path::<Gtk4Backend>()
-                .join("Cargo.toml")
-                .exists() =>
-        {
+        TargetBackend::Gtk4 if Gtk4Backend::requires_regeneration(&project).await? => {
             reinitialize_generated_backend::<Gtk4Backend>(
                 shell,
                 project_path,
@@ -221,12 +216,7 @@ async fn ensure_generated_backend_ready(
             )
             .await
         }
-        TargetBackend::Hydrolysis
-            if !project
-                .backend_path::<HydrolysisBackend>()
-                .join("Cargo.toml")
-                .exists() =>
-        {
+        TargetBackend::Hydrolysis if HydrolysisBackend::requires_regeneration(&project).await? => {
             reinitialize_generated_backend::<HydrolysisBackend>(
                 shell,
                 project_path,

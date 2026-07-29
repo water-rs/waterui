@@ -610,6 +610,63 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
     rebuilt
 }
 
+struct SurfaceRenderResult {
+    acquire: Duration,
+    render: Duration,
+    present: Duration,
+    snapshot: Option<HeadlessSnapshot>,
+}
+
+fn render_to_surface(
+    renderer: &mut HydrolysisRenderer,
+    surface: &mut dyn crate::platform::SurfaceProvider,
+    clear_color: vello::peniko::Color,
+    capture_snapshot: bool,
+    render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::HydrolysisRenderTarget<'_>),
+) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    let (width, height) = surface.size();
+    let format = surface.format();
+    let acquire_started_at = Instant::now();
+    let frame = acquire_surface_frame(surface)?;
+    let acquire = acquire_started_at.elapsed();
+    let render_started_at = Instant::now();
+    render(
+        renderer,
+        crate::renderer::HydrolysisRenderTarget {
+            adapter: surface.adapter(),
+            device: surface.device(),
+            queue: surface.queue(),
+            texture: Some(frame.texture()),
+            view: frame.view(),
+            format,
+            width,
+            height,
+            base_color: clear_color,
+        },
+    );
+    let snapshot = capture_snapshot.then(|| HeadlessSnapshot {
+        width,
+        height,
+        rgba8: readback_texture_rgba8(
+            surface.device(),
+            surface.queue(),
+            frame.texture(),
+            width,
+            height,
+        ),
+    });
+    let render = render_started_at.elapsed();
+    let present_started_at = Instant::now();
+    surface.present(frame);
+    let present = present_started_at.elapsed();
+    Ok(SurfaceRenderResult {
+        acquire,
+        render,
+        present,
+        snapshot,
+    })
+}
+
 pub(super) fn render_window_with_capture<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -634,12 +691,108 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         let clear_color = window_clear_color(&runtime.window, env);
 
         let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());
-        let surface = runtime.platform.surface();
-        let (width, height) = surface.size();
-        let format = surface.format();
-        let acquire_started_at = Instant::now();
-        let frame = match acquire_surface_frame(surface) {
-            Ok(frame) => frame,
+        #[cfg(hydrolysis_macos_system_webview)]
+        let (width, height) = runtime.platform.surface().size();
+        if !rebuilt {
+            runtime.renderer.begin_redraw_frame();
+            let surface = runtime.platform.surface();
+            runtime
+                .renderer
+                .refresh_active_applied_filters(surface.device(), surface.queue());
+        }
+        runtime
+            .renderer
+            .prepare_transient_text_input_overlay(env, root_transform);
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        let mut hybrid_composition = runtime.renderer.take_hybrid_composition();
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        let render_result = if let Some(composition) = hybrid_composition.as_mut() {
+            assert!(
+                !capture_snapshot,
+                "Hydrolysis cannot capture native WKWebView pixels through GPU readback"
+            );
+            let platform = (&mut runtime.platform as &mut dyn std::any::Any)
+                .downcast_mut::<crate::platform::WinitWindow>()
+                .expect("Hydrolysis native WebView composition requires a winit window");
+            platform.sync_hybrid_composition(&composition.native_views, width, height);
+
+            let segment_count = composition.segments.len();
+            let mut totals = SurfaceRenderResult {
+                acquire: Duration::ZERO,
+                render: Duration::ZERO,
+                present: Duration::ZERO,
+                snapshot: None,
+            };
+            let mut result = Ok(());
+            for (index, segment) in composition.segments.iter_mut().enumerate() {
+                let transient_scene = (index + 1 == segment_count)
+                    .then(|| composition.transient_scene.take())
+                    .flatten();
+                let surface = if index == 0 {
+                    platform.surface()
+                } else {
+                    platform.hybrid_overlay_surface(index - 1)
+                };
+                let segment_clear_color = if index == 0 {
+                    clear_color
+                } else {
+                    vello::peniko::Color::TRANSPARENT
+                };
+                match render_to_surface(
+                    &mut runtime.renderer,
+                    surface,
+                    segment_clear_color,
+                    false,
+                    |renderer, target| {
+                        renderer.render_hybrid_segment_to_surface(segment, transient_scene, target);
+                    },
+                ) {
+                    Ok(rendered) => {
+                        totals.acquire += rendered.acquire;
+                        totals.render += rendered.render;
+                        totals.present += rendered.present;
+                    }
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
+            }
+            composition.transient_scene.take();
+            result.map(|()| totals)
+        } else {
+            if let Some(platform) = (&mut runtime.platform as &mut dyn std::any::Any)
+                .downcast_mut::<crate::platform::WinitWindow>()
+            {
+                platform.clear_hybrid_composition();
+            }
+            render_to_surface(
+                &mut runtime.renderer,
+                runtime.platform.surface(),
+                clear_color,
+                capture_snapshot,
+                HydrolysisRenderer::render_scene_to_surface,
+            )
+        };
+
+        #[cfg(not(hydrolysis_macos_system_webview))]
+        let render_result = render_to_surface(
+            &mut runtime.renderer,
+            runtime.platform.surface(),
+            clear_color,
+            capture_snapshot,
+            HydrolysisRenderer::render_scene_to_surface,
+        );
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        if let Some(composition) = hybrid_composition.take() {
+            runtime.renderer.restore_hybrid_composition(composition);
+        }
+
+        let rendered = match render_result {
+            Ok(rendered) => rendered,
             Err(
                 crate::platform::SurfaceError::Lost
                 | crate::platform::SurfaceError::Outdated
@@ -664,7 +817,6 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                             build_content: rebuild_phases.build_content,
                             scene_dispatch: rebuild_phases.scene_dispatch,
                             scene_finish: rebuild_phases.scene_finish,
-                            acquire: acquire_started_at.elapsed(),
                             ..FramePhases::default()
                         },
                         counters: FrameCounters {
@@ -690,48 +842,11 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                 panic!("hydrolysis surface acquisition failed validation")
             }
         };
-        let acquire_duration = acquire_started_at.elapsed();
-        let render_started_at = Instant::now();
-        if !rebuilt {
-            runtime.renderer.begin_redraw_frame();
-            runtime
-                .renderer
-                .refresh_active_applied_filters(surface.device(), surface.queue());
-        }
-        runtime
-            .renderer
-            .prepare_transient_text_input_overlay(env, root_transform);
-        runtime
-            .renderer
-            .render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
-                adapter: surface.adapter(),
-                device: surface.device(),
-                queue: surface.queue(),
-                texture: Some(frame.texture()),
-                view: frame.view(),
-                format,
-                width,
-                height,
-                base_color: clear_color,
-            });
-        if capture_snapshot {
-            snapshot = Some(HeadlessSnapshot {
-                width,
-                height,
-                rgba8: readback_texture_rgba8(
-                    surface.device(),
-                    surface.queue(),
-                    frame.texture(),
-                    width,
-                    height,
-                ),
-            });
-        }
+        let acquire_duration = rendered.acquire;
+        let render_duration = rendered.render;
+        let present_duration = rendered.present;
+        snapshot = rendered.snapshot;
         runtime.renderer.clear_frame_resources();
-        let render_duration = render_started_at.elapsed();
-        let present_started_at = Instant::now();
-        surface.present(frame);
-        let present_duration = present_started_at.elapsed();
         let (measurement_cache_hits, measurement_cache_misses) =
             runtime.renderer.measurement_cache_stats();
         let (scene_layers, vello_scene_layers, gpu_surface_layers) =
@@ -1071,7 +1186,8 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::TextInput { text } => {
-                let changed = runtime.renderer.handle_text_input(text.as_str());
+                let changed = runtime.renderer.handle_browser_text_input(text.as_str())
+                    || runtime.renderer.handle_text_input(text.as_str());
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "text_input",
@@ -1083,13 +1199,18 @@ where
             }
             InputEvent::Key {
                 key,
+                native,
                 state: KeyState::Pressed,
                 modifiers,
             } => {
-                let changed =
-                    runtime
-                        .renderer
-                        .handle_key_with_env(&key, modifiers, &input_env(runtime, env));
+                let changed = runtime
+                    .renderer
+                    .handle_browser_key(true, &key, native, modifiers)
+                    || runtime.renderer.handle_key_with_env(
+                        &key,
+                        modifiers,
+                        &input_env(runtime, env),
+                    );
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "key_pressed",
@@ -1101,7 +1222,8 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImePreedit { text } => {
-                let changed = runtime.renderer.handle_ime_preedit(text.as_str());
+                let changed = runtime.renderer.browser_has_focus()
+                    || runtime.renderer.handle_ime_preedit(text.as_str());
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_preedit",
@@ -1112,7 +1234,8 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeCommit { text } => {
-                let changed = runtime.renderer.handle_ime_commit(text.as_str());
+                let changed = runtime.renderer.handle_browser_commit_text(text.as_str())
+                    || runtime.renderer.handle_ime_commit(text.as_str());
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_commit",
@@ -1134,13 +1257,20 @@ where
             }
             InputEvent::Key {
                 key,
+                native,
                 state: KeyState::Released,
-                ..
+                modifiers,
             } => {
                 let changed = runtime
                     .renderer
-                    .handle_key_release_with_env(&key, &input_env(runtime, env));
+                    .handle_browser_key(false, &key, native, modifiers)
+                    || runtime
+                        .renderer
+                        .handle_key_release_with_env(&key, &input_env(runtime, env));
                 schedule_redraw_or_refresh(runtime, changed);
+            }
+            InputEvent::ModifiersChanged(modifiers) => {
+                runtime.renderer.update_browser_modifiers(modifiers);
             }
         }
     }
@@ -1222,6 +1352,15 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.request_refresh();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
+    #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]
+    let next_deadline = env
+        .get::<waterui_browser_cef::CefRuntime>()
+        .map_or(next_deadline, |cef| {
+            let cef_deadline = cef.pump().instant();
+            Some(next_deadline.map_or(cef_deadline, |gesture_deadline| {
+                gesture_deadline.min(cef_deadline)
+            }))
+        });
     if runtime.mode.is_pending() {
         runtime.platform.request_redraw();
     }

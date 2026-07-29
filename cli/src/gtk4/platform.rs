@@ -11,7 +11,7 @@ use smol::fs;
 use tracing::info;
 
 use crate::{
-    assets,
+    assets, browser_runtime,
     build::{BuildOptions, RustDynamicLibraries, configure_cargo_linkage},
     device::Artifact,
     gtk4::backend::Gtk4Backend,
@@ -167,25 +167,29 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
             );
         }
     };
+    let runtime_plan = project
+        .browser_runtime_plan(TargetPlatform::Linux, crate::platform::TargetBackend::Gtk4)
+        .await?;
+    let runtime_dir = final_binary_path.parent().ok_or_else(|| {
+        eyre::eyre!(
+            "GTK4 binary path has no output directory: {}",
+            final_binary_path.display()
+        )
+    })?;
+    browser_runtime::stage(
+        runtime_plan,
+        TargetPlatform::Linux,
+        &target_dir,
+        runtime_dir,
+    )
+    .await?;
 
     if options.uses_shared_rust_runtime() {
-        let runtime_dir = final_binary_path.parent().ok_or_else(|| {
-            eyre::eyre!(
-                "GTK4 binary path has no output directory: {}",
-                final_binary_path.display()
-            )
-        })?;
         RustDynamicLibraries::resolve(runtime_dir, &TargetPlatform::Linux.triple())
             .await?
             .stage(runtime_dir)
             .await?;
     } else {
-        let runtime_dir = final_binary_path.parent().ok_or_else(|| {
-            eyre::eyre!(
-                "GTK4 binary path has no output directory: {}",
-                final_binary_path.display()
-            )
-        })?;
         RustDynamicLibraries::remove_staged(runtime_dir, &TargetPlatform::Linux.triple()).await?;
     }
 

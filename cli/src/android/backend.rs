@@ -8,7 +8,7 @@ use crate::{
     backend::Backend,
     build::BuildOptions,
     device::Artifact,
-    platform::{PackageOptions, TargetPlatform},
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
@@ -129,6 +129,9 @@ impl Backend for AndroidBackend {
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
         debug_assert_eq!(platform, TargetPlatform::Android);
+        project
+            .browser_runtime_plan(platform, TargetBackend::Android)
+            .await?;
         AndroidPlatform::arm64().build(project, options).await
     }
 

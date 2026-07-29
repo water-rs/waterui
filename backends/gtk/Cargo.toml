@@ -26,7 +26,10 @@ waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-shape.workspace = true
 waterui-form.workspace = true
 waterui-media.workspace = true
-waterui-webview.workspace = true
+waterui-webview = { workspace = true, optional = true }
+waterui-chromium = { workspace = true, optional = true }
+waterui-browser-cef = { workspace = true, optional = true }
+waterui-browser-wpe = { workspace = true, optional = true }
 nami.workspace = true
 tracing.workspace = true
 executor-core.workspace = true
@@ -51,6 +54,23 @@ pkg-config = "0.3"
 
 [features]
 default = []
+webview-default = ["webview-wpe"]
+webview-system = ["dep:waterui-webview", "webkitgtk"]
+webview-wpe = [
+    "dep:waterui-webview",
+    "dep:waterui-browser-wpe",
+    "waterui-browser-wpe/webview",
+]
+webview-cef = [
+    "dep:waterui-webview",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef/webview",
+]
+chromium = [
+    "dep:waterui-chromium",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef/chromium",
+]
 webkitgtk = []
 
 [lints]
