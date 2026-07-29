@@ -5,17 +5,17 @@ use core::marker::PhantomData;
 
 use waterui::accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui::color::Color;
-use waterui::component::zstack;
 use waterui::layout::padding::EdgeInsets;
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
+use waterui::style::FloatingStyle;
 use waterui::{Environment, Signal, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, boxed_action};
 
 use crate::color::{
     OnPrimaryContainer, OnSecondaryContainer, OnTertiaryContainer, Primary, PrimaryContainer,
-    SecondaryContainer, Shadow as ShadowColor, SurfaceContainerHigh, TertiaryContainer,
+    SecondaryContainer, SurfaceContainerHigh, TertiaryContainer,
 };
+use crate::elevation::{MaterialElevationLevel, apply_to_floating_style};
 use crate::semantics::interaction_style;
 use crate::theme::typography;
 
@@ -29,10 +29,6 @@ const EXTENDED_FAB_SHAPE: f32 = 16.0;
 const EXTENDED_FAB_CLIP_RADIUS: f32 = EXTENDED_FAB_SHAPE / EXTENDED_FAB_HEIGHT;
 const EXTENDED_FAB_LEADING_SPACE_WITHOUT_ICON: f32 = 20.0;
 const EXTENDED_FAB_TRAILING_SPACE: f32 = 20.0;
-const FAB_ELEVATION_AMBIENT_OFFSET_Y: f32 = 2.0;
-const FAB_ELEVATION_AMBIENT_OPACITY: f32 = 0.08;
-const FAB_ELEVATION_KEY_OFFSET_Y: f32 = 1.0;
-const FAB_ELEVATION_KEY_OPACITY: f32 = 0.12;
 
 /// Color token set for a FAB variant.
 pub trait FabVariantTokens: Default + 'static {
@@ -179,16 +175,18 @@ where
 {
     fn body(self, _env: &Environment) -> impl View {
         let mut action = self.action;
+        let floating_style = floating_style::<Tokens>(
+            f64::from(FAB_CONTAINER_WIDTH),
+            f64::from(FAB_CONTAINER_HEIGHT),
+            FAB_CONTAINER_CLIP_RADIUS,
+        );
 
         self.content
             .foreground(Tokens::content_color())
             .size(FAB_ICON_SIZE, FAB_ICON_SIZE)
             .padding_with(16.0)
             .size(FAB_CONTAINER_WIDTH, FAB_CONTAINER_HEIGHT)
-            .background(
-                RoundedRectangle::new(FAB_CONTAINER_CLIP_RADIUS).fill(Tokens::container_color()),
-            )
-            .background(fab_elevation(FAB_CONTAINER_CLIP_RADIUS))
+            .floating_with(floating_style)
             .on_tap(move |env: Environment| action(&env))
             .a11y_label(self.accessibility_label)
             .a11y_role(AccessibilityRole::Button)
@@ -287,6 +285,11 @@ where
 {
     fn body(self, _env: &Environment) -> impl View {
         let mut action = self.action;
+        let floating_style = floating_style::<Tokens>(
+            0.0,
+            f64::from(EXTENDED_FAB_HEIGHT),
+            EXTENDED_FAB_CLIP_RADIUS,
+        );
 
         self.label
             .font(typography::label_large())
@@ -298,10 +301,7 @@ where
                 EXTENDED_FAB_LEADING_SPACE_WITHOUT_ICON,
                 EXTENDED_FAB_TRAILING_SPACE,
             ))
-            .background(
-                RoundedRectangle::new(EXTENDED_FAB_CLIP_RADIUS).fill(Tokens::container_color()),
-            )
-            .background(fab_elevation(EXTENDED_FAB_CLIP_RADIUS))
+            .floating_with(floating_style)
             .on_tap(move |env: Environment| action(&env))
             .a11y_label(self.accessibility_label)
             .a11y_role(AccessibilityRole::Button)
@@ -315,15 +315,36 @@ where
 
 const fn noop(_env: &Environment) {}
 
-fn fab_elevation(clip_radius: f32) -> impl View {
-    zstack((
-        RoundedRectangle::new(clip_radius)
-            .fill(ShadowColor.with_opacity(FAB_ELEVATION_AMBIENT_OPACITY))
-            .offset(0.0, FAB_ELEVATION_AMBIENT_OFFSET_Y),
-        RoundedRectangle::new(clip_radius)
-            .fill(ShadowColor.with_opacity(FAB_ELEVATION_KEY_OPACITY))
-            .offset(0.0, FAB_ELEVATION_KEY_OFFSET_Y),
-    ))
+pub(crate) fn theme() -> FloatingStyle {
+    floating_style::<SurfaceFab>(
+        f64::from(FAB_CONTAINER_WIDTH),
+        f64::from(FAB_CONTAINER_HEIGHT),
+        FAB_CONTAINER_CLIP_RADIUS,
+    )
+}
+
+fn floating_style<Tokens>(
+    minimum_width: f64,
+    minimum_height: f64,
+    clip_radius: f32,
+) -> FloatingStyle
+where
+    Tokens: FabVariantTokens,
+{
+    let mut style = FloatingStyle {
+        container_color: Tokens::container_color(),
+        content_color: Tokens::content_color(),
+        state_layer_color: Tokens::content_color(),
+        clip_radius,
+        content_inset_x: 0.0,
+        content_inset_y: 0.0,
+        minimum_width,
+        minimum_height,
+        disabled_content_opacity: 0.38,
+        ..FloatingStyle::default()
+    };
+    apply_to_floating_style(&mut style, MaterialElevationLevel::LEVEL3);
+    style
 }
 
 /// Creates a surface FAB with arbitrary visual content.

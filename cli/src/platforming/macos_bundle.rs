@@ -6,6 +6,9 @@ use askama::Template;
 use color_eyre::eyre::{self, bail};
 use fs_extra::dir::CopyOptions;
 use smol::fs;
+use smol::stream::StreamExt as _;
+
+use crate::utils::run_command_os;
 
 #[derive(Template)]
 #[template(path = "macos/Info.plist.tpl", escape = "none")]
@@ -89,6 +92,85 @@ pub async fn package_binary_as_app(
     Ok(app_dir)
 }
 
+/// Signs a local macOS app bundle with an installed development identity.
+///
+/// Apps declaring protected-resource usage descriptions require a stable
+/// identity so macOS can persist privacy grants across local rebuilds. Apps
+/// without protected resources use ad-hoc signing when no identity is installed.
+///
+/// # Errors
+///
+/// Returns an error when a protected-resource app has no development identity,
+/// or when `security`/`codesign` cannot inspect or sign the assembled bundle.
+#[cfg(target_os = "macos")]
+pub async fn sign_macos_app(
+    app_path: &Path,
+    bundle_id: &str,
+    requires_stable_identity: bool,
+) -> eyre::Result<()> {
+    let identities = run_command_os(
+        "security",
+        [
+            std::ffi::OsStr::new("find-identity"),
+            std::ffi::OsStr::new("-v"),
+            std::ffi::OsStr::new("-p"),
+            std::ffi::OsStr::new("codesigning"),
+        ],
+    )
+    .await?;
+    let identity = first_codesigning_identity(&identities);
+    if requires_stable_identity && identity.is_none() {
+        bail!("macOS apps using protected resources require an installed code-signing identity");
+    }
+    let identity = identity.unwrap_or("-");
+
+    let frameworks_dir = app_path.join("Contents").join("Frameworks");
+    if frameworks_dir.exists() {
+        let mut entries = fs::read_dir(&frameworks_dir).await?;
+        let mut framework_paths = Vec::new();
+        while let Some(entry) = entries.next().await {
+            let path = entry?.path();
+            if path.is_file() {
+                framework_paths.push(path);
+            }
+        }
+        framework_paths.sort();
+        for framework_path in framework_paths {
+            codesign_path(&framework_path, identity, None).await?;
+        }
+    }
+
+    codesign_path(app_path, identity, Some(bundle_id)).await?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn first_codesigning_identity(output: &str) -> Option<&str> {
+    output.lines().find_map(|line| {
+        let (_, identity_and_name) = line.split_once(')')?;
+        let identity = identity_and_name.split_whitespace().next()?;
+        (identity.len() == 40 && identity.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then_some(identity)
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn codesign_path(path: &Path, identity: &str, bundle_id: Option<&str>) -> eyre::Result<()> {
+    let mut arguments = vec![
+        std::ffi::OsString::from("--force"),
+        std::ffi::OsString::from("--sign"),
+        std::ffi::OsString::from(identity),
+        std::ffi::OsString::from("--timestamp=none"),
+    ];
+    if let Some(bundle_id) = bundle_id {
+        arguments.push(std::ffi::OsString::from("--identifier"));
+        arguments.push(std::ffi::OsString::from(bundle_id));
+    }
+    arguments.push(path.as_os_str().to_owned());
+    run_command_os("codesign", arguments).await?;
+    Ok(())
+}
+
 async fn copy_dir(from: &Path, to: &Path) -> eyre::Result<()> {
     let source = from.to_path_buf();
     let destination = to.to_path_buf();
@@ -107,4 +189,26 @@ async fn copy_dir(from: &Path, to: &Path) -> eyre::Result<()> {
             })
     })
     .await
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::first_codesigning_identity;
+
+    #[test]
+    fn parses_first_valid_codesigning_identity() {
+        let output = "  1) 645DCB18E20044A687FFE48B0E62D31BF9F6A443 \"Apple Development\"\n     1 valid identities found\n";
+        assert_eq!(
+            first_codesigning_identity(output),
+            Some("645DCB18E20044A687FFE48B0E62D31BF9F6A443")
+        );
+    }
+
+    #[test]
+    fn reports_no_codesigning_identity() {
+        assert_eq!(
+            first_codesigning_identity("     0 valid identities found\n"),
+            None
+        );
+    }
 }

@@ -9,14 +9,16 @@ mod tree;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::prelude::text;
+use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::{ButtonStyle, button};
+use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 use waterui_controls::toggle::{ToggleStyle, toggle};
 use waterui_form::picker::PickerStyle;
-use waterui_layout::scroll;
-use waterui_layout::stack::{VStackLayout, hstack, vstack};
+use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
+use waterui_layout::{Divider, scroll};
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
@@ -458,6 +460,124 @@ fn vstack_places_state_wrapped_button_at_intrinsic_width() {
         target.bounds.width() < 200.0,
         "state-wrapped button hit bounds must stay intrinsic, got width {}",
         target.bounds.width()
+    );
+}
+
+#[test]
+fn floating_button_measurement_uses_style_tokens() {
+    let env = test_environment();
+    let mut floating_style = FloatingStyle::default();
+    floating_style.minimum_width = 37.0;
+    floating_style.minimum_height = 41.0;
+
+    let mut renderer = test_renderer();
+    capture_root_window(
+        &mut renderer,
+        vstack((button(label("Token Sized").icon(()))
+            .label_style(LabelDisplayMode::IconOnly)
+            .plain()
+            .floating_with(floating_style.clone()),)),
+        &env,
+        Rect::new(0.0, 0.0, 160.0, 160.0),
+    );
+    let intrinsic_bounds = renderer
+        .hit_test
+        .pointer_targets
+        .first()
+        .expect("floating button must register an intrinsic pointer target")
+        .bounds;
+    assert_eq!(intrinsic_bounds.width(), 37.0);
+    assert_eq!(intrinsic_bounds.height(), 41.0);
+}
+
+#[test]
+fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
+    let env = test_environment();
+    let zoom: Binding<f64> = nami::binding(1.0);
+    let zoom_in = button(label("Zoom In").icon(()))
+        .label_style(LabelDisplayMode::IconOnly)
+        .plain()
+        .action(|waterui::State(value): waterui::State<Binding<f64>>| {
+            value.set(value.get() * 0.5);
+        })
+        .state(&zoom)
+        .size(48.0, 48.0);
+    let zoom_out = button(label("Zoom Out").icon(()))
+        .label_style(LabelDisplayMode::IconOnly)
+        .plain()
+        .action(|waterui::State(value): waterui::State<Binding<f64>>| {
+            value.set(value.get() * 2.0);
+        })
+        .state(&zoom)
+        .size(48.0, 48.0);
+    let gesture_surface = Metadata::new(
+        Metadata::new(
+            ().size(160.0, 160.0),
+            GestureObserver::new(DragGesture::new(0.0), || {}),
+        ),
+        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
+    );
+    let controls = vstack((zoom_in, Divider, zoom_out)).size(48.0, 97.0);
+    let mut renderer = test_renderer();
+    capture_root_window(
+        &mut renderer,
+        zstack((gesture_surface, controls)),
+        &env,
+        Rect::new(0.0, 0.0, 160.0, 160.0),
+    );
+
+    let mut buttons = renderer.hit_test.pointer_targets.clone();
+    buttons.sort_by(|left, right| {
+        left.bounds
+            .y0
+            .partial_cmp(&right.bounds.y0)
+            .expect("finite button bounds must be ordered")
+    });
+    assert_eq!(buttons.len(), 2);
+    let zoom_in = &buttons[0];
+    let point = Point::new(
+        (zoom_in.bounds.x0 + zoom_in.bounds.x1) * 0.5,
+        (zoom_in.bounds.y0 + zoom_in.bounds.y1) * 0.5,
+    );
+    let _ =
+        renderer.handle_pointer_down(point.x as f32, point.y as f32, PointerButton::Primary, &env);
+    assert!(
+        renderer.flush_window_tree(
+            &env,
+            Rect::new(0.0, 0.0, 160.0, 160.0),
+            Affine::IDENTITY,
+            Affine::IDENTITY,
+        ),
+        "pressed controls must survive a retained redraw before pointer release"
+    );
+    assert!(renderer.handle_pointer_up(
+        point.x as f32,
+        point.y as f32,
+        PointerButton::Primary,
+        &env,
+    ));
+
+    assert_eq!(zoom.get(), 0.5);
+    assert!(
+        renderer.take_patch_request(),
+        "a synchronous button action must schedule a retained-tree refresh"
+    );
+}
+
+#[test]
+fn gpu_surface_external_redraw_is_consumed_during_continuous_frames() {
+    use waterui_graphics::RedrawHandle;
+
+    let redraw_handle = RedrawHandle::new();
+    redraw_handle.request_redraw();
+
+    assert!(super::render::take_gpu_surface_redraw_request(
+        true,
+        &redraw_handle
+    ));
+    assert!(
+        !redraw_handle.is_dirty(),
+        "a continuous inner frame must not leave the external wake coalesced forever"
     );
 }
 

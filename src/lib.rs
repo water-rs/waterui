@@ -4,7 +4,7 @@ extern crate self as waterui;
 #[macro_use]
 mod macros;
 mod appearance;
-pub use appearance::{background, border, filter, gradient, shape, style};
+pub use appearance::{background, border, filter, floating, gradient, shape, style};
 pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};

@@ -15,6 +15,7 @@ use nami::{Signal, SignalExt};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::ViewExt as _;
+use waterui::style::FloatingStyle;
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
@@ -64,8 +65,14 @@ impl ButtonRenderState {
         let theme = widget_theme(env);
         let style = self.config.style;
         let interaction_style = env.get::<InteractionStyle>();
-        let color =
-            disabled_aware_label_color(theme, style, &self.config.disabled, interaction_style);
+        let floating_style = env.get::<FloatingStyle>();
+        let color = disabled_aware_label_color(
+            theme,
+            style,
+            &self.config.disabled,
+            interaction_style,
+            floating_style,
+        );
         let styled = styled_button_label(theme, style, self.config.label.clone());
         let mut subview = RetainedSubview::new(button_label_view(color, AnyView::new(styled)));
         subview.ensure_built(renderer, env);
@@ -168,6 +175,7 @@ pub(crate) fn measure_button_node(
         theme,
         render_state.config.style,
         env.get::<InteractionStyle>(),
+        env.get::<FloatingStyle>(),
     );
     let label_size = match &render_state.label_view {
         Some(subview) => subview.measure_built(state, env),
@@ -356,6 +364,7 @@ pub(crate) fn render_button_parts(
     let theme = widget_theme(env);
     let style = state.borrow().config.style;
     let interaction_style = env.get::<InteractionStyle>().cloned();
+    let floating_style = env.get::<FloatingStyle>().cloned();
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
     // and this persistent node re-renders the new text.
     {
@@ -378,12 +387,17 @@ pub(crate) fn render_button_parts(
         env,
         disabled,
     );
-    if interaction_style.is_none() {
+    if interaction_style.is_none() && floating_style.is_none() {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style, interaction);
     }
 
-    let metrics = button_metrics(theme, style, interaction_style.as_ref());
+    let metrics = button_metrics(
+        theme,
+        style,
+        interaction_style.as_ref(),
+        floating_style.as_ref(),
+    );
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
     // A degenerate padded rect (a button smaller than its padding) falls back to the
     // full bounds so the label still shows — matching the old dispatch fallback.
@@ -408,9 +422,13 @@ pub(crate) fn render_button_parts(
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
             let mut styled = styled_button_title(theme, style, &state_mut.config.label, env);
-            if let Some(color) =
-                button_label_color(theme, style, disabled, interaction_style.as_ref())
-            {
+            if let Some(color) = button_label_color(
+                theme,
+                style,
+                disabled,
+                interaction_style.as_ref(),
+                floating_style.as_ref(),
+            ) {
                 styled = styled_with_default_foreground(styled, color);
             }
             ctx.render_styled_text_single_line_centered(styled, env, label_target);
@@ -428,6 +446,19 @@ pub(crate) fn render_button_parts(
                 &mut draw,
                 interaction_style.state_layer_bounds(bounds),
                 interaction_style.state_layer_radii,
+                color,
+                interaction,
+            );
+        } else if let Some(floating_style) = floating_style {
+            let color_signal = floating_style.state_layer_color.resolve(env);
+            let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+            let corner_radius =
+                bounds.width().min(bounds.height()) * f64::from(floating_style.clip_radius);
+            let mut draw = ctx.draw_context();
+            theme.draw_interaction_state_layer(
+                &mut draw,
+                bounds,
+                corner_radius.into(),
                 color,
                 interaction,
             );
@@ -452,7 +483,7 @@ pub(crate) fn render_button_parts(
         press_slot,
         move |_renderer, _point, _env| {
             (state.borrow_mut().config.action)(&action_env);
-            false
+            true
         },
     );
 }
@@ -528,7 +559,12 @@ pub(crate) fn measure_button_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let theme = widget_theme(env);
-    let metrics = button_metrics(theme, button.style, env.get::<InteractionStyle>());
+    let metrics = button_metrics(
+        theme,
+        button.style,
+        env.get::<InteractionStyle>(),
+        env.get::<FloatingStyle>(),
+    );
     let label_size = measure_button_label_intrinsic(theme, button.style, &button.label, state, env);
     button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
 }
@@ -566,9 +602,10 @@ fn disabled_aware_label_color(
     style: ButtonStyle,
     disabled: &nami::Computed<bool>,
     interaction_style: Option<&InteractionStyle>,
+    floating_style: Option<&FloatingStyle>,
 ) -> Option<Color> {
-    let enabled_color = button_label_color(theme, style, false, interaction_style);
-    let disabled_color = button_label_color(theme, style, true, interaction_style);
+    let enabled_color = button_label_color(theme, style, false, interaction_style, floating_style);
+    let disabled_color = button_label_color(theme, style, true, interaction_style, floating_style);
     match (enabled_color, disabled_color) {
         (None, None) => None,
         (Some(when_false), Some(when_true)) => Some(Color::new(SelectResolvedColor {
@@ -587,8 +624,24 @@ fn button_metrics(
     theme: &dyn waterui_backend_core::widget::WidgetTheme,
     style: ButtonStyle,
     interaction_style: Option<&InteractionStyle>,
+    floating_style: Option<&FloatingStyle>,
 ) -> ButtonMetrics {
-    interaction_style.map_or_else(|| theme.button_metrics(style), |style| style.metrics)
+    interaction_style.map_or_else(
+        || {
+            floating_style.map_or_else(
+                || theme.button_metrics(style),
+                |style| {
+                    ButtonMetrics::new(
+                        style.content_inset_x,
+                        style.content_inset_y,
+                        style.minimum_width,
+                        style.minimum_height,
+                    )
+                },
+            )
+        },
+        |style| style.metrics,
+    )
 }
 
 fn button_label_color(
@@ -596,9 +649,24 @@ fn button_label_color(
     style: ButtonStyle,
     disabled: bool,
     interaction_style: Option<&InteractionStyle>,
+    floating_style: Option<&FloatingStyle>,
 ) -> Option<Color> {
     interaction_style.map_or_else(
-        || theme.button_label_color(style, disabled),
+        || {
+            floating_style.map_or_else(
+                || theme.button_label_color(style, disabled),
+                |style| {
+                    Some(if disabled {
+                        style
+                            .content_color
+                            .clone()
+                            .with_opacity(style.disabled_content_opacity)
+                    } else {
+                        style.content_color.clone()
+                    })
+                },
+            )
+        },
         |style| style.resolved_label_color(disabled),
     )
 }
@@ -697,11 +765,28 @@ fn styled_button_label(
 
 #[cfg(test)]
 mod tests {
-    use super::MENU_TRIGGER_STYLE;
+    use super::{MENU_TRIGGER_STYLE, button_chrome_size};
+    use waterui_backend_core::widget::ButtonMetrics;
     use waterui_controls::button::ButtonStyle;
+    use waterui_core::layout::{ProposalSize, Size};
 
     #[test]
     fn menu_trigger_uses_material_default_button_style() {
         assert_eq!(MENU_TRIGGER_STYLE, ButtonStyle::Automatic);
+    }
+
+    #[test]
+    fn button_chrome_measurement_uses_metrics_and_proposal() {
+        let label = Size::new(11.0, 13.0);
+        let metrics = ButtonMetrics::new(3.0, 5.0, 37.0, 41.0);
+
+        assert_eq!(
+            button_chrome_size(label, &metrics, ProposalSize::UNSPECIFIED),
+            Size::new(37.0, 41.0)
+        );
+        assert_eq!(
+            button_chrome_size(label, &metrics, ProposalSize::new(Some(31.0), Some(29.0))),
+            Size::new(31.0, 29.0)
+        );
     }
 }

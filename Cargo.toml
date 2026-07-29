@@ -89,6 +89,13 @@ bitflags = "2.13.1"
 blocking = "1.6.2"
 executor-core = { version = "0.7.1", features = ["std"]}
 futures = "0.3"
+futures-lite = "2.6"
+geo = { version = "0.32", default-features = false }
+geo-types = "0.7"
+lru = "0.16"
+maplibre-expr = "0.3.2"
+mvt-reader = "2.4.0"
+serde_json = "1.0"
 smallvec = "1.15"
 # Local vendored dependency overrides via git submodule.
 nami = { version = "0.10.1", path = "utils/nami" }
@@ -96,6 +103,7 @@ nami-core = { version = "0.3.2", path = "utils/nami/core" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.19"
+url = "2.5"
 uuid = { version = "1.24.0", features = ["v4"] }
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }
@@ -142,6 +150,7 @@ filtrate-derive = { version = "0.1.0", path = "utils/filtrate/derive" }
 waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
 waterui-chart = { version = "0.1.0", path = "components/data/chart" }
+waterui-map-gpu = { version = "0.1.0", path = "components/data/map_gpu" }
 waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
 waterui-assets-planner = { version = "0.1.0", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets/macros" }

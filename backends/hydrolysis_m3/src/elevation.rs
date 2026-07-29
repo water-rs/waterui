@@ -1,6 +1,6 @@
 //! Material Design 3 elevation composed from `WaterUI` primitives.
 
-use waterui::style::{Shadow as ViewShadow, Vector};
+use waterui::style::{FloatingStyle, Shadow as ViewShadow, Vector};
 use waterui::{Environment, View, ViewExt as _};
 
 use crate::color::Shadow;
@@ -133,6 +133,18 @@ impl ElevationTokens {
             self.ambient.blur,
         )
     }
+}
+
+pub(crate) fn apply_to_floating_style(style: &mut FloatingStyle, level: MaterialElevationLevel) {
+    let tokens = ElevationTokens::for_level(level);
+    style.key_shadow_color = Shadow.with_opacity(tokens.key.opacity(KEY_OPACITY)).into();
+    style.key_shadow_offset_y = tokens.key.y;
+    style.key_shadow_radius = tokens.key.blur;
+    style.ambient_shadow_color = Shadow
+        .with_opacity(tokens.ambient.opacity(AMBIENT_OPACITY))
+        .into();
+    style.ambient_shadow_offset_y = tokens.ambient.y;
+    style.ambient_shadow_radius = tokens.ambient.blur;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

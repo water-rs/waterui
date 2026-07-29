@@ -1,8 +1,9 @@
 //! # `WaterUI` Map Component
 //!
 //! This crate provides a declarative map component for the `WaterUI` framework.
-//! It displays native maps (`MKMapView` on Apple platforms) with support for
-//! annotations and user location.
+//! It displays native maps where a platform has a suitable primitive and a
+//! shared GPU-drawn vector map elsewhere, with annotations and `WaterKit`
+//! location integration.
 //!
 //! ## Example
 //!
@@ -32,7 +33,7 @@ use waterui_str::Str;
 // Re-export waterkit-location for downstream convenience.
 pub use waterkit_location as location;
 // Commonly used location types re-export.
-pub use waterkit_location::{Latitude, Location, Longitude, OutOfRange};
+pub use waterkit_location::{Latitude, Location, Longitude, OutOfRange, Timestamp};
 
 /// A geographic coordinate with latitude and longitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -236,6 +237,12 @@ pub struct MapConfig {
     pub style: MapStyle,
     /// Whether to show the user's current location.
     pub user_location_visibility: MapVisibility,
+    /// `WaterKit` location values rendered by portable map realizations.
+    ///
+    /// Native realizations may use the platform location service when this is
+    /// absent. Supplying it keeps camera following, the location marker, and
+    /// horizontal-accuracy visualization driven by one reactive source.
+    pub user_location: Computed<Option<Location>>,
     /// Whether the map is interactive (pan/zoom enabled).
     pub interactivity: MapInteractivity,
     /// Whether to show the compass.
@@ -265,6 +272,7 @@ impl Map {
             annotations: empty_annotations.into_computed(),
             style: MapStyle::default(),
             user_location_visibility: MapVisibility::Hidden,
+            user_location: Computed::constant(None),
             interactivity: MapInteractivity::Interactive,
             compass_visibility: MapVisibility::Visible,
             scale_visibility: MapVisibility::Visible,
@@ -308,6 +316,26 @@ impl Map {
         self
     }
 
+    /// Displays reactive `WaterKit` location values and their horizontal accuracy.
+    #[must_use]
+    pub fn user_location(mut self, location: impl IntoComputed<Location>) -> Self {
+        self.0.user_location = location.into_computed().map(Some).computed();
+        self.0.user_location_visibility = MapVisibility::Visible;
+        self
+    }
+
+    /// Displays an optional reactive `WaterKit` location.
+    ///
+    /// This is useful while an asynchronous location permission/request flow is
+    /// pending: `None` draws no location marker and the first `Some` value
+    /// updates the existing map without replacing its view identity.
+    #[must_use]
+    pub fn optional_user_location(mut self, location: impl IntoComputed<Option<Location>>) -> Self {
+        self.0.user_location = location.into_computed();
+        self.0.user_location_visibility = MapVisibility::Visible;
+        self
+    }
+
     /// Binds the map center to reactive `Location` updates and enables user-location display.
     #[must_use]
     pub fn follows_location(mut self, location: impl IntoComputed<Location>) -> Self {
@@ -315,6 +343,7 @@ impl Map {
         self.0.region = location_signal
             .map(|location| Region::from_coordinate(Coordinate::from(location)))
             .into_computed();
+        self.0.user_location = location_signal.map(Some).computed();
         self.0.user_location_visibility = MapVisibility::Visible;
         self
     }

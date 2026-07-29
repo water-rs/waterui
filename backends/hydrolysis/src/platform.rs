@@ -1,5 +1,6 @@
 use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
+use waterui_graphics::RedrawHandle;
 
 #[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
 use waterui_graphics::gpu_surface::preferred_surface_format;
@@ -103,6 +104,13 @@ pub enum InputEvent {
         dx: f32,
         dy: f32,
         is_line_delta: bool,
+    },
+    TrackpadPan {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        phase: TouchPhase,
     },
     Magnification {
         x: f32,
@@ -297,6 +305,14 @@ pub trait PlatformWindow {
     }
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
+    /// Returns a thread-safe wake bridge for nested GPU surfaces.
+    ///
+    /// Windowed platforms override this when their native window can be woken
+    /// from a `RedrawHandle`. Offscreen and single-threaded hosts may keep the
+    /// default and rely on their explicit render pump.
+    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+        None
+    }
     fn scale_factor(&self) -> f64;
     /// The refresh rate (Hz) of the display this window is on, if known.
     ///
@@ -854,8 +870,8 @@ mod winit_impl {
 
     use super::{
         CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-        PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
-        TouchPhase,
+        PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
+        TextInputState, TouchPhase,
     };
 
     #[derive(Clone)]
@@ -1205,16 +1221,26 @@ mod winit_impl {
                     };
                     self.pending_events.push(event);
                 }
-                WindowEvent::MouseWheel { delta, .. } => {
+                WindowEvent::MouseWheel { delta, phase, .. } => {
                     let (dx, dy, is_line_delta) =
                         map_scroll_delta(delta, self.window.scale_factor());
-                    self.pending_events.push(InputEvent::Scroll {
-                        x: self.pointer_position.0,
-                        y: self.pointer_position.1,
-                        dx,
-                        dy,
-                        is_line_delta,
-                    });
+                    if is_line_delta {
+                        self.pending_events.push(InputEvent::Scroll {
+                            x: self.pointer_position.0,
+                            y: self.pointer_position.1,
+                            dx,
+                            dy,
+                            is_line_delta,
+                        });
+                    } else {
+                        self.pending_events.push(InputEvent::TrackpadPan {
+                            x: self.pointer_position.0,
+                            y: self.pointer_position.1,
+                            dx,
+                            dy,
+                            phase: map_touch_phase(*phase),
+                        });
+                    }
                 }
                 WindowEvent::PinchGesture { delta, phase, .. } => {
                     self.pending_events.push(InputEvent::Magnification {
@@ -1420,6 +1446,13 @@ mod winit_impl {
             if let Some(demand) = &self.frame_rate_demand {
                 demand.hold_demand();
             }
+        }
+
+        fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+            let handle = RedrawHandle::new();
+            let window = Arc::clone(&self.window);
+            handle.set_waker(Some(Arc::new(move || window.request_redraw())));
+            Some(handle)
         }
 
         fn scale_factor(&self) -> f64 {

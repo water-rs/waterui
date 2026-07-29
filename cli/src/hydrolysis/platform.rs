@@ -24,7 +24,7 @@ use crate::{
     },
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
-    macos_bundle::{MacOsUsageDescription, package_binary_as_app},
+    macos_bundle::{MacOsUsageDescription, package_binary_as_app, sign_macos_app as sign_app},
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::TemplateContext,
@@ -371,52 +371,14 @@ pub async fn package_hydrolysis(
     };
 
     #[cfg(target_os = "macos")]
-    {
-        if platform == TargetPlatform::MacOS {
-            let app_name = project
-                .manifest()
-                .package
-                .name
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == ' ')
-                .collect::<String>();
-            let app_name = if app_name.is_empty() {
-                "WaterUIHydrolysis".to_string()
-            } else {
-                app_name
-            };
-            let dist_dir = backend_path.join("dist");
-            fs::create_dir_all(&dist_dir).await?;
-            let usage_descriptions = project
-                .manifest()
-                .permissions
-                .iter()
-                .filter(|(_, entry)| entry.is_enabled())
-                .filter_map(|(key, entry)| {
-                    key.apple_usage_description_key()
-                        .map(|plist_key| MacOsUsageDescription {
-                            plist_key,
-                            description: entry.description().to_string(),
-                        })
-                })
-                .collect::<Vec<_>>();
-            let app_path = package_binary_as_app(
-                &final_binary_path,
-                project.bundle_identifier(),
-                &app_name,
-                &usage_descriptions,
-                Some(&backend_path.join("resources")),
-                &dist_dir,
-            )
-            .await?;
-            synchronize_shared_runtime(
-                &app_path.join("Contents/Frameworks"),
-                shared_libraries.as_ref(),
-                &platform.triple(),
-            )
-            .await?;
-            return Ok(Artifact::new(project.bundle_identifier(), app_path));
-        }
+    if platform == TargetPlatform::MacOS {
+        return package_hydrolysis_macos_app(
+            project,
+            &backend_path,
+            &final_binary_path,
+            shared_libraries.as_ref(),
+        )
+        .await;
     }
 
     let runtime_dir = final_binary_path.parent().ok_or_else(|| {
@@ -431,6 +393,65 @@ pub async fn package_hydrolysis(
         project.bundle_identifier(),
         final_binary_path,
     ))
+}
+
+#[cfg(target_os = "macos")]
+async fn package_hydrolysis_macos_app(
+    project: &Project,
+    backend_path: &Path,
+    binary_path: &Path,
+    shared_libraries: Option<&RustDynamicLibraries>,
+) -> eyre::Result<Artifact> {
+    let app_name = project
+        .manifest()
+        .package
+        .name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .collect::<String>();
+    let app_name = if app_name.is_empty() {
+        "WaterUIHydrolysis".to_string()
+    } else {
+        app_name
+    };
+    let dist_dir = backend_path.join("dist");
+    fs::create_dir_all(&dist_dir).await?;
+    let usage_descriptions = project
+        .manifest()
+        .permissions
+        .iter()
+        .filter(|(_, entry)| entry.is_enabled())
+        .flat_map(|(key, entry)| {
+            key.macos_usage_description_keys()
+                .iter()
+                .map(|&plist_key| MacOsUsageDescription {
+                    plist_key,
+                    description: entry.description().to_string(),
+                })
+        })
+        .collect::<Vec<_>>();
+    let app_path = package_binary_as_app(
+        binary_path,
+        project.bundle_identifier(),
+        &app_name,
+        &usage_descriptions,
+        Some(&backend_path.join("resources")),
+        &dist_dir,
+    )
+    .await?;
+    synchronize_shared_runtime(
+        &app_path.join("Contents/Frameworks"),
+        shared_libraries,
+        &TargetPlatform::MacOS.triple(),
+    )
+    .await?;
+    sign_app(
+        &app_path,
+        project.bundle_identifier(),
+        !usage_descriptions.is_empty(),
+    )
+    .await?;
+    Ok(Artifact::new(project.bundle_identifier(), app_path))
 }
 
 async fn synchronize_shared_runtime(
