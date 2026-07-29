@@ -506,6 +506,8 @@ impl CefRuntime {
     /// subprocess dispatch, or CEF initialization fails.
     #[must_use]
     pub fn initialize(configuration: CefRuntimeConfiguration) -> Self {
+        #[cfg(target_os = "macos")]
+        crate::application_mac::assert_macos_application_active();
         configuration.paths.validate();
         assert!(
             configuration.cache_root.is_absolute(),

@@ -42,6 +42,9 @@ cef::wrap_app! {
                 "disable-sync",
                 "enable-gpu",
                 "enable-gpu-compositing",
+                "no-default-browser-check",
+                "no-first-run",
+                "no-startup-window",
             ] {
                 command_line.append_switch(Some(&switch.into()));
             }

@@ -154,6 +154,8 @@ pub fn run(app: App) {
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
 pub fn run(app: App) {
+    #[cfg(all(target_os = "macos", any(hydrolysis_cef_webview, feature = "chromium")))]
+    waterui_browser_cef::initialize_macos_application();
     initialize_tracing_from_env();
     let inspector_probe = init_main_thread_executors();
     winit_runner::run(app, inspector_probe);
