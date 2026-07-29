@@ -956,7 +956,7 @@ async fn prepare_macos_bundle_launch(
 async fn launch_macos_bundle_process(
     launch: &MacosBundleLaunchContext,
     options: &RunOptions,
-) -> Result<smol::process::Child, FailToRun> {
+) -> Result<(smol::process::Child, u32), FailToRun> {
     use tracing::info;
 
     if options.replace_existing_macos_app_instances() {
@@ -964,22 +964,64 @@ async fn launch_macos_bundle_process(
         terminate_pids(&existing_pids).await?;
     }
 
+    let existing_pids = list_conflicting_macos_app_pids(launch)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     info!("Launching app on macOS: {}", launch.artifact_path.display());
-    spawn_local_child(&launch.executable_path, options)
+    let mut command = Command::new("open");
+    command.arg("-W").arg("-n");
+    for (key, value) in options.env_vars() {
+        command.arg("--env").arg(format!("{key}={value}"));
+    }
+    command
+        .arg(&launch.artifact_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().map_err(|error| {
+        FailToRun::Launch(eyre::eyre!(
+            "Failed to launch macOS app bundle '{}': {error}",
+            launch.artifact_path.display()
+        ))
+    })?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let new_pid = list_conflicting_macos_app_pids(launch)
+            .await?
+            .into_iter()
+            .find(|pid| !existing_pids.contains(pid));
+        if let Some(app_pid) = new_pid {
+            return Ok((child, app_pid));
+        }
+        Timer::after(Duration::from_millis(80)).await;
+    }
+
+    let _ = child.kill();
+    let _ = child.status().await;
+    Err(FailToRun::Launch(eyre::eyre!(
+        "LaunchServices did not start '{}' within 5 seconds",
+        launch.artifact_path.display()
+    )))
 }
 
-/// Run a macOS `.app` bundle as a directly supervised child process.
+/// Run a macOS `.app` bundle through `LaunchServices`.
 ///
-/// Owning the real application process provides an exact exit status and avoids
-/// confusing the lifetime of `LaunchServices`' `open -W` proxy with the app.
+/// `open -W -n` gives the CLI a supervised proxy while launching through the
+/// bundle preserves the process identity required by macOS privacy, lifecycle,
+/// and application services. App logs are captured from unified logging by PID.
 #[cfg(target_os = "macos")]
 async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
     let launch = prepare_macos_bundle_launch(artifact).await?;
     let started_at = Instant::now();
-    let child = launch_macos_bundle_process(&launch, &options).await?;
-    let app_pid = child.id();
+    let (child, app_pid) = launch_macos_bundle_process(&launch, &options).await?;
     let (cancel_tx, cancel_rx) = smol::channel::bounded(1);
     let (running, sender) = Running::new(move || {
+        let pid = nix::unistd::Pid::from_raw(
+            i32::try_from(app_pid).expect("macOS process identifiers fit in i32"),
+        );
+        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
         let _ = cancel_tx.try_send(());
     });
     let log_stream = start_log_stream(sender.clone(), options.log_level(), app_pid)?;

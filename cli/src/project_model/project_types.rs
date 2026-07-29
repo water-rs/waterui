@@ -341,24 +341,27 @@ impl PermissionKey {
         }
     }
 
-    /// Returns the raw Apple Info.plist usage-description key for this permission when one exists.
+    /// Returns the raw macOS Info.plist usage-description keys for this permission.
     #[must_use]
-    pub const fn apple_usage_description_key(self) -> Option<&'static str> {
+    pub const fn macos_usage_description_keys(self) -> &'static [&'static str] {
         match self {
-            Self::Microphone => Some("NSMicrophoneUsageDescription"),
-            Self::Camera => Some("NSCameraUsageDescription"),
-            Self::Location => Some("NSLocationWhenInUseUsageDescription"),
-            Self::PhotoLibrary => Some("NSPhotoLibraryUsageDescription"),
-            Self::Contacts => Some("NSContactsUsageDescription"),
-            Self::Calendars => Some("NSCalendarsUsageDescription"),
-            Self::Bluetooth => Some("NSBluetoothAlwaysUsageDescription"),
+            Self::Microphone => &["NSMicrophoneUsageDescription"],
+            Self::Camera => &["NSCameraUsageDescription"],
+            Self::Location => &[
+                "NSLocationUsageDescription",
+                "NSLocationWhenInUseUsageDescription",
+            ],
+            Self::PhotoLibrary => &["NSPhotoLibraryUsageDescription"],
+            Self::Contacts => &["NSContactsUsageDescription"],
+            Self::Calendars => &["NSCalendarsUsageDescription"],
+            Self::Bluetooth => &["NSBluetoothAlwaysUsageDescription"],
             Self::Internet
             | Self::CoarseLocation
             | Self::Storage
             | Self::WriteStorage
             | Self::BluetoothAdmin
             | Self::Vibrate
-            | Self::WakeLock => None,
+            | Self::WakeLock => &[],
         }
     }
 }

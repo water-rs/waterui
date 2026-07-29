@@ -1,0 +1,60 @@
+[package]
+name = "waterui-map-gpu"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+build = "build.rs"
+readme = "../../../README.md"
+repository.workspace = true
+description = "GPU-drawn MapLibre vector map realization for WaterUI"
+keywords = ["map", "vector-tiles", "vello", "wgpu", "waterui"]
+categories = ["gui", "graphics"]
+
+[dependencies]
+blocking.workspace = true
+bytemuck = "1.25"
+executor-core.workspace = true
+futures.workspace = true
+futures-lite.workspace = true
+geo.workspace = true
+geo-types.workspace = true
+kurbo.workspace = true
+lru.workspace = true
+maplibre-expr.workspace = true
+mvt-reader.workspace = true
+nami.workspace = true
+native-executor.workspace = true
+parley = { workspace = true, features = ["system"] }
+peniko.workspace = true
+rayon = "1.12"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+shaderloom.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+vello.workspace = true
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-map.workspace = true
+waterui-url = { workspace = true, features = ["std"] }
+wgpu.workspace = true
+
+[build-dependencies]
+waterui-build-support.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+zenwave = { workspace = true, features = ["native-tls"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+zenwave = { workspace = true, features = ["rustls"] }
+
+[target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dependencies]
+zenwave = { workspace = true, features = ["rustls"] }
+
+[dev-dependencies]
+pollster.workspace = true
+
+[lints]
+workspace = true

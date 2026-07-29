@@ -91,6 +91,9 @@ zenwave = { workspace = true, features = ["native-tls"] }
 core-graphics = "0.25"
 core-foundation = "0.10"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.31", features = ["signal"] }
+
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
 
