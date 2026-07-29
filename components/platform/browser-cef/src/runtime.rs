@@ -139,13 +139,30 @@ impl PumpDeadline {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CefRuntimePaths {
     root: PathBuf,
+    #[cfg(target_os = "macos")]
+    framework: PathBuf,
 }
 
 impl CefRuntimePaths {
     /// Creates paths for an explicitly staged CEF runtime root.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        #[cfg(target_os = "macos")]
+        let framework = root.join("Chromium Embedded Framework.framework");
+        Self {
+            root,
+            #[cfg(target_os = "macos")]
+            framework,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_app(contents: &Path) -> Self {
+        Self {
+            root: contents.join("Resources/waterui-browser/cef"),
+            framework: contents.join("Frameworks/Chromium Embedded Framework.framework"),
+        }
     }
 
     /// Resolves the runtime staged next to the current executable.
@@ -167,7 +184,7 @@ impl CefRuntimePaths {
                 .filter(|ancestor| ancestor.file_name().is_some_and(|name| name == "Contents"))
                 .find(|contents| {
                     contents
-                        .join("MacOS/waterui-browser/cef/runtime.json")
+                        .join("Resources/waterui-browser/cef/runtime.json")
                         .is_file()
                 })
                 .unwrap_or_else(|| {
@@ -176,7 +193,7 @@ impl CefRuntimePaths {
                         executable.display()
                     )
                 });
-            return Self::new(contents.join("MacOS/waterui-browser/cef"));
+            return Self::macos_app(contents);
         }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
@@ -198,9 +215,7 @@ impl CefRuntimePaths {
     fn library(&self) -> PathBuf {
         #[cfg(target_os = "macos")]
         {
-            return self
-                .root
-                .join("Chromium Embedded Framework.framework/Chromium Embedded Framework");
+            return self.framework.join("Chromium Embedded Framework");
         }
         #[cfg(target_os = "linux")]
         {
@@ -217,9 +232,7 @@ impl CefRuntimePaths {
     fn resources(&self) -> PathBuf {
         #[cfg(target_os = "macos")]
         {
-            return self
-                .root
-                .join("Chromium Embedded Framework.framework/Resources");
+            return self.framework.join("Resources");
         }
         #[allow(unreachable_code)]
         self.root.clone()
@@ -227,7 +240,7 @@ impl CefRuntimePaths {
 
     #[cfg(target_os = "macos")]
     fn framework(&self) -> PathBuf {
-        self.root.join("Chromium Embedded Framework.framework")
+        self.framework.clone()
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -623,5 +636,24 @@ impl CefRuntime {
 
     pub(crate) fn cache_root(&self) -> &Path {
         &self.inner.cache_root
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::path::Path;
+
+    use super::CefRuntimePaths;
+
+    #[test]
+    fn macos_app_uses_canonical_resource_and_framework_locations() {
+        let contents = Path::new("/Applications/Browser.app/Contents");
+        let paths = CefRuntimePaths::macos_app(contents);
+
+        assert_eq!(paths.root(), contents.join("Resources/waterui-browser/cef"));
+        assert_eq!(
+            paths.framework(),
+            contents.join("Frameworks/Chromium Embedded Framework.framework")
+        );
     }
 }

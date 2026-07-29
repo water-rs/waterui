@@ -15,6 +15,36 @@ use crate::project::{BrowserRuntimePlan, ResolvedWebViewBackend};
 
 const SOURCE_CONFIG: &str = include_str!("browser_runtime.toml");
 const RUNTIME_ROOT: &str = "waterui-browser";
+const CEF_FRAMEWORK_NAME: &str = "Chromium Embedded Framework.framework";
+
+struct RuntimeLayout {
+    executable_directory: PathBuf,
+    runtime_root: PathBuf,
+    macos_frameworks_directory: Option<PathBuf>,
+}
+
+impl RuntimeLayout {
+    fn adjacent(executable_directory: &Path) -> Self {
+        let runtime_root = executable_directory.join(RUNTIME_ROOT);
+        Self {
+            executable_directory: executable_directory.to_path_buf(),
+            #[cfg(target_os = "macos")]
+            macos_frameworks_directory: Some(runtime_root.join(RuntimeEngine::Cef.as_str())),
+            #[cfg(not(target_os = "macos"))]
+            macos_frameworks_directory: None,
+            runtime_root,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_app(contents_directory: &Path) -> Self {
+        Self {
+            executable_directory: contents_directory.join("MacOS"),
+            runtime_root: contents_directory.join("Resources").join(RUNTIME_ROOT),
+            macos_frameworks_directory: Some(contents_directory.join("Frameworks")),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct SourceConfiguration {
@@ -114,7 +144,47 @@ pub async fn stage(
     profile_directory: &Path,
     executable_directory: &Path,
 ) -> eyre::Result<()> {
-    remove_staged(executable_directory).await?;
+    stage_into(
+        plan,
+        platform,
+        profile_directory,
+        RuntimeLayout::adjacent(executable_directory),
+    )
+    .await
+}
+
+/// Stages browser runtimes into their canonical macOS application-bundle locations.
+///
+/// Runtime metadata is stored in `Contents/Resources`, while the CEF framework
+/// is stored in `Contents/Frameworks` so the bundle can be signed without
+/// treating data files as nested code.
+///
+/// # Errors
+///
+/// Returns an error when a selected runtime cannot be resolved, validated, or
+/// copied into the application bundle.
+#[cfg(target_os = "macos")]
+pub async fn stage_macos_app(
+    plan: BrowserRuntimePlan,
+    profile_directory: &Path,
+    contents_directory: &Path,
+) -> eyre::Result<()> {
+    stage_into(
+        plan,
+        TargetPlatform::MacOS,
+        profile_directory,
+        RuntimeLayout::macos_app(contents_directory),
+    )
+    .await
+}
+
+async fn stage_into(
+    plan: BrowserRuntimePlan,
+    platform: TargetPlatform,
+    profile_directory: &Path,
+    layout: RuntimeLayout,
+) -> eyre::Result<()> {
+    remove_staged(&layout).await?;
     let engines = engines(plan);
     if engines.is_empty() {
         return Ok(());
@@ -122,21 +192,13 @@ pub async fn stage(
 
     let configuration: SourceConfiguration =
         toml::from_str(SOURCE_CONFIG).wrap_err("invalid browser runtime source configuration")?;
-    let runtime_root = executable_directory.join(RUNTIME_ROOT);
-    fs::create_dir_all(&runtime_root).await?;
+    fs::create_dir_all(&layout.runtime_root).await?;
 
     if engines.contains(&RuntimeEngine::Wpe) {
-        stage_wpe(&configuration, platform, &runtime_root).await?;
+        stage_wpe(&configuration, platform, &layout.runtime_root).await?;
     }
     if engines.contains(&RuntimeEngine::Cef) {
-        stage_cef(
-            &configuration,
-            platform,
-            profile_directory,
-            executable_directory,
-            &runtime_root,
-        )
-        .await?;
+        stage_cef(&configuration, platform, profile_directory, &layout).await?;
     }
     Ok(())
 }
@@ -187,8 +249,7 @@ async fn stage_cef(
     configuration: &SourceConfiguration,
     platform: TargetPlatform,
     profile_directory: &Path,
-    executable_directory: &Path,
-    runtime_root: &Path,
+    layout: &RuntimeLayout,
 ) -> eyre::Result<()> {
     let architecture = target_architecture()?;
     let source = find_cef_distribution(
@@ -197,21 +258,22 @@ async fn stage_cef(
         architecture,
         &configuration.cef_version,
     )?;
-    let metadata_root = runtime_root.join(RuntimeEngine::Cef.as_str());
+    let metadata_root = layout.runtime_root.join(RuntimeEngine::Cef.as_str());
     fs::create_dir_all(metadata_root.join("licenses")).await?;
     let staged_files = if platform == TargetPlatform::MacOS {
-        let framework = source.join("Chromium Embedded Framework.framework");
+        let framework = source.join(CEF_FRAMEWORK_NAME);
         if !framework.is_dir() {
             bail!("CEF distribution is missing {}", framework.display());
         }
-        copy_directory(
-            &framework,
-            &metadata_root.join(framework.file_name().unwrap()),
-        )
-        .await?;
+        let frameworks_directory = layout
+            .macos_frameworks_directory
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("macOS CEF staging requires a Frameworks directory"))?;
+        fs::create_dir_all(frameworks_directory).await?;
+        copy_directory(&framework, &frameworks_directory.join(CEF_FRAMEWORK_NAME)).await?;
         Vec::new()
     } else {
-        copy_cef_flat_runtime(&source, executable_directory).await?
+        copy_cef_flat_runtime(&source, &layout.executable_directory).await?
     };
 
     let credits = source.join("CREDITS.html");
@@ -237,13 +299,16 @@ async fn stage_cef(
     )
     .await?;
     write_json(&metadata_root.join("runtime-files.json"), &staged_files).await?;
-    validate_cef_runtime(platform, executable_directory, &metadata_root)?;
+    validate_cef_runtime(
+        platform,
+        &layout.executable_directory,
+        layout.macos_frameworks_directory.as_deref(),
+    )?;
     Ok(())
 }
 
-async fn remove_staged(executable_directory: &Path) -> eyre::Result<()> {
-    let runtime_root = executable_directory.join(RUNTIME_ROOT);
-    let inventory = runtime_root.join("cef/runtime-files.json");
+async fn remove_staged(layout: &RuntimeLayout) -> eyre::Result<()> {
+    let inventory = layout.runtime_root.join("cef/runtime-files.json");
     if inventory.is_file() {
         let bytes = fs::read(&inventory).await?;
         let paths: Vec<PathBuf> =
@@ -259,7 +324,7 @@ async fn remove_staged(executable_directory: &Path) -> eyre::Result<()> {
                     relative.display()
                 );
             }
-            let path = executable_directory.join(relative);
+            let path = layout.executable_directory.join(relative);
             if path.is_dir() {
                 fs::remove_dir_all(path).await?;
             } else if path.exists() {
@@ -267,8 +332,14 @@ async fn remove_staged(executable_directory: &Path) -> eyre::Result<()> {
             }
         }
     }
-    if runtime_root.exists() {
-        fs::remove_dir_all(runtime_root).await?;
+    if layout.runtime_root.exists() {
+        fs::remove_dir_all(&layout.runtime_root).await?;
+    }
+    if let Some(frameworks_directory) = &layout.macos_frameworks_directory {
+        let framework = frameworks_directory.join(CEF_FRAMEWORK_NAME);
+        if framework.exists() {
+            fs::remove_dir_all(framework).await?;
+        }
     }
     Ok(())
 }
@@ -591,12 +662,13 @@ fn validate_wpe_runtime(root: &Path) -> eyre::Result<()> {
 fn validate_cef_runtime(
     platform: TargetPlatform,
     executable_directory: &Path,
-    metadata_root: &Path,
+    macos_frameworks_directory: Option<&Path>,
 ) -> eyre::Result<()> {
     let library = match platform {
-        TargetPlatform::MacOS => {
-            metadata_root.join("Chromium Embedded Framework.framework/Chromium Embedded Framework")
-        }
+        TargetPlatform::MacOS => macos_frameworks_directory
+            .ok_or_else(|| eyre::eyre!("macOS CEF validation requires a Frameworks directory"))?
+            .join(CEF_FRAMEWORK_NAME)
+            .join("Chromium Embedded Framework"),
         TargetPlatform::Linux => executable_directory.join("libcef.so"),
         TargetPlatform::Windows => executable_directory.join("libcef.dll"),
         _ => return Err(eyre::eyre!("CEF runtime is unsupported for {platform:?}")),
@@ -608,7 +680,10 @@ fn validate_cef_runtime(
         );
     }
     let resources = if platform == TargetPlatform::MacOS {
-        metadata_root.join("Chromium Embedded Framework.framework/Resources")
+        macos_frameworks_directory
+            .expect("macOS Frameworks directory validated above")
+            .join(CEF_FRAMEWORK_NAME)
+            .join("Resources")
     } else {
         executable_directory.to_path_buf()
     };
@@ -702,8 +777,8 @@ fn target_architecture() -> eyre::Result<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactManifest, RuntimeEngine, SourceConfiguration, engines, find_cef_distribution,
-        runtime_manifest_url, select_artifact, validate_cef_runtime,
+        ArtifactManifest, CEF_FRAMEWORK_NAME, RuntimeEngine, SourceConfiguration, engines,
+        find_cef_distribution, runtime_manifest_url, select_artifact, validate_cef_runtime,
     };
     use crate::platform::TargetPlatform;
     use crate::project::{BrowserRuntimePlan, ResolvedWebViewBackend};
@@ -794,8 +869,8 @@ mod tests {
     fn validates_platform_specific_cef_locale_layouts() {
         let temporary = tempfile::tempdir().expect("temporary CEF runtime directory");
         let macos_executable = temporary.path().join("macos/bin");
-        let macos_runtime = macos_executable.join("waterui-browser/cef");
-        let macos_framework = macos_runtime.join("Chromium Embedded Framework.framework");
+        let macos_frameworks = temporary.path().join("macos/frameworks");
+        let macos_framework = macos_frameworks.join(CEF_FRAMEWORK_NAME);
         let macos_resources = macos_framework.join("Resources");
         std::fs::create_dir_all(macos_resources.join("en.lproj"))
             .expect("macOS CEF locale directory");
@@ -807,8 +882,12 @@ mod tests {
         std::fs::write(macos_resources.join("icudtl.dat"), b"icu").expect("macOS CEF ICU data");
         std::fs::write(macos_resources.join("en.lproj/locale.pak"), b"locale")
             .expect("macOS CEF locale pack");
-        validate_cef_runtime(TargetPlatform::MacOS, &macos_executable, &macos_runtime)
-            .expect("macOS CEF resources must use .lproj locale packs");
+        validate_cef_runtime(
+            TargetPlatform::MacOS,
+            &macos_executable,
+            Some(&macos_frameworks),
+        )
+        .expect("macOS CEF resources must use .lproj locale packs");
 
         let linux_executable = temporary.path().join("linux/bin");
         let linux_runtime = linux_executable.join("waterui-browser/cef");
@@ -817,7 +896,7 @@ mod tests {
         std::fs::create_dir_all(&linux_runtime).expect("Linux CEF metadata directory");
         std::fs::write(linux_executable.join("libcef.so"), b"library").expect("Linux CEF library");
         std::fs::write(linux_executable.join("icudtl.dat"), b"icu").expect("Linux CEF ICU data");
-        validate_cef_runtime(TargetPlatform::Linux, &linux_executable, &linux_runtime)
+        validate_cef_runtime(TargetPlatform::Linux, &linux_executable, None)
             .expect("Linux CEF resources must use the locales directory");
     }
 
