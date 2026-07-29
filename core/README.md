@@ -95,7 +95,7 @@ struct AppConfig {
 
 let env = Environment::new()
     .with(AppConfig {
-        api_url: "https://api.example.com".to_string(),
+        api_url: "https://waterui.dev".to_string(),
     });
 
 // Later, in a view:
@@ -120,7 +120,7 @@ The environment supports:
 ```rust
 use waterui_core::AnyView;
 
-let views: Vec<AnyView> = vec![
+let views = [
     AnyView::new("Hello"),
     AnyView::new(42.to_string()),
     AnyView::new(()),

@@ -214,7 +214,7 @@ impl BrowserRunnerHandle {
     }
 }
 
-pub fn run(app: App) {
+pub fn run(app: App, inspector_probe: Option<std::sync::Arc<dyn waterui::task::RuntimeProbe>>) {
     wasm_bindgen_futures::spawn_local(async move {
         let schedule_frame_ref: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
         let browser_schedule = {
@@ -233,7 +233,10 @@ pub fn run(app: App) {
             runnable_queue: runnable_queue.clone(),
             schedule_frame: browser_schedule.clone(),
         };
-        let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
+        let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
+            local_executor,
+            inspector_probe,
+        ));
 
         let (windows, _menu_bar, env) = app.into_parts();
         let mut windows = windows.into_iter();

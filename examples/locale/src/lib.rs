@@ -28,8 +28,8 @@ use waterui_locale::format::unit::{Kilometer, Length, Meter};
 use waterui_locale::{Locale, LocalizedDisplay, locales};
 
 /// Available locales for the picker
-fn available_locales() -> Vec<PickerItem<&'static str>> {
-    vec![
+fn available_locales() -> [PickerItem<&'static str>; 11] {
+    [
         text("English (US)").tag("en-US"),
         text("English (UK)").tag("en-GB"),
         text("中文 (简体)").tag("zh"),

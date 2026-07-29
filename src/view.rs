@@ -587,7 +587,7 @@ pub trait ViewExt: View + Sized {
     /// view.gesture_observer(
     ///     GestureObserver::new(
     ///         TapGesture::repeat(2),
-    ///         |State(counter): State<Binding<i32>>| counter.set(counter.get() + 1),
+    ///         |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     ///     )
     /// )
     /// ```
@@ -1085,7 +1085,7 @@ pub trait ViewExt: View + Sized {
     ///          State(count): State<Binding<i32>>,
     ///          data: DragData| {
     ///             items.update(|v| v.push(data.as_str().to_string()));
-    ///             count.set(count.get() + 1);
+    ///             *count.get_mut() += 1;
     ///         },
     ///     );
     /// ```

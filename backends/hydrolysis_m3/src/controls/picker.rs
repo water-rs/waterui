@@ -1,7 +1,3 @@
-#![allow(
-    clippy::cast_precision_loss,
-    reason = "intentional lossy numeric cast in rendering/layout code"
-)]
 use crate::dimensions::{
     PICKER_HORIZONTAL_INSET, PICKER_INDICATOR_SPACE, PICKER_LABEL_SPACING,
     PICKER_MENU_POPUP_CORNER_RADIUS, PICKER_MENU_POPUP_ROW_HEIGHT, PICKER_MENU_POPUP_TOP_SPACING,
@@ -13,6 +9,7 @@ use crate::dimensions::{
 use crate::theme::colors::{MaterialColorScheme, MaterialRoleColor};
 use crate::theme::state_layer;
 use crate::{Brush, DrawContext, PickerMetrics, RadioIndicatorState, WidgetInteractionState};
+use num_traits::ToPrimitive;
 use waterui_form::picker::PickerStyle;
 
 pub fn metrics(style: PickerStyle) -> PickerMetrics {
@@ -258,9 +255,17 @@ pub fn draw_segmented_container(
     if segment_count <= 1 {
         return;
     }
-    let segment_width = bounds.width() / segment_count as f64;
+    let segment_width = bounds.width()
+        / segment_count
+            .to_f64()
+            .expect("picker segment count must be representable as f64");
     for index in 1..segment_count {
-        let x = segment_width.mul_add(index as f64, bounds.x0);
+        let x = segment_width.mul_add(
+            index
+                .to_f64()
+                .expect("picker segment index must be representable as f64"),
+            bounds.x0,
+        );
         draw.stroke_line(
             vello::kurbo::Point::new(x, bounds.y0),
             vello::kurbo::Point::new(x, bounds.y1),

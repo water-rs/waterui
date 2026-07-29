@@ -124,7 +124,9 @@ fn composite_over_opaque_background(
 ) -> OffscreenRenderOutput {
     let rgba8 = output
         .rgba8
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|pixel| {
             let alpha = u16::from(pixel[3]);
             let inv_alpha = 255_u16 - alpha;

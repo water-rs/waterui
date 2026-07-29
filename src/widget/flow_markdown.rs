@@ -379,18 +379,11 @@ struct FlowUpdate {
     typewriter: Option<TypewriterRun>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, crate::Identifiable)]
 struct FlowBlockSlot {
+    #[id]
     identity: u64,
     content: FlowBlockContent,
-}
-
-impl Identifiable for FlowBlockSlot {
-    type Id = u64;
-
-    fn id(&self) -> Self::Id {
-        self.identity
-    }
 }
 
 #[derive(Clone)]

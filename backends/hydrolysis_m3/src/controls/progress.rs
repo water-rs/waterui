@@ -1,12 +1,3 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    reason = "intentional lossy numeric cast in rendering/layout code"
-)]
-#![allow(
-    clippy::unreadable_literal,
-    reason = "dense Material motion easing/timing curve constants; digit grouping does not aid readability"
-)]
 use crate::dimensions::{
     PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH, PROGRESS_LINEAR_BAR_HEIGHT,
     PROGRESS_LINEAR_BAR_HORIZONTAL_INSET, PROGRESS_LINEAR_BAR_TOP_OFFSET,
@@ -17,6 +8,7 @@ use crate::theme::colors::MaterialColorScheme;
 use crate::{Brush, DrawContext, ProgressIndicatorStyle, ProgressMetrics, lerp_color};
 use core::f64::consts::FRAC_PI_2;
 use core::time::Duration;
+use num_traits::ToPrimitive;
 use vello::kurbo::{BezPath, Point, Rect};
 use waterui::animation::Animation;
 
@@ -43,11 +35,11 @@ const PRIMARY_SCALE: &[Segment] = &[
     Segment {
         at: 0.3665,
         value: 0.08,
-        easing: Some((0.334731, 0.12482, 0.785844, 1.0)),
+        easing: Some((0.334_731, 0.12482, 0.785_844, 1.0)),
     },
     Segment {
         at: 0.6915,
-        value: 0.661479,
+        value: 0.661_479,
         easing: Some((0.06, 0.11, 0.6, 1.0)),
     },
     Segment {
@@ -65,12 +57,12 @@ const PRIMARY_TRANSLATE: &[Segment] = &[
     Segment {
         at: 0.20,
         value: 0.0,
-        easing: Some((0.5, 0.0, 0.701732, 0.495819)),
+        easing: Some((0.5, 0.0, 0.701_732, 0.495_819)),
     },
     Segment {
         at: 0.5915,
         value: 83.6714,
-        easing: Some((0.302435, 0.381352, 0.55, 0.956352)),
+        easing: Some((0.302_435, 0.381_352, 0.55, 0.956_352)),
     },
     Segment {
         at: 1.0,
@@ -82,17 +74,17 @@ const SECONDARY_SCALE: &[Segment] = &[
     Segment {
         at: 0.0,
         value: 0.08,
-        easing: Some((0.205028, 0.057051, 0.57661, 0.453971)),
+        easing: Some((0.205_028, 0.057_051, 0.57661, 0.453_971)),
     },
     Segment {
         at: 0.1915,
-        value: 0.457104,
-        easing: Some((0.152313, 0.196432, 0.648374, 1.00432)),
+        value: 0.457_104,
+        easing: Some((0.152_313, 0.196_432, 0.648_374, 1.00432)),
     },
     Segment {
         at: 0.4415,
         value: 0.72796,
-        easing: Some((0.257759, -0.003163, 0.211762, 1.38179)),
+        easing: Some((0.257_759, -0.003_163, 0.211_762, 1.38179)),
     },
     Segment {
         at: 1.0,
@@ -104,17 +96,17 @@ const SECONDARY_TRANSLATE: &[Segment] = &[
     Segment {
         at: 0.0,
         value: 0.0,
-        easing: Some((0.15, 0.0, 0.515058, 0.409685)),
+        easing: Some((0.15, 0.0, 0.515_058, 0.409_685)),
     },
     Segment {
         at: 0.25,
         value: 37.6519,
-        easing: Some((0.31033, 0.284058, 0.8, 0.733712)),
+        easing: Some((0.31033, 0.284_058, 0.8, 0.733_712)),
     },
     Segment {
         at: 0.4835,
         value: 84.3862,
-        easing: Some((0.4, 0.627035, 0.6, 0.902026)),
+        easing: Some((0.4, 0.627_035, 0.6, 0.902_026)),
     },
     Segment {
         at: 1.0,
@@ -248,10 +240,17 @@ fn sample_segments(segments: &[Segment], elapsed: Duration, cycle: Duration) -> 
             return end.value;
         }
         let local = ((phase - start.at) / (end.at - start.at)).clamp(0.0, 1.0);
-        let eased = start.easing.map_or(local as f32, |(x1, y1, x2, y2)| {
-            Animation::bezier(Duration::from_millis(1), x1, y1, x2, y2)
-                .progress(Duration::from_secs_f64(local / 1_000.0))
-        });
+        let eased = start.easing.map_or_else(
+            || {
+                local
+                    .to_f32()
+                    .expect("progress phase must be representable as f32")
+            },
+            |(x1, y1, x2, y2)| {
+                Animation::bezier(Duration::from_millis(1), x1, y1, x2, y2)
+                    .progress(Duration::from_secs_f64(local / 1_000.0))
+            },
+        );
         return (end.value - start.value).mul_add(f64::from(eased), start.value);
     }
     segments
@@ -291,14 +290,24 @@ fn progress_color(
 fn sample_color_phase(phase: f64, palette: [vello::peniko::Color; 4]) -> vello::peniko::Color {
     match phase {
         p if p < 0.15 => palette[0],
-        p if p < 0.25 => lerp_color(palette[0], palette[1], ((p - 0.15) / 0.10) as f32),
+        p if p < 0.25 => lerp_color(palette[0], palette[1], progress_phase((p - 0.15) / 0.10)),
         p if p < 0.40 => palette[1],
-        p if p < 0.50 => lerp_color(palette[1], palette[2], ((p - 0.40) / 0.10) as f32),
+        p if p < 0.50 => lerp_color(palette[1], palette[2], progress_phase((p - 0.40) / 0.10)),
         p if p < 0.65 => palette[2],
-        p if p < 0.75 => lerp_color(palette[2], palette[3], ((p - 0.65) / 0.10) as f32),
+        p if p < 0.75 => lerp_color(palette[2], palette[3], progress_phase((p - 0.65) / 0.10)),
         p if p < 0.90 => palette[3],
-        _ => lerp_color(palette[3], palette[0], ((phase - 0.90) / 0.10) as f32),
+        _ => lerp_color(
+            palette[3],
+            palette[0],
+            progress_phase((phase - 0.90) / 0.10),
+        ),
     }
+}
+
+fn progress_phase(value: f64) -> f32 {
+    value
+        .to_f32()
+        .expect("progress phase must be representable as f32")
 }
 
 fn circular_indeterminate_arc(elapsed: Duration) -> (f64, f64) {
@@ -332,7 +341,10 @@ fn circle_arc_path(center: Point, radius: f64, start_angle: f64, sweep: f64) -> 
         return path;
     }
     let segments = 64usize;
-    let step = sweep / segments as f64;
+    let step = sweep
+        / segments
+            .to_f64()
+            .expect("progress arc segment count must be representable as f64");
     let mut angle = start_angle;
     path.move_to(Point::new(
         radius.mul_add(angle.cos(), center.x),

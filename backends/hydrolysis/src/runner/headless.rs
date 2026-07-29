@@ -210,7 +210,7 @@ impl HeadlessRuntime {
         height: u32,
         create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
     ) -> Self {
-        init_main_thread_executors();
+        let inspector_probe = init_main_thread_executors();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
@@ -227,8 +227,9 @@ impl HeadlessRuntime {
             .with_writer(std::io::stderr)
             .try_init();
         let local_executor = HeadlessMainThreadExecutor::default();
-        let _ = try_init_local_executor(waterui::task::monitored_local_executor(
+        let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
             local_executor.clone(),
+            inspector_probe,
         ));
 
         // The headless window uses the same default background as platform

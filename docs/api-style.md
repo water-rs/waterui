@@ -93,7 +93,7 @@ Use this when:
 
 ```rust
 button("+1")
-    .action(|State(c): State<Binding<i32>>| c.set(c.get() + 1))
+    .action(|State(c): State<Binding<i32>>| *c.get_mut() += 1)
     .state(&counter)
 ```
 
@@ -122,7 +122,7 @@ let control = StreamControl { … };
 button("Prev doc")
     .action(|State(c): State<StreamControl>| {
         cancel_stream(&c.streaming, &c.stream_revision);
-        c.document_index.set(c.document_index.get() - 1);
+        *c.document_index.get_mut() -= 1;
         reset_stream(&c.markdown, &c.char_progress);
     })
     .state(&control)

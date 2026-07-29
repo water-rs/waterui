@@ -8,7 +8,7 @@ use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Dynamic, Environment, View};
+use waterui_core::{AnyView, Environment, View};
 use waterui_locale::locale_binding;
 
 use crate::calendar::{
@@ -175,25 +175,13 @@ impl View for MultiDatePickerFallback {
         let visible_month = self.visible_month;
         let locale = locale_binding(env).computed();
 
-        let calendar = Dynamic::watch(visible_month.clone(), move |month| {
-            let cell_range = range.clone();
-            let cell_selection = selection.clone();
-            let cell_decorated = decorated.clone();
-            CalendarBody::new(
-                locale.clone(),
-                month,
-                range.clone(),
-                visible_month.clone(),
-                calendar_rows(month, move |cell| {
-                    multi_day_cell_content(
-                        cell,
-                        &cell_range,
-                        cell_selection.clone(),
-                        &cell_decorated,
-                    )
-                }),
-            )
+        let cell_range = range.clone();
+        let cell_selection = selection;
+        let cell_decorated = decorated;
+        let rows = calendar_rows(&visible_month, move |cell| {
+            multi_day_cell_content(cell, &cell_range, cell_selection.clone(), &cell_decorated)
         });
+        let calendar = CalendarBody::new(locale, range, visible_month, rows);
 
         waterui_layout::stack::vstack((label, calendar)).spacing(10.0)
     }

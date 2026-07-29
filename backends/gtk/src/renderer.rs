@@ -1424,15 +1424,12 @@ impl GtkRenderer {
             },
         );
 
-        // Metadata<AppliedFilter> - snapshot the child subtree and run the GPU filter pipeline.
-        dispatcher.register::<Metadata<AppliedFilter>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let content = renderer.render_any(metadata.content, env);
-            let runtime = env
-                .get::<waterui_graphics::GpuRuntime>()
-                .expect("GTK renderer requires a GpuRuntime in the environment")
-                .clone();
-            crate::applied_filter::wrap_filtered_content(content, metadata.value, runtime)
+        dispatcher.register::<Metadata<AppliedFilter>>(|_state, _ctx, _metadata, _env| {
+            panic!(
+                "AppliedFilter is unsupported on the GTK native backend because GTK does not \
+                 expose its rendered widget texture to wgpu without a GPU-to-CPU readback; \
+                 use a self-drawn backend for GPU filters"
+            )
         });
 
         // IgnorableMetadata handlers - these can safely just render the content

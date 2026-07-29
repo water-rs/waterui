@@ -108,4 +108,4 @@ release = false
 
 [[package]]
 name = "waterui-cli"
-git_tag_name = "cli-v{{ version }}"
+git_tag_name = "waterui-cli-v{{ version }}"

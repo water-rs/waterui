@@ -1,8 +1,9 @@
-//! Cross-platform native icons for `WaterUI`.
+//! Apple system icons for `WaterUI`.
 //!
-//! This crate provides a curated set of common icons that work across platforms:
-//! - **Apple**: Renders as native SF Symbols
-//! - **Android**: Falls back to placeholder icon (future: Material Icons mapping)
+//! This crate provides curated SF Symbol names for Apple platforms. `SystemIcon`
+//! is intentionally unsupported on Android, Linux, Web, terminal, and self-drawn
+//! backends because those platforms do not expose Apple's system icon catalog.
+//! Portable applications must use a packaged icon crate.
 //!
 //! Function-based entry points match the shape of the `lucide`,
 //! `material-icon`, and `sf-symbol` packs.
