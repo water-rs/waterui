@@ -6,6 +6,8 @@
 //! that do not select either surface.
 
 mod app;
+#[cfg(target_os = "macos")]
+mod application_mac;
 mod cdp;
 mod gpu;
 mod page;
@@ -13,6 +15,8 @@ mod runtime;
 #[cfg(feature = "webview")]
 mod webview;
 
+#[cfg(target_os = "macos")]
+pub use application_mac::initialize_macos_application;
 pub use cdp::CefCdpSession;
 pub use gpu::{CefViewport, gpu_view};
 pub use page::{
