@@ -102,17 +102,9 @@ pub enum Background {
     Image(Computed<Str>),
     /// A material background (blur effects).
     Material(Material),
-    /// WebGPU shader background.
-    Shader(Shader),
     /// A gradient background (linear, radial, angular, or mesh).
     Gradient(Gradient),
 }
-
-/// A WebGPU shader background.
-///
-/// Not implemented yet.
-#[derive(Debug)]
-pub struct Shader {}
 
 /// Material types for background blur effects.
 ///

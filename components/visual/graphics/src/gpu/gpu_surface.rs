@@ -1524,7 +1524,7 @@ fn encode_hdr_pq_png(
     // Treat linear 1.0 as HDR reference white (203 nits), then encode absolute PQ.
     // This keeps >1.0 headroom while producing standards-based HDR signaling.
     let mut png16 = Vec::with_capacity(expected);
-    for px in rgba16f.chunks_exact(8) {
+    for px in rgba16f.as_chunks::<8>().0 {
         let r = linear_to_pq(
             (f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0)) * SDR_WHITE_NITS,
         );
@@ -1604,7 +1604,7 @@ fn encode_png16(
 fn rgba16f_to_sdr_srgb16_bytes(rgba16f: &[u8], white_point: f32, capacity: usize) -> Vec<u8> {
     let white_point = white_point.max(1.0);
     let mut png16 = Vec::with_capacity(capacity);
-    for px in rgba16f.chunks_exact(8) {
+    for px in rgba16f.as_chunks::<8>().0 {
         let r = linear_to_srgb(
             (f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0) / white_point).min(1.0),
         );
@@ -1630,7 +1630,7 @@ fn rgba16f_to_sdr_srgb16_bytes(rgba16f: &[u8], white_point: f32, capacity: usize
 fn rgba16f_to_sdr_srgb8_bytes(rgba16f: &[u8], white_point: f32, capacity: usize) -> Vec<u8> {
     let white_point = white_point.max(1.0);
     let mut rgba8 = Vec::with_capacity(capacity);
-    for px in rgba16f.chunks_exact(8) {
+    for px in rgba16f.as_chunks::<8>().0 {
         let r = linear_to_srgb(
             (f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0) / white_point).min(1.0),
         );
@@ -1651,7 +1651,7 @@ fn rgba16f_to_sdr_srgb8_bytes(rgba16f: &[u8], white_point: f32, capacity: usize)
 
 fn compute_tonemap_white_point(rgba16f: &[u8]) -> f32 {
     let mut frame_max = Vec::with_capacity(rgba16f.len() / 8);
-    for px in rgba16f.chunks_exact(8) {
+    for px in rgba16f.as_chunks::<8>().0 {
         let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0);
         let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0);
         let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0);
@@ -1669,7 +1669,7 @@ fn analyze_hdr_headroom(rgba16f: &[u8]) -> (f32, f32) {
     let mut max_rgb = 0.0f32;
     let mut total = 0usize;
     let mut hdr = 0usize;
-    for px in rgba16f.chunks_exact(8) {
+    for px in rgba16f.as_chunks::<8>().0 {
         let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0);
         let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0);
         let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0);

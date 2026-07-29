@@ -6,7 +6,7 @@ use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use serde::Serialize;
 
-use crate::shell;
+use crate::shell::Shell;
 use crate::{header, line};
 use smol::future::zip;
 use smol::process::Command;
@@ -44,33 +44,33 @@ pub struct Args {
 }
 
 /// Run the devices command.
-pub async fn run(args: Args) -> Result<()> {
-    if shell::get().is_json() {
-        return run_json(args).await;
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    if shell.is_json() {
+        return run_json(shell, args).await;
     }
 
     match args.platform {
         TargetPlatform::Ios => {
             let ios_devices = scan_ios_devices().await?;
-            display_ios_devices(&ios_devices);
+            display_ios_devices(shell, &ios_devices);
         }
         TargetPlatform::Android => {
             let adb_path = resolve_android_adb()?;
             let (avds, devices, running_avds) =
                 scan_android_devices(AndroidSdk::emulator_path(), adb_path).await?;
-            display_android_devices(&avds, &devices, &running_avds);
+            display_android_devices(shell, &avds, &devices, &running_avds);
         }
         TargetPlatform::Macos => {
-            display_macos_devices();
+            display_macos_devices(shell);
         }
         TargetPlatform::Esp32 => {
             let ports = scan_serial_ports().await?;
-            display_esp32_devices(&ports);
+            display_esp32_devices(shell, &ports);
         }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
             let adb_path = resolve_android_adb()?;
-            let spinner = shell::spinner("Scanning devices...");
+            let spinner = shell.spinner("Scanning devices...");
 
             // Scan iOS, Android, and serial ports in parallel
             let ((ios_devices, android_result), serial_ports) = zip(
@@ -87,20 +87,20 @@ pub async fn run(args: Args) -> Result<()> {
             }
 
             // Display results in order
-            display_ios_devices(&ios_devices?);
+            display_ios_devices(shell, &ios_devices?);
             {
                 let (avds, devices, running_avds) = android_result?;
-                display_android_devices(&avds, &devices, &running_avds);
+                display_android_devices(shell, &avds, &devices, &running_avds);
             }
-            display_macos_devices();
-            display_esp32_devices(&serial_ports?);
+            display_macos_devices(shell);
+            display_esp32_devices(shell, &serial_ports?);
         }
     }
 
     Ok(())
 }
 
-async fn run_json(args: Args) -> Result<()> {
+async fn run_json(shell: &Shell, args: Args) -> Result<()> {
     let output = match args.platform {
         TargetPlatform::Ios => {
             let ios_devices = scan_ios_devices().await?;
@@ -176,7 +176,7 @@ async fn run_json(args: Args) -> Result<()> {
         }
     };
 
-    shell::json_raw(&serde_json::to_string(&output)?);
+    let _ = shell.json_raw(&serde_json::to_string(&output)?);
     Ok(())
 }
 
@@ -240,57 +240,63 @@ async fn scan_android_devices(
 }
 
 /// Display iOS devices.
-fn display_ios_devices(devs: &[AppleSimulator]) {
+fn display_ios_devices(shell: &Shell, devs: &[AppleSimulator]) {
     if !devs.is_empty() {
-        header!("iOS Simulators");
+        header!(shell, "iOS Simulators");
     }
 
     for sim in devs {
         let state_icon = if sim.state == "Booted" { "●" } else { "○" };
-        line!("  {} {} ({})", state_icon, sim.name, sim.udid);
+        line!(shell, "  {} {} ({})", state_icon, sim.name, sim.udid);
     }
 
     if devs.is_empty() {
-        line!("  No iOS simulators available");
+        line!(shell, "  No iOS simulators available");
     }
 }
 
 /// Display Android devices and emulators.
 fn display_android_devices(
+    shell: &Shell,
     avds: &[String],
     connected_devices: &[AndroidDevice],
     running_avds: &HashSet<String>,
 ) {
-    header!("Android");
+    header!(shell, "Android");
 
     // Show emulators
     for avd in avds {
         let is_running = running_avds.contains(avd);
         let state_icon = if is_running { "●" } else { "○" };
-        line!("  {} {} (emulator)", state_icon, avd);
+        line!(shell, "  {} {} (emulator)", state_icon, avd);
     }
 
     // Show connected physical devices
     for device in connected_devices {
         if !device.identifier().starts_with("emulator-") {
-            line!("  ● {} ({})", device.identifier(), device.abi().as_str());
+            line!(
+                shell,
+                "  ● {} ({})",
+                device.identifier(),
+                device.abi().as_str()
+            );
         }
     }
 
     if avds.is_empty() && connected_devices.is_empty() {
-        line!("  No Android devices or emulators available");
+        line!(shell, "  No Android devices or emulators available");
     }
 }
 
 /// Display macOS device.
-fn display_macos_devices() {
-    header!("macOS");
-    line!("  ● Current Machine");
+fn display_macos_devices(shell: &Shell) {
+    header!(shell, "macOS");
+    line!(shell, "  ● Current Machine");
 }
 
 /// Display ESP32 serial ports.
-fn display_esp32_devices(ports: &[SerialPortSummary]) {
-    header!("ESP32 (serial)");
+fn display_esp32_devices(shell: &Shell, ports: &[SerialPortSummary]) {
+    header!(shell, "ESP32 (serial)");
 
     for port in ports {
         let marker = if port.likely_esp { "●" } else { "○" };
@@ -304,11 +310,19 @@ fn display_esp32_devices(ports: &[SerialPortSummary]) {
             .map(|product| format!(" {product}"))
             .unwrap_or_default();
         let hint = if port.likely_esp { " (likely ESP)" } else { "" };
-        line!("  {} {}{}{}{}", marker, port.port_name, usb, product, hint);
+        line!(
+            shell,
+            "  {} {}{}{}{}",
+            marker,
+            port.port_name,
+            usb,
+            product,
+            hint
+        );
     }
 
     if ports.is_empty() {
-        line!("  No serial ports available");
+        line!(shell, "  No serial ports available");
     }
 }
 

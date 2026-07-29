@@ -8,7 +8,7 @@ use target_lexicon::{
     Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor,
 };
 
-use crate::shell::{self, display_output};
+use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, success};
 use waterui_cli::{
@@ -121,21 +121,22 @@ struct BuildContext {
 }
 
 /// Run the build command.
-pub async fn run(args: Args) -> Result<()> {
-    let context = prepare_build_context(&args).await?;
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let context = prepare_build_context(shell, &args).await?;
     print_build_header(
+        shell,
         &context.project,
         args.platform,
         context.backend,
         args.release,
     );
-    check_build_toolchain(args.platform, context.backend, args.arch).await?;
-    let result = execute_build(&args, &context).await;
+    check_build_toolchain(shell, args.platform, context.backend, args.arch).await?;
+    let result = execute_build(shell, &args, &context).await;
 
-    handle_build_result(result, args.output_dir)
+    handle_build_result(shell, result, args.output_dir)
 }
 
-async fn prepare_build_context(args: &Args) -> Result<BuildContext> {
+async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<BuildContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let mut project = Project::open(&project_path).await?;
     ensure_app_project(&project)?;
@@ -149,7 +150,7 @@ async fn prepare_build_context(args: &Args) -> Result<BuildContext> {
         project.set_esp32_chip(chip).await?;
     }
 
-    let project = ensure_generated_backend_ready(&project_path, project, backend).await?;
+    let project = ensure_generated_backend_ready(shell, &project_path, project, backend).await?;
     let build_options = build_options(args, backend);
 
     Ok(BuildContext {
@@ -199,6 +200,7 @@ fn ensure_backend_configured(project: &Project, backend: TargetBackend) -> Resul
 }
 
 async fn ensure_generated_backend_ready(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     backend: TargetBackend,
@@ -211,6 +213,7 @@ async fn ensure_generated_backend_ready(
                 .exists() =>
         {
             reinitialize_generated_backend::<Gtk4Backend>(
+                shell,
                 project_path,
                 &project,
                 "Re-initializing GTK4 backend...",
@@ -225,6 +228,7 @@ async fn ensure_generated_backend_ready(
                 .exists() =>
         {
             reinitialize_generated_backend::<HydrolysisBackend>(
+                shell,
                 project_path,
                 &project,
                 "Re-initializing hydrolysis backend...",
@@ -234,6 +238,7 @@ async fn ensure_generated_backend_ready(
         }
         TargetBackend::Dew if Esp32Backend::requires_regeneration(&project)? => {
             reinitialize_generated_backend::<Esp32Backend>(
+                shell,
                 project_path,
                 &project,
                 "Re-initializing ESP32 backend...",
@@ -246,6 +251,7 @@ async fn ensure_generated_backend_ready(
 }
 
 async fn reinitialize_generated_backend<T>(
+    shell: &Shell,
     project_path: &PathBuf,
     project: &Project,
     spinner_message: &str,
@@ -254,13 +260,13 @@ async fn reinitialize_generated_backend<T>(
 where
     T: waterui_cli::backend::Backend,
 {
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     reinit_backend::<T>(project).await?;
     let project = Project::open(project_path).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(project)
 }
 
@@ -280,6 +286,7 @@ fn build_options(args: &Args, backend: TargetBackend) -> BuildOptions {
 }
 
 fn print_build_header(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     backend: TargetBackend,
@@ -287,6 +294,7 @@ fn print_build_header(
 ) {
     let mode = if release { "release" } else { "debug" };
     header!(
+        shell,
         "Building {} for {} via {} ({})",
         project.crate_name(),
         platform_name(platform),
@@ -296,52 +304,55 @@ fn print_build_header(
 }
 
 async fn check_build_toolchain(
+    shell: &Shell,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
 ) -> Result<()> {
-    let spinner = shell::spinner("Checking toolchain...");
+    let spinner = shell.spinner("Checking toolchain...");
     check_toolchain_for_backend(platform, backend, arch).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Toolchain ready");
+    success!(shell, "Toolchain ready");
     Ok(())
 }
 
-async fn execute_build(args: &Args, context: &BuildContext) -> Result<PathBuf> {
-    let spinner = shell::spinner("Compiling...");
-    let result = display_output(async {
-        match context.backend {
-            TargetBackend::Apple => {
-                build_for_apple(
-                    &context.project,
-                    args.platform,
-                    args.arch,
-                    context.build_options.clone(),
-                )
-                .await
+async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Result<PathBuf> {
+    let spinner = shell.spinner("Compiling...");
+    let result = shell
+        .display_output(async {
+            match context.backend {
+                TargetBackend::Apple => {
+                    build_for_apple(
+                        &context.project,
+                        args.platform,
+                        args.arch,
+                        context.build_options.clone(),
+                    )
+                    .await
+                }
+                TargetBackend::Android => {
+                    build_for_android(&context.project, args.arch, context.build_options.clone())
+                        .await
+                }
+                TargetBackend::Gtk4 => {
+                    build_gtk4(&context.project, context.build_options.clone()).await
+                }
+                TargetBackend::Hydrolysis => {
+                    build_hydrolysis(
+                        &context.project,
+                        lib_platform(args.platform),
+                        context.build_options.clone(),
+                    )
+                    .await
+                }
+                TargetBackend::Dew => {
+                    build_esp32(&context.project, context.build_options.clone()).await
+                }
             }
-            TargetBackend::Android => {
-                build_for_android(&context.project, args.arch, context.build_options.clone()).await
-            }
-            TargetBackend::Gtk4 => {
-                build_gtk4(&context.project, context.build_options.clone()).await
-            }
-            TargetBackend::Hydrolysis => {
-                build_hydrolysis(
-                    &context.project,
-                    lib_platform(args.platform),
-                    context.build_options.clone(),
-                )
-                .await
-            }
-            TargetBackend::Dew => {
-                build_esp32(&context.project, context.build_options.clone()).await
-            }
-        }
-    })
-    .await;
+        })
+        .await;
 
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -350,17 +361,21 @@ async fn execute_build(args: &Args, context: &BuildContext) -> Result<PathBuf> {
     result
 }
 
-fn handle_build_result(result: Result<PathBuf>, output_dir: Option<PathBuf>) -> Result<()> {
+fn handle_build_result(
+    shell: &Shell,
+    result: Result<PathBuf>,
+    output_dir: Option<PathBuf>,
+) -> Result<()> {
     match result {
         Ok(output_path) => {
-            success!("Build output at {}", output_path.display());
+            success!(shell, "Build output at {}", output_path.display());
             if let Some(output_dir) = output_dir {
-                success!("Copied library to {}", output_dir.display());
+                success!(shell, "Copied library to {}", output_dir.display());
             }
             Ok(())
         }
         Err(err) => {
-            error!("Build failed: {err}");
+            error!(shell, "Build failed: {err}");
             Err(err)
         }
     }

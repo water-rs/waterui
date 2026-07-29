@@ -274,7 +274,7 @@ fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut
 }
 
 impl Extractor for Locale {
-    fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
+    fn extract(env: &Environment) -> Result<Self, waterui_core::Error> {
         if let Some(locale) = env.get::<Binding<Self>>() {
             return Ok(locale.get());
         }

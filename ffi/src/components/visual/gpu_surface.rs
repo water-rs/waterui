@@ -62,7 +62,7 @@ impl IntoFFI for GpuSurface {
         WuiGpuSurface {
             surface: ptr,
             has_picture_in_picture_host_id: picture_in_picture_host_id.is_some(),
-            picture_in_picture_host_id: picture_in_picture_host_id.map_or(0, |id| id),
+            picture_in_picture_host_id: picture_in_picture_host_id.unwrap_or(0),
         }
     }
 }

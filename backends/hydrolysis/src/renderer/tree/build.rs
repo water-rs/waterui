@@ -547,7 +547,7 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<SystemIcon>>() {
-            Ok(icon) => return RenderNode::build_icon((*icon).into_inner(), env, renderer),
+            Ok(icon) => unsupported_system_icon(icon.as_inner()),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<ResolvedGradient>>() {

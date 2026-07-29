@@ -15,6 +15,7 @@ proc-macro = true
 
 [dependencies]
 proc-macro2 = "1"
+proc-macro-crate = "3"
 quote = "1"
 syn = { version = "3", features = ["full", "parsing"] }
 waterui-assets.workspace = true

@@ -7,6 +7,7 @@ use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::Result;
 use sha2::Digest as _;
 
+use crate::shell::Shell;
 use crate::{header, note, success};
 use waterui_cli::inspector::{InspectorLaunchOptions, InspectorPlatform, launch_inspector_session};
 
@@ -52,14 +53,14 @@ pub struct Args {
 }
 
 /// Run the inspector command.
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let target: SocketAddr = args.target.parse()?;
     let token = args.token.unwrap_or_else(generate_session_token);
 
-    header!("Inspector");
-    note!("Target runtime endpoint: {}", target);
-    note!("Session token: {}", token);
+    header!(shell, "Inspector");
+    note!(shell, "Target runtime endpoint: {}", target);
+    note!(shell, "Session token: {}", token);
 
     let mut session = launch_inspector_session(
         &project_path,
@@ -73,8 +74,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Keep the inspector app alive after CLI exits.
     session.detach();
-    success!("Inspector app launched");
+    success!(shell, "Inspector app launched");
     note!(
+        shell,
         "Ensure the target app runs with WATERUI_INSPECTOR_TOKEN={token} and matching inspector endpoint."
     );
     Ok(())

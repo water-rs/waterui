@@ -18,6 +18,36 @@ fn layout_debug_enabled() -> bool {
     std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
 }
 
+fn trace_layout_rects(
+    operation: &str,
+    width: i32,
+    height: i32,
+    child_count: usize,
+    rects: &[Rect],
+) {
+    tracing::debug!(
+        target: "waterui::gtk::layout",
+        operation,
+        width,
+        height,
+        child_count,
+        rect_count = rects.len(),
+        "Laid out GTK fixed container"
+    );
+    for (index, rect) in rects.iter().enumerate().take(8) {
+        tracing::debug!(
+            target: "waterui::gtk::layout",
+            operation,
+            index,
+            x = rect.x(),
+            y = rect.y(),
+            width = rect.width(),
+            height = rect.height(),
+            "GTK fixed-container child rectangle"
+        );
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -74,11 +104,16 @@ mod imp {
             let w = size.width.max(0.0).round() as i32;
             let h = size.height.max(0.0).round() as i32;
             if layout_debug_enabled() {
-                eprintln!(
-                    "[gtk-layout] fixed.measure orientation={orientation:?} for_size={for_size} proposal=({:?},{:?}) -> size=({w},{h}) children={}",
-                    proposal.width,
-                    proposal.height,
-                    refs.len()
+                tracing::debug!(
+                    target: "waterui::gtk::layout",
+                    orientation = ?orientation,
+                    for_size,
+                    proposal_width = ?proposal.width,
+                    proposal_height = ?proposal.height,
+                    width = w,
+                    height = h,
+                    child_count = refs.len(),
+                    "Measured GTK fixed container"
                 );
             }
             match orientation {
@@ -118,20 +153,7 @@ mod imp {
 
             let rects = layout.place(bounds, &refs);
             if layout_debug_enabled() {
-                eprintln!(
-                    "[gtk-layout] fixed.allocate width={width} height={height} children={} rects={}",
-                    children.len(),
-                    rects.len()
-                );
-                for (idx, rect) in rects.iter().enumerate().take(8) {
-                    eprintln!(
-                        "[gtk-layout]   rect[{idx}] = x={} y={} w={} h={}",
-                        rect.x(),
-                        rect.y(),
-                        rect.width(),
-                        rect.height()
-                    );
-                }
+                trace_layout_rects("allocate", width, height, children.len(), &rects);
             }
 
             // First placement adds children; subsequent placements only move/resize.
@@ -239,20 +261,7 @@ impl WuiFixedContainer {
         let _ = layout.size_that_fits(proposal, &refs);
         let rects = layout.place(bounds, &refs);
         if layout_debug_enabled() {
-            eprintln!(
-                "[gtk-layout] fixed.relayout width={width} height={height} children={} rects={}",
-                children.len(),
-                rects.len()
-            );
-            for (idx, rect) in rects.iter().enumerate().take(8) {
-                eprintln!(
-                    "[gtk-layout]   rect[{idx}] = x={} y={} w={} h={}",
-                    rect.x(),
-                    rect.y(),
-                    rect.width(),
-                    rect.height()
-                );
-            }
+            trace_layout_rects("relayout", width, height, children.len(), &rects);
         }
 
         let mut last_rects = imp.last_rects.borrow_mut();
@@ -269,10 +278,11 @@ impl WuiFixedContainer {
         let obj: Self = glib::Object::new();
         let imp = obj.imp();
         if layout_debug_enabled() {
-            eprintln!(
-                "[gtk-layout] fixed.new type={} children={}",
-                obj.type_().name(),
-                children.len()
+            tracing::debug!(
+                target: "waterui::gtk::layout",
+                widget_type = %obj.type_().name(),
+                child_count = children.len(),
+                "Created GTK fixed container"
             );
         }
 

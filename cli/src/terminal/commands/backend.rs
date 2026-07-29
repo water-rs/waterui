@@ -6,7 +6,7 @@ use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use dialoguer::{Confirm, theme::ColorfulTheme};
 
-use crate::shell;
+use crate::shell::Shell;
 use crate::{header, line, note, success, warn};
 use waterui_cli::project::{PackageType, Project};
 
@@ -53,7 +53,7 @@ enum BackendName {
 }
 
 /// Run the backend command.
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(Path::new("."))?;
     let mut project = Project::open(&project_path).await?;
 
@@ -65,81 +65,81 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     match args.command {
-        BackendCommand::Add(add) => add_backend(&mut project, add.backend).await,
+        BackendCommand::Add(add) => add_backend(shell, &mut project, add.backend).await,
         BackendCommand::Remove(remove) => {
-            remove_backend(&mut project, remove.backend, remove.yes).await
+            remove_backend(shell, &mut project, remove.backend, remove.yes).await
         }
         BackendCommand::List => {
-            list_backends(&project);
+            list_backends(shell, &project);
             Ok(())
         }
     }
 }
 
-async fn add_backend(project: &mut Project, backend: BackendName) -> Result<()> {
-    header!("Adding backend: {}", backend_name(backend));
+async fn add_backend(shell: &Shell, project: &mut Project, backend: BackendName) -> Result<()> {
+    header!(shell, "Adding backend: {}", backend_name(backend));
     validate_backend_add_on_host(backend)?;
 
     match backend {
         BackendName::Apple => {
             if project.apple_backend().is_some() {
-                note!("Apple backend already configured");
+                note!(shell, "Apple backend already configured");
                 return Ok(());
             }
-            let spinner = shell::spinner("Scaffolding Apple backend...");
+            let spinner = shell.spinner("Scaffolding Apple backend...");
             project.init_apple_backend().await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Added Apple backend");
+            success!(shell, "Added Apple backend");
         }
         BackendName::Android => {
             if project.android_backend().is_some() {
-                note!("Android backend already configured");
+                note!(shell, "Android backend already configured");
                 return Ok(());
             }
-            let spinner = shell::spinner("Scaffolding Android backend...");
+            let spinner = shell.spinner("Scaffolding Android backend...");
             project.init_android_backend().await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Added Android backend");
+            success!(shell, "Added Android backend");
         }
         BackendName::Gtk4 => {
             if project.gtk4_backend().is_some() {
-                note!("GTK4 backend already configured");
+                note!(shell, "GTK4 backend already configured");
                 return Ok(());
             }
-            let spinner = shell::spinner("Scaffolding GTK4 backend...");
+            let spinner = shell.spinner("Scaffolding GTK4 backend...");
             project.init_gtk4_backend().await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Added GTK4 backend");
+            success!(shell, "Added GTK4 backend");
         }
         BackendName::Hydrolysis => {
             if project.hydrolysis_backend().is_some() {
-                note!("Hydrolysis backend already configured");
+                note!(shell, "Hydrolysis backend already configured");
                 return Ok(());
             }
-            let spinner = shell::spinner("Scaffolding hydrolysis backend...");
+            let spinner = shell.spinner("Scaffolding hydrolysis backend...");
             project.init_hydrolysis_backend().await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Added hydrolysis backend");
+            success!(shell, "Added hydrolysis backend");
         }
         BackendName::Esp32 => {
             if project.esp32_backend().is_some() {
-                note!("ESP32 backend already configured");
+                note!(shell, "ESP32 backend already configured");
                 return Ok(());
             }
-            let spinner = shell::spinner("Scaffolding ESP32 backend...");
+            let spinner = shell.spinner("Scaffolding ESP32 backend...");
             project.init_esp32_backend().await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Added ESP32 backend");
+            success!(shell, "Added ESP32 backend");
         }
     }
 
@@ -169,16 +169,21 @@ fn validate_backend_add_on_host(backend: BackendName) -> Result<()> {
     Ok(())
 }
 
-async fn remove_backend(project: &mut Project, backend: BackendName, yes: bool) -> Result<()> {
+async fn remove_backend(
+    shell: &Shell,
+    project: &mut Project,
+    backend: BackendName,
+    yes: bool,
+) -> Result<()> {
     if !is_backend_configured(project, backend) {
         bail!("Backend {} is not configured", backend_name(backend));
     }
 
-    if !yes && !shell::is_interactive() {
+    if !yes && !shell.is_interactive() {
         bail!("`water backend remove` requires --yes in non-interactive environments");
     }
 
-    if !yes && shell::is_interactive() {
+    if !yes && shell.is_interactive() {
         let confirmed = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
                 "Remove backend {} and delete its generated directory?",
@@ -187,12 +192,12 @@ async fn remove_backend(project: &mut Project, backend: BackendName, yes: bool) 
             .default(false)
             .interact()?;
         if !confirmed {
-            warn!("Cancelled backend removal");
+            warn!(shell, "Cancelled backend removal");
             return Ok(());
         }
     }
 
-    header!("Removing backend: {}", backend_name(backend));
+    header!(shell, "Removing backend: {}", backend_name(backend));
 
     match backend {
         BackendName::Apple => project.remove_apple_backend().await?,
@@ -202,37 +207,37 @@ async fn remove_backend(project: &mut Project, backend: BackendName, yes: bool) 
         BackendName::Esp32 => project.remove_esp32_backend().await?,
     }
 
-    success!("Removed backend {}", backend_name(backend));
+    success!(shell, "Removed backend {}", backend_name(backend));
     Ok(())
 }
 
-fn list_backends(project: &Project) {
-    header!("Configured backends");
+fn list_backends(shell: &Shell, project: &Project) {
+    header!(shell, "Configured backends");
     let mut configured = 0usize;
 
     if project.apple_backend().is_some() {
-        line!("  - apple");
+        line!(shell, "  - apple");
         configured += 1;
     }
     if project.android_backend().is_some() {
-        line!("  - android");
+        line!(shell, "  - android");
         configured += 1;
     }
     if project.gtk4_backend().is_some() {
-        line!("  - gtk4");
+        line!(shell, "  - gtk4");
         configured += 1;
     }
     if project.hydrolysis_backend().is_some() {
-        line!("  - hydrolysis");
+        line!(shell, "  - hydrolysis");
         configured += 1;
     }
     if project.esp32_backend().is_some() {
-        line!("  - esp32");
+        line!(shell, "  - esp32");
         configured += 1;
     }
 
     if configured == 0 {
-        line!("  (none)");
+        line!(shell, "  (none)");
     }
 }
 

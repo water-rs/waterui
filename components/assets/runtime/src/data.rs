@@ -23,7 +23,8 @@ use crate::download_remote_bytes;
 /// let config: Data = asset!("config.json");
 ///
 /// // From remote URL (async)
-/// let remote: Data = asset!("https://api.example.com/data.json").await;
+/// let remote: Data =
+///     asset!("https://raw.githubusercontent.com/water-rs/waterui/dev/Cargo.toml").await;
 ///
 /// // Embedded at compile time
 /// let shader: Data = asset!("shader.wgsl", embed = true);

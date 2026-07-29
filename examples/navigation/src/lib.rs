@@ -24,8 +24,8 @@ enum Route {
     Deepest,
 }
 
-fn sample_topics() -> Vec<Topic> {
-    vec![
+fn sample_topics() -> [Topic; 3] {
+    [
         Topic {
             title: "Getting Started",
             description: "Learn the basics of WaterUI navigation",
@@ -103,13 +103,13 @@ fn counter_section(counter: &Binding<i32>) -> impl View {
             text("Shared Counter").sub_headline(),
             hstack((
                 button("-")
-                    .action(|State(value): State<Binding<i32>>| value.set(value.get() - 1))
+                    .action(|State(value): State<Binding<i32>>| *value.get_mut() -= 1)
                     .state(counter),
                 spacer_min(16.0),
                 text!("Count: {counter_display}").body(),
                 spacer_min(16.0),
                 button("+")
-                    .action(|State(value): State<Binding<i32>>| value.set(value.get() + 1))
+                    .action(|State(value): State<Binding<i32>>| *value.get_mut() += 1)
                     .state(counter),
             )),
             text("This value stays live across the whole path.")
@@ -121,14 +121,14 @@ fn counter_section(counter: &Binding<i32>) -> impl View {
     ))
 }
 
-fn topics_section(items: Vec<Topic>) -> impl View {
+fn topics_section(items: [Topic; 3]) -> impl View {
     vstack((
         spacer_min(16.0),
         Divider,
         spacer_min(16.0),
         text("Topics").sub_headline(),
         spacer_min(8.0),
-        vstack(items.into_iter().map(topic_row).collect::<Vec<_>>()),
+        items.into_iter().map(topic_row).collect::<VStack<_>>(),
     ))
 }
 

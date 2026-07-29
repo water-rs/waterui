@@ -1221,7 +1221,7 @@ pub(crate) fn candlestick_geometry(
                 (bottom.max(low) - top.min(high)).max(4.0),
             ),
         );
-        let anchor = Point::new(x, (top + bottom) * 0.5);
+        let anchor = Point::new(x, f32::midpoint(top, bottom));
         targets.push_rect(HitResult::new(0, index, *candle, anchor), rect);
     }
     CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
@@ -1296,7 +1296,7 @@ pub(crate) fn pie_geometry(
     let center = plot.center();
     let outer_r = plot.width().min(plot.height()) * 0.45;
     let inner_r = outer_r * inner_radius;
-    let mid_r = (inner_r + outer_r) * 0.5;
+    let mid_r = f32::midpoint(inner_r, outer_r);
     let mut angle = -FRAC_PI_2;
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     if total <= 0.0 {
@@ -1344,9 +1344,10 @@ pub(crate) fn gauge_geometry(
     let normalized = data.normalized_value();
     let value_end = (end_angle - start_angle).mul_add(normalized, start_angle);
     let mid = (value_end - start_angle).mul_add(0.5, start_angle);
+    let mid_r = f32::midpoint(inner_r, outer_r);
     let anchor = Point::new(
-        mid.cos().mul_add((inner_r + outer_r) * 0.5, center.x),
-        mid.sin().mul_add((inner_r + outer_r) * 0.5, center.y),
+        mid.cos().mul_add(mid_r, center.x),
+        mid.sin().mul_add(mid_r, center.y),
     );
     let mut targets = HitTargets::new(chart_viewport_from_rect(area));
     let datum = SliceDatum::new(0, data.value, start_angle, value_end);

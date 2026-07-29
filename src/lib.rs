@@ -108,7 +108,7 @@ pub mod prelude {
     };
 
     // Background types (explicit to avoid module name conflict with layout::background)
-    pub use super::background::{Background, Material, Shader};
+    pub use super::background::{Background, Material};
 
     // Asset types
     #[cfg(feature = "assets")]

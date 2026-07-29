@@ -84,19 +84,19 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
         vstack((
             hstack((
                 button("-90°")
-                    .action(|State(r): State<Binding<f32>>| r.set(r.get() - 90.0))
+                    .action(|State(r): State<Binding<f32>>| *r.get_mut() -= 90.0)
                     .state(rotation),
                 button("-45°")
-                    .action(|State(r): State<Binding<f32>>| r.set(r.get() - 45.0))
+                    .action(|State(r): State<Binding<f32>>| *r.get_mut() -= 45.0)
                     .state(rotation),
                 set_f32_button("Reset", 0.0, rotation),
             )),
             hstack((
                 button("+45°")
-                    .action(|State(r): State<Binding<f32>>| r.set(r.get() + 45.0))
+                    .action(|State(r): State<Binding<f32>>| *r.get_mut() += 45.0)
                     .state(rotation),
                 button("+90°")
-                    .action(|State(r): State<Binding<f32>>| r.set(r.get() + 90.0))
+                    .action(|State(r): State<Binding<f32>>| *r.get_mut() += 90.0)
                     .state(rotation),
             )),
         )),
@@ -168,7 +168,7 @@ fn combined_transform_section(
             }),
             button("Grow + Spin").action(move || {
                 grow_scale.set(1.8);
-                grow_rotation.set(grow_rotation.get() + 180.0);
+                *grow_rotation.get_mut() += 180.0;
             }),
             button("Pulse")
                 .action(|State(s): State<Binding<f32>>| {
@@ -509,11 +509,3 @@ pub fn demo() -> impl View {
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }
-
-
-
-
-
-
-
-

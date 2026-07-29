@@ -5,13 +5,34 @@
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 mod identifiable;
 mod locale;
 mod view_builder;
+
+fn waterui_crate_path() -> syn::Result<TokenStream2> {
+    if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal") {
+        return Ok(quote!(crate));
+    }
+
+    match crate_name("waterui") {
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = syn::Ident::new(&name, Span::call_site());
+            Ok(quote!(::#ident))
+        }
+        Err(error) => Err(syn::Error::new(
+            Span::call_site(),
+            format!(
+                "WaterUI macro requires the `waterui` crate as a dependency; \
+                 Cargo.toml may rename it: {error}"
+            ),
+        )),
+    }
+}
 
 #[proc_macro]
 /// Expands `text!(...)` into a localized `Text` view with compile-time catalog loading.
@@ -117,6 +138,10 @@ pub fn derive_identifiable(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(FormBuilder)]
 pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
     let name = &input.ident;
 
     let fields = match &input.data {
@@ -175,10 +200,10 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
         // Use FormBuilder trait for all types
         // The FormBuilder::view method will handle whether to use the placeholder or not
         quote! {
-            <#field_type as crate::FormBuilder>::view(
+            <#field_type as #waterui::FormBuilder>::view(
                 &projected.#field_name,
                 #label_text,
-                ::waterui::Str::from(#placeholder)
+                #waterui::Str::from(#placeholder)
             )
         }
     });
@@ -189,17 +214,17 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     let view_body = if requires_project {
         quote! {
             // Use the Project trait to get individual field bindings
-            let projected = <Self as ::waterui::reactive::project::Project>::project(binding);
+            let projected = <Self as #waterui::reactive::project::Project>::project(binding);
 
             // Create a vstack with all form fields
-            ::waterui::component::stack::vstack((
+            #waterui::component::stack::vstack((
                 #(#field_views,)*
             ))
         }
     } else {
         // Empty struct case
         quote! {
-            ::waterui::component::stack::vstack(())
+            #waterui::component::stack::vstack(())
         }
     };
 
@@ -207,13 +232,13 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
 
     // Generate the implementation
     let expanded = quote! {
-        impl crate::FormBuilder for #name {
-            type View = ::waterui::component::stack::VStack<((#(<#field_types as crate::FormBuilder>::View),*),)>;
+        impl #waterui::FormBuilder for #name {
+            type View = #waterui::component::stack::VStack<((#(<#field_types as #waterui::FormBuilder>::View),*),)>;
 
-            fn view<L: ::waterui::component::IntoLabel>(
-                binding: &::waterui::Binding<Self>,
+            fn view<L: #waterui::component::IntoLabel>(
+                binding: &#waterui::Binding<Self>,
                 _label: L,
-                _placeholder: ::waterui::Str,
+                _placeholder: #waterui::Str,
             ) -> Self::View {
                 #view_body
             }
@@ -288,6 +313,10 @@ fn snake_to_title_case(s: &str) -> String {
 #[proc_macro_attribute]
 pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
     let _name = &input.ident;
     let (_impl_generics, _ty_generics, _where_clause) = input.generics.split_for_impl();
 
@@ -315,7 +344,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        #[derive(Default, Clone, Debug, ::waterui::FormBuilder, ::waterui::Project)]
+        #[derive(Default, Clone, Debug, #waterui::FormBuilder, #waterui::Project)]
         #input
     };
 
@@ -357,12 +386,18 @@ use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
 #[proc_macro_derive(Project)]
 pub fn derive_project(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
 
     match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields_named) => derive_project_struct(&input, fields_named),
-            Fields::Unnamed(fields_unnamed) => derive_project_tuple_struct(&input, fields_unnamed),
-            Fields::Unit => derive_project_unit_struct(&input),
+            Fields::Named(fields_named) => derive_project_struct(&input, fields_named, &waterui),
+            Fields::Unnamed(fields_unnamed) => {
+                derive_project_tuple_struct(&input, fields_unnamed, &waterui)
+            }
+            Fields::Unit => derive_project_unit_struct(&input, &waterui),
         },
         Data::Enum(_) => {
             syn::Error::new_spanned(input, "Project derive macro does not support enums")
@@ -377,7 +412,11 @@ pub fn derive_project(input: TokenStream) -> TokenStream {
     }
 }
 
-fn derive_project_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> TokenStream {
+fn derive_project_struct(
+    input: &DeriveInput,
+    fields: &syn::FieldsNamed,
+    waterui: &TokenStream2,
+) -> TokenStream {
     let struct_name = &input.ident;
     let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -397,7 +436,7 @@ fn derive_project_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> Toke
         );
         quote! {
             #[doc = #doc]
-            pub #field_name: ::waterui::reactive::Binding<#field_type>
+            pub #field_name: #waterui::reactive::Binding<#field_type>
         }
     });
 
@@ -407,7 +446,7 @@ fn derive_project_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> Toke
         quote! {
             #field_name: {
                 let source = source.clone();
-                ::waterui::reactive::Binding::mapping(
+                #waterui::reactive::Binding::mapping(
                     &source,
                     |value| value.#field_name.clone(),
                     move |binding, value| {
@@ -434,10 +473,10 @@ fn derive_project_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> Toke
             #(#projected_fields,)*
         }
 
-        impl #impl_generics_with_static ::waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
+        impl #impl_generics_with_static #waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
             type Projected = #projected_struct_name #ty_generics;
 
-            fn project(source: &::waterui::reactive::Binding<Self>) -> Self::Projected {
+            fn project(source: &#waterui::reactive::Binding<Self>) -> Self::Projected {
                 #projected_struct_name {
                     #(#field_projections,)*
                 }
@@ -448,16 +487,20 @@ fn derive_project_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> Toke
     TokenStream::from(expanded)
 }
 
-fn derive_project_tuple_struct(input: &DeriveInput, fields: &syn::FieldsUnnamed) -> TokenStream {
+fn derive_project_tuple_struct(
+    input: &DeriveInput,
+    fields: &syn::FieldsUnnamed,
+    waterui: &TokenStream2,
+) -> TokenStream {
     let struct_name = &input.ident;
     let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     // Generate tuple type for projection
     let field_types: Vec<&Type> = fields.unnamed.iter().map(|field| &field.ty).collect();
     let projected_tuple = if field_types.len() == 1 {
-        quote! { (::waterui::reactive::Binding<#(#field_types)*>,) }
+        quote! { (#waterui::reactive::Binding<#(#field_types)*>,) }
     } else {
-        quote! { (#(::waterui::reactive::Binding<#field_types>),*) }
+        quote! { (#(#waterui::reactive::Binding<#field_types>),*) }
     };
 
     // Generate field projections using index access
@@ -466,7 +509,7 @@ fn derive_project_tuple_struct(input: &DeriveInput, fields: &syn::FieldsUnnamed)
         quote! {
             {
                 let source = source.clone();
-                ::waterui::reactive::Binding::mapping(
+                #waterui::reactive::Binding::mapping(
                     &source,
                     |value| value.#idx.clone(),
                     move |binding, value| {
@@ -493,10 +536,10 @@ fn derive_project_tuple_struct(input: &DeriveInput, fields: &syn::FieldsUnnamed)
     };
 
     let expanded = quote! {
-        impl #impl_generics_with_static ::waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
+        impl #impl_generics_with_static #waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
             type Projected = #projected_tuple;
 
-            fn project(source: &::waterui::reactive::Binding<Self>) -> Self::Projected {
+            fn project(source: &#waterui::reactive::Binding<Self>) -> Self::Projected {
                 #projection_tuple
             }
         }
@@ -505,7 +548,7 @@ fn derive_project_tuple_struct(input: &DeriveInput, fields: &syn::FieldsUnnamed)
     TokenStream::from(expanded)
 }
 
-fn derive_project_unit_struct(input: &DeriveInput) -> TokenStream {
+fn derive_project_unit_struct(input: &DeriveInput, waterui: &TokenStream2) -> TokenStream {
     let struct_name = &input.ident;
     let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -519,10 +562,10 @@ fn derive_project_unit_struct(input: &DeriveInput) -> TokenStream {
     let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
 
     let expanded = quote! {
-        impl #impl_generics_with_static ::waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
+        impl #impl_generics_with_static #waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
             type Projected = ();
 
-            fn project(_source: &::waterui::reactive::Binding<Self>) -> Self::Projected {
+            fn project(_source: &#waterui::reactive::Binding<Self>) -> Self::Projected {
                 ()
             }
         }
@@ -574,6 +617,10 @@ impl Parse for SInput {
 #[allow(clippy::similar_names, clippy::too_many_lines)]
 pub fn s(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as SInput);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
     let format_str = input.format_str;
     let format_value = format_str.value();
 
@@ -616,8 +663,8 @@ pub fn s(input: TokenStream) -> TokenStream {
                 let arg = &args[0];
                 quote! {
                     {
-                        use ::waterui::reactive::SignalExt;
-                        SignalExt::map(#arg.clone(), |arg| waterui::reactive::__format!(#format_str, arg))
+                        use #waterui::reactive::SignalExt;
+                        SignalExt::map(#arg.clone(), |arg| #waterui::reactive::__format!(#format_str, arg))
                     }
                 }
                 .into()
@@ -627,11 +674,11 @@ pub fn s(input: TokenStream) -> TokenStream {
                 let arg2 = &args[1];
                 quote! {
                     {
-                        use waterui::reactive::{SignalExt, zip::zip};
+                        use #waterui::reactive::{SignalExt, zip::zip};
                         let __arg1 = #arg1.clone();
                         let __arg2 = #arg2.clone();
                         SignalExt::map(zip(__arg1, &__arg2), |(arg1, arg2)| {
-                            waterui::reactive::__format!(#format_str, arg1, arg2)
+                            #waterui::reactive::__format!(#format_str, arg1, arg2)
                         })
                     }
                 }
@@ -643,14 +690,14 @@ pub fn s(input: TokenStream) -> TokenStream {
                 let arg3 = &args[2];
                 quote! {
                     {
-                        use ::waterui::reactive::{SignalExt, zip::zip};
+                        use #waterui::reactive::{SignalExt, zip::zip};
                         let __arg1 = #arg1.clone();
                         let __arg2 = #arg2.clone();
                         let __arg3 = #arg3.clone();
                         let __inner = zip(__arg1, &__arg2);
                         SignalExt::map(
                             zip(__inner, &__arg3),
-                            |((arg1, arg2), arg3)| waterui::reactive::__format!(#format_str, arg1, arg2, arg3)
+                            |((arg1, arg2), arg3)| #waterui::reactive::__format!(#format_str, arg1, arg2, arg3)
                         )
                     }
                 }
@@ -663,7 +710,7 @@ pub fn s(input: TokenStream) -> TokenStream {
                 let arg4 = &args[3];
                 quote! {
                     {
-                        use ::waterui::reactive::{SignalExt, zip::zip};
+                        use #waterui::reactive::{SignalExt, zip::zip};
                         let __arg1 = #arg1.clone();
                         let __arg2 = #arg2.clone();
                         let __arg3 = #arg3.clone();
@@ -672,7 +719,7 @@ pub fn s(input: TokenStream) -> TokenStream {
                         let __inner2 = zip(__arg3, &__arg4);
                         SignalExt::map(
                             zip(__inner1, &__inner2),
-                            |((arg1, arg2), (arg3, arg4))| waterui::reactive::__format!(#format_str, arg1, arg2, arg3, arg4)
+                            |((arg1, arg2), (arg3, arg4))| #waterui::reactive::__format!(#format_str, arg1, arg2, arg3, arg4)
                         )
                     }
                 }.into()
@@ -714,8 +761,8 @@ pub fn s(input: TokenStream) -> TokenStream {
     if var_names.is_empty() {
         return quote! {
             {
-                use ::waterui::reactive::constant;
-                constant(waterui::reactive::__format!(#format_str))
+                use #waterui::reactive::constant;
+                constant(#waterui::reactive::__format!(#format_str))
             }
         }
         .into();
@@ -732,10 +779,10 @@ pub fn s(input: TokenStream) -> TokenStream {
             let var = &var_idents[0];
             quote! {
                 {
-                    use ::waterui::reactive::SignalExt;
+                    use #waterui::reactive::SignalExt;
                     let __var = #var.clone();
                     SignalExt::map(&__var, |#var| {
-                        waterui::reactive::__format!(#format_str)
+                        #waterui::reactive::__format!(#format_str)
                     })
                 }
             }
@@ -746,12 +793,12 @@ pub fn s(input: TokenStream) -> TokenStream {
             let var2 = &var_idents[1];
             quote! {
                 {
-                    use ::waterui::reactive::{SignalExt, zip::zip};
+                    use #waterui::reactive::{SignalExt, zip::zip};
                     let __var1 = #var1.clone();
                     let __var2 = #var2.clone();
                     let __zipped = zip(__var1, &__var2);
                     SignalExt::map(&__zipped, |(#var1, #var2)| {
-                        waterui::reactive::__format!(#format_str)
+                        #waterui::reactive::__format!(#format_str)
                     })
                 }
             }
@@ -763,7 +810,7 @@ pub fn s(input: TokenStream) -> TokenStream {
             let var3 = &var_idents[2];
             quote! {
                 {
-                    use ::waterui::reactive::{SignalExt, zip::zip};
+                    use #waterui::reactive::{SignalExt, zip::zip};
                     let __var1 = #var1.clone();
                     let __var2 = #var2.clone();
                     let __var3 = #var3.clone();
@@ -772,7 +819,7 @@ pub fn s(input: TokenStream) -> TokenStream {
                     SignalExt::map(
                         &__zipped,
                         |((#var1, #var2), #var3)| {
-                            ::waterui::reactive::__format!(#format_str)
+                            #waterui::reactive::__format!(#format_str)
                         }
                     )
                 }
@@ -786,7 +833,7 @@ pub fn s(input: TokenStream) -> TokenStream {
             let var4 = &var_idents[3];
             quote! {
                 {
-                    use ::waterui::reactive::{SignalExt, zip::zip};
+                    use #waterui::reactive::{SignalExt, zip::zip};
                     let __var1 = #var1.clone();
                     let __var2 = #var2.clone();
                     let __var3 = #var3.clone();
@@ -797,7 +844,7 @@ pub fn s(input: TokenStream) -> TokenStream {
                     SignalExt::map(
                         &__zipped,
                         |((#var1, #var2), (#var3, #var4))| {
-                            ::waterui::reactive::__format!(#format_str)
+                            #waterui::reactive::__format!(#format_str)
                         }
                     )
                 }
@@ -925,6 +972,10 @@ fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
 #[proc_macro_attribute]
 pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(input as ItemFn);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
     let args = parse_macro_input!(args with Punctuated::<PreviewArg, Token![,]>::parse_terminated);
 
     let fn_name = &input_fn.sig.ident;
@@ -1024,9 +1075,9 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
         // Generate C export symbol for preview
         // Symbol name: waterui_preview_<crate_name>_<fn_name>
         // Uses a helper that expands CARGO_PKG_NAME at compile time
-        ::waterui::__export_preview!(#fn_name_str, {
+        #waterui::__export_preview!(#fn_name_str, {
             let view = #call_expr;
-            Box::into_raw(Box::new(::waterui::AnyView::new(view))).cast()
+            Box::into_raw(Box::new(#waterui::AnyView::new(view))).cast()
         });
     };
 

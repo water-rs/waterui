@@ -43,7 +43,7 @@ pub const fn parse_hex_color(s: &str) -> (u8, u8, u8) {
     }
 }
 
-fn parse_runtime_prefix(bytes: &[u8]) -> usize {
+const fn parse_runtime_prefix(bytes: &[u8]) -> usize {
     if !bytes.is_empty() && bytes[0] == b'#' {
         1
     } else if bytes.len() >= 2 && bytes[0] == b'0' && (bytes[1] == b'x' || bytes[1] == b'X') {

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 
-use crate::shell::{self, display_output};
+use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{header, success};
 use waterui_cli::{
@@ -122,21 +122,22 @@ struct PackagingContext {
 }
 
 /// Run the package command.
-pub async fn run(args: Args) -> Result<()> {
-    let context = prepare_packaging_context(&args).await?;
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let context = prepare_packaging_context(shell, &args).await?;
     print_packaging_header(
+        shell,
         &context.project,
         args.platform,
         context.backend,
         args.release,
         args.distribution,
     );
-    check_packaging_toolchain(args.platform, context.backend, &args.arch).await?;
-    build_packaging_artifacts(&args, &context).await?;
-    package_artifact(&args, &context).await
+    check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
+    build_packaging_artifacts(shell, &args, &context).await?;
+    package_artifact(shell, &args, &context).await
 }
 
-async fn prepare_packaging_context(args: &Args) -> Result<PackagingContext> {
+async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<PackagingContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let project = Project::open(&project_path).await?;
     let backend = resolve_backend(args.platform, args.backend)?;
@@ -144,7 +145,8 @@ async fn prepare_packaging_context(args: &Args) -> Result<PackagingContext> {
     validate_arch_args(backend, &args.arch)?;
     validate_desktop_backend_platform_on_host(args.platform, backend)?;
     ensure_packaging_backend_ready(&project, backend)?;
-    let project = ensure_packaging_backend_generated(&project_path, project, backend).await?;
+    let project =
+        ensure_packaging_backend_generated(shell, &project_path, project, backend).await?;
 
     Ok(PackagingContext {
         project,
@@ -176,6 +178,7 @@ fn ensure_packaging_backend_ready(project: &Project, backend: TargetBackend) -> 
 }
 
 async fn ensure_packaging_backend_generated(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     backend: TargetBackend,
@@ -188,6 +191,7 @@ async fn ensure_packaging_backend_generated(
                     .join("Cargo.toml")
                     .exists();
             ensure_packaging_generated_backend::<Gtk4Backend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -199,6 +203,7 @@ async fn ensure_packaging_backend_generated(
         TargetBackend::Hydrolysis if project.is_playground() => {
             let needs_reinit = HydrolysisBackend::requires_regeneration(&project)?;
             ensure_packaging_generated_backend::<HydrolysisBackend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -212,6 +217,7 @@ async fn ensure_packaging_backend_generated(
 }
 
 async fn ensure_packaging_generated_backend<T>(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     needs_reinit: bool,
@@ -225,17 +231,18 @@ where
         return Ok(project);
     }
 
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     reinit_backend::<T>(&project).await?;
     let project = Project::open(project_path).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(project)
 }
 
 fn print_packaging_header(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     backend: TargetBackend,
@@ -245,6 +252,7 @@ fn print_packaging_header(
     let mode = if release { "release" } else { "debug" };
     let dist = if distribution { " (distribution)" } else { "" };
     header!(
+        shell,
         "Packaging {} for {} via {} ({}){}",
         project.crate_name(),
         platform_name(platform),
@@ -255,23 +263,29 @@ fn print_packaging_header(
 }
 
 async fn check_packaging_toolchain(
+    shell: &Shell,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
 ) -> Result<()> {
-    let spinner = shell::spinner("Checking toolchain...");
+    let spinner = shell.spinner("Checking toolchain...");
     check_toolchain_for_backend(platform, backend, arch).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Toolchain ready");
+    success!(shell, "Toolchain ready");
     Ok(())
 }
 
-async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> Result<()> {
+async fn build_packaging_artifacts(
+    shell: &Shell,
+    args: &Args,
+    context: &PackagingContext,
+) -> Result<()> {
     match context.backend {
         TargetBackend::Android => {
             build_android_packaging_artifacts(
+                shell,
                 &context.project,
                 &args.arch,
                 context.build_options.clone(),
@@ -280,6 +294,7 @@ async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> R
         }
         TargetBackend::Apple => {
             build_apple_packaging_artifacts(
+                shell,
                 &context.project,
                 args.platform,
                 context.build_options.clone(),
@@ -287,10 +302,12 @@ async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> R
             .await
         }
         TargetBackend::Gtk4 => {
-            build_gtk4_packaging_artifacts(&context.project, context.build_options.clone()).await
+            build_gtk4_packaging_artifacts(shell, &context.project, context.build_options.clone())
+                .await
         }
         TargetBackend::Hydrolysis => {
             build_hydrolysis_packaging_artifacts(
+                shell,
                 &context.project,
                 args.platform,
                 context.build_options.clone(),
@@ -301,6 +318,7 @@ async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> R
 }
 
 async fn build_android_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     arch: &[AndroidArch],
     build_options: BuildOptions,
@@ -308,49 +326,57 @@ async fn build_android_packaging_artifacts(
     AndroidPlatform::clean_jni_libs(project).await?;
     for arch in arch {
         let abi = arch.to_abi();
-        let spinner = shell::spinner(format!("Building Rust library ({})...", abi.as_str()));
-        display_output(AndroidPlatform::new(abi).build(project, build_options.clone())).await?;
+        let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
+        shell
+            .display_output(AndroidPlatform::new(abi).build(project, build_options.clone()))
+            .await?;
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        success!("Built for {}", abi.as_str());
+        success!(shell, "Built for {}", abi.as_str());
     }
     Ok(())
 }
 
 async fn build_apple_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     build_options: BuildOptions,
 ) -> Result<()> {
-    let spinner = shell::spinner("Building Rust library...");
-    display_output(build_rust_lib(
-        project,
-        lib_platform(platform),
-        build_options,
-    ))
-    .await?;
+    let spinner = shell.spinner("Building Rust library...");
+    shell
+        .display_output(build_rust_lib(
+            project,
+            lib_platform(platform),
+            build_options,
+        ))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built Rust library");
+    success!(shell, "Built Rust library");
     Ok(())
 }
 
 async fn build_gtk4_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     build_options: BuildOptions,
 ) -> Result<()> {
-    let spinner = shell::spinner("Building GTK4 app...");
-    display_output(build_gtk4(project, build_options)).await?;
+    let spinner = shell.spinner("Building GTK4 app...");
+    shell
+        .display_output(build_gtk4(project, build_options))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built GTK4 app");
+    success!(shell, "Built GTK4 app");
     Ok(())
 }
 
 async fn build_hydrolysis_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     build_options: BuildOptions,
@@ -359,27 +385,30 @@ async fn build_hydrolysis_packaging_artifacts(
         return Ok(());
     }
 
-    let spinner = shell::spinner("Building hydrolysis app...");
-    display_output(build_hydrolysis(
-        project,
-        hydrolysis_platform(platform),
-        build_options,
-    ))
-    .await?;
+    let spinner = shell.spinner("Building hydrolysis app...");
+    shell
+        .display_output(build_hydrolysis(
+            project,
+            hydrolysis_platform(platform),
+            build_options,
+        ))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built hydrolysis app");
+    success!(shell, "Built hydrolysis app");
     Ok(())
 }
 
-async fn package_artifact(args: &Args, context: &PackagingContext) -> Result<()> {
-    let spinner = shell::spinner("Packaging application...");
-    let artifact = display_output(package_artifact_inner(args, context)).await?;
+async fn package_artifact(shell: &Shell, args: &Args, context: &PackagingContext) -> Result<()> {
+    let spinner = shell.spinner("Packaging application...");
+    let artifact = shell
+        .display_output(package_artifact_inner(args, context))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Packaged at {}", artifact.path().display());
+    success!(shell, "Packaged at {}", artifact.path().display());
     Ok(())
 }
 

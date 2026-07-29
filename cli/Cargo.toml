@@ -7,7 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-description.workspace = true
+homepage = "https://waterui.dev"
+description = "Cross-platform tooling for WaterUI applications"
 keywords.workspace = true
 categories.workspace = true
 
@@ -20,9 +21,9 @@ waterui-gtk-version = "0.1.0"
 waterui-preview-version = "0.1.0"
 android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-apple-backend-commit = "b4d162edf7797c599b3401c808c39dc11fea97c7"
+apple-backend-commit = "40459e4682349745f1d7d96c0beced8b6c625c0a"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-commit = "f18d381a672565bdac8e65404d14dde0f518afc4"
+android-backend-commit = "f7a79d0a6675f15fde6178b8428964f87668c9a1"
 
 [[bin]]
 name = "water"

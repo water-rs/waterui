@@ -26,6 +26,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
+      - run: cargo test --verbose --workspace
       - run: cargo test --verbose --all-features
       - name: Upload Test Snapshots
         if: always()

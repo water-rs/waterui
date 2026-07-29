@@ -18,7 +18,8 @@
 //!
 //! // Data type - sync for local, async for remote
 //! let config: Data = asset!("config.json");
-//! let remote: Data = asset!("https://api.example.com/data.json").await;
+//! let remote: Data =
+//!     asset!("https://raw.githubusercontent.com/water-rs/waterui/dev/Cargo.toml").await;
 //!
 //! // LargeFile - always async (mmap setup required)
 //! let model: LargeFile = asset!("model.onnx").await;
@@ -45,6 +46,7 @@ mod bundle;
 mod data;
 mod error;
 mod kind;
+#[cfg(feature = "std")]
 mod large_file;
 #[cfg(feature = "std")]
 mod remote;
@@ -58,6 +60,7 @@ pub use bundle::{
 pub use data::Data;
 pub use error::AssetError;
 pub use kind::AssetKind;
+#[cfg(feature = "std")]
 pub use large_file::LargeFile;
 #[cfg(feature = "std")]
 pub use remote::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
@@ -66,9 +69,9 @@ pub use url::{ensure_http_allowed, is_loopback_http_url, is_remote_url};
 
 /// Prelude for common imports.
 pub mod prelude {
-    pub use crate::{AssetError, AssetKind, Data, LargeFile};
+    pub use crate::{AssetError, AssetKind, Data};
     #[cfg(feature = "std")]
     pub use crate::{
-        AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset,
+        AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFile, LargeFileAsset, VideoAsset,
     };
 }

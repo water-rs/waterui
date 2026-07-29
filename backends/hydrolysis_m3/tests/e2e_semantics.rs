@@ -825,18 +825,11 @@ fn material_collection_items_expose_accessibility_and_survive_membership_change(
     use waterui::component::ZStack;
     use waterui::reactive::collection::List;
 
-    #[derive(Clone)]
+    #[derive(Clone, Identifiable)]
     struct Row {
+        #[id]
         id: u64,
         label: Str,
-    }
-
-    impl Identifiable for Row {
-        type Id = u64;
-
-        fn id(&self) -> u64 {
-            self.id
-        }
     }
 
     let list = List::from(vec![

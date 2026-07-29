@@ -1,4 +1,3 @@
-#![allow(clippy::cast_possible_truncation, reason = "intentional lossy numeric cast in rendering/layout code")]
 //! Platform-agnostic gesture recognition fed by pointer phases.
 //!
 //! [`GestureEngine`] holds the gesture targets registered during view
@@ -15,6 +14,7 @@ use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use num_traits::ToPrimitive;
 use waterui::gesture::{
     DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent, TapEvent,
 };
@@ -196,7 +196,20 @@ impl GestureBinding {
 }
 
 fn local_gesture_point(point: GesturePoint, bounds: kurbo::Rect) -> GesturePoint {
-    GesturePoint::new(point.x - bounds.x0 as f32, point.y - bounds.y0 as f32)
+    GesturePoint::new(
+        point.x - logical_coordinate(bounds.x0),
+        point.y - logical_coordinate(bounds.y0),
+    )
+}
+
+fn logical_coordinate(value: f64) -> f32 {
+    value
+        .to_f32()
+        .expect("gesture coordinate must be representable as f32")
+}
+
+fn gesture_point(point: kurbo::Point) -> GesturePoint {
+    GesturePoint::new(logical_coordinate(point.x), logical_coordinate(point.y))
 }
 
 fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> GesturePayload {
@@ -642,7 +655,7 @@ impl GestureDetector for TapDetector {
 
                 self.streak = 0;
                 GestureDetection::recognized(GesturePayload::Tap(TapEvent {
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
+                    location: gesture_point(point),
                     count: self.required_count,
                 }))
             }
@@ -715,7 +728,7 @@ impl GestureDetector for LongPressDetector {
                 self.fired = true;
                 let duration_ms = self.duration.as_secs_f32() * 1_000.0;
                 let payload = GesturePayload::LongPress(LongPressEvent {
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
+                    location: gesture_point(point),
                     duration: duration_ms,
                 });
                 self.reset();
@@ -740,7 +753,7 @@ impl GestureDetector for LongPressDetector {
                 self.fired = true;
                 let duration_ms = self.duration.as_secs_f32() * 1_000.0;
                 GestureDetection::recognized(GesturePayload::LongPress(LongPressEvent {
-                    location: GesturePoint::new(started_point.x as f32, started_point.y as f32),
+                    location: gesture_point(started_point),
                     duration: duration_ms,
                 }))
             }
@@ -799,16 +812,16 @@ impl GestureDetector for DragDetector {
                     return GestureDetection::default();
                 };
 
-                let dx = (point.x - start_point.x) as f32;
-                let dy = (point.y - start_point.y) as f32;
+                let dx = logical_coordinate(point.x - start_point.x);
+                let dy = logical_coordinate(point.y - start_point.y);
                 let distance = dx.hypot(dy);
                 let dt = at
                     .duration_since(previous_at)
                     .as_secs_f32()
                     .max(f32::EPSILON);
                 let velocity = GesturePoint::new(
-                    ((point.x - previous_point.x) as f32) / dt,
-                    ((point.y - previous_point.y) as f32) / dt,
+                    logical_coordinate(point.x - previous_point.x) / dt,
+                    logical_coordinate(point.y - previous_point.y) / dt,
                 );
 
                 self.last_point = Some(point);
@@ -820,7 +833,7 @@ impl GestureDetector for DragDetector {
                     self.started = true;
                     return GestureDetection::recognized(GesturePayload::Drag(DragEvent {
                         phase: GesturePhase::Started,
-                        location: GesturePoint::new(point.x as f32, point.y as f32),
+                        location: gesture_point(point),
                         translation: GesturePoint::new(dx, dy),
                         velocity,
                     }));
@@ -828,7 +841,7 @@ impl GestureDetector for DragDetector {
 
                 GestureDetection::recognized(GesturePayload::Drag(DragEvent {
                     phase: GesturePhase::Updated,
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
+                    location: gesture_point(point),
                     translation: GesturePoint::new(dx, dy),
                     velocity,
                 }))
@@ -839,15 +852,15 @@ impl GestureDetector for DragDetector {
                 };
                 let previous_point = self.last_point.unwrap_or(start_point);
                 let previous_at = self.last_at.unwrap_or(at);
-                let dx = (point.x - start_point.x) as f32;
-                let dy = (point.y - start_point.y) as f32;
+                let dx = logical_coordinate(point.x - start_point.x);
+                let dy = logical_coordinate(point.y - start_point.y);
                 let dt = at
                     .duration_since(previous_at)
                     .as_secs_f32()
                     .max(f32::EPSILON);
                 let velocity = GesturePoint::new(
-                    ((point.x - previous_point.x) as f32) / dt,
-                    ((point.y - previous_point.y) as f32) / dt,
+                    logical_coordinate(point.x - previous_point.x) / dt,
+                    logical_coordinate(point.y - previous_point.y) / dt,
                 );
                 if !self.started {
                     self.reset();
@@ -856,7 +869,7 @@ impl GestureDetector for DragDetector {
                 self.reset();
                 GestureDetection::recognized(GesturePayload::Drag(DragEvent {
                     phase: GesturePhase::Ended,
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
+                    location: gesture_point(point),
                     translation: GesturePoint::new(dx, dy),
                     velocity,
                 }))
@@ -870,12 +883,12 @@ impl GestureDetector for DragDetector {
                     return GestureDetection::failed();
                 }
                 let point = self.last_point.unwrap_or(start_point);
-                let dx = (point.x - start_point.x) as f32;
-                let dy = (point.y - start_point.y) as f32;
+                let dx = logical_coordinate(point.x - start_point.x);
+                let dy = logical_coordinate(point.y - start_point.y);
                 self.reset();
                 GestureDetection::recognized(GesturePayload::Drag(DragEvent {
                     phase: GesturePhase::Cancelled,
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
+                    location: gesture_point(point),
                     translation: GesturePoint::new(dx, dy),
                     velocity: GesturePoint::new(0.0, 0.0),
                 }))
@@ -929,7 +942,7 @@ impl GestureDetector for MagnificationDetector {
                 self.last_at = Some(at);
                 GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
                     phase: mapped_phase,
-                    center: GesturePoint::new(center.x as f32, center.y as f32),
+                    center: gesture_point(center),
                     scale: self.scale,
                     velocity: 0.0,
                 }))
@@ -948,7 +961,7 @@ impl GestureDetector for MagnificationDetector {
                 self.scale = (self.scale * (1.0 + delta)).max(0.01);
                 GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
                     phase: mapped_phase,
-                    center: GesturePoint::new(center.x as f32, center.y as f32),
+                    center: gesture_point(center),
                     scale: self.scale,
                     velocity: delta / dt,
                 }))
@@ -957,7 +970,7 @@ impl GestureDetector for MagnificationDetector {
                 let payload = GestureDetection::recognized(GesturePayload::Magnification(
                     MagnificationEvent {
                         phase: mapped_phase,
-                        center: GesturePoint::new(center.x as f32, center.y as f32),
+                        center: gesture_point(center),
                         scale: self.scale,
                         velocity: 0.0,
                     },

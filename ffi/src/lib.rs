@@ -164,8 +164,7 @@ macro_rules! export {
 /// JNI initialization helper for Android.
 /// This is called from JNI_OnLoad in the export! macro.
 ///
-/// When `android-jni` feature is enabled, this initializes the JNI module.
-/// When disabled, this is a no-op that returns JNI_VERSION_1_6.
+/// The `android-jni` feature is mandatory for Android exports.
 ///
 /// # Safety
 /// Must only be called once from JNI_OnLoad.
@@ -176,14 +175,8 @@ pub unsafe fn __jni_init(vm: *mut core::ffi::c_void) -> i32 {
     unsafe { jni::init(vm as *mut jni::jni::sys::JavaVM) }
 }
 
-/// JNI initialization stub when android-jni feature is disabled.
-#[doc(hidden)]
 #[cfg(all(target_os = "android", not(feature = "android-jni")))]
-#[inline(always)]
-pub unsafe fn __jni_init(_vm: *mut core::ffi::c_void) -> i32 {
-    // JNI_VERSION_1_6 = 0x00010006
-    0x0001_0006
-}
+compile_error!("waterui-ffi requires the `android-jni` feature when targeting Android");
 
 /// JNI initialization stub for non-Android platforms.
 #[doc(hidden)]
@@ -260,9 +253,11 @@ unsafe fn __init_impl() {
     }
 
     init_global_executor(native_executor::NativeExecutor::new());
-    let _ = waterui::inspector::maybe_init_from_env();
-    init_local_executor(waterui::task::monitored_local_executor(
+    let inspector_probe = waterui::inspector::maybe_init_from_env()
+        .map(waterui::inspector::InspectorRuntime::into_runtime_probe);
+    init_local_executor(waterui::task::monitored_local_executor_with_probes(
         native_executor::NativeExecutor::new(),
+        inspector_probe,
     ));
 }
 

@@ -212,14 +212,16 @@ mod tests {
 
     #[test]
     fn device_limits_clamp_compute_capabilities_to_adapter() {
-        let mut adapter_limits = wgpu::Limits::default();
-        adapter_limits.max_texture_dimension_2d = 16_384;
-        adapter_limits.max_compute_workgroup_storage_size = 0;
-        adapter_limits.max_compute_invocations_per_workgroup = 0;
-        adapter_limits.max_compute_workgroup_size_x = 0;
-        adapter_limits.max_compute_workgroup_size_y = 0;
-        adapter_limits.max_compute_workgroup_size_z = 0;
-        adapter_limits.max_compute_workgroups_per_dimension = 0;
+        let adapter_limits = wgpu::Limits {
+            max_texture_dimension_2d: 16_384,
+            max_compute_workgroup_storage_size: 0,
+            max_compute_invocations_per_workgroup: 0,
+            max_compute_workgroup_size_x: 0,
+            max_compute_workgroup_size_y: 0,
+            max_compute_workgroup_size_z: 0,
+            max_compute_workgroups_per_dimension: 0,
+            ..wgpu::Limits::default()
+        };
 
         let required = required_device_limits(&adapter_limits);
 

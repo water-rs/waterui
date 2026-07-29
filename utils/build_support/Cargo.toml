@@ -15,6 +15,7 @@ askama = "0.16"
 heck = "0.5"
 ureq = "3.3"
 shaderloom = { workspace = true, features = ["build"] }
+tracing.workspace = true
 
 [lints]
 workspace = true

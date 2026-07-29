@@ -440,7 +440,7 @@ impl GpuView for WaveformRenderer {
             let audio_samples = self.capture.samples();
             let smoothing_factor = 0.3;
             for (smoothed, sample) in self.smoothed_samples.iter_mut().zip(audio_samples.iter()) {
-                *smoothed += (*sample - *smoothed) * smoothing_factor;
+                *smoothed = (*sample - *smoothed).mul_add(smoothing_factor, *smoothed);
             }
         }
         frame.queue.write_texture(

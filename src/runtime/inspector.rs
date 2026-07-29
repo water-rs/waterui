@@ -4,7 +4,7 @@ use std::backtrace::Backtrace;
 use std::collections::VecDeque;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,7 +14,7 @@ use waterui_inspector_protocol::{
     MainThreadStallEvent, RuntimePollEvent, protocol_info,
 };
 
-use crate::task::{RuntimeProbe, TaskPollSample, install_runtime_probe};
+use crate::task::{RuntimeProbe, TaskPollSample};
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 const DEFAULT_PORT: u16 = 0;
@@ -162,23 +162,39 @@ impl InspectorServerConfig {
     }
 }
 
-#[derive(Debug)]
-struct InspectorServer {
+/// A running inspector endpoint and the runtime probe that feeds it.
+pub struct InspectorRuntime {
     endpoint: InspectorEndpointInfo,
+    runtime_probe: Arc<dyn RuntimeProbe>,
 }
 
-static SERVER: OnceLock<InspectorServer> = OnceLock::new();
-static SERVER_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+impl std::fmt::Debug for InspectorRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InspectorRuntime")
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
+}
 
-/// Returns the current inspector endpoint if initialized.
-#[must_use]
-pub fn endpoint() -> Option<InspectorEndpointInfo> {
-    SERVER.get().map(|s| s.endpoint.clone())
+impl InspectorRuntime {
+    /// Returns the bound endpoint.
+    #[must_use]
+    pub const fn endpoint(&self) -> &InspectorEndpointInfo {
+        &self.endpoint
+    }
+
+    /// Consumes the runtime and returns the probe that keeps feeding its
+    /// server-owned event buffer.
+    #[must_use]
+    pub fn into_runtime_probe(self) -> Arc<dyn RuntimeProbe> {
+        self.runtime_probe
+    }
 }
 
 /// Initializes inspector runtime endpoint from environment when configured.
 #[must_use]
-pub fn maybe_init_from_env() -> Option<InspectorEndpointInfo> {
+pub fn maybe_init_from_env() -> Option<InspectorRuntime> {
     let config = match InspectorServerConfig::from_env() {
         Ok(Some(config)) => config,
         Ok(None) => return None,
@@ -206,22 +222,10 @@ pub fn maybe_init_from_env() -> Option<InspectorEndpointInfo> {
 
 /// Initializes the inspector runtime endpoint.
 ///
-/// If already initialized, returns the existing endpoint.
-///
 /// # Errors
 ///
 /// Returns an I/O error when the inspector server cannot bind or initialize.
-pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorEndpointInfo> {
-    let init_lock = SERVER_INIT_LOCK.get_or_init(|| Mutex::new(()));
-    let _guard = match init_lock.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    if let Some(existing) = SERVER.get() {
-        return Ok(existing.endpoint.clone());
-    }
-
+pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorRuntime> {
     let listener = TcpListener::bind(SocketAddr::new(config.host, config.port))?;
     listener.set_nonblocking(false)?;
     let addr = listener.local_addr()?;
@@ -244,18 +248,16 @@ pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorEn
         token: config.token,
     };
 
-    let _ = SERVER.set(InspectorServer {
-        endpoint: endpoint.clone(),
-    });
-    install_runtime_probe(runtime_probe);
-
     tracing::info!(
         target: "waterui::inspector",
         inspector_addr = %addr,
         "Inspector runtime endpoint listening"
     );
 
-    Ok(endpoint)
+    Ok(InspectorRuntime {
+        endpoint,
+        runtime_probe,
+    })
 }
 
 #[derive(Debug)]

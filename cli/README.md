@@ -32,7 +32,7 @@ Create a new WaterUI project and run it on iOS Simulator:
 
 ```bash
 # Create a new project
-water create my-app --platform ios,android
+water create my-app --backends apple,android
 
 # Run on iOS Simulator
 cd my-app
@@ -45,7 +45,7 @@ water run --platform android
 Create a playground for quick experimentation (auto-managed backends):
 
 ```bash
-water create --playground --name my-experiment
+water create my-experiment --mode playground
 cd my-experiment
 water run --platform ios
 ```

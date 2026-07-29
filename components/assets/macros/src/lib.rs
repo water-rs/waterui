@@ -5,7 +5,8 @@
 use std::collections::BTreeMap;
 
 use proc_macro::TokenStream;
-use proc_macro2::Span;
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
     Ident, LitBool, LitStr, Token,
@@ -14,6 +15,23 @@ use syn::{
 };
 use waterui_assets::{AssetKind, is_loopback_http_url, is_remote_url};
 use waterui_assets_planner::{BundleManifest, PlannedAsset, plan_bundle, read_assets_path};
+
+fn waterui_crate_path() -> syn::Result<TokenStream2> {
+    match crate_name("waterui") {
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = Ident::new(&name, Span::call_site());
+            Ok(quote!(::#ident))
+        }
+        Err(error) => Err(syn::Error::new(
+            Span::call_site(),
+            format!(
+                "WaterUI asset macros require the `waterui` crate as a dependency; \
+                 Cargo.toml may rename it: {error}"
+            ),
+        )),
+    }
+}
 
 /// Input to the `asset!` macro.
 struct AssetInput {
@@ -115,47 +133,51 @@ fn insert_asset(node: &mut ModuleNode, asset: PlannedAsset) {
     current.assets.push(asset);
 }
 
-fn bundle_tokens(mount: Option<&str>) -> proc_macro2::TokenStream {
+fn bundle_tokens(waterui: &TokenStream2, mount: Option<&str>) -> TokenStream2 {
     match mount {
         Some(mount_name) if !mount_name.is_empty() => {
-            quote! { ::waterui::Bundle::new(#mount_name) }
+            quote! { #waterui::Bundle::new(#mount_name) }
         }
-        _ => quote! { ::waterui::Bundle::main() },
+        _ => quote! { #waterui::Bundle::main() },
     }
 }
 
-fn asset_type_tokens(kind: AssetKind) -> proc_macro2::TokenStream {
+fn asset_type_tokens(waterui: &TokenStream2, kind: AssetKind) -> TokenStream2 {
     match kind {
-        AssetKind::Font => quote! { ::waterui::FontAsset },
-        AssetKind::Image => quote! { ::waterui::ImageAsset },
-        AssetKind::Video => quote! { ::waterui::VideoAsset },
-        AssetKind::Audio => quote! { ::waterui::AudioAsset },
-        AssetKind::LargeModel => quote! { ::waterui::LargeFileAsset },
-        AssetKind::Data => quote! { ::waterui::DataAsset },
+        AssetKind::Font => quote! { #waterui::FontAsset },
+        AssetKind::Image => quote! { #waterui::ImageAsset },
+        AssetKind::Video => quote! { #waterui::VideoAsset },
+        AssetKind::Audio => quote! { #waterui::AudioAsset },
+        AssetKind::LargeModel => quote! { #waterui::LargeFileAsset },
+        AssetKind::Data => quote! { #waterui::DataAsset },
     }
 }
 
-fn asset_constructor_tokens(asset: &PlannedAsset) -> proc_macro2::TokenStream {
-    let bundle = bundle_tokens((!asset.mount.is_empty()).then_some(asset.mount.as_str()));
+fn asset_constructor_tokens(waterui: &TokenStream2, asset: &PlannedAsset) -> TokenStream2 {
+    let bundle = bundle_tokens(
+        waterui,
+        (!asset.mount.is_empty()).then_some(asset.mount.as_str()),
+    );
     let relative = asset.relative_path.to_string_lossy().replace('\\', "/");
     match asset.kind {
-        AssetKind::Font => quote! { ::waterui::FontAsset::new(#bundle, #relative) },
-        AssetKind::Image => quote! { ::waterui::ImageAsset::new(#bundle, #relative) },
-        AssetKind::Video => quote! { ::waterui::VideoAsset::new(#bundle, #relative) },
-        AssetKind::Audio => quote! { ::waterui::AudioAsset::new(#bundle, #relative) },
-        AssetKind::LargeModel => quote! { ::waterui::LargeFileAsset::new(#bundle, #relative) },
-        AssetKind::Data => quote! { ::waterui::DataAsset::new(#bundle, #relative) },
+        AssetKind::Font => quote! { #waterui::FontAsset::new(#bundle, #relative) },
+        AssetKind::Image => quote! { #waterui::ImageAsset::new(#bundle, #relative) },
+        AssetKind::Video => quote! { #waterui::VideoAsset::new(#bundle, #relative) },
+        AssetKind::Audio => quote! { #waterui::AudioAsset::new(#bundle, #relative) },
+        AssetKind::LargeModel => quote! { #waterui::LargeFileAsset::new(#bundle, #relative) },
+        AssetKind::Data => quote! { #waterui::DataAsset::new(#bundle, #relative) },
     }
 }
 
 fn emit_module(
+    waterui: &TokenStream2,
     node: &ModuleNode,
     current_mount: Option<&str>,
     root: bool,
-) -> proc_macro2::TokenStream {
-    let bundle = bundle_tokens(node.mount.as_deref().or(current_mount));
+) -> TokenStream2 {
+    let bundle = bundle_tokens(waterui, node.mount.as_deref().or(current_mount));
     let bundle_const = if root || node.mount.is_some() {
-        quote! { pub const BUNDLE: ::waterui::Bundle = #bundle; }
+        quote! { pub const BUNDLE: #waterui::Bundle = #bundle; }
     } else {
         quote! {}
     };
@@ -163,7 +185,12 @@ fn emit_module(
     let mut child_tokens = Vec::new();
     for (name, child) in &node.children {
         let ident = syn_ident(name);
-        let body = emit_module(child, node.mount.as_deref().or(current_mount), false);
+        let body = emit_module(
+            waterui,
+            child,
+            node.mount.as_deref().or(current_mount),
+            false,
+        );
         child_tokens.push(quote! {
             pub mod #ident {
                 #body
@@ -174,8 +201,8 @@ fn emit_module(
     let mut asset_tokens = Vec::new();
     for asset in &node.assets {
         let ident = syn_ident(&asset.item_name());
-        let ty = asset_type_tokens(asset.kind);
-        let ctor = asset_constructor_tokens(asset);
+        let ty = asset_type_tokens(waterui, asset.kind);
+        let ctor = asset_constructor_tokens(waterui, asset);
         asset_tokens.push(quote! {
             pub fn #ident() -> #ty {
                 #ctor
@@ -200,11 +227,15 @@ pub fn assets(input: TokenStream) -> TokenStream {
         Ok(manifest) => manifest,
         Err(error) => return compile_error(error, Span::call_site()),
     };
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
     let mut root = ModuleNode::default();
     for asset in manifest.assets {
         insert_asset(&mut root, asset);
     }
-    let body = emit_module(&root, None, true);
+    let body = emit_module(&waterui, &root, None, true);
     quote! {
         pub mod assets {
             #body
@@ -226,6 +257,10 @@ pub fn include_bundle(input: TokenStream) -> TokenStream {
 /// Expands a single asset path into its inferred `WaterUI` asset handle.
 pub fn asset(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AssetInput);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
     let path_str = input.path.value();
     let path_span = input.path.span();
 
@@ -267,20 +302,20 @@ pub fn asset(input: TokenStream) -> TokenStream {
     let path_lit = &input.path;
     let output = match kind {
         AssetKind::Font => quote! {
-            ::waterui::FontAsset::new(::waterui::Bundle::main(), #path_lit)
+            #waterui::FontAsset::new(#waterui::Bundle::main(), #path_lit)
         },
         AssetKind::Image => {
             if is_remote {
-                quote! { ::waterui::Photo::new(#path_lit) }
+                quote! { #waterui::Photo::new(#path_lit) }
             } else {
-                quote! { ::waterui::Photo::from_path(#path_lit) }
+                quote! { #waterui::Photo::from_path(#path_lit) }
             }
         }
         AssetKind::Video => {
             if is_remote {
-                quote! { ::waterui::video::video(#path_lit) }
+                quote! { #waterui::video::video(#path_lit) }
             } else {
-                quote! { ::waterui::video::video(::waterui::Url::from_file_path_str(#path_lit)) }
+                quote! { #waterui::video::video(#waterui::Url::from_file_path_str(#path_lit)) }
             }
         }
         AssetKind::Audio => {
@@ -290,22 +325,22 @@ pub fn asset(input: TokenStream) -> TokenStream {
                     path_span,
                 );
             }
-            quote! { ::waterui::AudioAsset::new(::waterui::Bundle::main(), #path_lit) }
+            quote! { #waterui::AudioAsset::new(#waterui::Bundle::main(), #path_lit) }
         }
         AssetKind::Data => {
             if input.embed {
-                quote! { ::waterui::Data::from_static(include_bytes!(#path_lit)) }
+                quote! { #waterui::Data::from_static(include_bytes!(#path_lit)) }
             } else if is_remote {
-                quote! { ::waterui::Data::from_remote(#path_lit) }
+                quote! { #waterui::Data::from_remote(#path_lit) }
             } else {
-                quote! { ::waterui::Data::from_local(#path_lit) }
+                quote! { #waterui::Data::from_local(#path_lit) }
             }
         }
         AssetKind::LargeModel => {
             if is_remote {
-                quote! { ::waterui::LargeFile::from_remote(#path_lit) }
+                quote! { #waterui::LargeFile::from_remote(#path_lit) }
             } else {
-                quote! { ::waterui::LargeFile::from_local(#path_lit) }
+                quote! { #waterui::LargeFile::from_local(#path_lit) }
             }
         }
     };

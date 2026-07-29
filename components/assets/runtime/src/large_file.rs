@@ -1,15 +1,11 @@
 //! Large files using memory-mapping.
 
-use alloc::format;
-use alloc::string::ToString;
+use alloc::{format, string::ToString};
 use core::ops::Deref;
 
-#[cfg(feature = "std")]
 use std::path::Path;
 
-use crate::AssetError;
-#[cfg(feature = "std")]
-use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
+use crate::{AssetError, AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 
 /// Large file, memory-mapped for efficient access.
 ///
@@ -47,7 +43,6 @@ use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 ///     inference_engine.run(&model)
 /// }).await;
 /// ```
-#[cfg(feature = "std")]
 pub struct LargeFile {
     /// Memory-mapped data.
     mmap: memmap2::Mmap,
@@ -55,7 +50,6 @@ pub struct LargeFile {
     size: usize,
 }
 
-#[cfg(feature = "std")]
 impl core::fmt::Debug for LargeFile {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LargeFile")
@@ -64,7 +58,6 @@ impl core::fmt::Debug for LargeFile {
     }
 }
 
-#[cfg(feature = "std")]
 impl LargeFile {
     /// Create `LargeFile` from a local file path.
     ///
@@ -172,7 +165,6 @@ impl LargeFile {
     }
 }
 
-#[cfg(feature = "std")]
 impl Deref for LargeFile {
     type Target = [u8];
 
@@ -187,7 +179,6 @@ impl Deref for LargeFile {
     }
 }
 
-#[cfg(feature = "std")]
 impl AsRef<[u8]> for LargeFile {
     fn as_ref(&self) -> &[u8] {
         &self.mmap
@@ -195,7 +186,6 @@ impl AsRef<[u8]> for LargeFile {
 }
 
 /// Download a remote URL to the cache directory.
-#[cfg(feature = "std")]
 async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> {
     use sha2::{Digest, Sha256};
 
@@ -260,18 +250,4 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
     }
 
     Ok(cache_path)
-}
-
-// Stub for no_std (LargeFile requires std)
-#[cfg(not(feature = "std"))]
-pub struct LargeFile {
-    _private: (),
-}
-
-#[cfg(not(feature = "std"))]
-impl LargeFile {
-    /// `LargeFile` requires the `std` feature.
-    pub fn from_local(_path: &str) -> Result<Self, AssetError> {
-        Err(AssetError::io("LargeFile requires std feature"))
-    }
 }

@@ -1,9 +1,3 @@
-#![allow(
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    reason = "intentional lossy numeric cast in rendering/layout code"
-)]
 //! GPU-accelerated Image view using wgpu.
 //!
 //! This module provides [`Image`], a View that displays images on the GPU.

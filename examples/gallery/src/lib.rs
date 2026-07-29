@@ -408,7 +408,7 @@ fn note(text_value: &'static str) -> impl View {
 
 /// Increments a shared tap counter; reused by every button style.
 fn bump(State(taps): State<Binding<i32>>) {
-    taps.set(taps.get() + 1);
+    *taps.get_mut() += 1;
 }
 
 fn buttons_demo(taps: &Binding<i32>) -> impl View {

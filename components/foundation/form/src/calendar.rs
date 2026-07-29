@@ -5,21 +5,21 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use core::ops::RangeInclusive;
+use core::{num::NonZeroUsize, ops::RangeInclusive};
 
 use jiff::{
     Timestamp, ToSpan,
     civil::{Date, Weekday},
 };
-use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
+use nami::{Binding, Computed, SignalExt, collection::SignalCollection, signal::IntoComputed};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{IntoLabel, button};
-use waterui_core::{AnyView, Dynamic, Environment, View};
+use waterui_core::{AnyView, Environment, View, id::Identifiable, views::ForEach};
 use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
-use waterui_layout::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
-use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack, vstack};
+use waterui_layout::stack::{Alignment, HStack, HorizontalAlignment, hstack, vstack};
+use waterui_layout::{BackgroundView, LazyContainer, Size, grid::GridLayout};
 use waterui_locale::format::date::{format_calendar_month_year, format_calendar_weekday};
 use waterui_locale::{Locale, locale_binding};
 use waterui_shape::{Circle, ShapeExt};
@@ -106,25 +106,13 @@ impl View for Calendar {
         let visible_month = self.visible_month;
         let locale = locale_binding(env).computed();
 
-        let calendar = Dynamic::watch(visible_month.clone(), move |month| {
-            let cell_range = range.clone();
-            let cell_selection = selection.clone();
-            let cell_decorated = decorated.clone();
-            CalendarBody::new(
-                locale.clone(),
-                month,
-                range.clone(),
-                visible_month.clone(),
-                calendar_rows(month, move |cell| {
-                    single_day_cell_content(
-                        cell,
-                        &cell_range,
-                        cell_selection.clone(),
-                        &cell_decorated,
-                    )
-                }),
-            )
+        let cell_range = range.clone();
+        let cell_selection = selection;
+        let cell_decorated = decorated;
+        let rows = calendar_rows(&visible_month, move |cell| {
+            single_day_cell_content(cell, &cell_range, cell_selection.clone(), &cell_decorated)
         });
+        let calendar = CalendarBody::new(locale, range, visible_month, rows);
 
         vstack((label, calendar)).spacing(10.0)
     }
@@ -182,15 +170,16 @@ impl VisibleMonth {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, waterui_macros::Identifiable)]
 pub(crate) struct DayCell {
+    #[id]
+    identity: (Date, bool),
     pub(crate) date: Date,
     pub(crate) in_current_month: bool,
 }
 
 pub(crate) struct CalendarBody<Content> {
     locale: Computed<Locale>,
-    month: VisibleMonth,
     range: RangeInclusive<Date>,
     visible_month: Binding<VisibleMonth>,
     content: Content,
@@ -199,14 +188,12 @@ pub(crate) struct CalendarBody<Content> {
 impl<Content> CalendarBody<Content> {
     pub(crate) const fn new(
         locale: Computed<Locale>,
-        month: VisibleMonth,
         range: RangeInclusive<Date>,
         visible_month: Binding<VisibleMonth>,
         content: Content,
     ) -> Self {
         Self {
             locale,
-            month,
             range,
             visible_month,
             content,
@@ -216,19 +203,10 @@ impl<Content> CalendarBody<Content> {
 
 impl<Content: View> View for CalendarBody<Content> {
     fn body(self, _env: &Environment) -> impl View {
-        let can_go_previous = self.month.previous().first_day() >= month_start(*self.range.start());
-        let can_go_next = self.month.next().first_day() <= month_start(*self.range.end());
-
         Padding::new(
             EdgeInsets::all(8.0),
             vstack((
-                build_month_header(
-                    &self.locale,
-                    self.month,
-                    self.visible_month,
-                    can_go_previous,
-                    can_go_next,
-                ),
+                build_month_header(&self.locale, self.visible_month, self.range),
                 weekday_header(self.locale),
                 self.content,
             ))
@@ -237,26 +215,23 @@ impl<Content: View> View for CalendarBody<Content> {
     }
 }
 
-pub(crate) fn calendar_rows<V: View>(
-    month: VisibleMonth,
-    mut cell_view: impl FnMut(DayCell) -> V,
-) -> impl View {
-    let cells = month_cells(month);
-    let mut rows = Vec::new();
-
-    for week in cells.chunks(7) {
-        let row = week
-            .iter()
-            .copied()
-            .map(&mut cell_view)
-            .collect::<HStack<_>>()
-            .spacing(CALENDAR_CELL_SPACING);
-        rows.push(row);
-    }
-
-    rows.into_iter()
-        .collect::<VStack<_>>()
-        .spacing(CALENDAR_CELL_SPACING)
+pub(crate) fn calendar_rows<V, F>(
+    visible_month: &Binding<VisibleMonth>,
+    cell_view: F,
+) -> impl View + use<V, F>
+where
+    V: View,
+    F: Fn(DayCell) -> V + 'static,
+{
+    let cells = SignalCollection::new(visible_month.map(month_cells));
+    LazyContainer::new(
+        GridLayout::new(
+            NonZeroUsize::new(7).expect("calendar column count must be non-zero"),
+            Size::new(CALENDAR_CELL_SPACING, CALENDAR_CELL_SPACING),
+            Alignment::Center,
+        ),
+        ForEach::new(cells, cell_view),
+    )
 }
 
 pub(crate) fn initial_visible_month(
@@ -298,20 +273,31 @@ pub(crate) fn map_visible_month_binding(month: &Binding<Date>) -> Binding<Visibl
 
 fn build_month_header(
     locale: &Computed<Locale>,
-    month: VisibleMonth,
     visible_month: Binding<VisibleMonth>,
-    can_go_previous: bool,
-    can_go_next: bool,
+    range: RangeInclusive<Date>,
 ) -> impl View {
-    let title = Text::computed(locale.map(move |locale| {
-        StyledStr::plain(format_calendar_month_year(&locale, &month.first_day()))
-    }))
+    let title = Text::computed(
+        locale
+            .zip(&visible_month)
+            .map(|(locale, month)| {
+                StyledStr::plain(format_calendar_month_year(&locale, &month.first_day()))
+            })
+            .computed(),
+    )
     .headline();
+    let first_month = month_start(*range.start());
+    let last_month = month_start(*range.end());
+    let previous_disabled = visible_month
+        .map(move |month| month.previous().first_day() < first_month)
+        .computed();
+    let next_disabled = visible_month
+        .map(move |month| month.next().first_day() > last_month)
+        .computed();
 
     hstack((
         Frame::new(month_navigation_button(
             "<",
-            can_go_previous,
+            previous_disabled,
             visible_month.clone(),
             VisibleMonth::previous,
         ))
@@ -319,7 +305,7 @@ fn build_month_header(
         title,
         Frame::new(month_navigation_button(
             ">",
-            can_go_next,
+            next_disabled,
             visible_month,
             VisibleMonth::next,
         ))
@@ -330,17 +316,18 @@ fn build_month_header(
 
 fn month_navigation_button(
     label: &'static str,
-    enabled: bool,
+    disabled: Computed<bool>,
     visible_month: Binding<VisibleMonth>,
     step: fn(VisibleMonth) -> VisibleMonth,
 ) -> impl View {
-    if enabled {
-        AnyView::new(button(label).borderless().action(move || {
-            visible_month.set(step(visible_month.get()));
-        }))
-    } else {
-        AnyView::new(button(label).borderless())
-    }
+    button(label)
+        .borderless()
+        .disabled(disabled)
+        .action(move || {
+            let mut month = visible_month.get_mut();
+            let next = step(*month);
+            *month = next;
+        })
 }
 
 /// Wraps day-grid content in its column cell: ideally [`CALENDAR_DAY_SIZE`]
@@ -501,6 +488,7 @@ fn month_cells(month: VisibleMonth) -> Vec<DayCell> {
         .map(|day_offset| {
             let date = grid_start + day_offset.days();
             DayCell {
+                identity: (date, month.contains(date)),
                 date,
                 in_current_month: month.contains(date),
             }

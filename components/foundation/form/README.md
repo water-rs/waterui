@@ -127,7 +127,7 @@ struct LoginForm {
 
 fn login_view() -> impl View {
     let initial = LoginForm {
-        username: "alice@example.com".to_string(),
+        username: "me@lexo.cool".to_string(),
         password: String::new(),
     };
     let form_binding = Binding::new(initial);

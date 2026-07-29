@@ -117,7 +117,7 @@ impl LocalExecutor for WinitMainThreadExecutor {
     }
 }
 
-pub fn run(app: App) {
+pub fn run(app: App, inspector_probe: Option<std::sync::Arc<dyn waterui::task::RuntimeProbe>>) {
     let mut event_loop_builder = EventLoop::<RunnerEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     event_loop_builder
@@ -132,7 +132,10 @@ pub fn run(app: App) {
         runnable_tx: local_runnable_tx,
         event_proxy: event_proxy.clone(),
     };
-    let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
+    let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
+        local_executor,
+        inspector_probe,
+    ));
 
     let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);

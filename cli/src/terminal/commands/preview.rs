@@ -14,7 +14,7 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use syn::{Attribute, Item};
 
-use crate::shell;
+use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, note, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
@@ -49,7 +49,7 @@ impl From<CliPreviewPlatform> for PreviewPlatform {
     }
 }
 
-async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
+async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     let platform = resolve_preview_platform(args.platform)?;
     ensure_hydrolysis_preview_platform(platform)?;
     let (width, height) = parse_frame(&args.frame)?;
@@ -70,11 +70,11 @@ async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
         "`water preview test`",
     )
     .await?;
-    let sccache_path = resolve_sccache_path().await;
+    let sccache_path = resolve_sccache_path(shell).await;
 
     for target in targets {
-        header!("Preview test: {}", target.display_name());
-        let spinner = shell::spinner("Building and testing with hydrolysis...");
+        header!(shell, "Preview test: {}", target.display_name());
+        let spinner = shell.spinner("Building and testing with hydrolysis...");
         let output = test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
@@ -91,8 +91,12 @@ async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
-        emit_child_output(&output);
-        success!("Preview semantic test passed: {}", target.display_name());
+        emit_child_output(shell, &output);
+        success!(
+            shell,
+            "Preview semantic test passed: {}",
+            target.display_name()
+        );
     }
 
     Ok(())
@@ -102,7 +106,7 @@ async fn run_preview_test(args: PreviewTestArgs) -> Result<()> {
     clippy::too_many_lines,
     reason = "keeps one ordered perf run lifecycle from artifact planning through report emission"
 )]
-async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
+async fn run_preview_perf(shell: &Shell, args: PreviewPerfArgs) -> Result<()> {
     let platform = resolve_preview_platform(args.platform)?;
     ensure_hydrolysis_preview_platform(platform)?;
     let (width, height) = parse_frame(&args.frame)?;
@@ -129,7 +133,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         "`water preview perf`",
     )
     .await?;
-    let sccache_path = resolve_sccache_path().await;
+    let sccache_path = resolve_sccache_path(shell).await;
     let format_output = args.output.clone();
     let flamegraph_path =
         resolve_preview_perf_flamegraph_path(args.all, format_output.as_deref(), args.flamegraph);
@@ -149,10 +153,10 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         .zip(html_reports)
     {
         if args.format != PreviewPerfOutputFormat::Json {
-            header!("Preview perf: {}", target.display_name());
+            header!(shell, "Preview perf: {}", target.display_name());
         }
         let spinner = (args.format != PreviewPerfOutputFormat::Json)
-            .then(|| shell::spinner("Building and profiling with hydrolysis..."))
+            .then(|| shell.spinner("Building and profiling with hydrolysis..."))
             .flatten();
         let output = test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
@@ -192,7 +196,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
             },
         )?;
         if args.format == PreviewPerfOutputFormat::Human {
-            emit_preview_perf_human(&perf_report);
+            emit_preview_perf_human(shell, &perf_report);
         }
         if let Some(path) = json_report {
             write_preview_perf_json(&path, &perf_report).await?;
@@ -203,17 +207,18 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
         if let Some(path) = html_report {
             write_preview_perf_html(&path, std::slice::from_ref(&perf_report)).await?;
             open_preview_perf_html(&path).await?;
-            success!("Preview perf report opened: {}", path.display());
+            success!(shell, "Preview perf report opened: {}", path.display());
         }
         if args.format != PreviewPerfOutputFormat::Json {
             if let Some(flamegraph) = flamegraph {
                 success!(
+                    shell,
                     "Preview perf passed: {} (flamegraph: {})",
                     target.display_name(),
                     flamegraph.display()
                 );
             } else {
-                success!("Preview perf passed: {}", target.display_name());
+                success!(shell, "Preview perf passed: {}", target.display_name());
             }
         }
         reports.push(perf_report);
@@ -234,7 +239,7 @@ async fn run_preview_perf(args: PreviewPerfArgs) -> Result<()> {
                     format_output.unwrap_or_else(|| PathBuf::from("preview-perf-report.html"));
                 write_preview_perf_html(&path, &reports).await?;
                 open_preview_perf_html(&path).await?;
-                success!("Preview perf report opened: {}", path.display());
+                success!(shell, "Preview perf report opened: {}", path.display());
             }
         }
     }
@@ -501,10 +506,10 @@ use waterui_preview_protocol::hydrolysis::{
     clippy::too_many_lines,
     reason = "keeps preview command dispatch and support-app cleanup in one linear lifecycle"
 )]
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     match args.command {
-        Some(PreviewCommand::Test(args)) => return run_preview_test(args).await,
-        Some(PreviewCommand::Perf(args)) => return run_preview_perf(args).await,
+        Some(PreviewCommand::Test(args)) => return run_preview_test(shell, args).await,
+        Some(PreviewCommand::Perf(args)) => return run_preview_perf(shell, args).await,
         None => {}
     }
 
@@ -526,7 +531,7 @@ pub async fn run(args: Args) -> Result<()> {
     let backend = resolve_preview_backend(platform, args.backend)?;
     let hydrolysis_theme = resolve_hydrolysis_preview_theme(backend, args.theme)?;
     let preview_target = resolve_preview_target(&crate_name, target, args.expr);
-    header!("Preview: {}", preview_target.display_name());
+    header!(shell, "Preview: {}", preview_target.display_name());
 
     check_toolchain_for_backend(platform, backend).await?;
 
@@ -535,6 +540,7 @@ pub async fn run(args: Args) -> Result<()> {
     let sccache_path = sccache.path().await.map_or_else(
         |_| {
             warn!(
+                shell,
                 "sccache not found. Build efficiency may be reduced. Install with: {}",
                 sccache_install_hint()
             );
@@ -545,7 +551,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     if backend == CliPreviewBackend::Hydrolysis {
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
-        let spinner = shell::spinner("Building and rendering with hydrolysis...");
+        let spinner = shell.spinner("Building and rendering with hydrolysis...");
         render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
@@ -563,9 +569,13 @@ pub async fn run(args: Args) -> Result<()> {
             s.finish_and_clear();
         }
         if let Some(scenario) = scenario {
-            success!("Preview frames saved to {}", scenario.output_dir.display());
+            success!(
+                shell,
+                "Preview frames saved to {}",
+                scenario.output_dir.display()
+            );
         } else {
-            success!("Preview saved to {}", args.output.display());
+            success!(shell, "Preview saved to {}", args.output.display());
         }
         return Ok(());
     }
@@ -583,7 +593,7 @@ pub async fn run(args: Args) -> Result<()> {
     };
 
     // Launch preview session (connects to existing app or launches new one)
-    let spinner = shell::spinner("Connecting to preview app...");
+    let spinner = shell.spinner("Connecting to preview app...");
     let preview_platform: PreviewPlatform = platform.into();
     let mut session =
         launch_preview_session(&project_path, preview_platform, sccache_path.clone()).await?;
@@ -593,13 +603,13 @@ pub async fn run(args: Args) -> Result<()> {
 
     let result = async {
         // Build dylib
-        let spinner = shell::spinner("Building project...");
+        let spinner = shell.spinner("Building project...");
         let dylib = session.build_dylib(&project_path).await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
 
-        let spinner = shell::spinner("Rendering view...");
+        let spinner = shell.spinner("Rendering view...");
         let png_data = render_with_symbol(
             &mut session,
             function_path,
@@ -616,12 +626,12 @@ pub async fn run(args: Args) -> Result<()> {
 
         // Save output
         if png_data.is_empty() {
-            error!("Preview returned empty PNG data");
+            error!(shell, "Preview returned empty PNG data");
             bail!("Preview returned empty PNG data");
         }
 
         smol::fs::write(&args.output, &png_data).await?;
-        success!("Preview saved to {}", args.output.display());
+        success!(shell, "Preview saved to {}", args.output.display());
         Ok(())
     }
     .await;
@@ -1066,12 +1076,13 @@ fn parse_preview_perf_output(target: String, output: &str) -> Result<PreviewPerf
     })
 }
 
-fn emit_preview_perf_human(report: &PreviewPerfReport) {
+fn emit_preview_perf_human(shell: &Shell, report: &PreviewPerfReport) {
     // This deliberately stays compact and regular: the default terminal format is optimized for
     // humans and LLM agents to scan, while stable machine consumption belongs to JSON mode.
-    note!("Perf report: {}", report.target);
+    note!(shell, "Perf report: {}", report.target);
     for measurement in &report.measurements {
         note!(
+            shell,
             "  {}: samples={} rendered={} idle={} mean={} median={} p95={} min={} max={} rendered-mean={} rendered-p95={} rendered-max={} rebuilt={}/{} missed120={}/{} missed60={}/{}",
             measurement.name,
             measurement.samples,
@@ -1093,6 +1104,7 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
             measurement.samples
         );
         note!(
+            shell,
             "    phases: rebuild mean={} p95={} | build={} p95={} | dispatch={} p95={} | finish={} p95={} | render mean={} p95={} | animation mean={} | input mean={}",
             micros_label(measurement.phases.rebuild_mean_us),
             micros_label(measurement.phases.rebuild_p95_us),
@@ -1108,11 +1120,13 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
             micros_label(measurement.phases.input_mean_us)
         );
         note!(
+            shell,
             "    caches: measurement hits={} misses={}",
             measurement.measurement_cache_hits,
             measurement.measurement_cache_misses
         );
         note!(
+            shell,
             "    layers: compositor={} vello={} gpu-surface={} clip-pushes={} max-clip-depth={}",
             measurement.scene_layers,
             measurement.vello_scene_layers,
@@ -1121,6 +1135,7 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
             measurement.max_clip_depth
         );
         note!(
+            shell,
             "    filters: applied={} capture={} effect={}",
             measurement.applied_filter_count,
             micros_label(measurement.applied_filter_capture_us),
@@ -1128,6 +1143,7 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
         );
         if let Some(resources) = resource_summary(measurement) {
             note!(
+                shell,
                 "    resources: cpu avg={:.1}% max={:.1}% | memory max={} | gpu-frame avg={} max={} | layers avg={:.1} max={} | clip avg={:.1} max-depth={} | raw_samples={}",
                 resources.avg_cpu_percent,
                 resources.max_cpu_percent,
@@ -1143,7 +1159,7 @@ fn emit_preview_perf_human(report: &PreviewPerfReport) {
         }
     }
     if let Some(flamegraph) = &report.flamegraph {
-        note!("  flamegraph: {}", flamegraph.display());
+        note!(shell, "  flamegraph: {}", flamegraph.display());
     }
 }
 
@@ -2086,11 +2102,12 @@ async fn open_preview_perf_html(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn resolve_sccache_path() -> Option<PathBuf> {
+async fn resolve_sccache_path(shell: &Shell) -> Option<PathBuf> {
     let sccache = Sccache;
     sccache.path().await.map_or_else(
         |_| {
             warn!(
+                shell,
                 "sccache not found. Build efficiency may be reduced. Install with: {}",
                 sccache_install_hint()
             );
@@ -2100,9 +2117,9 @@ async fn resolve_sccache_path() -> Option<PathBuf> {
     )
 }
 
-fn emit_child_output(output: &str) {
+fn emit_child_output(shell: &Shell, output: &str) {
     for line in output.lines().filter(|line| !line.trim().is_empty()) {
-        note!("{line}");
+        note!(shell, "{line}");
     }
 }
 

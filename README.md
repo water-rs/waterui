@@ -10,7 +10,7 @@
   </p>
 </div>
 
-WaterUI lets you describe an application once in Rust and realize it through the backend that fits each platform. It bridges semantic components to UIKit/AppKit, Android View, and GTK4 where suitable native primitives exist, and provides purpose-built shared renderers for platforms or components that need a portable realization.
+`WaterUI` lets you describe an application once in Rust and realize it through the backend that fits each platform. It bridges semantic components to `UIKit`/`AppKit`, Android View, and GTK4 where suitable native primitives exist, and provides purpose-built shared renderers for platforms or components that need a portable realization.
 
 The framework is built around four ideas:
 
@@ -212,11 +212,11 @@ Backends consume shared theme slots, so ordinary view code receives platform-cor
 
 ## Rendering backends
 
-WaterUI separates component semantics from their realization:
+`WaterUI` separates component semantics from their realization:
 
 | Target | Backend | Realization |
 | --- | --- | --- |
-| iOS and macOS | Apple | UIKit and AppKit |
+| iOS and macOS | Apple | `UIKit` and `AppKit` |
 | Android | Android | Android View |
 | Linux | GTK4 | GTK4 widgets |
 | macOS, Linux, Windows, and web | Hydrolysis | Self-drawn GPU renderer |
@@ -276,7 +276,7 @@ water run --platform macos
 - [`backends/`](backends/) — Apple, Android, GTK4, Hydrolysis, Dew, and backend contracts
 - [`cli/`](cli/) — the `water` command and project generators
 - [`ffi/`](ffi/) — backend-facing integration used by generated companion crates
-- [`testing/`](testing/) — semantic UI testing through the WaterUI accessibility tree
+- [`testing/`](testing/) — semantic UI testing through the `WaterUI` accessibility tree
 - [`examples/`](examples/) — runnable applications and previews
 
 ## Documentation
@@ -294,4 +294,4 @@ AI-assisted contributions are welcome when a human understands and reviews the r
 
 ## License
 
-WaterUI is available under either the [Apache License 2.0](LICENSE-APACHE) or the [MIT License](LICENSE-MIT).
+`WaterUI` is available under either the [Apache License 2.0](LICENSE-APACHE) or the [MIT License](LICENSE-MIT).

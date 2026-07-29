@@ -36,7 +36,7 @@
 //!
 //! button("Increment")
 //!     .action(|State(count): State<Binding<i32>>| {
-//!         count.set(count.get() + 1);
+//!         *count.get_mut() += 1;
 //!     })
 //!     .state(&counter);
 //!

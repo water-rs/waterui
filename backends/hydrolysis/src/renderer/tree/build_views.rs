@@ -38,11 +38,6 @@ impl_widget_behavior!(
     crate::widgets::nav::tabs::measure_tabs_node
 );
 impl_widget_behavior!(
-    crate::widgets::visual::icon::IconRenderState,
-    crate::widgets::visual::icon::render_icon_node,
-    crate::widgets::visual::icon::measure_icon_node
-);
-impl_widget_behavior!(
     ResolvedGradient,
     crate::renderer::render_gradient_node,
     crate::renderer::measure_gradient_node
@@ -188,23 +183,6 @@ impl RenderNode {
         let stretch = waterui_core::NativeView::stretch_axis(&tabs);
         let mut state = TabsRenderState::from_tabs(tabs);
         state.prebuild_labels(renderer, env);
-        let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
-    }
-
-    /// Build a persistent system-icon node: the placeholder marker is a move-only
-    /// `AnyView` pre-built into a [`RetainedSubview`] (Hydrolysis has no OS icon
-    /// catalog, so it draws a neutral missing-glyph marker). Static, content-sized
-    /// (`StretchAxis::None`, read from the config).
-    pub(super) fn build_icon(
-        icon: SystemIcon,
-        env: &Environment,
-        renderer: &mut HydrolysisRenderer,
-    ) -> RenderNode {
-        use crate::widgets::visual::icon::IconRenderState;
-        let stretch = waterui_core::NativeView::stretch_axis(&icon);
-        let mut state = IconRenderState::from_icon(&icon, env);
-        state.prebuild(renderer, env);
         let state = Rc::new(RefCell::new(state));
         Self::build_widget(state, stretch, env)
     }

@@ -9,7 +9,7 @@ use futures::StreamExt;
 #[cfg(target_os = "macos")]
 use jiff::Timestamp;
 
-use crate::shell::{self, display_output};
+use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
@@ -385,57 +385,64 @@ fn sccache_allowed() -> bool {
 }
 
 /// Run the run command.
-pub async fn run(args: Args) -> Result<()> {
-    let context = prepare_run_context(&args).await?;
-    print_run_header(&context);
-    check_run_toolchain(context.platform, context.backend).await?;
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let context = prepare_run_context(shell, &args).await?;
+    print_run_header(shell, &context);
+    check_run_toolchain(shell, context.platform, context.backend).await?;
 
     if context.platform == TargetPlatform::Web {
-        return run_web_app(&context.project).await;
+        return run_web_app(shell, &context.project).await;
     }
 
     if context.platform.esp32_chip().is_some() {
-        return run_esp32_app(&context.project, args.device.as_deref()).await;
+        return run_esp32_app(shell, &context.project, args.device.as_deref()).await;
     }
 
-    let selection =
-        select_run_device(context.platform, context.backend, args.device.as_deref()).await?;
-    let config = build_run_config(&args).await;
+    let selection = select_run_device(
+        shell,
+        context.platform,
+        context.backend,
+        args.device.as_deref(),
+    )
+    .await?;
+    let config = build_run_config(shell, &args).await;
 
     #[cfg(target_os = "macos")]
     let mut crash_ctx =
         match CrashReportContext::try_new(&context.project, context.platform, context.backend) {
             Ok(ctx) => ctx,
             Err(e) => {
-                warn!("Crash report augmentation disabled: {e}");
+                warn!(shell, "Crash report augmentation disabled: {e}");
                 None
             }
         };
 
-    let running = display_output(build_and_run(
-        &context.project,
-        context.platform,
-        context.backend,
-        selection.device,
-        selection.needs_launch,
-        config,
-    ))
-    .await?;
+    let running = shell
+        .display_output(build_and_run(
+            shell,
+            &context.project,
+            context.platform,
+            context.backend,
+            selection.device,
+            selection.needs_launch,
+            config,
+        ))
+        .await?;
 
-    line!();
-    note!("Press Ctrl+C to stop the application");
-    line!();
+    line!(shell);
+    note!(shell, "Press Ctrl+C to stop the application");
+    line!(shell);
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(running, context.backend, &mut crash_ctx).await?;
+    stream_running_events(shell, running, context.backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
-    stream_running_events(running, context.backend).await?;
+    stream_running_events(shell, running, context.backend).await?;
 
     Ok(())
 }
 
-async fn prepare_run_context(args: &Args) -> Result<RunContext> {
+async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<RunContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let mut project = Project::open(&project_path).await?;
     let platform = resolve_platform(args.platform);
@@ -453,7 +460,7 @@ async fn prepare_run_context(args: &Args) -> Result<RunContext> {
         project.set_esp32_chip(chip).await?;
     }
 
-    let project = ensure_generated_run_backend(&project_path, project, backend).await?;
+    let project = ensure_generated_run_backend(shell, &project_path, project, backend).await?;
 
     Ok(RunContext {
         project,
@@ -517,6 +524,7 @@ fn ensure_run_backend_ready(project: &Project, backend: TargetBackend) -> Result
 }
 
 async fn ensure_generated_run_backend(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     backend: TargetBackend,
@@ -529,6 +537,7 @@ async fn ensure_generated_run_backend(
                     .join("Cargo.toml")
                     .exists();
             ensure_generated_run_backend_impl::<Gtk4Backend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -540,6 +549,7 @@ async fn ensure_generated_run_backend(
         TargetBackend::Hydrolysis if project.is_playground() => {
             let needs_reinit = HydrolysisBackend::requires_regeneration(&project)?;
             ensure_generated_run_backend_impl::<HydrolysisBackend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -552,6 +562,7 @@ async fn ensure_generated_run_backend(
             let needs_reinit =
                 project.esp32_backend().is_none() || Esp32Backend::requires_regeneration(&project)?;
             ensure_generated_run_backend_impl::<Esp32Backend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -565,6 +576,7 @@ async fn ensure_generated_run_backend(
 }
 
 async fn ensure_generated_run_backend_impl<T>(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     needs_reinit: bool,
@@ -578,18 +590,19 @@ where
         return Ok(project);
     }
 
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     reinit_backend::<T>(&project).await?;
     let project = Project::open(project_path).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(project)
 }
 
-fn print_run_header(context: &RunContext) {
+fn print_run_header(shell: &Shell, context: &RunContext) {
     header!(
+        shell,
         "Running {} on {} ({})",
         context.project.crate_name(),
         platform_name(context.platform),
@@ -597,50 +610,57 @@ fn print_run_header(context: &RunContext) {
     );
 }
 
-async fn check_run_toolchain(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
-    let spinner = shell::spinner("Checking toolchain...");
+async fn check_run_toolchain(
+    shell: &Shell,
+    platform: TargetPlatform,
+    backend: TargetBackend,
+) -> Result<()> {
+    let spinner = shell.spinner("Checking toolchain...");
     check_toolchain_for_backend(platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Toolchain ready");
+    success!(shell, "Toolchain ready");
     Ok(())
 }
 
-async fn run_web_app(project: &Project) -> Result<()> {
-    let spinner = shell::spinner("Building Hydrolysis web app...");
+async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
+    let spinner = shell.spinner("Building Hydrolysis web app...");
     let site_root = prepare_hydrolysis_web_dev_site(project).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built Hydrolysis web app at {}", site_root.display());
+    success!(shell, "Built Hydrolysis web app at {}", site_root.display());
 
     let server = HydrolysisWebDevServer::start(site_root).await?;
-    line!();
-    note!("Serving at http://{}/", server.address());
-    note!("Press Ctrl+C to stop the web server");
+    line!(shell);
+    note!(shell, "Serving at http://{}/", server.address());
+    note!(shell, "Press Ctrl+C to stop the web server");
     let _server = server;
     futures::future::pending::<()>().await;
     unreachable!("web dev server future should be cancelled by Ctrl+C")
 }
 
-async fn run_esp32_app(project: &Project, device: Option<&str>) -> Result<()> {
-    let sccache_path = detect_sccache_path().await;
+async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -> Result<()> {
+    let sccache_path = detect_sccache_path(shell).await;
     let build_options = sccache_path.map_or_else(
         || BuildOptions::development(false),
         |sccache| BuildOptions::development(false).with_sccache(sccache),
     );
 
-    shell::status(">", "Building ESP32 firmware...");
-    display_output(run_esp32(project, build_options, device)).await
+    let _ = shell.status(">", "Building ESP32 firmware...");
+    shell
+        .display_output(run_esp32(project, build_options, device))
+        .await
 }
 
 async fn select_run_device(
+    shell: &Shell,
     platform: TargetPlatform,
     backend: TargetBackend,
     device_id: Option<&str>,
 ) -> Result<DeviceSelection> {
-    let spinner = shell::spinner("Scanning for devices...");
+    let spinner = shell.spinner("Scanning for devices...");
     let device = find_device(platform, backend, device_id).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -648,9 +668,9 @@ async fn select_run_device(
 
     let needs_launch = device.needs_launch();
     if needs_launch {
-        note!("Will launch: {}", device_name(&device));
+        note!(shell, "Will launch: {}", device_name(&device));
     } else {
-        success!("Found device: {}", device_name(&device));
+        success!(shell, "Found device: {}", device_name(&device));
     }
 
     Ok(DeviceSelection {
@@ -659,8 +679,8 @@ async fn select_run_device(
     })
 }
 
-async fn build_run_config(args: &Args) -> BuildRunConfig {
-    let sccache_path = detect_sccache_path().await;
+async fn build_run_config(shell: &Shell, args: &Args) -> BuildRunConfig {
+    let sccache_path = detect_sccache_path(shell).await;
     let mut run_options = RunOptions::new();
     if let Some(level) = args.logs.map(LogLevel::from) {
         run_options.set_log_level(level);
@@ -673,9 +693,12 @@ async fn build_run_config(args: &Args) -> BuildRunConfig {
     }
 }
 
-async fn detect_sccache_path() -> Option<PathBuf> {
+async fn detect_sccache_path(shell: &Shell) -> Option<PathBuf> {
     if !sccache_allowed() {
-        note!("Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)");
+        note!(
+            shell,
+            "Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)"
+        );
         return None;
     }
 
@@ -683,6 +706,7 @@ async fn detect_sccache_path() -> Option<PathBuf> {
     sccache.path().await.map_or_else(
         |_| {
             warn!(
+                shell,
                 "sccache not found. Build efficiency may be reduced. Install with: {}",
                 sccache_install_hint()
             );
@@ -694,6 +718,7 @@ async fn detect_sccache_path() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 async fn stream_running_events(
+    shell: &Shell,
     running: Running,
     backend: TargetBackend,
     crash_ctx: &mut Option<CrashReportContext>,
@@ -719,7 +744,7 @@ async fn stream_running_events(
             event = augment_event_with_crash_report(event, ctx).await;
         }
 
-        if handle_device_event(event, backend_log_name)? {
+        if handle_device_event(shell, event, backend_log_name)? {
             break;
         }
     }
@@ -727,12 +752,16 @@ async fn stream_running_events(
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn stream_running_events(running: Running, backend: TargetBackend) -> Result<()> {
+async fn stream_running_events(
+    shell: &Shell,
+    running: Running,
+    backend: TargetBackend,
+) -> Result<()> {
     let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
 
     loop {
-        if handle_device_event(running.next().await, backend_log_name)? {
+        if handle_device_event(shell, running.next().await, backend_log_name)? {
             break;
         }
     }
@@ -768,6 +797,7 @@ async fn augment_event_with_crash_report(
 
 /// Build, package, and run on device.
 async fn build_and_run(
+    shell: &Shell,
     project: &Project,
     cli_platform: TargetPlatform,
     backend: TargetBackend,
@@ -778,18 +808,18 @@ async fn build_and_run(
     let build_plan = resolve_build_plan(cli_platform, backend, &device)?;
     let launch_task = spawn_device_launch_task(device, needs_launch);
 
-    shell::status(">", "Building...");
+    let _ = shell.status(">", "Building...");
     build_for_backend(project, backend, &build_plan, build_options(&config)).await?;
 
-    shell::status(">", "Packaging...");
+    let _ = shell.status(">", "Packaging...");
     let artifact = package_for_backend(project, backend, &build_plan).await?;
 
     if needs_launch {
-        shell::status(">", "Waiting for device...");
+        let _ = shell.status(">", "Waiting for device...");
     }
     let device = launch_task.await?;
 
-    shell::status(">", "Running...");
+    let _ = shell.status(">", "Running...");
     let running = run_with_options(device, artifact, config.run_options).await?;
 
     Ok(running)
@@ -1230,38 +1260,42 @@ fn validate_desktop_backend_platform_on_host(
 /// Handle a device event.
 ///
 /// Returns `true` if the event loop should break.
-fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> Result<bool> {
+fn handle_device_event(
+    shell: &Shell,
+    event: Option<DeviceEvent>,
+    platform_name: &str,
+) -> Result<bool> {
     match event {
         Some(DeviceEvent::Started) => {
-            shell::status("*", "Application started");
+            let _ = shell.status("*", "Application started");
             Ok(false)
         }
         Some(DeviceEvent::Stopped) => {
-            shell::status("o", "Application stopped");
+            let _ = shell.status("o", "Application stopped");
             Ok(true)
         }
         Some(DeviceEvent::Stdout { message }) => {
-            line!("[stdout] {message}");
+            line!(shell, "[stdout] {message}");
             Ok(false)
         }
         Some(DeviceEvent::Stderr { message }) => {
-            warn!("[stderr] {message}");
+            warn!(shell, "[stderr] {message}");
             Ok(false)
         }
         Some(DeviceEvent::Log { level, message }) => {
-            shell::device_log(platform_name, level, message);
+            let _ = shell.device_log(platform_name, level, message);
             Ok(false)
         }
         Some(DeviceEvent::Exited(exit)) => {
-            shell::status("o", exit.terminal_message());
+            let _ = shell.status("o", exit.terminal_message());
             Ok(true)
         }
         Some(DeviceEvent::Crashed(msg)) => {
             // Use panic_report for panic messages, regular error for others
             if msg.starts_with("Panic:") {
-                shell::panic_report(&msg);
+                shell.panic_message(&msg);
             } else {
-                error!("Application crashed: {msg}");
+                error!(shell, "Application crashed: {msg}");
             }
             bail!("application crashed");
         }
@@ -1301,8 +1335,9 @@ mod tests {
 
     #[test]
     fn clean_device_exit_stops_without_error() {
-        crate::shell::init(false);
+        let shell = crate::shell::Shell::new(false);
         let should_stop = handle_device_event(
+            &shell,
             Some(DeviceEvent::Exited(ApplicationExit::completed())),
             "test",
         )

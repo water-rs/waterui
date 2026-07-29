@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use clap::{Args as ClapArgs, Subcommand};
 use color_eyre::eyre::{self, Result};
 
-use crate::{error, line, note, shell, success};
+use crate::shell::Shell;
+use crate::{error, line, note, success};
 use waterui_cli::{android, apple, capture, gesture};
 
 /// Arguments for the device command.
@@ -177,21 +178,22 @@ fn parse_coords(s: &str) -> Result<(u32, u32), String> {
 }
 
 /// Run the device command.
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     match args.command {
-        DeviceCommand::Capture(capture_args) => run_capture(capture_args).await,
-        DeviceCommand::Tap(tap_args) => run_tap(tap_args).await,
-        DeviceCommand::Swipe(swipe_args) => run_swipe(swipe_args).await,
-        DeviceCommand::Text(text_args) => run_text(text_args).await,
-        DeviceCommand::Describe(describe_args) => run_describe(describe_args).await,
+        DeviceCommand::Capture(capture_args) => run_capture(shell, capture_args).await,
+        DeviceCommand::Tap(tap_args) => run_tap(shell, tap_args).await,
+        DeviceCommand::Swipe(swipe_args) => run_swipe(shell, swipe_args).await,
+        DeviceCommand::Text(text_args) => run_text(shell, text_args).await,
+        DeviceCommand::Describe(describe_args) => run_describe(shell, describe_args).await,
     }
 }
 
 /// Run the capture subcommand.
-async fn run_capture(args: CaptureArgs) -> Result<()> {
+async fn run_capture(shell: &Shell, args: CaptureArgs) -> Result<()> {
     // Handle PID-based capture (macOS window capture)
     if let Some(pid) = args.pid {
         return run_capture_by_pid(
+            shell,
             pid,
             args.window,
             args.all_windows,
@@ -213,13 +215,14 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
         match waterui_cli::apple::local::screenshot(&output).await {
             Ok(()) => {
                 success!(
+                    shell,
                     "Screenshot saved to {} (from macOS local)",
                     output.display()
                 );
                 return Ok(());
             }
             Err(e) => {
-                error!("Failed to capture screenshot: {e}");
+                error!(shell, "Failed to capture screenshot: {e}");
                 return Err(e);
             }
         }
@@ -229,7 +232,7 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
     let platform = match capture::verify_device(device_id).await {
         Ok(p) => p,
         Err(e) => {
-            error!("Device not found: {e}");
+            error!(shell, "Device not found: {e}");
             return Err(e);
         }
     };
@@ -248,6 +251,7 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
     match capture::screenshot(device_id, &output).await {
         Ok(()) => {
             success!(
+                shell,
                 "Screenshot saved to {} (from {})",
                 output.display(),
                 platform_name
@@ -255,7 +259,7 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            error!("Failed to capture screenshot: {e}");
+            error!(shell, "Failed to capture screenshot: {e}");
             Err(e)
         }
     }
@@ -263,6 +267,7 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
 
 /// Run capture by PID (macOS window capture).
 async fn run_capture_by_pid(
+    shell: &Shell,
     pid: i32,
     window_index: Option<usize>,
     all_windows: bool,
@@ -275,7 +280,7 @@ async fn run_capture_by_pid(
     let windows = list_windows_by_pid(pid)?;
 
     if windows.is_empty() {
-        error!("No windows found for PID {pid}");
+        error!(shell, "No windows found for PID {pid}");
         eyre::bail!("No windows found for PID {pid}");
     }
 
@@ -284,6 +289,7 @@ async fn run_capture_by_pid(
 
     if normal_windows.is_empty() {
         error!(
+            shell,
             "No normal windows found for PID {pid} (found {} auxiliary windows)",
             windows.len()
         );
@@ -317,15 +323,24 @@ async fn run_capture_by_pid(
 
             match screenshot_window(window.window_id, &path).await {
                 Ok(()) => {
-                    success!("Window {i} \"{}\" saved to {}", window.name, path.display());
+                    success!(
+                        shell,
+                        "Window {i} \"{}\" saved to {}",
+                        window.name,
+                        path.display()
+                    );
                 }
                 Err(e) => {
-                    error!("Failed to capture window {i}: {e}");
+                    error!(shell, "Failed to capture window {i}: {e}");
                 }
             }
         }
 
-        note!("Captured {} windows for PID {pid}", normal_windows.len());
+        note!(
+            shell,
+            "Captured {} windows for PID {pid}",
+            normal_windows.len()
+        );
         Ok(())
     } else {
         // Capture single window
@@ -333,6 +348,7 @@ async fn run_capture_by_pid(
 
         if index >= normal_windows.len() {
             error!(
+                shell,
                 "Window index {index} out of range (found {} windows)",
                 normal_windows.len()
             );
@@ -348,6 +364,7 @@ async fn run_capture_by_pid(
         match screenshot_window(window.window_id, &output_path).await {
             Ok(()) => {
                 success!(
+                    shell,
                     "Screenshot saved to {} (window \"{}\" from PID {pid})",
                     output_path.display(),
                     window.name
@@ -355,7 +372,7 @@ async fn run_capture_by_pid(
                 Ok(())
             }
             Err(e) => {
-                error!("Failed to capture screenshot: {e}");
+                error!(shell, "Failed to capture screenshot: {e}");
                 Err(e)
             }
         }
@@ -376,17 +393,21 @@ const fn build_gesture_options(
 }
 
 /// Print diff result if present.
-fn print_diff_result(result: &gesture::GestureResult, diff_output: Option<&std::path::Path>) {
+fn print_diff_result(
+    shell: &Shell,
+    result: &gesture::GestureResult,
+    diff_output: Option<&std::path::Path>,
+) {
     if let Some(diff) = &result.diff {
         if let Some(path) = diff_output {
-            success!("Diff image saved to {}", path.display());
+            success!(shell, "Diff image saved to {}", path.display());
         }
-        note!("Diff result:\n{diff}");
+        note!(shell, "Diff result:\n{diff}");
     }
 }
 
 /// Run the tap subcommand.
-async fn run_tap(args: TapArgs) -> Result<()> {
+async fn run_tap(shell: &Shell, args: TapArgs) -> Result<()> {
     let device_id = &args.id;
 
     // Verify device exists
@@ -396,19 +417,19 @@ async fn run_tap(args: TapArgs) -> Result<()> {
 
     match gesture::tap(device_id, args.x, args.y, &options).await {
         Ok(result) => {
-            success!("Tap at ({}, {})", args.x, args.y);
-            print_diff_result(&result, args.diff_output.as_deref());
+            success!(shell, "Tap at ({}, {})", args.x, args.y);
+            print_diff_result(shell, &result, args.diff_output.as_deref());
             Ok(())
         }
         Err(e) => {
-            error!("Failed to tap: {e}");
+            error!(shell, "Failed to tap: {e}");
             Err(e)
         }
     }
 }
 
 /// Run the swipe subcommand.
-async fn run_swipe(args: SwipeArgs) -> Result<()> {
+async fn run_swipe(shell: &Shell, args: SwipeArgs) -> Result<()> {
     let device_id = &args.id;
 
     // Verify device exists
@@ -419,24 +440,25 @@ async fn run_swipe(args: SwipeArgs) -> Result<()> {
     match gesture::swipe(device_id, args.from, args.to, args.duration, &options).await {
         Ok(result) => {
             success!(
+                shell,
                 "Swipe from ({}, {}) to ({}, {})",
                 args.from.0,
                 args.from.1,
                 args.to.0,
                 args.to.1
             );
-            print_diff_result(&result, args.diff_output.as_deref());
+            print_diff_result(shell, &result, args.diff_output.as_deref());
             Ok(())
         }
         Err(e) => {
-            error!("Failed to swipe: {e}");
+            error!(shell, "Failed to swipe: {e}");
             Err(e)
         }
     }
 }
 
 /// Run the text subcommand.
-async fn run_text(args: TextArgs) -> Result<()> {
+async fn run_text(shell: &Shell, args: TextArgs) -> Result<()> {
     let device_id = &args.id;
 
     // Verify device exists
@@ -446,19 +468,19 @@ async fn run_text(args: TextArgs) -> Result<()> {
 
     match gesture::text(device_id, &args.input, &options).await {
         Ok(result) => {
-            success!("Text input: \"{}\"", args.input);
-            print_diff_result(&result, args.diff_output.as_deref());
+            success!(shell, "Text input: \"{}\"", args.input);
+            print_diff_result(shell, &result, args.diff_output.as_deref());
             Ok(())
         }
         Err(e) => {
-            error!("Failed to input text: {e}");
+            error!(shell, "Failed to input text: {e}");
             Err(e)
         }
     }
 }
 
 /// Run the describe subcommand.
-async fn run_describe(args: DescribeArgs) -> Result<()> {
+async fn run_describe(shell: &Shell, args: DescribeArgs) -> Result<()> {
     let device_id = &args.id;
 
     // Local macOS device is not supported
@@ -472,23 +494,23 @@ async fn run_describe(args: DescribeArgs) -> Result<()> {
         capture::DevicePlatform::Android => android::device::describe(device_id).await?,
     };
 
-    if shell::get().is_json() {
+    if shell.is_json() {
         // JSON mode: output raw JSON
-        shell::json_raw(&json);
+        let _ = shell.json_raw(&json);
     } else {
         // Readable mode: format as table
-        print_ui_elements_readable(&json)?;
+        print_ui_elements_readable(shell, &json)?;
     }
 
     Ok(())
 }
 
 /// Print UI elements in human-readable format.
-fn print_ui_elements_readable(json: &str) -> Result<()> {
+fn print_ui_elements_readable(shell: &Shell, json: &str) -> Result<()> {
     let elements: Vec<serde_json::Value> = serde_json::from_str(json)?;
 
-    line!("UI Elements ({} found):", elements.len());
-    line!("{}", "-".repeat(80));
+    line!(shell, "UI Elements ({} found):", elements.len());
+    line!(shell, "{}", "-".repeat(80));
 
     for (i, elem) in elements.iter().enumerate() {
         let label = elem.get("AXLabel").and_then(|v| v.as_str()).unwrap_or("-");
@@ -531,6 +553,7 @@ fn print_ui_elements_readable(json: &str) -> Result<()> {
                 format!(" ({label})")
             };
             line!(
+                shell,
                 "[{}] {} \"{}\"{}",
                 i,
                 elem_type,
@@ -538,6 +561,7 @@ fn print_ui_elements_readable(json: &str) -> Result<()> {
                 label_suffix
             );
             line!(
+                shell,
                 "    tap: --x {center_x:.0} --y {center_y:.0}  (frame: {x:.0},{y:.0} {w:.0}x{h:.0})"
             );
         }

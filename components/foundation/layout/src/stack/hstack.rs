@@ -1,11 +1,8 @@
-#![allow(
-    clippy::cast_precision_loss,
-    reason = "intentional lossy numeric cast in rendering/layout code"
-)]
 //! Horizontal stack layout.
 
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt, collection::Collection};
+use num_traits::ToPrimitive;
 use waterui_core::{
     AnyView, IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
     view::TupleViews, views::ForEach,
@@ -154,7 +151,8 @@ fn hstack_stretch_allocations(
         return Vec::new();
     }
 
-    let width = (available_for_children - fixed_width).max(0.0) / stretch_indices.len() as f32;
+    let width =
+        (available_for_children - fixed_width).max(0.0) / usize_to_f32(stretch_indices.len());
 
     stretch_indices.iter().map(|&idx| (idx, width)).collect()
 }
@@ -167,7 +165,7 @@ const MIN_COMPRESSED_WIDTH: f32 = 20.0;
 /// rounding error of measuring and then reconstructing the same row width.
 fn exceeds_available_width(total: f32, available: f32, terms: usize) -> bool {
     let magnitude = total.abs().max(available.abs()).max(1.0);
-    let rounding_tolerance = f32::EPSILON * magnitude * terms.max(1) as f32;
+    let rounding_tolerance = f32::EPSILON * magnitude * usize_to_f32(terms.max(1));
     total - available > rounding_tolerance
 }
 
@@ -211,7 +209,7 @@ fn compress_children_evenly(
     let mut cap = f32::NEG_INFINITY;
     for (k, &width) in widths.iter().enumerate() {
         prefix += width;
-        let candidate = (available - (total - prefix)) / (k + 1) as f32;
+        let candidate = (available - (total - prefix)) / usize_to_f32(k + 1);
         let next = if k + 1 < widths.len() {
             widths[k + 1]
         } else {
@@ -234,7 +232,6 @@ fn compress_children_evenly(
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
 #[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -244,7 +241,7 @@ impl Layout for HStackLayout {
 
         let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * spacing
+            usize_to_f32(children.len() - 1) * spacing
         } else {
             0.0
         };
@@ -363,7 +360,7 @@ impl Layout for HStackLayout {
 
         let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * spacing
+            usize_to_f32(children.len() - 1) * spacing
         } else {
             0.0
         };
@@ -513,6 +510,12 @@ impl Layout for HStackLayout {
     ) -> Vec<nami::watcher::BoxWatcherGuard> {
         vec![self.spacing.watch(move |_| invalidate())]
     }
+}
+
+fn usize_to_f32(value: usize) -> f32 {
+    value
+        .to_f32()
+        .expect("HStackLayout: child count must be representable as f32")
 }
 
 impl<C> HStack<(C,)> {

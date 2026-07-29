@@ -434,7 +434,7 @@ fn extract_region(locale_tag: &str) -> Option<String> {
 }
 
 impl Extractor for RegionalContext {
-    fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
+    fn extract(env: &Environment) -> Result<Self, waterui_core::Error> {
         if let Some(locale) = env.get::<Binding<Locale>>() {
             return Ok(current_settings().with_locale(&locale.get()));
         }

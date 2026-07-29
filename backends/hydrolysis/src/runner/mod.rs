@@ -11,6 +11,7 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 #[cfg(feature = "winit")]
@@ -70,9 +71,10 @@ use crate::renderer::{
 };
 use crate::time::Instant;
 
-fn init_main_thread_executors() {
+fn init_main_thread_executors() -> Option<Arc<dyn waterui::task::RuntimeProbe>> {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = waterui::inspector::maybe_init_from_env();
+    waterui::inspector::maybe_init_from_env()
+        .map(waterui::inspector::InspectorRuntime::into_runtime_probe)
 }
 
 fn install_native_component_hooks(env: &mut Environment) {
@@ -107,7 +109,11 @@ fn install_headless_window_managers(
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 pub fn run(app: App) {
-    init_main_thread_executors();
+    let inspector_probe = init_main_thread_executors();
+    let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
+        native_executor::NativeExecutor::new(),
+        inspector_probe,
+    ));
     let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
@@ -138,15 +144,15 @@ pub fn run(app: App) {
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub fn run(app: App) {
-    init_main_thread_executors();
-    web_runner::run(app);
+    let inspector_probe = init_main_thread_executors();
+    web_runner::run(app, inspector_probe);
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
 pub fn run(app: App) {
     initialize_tracing_from_env();
-    init_main_thread_executors();
-    winit_runner::run(app);
+    let inspector_probe = init_main_thread_executors();
+    winit_runner::run(app, inspector_probe);
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]

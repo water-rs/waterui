@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Args as ClapArgs, Subcommand};
 use color_eyre::eyre::Result;
 
+use crate::shell::Shell;
 use crate::{header, note, success};
 use waterui_cli::water_dir::{self, BuildCacheGcOutcome};
 
@@ -31,15 +32,16 @@ struct BuildCacheArgs {
 }
 
 /// Run the gc command.
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     match args.command {
-        GcCommand::BuildCache(args) => run_build_cache(args).await,
+        GcCommand::BuildCache(args) => run_build_cache(shell, args).await,
     }
 }
 
-async fn run_build_cache(args: BuildCacheArgs) -> Result<()> {
+async fn run_build_cache(shell: &Shell, args: BuildCacheArgs) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     header!(
+        shell,
         "Cleaning stale managed build cache for {}...",
         project_path.display()
     );
@@ -47,13 +49,17 @@ async fn run_build_cache(args: BuildCacheArgs) -> Result<()> {
     match water_dir::cleanup_stale_build_caches_for_project(&project_path).await? {
         BuildCacheGcOutcome::Ran(summary) => {
             success!(
+                shell,
                 "Build-cache GC complete: scanned {} cache entries, removed {} stale entries",
                 summary.scanned_entries,
                 summary.removed_entries
             );
         }
         BuildCacheGcOutcome::SkippedAlreadyRunning => {
-            note!("Build-cache GC skipped because another cleanup process is already running");
+            note!(
+                shell,
+                "Build-cache GC skipped because another cleanup process is already running"
+            );
         }
     }
 

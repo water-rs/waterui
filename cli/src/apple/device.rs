@@ -475,19 +475,11 @@ async fn wait_for_pid_exit(pid: u32) {
     }
 }
 
-/// Represents a physical Apple device
+/// Represents an Apple device available to the CLI.
 #[derive(Debug)]
-pub struct ApplePhysicalDevice {}
-
-/// Represents an Apple device (simulator or physical)
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum AppleDevice {
     /// An Apple Simulator device
-    Simulator(AppleSimulator),
-
-    /// A physical Apple device
-    Physical(ApplePhysicalDevice),
+    Simulator(Box<AppleSimulator>),
 
     /// The current physical `macOS` device
     ///
@@ -501,7 +493,6 @@ impl Device for AppleDevice {
         match self {
             Self::Simulator(simulator) => simulator.name(),
             Self::Current(mac_os) => mac_os.name(),
-            Self::Physical(_) => "iOS Device",
         }
     }
 
@@ -511,11 +502,6 @@ impl Device for AppleDevice {
             Self::Current(_) => {
                 // No need to launch anything for MacOS physical device
                 // This is the current machine
-                Ok(())
-            }
-            Self::Physical(_) => {
-                // Physical devices don't need to be "launched" - they're already running
-                // Connection is handled during run()
                 Ok(())
             }
         }
@@ -529,14 +515,6 @@ impl Device for AppleDevice {
         match self {
             Self::Simulator(simulator) => simulator.run(artifact, options).await,
             Self::Current(mac_os) => mac_os.run(artifact, options).await,
-            Self::Physical(_) => {
-                // Physical device deployment requires ios-deploy or similar tooling
-                // For now, return an error indicating this is not yet implemented
-                Err(FailToRun::Run(eyre!(
-                    "Physical iOS device deployment is not yet implemented. \
-                     Please use a simulator or deploy manually via Xcode."
-                )))
-            }
         }
     }
 
@@ -547,7 +525,7 @@ impl Device for AppleDevice {
         // Add available simulators
         let simulators = AppleSimulator::scan().await?;
         for sim in simulators {
-            devices.push(Self::Simulator(sim));
+            devices.push(Self::Simulator(Box::new(sim)));
         }
 
         // Add local machine

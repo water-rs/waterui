@@ -66,16 +66,19 @@ impl SubView for GtkSubView {
                 inner_dimensions.size.height + margin_v,
             );
             if layout_debug_enabled() {
-                eprintln!(
-                    "[gtk-layout] subview.measure type={} proposal=({:?},{:?}) container-inner=({},{}) margins=({margin_h},{margin_v}) -> ({},{}) stretch={:?}",
-                    self.widget.type_().name(),
-                    proposal.width,
-                    proposal.height,
-                    inner_dimensions.size.width,
-                    inner_dimensions.size.height,
-                    size.width,
-                    size.height,
-                    self.stretch_axis
+                tracing::debug!(
+                    target: "waterui::gtk::layout",
+                    widget_type = %self.widget.type_().name(),
+                    proposal_width = ?proposal.width,
+                    proposal_height = ?proposal.height,
+                    inner_width = inner_dimensions.size.width,
+                    inner_height = inner_dimensions.size.height,
+                    margin_horizontal = margin_h,
+                    margin_vertical = margin_v,
+                    width = size.width,
+                    height = size.height,
+                    stretch_axis = ?self.stretch_axis,
+                    "Measured GTK container subview"
                 );
             }
             let mut dimensions = ViewDimensions::new(size);
@@ -144,12 +147,19 @@ impl SubView for GtkSubView {
             height = proposed.max(0.0);
         }
         if layout_debug_enabled() {
-            eprintln!(
-                "[gtk-layout] subview.measure type={} proposal=({:?},{:?}) for=(w:{for_width},h:{for_height}) natural=({natural_width},{natural_height}) -> ({width},{height}) stretch={:?}",
-                self.widget.type_().name(),
-                proposal.width,
-                proposal.height,
-                self.stretch_axis
+            tracing::debug!(
+                target: "waterui::gtk::layout",
+                widget_type = %self.widget.type_().name(),
+                proposal_width = ?proposal.width,
+                proposal_height = ?proposal.height,
+                for_width,
+                for_height,
+                natural_width,
+                natural_height,
+                width,
+                height,
+                stretch_axis = ?self.stretch_axis,
+                "Measured GTK subview"
             );
         }
 

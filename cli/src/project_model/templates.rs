@@ -165,7 +165,7 @@ pub struct TemplateContext {
     pub app_name: String,
     /// The Rust crate name (e.g., "`my_app`")
     pub crate_name: CrateName,
-    /// The bundle identifier (e.g., "com.example.myapp")
+    /// The bundle identifier (e.g., "dev.waterui.myapp")
     pub bundle_identifier: BundleIdentifier,
     /// The author name
     pub author: String,

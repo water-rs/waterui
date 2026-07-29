@@ -26,10 +26,12 @@ use waterui_core::prelude::*;
 fn main() -> impl View {
     VStack::new((
         // Display a remote photo
-        Photo::new(Url::new("https://example.com/image.jpg")),
+        Photo::new(Url::new("https://assets.waterui.dev/images/logo.png")),
 
         // Video player with native controls
-        VideoPlayer::new(Url::new("https://example.com/video.mp4"))
+        VideoPlayer::new(Url::new(
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        ))
             .show_controls(true),
     ))
 }
@@ -45,7 +47,9 @@ The crate uses `waterui_url::Url` for type-safe resource addressing. URLs suppor
 use waterui_media::Url;
 
 // Compile-time web URLs
-const REMOTE: Url = Url::new("https://cdn.example.com/video.mp4");
+const REMOTE: Url = Url::new(
+    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+);
 
 // Runtime parsing
 let local: Url = "/path/to/video.mp4".parse().unwrap();
@@ -80,7 +84,7 @@ All media components integrate with WaterUI's reactive system via `Binding` and 
 ```rust
 use waterui_media::{Photo, photo::Event, Url};
 
-let photo = Photo::new(Url::new("https://example.com/large-image.jpg"))
+let photo = Photo::new(Url::new("https://assets.waterui.dev/images/logo.png"))
     .on_event(|event| {
         match event {
             Event::Loaded => tracing::debug!("Image loaded successfully"),
@@ -100,7 +104,9 @@ fn volume_demo() -> impl View {
     let muted = binding(false);
 
     VStack::new((
-        VideoPlayer::new(Url::new("https://example.com/video.mp4"))
+        VideoPlayer::new(Url::new(
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        ))
             .muted(&muted),
 
         HStack::new((
@@ -117,7 +123,9 @@ fn volume_demo() -> impl View {
 use waterui_media::{Video, AspectRatio, Url};
 use waterui_core::binding;
 
-let video = Video::new(Url::new("https://example.com/loop.mp4"))
+let video = Video::new(Url::new(
+    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+))
     .aspect_ratio(AspectRatio::Fill)
     .loops(true)
     .on_event(|event| {
@@ -128,14 +136,11 @@ let video = Video::new(Url::new("https://example.com/loop.mp4"))
 ### Live Photo Display
 
 ```rust
-use waterui_media::{LivePhoto, live::LivePhotoSource, Url};
+use waterui_media::{live::LivePhotoSource, LivePhoto, Url};
 
-let source = LivePhotoSource::new(
-    Url::new("https://example.com/live-photo.jpg"),
-    Url::new("https://example.com/live-photo.mov"),
-);
-
-let live_photo = LivePhoto::new(source);
+fn live_photo(still_image: Url, motion_video: Url) -> LivePhoto {
+    LivePhoto::new(LivePhotoSource::new(still_image, motion_video))
+}
 ```
 
 ### Media Picker
@@ -176,8 +181,10 @@ fn display_media(media: Media) -> impl View {
     }
 }
 
-let image = Media::Image(Url::new("https://example.com/photo.jpg"));
-let video = Media::Video(Url::new("https://example.com/clip.mp4"));
+let image = Media::Image(Url::new("https://assets.waterui.dev/images/logo.png"));
+let video = Media::Video(Url::new(
+    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+));
 ```
 
 ## API Overview

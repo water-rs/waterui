@@ -17,7 +17,9 @@ struct SnapshotSpec {
 
 fn composite_over_opaque_background(pixels: &[u8], background: [u8; 3]) -> Vec<u8> {
     pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|pixel| {
             let alpha = u16::from(pixel[3]);
             let inv_alpha = 255_u16 - alpha;

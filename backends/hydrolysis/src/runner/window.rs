@@ -1155,15 +1155,15 @@ where
     should_close
 }
 
-/// Whether the window opted into game-engine continuous rendering and is currently
-/// visible. Minimized/closed windows are excluded so a backgrounded continuous window
-/// does not keep driving the GPU.
-fn window_wants_continuous_render(window: &Window) -> bool {
-    window.continuous_render
-        && !matches!(
-            window.state.get(),
-            waterui::window::WindowState::Minimized | waterui::window::WindowState::Closed
-        )
+/// Whether the game-engine renderer's window is currently visible.
+///
+/// Hydrolysis renders every display refresh by design. Minimized and closed
+/// windows are excluded so background windows do not keep driving the GPU.
+fn window_is_visible(window: &Window) -> bool {
+    !matches!(
+        window.state.get(),
+        waterui::window::WindowState::Minimized | waterui::window::WindowState::Closed
+    )
 }
 
 pub(super) fn advance_runtime<P: PlatformWindow>(
@@ -1211,10 +1211,10 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.renderer.request_redraw();
         runtime.platform.request_redraw();
     }
-    if window_wants_continuous_render(&runtime.window) {
-        // Game-engine mode: keep presenting every display refresh while the window is
-        // visible. The redraw is delivered through the AutoVsync-gated present, so this
-        // paces to the monitor refresh rather than spinning the CPU.
+    if window_is_visible(&runtime.window) {
+        // Keep presenting every display refresh while the window is visible. The
+        // redraw is delivered through the AutoVsync-gated present, so this paces
+        // to the monitor refresh rather than spinning the CPU.
         runtime.request_reencode();
         runtime.platform.request_redraw();
     }

@@ -45,7 +45,7 @@ pub fn load_cached_text(
 /// Returns an error if the HTTP request fails or the local file cannot be read.
 pub fn fetch_text(source: &str, description: &str) -> Result<String, String> {
     if is_http_url(source) {
-        eprintln!("Downloading {description} from {source}...");
+        tracing::debug!(description, source, "Downloading build input");
         ureq::get(source)
             .call()
             .map_err(|error| format!("Download failed: {error}"))?
@@ -53,7 +53,7 @@ pub fn fetch_text(source: &str, description: &str) -> Result<String, String> {
             .read_to_string()
             .map_err(|error| format!("Failed to read response: {error}"))
     } else {
-        eprintln!("Reading {description} from local file: {source}");
+        tracing::debug!(description, source, "Reading local build input");
         fs::read_to_string(source).map_err(|error| format!("Failed to read file: {error}"))
     }
 }

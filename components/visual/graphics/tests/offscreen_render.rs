@@ -69,8 +69,8 @@ fn render_offscreen_returns_expected_rgba_and_png() {
     assert_eq!(output.width, 16);
     assert_eq!(output.height, 12);
     assert_eq!(output.rgba8.len(), 16 * 12 * 4);
-    for px in output.rgba8.chunks_exact(4) {
-        assert_eq!(px, [255, 0, 0, 255], "pixel should match clear color");
+    for px in output.rgba8.as_chunks::<4>().0 {
+        assert_eq!(*px, [255, 0, 0, 255], "pixel should match clear color");
     }
 
     let png = output.to_png().expect("png encoding should succeed");

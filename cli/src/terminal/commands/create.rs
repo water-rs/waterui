@@ -7,7 +7,7 @@ use color_eyre::eyre::{Result, bail, eyre};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use heck::{ToKebabCase, ToSnakeCase};
 
-use crate::shell;
+use crate::shell::Shell;
 use crate::{header, line, success};
 use waterui_cli::build_info::{self, BuildKind};
 use waterui_cli::project::{CreateOptions, PackageType, Project};
@@ -19,7 +19,7 @@ pub struct Args {
     /// Project display name (e.g., "Water Example" creates folder "water-example").
     name: Option<String>,
 
-    /// Bundle identifier (defaults to com.example.<name>).
+    /// Bundle identifier (defaults to dev.waterui.<name>).
     #[arg(long)]
     bundle_id: Option<String>,
 
@@ -104,17 +104,17 @@ impl Backend {
 }
 
 /// Run the create command.
-pub async fn run(args: Args) -> Result<()> {
-    let plan = resolve_create_plan(&args)?;
-    header!("Creating WaterUI project: {}", plan.name);
-    let mut project = create_project(&plan).await?;
-    initialize_requested_backends(&mut project, &plan).await?;
-    print_create_summary(&plan);
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let plan = resolve_create_plan(shell, &args)?;
+    header!(shell, "Creating WaterUI project: {}", plan.name);
+    let mut project = create_project(shell, &plan).await?;
+    initialize_requested_backends(shell, &mut project, &plan).await?;
+    print_create_summary(shell, &plan);
     Ok(())
 }
 
-fn resolve_create_plan(args: &Args) -> Result<CreatePlan> {
-    let interactive = shell::is_interactive();
+fn resolve_create_plan(shell: &Shell, args: &Args) -> Result<CreatePlan> {
+    let interactive = shell.is_interactive();
     let package_type = args.mode.package_type();
     let name = resolve_project_name(args, interactive)?;
     let folder_name = name.to_kebab_case();
@@ -235,8 +235,8 @@ fn resolve_backends(
     Ok(backends)
 }
 
-async fn create_project(plan: &CreatePlan) -> Result<Project> {
-    let spinner = shell::spinner("Creating project files...");
+async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<Project> {
+    let spinner = shell.spinner("Creating project files...");
     let project = Project::create(
         &plan.project_path,
         CreateOptions {
@@ -253,23 +253,28 @@ async fn create_project(plan: &CreatePlan) -> Result<Project> {
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Created Cargo.toml and src/lib.rs");
+    success!(shell, "Created Cargo.toml and src/lib.rs");
     Ok(project)
 }
 
-async fn initialize_requested_backends(project: &mut Project, plan: &CreatePlan) -> Result<()> {
+async fn initialize_requested_backends(
+    shell: &Shell,
+    project: &mut Project,
+    plan: &CreatePlan,
+) -> Result<()> {
     if plan.package_type != PackageType::App {
         return Ok(());
     }
 
-    initialize_backend_if_requested(project, &plan.backends, Backend::Apple).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Android).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Gtk4).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Hydrolysis).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Esp32).await
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Apple).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Android).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Gtk4).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Hydrolysis).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Esp32).await
 }
 
 async fn initialize_backend_if_requested(
+    shell: &Shell,
     project: &mut Project,
     backends: &[Backend],
     backend: Backend,
@@ -289,7 +294,7 @@ async fn initialize_backend_if_requested(
         Backend::Esp32 => ("Scaffolding ESP32 backend...", "Created ESP32 backend"),
     };
 
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     match backend {
         Backend::Apple => project.init_apple_backend().await?,
         Backend::Android => project.init_android_backend().await?,
@@ -300,18 +305,18 @@ async fn initialize_backend_if_requested(
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(())
 }
 
-fn print_create_summary(plan: &CreatePlan) {
-    line!();
-    success!("Project created at {}", plan.project_path.display());
-    line!();
-    line!("Next steps:");
-    line!("  cd {}", plan.folder_name);
+fn print_create_summary(shell: &Shell, plan: &CreatePlan) {
+    line!(shell);
+    success!(shell, "Project created at {}", plan.project_path.display());
+    line!(shell);
+    line!(shell, "Next steps:");
+    line!(shell, "  cd {}", plan.folder_name);
     if let Some(command) = next_run_command(plan.package_type, &plan.backends) {
-        line!("  {command}");
+        line!(shell, "  {command}");
     }
 }
 
@@ -322,7 +327,7 @@ fn prompt_name() -> Result<String> {
 }
 
 fn default_bundle_id(app_name: &str) -> String {
-    format!("com.example.{}", app_name.to_snake_case())
+    format!("dev.waterui.{}", app_name.to_snake_case())
 }
 
 fn prompt_bundle_id(app_name: &str) -> Result<String> {

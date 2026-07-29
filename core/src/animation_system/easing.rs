@@ -160,7 +160,7 @@ fn cubic_bezier_ease(t: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
             } else {
                 low = guess;
             }
-            guess = (low + high) * 0.5;
+            guess = f32::midpoint(low, high);
         }
     }
 
