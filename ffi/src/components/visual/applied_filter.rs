@@ -553,12 +553,14 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         .expect("waterui_applied_filter_render: output configuration is detached");
 
     // Get output texture
-    let output = super::acquire_surface_texture(
+    let Some(output) = super::acquire_surface_texture(
         output_surface,
         &state.runtime.context().device,
         output_config,
         "waterui_applied_filter_render",
-    );
+    ) else {
+        return false;
+    };
 
     // Get input texture after setup so mutable borrows of `state` are finished.
     let input_texture = state

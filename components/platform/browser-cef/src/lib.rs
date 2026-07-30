@@ -10,6 +10,8 @@ mod app;
 mod application_mac;
 mod cdp;
 mod gpu;
+#[cfg(target_os = "macos")]
+mod message_pump_macos;
 mod page;
 mod runtime;
 #[cfg(feature = "webview")]
@@ -19,9 +21,11 @@ mod webview;
 pub use application_mac::initialize_macos_application;
 pub use cdp::CefCdpSession;
 pub use gpu::{CefViewport, gpu_view};
+#[cfg(target_os = "macos")]
+pub use message_pump_macos::CefMacOsMessagePump;
 pub use page::{
     AcceleratedFrameSink, CefInputModifiers, CefKeyInput, CefPageHandle, CefPointerButton,
-    CefPopupRect,
+    CefPopupRect, CefTextRange,
 };
 pub use runtime::{
     CefRuntime, CefRuntimeConfiguration, CefRuntimePaths, PumpDeadline, run_packaged_subprocess,

@@ -12,14 +12,15 @@ use base64::Engine as _;
 use cef::ImplRequest as _;
 use cef::rc::Rc as _;
 use cef::{
-    AcceleratedPaintInfo, Browser, BrowserHost, BrowserSettings, CefString, Client, Frame,
-    ImplBrowser, ImplBrowserHost, ImplClient, ImplDictionaryValue, ImplFrame, ImplLifeSpanHandler,
-    ImplLoadHandler, ImplPreferenceManager, ImplRenderHandler, ImplRequestHandler, ImplValue,
-    KeyEvent, KeyEventType, LifeSpanHandler, LoadHandler, MouseButtonType, MouseEvent,
-    PaintElementType, Rect, RenderHandler, Request, RequestContext, RequestContextSettings,
-    RequestHandler, ScreenInfo, TerminationStatus, WindowInfo, WrapClient, WrapLifeSpanHandler,
-    WrapLoadHandler, WrapRenderHandler, WrapRequestHandler, browser_host_create_browser_sync,
-    dictionary_value_create, request_context_create_context, value_create,
+    AcceleratedPaintInfo, Browser, BrowserHost, BrowserSettings, CefString, Client,
+    CompositionUnderline, Frame, ImplBrowser, ImplBrowserHost, ImplClient, ImplDictionaryValue,
+    ImplFrame, ImplLifeSpanHandler, ImplLoadHandler, ImplPreferenceManager, ImplRenderHandler,
+    ImplRequestHandler, ImplValue, KeyEvent, KeyEventType, LifeSpanHandler, LoadHandler,
+    MouseButtonType, MouseEvent, PaintElementType, Range, Rect, RenderHandler, Request,
+    RequestContext, RequestContextSettings, RequestHandler, ScreenInfo, TerminationStatus,
+    WindowInfo, WrapClient, WrapLifeSpanHandler, WrapLoadHandler, WrapRenderHandler,
+    WrapRequestHandler, browser_host_create_browser_sync, dictionary_value_create,
+    request_context_create_context, value_create,
 };
 #[cfg(feature = "chromium")]
 use futures::channel::oneshot;
@@ -132,6 +133,38 @@ pub struct CefKeyInput {
     pub character: Option<char>,
 }
 
+/// A half-open UTF-16 range used by CEF text editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CefTextRange {
+    /// Inclusive UTF-16 start offset.
+    pub start: u32,
+    /// Exclusive UTF-16 end offset.
+    pub end: u32,
+}
+
+impl CefTextRange {
+    /// Creates a validated half-open text range.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `start` exceeds `end`.
+    #[must_use]
+    pub fn new(start: u32, end: u32) -> Self {
+        assert!(
+            start <= end,
+            "CEF text range start {start} exceeds end {end}"
+        );
+        Self { start, end }
+    }
+
+    const fn into_cef(self) -> Range {
+        Range {
+            from: self.start,
+            to: self.end,
+        }
+    }
+}
+
 /// Receives a CEF shared GPU frame while the platform handle is valid.
 ///
 /// Implementations must reopen the platform resource and complete a GPU copy
@@ -218,6 +251,7 @@ struct PageState {
     size: Cell<(i32, i32)>,
     device_scale_factor: Cell<f32>,
     frame_sink: RefCell<Option<Rc<dyn AcceleratedFrameSink>>>,
+    accelerated_paint_received: Cell<bool>,
     #[cfg(feature = "chromium")]
     watchers: RefCell<Vec<PageWatcher>>,
     #[cfg(feature = "webview")]
@@ -241,6 +275,7 @@ impl PageState {
             size: Cell::new((1, 1)),
             device_scale_factor: Cell::new(1.0),
             frame_sink: RefCell::new(None),
+            accelerated_paint_received: Cell::new(false),
             #[cfg(feature = "chromium")]
             watchers: RefCell::new(Vec::new()),
             #[cfg(feature = "webview")]
@@ -375,6 +410,12 @@ cef::wrap_render_handler! {
             info: Option<&AcceleratedPaintInfo>,
         ) {
             let info = info.expect("CEF accelerated paint callback must contain frame metadata");
+            if !self.state.accelerated_paint_received.replace(true) {
+                tracing::debug!(
+                    has_frame_sink = self.state.frame_sink.borrow().is_some(),
+                    "Received the first accelerated CEF paint"
+                );
+            }
             if let Some(sink) = self.state.frame_sink.borrow().as_ref() {
                 sink.import(element, dirty_rects.unwrap_or_default(), info);
             }
@@ -668,6 +709,7 @@ impl CefPageHandle {
             Some(&WindowInfo {
                 windowless_rendering_enabled: 1,
                 shared_texture_enabled: 1,
+                external_begin_frame_enabled: 1,
                 ..Default::default()
             }),
             Some(&mut client),
@@ -725,12 +767,18 @@ impl CefPageHandle {
             "headless CEF pages cannot install a frame presenter"
         );
         self.state.frame_sink.replace(Some(Rc::new(sink)));
+        self.host.was_resized();
         self.host.invalidate(PaintElementType::VIEW);
     }
 
     /// Executes due work for the process-owned CEF external message pump.
     pub fn pump(&self) {
         let _ = self.runtime.pump();
+    }
+
+    /// Requests one compositor frame for this windowless browser.
+    pub fn request_frame(&self) {
+        self.host.send_external_begin_frame();
     }
 
     /// Updates keyboard focus for the windowless browser.
@@ -873,8 +921,61 @@ impl CefPageHandle {
     }
 
     /// Commits IME or composed text into the focused browser editor.
-    pub fn commit_text(&self, text: &str) {
-        self.host.ime_commit_text(Some(&text.into()), None, 0);
+    pub fn commit_text(&self, text: &str, replacement: Option<CefTextRange>) {
+        let replacement = replacement.map(CefTextRange::into_cef);
+        self.host
+            .ime_commit_text(Some(&text.into()), replacement.as_ref(), 0);
+    }
+
+    /// Updates active IME composition and its UTF-16 selection.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the composition exceeds `u32` UTF-16 code units or the
+    /// selection is outside the composition.
+    pub fn set_composition(
+        &self,
+        text: &str,
+        selection_start: u32,
+        selection_end: u32,
+        replacement: Option<CefTextRange>,
+    ) {
+        let utf16_len =
+            u32::try_from(text.encode_utf16().count()).expect("CEF composition length exceeds u32");
+        assert!(
+            selection_start <= selection_end && selection_end <= utf16_len,
+            "CEF composition selection {selection_start}..{selection_end} exceeds UTF-16 length {utf16_len}"
+        );
+        let selection = Range {
+            from: selection_start,
+            to: selection_end,
+        };
+        let replacement = replacement.map(CefTextRange::into_cef);
+        let underline = CompositionUnderline {
+            range: Range {
+                from: 0,
+                to: utf16_len,
+            },
+            thick: 1,
+            ..Default::default()
+        };
+        self.host.ime_set_composition(
+            Some(&text.into()),
+            Some(&[underline]),
+            replacement.as_ref(),
+            Some(&selection),
+        );
+    }
+
+    /// Finishes active IME composition.
+    pub fn finish_composition(&self, keep_selection: bool) {
+        self.host
+            .ime_finish_composing_text(i32::from(keep_selection));
+    }
+
+    /// Cancels active IME composition.
+    pub fn cancel_composition(&self) {
+        self.host.ime_cancel_composition();
     }
 
     /// Updates the OSR viewport in physical-independent pixels.
@@ -894,6 +995,11 @@ impl CefPageHandle {
         );
         let width = i32::try_from(width).expect("CEF viewport width exceeds i32");
         let height = i32::try_from(height).expect("CEF viewport height exceeds i32");
+        if self.state.size.get() == (width, height)
+            && self.state.device_scale_factor.get().to_bits() == device_scale_factor.to_bits()
+        {
+            return;
+        }
         self.state.size.set((width, height));
         self.state.device_scale_factor.set(device_scale_factor);
         self.host.notify_screen_info_changed();

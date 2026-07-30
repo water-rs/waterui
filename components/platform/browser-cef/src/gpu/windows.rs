@@ -8,8 +8,8 @@ use windows::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE}
 use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
 use windows::Win32::System::Threading::GetCurrentProcess;
 
-use super::CefViewport;
 use super::presenter::{OwnedFrameMailbox, TexturePresenter, copy_source_texture};
+use super::{CefViewport, request_browser_frame};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct SharedD3dFrame {
@@ -127,6 +127,7 @@ impl GpuView for CefGpuView {
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         self.page.pump();
+        request_browser_frame(&self.page, frame);
         let scale = self.viewport.scale();
         let logical_width = (f64::from(frame.width) / scale).round().max(1.0);
         let logical_height = (f64::from(frame.height) / scale).round().max(1.0);

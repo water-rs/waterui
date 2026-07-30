@@ -9,6 +9,15 @@
 /* Begin PBXBuildFile section */
 		D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D01867752E6C818300802E96 /* libwaterui_app.a */; };
 		D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */ = {isa = PBXBuildFile; productRef = D01867792E6C82CA00802E96 /* WaterUI */; settings = {ATTRIBUTES = (Required, ); }; };
+{% if ctx.cef_runtime_enabled() %}
+		D018677B2E6C82CA00802E96 /* WaterUICEF in Frameworks */ = {isa = PBXBuildFile; productRef = D018677E2E6C82CA00802E96 /* WaterUICEF */; settings = {ATTRIBUTES = (Required, ); }; };
+{% endif %}
+{% if ctx.chromium_enabled() %}
+		D018677C2E6C82CA00802E96 /* WaterUIChromium in Frameworks */ = {isa = PBXBuildFile; productRef = D018677F2E6C82CA00802E96 /* WaterUIChromium */; settings = {ATTRIBUTES = (Required, ); }; };
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+		D018677D2E6C82CA00802E96 /* WaterUICefWebView in Frameworks */ = {isa = PBXBuildFile; productRef = D01867802E6C82CA00802E96 /* WaterUICefWebView */; settings = {ATTRIBUTES = (Required, ); }; };
+{% endif %}
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +39,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */,
+{% if ctx.cef_runtime_enabled() %}
+				D018677B2E6C82CA00802E96 /* WaterUICEF in Frameworks */,
+{% endif %}
+{% if ctx.chromium_enabled() %}
+				D018677C2E6C82CA00802E96 /* WaterUIChromium in Frameworks */,
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+				D018677D2E6C82CA00802E96 /* WaterUICefWebView in Frameworks */,
+{% endif %}
 				D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -84,6 +102,15 @@
             name = "{{ ctx.crate_name }}";
             packageProductDependencies = (
                 D01867792E6C82CA00802E96 /* WaterUI */,
+{% if ctx.cef_runtime_enabled() %}
+                D018677E2E6C82CA00802E96 /* WaterUICEF */,
+{% endif %}
+{% if ctx.chromium_enabled() %}
+                D018677F2E6C82CA00802E96 /* WaterUIChromium */,
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+                D01867802E6C82CA00802E96 /* WaterUICefWebView */,
+{% endif %}
             );
             productName = "{{ ctx.app_name }}";
             productReference = D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */;
@@ -439,6 +466,24 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = WaterUI;
 		};
+{% if ctx.cef_runtime_enabled() %}
+		D018677E2E6C82CA00802E96 /* WaterUICEF */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WaterUICEF;
+		};
+{% endif %}
+{% if ctx.chromium_enabled() %}
+		D018677F2E6C82CA00802E96 /* WaterUIChromium */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WaterUIChromium;
+		};
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+		D01867802E6C82CA00802E96 /* WaterUICefWebView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WaterUICefWebView;
+		};
+{% endif %}
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = D01867562E6C7BBB00802E96 /* Project object */;

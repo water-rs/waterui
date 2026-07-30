@@ -144,11 +144,21 @@ impl Backend for AppleBackend {
                     })
             })
             .collect();
+        let webview_enabled = project
+            .links_runtime_package("waterui-webview")
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let chromium_enabled = project
+            .links_runtime_package("waterui-chromium")
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
         let ctx =
             TemplateContext::for_project_manifest(manifest, crate_name_for_template, app_name)
                 .with_backend_project_path(project.backend_path::<Self>())
                 .with_project_root_path(project.root().to_path_buf())
-                .with_ios_permissions(ios_permissions);
+                .with_ios_permissions(ios_permissions)
+                .with_webview_enabled(webview_enabled)
+                .with_chromium_enabled(chromium_enabled);
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
             .await

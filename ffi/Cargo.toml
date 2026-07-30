@@ -39,6 +39,7 @@ waterui-str.workspace = true
 waterui-locale.workspace = true
 wgpu.workspace = true
 async-channel = "2.5"
+async-io = { version = "2.6", optional = true }
 base64 = "0.22.1"
 pastey.workspace = true
 tracing.workspace = true
@@ -46,6 +47,8 @@ tracing-panic.workspace = true
 jiff.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 raw-window-handle = "0.6"
+waterui-browser-cef = { workspace = true, optional = true }
+waterui-chromium = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 waterui-video-gpu.workspace = true
@@ -81,5 +84,28 @@ c-api = ["std"]
 # JNI for Android backend - mutually exclusive with c-api
 # Note: android-jni requires std because jni crate uses std
 android-jni = ["dep:jni", "dep:bytemuck", "std"]
+cef-runtime = [
+    "dep:async-io",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef/cef-runtime",
+]
+# Header generation compiles CEF's Rust API without downloading or linking the runtime.
+cef-header = [
+    "dep:async-io",
+    "dep:waterui-browser-cef",
+    "dep:waterui-chromium",
+    "waterui-browser-cef/compile-only",
+    "waterui-browser-cef/chromium",
+    "waterui-browser-cef/webview",
+]
+chromium = [
+    "cef-runtime",
+    "dep:waterui-chromium",
+    "waterui-browser-cef/chromium",
+]
+webview-cef = [
+    "cef-runtime",
+    "waterui-browser-cef/webview",
+]
 [package.metadata.cargo-machete]
 ignored = ["bytemuck", "waterui-media", "waterui-svg"]

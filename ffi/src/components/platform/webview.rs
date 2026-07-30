@@ -533,3 +533,14 @@ pub unsafe extern "C" fn waterui_env_install_webview_controller(
     let controller = WebViewController::new(FfiWebViewController { create_fn });
     env.insert(controller);
 }
+
+/// Returns whether a WebView controller is already installed in the environment.
+///
+/// # Safety
+///
+/// `env` must be a valid pointer to a live `WuiEnv`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_has_webview_controller(env: *const WuiEnv) -> bool {
+    let env = unsafe { crate::borrow_ffi(env) };
+    env.get::<WebViewController>().is_some()
+}

@@ -30,6 +30,7 @@ num-traits = "0.2"
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1.0"
 thiserror.workspace = true
+tracing.workspace = true
 waterui-chromium = { workspace = true, optional = true }
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
@@ -38,6 +39,7 @@ waterui-url.workspace = true
 waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 libloading = "0.9"
 objc2 = "0.6"
 objc2-core-foundation = "0.3"

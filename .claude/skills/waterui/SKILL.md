@@ -296,6 +296,28 @@ portable code depend on a cross-platform set instead.
 | Platform | `WebView` |
 | Graphics | `Canvas`, `Barcode::qr()`, `Icon` sets (see Icons) |
 
+### Embedded browsers
+
+Use `WebView` for ordinary embedded web content. It uses the platform system
+web view by default, except on Linux where the default is WaterUI's bundled WPE
+runtime. Select an explicit engine in `Water.toml` when the application requires
+one:
+
+```toml
+webview_backend = "default" # default | system | wpe | cef
+```
+
+`system` selects the platform web view, including WebKitGTK on Linux. `wpe`
+selects the bundled WPE runtime on Linux. `cef` selects the bundled CEF runtime
+on supported desktop targets and works with either a native renderer or
+Hydrolysis; the browser is still embedded as a WaterUI view.
+
+Depend on `waterui-chromium` when the application needs a visible Chromium
+surface, headless pages, screenshots, or raw/typed Chrome DevTools Protocol
+access. Chromium is an independent advanced component rather than a `WebView`
+backend, and links its bundled CEF runtime regardless of whether the surrounding
+WaterUI renderer is native or Hydrolysis.
+
 ## Collections (dynamic lists)
 
 For a **changing set** of views, use `ForEach`/`List` — NOT `watch`. The collection
