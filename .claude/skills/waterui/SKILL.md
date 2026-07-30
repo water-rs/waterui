@@ -309,14 +309,15 @@ webview_backend = "default" # default | system | wpe | cef
 
 `system` selects the platform web view, including WebKitGTK on Linux. `wpe`
 selects the bundled WPE runtime on Linux. `cef` selects the bundled CEF runtime
-on supported desktop targets and works with either a native renderer or
-Hydrolysis; the browser is still embedded as a WaterUI view.
+on macOS, Linux, and Windows and is independent of the selected WaterUI backend;
+the browser is still embedded as a WaterUI view. Dew deliberately excludes CEF
+because its constrained-device targets cannot carry the Chromium runtime.
 
 Depend on `waterui-chromium` when the application needs a visible Chromium
 surface, headless pages, screenshots, or raw/typed Chrome DevTools Protocol
 access. Chromium is an independent advanced component rather than a `WebView`
 backend, and links its bundled CEF runtime regardless of whether the surrounding
-WaterUI renderer is native or Hydrolysis.
+WaterUI renderer is native or self-drawn.
 
 ## Collections (dynamic lists)
 
