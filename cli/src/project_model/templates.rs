@@ -1304,6 +1304,19 @@ mod tests {
             .expect("gtk4 Cargo.toml should be written");
         assert!(gtk_manifest.contains("features = [\"webview-wpe\"]"));
 
+        let mut gtk_cef_ctx = app_ctx().with_webview_enabled(true);
+        gtk_cef_ctx.browser.webview_backend = WebViewBackend::Cef;
+        let gtk_cef_manifest =
+            crate::templates::gtk4::rendered_outputs(&gtk_cef_ctx, "waterui-test-gtk-cef")
+                .expect("GTK CEF outputs should render")
+                .into_iter()
+                .find_map(|(path, content)| {
+                    (path == std::path::Path::new("Cargo.toml"))
+                        .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                })
+                .expect("GTK CEF Cargo.toml output should exist");
+        assert!(gtk_cef_manifest.contains("features = [\"webview-cef\"]"));
+
         let mut hydrolysis_ctx = app_ctx().with_webview_enabled(true);
         hydrolysis_ctx.browser.webview_backend = WebViewBackend::Cef;
         let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
