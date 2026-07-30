@@ -621,12 +621,14 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         "waterui_gpu_surface_render called before asynchronous setup completed"
     );
 
-    let output = super::acquire_surface_texture(
+    let Some(output) = super::acquire_surface_texture(
         attached_surface(state, "waterui_gpu_surface_render"),
         &state.runtime.context().device,
         attached_config(state, "waterui_gpu_surface_render"),
         "waterui_gpu_surface_render",
-    );
+    ) else {
+        return false;
+    };
     let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("GpuSurface Frame View"),
         format: Some(format),

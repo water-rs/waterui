@@ -603,7 +603,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_lib(&self, release: bool) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(release).await
+        self.build_inner(release, &["--lib"]).await
     }
 
     /// Build a dynamic library (cdylib) and return the full path to the dylib file.
@@ -619,7 +619,7 @@ impl RustBuild {
         crate_name: &str,
         release: bool,
     ) -> Result<PathBuf, RustBuildError> {
-        let lib_dir = self.build_inner(release).await?;
+        let lib_dir = self.build_inner(release, &["--lib"]).await?;
 
         let lib_name = crate_name.replace('-', "_");
         let ext = lib_extension_for_triple(&self.triple);
@@ -636,6 +636,30 @@ impl RustBuild {
         }
 
         Ok(dylib_path)
+    }
+
+    /// Builds one named binary and returns its full output path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo fails or the expected binary is missing.
+    pub async fn build_binary(
+        &self,
+        binary_name: &str,
+        release: bool,
+    ) -> Result<PathBuf, RustBuildError> {
+        let output_dir = self.build_inner(release, &["--bin", binary_name]).await?;
+        let binary_path = output_dir.join(binary_name);
+        if !binary_path.is_file() {
+            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "Binary not found at {} after cargo build",
+                    binary_path.display()
+                ),
+            )));
+        }
+        Ok(binary_path)
     }
 
     /// Compute the expected dylib output path without building.
@@ -657,8 +681,12 @@ impl RustBuild {
     }
 
     /// Return target directory path
-    async fn build_inner(&self, release: bool) -> Result<PathBuf, RustBuildError> {
-        let mut output = self.cargo_build_output(release).await?;
+    async fn build_inner(
+        &self,
+        release: bool,
+        cargo_target: &[&str],
+    ) -> Result<PathBuf, RustBuildError> {
+        let mut output = self.cargo_build_output(release, cargo_target).await?;
 
         if !output.status.success() {
             let mut combined = combined_build_output(&output);
@@ -668,14 +696,14 @@ impl RustBuild {
             if should_retry_after_cmake_generator_mismatch(&combined)
                 && self.clean_stale_cmake_build_dirs().await?
             {
-                output = self.cargo_build_output(release).await?;
+                output = self.cargo_build_output(release, cargo_target).await?;
                 combined = combined_build_output(&output);
             }
 
             if !output.status.success() && should_auto_install_meson(&combined) {
                 match ensure_meson_installed_for_build().await {
                     Ok(()) => {
-                        output = self.cargo_build_output(release).await?;
+                        output = self.cargo_build_output(release, cargo_target).await?;
                     }
                     Err(install_err) => {
                         return Err(RustBuildError::FailToBuildRustLibrary(
@@ -725,6 +753,7 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
     async fn cargo_build_output(
         &self,
         release: bool,
+        cargo_target: &[&str],
     ) -> Result<std::process::Output, RustBuildError> {
         let mut cmd = Command::new("cargo");
         let cargo_subcommand = if self.crate_type_override.is_some() {
@@ -734,7 +763,7 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
         };
         let mut cmd = command(&mut cmd)
             .arg(cargo_subcommand)
-            .arg("--lib")
+            .args(cargo_target)
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
 

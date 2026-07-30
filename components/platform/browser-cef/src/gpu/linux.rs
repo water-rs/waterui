@@ -6,8 +6,8 @@ use num_traits::ToPrimitive as _;
 use waterui_browser_wpe::{DmaBufFormat, DmaBufFrame, DmaBufFrameCopier, DmaBufPlane};
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
 
-use super::CefViewport;
 use super::presenter::{OwnedFrameMailbox, TexturePresenter};
+use super::{CefViewport, request_browser_frame};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct LinuxFrameSink {
@@ -106,6 +106,7 @@ impl GpuView for CefGpuView {
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         self.page.pump();
+        request_browser_frame(&self.page, frame);
         let scale = self.viewport.scale();
         let logical_width = (f64::from(frame.width) / scale).round().max(1.0);
         let logical_height = (f64::from(frame.height) / scale).round().max(1.0);

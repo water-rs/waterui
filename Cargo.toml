@@ -124,7 +124,7 @@ waterui-layout = { version = "0.2.2", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.2.1", path = "components/foundation/navigation" }
 waterui-webview = { version = "0.2.0", path = "components/platform/webview" }
 waterui-chromium = { version = "0.1.0", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.1.0", path = "components/platform/browser-cef" }
+waterui-browser-cef = { version = "0.1.0", path = "components/platform/browser-cef", default-features = false }
 waterui-browser-wpe = { version = "0.1.0", path = "components/platform/browser-wpe", default-features = false }
 waterui-icon = { version = "0.2.0", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.1.0", path = "components/icon/sf_symbol" }

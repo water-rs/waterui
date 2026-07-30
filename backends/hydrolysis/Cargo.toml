@@ -180,11 +180,13 @@ webview-wpe = [
 webview-cef = [
     "dep:waterui-webview",
     "dep:waterui-browser-cef",
+    "waterui-browser-cef/cef-runtime",
     "waterui-browser-cef/webview",
 ]
 chromium = [
     "dep:waterui-chromium",
     "dep:waterui-browser-cef",
+    "waterui-browser-cef/cef-runtime",
     "waterui-browser-cef/chromium",
 ]
 winit = [

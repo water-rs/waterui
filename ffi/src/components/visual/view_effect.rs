@@ -483,12 +483,14 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         .expect("waterui_view_effect_render: output configuration is detached");
 
     // Get output texture
-    let output = super::acquire_surface_texture(
+    let Some(output) = super::acquire_surface_texture(
         output_surface,
         &state.runtime.context().device,
         output_config,
         "waterui_view_effect_render",
-    );
+    ) else {
+        return false;
+    };
 
     let input_texture = state
         .imported_texture

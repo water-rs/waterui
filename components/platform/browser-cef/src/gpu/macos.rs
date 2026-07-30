@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -12,8 +13,8 @@ use objc2_metal::{
 };
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
 
-use super::CefViewport;
 use super::presenter::{OwnedFrameMailbox, TexturePresenter, copy_source_texture};
+use super::{CefViewport, request_browser_frame};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct RetainedIoSurface {
@@ -56,6 +57,7 @@ struct MacFrameSink {
     device: wgpu::Device,
     queue: wgpu::Queue,
     mailbox: Rc<OwnedFrameMailbox>,
+    imported_size: Cell<(u32, u32)>,
 }
 
 impl AcceleratedFrameSink for MacFrameSink {
@@ -66,6 +68,15 @@ impl AcceleratedFrameSink for MacFrameSink {
         frame: &AcceleratedPaintInfo,
     ) {
         let surface = unsafe { RetainedIoSurface::retain(frame) };
+        let size = (surface.width, surface.height);
+        if self.imported_size.replace(size) != size {
+            tracing::debug!(
+                width = surface.width,
+                height = surface.height,
+                format = ?surface.format,
+                "Importing a resized accelerated CEF IOSurface"
+            );
+        }
         let source = import_iosurface(
             &self.device,
             surface.pointer(),
@@ -124,12 +135,15 @@ impl GpuView for CefGpuView {
             device: context.device.clone(),
             queue: context.queue.clone(),
             mailbox: Rc::clone(&self.mailbox),
+            imported_size: Cell::new((0, 0)),
         });
+        tracing::debug!("Installed the accelerated CEF frame sink");
         self.presenter = Some(TexturePresenter::new(context));
     }
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         self.page.pump();
+        request_browser_frame(&self.page, frame);
         let scale = self.viewport.scale();
         let logical_width = (f64::from(frame.width) / scale).round().max(1.0);
         let logical_height = (f64::from(frame.height) / scale).round().max(1.0);

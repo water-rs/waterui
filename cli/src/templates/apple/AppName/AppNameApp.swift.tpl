@@ -28,6 +28,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 import Darwin
 import AppKit
 import WaterUI
+{% if ctx.cef_runtime_enabled() %}
+import WaterUICEF
+{% endif %}
+{% if ctx.chromium_enabled() %}
+import WaterUIChromium
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+import WaterUICefWebView
+{% endif %}
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -37,6 +46,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let isAccessory: Bool = {{ ctx.accessory }}
 
     static func main() {
+{% if ctx.cef_runtime_enabled() %}
+        prepareWaterUICEFApplication()
+{% endif %}
+{% if ctx.chromium_enabled() %}
+        installWaterUIChromium()
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+        installWaterUICefWebView()
+{% endif %}
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

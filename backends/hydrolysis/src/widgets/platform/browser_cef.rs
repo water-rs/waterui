@@ -200,7 +200,7 @@ impl BrowserInputHandler for CefInputHandler {
         if character.is_none()
             && let Some(text) = text
         {
-            self.page.commit_text(&text);
+            self.page.commit_text(&text, None);
         }
     }
 
@@ -213,7 +213,7 @@ impl BrowserInputHandler for CefInputHandler {
     }
 
     fn commit_text(&self, text: &str) {
-        self.page.commit_text(text);
+        self.page.commit_text(text, None);
     }
 }
 

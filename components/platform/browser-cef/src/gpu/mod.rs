@@ -1,6 +1,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use waterui_graphics::gpu_surface::GpuFrame;
+
 use crate::CefPageHandle;
 
 #[cfg(target_os = "linux")]
@@ -46,6 +48,17 @@ impl Default for CefViewport {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn request_browser_frame(page: &CefPageHandle, _frame: &mut GpuFrame<'_>) {
+    page.request_frame();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_browser_frame(page: &CefPageHandle, frame: &mut GpuFrame<'_>) {
+    page.request_frame();
+    frame.request_redraw();
 }
 
 /// Creates the target-specific GPU-only presenter for one visible CEF page.

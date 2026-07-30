@@ -104,6 +104,7 @@ macro_rules! export {
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 #[cfg(not(target_vendor = "apple"))]
                 $crate::waterui_video_gpu::install(&mut env);
+                $crate::__configure_browser_environment(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
 
@@ -159,6 +160,16 @@ macro_rules! export {
             }
         };
     };
+}
+
+/// Installs optional packaged browser runtimes selected by the generated FFI crate.
+#[doc(hidden)]
+#[inline]
+pub fn __configure_browser_environment(env: &mut waterui::Environment) {
+    #[cfg(any(feature = "cef-runtime", feature = "cef-header"))]
+    components::platform::browser_cef::configure_environment(env);
+    #[cfg(not(any(feature = "cef-runtime", feature = "cef-header")))]
+    let _ = env;
 }
 
 /// JNI initialization helper for Android.

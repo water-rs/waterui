@@ -178,6 +178,20 @@ pub async fn stage_macos_app(
     .await
 }
 
+/// Removes browser runtime files previously staged into a macOS application.
+///
+/// Xcode owns the application bundle while it builds and validates it. The CLI
+/// therefore removes its post-build runtime additions before an incremental
+/// Xcode build and stages the selected runtime again after that build succeeds.
+///
+/// # Errors
+///
+/// Returns an error when previously staged runtime files cannot be removed.
+#[cfg(target_os = "macos")]
+pub async fn remove_macos_app(contents_directory: &Path) -> eyre::Result<()> {
+    remove_staged(&RuntimeLayout::macos_app(contents_directory)).await
+}
+
 async fn stage_into(
     plan: BrowserRuntimePlan,
     platform: TargetPlatform,

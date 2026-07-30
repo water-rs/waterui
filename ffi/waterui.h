@@ -591,6 +591,54 @@ typedef enum WuiTabStyle {
 } WuiTabStyle;
 
 /**
+ * Pointer buttons supported by CEF windowless rendering.
+ */
+typedef enum WuiCefPointerButton {
+  /**
+   * Primary pointer button.
+   */
+  WuiCefPointerButton_Primary,
+  /**
+   * Middle pointer button.
+   */
+  WuiCefPointerButton_Middle,
+  /**
+   * Secondary pointer button.
+   */
+  WuiCefPointerButton_Secondary,
+} WuiCefPointerButton;
+
+/**
+ * Editing operations forwarded to Chromium's focused frame.
+ */
+typedef enum WuiCefEditCommand {
+  /**
+   * Undo.
+   */
+  WuiCefEditCommand_Undo,
+  /**
+   * Redo.
+   */
+  WuiCefEditCommand_Redo,
+  /**
+   * Cut.
+   */
+  WuiCefEditCommand_Cut,
+  /**
+   * Copy.
+   */
+  WuiCefEditCommand_Copy,
+  /**
+   * Paste.
+   */
+  WuiCefEditCommand_Paste,
+  /**
+   * Select all.
+   */
+  WuiCefEditCommand_SelectAll,
+} WuiCefEditCommand;
+
+/**
  * FFI representation of script injection timing.
  */
 typedef enum WuiScriptInjectionTime {
@@ -978,6 +1026,8 @@ typedef struct WuiAnyViews WuiAnyViews;
  * Opaque state held by the native backend for one semantic applied filter.
  */
 typedef struct WuiAppliedFilterState WuiAppliedFilterState;
+
+typedef struct WuiCefSurfaceState WuiCefSurfaceState;
 
 typedef struct WuiColor WuiColor;
 
@@ -3642,6 +3692,77 @@ typedef struct WuiNavigationTransaction {
 } WuiNavigationTransaction;
 
 /**
+ * FFI representation of a GpuSurface view.
+ *
+ * This struct is passed to the native backend when rendering the view tree.
+ * The native backend consumes it with `waterui_gpu_surface_create`, then owns
+ * the returned state for the semantic view lifetime.
+ */
+typedef struct WuiGpuSurface {
+  /**
+   * Opaque pointer to the boxed GpuSurface.
+   * This is consumed during state creation and should not be used after.
+   */
+  void *surface;
+  /**
+   * Whether this surface should register as a picture-in-picture host.
+   */
+  bool has_picture_in_picture_host_id;
+  /**
+   * Stable picture-in-picture host id when `has_picture_in_picture_host_id` is true.
+   */
+  uint64_t picture_in_picture_host_id;
+} WuiGpuSurface;
+
+/**
+ * GPU surface plus retained CEF input and semantic state.
+ */
+typedef struct WuiCefSurface {
+  /**
+   * GPU presenter consumed by WaterUI's native GPU surface host.
+   */
+  struct WuiGpuSurface gpu_surface;
+  /**
+   * Opaque input state retained until [`waterui_cef_surface_drop`].
+   */
+  struct WuiCefSurfaceState *state;
+} WuiCefSurface;
+
+/**
+ * Modifier snapshot for CEF pointer and keyboard input.
+ */
+typedef struct WuiCefInputModifiers {
+  /**
+   * Shift key.
+   */
+  bool shift;
+  /**
+   * Control key.
+   */
+  bool control;
+  /**
+   * Alt or Option key.
+   */
+  bool alt;
+  /**
+   * Command key.
+   */
+  bool command;
+  /**
+   * Primary pointer button.
+   */
+  bool primary_button;
+  /**
+   * Middle pointer button.
+   */
+  bool middle_button;
+  /**
+   * Secondary pointer button.
+   */
+  bool secondary_button;
+} WuiCefInputModifiers;
+
+/**
  * FFI representation of a WebView event.
  */
 typedef struct WuiWebViewEvent {
@@ -3870,29 +3991,6 @@ typedef void (*WuiGpuRuntimeCreateCallback)(void *context, struct WuiGpuRuntime 
  * Releases the native context retained for asynchronous GPU runtime creation.
  */
 typedef void (*WuiGpuRuntimeCreateContextDrop)(void *context);
-
-/**
- * FFI representation of a GpuSurface view.
- *
- * This struct is passed to the native backend when rendering the view tree.
- * The native backend consumes it with `waterui_gpu_surface_create`, then owns
- * the returned state for the semantic view lifetime.
- */
-typedef struct WuiGpuSurface {
-  /**
-   * Opaque pointer to the boxed GpuSurface.
-   * This is consumed during state creation and should not be used after.
-   */
-  void *surface;
-  /**
-   * Whether this surface should register as a picture-in-picture host.
-   */
-  bool has_picture_in_picture_host_id;
-  /**
-   * Stable picture-in-picture host id when `has_picture_in_picture_host_id` is true.
-   */
-  uint64_t picture_in_picture_host_id;
-} WuiGpuSurface;
 
 /**
  * Renderer-driven HDR preference exported to native backends before init.
@@ -6977,6 +7075,204 @@ bool waterui_navigation_transition_cancelled(const struct WuiEnv *env, uint64_t 
 
 /**
  * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
+struct WuiCefSurface waterui_force_as_chromium(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_chromium_id(void);
+
+/**
+ * Consumes a standard WebView whose selected engine is CEF.
+ *
+ * # Safety
+ *
+ * `view` must be a valid owning `WuiAnyView` containing `Native<WebView>`.
+ */
+struct WuiCefSurface waterui_force_as_cef_webview(struct WuiAnyView *view);
+
+/**
+ * Updates focus for a CEF surface.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_set_focus(const struct WuiCefSurfaceState *state, bool focused);
+
+/**
+ * Requests one compositor frame for a visible CEF surface.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_request_frame(const struct WuiCefSurfaceState *state);
+
+/**
+ * Updates the logical browser viewport and device scale.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_set_viewport(const struct WuiCefSurfaceState *state,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      double scale);
+
+/**
+ * Navigates the CEF surface backward.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_go_back(const struct WuiCefSurfaceState *state);
+
+/**
+ * Navigates the CEF surface forward.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_go_forward(const struct WuiCefSurfaceState *state);
+
+/**
+ * Sends pointer movement in surface-local logical coordinates.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_pointer_move(const struct WuiCefSurfaceState *state,
+                                      double x,
+                                      double y,
+                                      struct WuiCefInputModifiers modifiers);
+
+/**
+ * Sends one pointer button transition.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_pointer_button(const struct WuiCefSurfaceState *state,
+                                        bool pressed,
+                                        enum WuiCefPointerButton button,
+                                        double x,
+                                        double y,
+                                        struct WuiCefInputModifiers modifiers);
+
+/**
+ * Sends a CEF wheel event.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_scroll(const struct WuiCefSurfaceState *state,
+                                double x,
+                                double y,
+                                double delta_x,
+                                double delta_y,
+                                struct WuiCefInputModifiers modifiers);
+
+/**
+ * Sends one native key transition.
+ *
+ * `character` is a Unicode scalar value, or zero when the key has no text.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_key(const struct WuiCefSurfaceState *state,
+                             bool pressed,
+                             uint32_t native_keycode,
+                             uint32_t keyval,
+                             uint32_t character,
+                             struct WuiCefInputModifiers modifiers);
+
+/**
+ * Commits text to the focused Chromium editor.
+ *
+ * # Safety
+ *
+ * `state` and `text` must be valid owning FFI values.
+ */
+void waterui_cef_surface_commit_text(const struct WuiCefSurfaceState *state,
+                                     struct WuiStr text,
+                                     uint32_t replacement_start,
+                                     uint32_t replacement_end);
+
+/**
+ * Updates active IME composition text and its UTF-16 selection.
+ *
+ * # Safety
+ *
+ * `state` and `text` must be valid owning FFI values.
+ */
+void waterui_cef_surface_set_composition(const struct WuiCefSurfaceState *state,
+                                         struct WuiStr text,
+                                         uint32_t selection_start,
+                                         uint32_t selection_end,
+                                         uint32_t replacement_start,
+                                         uint32_t replacement_end);
+
+/**
+ * Finishes active IME composition.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_finish_composition(const struct WuiCefSurfaceState *state,
+                                            bool keep_selection);
+
+/**
+ * Cancels active IME composition.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_cancel_composition(const struct WuiCefSurfaceState *state);
+
+/**
+ * Executes an editing command in Chromium's focused frame.
+ *
+ * # Safety
+ *
+ * `state` must be a live state returned by a CEF force-as function.
+ */
+void waterui_cef_surface_edit(const struct WuiCefSurfaceState *state,
+                              enum WuiCefEditCommand command);
+
+/**
+ * Drops retained CEF input and semantic state.
+ *
+ * # Safety
+ *
+ * `state` must be returned by a CEF force-as function and consumed once.
+ */
+void waterui_cef_surface_drop(struct WuiCefSurfaceState *state);
+
+/**
+ * Installs the CEF-compatible `NSApplication` subclass before AppKit starts.
+ */
+void waterui_cef_prepare_macos_application(void);
+
+/**
+ * Runs one packaged CEF helper subprocess and returns its exit status.
+ */
+int32_t waterui_cef_run_packaged_subprocess(void);
+
+/**
+ * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_dynamic(struct WuiDynamic *value);
@@ -7057,6 +7353,15 @@ void *waterui_webview_native_handle(struct WuiWebView *webview);
  * - `create_fn` is a valid function pointer that returns a properly initialized `WuiWebViewHandle`
  */
 void waterui_env_install_webview_controller(struct WuiEnv *env, WuiCreateWebViewFn create_fn);
+
+/**
+ * Returns whether a WebView controller is already installed in the environment.
+ *
+ * # Safety
+ *
+ * `env` must be a valid pointer to a live `WuiEnv`.
+ */
+bool waterui_env_has_webview_controller(const struct WuiEnv *env);
 
 /**
  * # Safety

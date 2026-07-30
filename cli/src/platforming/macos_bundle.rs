@@ -10,6 +10,14 @@ use smol::stream::StreamExt as _;
 
 use crate::utils::run_command_os;
 
+const CEF_HELPER_VARIANTS: [(&str, &str); 5] = [
+    ("", ""),
+    (" (Alerts)", ".alerts"),
+    (" (GPU)", ".gpu"),
+    (" (Plugin)", ".plugin"),
+    (" (Renderer)", ".renderer"),
+];
+
 #[derive(Template)]
 #[template(path = "macos/Info.plist.tpl", escape = "none")]
 struct InfoPlistTemplate<'a> {
@@ -127,11 +135,15 @@ pub async fn sign_macos_app(
         ],
     )
     .await?;
-    let identity = first_codesigning_identity(&identities);
-    if requires_stable_identity && identity.is_none() {
-        bail!("macOS apps using protected resources require an installed code-signing identity");
-    }
-    let identity = identity.unwrap_or("-");
+    let identity = if requires_stable_identity {
+        first_codesigning_identity(&identities).ok_or_else(|| {
+            eyre::eyre!(
+                "macOS apps using protected resources require an installed code-signing identity"
+            )
+        })?
+    } else {
+        "-"
+    };
 
     let frameworks_dir = app_path.join("Contents").join("Frameworks");
     if frameworks_dir.exists() {
@@ -219,15 +231,8 @@ pub async fn package_cef_helper_app(
         }
     }
 
-    let variants = [
-        ("", ""),
-        (" (Alerts)", ".alerts"),
-        (" (GPU)", ".gpu"),
-        (" (Plugin)", ".plugin"),
-        (" (Renderer)", ".renderer"),
-    ];
-    let mut helper_dirs = Vec::with_capacity(variants.len());
-    for (name_suffix, identifier_suffix) in variants {
+    let mut helper_dirs = Vec::with_capacity(CEF_HELPER_VARIANTS.len());
+    for (name_suffix, identifier_suffix) in CEF_HELPER_VARIANTS {
         let helper_name = format!("{executable_name} Helper{name_suffix}");
         let helper_dir = main_frameworks_dir.join(format!("{helper_name}.app"));
         if helper_dir.exists() {
@@ -272,6 +277,24 @@ pub async fn package_cef_helper_app(
     Ok(helper_dirs)
 }
 
+/// Removes CEF helper applications added after a previous macOS build.
+///
+/// # Errors
+///
+/// Returns an error when an existing helper application cannot be removed.
+#[cfg(target_os = "macos")]
+pub async fn remove_cef_helper_apps(app_dir: &Path, executable_name: &str) -> eyre::Result<()> {
+    let frameworks_dir = app_dir.join("Contents/Frameworks");
+    for (name_suffix, _) in CEF_HELPER_VARIANTS {
+        let helper_name = format!("{executable_name} Helper{name_suffix}.app");
+        let helper_dir = frameworks_dir.join(helper_name);
+        if helper_dir.exists() {
+            fs::remove_dir_all(helper_dir).await?;
+        }
+    }
+    Ok(())
+}
+
 async fn copy_dir(from: &Path, to: &Path) -> eyre::Result<()> {
     let source = from.to_path_buf();
     let destination = to.to_path_buf();
@@ -296,7 +319,7 @@ async fn copy_dir(from: &Path, to: &Path) -> eyre::Result<()> {
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
-    use super::{first_codesigning_identity, package_cef_helper_app};
+    use super::{first_codesigning_identity, package_cef_helper_app, remove_cef_helper_apps};
 
     #[test]
     fn parses_first_valid_codesigning_identity() {
@@ -356,6 +379,13 @@ mod tests {
                 .expect("renderer helper plist must be readable");
             assert!(renderer_plist.contains("browser Helper (Renderer)"));
             assert!(renderer_plist.contains("dev.waterui.browser.helper.renderer"));
+
+            remove_cef_helper_apps(&app, "browser")
+                .await
+                .expect("CEF helpers must be removable before an incremental build");
+            for helper in helpers {
+                assert!(!helper.exists());
+            }
         });
     }
 }
