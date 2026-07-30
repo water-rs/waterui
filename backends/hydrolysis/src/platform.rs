@@ -880,7 +880,7 @@ mod winit_impl {
     #[cfg(hydrolysis_macos_system_webview)]
     use objc2_web_kit::WKWebView;
     use waterui::window::WindowState;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use winit::platform::scancode::PhysicalKeyExtScancode as _;
     #[cfg(hydrolysis_macos_system_webview)]
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -2035,7 +2035,15 @@ mod winit_impl {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn native_key_event(event: &KeyEvent) -> Option<NativeKey> {
+        Some(NativeKey {
+            keycode: event.physical_key.to_scancode()?,
+            keyval: 0,
+        })
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn native_key_event(_event: &KeyEvent) -> Option<NativeKey> {
         None
     }

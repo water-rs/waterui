@@ -485,11 +485,58 @@ cef::wrap_life_span_handler! {
     }
 
     impl LifeSpanHandler {
+        fn on_before_popup(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _popup_id: std::os::raw::c_int,
+            target_url: Option<&CefString>,
+            _target_frame_name: Option<&CefString>,
+            _target_disposition: cef::WindowOpenDisposition,
+            user_gesture: std::os::raw::c_int,
+            _popup_features: Option<&cef::PopupFeatures>,
+            _window_info: Option<&mut WindowInfo>,
+            _client: Option<&mut Option<Client>>,
+            _settings: Option<&mut BrowserSettings>,
+            _extra_info: Option<&mut Option<cef::DictionaryValue>>,
+            _no_javascript_access: Option<&mut std::os::raw::c_int>,
+        ) -> std::os::raw::c_int {
+            let target_url = target_url.map(ToString::to_string);
+            if let Some(target_url) =
+                popup_navigation_target(user_gesture, target_url.as_deref())
+            {
+                browser
+                    .expect("CEF popup request must identify its opener browser")
+                    .main_frame()
+                    .expect("CEF popup opener must expose its main frame")
+                    .load_url(Some(&target_url.into()));
+            }
+
+            // ChromiumView has no independent native-window surface. Allowing
+            // CEF's default popup would escape the WaterUI view hierarchy and
+            // create an unmanaged top-level Chrome window.
+            1
+        }
+
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             #[cfg(feature = "chromium")]
             self.state.closed();
         }
     }
+}
+
+fn popup_navigation_target(
+    user_gesture: std::os::raw::c_int,
+    target_url: Option<&str>,
+) -> Option<&str> {
+    assert!(
+        user_gesture == 0 || user_gesture == 1,
+        "CEF popup user gesture must be zero or one"
+    );
+    if user_gesture == 0 {
+        return None;
+    }
+    target_url.filter(|target_url| !target_url.is_empty())
 }
 
 cef::wrap_request_handler! {
@@ -701,6 +748,36 @@ impl CefPageHandle {
         self.browser.go_forward();
     }
 
+    /// Undoes the last edit in the focused Chromium frame.
+    pub fn undo(&self) {
+        self.focused_frame_for_editing().undo();
+    }
+
+    /// Redoes the last edit in the focused Chromium frame.
+    pub fn redo(&self) {
+        self.focused_frame_for_editing().redo();
+    }
+
+    /// Cuts the current selection in the focused Chromium frame.
+    pub fn cut(&self) {
+        self.focused_frame_for_editing().cut();
+    }
+
+    /// Copies the current selection in the focused Chromium frame.
+    pub fn copy(&self) {
+        self.focused_frame_for_editing().copy();
+    }
+
+    /// Pastes clipboard contents into the focused Chromium frame.
+    pub fn paste(&self) {
+        self.focused_frame_for_editing().paste();
+    }
+
+    /// Selects all content in the focused Chromium frame.
+    pub fn select_all(&self) {
+        self.focused_frame_for_editing().select_all();
+    }
+
     /// Sends pointer movement in browser-local logical coordinates.
     ///
     /// # Panics
@@ -777,13 +854,9 @@ impl CefPageHandle {
                     .expect("one UTF-16 code unit must exist")
             });
         let event = KeyEvent {
-            type_: if pressed {
-                KeyEventType::RAWKEYDOWN
-            } else {
-                KeyEventType::KEYUP
-            },
+            type_: key_event_type(pressed),
             modifiers: modifiers.bits(),
-            windows_key_code: i32::try_from(key.keyval).unwrap_or(0),
+            windows_key_code: windows_key_code(key.keyval),
             native_key_code: i32::try_from(key.native_keycode).unwrap_or(0),
             is_system_key: i32::from(modifiers.alt),
             character,
@@ -857,6 +930,12 @@ impl CefPageHandle {
         self.browser.stop_load();
     }
 
+    fn focused_frame_for_editing(&self) -> Frame {
+        self.browser
+            .focused_frame()
+            .expect("CEF browser must expose a focused frame for editing commands")
+    }
+
     #[cfg(feature = "chromium")]
     pub(crate) fn watch_page(&self, watcher: impl Fn(CefPageEvent) + 'static) {
         self.state.watch(watcher);
@@ -885,6 +964,32 @@ impl CefPageHandle {
     #[cfg(feature = "webview")]
     pub(crate) fn set_redirects_enabled(&self, enabled: Computed<bool>) {
         self.state.redirects_enabled.replace(enabled);
+    }
+}
+
+const fn key_event_type(pressed: bool) -> KeyEventType {
+    if !pressed {
+        return KeyEventType::KEYUP;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        KeyEventType::KEYDOWN
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        KeyEventType::RAWKEYDOWN
+    }
+}
+
+const fn windows_key_code(keyval: u32) -> i32 {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = keyval;
+        0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        i32::try_from(keyval).unwrap_or(0)
     }
 }
 
@@ -1173,7 +1278,10 @@ mod tests {
 
     use waterui_chromium::ScreenshotFormat;
 
-    use super::{CefPageEvent, CefPageMode, PageState, screenshot_parameters};
+    use super::{
+        CefPageEvent, CefPageMode, PageState, key_event_type, popup_navigation_target,
+        screenshot_parameters, windows_key_code,
+    };
 
     #[test]
     fn late_lifecycle_watcher_receives_ready_and_closed_state() {
@@ -1201,5 +1309,37 @@ mod tests {
 
         let jpeg = screenshot_parameters(ScreenshotFormat::Jpeg(82));
         assert_eq!(jpeg["quality"], 82);
+    }
+
+    #[test]
+    fn user_initiated_popup_navigates_the_embedded_page() {
+        let target = "https://crates.io/crates/waterui";
+
+        assert_eq!(
+            popup_navigation_target(1, Some(target)),
+            Some("https://crates.io/crates/waterui")
+        );
+        assert_eq!(popup_navigation_target(0, Some(target)), None);
+        assert_eq!(popup_navigation_target(1, None), None);
+    }
+
+    #[test]
+    fn pressed_keys_use_the_platform_cef_event_type() {
+        let expected = if cfg!(target_os = "macos") {
+            cef::KeyEventType::KEYDOWN
+        } else {
+            cef::KeyEventType::RAWKEYDOWN
+        };
+        assert_eq!(key_event_type(true), expected);
+        assert_eq!(key_event_type(false), cef::KeyEventType::KEYUP);
+    }
+
+    #[test]
+    fn platform_windows_key_code_matches_cef_input_conventions() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(windows_key_code(u32::from('A')), 0);
+        } else {
+            assert_eq!(windows_key_code(u32::from('A')), i32::from(b'A'));
+        }
     }
 }

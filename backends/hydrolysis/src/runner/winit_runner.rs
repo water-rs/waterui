@@ -45,6 +45,7 @@ enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
     AccessKit(AccessKitEvent),
+    Terminate,
 }
 
 struct PendingWindow {
@@ -142,6 +143,14 @@ pub fn run(app: App, inspector_probe: Option<std::sync::Arc<dyn waterui::task::R
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     super::install_native_component_hooks(&mut env);
+    #[cfg(target_os = "macos")]
+    ctrlc::set_handler({
+        let event_proxy = event_proxy.clone();
+        move || {
+            let _ = event_proxy.send_event(RunnerEvent::Terminate);
+        }
+    })
+    .expect("hydrolysis runner: failed to install the macOS termination handler");
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
@@ -539,6 +548,9 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                     }
                     AccessKitWindowEvent::AccessibilityDeactivated => {}
                 }
+            }
+            RunnerEvent::Terminate => {
+                self.exit_after_runtime_cleanup(_event_loop);
             }
         }
     }
