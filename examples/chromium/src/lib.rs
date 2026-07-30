@@ -20,6 +20,7 @@ use waterui_chromium::{
 };
 
 const START_URL: &str = "https://waterui.dev";
+const INPUT_PROBE_SCRIPT: &str = include_str!("input_probe.js");
 
 fn evaluation_text(response: &Value) -> Option<String> {
     let value = response.get("result")?.get("value")?;
@@ -50,7 +51,6 @@ fn install_event_observer(
             progress_value.set(0.0);
         }
         ChromiumEvent::Loading(progress) => {
-            status.set(Str::from(format!("Loading {:.0}%", progress * 100.0)));
             progress_value.set(f64::from(progress));
         }
         ChromiumEvent::Loaded(url) => {
@@ -66,6 +66,26 @@ fn install_event_observer(
             progress_value.set(0.0);
         }
     });
+}
+
+#[expect(
+    clippy::future_not_send,
+    reason = "Chromium pages and CDP sessions are confined to the WaterUI thread"
+)]
+async fn evaluate_page(
+    page: &ChromiumPage,
+    expression: &'static str,
+) -> Result<Option<String>, CdpError> {
+    page.cdp()
+        .execute_raw(
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true
+            }),
+        )
+        .await
+        .map(|response| evaluation_text(&response))
 }
 
 fn navigation_controls(page: &ChromiumPage) -> impl View + use<> {
@@ -101,6 +121,52 @@ fn lifecycle_controls(status: &Binding<Str>, progress_value: &Binding<f64>) -> i
     .spacing(6.0)
 }
 
+fn input_probe_controls(page: &ChromiumPage, result: &Binding<Str>) -> impl View + use<> {
+    vstack((
+        button("Prepare browser input probe")
+            .style(ButtonStyle::Bordered)
+            .action_async(
+                |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
+                    match evaluate_page(&page, INPUT_PROBE_SCRIPT).await {
+                        Ok(Some(value)) if value == "ready" => {
+                            result.set(Str::from_static("Browser input probe ready"));
+                        }
+                        Ok(Some(value)) => {
+                            result.set(Str::from(format!("Unexpected input probe result: {value}")));
+                        }
+                        Ok(None) => result
+                            .set(Str::from_static("Input probe response omitted result.value")),
+                        Err(error) => result.set(Str::from(format!("Input probe error: {error}"))),
+                    }
+                },
+            )
+            .state(page)
+            .state(result),
+        button("Inspect focused browser element")
+            .style(ButtonStyle::Bordered)
+            .action_async(
+                |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
+                    match evaluate_page(
+                        &page,
+                        "JSON.stringify({tag:document.activeElement?.tagName??null,value:document.activeElement?.value??null,selectionStart:document.activeElement?.selectionStart??null,selectionEnd:document.activeElement?.selectionEnd??null,events:window.wateruiInputProbeEvents??[]})",
+                    )
+                    .await
+                    {
+                        Ok(Some(focus)) => {
+                            result.set(Str::from(format!("Raw CDP focus: {focus}")));
+                        }
+                        Ok(None) => result
+                            .set(Str::from_static("Raw CDP response omitted result.value")),
+                        Err(error) => result.set(Str::from(format!("Raw CDP error: {error}"))),
+                    }
+                },
+            )
+            .state(page)
+            .state(result),
+    ))
+    .spacing(8.0)
+}
+
 fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
     let raw_result: Binding<Str> = binding("Raw CDP has not run");
     let typed_result: Binding<Str> = binding("Typed CDP has not run");
@@ -112,18 +178,8 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
             .style(ButtonStyle::Bordered)
             .action_async(
                 |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
-                    let response = page
-                        .cdp()
-                        .execute_raw(
-                            "Runtime.evaluate",
-                            json!({
-                                "expression": "document.title",
-                                "returnByValue": true
-                            }),
-                        )
-                        .await;
-                    match response {
-                        Ok(response) => match evaluation_text(&response) {
+                    match evaluate_page(&page, "document.title").await {
+                        Ok(title) => match title {
                             Some(title) => result.set(Str::from(format!("Raw CDP title: {title}"))),
                             None => result
                                 .set(Str::from_static("Raw CDP response omitted result.value")),
@@ -134,6 +190,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
             )
             .state(page)
             .state(&raw_result),
+        input_probe_controls(page, &raw_result),
         text!("{raw_result}")
             .caption()
             .foreground(theme_color::MutedForeground),
