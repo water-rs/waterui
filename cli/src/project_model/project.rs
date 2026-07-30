@@ -382,17 +382,17 @@ impl Project {
     /// # Errors
     ///
     /// Returns an error when Cargo metadata cannot be resolved or when the
-    /// configured engine is unsupported for the requested platform and renderer.
+    /// configured engine is unsupported for the requested platform and backend.
     pub async fn resolved_webview_backend(
         &self,
         platform: TargetPlatform,
-        renderer: TargetBackend,
+        backend: TargetBackend,
     ) -> eyre::Result<Option<ResolvedWebViewBackend>> {
         if !self.links_runtime_package("waterui-webview").await? {
             return Ok(None);
         }
         self.webview_backend()
-            .resolve(platform, renderer)
+            .resolve(platform, backend)
             .map(Some)
             .map_err(Into::into)
     }
@@ -402,29 +402,18 @@ impl Project {
     /// # Errors
     ///
     /// Returns an error when standard `WebView` or Chromium is unsupported for
-    /// the requested platform and renderer.
+    /// the requested platform and backend.
     pub async fn browser_runtime_plan(
         &self,
         platform: TargetPlatform,
-        renderer: TargetBackend,
+        backend: TargetBackend,
     ) -> eyre::Result<BrowserRuntimePlan> {
-        let webview = self.resolved_webview_backend(platform, renderer).await?;
+        let webview = self.resolved_webview_backend(platform, backend).await?;
         let chromium = self.links_runtime_package("waterui-chromium").await?;
-        if chromium
-            && !matches!(
-                (platform, renderer),
-                (
-                    TargetPlatform::MacOS,
-                    TargetBackend::Apple | TargetBackend::Hydrolysis
-                ) | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
-                    | (
-                        TargetPlatform::Linux,
-                        TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-                    )
-            )
-        {
+        if chromium && !cef_is_supported(platform, backend) {
             eyre::bail!(
-                "waterui-chromium is unsupported for platform {platform:?} with renderer {renderer:?}"
+                "waterui-chromium requires CEF, which is unsupported for platform {platform:?} \
+                 with backend {backend:?}"
             );
         }
         Ok(BrowserRuntimePlan { webview, chromium })
@@ -1484,15 +1473,15 @@ impl WebViewBackend {
         }
     }
 
-    /// Resolve this configuration to a concrete engine for a platform and renderer.
+    /// Resolve this configuration to a concrete engine for a platform and backend.
     ///
     /// # Errors
     ///
-    /// Returns an error when the selected engine cannot be composed by the requested renderer.
+    /// Returns an error when the selected engine cannot be composed by the requested backend.
     pub fn resolve(
         self,
         platform: TargetPlatform,
-        renderer: TargetBackend,
+        backend: TargetBackend,
     ) -> Result<ResolvedWebViewBackend, UnsupportedWebViewBackend> {
         let resolved = match self {
             Self::Default if platform == TargetPlatform::Linux => ResolvedWebViewBackend::Wpe,
@@ -1501,14 +1490,14 @@ impl WebViewBackend {
             Self::Cef => ResolvedWebViewBackend::Cef,
         };
 
-        if resolved.supports(platform, renderer) {
+        if resolved.supports(platform, backend) {
             Ok(resolved)
         } else {
             Err(UnsupportedWebViewBackend {
                 configured: self,
                 resolved,
                 platform,
-                renderer,
+                backend,
             })
         }
     }
@@ -1544,12 +1533,12 @@ impl BrowserRuntimePlan {
 }
 
 impl ResolvedWebViewBackend {
-    /// Return whether this engine can be hosted by a platform and renderer pair.
+    /// Return whether this engine can be hosted by a platform and backend pair.
     #[must_use]
-    pub const fn supports(self, platform: TargetPlatform, renderer: TargetBackend) -> bool {
+    pub const fn supports(self, platform: TargetPlatform, backend: TargetBackend) -> bool {
         match self {
             Self::System => matches!(
-                (platform, renderer),
+                (platform, backend),
                 (
                     TargetPlatform::MacOS,
                     TargetBackend::Apple | TargetBackend::Hydrolysis
@@ -1565,19 +1554,9 @@ impl ResolvedWebViewBackend {
             ),
             Self::Wpe => {
                 matches!(platform, TargetPlatform::Linux)
-                    && matches!(renderer, TargetBackend::Gtk4 | TargetBackend::Hydrolysis)
+                    && matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis)
             }
-            Self::Cef => matches!(
-                (platform, renderer),
-                (
-                    TargetPlatform::MacOS,
-                    TargetBackend::Apple | TargetBackend::Hydrolysis
-                ) | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
-                    | (
-                        TargetPlatform::Linux,
-                        TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-                    )
-            ),
+            Self::Cef => cef_is_supported(platform, backend),
         }
     }
 
@@ -1592,17 +1571,25 @@ impl ResolvedWebViewBackend {
     }
 }
 
-/// Error returned for an unsupported `WebView` engine/platform/renderer combination.
+const fn cef_is_supported(platform: TargetPlatform, backend: TargetBackend) -> bool {
+    !matches!(backend, TargetBackend::Dew)
+        && matches!(
+            platform,
+            TargetPlatform::MacOS | TargetPlatform::Linux | TargetPlatform::Windows
+        )
+}
+
+/// Error returned for an unsupported `WebView` engine/platform/backend combination.
 #[derive(Debug, thiserror::Error)]
 #[error(
     "webview_backend={configured:?} resolves to {resolved:?}, which is unsupported for \
-     platform {platform:?} with renderer {renderer:?}"
+     platform {platform:?} with backend {backend:?}"
 )]
 pub struct UnsupportedWebViewBackend {
     configured: WebViewBackend,
     resolved: ResolvedWebViewBackend,
     platform: TargetPlatform,
-    renderer: TargetBackend,
+    backend: TargetBackend,
 }
 
 /// App-specific configuration in `Water.toml`.
@@ -1754,6 +1741,51 @@ bundle_identifier = "dev.waterui.test.webview"
                 .resolve(TargetPlatform::Windows, TargetBackend::Hydrolysis)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn cef_is_available_to_every_non_dew_backend_on_desktop_platforms() {
+        for backend in [
+            TargetBackend::Apple,
+            TargetBackend::Android,
+            TargetBackend::Gtk4,
+            TargetBackend::Hydrolysis,
+        ] {
+            for platform in [
+                TargetPlatform::MacOS,
+                TargetPlatform::Linux,
+                TargetPlatform::Windows,
+            ] {
+                assert_eq!(
+                    WebViewBackend::Cef
+                        .resolve(platform, backend)
+                        .expect("CEF availability must not depend on the WaterUI backend"),
+                    ResolvedWebViewBackend::Cef
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cef_rejects_dew_and_platforms_without_cef_distributions() {
+        for platform in [
+            TargetPlatform::MacOS,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                WebViewBackend::Cef
+                    .resolve(platform, TargetBackend::Dew)
+                    .is_err()
+            );
+        }
+        for (platform, backend) in [
+            (TargetPlatform::Android, TargetBackend::Android),
+            (TargetPlatform::IOS, TargetBackend::Apple),
+            (TargetPlatform::Web, TargetBackend::Hydrolysis),
+        ] {
+            assert!(WebViewBackend::Cef.resolve(platform, backend).is_err());
+        }
     }
 
     #[test]
