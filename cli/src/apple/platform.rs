@@ -15,14 +15,18 @@ use smol::fs;
 use target_lexicon::Architecture;
 use tracing::{debug, info};
 
+#[cfg(target_os = "macos")]
+use crate::browser_runtime;
+#[cfg(target_os = "macos")]
+use crate::macos_bundle::{package_cef_helper_app, remove_cef_helper_apps, sign_macos_app};
 use crate::{
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
     assets::{self, ResolvedFont},
     build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
     device::Artifact,
-    platform::{PackageOptions, TargetPlatform},
-    project::Project,
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
+    project::{Project, ResolvedWebViewBackend},
     templates::FontRegistrationTemplateEntry,
     utils::{copy_file, run_command_os},
 };
@@ -50,6 +54,9 @@ pub async fn build_rust_lib(
     // for crates like fontawesome7 that need it during build.rs
     let font_declarations = crate::assets::scan_fonts(project).await?;
     let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
+    let browser_runtime_plan = project
+        .browser_runtime_plan(platform, TargetBackend::Apple)
+        .await?;
 
     let triple = options
         .target_triple()
@@ -59,6 +66,15 @@ pub async fn build_rust_lib(
     let target_underscore = target.replace('-', "_");
     let mut build =
         RustBuild::new(project.ffi_crate_path(), triple.clone()).with_feature("waterui-ffi/c-api");
+    if browser_runtime_plan.chromium {
+        build = build.with_feature("waterui-ffi/chromium");
+    }
+    if matches!(
+        browser_runtime_plan.webview,
+        Some(ResolvedWebViewBackend::Cef)
+    ) {
+        build = build.with_feature("waterui-ffi/webview-cef");
+    }
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -76,6 +92,13 @@ pub async fn build_rust_lib(
             .with_preferred_dynamic_linking();
     }
     let lib_dir = build.build_lib(options.is_release()).await?;
+    if browser_runtime_plan.requires_cef() {
+        build
+            .clone()
+            .with_rustc_flag("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
+            .build_binary("waterui-cef-helper", options.is_release())
+            .await?;
+    }
 
     // If output_dir is specified, copy the library there
     if let Some(output_dir) = options.output_dir() {
@@ -429,6 +452,9 @@ pub async fn package_apple(
     let backend = project
         .apple_backend()
         .ok_or_else(|| eyre::eyre!("Apple backend must be configured"))?;
+    let browser_runtime_plan = project
+        .browser_runtime_plan(platform, TargetBackend::Apple)
+        .await?;
 
     let project_path = project.backend_path::<AppleBackend>();
     let xcodeproj = project_path.join(format!("{}.xcodeproj", backend.scheme));
@@ -482,6 +508,14 @@ pub async fn package_apple(
     };
     let products_dir = derived_data.join("Build/Products").join(&products_config);
     fs::create_dir_all(&products_dir).await?;
+    let app_path = products_dir.join(format!("{}.app", backend.scheme));
+
+    #[cfg(target_os = "macos")]
+    if platform == TargetPlatform::MacOS {
+        browser_runtime::remove_macos_app(&app_path.join("Contents")).await?;
+        remove_cef_helper_apps(&app_path, &backend.scheme).await?;
+    }
+
     let dest_lib = products_dir.join("libwaterui_app.a");
     copy_file(&source_lib, &dest_lib).await?;
 
@@ -557,8 +591,6 @@ pub async fn package_apple(
         env::set_var("WATERUI_SKIP_RUST_BUILD", "0");
     }
 
-    let app_path = products_dir.join(format!("{}.app", backend.scheme));
-
     if !app_path.exists() {
         bail!(
             "Built app not found at {}. Check xcodebuild output for errors.",
@@ -573,6 +605,37 @@ pub async fn package_apple(
     } else {
         RustDynamicLibraries::remove_staged(&frameworks_dir, &triple).await?;
     }
+
+    #[cfg(target_os = "macos")]
+    if platform == TargetPlatform::MacOS && browser_runtime_plan.requires_cef() {
+        browser_runtime::stage_macos_app(
+            browser_runtime_plan,
+            &lib_dir,
+            &app_path.join("Contents"),
+        )
+        .await?;
+        let main_binary = app_path.join("Contents/MacOS").join(&backend.scheme);
+        let helper_binary = lib_dir.join("waterui-cef-helper");
+        package_cef_helper_app(
+            &app_path,
+            &main_binary,
+            &helper_binary,
+            project.bundle_identifier(),
+        )
+        .await?;
+        let requires_stable_identity = project.manifest().permissions.iter().any(|(key, entry)| {
+            entry.is_enabled() && !key.macos_usage_description_keys().is_empty()
+        });
+        sign_macos_app(
+            &app_path,
+            project.bundle_identifier(),
+            requires_stable_identity,
+        )
+        .await?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = browser_runtime_plan;
 
     Ok(Artifact::new(project.bundle_identifier(), app_path))
 }

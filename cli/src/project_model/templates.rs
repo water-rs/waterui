@@ -357,6 +357,18 @@ impl TemplateContext {
             .then_some(self.browser.webview_backend.cargo_feature())
     }
 
+    const fn chromium_enabled(&self) -> bool {
+        self.browser.chromium_enabled
+    }
+
+    const fn cef_webview_enabled(&self) -> bool {
+        self.browser.webview_enabled && matches!(self.browser.webview_backend, WebViewBackend::Cef)
+    }
+
+    const fn cef_runtime_enabled(&self) -> bool {
+        self.chromium_enabled() || self.cef_webview_enabled()
+    }
+
     /// Set the exact `WaterUI` feature set used by a preview support runtime.
     #[must_use]
     pub fn with_preview_runtime_features(mut self, features: Vec<String>) -> Self {
@@ -1094,6 +1106,83 @@ mod tests {
     }
 
     #[test]
+    fn apple_chromium_template_links_and_initializes_cef_before_appkit() {
+        let ctx = app_ctx().with_chromium_enabled(true);
+        let project_template = embedded::APPLE
+            .get_file("AppName.xcodeproj/project.pbxproj.tpl")
+            .expect("apple project template must exist")
+            .contents_utf8()
+            .expect("apple project template must be utf-8");
+        let project = render_scaffold_template(
+            TemplateNamespace::Apple,
+            std::path::Path::new("AppName.xcodeproj/project.pbxproj.tpl"),
+            project_template,
+            &ctx,
+        )
+        .expect("apple Chromium project render");
+        assert!(project.contains("WaterUICEF in Frameworks"));
+        assert!(project.contains("WaterUIChromium in Frameworks"));
+        assert!(!project.contains("WaterUICefWebView in Frameworks"));
+
+        let app_template = embedded::APPLE
+            .get_file("AppName/AppNameApp.swift.tpl")
+            .expect("apple app template must exist")
+            .contents_utf8()
+            .expect("apple app template must be utf-8");
+        let app = render_scaffold_template(
+            TemplateNamespace::Apple,
+            std::path::Path::new("AppName/AppNameApp.swift.tpl"),
+            app_template,
+            &ctx,
+        )
+        .expect("apple Chromium app render");
+        assert!(app.contains("import WaterUICEF"));
+        assert!(app.contains("import WaterUIChromium"));
+        assert!(app.contains("installWaterUIChromium()"));
+        assert!(
+            app.find("prepareWaterUICEFApplication()") < app.find("let app = NSApplication.shared")
+        );
+        assert!(!app.contains("runWaterUICEFSubprocessIfNeeded()"));
+    }
+
+    #[test]
+    fn apple_cef_webview_template_links_only_the_standard_cef_component() {
+        let mut ctx = app_ctx().with_webview_enabled(true);
+        ctx.browser.webview_backend = WebViewBackend::Cef;
+        let project_template = embedded::APPLE
+            .get_file("AppName.xcodeproj/project.pbxproj.tpl")
+            .expect("apple project template must exist")
+            .contents_utf8()
+            .expect("apple project template must be utf-8");
+        let project = render_scaffold_template(
+            TemplateNamespace::Apple,
+            std::path::Path::new("AppName.xcodeproj/project.pbxproj.tpl"),
+            project_template,
+            &ctx,
+        )
+        .expect("apple CEF WebView project render");
+        assert!(project.contains("WaterUICEF in Frameworks"));
+        assert!(project.contains("WaterUICefWebView in Frameworks"));
+        assert!(!project.contains("WaterUIChromium in Frameworks"));
+
+        let app_template = embedded::APPLE
+            .get_file("AppName/AppNameApp.swift.tpl")
+            .expect("apple app template must exist")
+            .contents_utf8()
+            .expect("apple app template must be utf-8");
+        let app = render_scaffold_template(
+            TemplateNamespace::Apple,
+            std::path::Path::new("AppName/AppNameApp.swift.tpl"),
+            app_template,
+            &ctx,
+        )
+        .expect("apple CEF WebView app render");
+        assert!(app.contains("import WaterUICefWebView"));
+        assert!(app.contains("installWaterUICefWebView()"));
+        assert!(!app.contains("installWaterUIChromium()"));
+    }
+
+    #[test]
     fn android_build_gradle_uses_embedded_remote_backend_commit() {
         let ctx = app_ctx();
         let template = embedded::ANDROID
@@ -1323,6 +1412,43 @@ mod tests {
             manifest["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
             Some(false)
         );
+        assert_eq!(manifest["package"]["autobins"].as_bool(), Some(false));
+        assert!(manifest.get("bin").is_none());
+    }
+
+    #[test]
+    fn ffi_scaffold_declares_minimal_cef_helper_for_chromium() {
+        let tempdir = tempdir().expect("temporary ffi scaffold dir");
+        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+        let ctx = app_ctx()
+            .with_backend_project_path(ffi_dir.clone())
+            .with_project_root_path(tempdir.path().to_path_buf())
+            .with_chromium_enabled(true);
+
+        smol::block_on(crate::templates::ffi::scaffold(
+            &ffi_dir,
+            &ctx,
+            "chromium-ffi",
+        ))
+        .expect("Chromium ffi scaffold should succeed");
+
+        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
+            .expect("ffi Cargo.toml should be written")
+            .parse::<toml::Table>()
+            .expect("ffi Cargo.toml should parse");
+        let bins = manifest["bin"]
+            .as_array()
+            .expect("CEF FFI companion should declare a helper binary");
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0]["name"].as_str(), Some("waterui-cef-helper"));
+        assert_eq!(
+            bins[0]["path"].as_str(),
+            Some("src/bin/waterui-cef-helper.rs")
+        );
+
+        let helper = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-cef-helper.rs"))
+            .expect("CEF helper source should be written");
+        assert!(helper.contains("waterui_cef_run_packaged_subprocess"));
     }
 
     #[test]
@@ -2485,6 +2611,7 @@ pub mod ffi {
         let mut manifest = Manifest::<()>::default();
         let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        package.autobins = false;
         manifest.package = Some(package);
 
         manifest.lib = Some(Product {
@@ -2495,6 +2622,13 @@ pub mod ffi {
             ],
             ..Default::default()
         });
+        if ctx.cef_runtime_enabled() {
+            manifest.bin.push(Product {
+                name: Some("waterui-cef-helper".to_string()),
+                path: Some("src/bin/waterui-cef-helper.rs".to_string()),
+                ..Default::default()
+            });
+        }
 
         manifest.dependencies.insert(
             ctx.crate_name.to_string(),

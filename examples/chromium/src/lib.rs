@@ -380,25 +380,15 @@ fn scene(controller: &ChromiumController) -> impl View + use<> {
     ))
 }
 
-fn missing_controller_view() -> impl View {
-    vstack((
-        text("Chromium is not available on this backend.").title(),
-        "Run with a backend that installs the independent Chromium runtime.",
-        "For example: water run --platform macos --backend hydrolysis",
-    ))
-    .spacing(8.0)
-    .padding()
-}
-
 #[derive(Debug)]
 struct ChromiumDemo;
 
 impl View for ChromiumDemo {
     fn body(self, env: &Environment) -> impl View {
-        env.get::<ChromiumController>().map_or_else(
-            || AnyView::new(missing_controller_view()),
-            |controller| AnyView::new(scene(controller)),
-        )
+        let controller = env
+            .get::<ChromiumController>()
+            .expect("the selected backend did not install the Chromium runtime");
+        scene(controller)
     }
 }
 

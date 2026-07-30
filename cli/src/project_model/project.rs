@@ -414,12 +414,13 @@ impl Project {
             && !matches!(
                 (platform, renderer),
                 (
-                    TargetPlatform::MacOS | TargetPlatform::Windows,
-                    TargetBackend::Hydrolysis
-                ) | (
-                    TargetPlatform::Linux,
-                    TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-                )
+                    TargetPlatform::MacOS,
+                    TargetBackend::Apple | TargetBackend::Hydrolysis
+                ) | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
+                    | (
+                        TargetPlatform::Linux,
+                        TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+                    )
             )
         {
             eyre::bail!(
@@ -636,10 +637,20 @@ impl Project {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
+        let webview_enabled = self
+            .links_runtime_package("waterui-webview")
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let chromium_enabled = self
+            .links_runtime_package("waterui-chromium")
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
         let ctx =
             TemplateContext::for_project_manifest(manifest, self.crate_name().clone(), app_name)
                 .with_backend_project_path(self.ffi_crate_path())
-                .with_project_root_path(self.root.clone());
+                .with_project_root_path(self.root.clone())
+                .with_webview_enabled(webview_enabled)
+                .with_chromium_enabled(chromium_enabled);
 
         templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
             .await
@@ -1559,12 +1570,13 @@ impl ResolvedWebViewBackend {
             Self::Cef => matches!(
                 (platform, renderer),
                 (
-                    TargetPlatform::MacOS | TargetPlatform::Windows,
-                    TargetBackend::Hydrolysis
-                ) | (
-                    TargetPlatform::Linux,
-                    TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-                )
+                    TargetPlatform::MacOS,
+                    TargetBackend::Apple | TargetBackend::Hydrolysis
+                ) | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
+                    | (
+                        TargetPlatform::Linux,
+                        TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+                    )
             ),
         }
     }
@@ -1731,10 +1743,11 @@ bundle_identifier = "dev.waterui.test.webview"
                 .resolve(TargetPlatform::Android, TargetBackend::Android)
                 .is_err()
         );
-        assert!(
+        assert_eq!(
             WebViewBackend::Cef
                 .resolve(TargetPlatform::MacOS, TargetBackend::Apple)
-                .is_err()
+                .expect("CEF must compose with the native Apple renderer on macOS"),
+            ResolvedWebViewBackend::Cef
         );
         assert!(
             WebViewBackend::System

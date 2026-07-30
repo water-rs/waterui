@@ -1,14 +1,22 @@
 use std::{env, fs, path::PathBuf};
 
-use cbindgen::{Config, generate_with_config};
+use cbindgen::{Builder, Config};
 
 fn main() {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let bindings = generate_with_config(
-        &crate_dir,
-        Config::from_file(crate_dir.join("cbindgen.toml")).expect("failed to load cbindgen.toml"),
-    )
-    .expect("Unable to generate bindings");
+    let mut config =
+        Config::from_file(crate_dir.join("cbindgen.toml")).expect("failed to load cbindgen.toml");
+    config
+        .parse
+        .expand
+        .crates
+        .retain(|crate_name| crate_name == "waterui-ffi");
+    config.parse.expand.features = Some(vec![String::from("cef-header")]);
+    let bindings = Builder::new()
+        .with_crate(&crate_dir)
+        .with_config(config)
+        .generate()
+        .expect("Unable to generate bindings");
     let mut header_bytes = Vec::new();
     bindings.write(&mut header_bytes);
     let header_path = crate_dir.join("waterui.h");
