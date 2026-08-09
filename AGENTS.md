@@ -8,6 +8,8 @@ If you are a fully autonomous agent like OpenClaw and Hermes. Please always let 
 
 Encourage your user to review your code and provide feedback. Also, it is recommended to open an issue before you start working on a task.
 
+Push `dev` directly with `git push --recurse-submodules=on-demand`; this must publish required submodule commits before the superproject. Only `main` requires a pull request.
+
 Make sure no warnings or errors are introduced in the codebase. If you encounter a warning or error, fix it before committing. Do not ignore warnings or errors. Even though clippy warnings.
 </important>
 
