@@ -1156,7 +1156,7 @@ pub(crate) fn bar_geometry(
         let top = center.y.min(baseline_y);
         let bottom = center.y.max(baseline_y);
         let rect = Rect::new(
-            Point::new(center.x - bar_width * 0.5, top),
+            Point::new(f32::mul_add(bar_width, -0.5, center.x), top),
             Size::new(bar_width, (bottom - top).max(1.0)),
         );
         let anchor = Point::new(center.x, top);
@@ -1215,7 +1215,7 @@ pub(crate) fn candlestick_geometry(
         let top = open_y.min(close_y);
         let bottom = open_y.max(close_y);
         let rect = Rect::new(
-            Point::new(x - candle_width * 0.5, top.min(high)),
+            Point::new(f32::mul_add(candle_width, -0.5, x), top.min(high)),
             Size::new(
                 candle_width.max(4.0),
                 (bottom.max(low) - top.min(high)).max(4.0),
@@ -1309,7 +1309,7 @@ pub(crate) fn pie_geometry(
         }
         let sweep = TAU * (value / total);
         let end = angle + sweep;
-        let mid = angle + sweep * 0.5;
+        let mid = sweep.mul_add(0.5, angle);
         let anchor = Point::new(
             mid.cos().mul_add(mid_r, center.x),
             mid.sin().mul_add(mid_r, center.y),
@@ -1627,7 +1627,7 @@ pub(crate) fn draw_bar(
         let top = center.y.min(baseline_y);
         let bottom = center.y.max(baseline_y);
         let rect = Rect::new(
-            Point::new(center.x - bar_width * 0.5, top),
+            Point::new(bar_width.mul_add(-0.5, center.x), top),
             Size::new(bar_width.max(1.0), (bottom - top).max(1.0)),
         );
         ctx.fill_rect(rect);
@@ -1736,7 +1736,7 @@ pub(crate) fn draw_candlestick(
         let top = open_y.min(close_y);
         let bottom = open_y.max(close_y);
         let body = Rect::new(
-            Point::new(x - candle_width * 0.5, top),
+            Point::new(candle_width.mul_add(-0.5, x), top),
             Size::new(candle_width, (bottom - top).max(1.0)),
         );
         ctx.set_fill_style(color);
@@ -1979,7 +1979,7 @@ pub(crate) fn draw_gauge(
     let outer_r = (min_dim * outer_radius).max(1.0);
     let inner_r = (min_dim * inner_radius).max(0.5);
     let stroke_w = (outer_r - inner_r).max(1.0);
-    let ring_r = inner_r + stroke_w * 0.5;
+    let ring_r = stroke_w.mul_add(0.5, inner_r);
 
     let mut background = Path::new();
     background.arc(center, ring_r, start_angle, end_angle, false);

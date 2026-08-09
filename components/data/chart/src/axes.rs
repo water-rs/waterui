@@ -314,8 +314,8 @@ impl Layout for GridLinesLayout {
         let plot_pad_y = chart_height * plot_padding;
         let chart_left = chart_left + plot_pad_x;
         let chart_top = chart_top + plot_pad_y;
-        chart_width = (chart_width - plot_pad_x * 2.0).max(0.0);
-        chart_height = (chart_height - plot_pad_y * 2.0).max(0.0);
+        chart_width = plot_pad_x.mul_add(-2.0, chart_width).max(0.0);
+        chart_height = plot_pad_y.mul_add(-2.0, chart_height).max(0.0);
 
         let mut rects = Vec::with_capacity(self.y_positions.len() + self.x_positions.len());
 
@@ -330,7 +330,7 @@ impl Layout for GridLinesLayout {
 
         for pos in &self.x_positions {
             let clamped = pos.clamp(0.0, 1.0);
-            let x = chart_left + clamped * chart_width;
+            let x = f32::mul_add(clamped, chart_width, chart_left);
             rects.push(Rect::new(
                 Point::new(x - 0.5, chart_top),
                 Size::new(1.0, chart_height),
@@ -454,8 +454,8 @@ impl ReactiveAxisLayout {
         (
             chart_left + plot_pad_x,
             chart_top + plot_pad_y,
-            (chart_width - plot_pad_x * 2.0).max(0.0),
-            (chart_height - plot_pad_y * 2.0).max(0.0),
+            plot_pad_x.mul_add(-2.0, chart_width).max(0.0),
+            plot_pad_y.mul_add(-2.0, chart_height).max(0.0),
         )
     }
 }
@@ -486,7 +486,7 @@ impl Layout for ReactiveAxisLayout {
             } else {
                 let x = size
                     .width
-                    .mul_add(-0.5, chart_left + position * chart_width);
+                    .mul_add(-0.5, position.mul_add(chart_width, chart_left));
                 let y = bounds.y() + bounds.height() - self.padding.bottom + 5.0 - size.height;
                 vec![Rect::new(Point::new(x, y), size)]
             }
@@ -497,7 +497,7 @@ impl Layout for ReactiveAxisLayout {
                 Size::new(chart_width, 1.0),
             )]
         } else {
-            let x = chart_left + position * chart_width;
+            let x = position.mul_add(chart_width, chart_left);
             vec![Rect::new(
                 Point::new(x - 0.5, chart_top),
                 Size::new(1.0, chart_height),
@@ -682,7 +682,7 @@ impl Layout for AxisLabelsLayout {
             let mut chart_height = (chart_bottom - chart_top).max(0.0);
             let plot_pad = chart_height * self.plot_padding.clamp(0.0, 0.45);
             let chart_top = chart_top + plot_pad;
-            chart_height = (chart_height - plot_pad * 2.0).max(0.0);
+            chart_height = plot_pad.mul_add(-2.0, chart_height).max(0.0);
 
             for (idx, child) in children.iter().enumerate() {
                 let pos = self
@@ -705,7 +705,7 @@ impl Layout for AxisLabelsLayout {
             let mut chart_width = (chart_right - chart_left).max(0.0);
             let plot_pad = chart_width * self.plot_padding.clamp(0.0, 0.45);
             let chart_left = chart_left + plot_pad;
-            chart_width = (chart_width - plot_pad * 2.0).max(0.0);
+            chart_width = plot_pad.mul_add(-2.0, chart_width).max(0.0);
             let y = bounds.y() + bounds.height() - self.offset;
 
             for (idx, child) in children.iter().enumerate() {
@@ -717,7 +717,9 @@ impl Layout for AxisLabelsLayout {
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0);
                 let size = child.measure(ProposalSize::UNSPECIFIED).size;
-                let x = size.width.mul_add(-0.5, chart_left + pos * chart_width);
+                let x = size
+                    .width
+                    .mul_add(-0.5, pos.mul_add(chart_width, chart_left));
                 // Align labels by their bottom edge so they don't collide with the axis title label.
                 rects.push(Rect::new(Point::new(x, y - size.height), size));
             }
