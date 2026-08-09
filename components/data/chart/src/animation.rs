@@ -42,7 +42,7 @@ impl EasingType {
                 // Damped spring approximation
                 let omega = 14.0_f32; // Angular frequency
                 let decay = (-5.0 * t).exp();
-                1.0 - decay * (omega * t).cos()
+                decay.mul_add(-(omega * t).cos(), 1.0)
             }
         }
     }
