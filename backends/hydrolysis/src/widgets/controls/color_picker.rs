@@ -29,7 +29,7 @@ const COLOR_SWATCH_SIZE: f64 = 32.0;
 const COLOR_SWATCH_RADIUS: f64 = 8.0;
 const COLOR_PICKER_MIN_WIDTH: f32 = 160.0;
 
-/// The retained render state of a color picker: the clonable [`ColorPickerConfig`]
+/// The retained render state of a color picker: the cloneable [`ColorPickerConfig`]
 /// drives the swatch + accessibility, and its main label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.

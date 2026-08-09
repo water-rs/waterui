@@ -33,7 +33,7 @@ fn save(app: &mut OffscreenApp, stage: &str) {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn plain_button_press_shows_growing_ripple() {
     let mut app = ui()
         .viewport(360, 200)
@@ -54,7 +54,7 @@ fn plain_button_press_shows_growing_ripple() {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn released_ripple_fades_at_full_size_without_shrinking() {
     // Regression stage for the reverse-playback bug: after release the wave
     // must hold its expanded, centered shape and only lose opacity — the
@@ -84,7 +84,7 @@ fn released_ripple_fades_at_full_size_without_shrinking() {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn rapid_represses_overlap_independent_waves() {
     // mdui multi-wave behavior: a quick tap's wave keeps fading at full size
     // while a second press spawns a fresh wave growing from its own point —
@@ -113,7 +113,7 @@ fn rapid_represses_overlap_independent_waves() {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn plain_button_hover_shows_state_layer() {
     let mut app = ui()
         .viewport(360, 200)
@@ -127,7 +127,7 @@ fn plain_button_hover_shows_state_layer() {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn ripple_survives_same_frame_structural_patch() {
     // The chart-demo scenario: the button's release action flips a signal that
     // a `watch` subtree rebuilds from in the same refresh frame. The quick

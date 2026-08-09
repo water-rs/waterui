@@ -19,7 +19,7 @@ use waterui_core::{AnyView, Environment, Native};
 use crate::renderer::RetainedSubview;
 use crate::widgets::util::widget_theme;
 
-/// The retained render state of a stepper: the clonable [`StepperConfig`] drives the
+/// The retained render state of a stepper: the cloneable [`StepperConfig`] drives the
 /// +/- buttons + accessibility, and its main label is held as a [`RetainedSubview`]
 /// built once and re-flushed each frame so reactive label content stays live.
 pub(crate) struct StepperRenderState {

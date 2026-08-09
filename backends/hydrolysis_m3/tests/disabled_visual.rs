@@ -38,7 +38,7 @@ fn controls(checked: bool) -> impl View {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn disabled_controls_render_md3_disabled_palette() {
     let mut app = ui()
         .viewport(360, 420)

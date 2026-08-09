@@ -1,7 +1,9 @@
 [default.extend-words]
 Alle = "Alle"
 COSE = "COSE"
+CLL = "CLL"
 Dezember = "Dezember"
+Fo = "Fo"
 Favorit = "Favorit"
 Sie = "Sie"
 Spanisch = "Spanisch"
@@ -20,6 +22,7 @@ udid = "udid"
 NdefFormatable = "NdefFormatable"
 formatable = "formatable"
 thw = "thw"
+trun = "trun"
 
 [files]
 extend-exclude = [

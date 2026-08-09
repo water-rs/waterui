@@ -339,231 +339,252 @@ impl PageState {
     }
 }
 
-cef::wrap_render_handler! {
-    struct WaterRenderHandler {
-        state: Rc<PageState>,
-    }
-
-    impl RenderHandler {
-        fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
-            let rect = rect.expect("CEF must provide an output rectangle");
-            let (width, height) = self.state.size.get();
-            *rect = Rect {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            };
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_render_handler(state: Rc<PageState>) -> RenderHandler {
+    cef::wrap_render_handler! {
+        struct WaterRenderHandler {
+            state: Rc<PageState>,
         }
 
-        fn screen_info(
-            &self,
-            _browser: Option<&mut Browser>,
-            screen_info: Option<&mut ScreenInfo>,
-        ) -> std::os::raw::c_int {
-            let screen_info = screen_info.expect("CEF must provide screen information");
-            screen_info.device_scale_factor = self.state.device_scale_factor.get();
-            screen_info.depth = 24;
-            screen_info.depth_per_component = 8;
-            screen_info.is_monochrome = 0;
-            1
-        }
-
-        fn on_popup_show(&self, _browser: Option<&mut Browser>, show: std::os::raw::c_int) {
-            assert!(
-                show == 0 || show == 1,
-                "CEF popup visibility must be zero or one"
-            );
-            if show == 0
-                && let Some(sink) = self.state.frame_sink.borrow().as_ref()
-            {
-                sink.set_popup_rect(None);
+        impl RenderHandler {
+            fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
+                let rect = rect.expect("CEF must provide an output rectangle");
+                let (width, height) = self.state.size.get();
+                *rect = Rect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                };
             }
-        }
 
-        fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
-            let rect = rect.expect("CEF popup size callback must contain a rectangle");
-            if let Some(sink) = self.state.frame_sink.borrow().as_ref() {
-                sink.set_popup_rect(Some(CefPopupRect::from_cef(rect)));
+            fn screen_info(
+                &self,
+                _browser: Option<&mut Browser>,
+                screen_info: Option<&mut ScreenInfo>,
+            ) -> std::os::raw::c_int {
+                let screen_info = screen_info.expect("CEF must provide screen information");
+                screen_info.device_scale_factor = self.state.device_scale_factor.get();
+                screen_info.depth = 24;
+                screen_info.depth_per_component = 8;
+                screen_info.is_monochrome = 0;
+                1
             }
-        }
 
-        fn on_paint(
-            &self,
-            _browser: Option<&mut Browser>,
-            _element: PaintElementType,
-            _dirty_rects: Option<&[Rect]>,
-            _buffer: *const u8,
-            _width: std::os::raw::c_int,
-            _height: std::os::raw::c_int,
-        ) {
-            panic!(
-                "CEF delivered a CPU paint buffer; WaterUI requires shared-texture accelerated paint"
-            );
-        }
+            fn on_popup_show(&self, _browser: Option<&mut Browser>, show: std::os::raw::c_int) {
+                assert!(
+                    show == 0 || show == 1,
+                    "CEF popup visibility must be zero or one"
+                );
+                if show == 0
+                    && let Some(sink) = self.state.frame_sink.borrow().as_ref()
+                {
+                    sink.set_popup_rect(None);
+                }
+            }
 
-        fn on_accelerated_paint(
-            &self,
-            _browser: Option<&mut Browser>,
-            element: PaintElementType,
-            dirty_rects: Option<&[Rect]>,
-            info: Option<&AcceleratedPaintInfo>,
-        ) {
-            let info = info.expect("CEF accelerated paint callback must contain frame metadata");
-            if !self.state.accelerated_paint_received.replace(true) {
-                tracing::debug!(
-                    has_frame_sink = self.state.frame_sink.borrow().is_some(),
-                    "Received the first accelerated CEF paint"
+            fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
+                let rect = rect.expect("CEF popup size callback must contain a rectangle");
+                if let Some(sink) = self.state.frame_sink.borrow().as_ref() {
+                    sink.set_popup_rect(Some(CefPopupRect::from_cef(rect)));
+                }
+            }
+
+            fn on_paint(
+                &self,
+                _browser: Option<&mut Browser>,
+                _element: PaintElementType,
+                _dirty_rects: Option<&[Rect]>,
+                _buffer: *const u8,
+                _width: std::os::raw::c_int,
+                _height: std::os::raw::c_int,
+            ) {
+                panic!(
+                    "CEF delivered a CPU paint buffer; WaterUI requires shared-texture accelerated paint"
                 );
             }
-            if let Some(sink) = self.state.frame_sink.borrow().as_ref() {
-                sink.import(element, dirty_rects.unwrap_or_default(), info);
-            }
-        }
-    }
-}
 
-cef::wrap_load_handler! {
-    struct WaterLoadHandler {
-        state: Rc<PageState>,
-    }
-
-    impl LoadHandler {
-        fn on_loading_state_change(
-            &self,
-            _browser: Option<&mut Browser>,
-            is_loading: std::os::raw::c_int,
-            _can_go_back: std::os::raw::c_int,
-            _can_go_forward: std::os::raw::c_int,
-        ) {
-            #[cfg(feature = "chromium")]
-            self.state.emit(&CefPageEvent::Loading(if is_loading == 1 {
-                0.0
-            } else {
-                1.0
-            }));
-            #[cfg(feature = "webview")]
-            let browser = _browser.expect("CEF loading state must identify the browser");
-            #[cfg(feature = "webview")]
-            self.state.emit_webview(&WebViewEvent::Loading {
-                progress: if is_loading == 1 { 0.0 } else { 1.0 },
-            });
-            #[cfg(feature = "webview")]
-            self.state.emit_webview(&WebViewEvent::StateChanged {
-                can_go_back: browser.can_go_back() == 1,
-                can_go_forward: browser.can_go_forward() == 1,
-            });
-        }
-
-        fn on_load_start(
-            &self,
-            _browser: Option<&mut Browser>,
-            frame: Option<&mut Frame>,
-            _transition_type: cef::TransitionType,
-        ) {
-            let frame = frame.expect("CEF load start must identify a frame");
-            if frame.is_main() == 1 {
-                #[cfg(any(feature = "chromium", feature = "webview"))]
-                {
-                let url = frame_url(frame);
-                #[cfg(feature = "webview")]
-                self.state.current_url.replace(Some(url.clone()));
-                #[cfg(all(feature = "chromium", feature = "webview"))]
-                self.state
-                    .emit(&CefPageEvent::NavigationStarted(url.clone()));
-                #[cfg(all(feature = "chromium", not(feature = "webview")))]
-                self.state.emit(&CefPageEvent::NavigationStarted(url));
-                #[cfg(feature = "webview")]
-                self.state
-                    .emit_webview(&WebViewEvent::WillNavigate { url });
+            fn on_accelerated_paint(
+                &self,
+                _browser: Option<&mut Browser>,
+                element: PaintElementType,
+                dirty_rects: Option<&[Rect]>,
+                info: Option<&AcceleratedPaintInfo>,
+            ) {
+                let info = info.expect("CEF accelerated paint callback must contain frame metadata");
+                if !self.state.accelerated_paint_received.replace(true) {
+                    tracing::debug!(
+                        has_frame_sink = self.state.frame_sink.borrow().is_some(),
+                        "Received the first accelerated CEF paint"
+                    );
+                }
+                if let Some(sink) = self.state.frame_sink.borrow().as_ref() {
+                    sink.import(element, dirty_rects.unwrap_or_default(), info);
                 }
             }
         }
+    }
+    WaterRenderHandler::new(state)
+}
 
-        fn on_load_end(
-            &self,
-            _browser: Option<&mut Browser>,
-            frame: Option<&mut Frame>,
-            _http_status_code: std::os::raw::c_int,
-        ) {
-            let frame = frame.expect("CEF load end must identify a frame");
-            if frame.is_main() == 1 {
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_load_handler(state: Rc<PageState>) -> LoadHandler {
+    cef::wrap_load_handler! {
+        struct WaterLoadHandler {
+            state: Rc<PageState>,
+        }
+
+        impl LoadHandler {
+            fn on_loading_state_change(
+                &self,
+                _browser: Option<&mut Browser>,
+                is_loading: std::os::raw::c_int,
+                _can_go_back: std::os::raw::c_int,
+                _can_go_forward: std::os::raw::c_int,
+            ) {
                 #[cfg(feature = "chromium")]
-                self.state.emit(&CefPageEvent::Loaded(frame_url(frame)));
+                self.state.emit(&CefPageEvent::Loading(if is_loading == 1 {
+                    0.0
+                } else {
+                    1.0
+                }));
                 #[cfg(feature = "webview")]
-                self.state.emit_webview(&WebViewEvent::Loaded);
+                let browser = _browser.expect("CEF loading state must identify the browser");
+                #[cfg(feature = "webview")]
+                self.state.emit_webview(&WebViewEvent::Loading {
+                    progress: if is_loading == 1 { 0.0 } else { 1.0 },
+                });
+                #[cfg(feature = "webview")]
+                self.state.emit_webview(&WebViewEvent::StateChanged {
+                    can_go_back: browser.can_go_back() == 1,
+                    can_go_forward: browser.can_go_forward() == 1,
+                });
             }
-        }
 
-        fn on_load_error(
-            &self,
-            _browser: Option<&mut Browser>,
-            _frame: Option<&mut Frame>,
-            _error_code: cef::Errorcode,
-            _error_text: Option<&CefString>,
-            _failed_url: Option<&CefString>,
-        ) {
-            #[cfg(feature = "webview")]
-            {
-                let frame = _frame.expect("CEF load error must identify a frame");
+            fn on_load_start(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                _transition_type: cef::TransitionType,
+            ) {
+                let frame = frame.expect("CEF load start must identify a frame");
                 if frame.is_main() == 1 {
-                    self.state.emit_webview(&WebViewEvent::Error(
-                        WebViewError::LoadFailed(
-                            _error_text
-                                .map_or_else(String::new, ToString::to_string)
-                                .into(),
-                        ),
-                    ));
+                    #[cfg(any(feature = "chromium", feature = "webview"))]
+                    {
+                    let url = frame_url(frame);
+                    #[cfg(feature = "webview")]
+                    self.state.current_url.replace(Some(url.clone()));
+                    #[cfg(all(feature = "chromium", feature = "webview"))]
+                    self.state
+                        .emit(&CefPageEvent::NavigationStarted(url.clone()));
+                    #[cfg(all(feature = "chromium", not(feature = "webview")))]
+                    self.state.emit(&CefPageEvent::NavigationStarted(url));
+                    #[cfg(feature = "webview")]
+                    self.state
+                        .emit_webview(&WebViewEvent::WillNavigate { url });
+                    }
+                }
+            }
+
+            fn on_load_end(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                _http_status_code: std::os::raw::c_int,
+            ) {
+                let frame = frame.expect("CEF load end must identify a frame");
+                if frame.is_main() == 1 {
+                    #[cfg(feature = "chromium")]
+                    self.state.emit(&CefPageEvent::Loaded(frame_url(frame)));
+                    #[cfg(feature = "webview")]
+                    self.state.emit_webview(&WebViewEvent::Loaded);
+                }
+            }
+
+            fn on_load_error(
+                &self,
+                _browser: Option<&mut Browser>,
+                _frame: Option<&mut Frame>,
+                _error_code: cef::Errorcode,
+                _error_text: Option<&CefString>,
+                _failed_url: Option<&CefString>,
+            ) {
+                #[cfg(feature = "webview")]
+                {
+                    let frame = _frame.expect("CEF load error must identify a frame");
+                    if frame.is_main() == 1 {
+                        self.state.emit_webview(&WebViewEvent::Error(
+                            WebViewError::LoadFailed(
+                                _error_text
+                                    .map_or_else(String::new, ToString::to_string)
+                                    .into(),
+                            ),
+                        ));
+                    }
                 }
             }
         }
     }
+    WaterLoadHandler::new(state)
 }
 
-cef::wrap_life_span_handler! {
-    struct WaterLifeSpanHandler {
-        state: Rc<PageState>,
-    }
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_life_span_handler(state: Rc<PageState>) -> LifeSpanHandler {
+    cef::wrap_life_span_handler! {
+        struct WaterLifeSpanHandler {
+            state: Rc<PageState>,
+        }
 
-    impl LifeSpanHandler {
-        fn on_before_popup(
-            &self,
-            browser: Option<&mut Browser>,
-            _frame: Option<&mut Frame>,
-            _popup_id: std::os::raw::c_int,
-            target_url: Option<&CefString>,
-            _target_frame_name: Option<&CefString>,
-            _target_disposition: cef::WindowOpenDisposition,
-            user_gesture: std::os::raw::c_int,
-            _popup_features: Option<&cef::PopupFeatures>,
-            _window_info: Option<&mut WindowInfo>,
-            _client: Option<&mut Option<Client>>,
-            _settings: Option<&mut BrowserSettings>,
-            _extra_info: Option<&mut Option<cef::DictionaryValue>>,
-            _no_javascript_access: Option<&mut std::os::raw::c_int>,
-        ) -> std::os::raw::c_int {
-            let target_url = target_url.map(ToString::to_string);
-            if let Some(target_url) =
-                popup_navigation_target(user_gesture, target_url.as_deref())
-            {
-                browser
-                    .expect("CEF popup request must identify its opener browser")
-                    .main_frame()
-                    .expect("CEF popup opener must expose its main frame")
-                    .load_url(Some(&target_url.into()));
+        impl LifeSpanHandler {
+            fn on_before_popup(
+                &self,
+                browser: Option<&mut Browser>,
+                _frame: Option<&mut Frame>,
+                _popup_id: std::os::raw::c_int,
+                target_url: Option<&CefString>,
+                _target_frame_name: Option<&CefString>,
+                _target_disposition: cef::WindowOpenDisposition,
+                user_gesture: std::os::raw::c_int,
+                _popup_features: Option<&cef::PopupFeatures>,
+                _window_info: Option<&mut WindowInfo>,
+                _client: Option<&mut Option<Client>>,
+                _settings: Option<&mut BrowserSettings>,
+                _extra_info: Option<&mut Option<cef::DictionaryValue>>,
+                _no_javascript_access: Option<&mut std::os::raw::c_int>,
+            ) -> std::os::raw::c_int {
+                let target_url = target_url.map(ToString::to_string);
+                if let Some(target_url) =
+                    popup_navigation_target(user_gesture, target_url.as_deref())
+                {
+                    browser
+                        .expect("CEF popup request must identify its opener browser")
+                        .main_frame()
+                        .expect("CEF popup opener must expose its main frame")
+                        .load_url(Some(&target_url.into()));
+                }
+
+                // ChromiumView has no independent native-window surface. Allowing
+                // CEF's default popup would escape the WaterUI view hierarchy and
+                // create an unmanaged top-level Chrome window.
+                1
             }
 
-            // ChromiumView has no independent native-window surface. Allowing
-            // CEF's default popup would escape the WaterUI view hierarchy and
-            // create an unmanaged top-level Chrome window.
-            1
-        }
-
-        fn on_before_close(&self, _browser: Option<&mut Browser>) {
-            #[cfg(feature = "chromium")]
-            self.state.closed();
+            fn on_before_close(&self, _browser: Option<&mut Browser>) {
+                #[cfg(feature = "chromium")]
+                self.state.closed();
+            }
         }
     }
+    WaterLifeSpanHandler::new(state)
 }
 
 fn popup_navigation_target(
@@ -580,95 +601,114 @@ fn popup_navigation_target(
     target_url.filter(|target_url| !target_url.is_empty())
 }
 
-cef::wrap_request_handler! {
-    struct WaterRequestHandler {
-        state: Rc<PageState>,
-    }
-
-    impl RequestHandler {
-        fn on_before_browse(
-            &self,
-            _browser: Option<&mut Browser>,
-            frame: Option<&mut Frame>,
-            request: Option<&mut Request>,
-            _user_gesture: std::os::raw::c_int,
-            is_redirect: std::os::raw::c_int,
-        ) -> std::os::raw::c_int {
-            #[cfg(not(feature = "webview"))]
-            {
-                let _ = (frame, request, is_redirect);
-                return 0;
-            }
-            #[cfg(feature = "webview")]
-            {
-            let frame = frame.expect("CEF navigation must identify a frame");
-            if frame.is_main() != 1 {
-                return 0;
-            }
-            let request = request.expect("CEF navigation must contain a request");
-            let destination: Url = CefString::from(&request.url())
-                .to_string()
-                .parse()
-                .expect("CEF navigation URL must be a valid WaterUI URL");
-            if is_redirect == 1 {
-                if let Some(source) = self.state.current_url.borrow().clone() {
-                    self.state.emit_webview(&WebViewEvent::Redirect {
-                        from: source,
-                        to: destination.clone(),
-                    });
-                }
-                if !self.state.redirects_enabled.borrow().get() {
-                    return 1;
-                }
-            }
-            self.state.current_url.replace(Some(destination));
-            0
-            }
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
+    cef::wrap_request_handler! {
+        struct WaterRequestHandler {
+            state: Rc<PageState>,
         }
 
-        fn on_render_process_terminated(
-            &self,
-            _browser: Option<&mut Browser>,
-            _status: TerminationStatus,
-            _error_code: std::os::raw::c_int,
-            _error_string: Option<&CefString>,
-        ) {
-            #[cfg(feature = "chromium")]
-            let error_string = _error_string.map_or_else(String::new, ToString::to_string);
-            #[cfg(feature = "chromium")]
-            self.state
-                .emit(&CefPageEvent::RendererTerminated(format!(
-                "{_status:?} ({_error_code}): {error_string}"
-            )));
+        impl RequestHandler {
+            fn on_before_browse(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                request: Option<&mut Request>,
+                _user_gesture: std::os::raw::c_int,
+                is_redirect: std::os::raw::c_int,
+            ) -> std::os::raw::c_int {
+                #[cfg(not(feature = "webview"))]
+                {
+                    let _ = (frame, request, is_redirect);
+                    return 0;
+                }
+                #[cfg(feature = "webview")]
+                {
+                let frame = frame.expect("CEF navigation must identify a frame");
+                if frame.is_main() != 1 {
+                    return 0;
+                }
+                let request = request.expect("CEF navigation must contain a request");
+                let destination: Url = CefString::from(&request.url())
+                    .to_string()
+                    .parse()
+                    .expect("CEF navigation URL must be a valid WaterUI URL");
+                if is_redirect == 1 {
+                    if let Some(source) = self.state.current_url.borrow().clone() {
+                        self.state.emit_webview(&WebViewEvent::Redirect {
+                            from: source,
+                            to: destination.clone(),
+                        });
+                    }
+                    if !self.state.redirects_enabled.borrow().get() {
+                        return 1;
+                    }
+                }
+                self.state.current_url.replace(Some(destination));
+                0
+                }
+            }
+
+            fn on_render_process_terminated(
+                &self,
+                _browser: Option<&mut Browser>,
+                _status: TerminationStatus,
+                _error_code: std::os::raw::c_int,
+                _error_string: Option<&CefString>,
+            ) {
+                #[cfg(feature = "chromium")]
+                let error_string = _error_string.map_or_else(String::new, ToString::to_string);
+                #[cfg(feature = "chromium")]
+                self.state
+                    .emit(&CefPageEvent::RendererTerminated(format!(
+                    "{_status:?} ({_error_code}): {error_string}"
+                )));
+            }
         }
     }
+    WaterRequestHandler::new(state)
 }
 
-cef::wrap_client! {
-    struct WaterClient {
-        render: RenderHandler,
-        load: LoadHandler,
-        life_span: LifeSpanHandler,
-        request: RequestHandler,
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_client(
+    render: RenderHandler,
+    load: LoadHandler,
+    life_span: LifeSpanHandler,
+    request: RequestHandler,
+) -> Client {
+    cef::wrap_client! {
+        struct WaterClient {
+            render: RenderHandler,
+            load: LoadHandler,
+            life_span: LifeSpanHandler,
+            request: RequestHandler,
+        }
+
+        impl Client {
+            fn render_handler(&self) -> Option<RenderHandler> {
+                Some(self.render.clone())
+            }
+
+            fn load_handler(&self) -> Option<LoadHandler> {
+                Some(self.load.clone())
+            }
+
+            fn life_span_handler(&self) -> Option<LifeSpanHandler> {
+                Some(self.life_span.clone())
+            }
+
+            fn request_handler(&self) -> Option<RequestHandler> {
+                Some(self.request.clone())
+            }
+        }
     }
-
-    impl Client {
-        fn render_handler(&self) -> Option<RenderHandler> {
-            Some(self.render.clone())
-        }
-
-        fn load_handler(&self) -> Option<LoadHandler> {
-            Some(self.load.clone())
-        }
-
-        fn life_span_handler(&self) -> Option<LifeSpanHandler> {
-            Some(self.life_span.clone())
-        }
-
-        fn request_handler(&self) -> Option<RequestHandler> {
-            Some(self.request.clone())
-        }
-    }
+    WaterClient::new(render, load, life_span, request)
 }
 
 /// CEF implementation of one visible or headless Chromium page.
@@ -694,11 +734,11 @@ impl core::fmt::Debug for CefPageHandle {
 impl CefPageHandle {
     fn create(runtime: CefRuntime, configuration: CefPageConfiguration, mode: CefPageMode) -> Self {
         let state = Rc::new(PageState::new(mode));
-        let mut client = WaterClient::new(
-            WaterRenderHandler::new(Rc::clone(&state)),
-            WaterLoadHandler::new(Rc::clone(&state)),
-            WaterLifeSpanHandler::new(Rc::clone(&state)),
-            WaterRequestHandler::new(Rc::clone(&state)),
+        let mut client = new_client(
+            new_render_handler(Rc::clone(&state)),
+            new_load_handler(Rc::clone(&state)),
+            new_life_span_handler(Rc::clone(&state)),
+            new_request_handler(Rc::clone(&state)),
         );
         let mut request_context = create_request_context(&runtime, &configuration);
         let initial_url = configuration
@@ -889,7 +929,8 @@ impl CefPageHandle {
     ///
     /// # Panics
     ///
-    /// Panics when a single-unit UTF-16 character cannot be encoded.
+    /// Panics when a single-unit UTF-16 character cannot be encoded or a
+    /// native key code does not fit CEF's integer input ABI.
     pub fn key(&self, pressed: bool, key: CefKeyInput, modifiers: CefInputModifiers) {
         let character = key
             .character
@@ -905,7 +946,8 @@ impl CefPageHandle {
             type_: key_event_type(pressed),
             modifiers: modifiers.bits(),
             windows_key_code: windows_key_code(key.keyval),
-            native_key_code: i32::try_from(key.native_keycode).unwrap_or(0),
+            native_key_code: i32::try_from(key.native_keycode)
+                .expect("CEF native key code exceeds i32"),
             is_system_key: i32::from(modifiers.alt),
             character,
             unmodified_character: character,
@@ -1087,7 +1129,14 @@ const fn key_event_type(pressed: bool) -> KeyEventType {
     }
 }
 
-const fn windows_key_code(keyval: u32) -> i32 {
+#[cfg_attr(
+    target_os = "macos",
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "non-macOS uses a checked conversion that is unavailable in coverage const builds"
+    )
+)]
+fn windows_key_code(keyval: u32) -> i32 {
     #[cfg(target_os = "macos")]
     {
         let _ = keyval;
@@ -1095,7 +1144,7 @@ const fn windows_key_code(keyval: u32) -> i32 {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        i32::try_from(keyval).unwrap_or(0)
+        i32::try_from(keyval).expect("CEF Windows key code exceeds i32")
     }
 }
 
