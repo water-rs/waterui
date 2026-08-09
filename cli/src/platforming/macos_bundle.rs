@@ -12,6 +12,7 @@ use smol::stream::StreamExt as _;
 #[cfg(target_os = "macos")]
 use crate::utils::run_command_os;
 
+#[cfg(target_os = "macos")]
 const CEF_HELPER_VARIANTS: [(&str, &str); 5] = [
     ("", ""),
     (" (Alerts)", ".alerts"),

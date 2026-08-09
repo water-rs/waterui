@@ -965,8 +965,10 @@ async fn ensure_meson_installed_for_build() -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn ensure_meson_installed_for_build() -> Result<(), String> {
-    Err("automatic meson installation is only supported on macOS".to_string())
+fn ensure_meson_installed_for_build() -> impl std::future::Future<Output = Result<(), String>> {
+    std::future::ready(Err(
+        "automatic meson installation is only supported on macOS".to_string(),
+    ))
 }
 
 #[cfg(test)]
