@@ -7,37 +7,53 @@ use waterui::gesture::{Gesture, GestureObserver};
 
 /// FFI-safe representation of a gesture type.
 #[repr(C)]
+#[derive(Debug)]
 pub enum WuiGesture {
     /// A tap gesture requiring a specific number of taps.
-    Tap { count: u32 },
+    Tap {
+        /// Number of taps required to recognize the gesture.
+        count: u32,
+    },
     /// A long-press gesture requiring a minimum duration.
-    LongPress { duration: u32 },
+    LongPress {
+        /// Minimum press duration in milliseconds before the gesture fires.
+        duration: u32,
+    },
     /// A drag gesture with minimum distance threshold.
-    Drag { min_distance: f32 },
+    Drag {
+        /// Minimum drag distance (in points) before the gesture fires.
+        min_distance: f32,
+    },
     /// A magnification (pinch) gesture with initial scale.
-    Magnification { initial_scale: f32 },
+    Magnification {
+        /// Scale factor the gesture starts recognizing from.
+        initial_scale: f32,
+    },
     /// A rotation gesture with initial angle.
-    Rotation { initial_angle: f32 },
+    Rotation {
+        /// Angle (in radians) the gesture starts recognizing from.
+        initial_angle: f32,
+    },
     /// A sequential composition of two gestures.
     Then {
         /// The first gesture that must complete.
-        first: *mut WuiGesture,
+        first: *mut Self,
         /// The gesture that runs after the first completes.
-        then: *mut WuiGesture,
+        then: *mut Self,
     },
     /// A parallel composition of two gestures.
     Simultaneous {
         /// The first gesture in the composition.
-        first: *mut WuiGesture,
+        first: *mut Self,
         /// The second gesture in the composition.
-        second: *mut WuiGesture,
+        second: *mut Self,
     },
     /// An exclusive composition where first has priority over second.
     Exclusive {
         /// The primary gesture.
-        first: *mut WuiGesture,
+        first: *mut Self,
         /// The fallback gesture.
-        second: *mut WuiGesture,
+        second: *mut Self,
     },
 }
 
@@ -45,20 +61,20 @@ impl IntoFFI for Gesture {
     type FFI = WuiGesture;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Gesture::Tap(tap) => WuiGesture::Tap { count: tap.count },
-            Gesture::LongPress(lp) => WuiGesture::LongPress {
+            Self::Tap(tap) => WuiGesture::Tap { count: tap.count },
+            Self::LongPress(lp) => WuiGesture::LongPress {
                 duration: lp.duration,
             },
-            Gesture::Drag(drag) => WuiGesture::Drag {
+            Self::Drag(drag) => WuiGesture::Drag {
                 min_distance: drag.min_distance,
             },
-            Gesture::Magnification(mag) => WuiGesture::Magnification {
+            Self::Magnification(mag) => WuiGesture::Magnification {
                 initial_scale: mag.initial_scale,
             },
-            Gesture::Rotation(rot) => WuiGesture::Rotation {
+            Self::Rotation(rot) => WuiGesture::Rotation {
                 initial_angle: rot.initial_angle,
             },
-            Gesture::Then(then) => {
+            Self::Then(then) => {
                 let first = Box::into_raw(Box::new(then.first().clone().into_ffi()));
                 let then_gesture = Box::into_raw(Box::new(then.then().clone().into_ffi()));
                 WuiGesture::Then {
@@ -66,12 +82,12 @@ impl IntoFFI for Gesture {
                     then: then_gesture,
                 }
             }
-            Gesture::Simultaneous(pair) => {
+            Self::Simultaneous(pair) => {
                 let first = Box::into_raw(Box::new(pair.first().clone().into_ffi()));
                 let second = Box::into_raw(Box::new(pair.second().clone().into_ffi()));
                 WuiGesture::Simultaneous { first, second }
             }
-            Gesture::Exclusive(pair) => {
+            Self::Exclusive(pair) => {
                 let first = Box::into_raw(Box::new(pair.first().clone().into_ffi()));
                 let second = Box::into_raw(Box::new(pair.second().clone().into_ffi()));
                 WuiGesture::Exclusive { first, second }
@@ -81,7 +97,7 @@ impl IntoFFI for Gesture {
     }
 }
 
-/// Drops a WuiGesture, recursively freeing any composite variants.
+/// Drops a `WuiGesture`, recursively freeing any composite variants.
 ///
 /// # Safety
 ///
@@ -111,6 +127,7 @@ pub unsafe extern "C" fn waterui_drop_gesture(gesture: *mut WuiGesture) {
 
 /// FFI-safe representation of a gesture observer.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiGestureObserver {
     /// The gesture type to observe.
     pub gesture: WuiGesture,

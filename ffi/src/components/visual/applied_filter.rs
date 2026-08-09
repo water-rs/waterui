@@ -1,4 +1,4 @@
-//! FFI bindings for the AppliedFilter metadata.
+//! FFI bindings for the `AppliedFilter` metadata.
 //!
 //! This module provides the FFI interface for applying GPU filters to captured
 //! view content using wgpu.
@@ -68,10 +68,11 @@ impl Drop for ForeignRedrawTarget {
 
 /// FFI representation of a Metadata<AppliedFilter>.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiAppliedFilter {
-    /// The child view to capture (pointer to WuiAnyView).
+    /// The child view to capture (pointer to `WuiAnyView`).
     pub content: *mut WuiAnyView,
-    /// Opaque pointer to the boxed AppliedFilter.
+    /// Opaque pointer to the boxed `AppliedFilter`.
     /// This is consumed during create and should not be used after.
     pub filter: *mut c_void,
 }
@@ -84,7 +85,7 @@ impl IntoFFI for waterui_core::Metadata<AppliedFilter> {
         let content = self.content.into_ffi();
 
         // Box the AppliedFilter for FFI transfer
-        let filter_ptr = Box::into_raw(Box::new(self.value)) as *mut c_void;
+        let filter_ptr = Box::into_raw(Box::new(self.value)).cast::<c_void>();
 
         WuiAppliedFilter {
             content,
@@ -135,6 +136,17 @@ pub struct WuiAppliedFilterState {
     frame_clock: EffectFrameClock,
 }
 
+impl core::fmt::Debug for WuiAppliedFilterState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WuiAppliedFilterState")
+            .field("input_width", &self.input_width)
+            .field("input_height", &self.input_height)
+            .field("output_width", &self.output_width)
+            .field("output_height", &self.output_height)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Resolved output size returned to native before render scheduling.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -145,7 +157,7 @@ pub struct WuiAppliedFilterOutputSize {
     pub height: u32,
 }
 
-fn output_dimensions_for_input(
+const fn output_dimensions_for_input(
     state: &WuiAppliedFilterState,
     input_width: u32,
     input_height: u32,
@@ -247,11 +259,7 @@ fn resolve_output_size(
         .output_size(input_width, input_height);
     assert!(
         output_width > 0 && output_height > 0,
-        "waterui_applied_filter_resolve_output_size: filter produced invalid output size {}x{} for input {}x{}",
-        output_width,
-        output_height,
-        input_width,
-        input_height
+        "waterui_applied_filter_resolve_output_size: filter produced invalid output size {output_width}x{output_height} for input {input_width}x{input_height}"
     );
     state.resolved_output_width = output_width;
     state.resolved_output_height = output_height;
@@ -271,6 +279,11 @@ fn resolve_output_size(
 /// `filter_ffi` must be a valid, unconsumed descriptor returned by
 /// `waterui_force_as_metadata_applied_filter`.
 /// `env` must contain an installed GPU runtime.
+///
+/// # Panics
+///
+/// Panics if `filter_ffi`'s inner filter pointer is null, meaning the descriptor
+/// was already consumed by a previous call to this function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_create(
     filter_ffi: *mut WuiAppliedFilter,
@@ -281,7 +294,8 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
         !wui_filter.filter.is_null(),
         "waterui_applied_filter_create: descriptor was already consumed"
     );
-    let filter: AppliedFilter = unsafe { *Box::from_raw(wui_filter.filter as *mut AppliedFilter) };
+    let filter: AppliedFilter =
+        unsafe { *Box::from_raw(wui_filter.filter.cast::<AppliedFilter>()) };
     wui_filter.filter = core::ptr::null_mut();
 
     let runtime = super::gpu_runtime::gpu_runtime(&unsafe { &*env }.0);
@@ -382,6 +396,11 @@ fn create_configured_surface(
 /// - `state` must come from [`waterui_applied_filter_create`].
 /// - `output_layer` must remain valid until [`waterui_applied_filter_detach`].
 /// - The state must currently be detached.
+///
+/// # Panics
+///
+/// Panics if `state` already has an output surface attached, or if
+/// `input_width`/`input_height` is zero.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_attach(
     state: *mut WuiAppliedFilterState,
@@ -428,6 +447,10 @@ pub unsafe extern "C" fn waterui_applied_filter_attach(
 /// # Safety
 ///
 /// `state` must be valid and currently attached.
+///
+/// # Panics
+///
+/// Panics if `state` does not currently have an output surface attached.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_detach(state: *mut WuiAppliedFilterState) {
     let state = unsafe { crate::borrow_ffi_mut(state) };
@@ -528,6 +551,11 @@ pub unsafe extern "C" fn waterui_applied_filter_is_ready(
 /// - `state` must be a valid pointer from `waterui_applied_filter_create`
 /// - A presentation target must be attached
 /// - `waterui_applied_filter_setup` must have completed
+///
+/// # Panics
+///
+/// Panics if the asynchronous setup started by `waterui_applied_filter_setup`
+/// has not completed yet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_render(
     state: *mut WuiAppliedFilterState,
@@ -616,7 +644,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     needs_redraw
 }
 
-fn current_applied_filter_input_format(state: &WuiAppliedFilterState) -> wgpu::TextureFormat {
+const fn current_applied_filter_input_format(state: &WuiAppliedFilterState) -> wgpu::TextureFormat {
     state
         .capture_format
         .expect("AppliedFilter input format requires an attached presentation target")
@@ -700,6 +728,10 @@ pub unsafe extern "C" fn waterui_applied_filter_resolve_output_size(
 /// # Safety
 ///
 /// `state` must be a valid pointer from `waterui_applied_filter_create` with an attached target.
+///
+/// # Panics
+///
+/// Panics if `state` does not currently have an output surface attached.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
     state: *mut WuiAppliedFilterState,
@@ -717,12 +749,17 @@ pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
 
 /// Get a pointer to the Metal texture backing the capture texture (Apple only).
 ///
-/// This exposes the underlying MTLTexture so native code can render directly
+/// This exposes the underlying `MTLTexture` so native code can render directly
 /// into the wgpu capture texture without extra copies.
 ///
 /// # Safety
 ///
 /// `state` must be a valid pointer from `waterui_applied_filter_create` with an attached target.
+///
+/// # Panics
+///
+/// Panics if `state` does not currently have a capture texture, meaning the
+/// presentation target is detached.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
@@ -746,7 +783,7 @@ pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
     panic!("waterui_applied_filter_get_capture_metal_texture: only supported on Apple platforms");
 }
 
-/// Clean up AppliedFilter resources.
+/// Clean up `AppliedFilter` resources.
 ///
 /// # Safety
 ///

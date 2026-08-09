@@ -22,7 +22,7 @@ pub type WuiGpuRuntimeCreateCallback =
 #[cfg(feature = "c-api")]
 pub type WuiGpuRuntimeCreateContextDrop = unsafe extern "C" fn(context: *mut ());
 
-pub(crate) fn create_gpu_runtime(complete: impl FnOnce(GpuRuntime) + 'static) {
+pub fn create_gpu_runtime(complete: impl FnOnce(GpuRuntime) + 'static) {
     spawn_local(async move {
         let runtime = GpuRuntime::new()
             .await
@@ -53,11 +53,11 @@ pub unsafe extern "C" fn waterui_gpu_runtime_create(
     });
 }
 
-pub(crate) fn install_gpu_runtime(env: &mut waterui::Environment, runtime: GpuRuntime) {
+pub fn install_gpu_runtime(env: &mut waterui::Environment, runtime: GpuRuntime) {
     env.insert(runtime);
 }
 
-pub(crate) fn gpu_runtime(env: &waterui::Environment) -> GpuRuntime {
+pub fn gpu_runtime(env: &waterui::Environment) -> GpuRuntime {
     env.get::<GpuRuntime>()
         .expect("GPU runtime is not installed in the WaterUI environment")
         .clone()

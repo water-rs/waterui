@@ -1,3 +1,6 @@
+//! Runtime verification that Apple-backend-required `WaterKit` FFI symbols are
+//! linked into the final binary.
+
 #![cfg(target_vendor = "apple")]
 
 use waterui_ffi as _;

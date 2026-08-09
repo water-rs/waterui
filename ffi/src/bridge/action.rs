@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::fmt;
 use waterui::component::list::Move;
 use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
@@ -37,6 +38,14 @@ type IndexCallback = Box<dyn Fn(&Environment, usize)>;
 
 /// Handler that takes an index parameter (used for delete callbacks).
 pub struct IndexHandler(pub IndexCallback);
+
+impl fmt::Debug for IndexHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The wrapped `IndexCallback` is a boxed closure with no Debug
+        // representation, so only the handler's identity is reported.
+        f.debug_struct("IndexHandler").finish_non_exhaustive()
+    }
+}
 
 opaque!(WuiIndexAction, RetainedCallback<IndexHandler>, index_action);
 
@@ -77,6 +86,14 @@ type MoveCallback = Box<dyn Fn(&Environment, Move)>;
 
 /// Handler that takes a list move operation (used for move callbacks).
 pub struct MoveHandler(pub MoveCallback);
+
+impl fmt::Debug for MoveHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The wrapped `MoveCallback` is a boxed closure with no Debug
+        // representation, so only the handler's identity is reported.
+        f.debug_struct("MoveHandler").finish_non_exhaustive()
+    }
+}
 
 opaque!(WuiMoveAction, RetainedCallback<MoveHandler>, move_action);
 
@@ -143,7 +160,7 @@ mod tests {
 
         unsafe {
             waterui_drop_action(action_ptr);
-            let _ = Box::from_raw(env_ptr as *mut waterui::Environment);
+            let _ = Box::from_raw(env_ptr.cast::<waterui::Environment>());
         }
     }
 
@@ -165,7 +182,7 @@ mod tests {
 
         assert!(callback_finished.get());
         unsafe {
-            let _ = Box::from_raw(env as *mut waterui::Environment);
+            let _ = Box::from_raw(env.cast::<waterui::Environment>());
         }
     }
 }

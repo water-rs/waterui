@@ -12,10 +12,12 @@ use waterui_core::{
 // ============================================================================
 
 /// FFI lifecycle enum for one-time lifecycle events.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum WuiLifecycle {
+    /// The component appeared (attached to the view hierarchy).
     Appear,
+    /// The component disappeared (detached from the view hierarchy).
     Disappear,
 }
 
@@ -23,18 +25,20 @@ impl IntoFFI for LifeCycle {
     type FFI = WuiLifecycle;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            LifeCycle::Appear => WuiLifecycle::Appear,
-            LifeCycle::Disappear => WuiLifecycle::Disappear,
+            Self::Appear => WuiLifecycle::Appear,
+            Self::Disappear => WuiLifecycle::Disappear,
             _ => panic!("unsupported LifeCycle variant for FFI"),
         }
     }
 }
 
 /// Wrapper for `LifeCycleHook` to avoid orphan rule issues.
+#[derive(Debug)]
 pub struct WuiLifecycleHookHandler(pub LifeCycleHook);
 
 /// FFI-safe representation of a lifecycle hook.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiLifecycleHook {
     /// The lifecycle event to listen for.
     pub lifecycle: WuiLifecycle,
@@ -60,7 +64,7 @@ impl IntoFFI for LifeCycleHook {
 /// # Safety
 ///
 /// * `handler` must be a valid pointer to a `WuiLifecycleHookHandler`.
-/// * `env` must be a valid pointer to a WuiEnv.
+/// * `env` must be a valid pointer to a `WuiEnv`.
 /// * This consumes the handler - it can only be called once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_lifecycle_hook(
@@ -89,11 +93,14 @@ pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifecycleH
 // ============================================================================
 
 /// FFI event enum for repeatable interaction events.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum WuiEvent {
+    /// The cursor entered a component's bounds.
     HoverEnter,
+    /// Pointer motion within a component's bounds.
     HoverMove,
+    /// The cursor exited a component's bounds.
     HoverExit,
 }
 
@@ -101,23 +108,25 @@ impl IntoFFI for Event {
     type FFI = WuiEvent;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Event::HoverEnter => WuiEvent::HoverEnter,
-            Event::HoverMove => WuiEvent::HoverMove,
-            Event::HoverExit => WuiEvent::HoverExit,
+            Self::HoverEnter => WuiEvent::HoverEnter,
+            Self::HoverMove => WuiEvent::HoverMove,
+            Self::HoverExit => WuiEvent::HoverExit,
             _ => panic!("unsupported Event variant for FFI"),
         }
     }
 }
 
-/// Wrapper for OnEvent to avoid orphan rule issues.
+/// Wrapper for `OnEvent` to avoid orphan rule issues.
+#[derive(Debug)]
 pub struct WuiOnEventHandler(RetainedCallback<OnEvent>);
 
 /// FFI-safe representation of an event handler.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiOnEvent {
     /// The event type to listen for.
     pub event: WuiEvent,
-    /// Opaque pointer to the OnEvent (owns the handler).
+    /// Opaque pointer to the `OnEvent` (owns the handler).
     pub handler: *mut WuiOnEventHandler,
 }
 
@@ -134,13 +143,13 @@ impl IntoFFI for OnEvent {
     }
 }
 
-/// Calls an OnEvent handler with the given environment.
+/// Calls an `OnEvent` handler with the given environment.
 /// This handler can be called multiple times (repeatable).
 ///
 /// # Safety
 ///
-/// * `handler` must be a valid pointer to a WuiOnEventHandler.
-/// * `env` must be a valid pointer to a WuiEnv.
+/// * `handler` must be a valid pointer to a `WuiOnEventHandler`.
+/// * `env` must be a valid pointer to a `WuiEnv`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_on_event(
     handler: *const WuiOnEventHandler,
@@ -151,12 +160,12 @@ pub unsafe extern "C" fn waterui_call_on_event(
     handler.call(|handler| handler.handle(&env));
 }
 
-/// Calls an OnEvent hover-move handler with the given local pointer position.
+/// Calls an `OnEvent` hover-move handler with the given local pointer position.
 ///
 /// # Safety
 ///
-/// * `handler` must be a valid pointer to a WuiOnEventHandler.
-/// * `env` must be a valid pointer to a WuiEnv.
+/// * `handler` must be a valid pointer to a `WuiOnEventHandler`.
+/// * `env` must be a valid pointer to a `WuiEnv`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_on_hover_event(
     handler: *const WuiOnEventHandler,
@@ -170,11 +179,11 @@ pub unsafe extern "C" fn waterui_call_on_hover_event(
     handler.call(|handler| handler.handle(&env_with_hover));
 }
 
-/// Drops an OnEvent handler.
+/// Drops an `OnEvent` handler.
 ///
 /// # Safety
 ///
-/// * `handler` must be a valid pointer to a WuiOnEventHandler.
+/// * `handler` must be a valid pointer to a `WuiOnEventHandler`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_on_event(handler: *mut WuiOnEventHandler) {
     unsafe {
@@ -203,7 +212,7 @@ mod tests {
         handler_ptr.set(event.handler);
         let env = crate::WuiEnv(waterui::Environment::new());
 
-        unsafe { waterui_call_on_event(event.handler, &env) };
+        unsafe { waterui_call_on_event(event.handler, &raw const env) };
 
         assert!(callback_finished.get());
     }

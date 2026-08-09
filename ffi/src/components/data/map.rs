@@ -66,6 +66,7 @@ impl IntoFFI for Region {
 
 /// FFI representation of a map annotation (pin).
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiAnnotation {
     /// The coordinate where the annotation is placed.
     pub coordinate: WuiCoordinate,
@@ -109,9 +110,9 @@ impl IntoFFI for MapStyle {
     type FFI = WuiMapStyle;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            MapStyle::Standard => WuiMapStyle::Standard,
-            MapStyle::Satellite => WuiMapStyle::Satellite,
-            MapStyle::Hybrid => WuiMapStyle::Hybrid,
+            Self::Standard => WuiMapStyle::Standard,
+            Self::Satellite => WuiMapStyle::Satellite,
+            Self::Hybrid => WuiMapStyle::Hybrid,
         }
     }
 }
@@ -122,6 +123,7 @@ impl IntoFFI for MapStyle {
 
 /// FFI representation of the Map component.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiMap {
     /// The region to display (reactive).
     pub region: *mut WuiComputed<Region>,

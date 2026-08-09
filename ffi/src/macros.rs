@@ -42,10 +42,10 @@ macro_rules! ffi_safe {
 ///
 /// # Generated Functions (C-API)
 /// - `waterui_<ident>_id()` - Returns the type ID as 128-bit value
-/// - `waterui_force_as_<ident>()` - Downcasts AnyView to the view type
+/// - `waterui_force_as_<ident>()` - Downcasts `AnyView` to the view type
 ///
 /// # Generated Functions (Android-JNI)
-/// - `Java_dev_waterui_android_ffi_WatcherJni_<ident>Id()` - Returns TypeIdStruct
+/// - `Java_dev_waterui_android_ffi_WatcherJni_<ident>Id()` - Returns `TypeIdStruct`
 /// - `Java_dev_waterui_android_ffi_WatcherJni_forceAs<Ident>()` - Returns struct
 ///
 /// Generates FFI functions for view types.
@@ -80,6 +80,7 @@ macro_rules! ffi_view {
             }
 
             #[cfg(feature = "c-api")]
+            /// Returns the stable `TypeId` identifying this view type across the FFI.
             #[unsafe(no_mangle)]
             pub extern "C" fn [<waterui_ $ident _id>]() -> $crate::WuiTypeId {
                 $crate::WuiTypeId::of::<waterui_core::Native<$view>>()
@@ -132,10 +133,10 @@ macro_rules! ffi_view {
 ///
 /// # Generated Functions (C-API)
 /// - `waterui_metadata_<ident>_id()` - Returns the type ID as 128-bit value
-/// - `waterui_force_as_metadata_<ident>()` - Downcasts AnyView to the metadata type
+/// - `waterui_force_as_metadata_<ident>()` - Downcasts `AnyView` to the metadata type
 ///
 /// # Generated Functions (Android-JNI)
-/// - `Java_dev_waterui_android_ffi_WatcherJni_metadata<Ident>Id()` - Returns TypeIdStruct
+/// - `Java_dev_waterui_android_ffi_WatcherJni_metadata<Ident>Id()` - Returns `TypeIdStruct`
 /// - `Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadata<Ident>()` - Returns struct
 #[macro_export]
 macro_rules! ffi_metadata {
@@ -152,7 +153,7 @@ macro_rules! ffi_metadata {
             // ========== C-API (for Apple/GTK backends) ==========
             #[cfg(feature = "c-api")]
             /// Returns the type ID as a 128-bit value for O(1) comparison.
-            /// Returns the view's TypeId (guaranteed unique within a single binary).
+            /// Returns the view's `TypeId` (guaranteed unique within a single binary).
             #[unsafe(no_mangle)]
             pub extern "C" fn [<waterui_metadata_ $ident _id>]() -> $crate::WuiTypeId {
                 // Metadata<T> is stored directly, not wrapped in Native<T>
@@ -160,7 +161,7 @@ macro_rules! ffi_metadata {
             }
 
             #[cfg(feature = "c-api")]
-            /// Force-casts an AnyView to this metadata type
+            /// Force-casts an `AnyView` to this metadata type.
             ///
             /// # Safety
             /// The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -215,17 +216,17 @@ macro_rules! ffi_metadata {
     };
 }
 
-/// Generates FFI functions for IgnorableMetadata<T> types.
+/// Generates FFI functions for `IgnorableMetadata`<T> types.
 ///
 /// Similar to `ffi_metadata!`, but for `IgnorableMetadata<T>` which can be
 /// safely ignored by renderers that don't support the metadata type.
 ///
 /// # Generated Functions (C-API)
 /// - `waterui_ignorable_metadata_<ident>_id()` - Returns the type ID as 128-bit value
-/// - `waterui_force_as_ignorable_metadata_<ident>()` - Downcasts AnyView to the metadata type
+/// - `waterui_force_as_ignorable_metadata_<ident>()` - Downcasts `AnyView` to the metadata type
 ///
 /// # Generated Functions (Android-JNI)
-/// - `Java_dev_waterui_android_ffi_WatcherJni_ignorableMetadata<Ident>Id()` - Returns TypeIdStruct
+/// - `Java_dev_waterui_android_ffi_WatcherJni_ignorableMetadata<Ident>Id()` - Returns `TypeIdStruct`
 /// - `Java_dev_waterui_android_ffi_WatcherJni_forceAsIgnorableMetadata<Ident>()` - Returns struct
 #[macro_export]
 macro_rules! ffi_ignorable_metadata {
@@ -234,7 +235,7 @@ macro_rules! ffi_ignorable_metadata {
             // ========== C-API (for Apple/GTK backends) ==========
             #[cfg(feature = "c-api")]
             /// Returns the type ID as a 128-bit value for O(1) comparison.
-            /// Returns the view's TypeId (guaranteed unique within a single binary).
+            /// Returns the view's `TypeId` (guaranteed unique within a single binary).
             #[unsafe(no_mangle)]
             pub extern "C" fn [<waterui_ignorable_metadata_ $ident _id>]() -> $crate::WuiTypeId {
                 // IgnorableMetadata<T> is stored directly, not wrapped in Native<T>
@@ -242,7 +243,7 @@ macro_rules! ffi_ignorable_metadata {
             }
 
             #[cfg(feature = "c-api")]
-            /// Force-casts an AnyView to this ignorable metadata type
+            /// Force-casts an `AnyView` to this ignorable metadata type.
             ///
             /// # Safety
             /// The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -308,7 +309,14 @@ macro_rules! ffi_ignorable_metadata {
 macro_rules! opaque {
     ($name:ident,$ty:ty,$ident:tt,$jni_drop:meta) => {
         #[allow(nonstandard_style)]
+        #[doc = concat!("Opaque FFI handle owning a `", stringify!($ty), "`.")]
         pub struct $name(pub(crate) $ty);
+
+        impl core::fmt::Debug for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.debug_struct(stringify!($name)).finish_non_exhaustive()
+            }
+        }
 
         $crate::impl_deref!($name, $ty);
 
@@ -325,7 +333,7 @@ macro_rules! opaque {
                 if let Some(value) = self {
                     value.into_ffi()
                 } else {
-                    core::ptr::null::<$name>() as *mut $name
+                    core::ptr::null_mut::<$name>()
                 }
             }
         }
@@ -393,10 +401,15 @@ macro_rules! opaque {
 /// ```
 macro_rules! into_ffi {
     ($ty:ty, $(#[$meta:meta])* pub struct $ffi:ident { $($field:ident : $ftype:ty),* $(,)? }) => {
+        #[doc = concat!("C ABI mirror of `", stringify!($ty), "`.")]
         $(#[$meta])*
+        #[derive(Debug)]
         #[repr(C)]
         pub struct $ffi {
-            $(pub $field: $ftype),*
+            $(
+                #[doc = concat!("Mirrors the `", stringify!($field), "` field of `", stringify!($ty), "`.")]
+                pub $field: $ftype
+            ),*
         }
 
         impl $crate::IntoFFI for $ty {
@@ -411,11 +424,15 @@ macro_rules! into_ffi {
     };
 
     ($ty:ty, $(#[$meta:meta])* pub enum $ffi:ident { $($variant:ident),* $(,)? }) => {
+        #[doc = concat!("C ABI mirror of `", stringify!($ty), "`.")]
         $(#[$meta])*
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, Debug)]
         #[repr(C)]
         pub enum $ffi {
-            $($variant),*
+            $(
+                #[doc = concat!("Mirrors `", stringify!($ty), "::", stringify!($variant), "`.")]
+                $variant
+            ),*
         }
 
         impl $crate::IntoFFI for $ty {
@@ -439,11 +456,15 @@ macro_rules! into_ffi {
 
     // Non-exhaustive Rust enum. Unknown variants are unsupported by this ABI.
     ($ty:ty, non_exhaustive, $(#[$meta:meta])* pub enum $ffi:ident { $($variant:ident),* $(,)? }) => {
+        #[doc = concat!("C ABI mirror of `", stringify!($ty), "`.")]
         $(#[$meta])*
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, Debug)]
         #[repr(C)]
         pub enum $ffi {
-            $($variant),*
+            $(
+                #[doc = concat!("Mirrors `", stringify!($ty), "::", stringify!($variant), "`.")]
+                $variant
+            ),*
         }
 
         impl $crate::IntoFFI for $ty {
@@ -467,6 +488,7 @@ macro_rules! into_ffi {
     };
 }
 
+/// Implements `Deref` and `DerefMut` to the wrapped `$target` for a newtype wrapper.
 #[macro_export]
 macro_rules! impl_deref {
     ($ty:ty,$target:ty) => {

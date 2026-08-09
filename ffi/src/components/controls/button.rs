@@ -14,12 +14,16 @@ into_ffi! {ButtonStyle, non_exhaustive,
     }
 }
 
+/// FFI representation of the `Button` component.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiButton {
     /// Semantic label slot. Carries the visual view, accessibility text, and
     /// visual mode in a single struct — see [`WuiLabel`].
     pub label: WuiLabel,
+    /// The action invoked when the button is activated.
     pub action: *mut WuiAction,
+    /// The visual presentation style for the button.
     pub style: WuiButtonStyle,
     /// Reactive disabled state: the control renders as inactive and must
     /// ignore input while this signal is `true`.

@@ -94,12 +94,16 @@ crate::ffi_watcher!(WindowState, WuiWindowState, window_state);
 /// Only supports Opaque and Color. Material blur effects are handled
 /// via `MaterialBackground` metadata on the window content.
 #[repr(C)]
+#[derive(Debug)]
 pub enum WuiWindowBackground {
     /// Opaque system default background.
     Opaque,
     /// Solid color background (can be semi-transparent via alpha).
     /// Native must resolve the color using the environment.
-    Color { color: *mut WuiColor },
+    Color {
+        /// Pointer to the reactive color to resolve and apply as the window background.
+        color: *mut WuiColor,
+    },
 }
 
 impl From<WindowBackground> for WuiWindowBackground {
@@ -115,6 +119,7 @@ impl From<WindowBackground> for WuiWindowBackground {
 
 /// FFI-compatible representation of a window.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiWindow {
     /// The title of the window.
     pub title: *mut WuiComputed<Str>,
@@ -165,7 +170,7 @@ impl<T> OwnedFfiHandle<T> {
         self.0.as_ptr()
     }
 
-    pub(crate) fn into_raw(self) -> *mut T {
+    pub(crate) const fn into_raw(self) -> *mut T {
         let pointer = self.as_ptr();
         core::mem::forget(self);
         pointer
@@ -281,7 +286,7 @@ impl IntoFFI for Window {
 /// - `WuiWindow`: The window configuration to show
 pub type WindowShowFn = unsafe extern "C" fn(context: *mut (), window: WuiWindow);
 
-/// FFI-compatible WindowManager implementation.
+/// FFI-compatible `WindowManager` implementation.
 struct FFIWindowManager {
     context: ForeignCallbackContext,
     show_fn: WindowShowFn,
@@ -296,7 +301,7 @@ impl FFIWindowManager {
     }
 }
 
-/// Installs a WindowManager into the environment from a native function pointer.
+/// Installs a `WindowManager` into the environment from a native function pointer.
 ///
 /// Native backends call this during initialization to register their window
 /// management implementation. When `Window` views are rendered, the provided

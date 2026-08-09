@@ -2,13 +2,22 @@ use waterui::shape::{ResolvedShape, ShapeKind};
 
 use crate::{IntoFFI, WuiArray, WuiPathCommand, reactive::WuiComputed};
 
+/// C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
+/// per-corner radii used only by the rounded-rect variants.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct WuiShapeKind {
+    /// Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
+    /// (uniform radius), 4 = uneven rounded rect (per-corner radii),
+    /// 5 = capsule, 6 = custom path.
     pub tag: i32,
+    /// Top-left corner radius, used by tags 3 and 4.
     pub top_left: f32,
+    /// Top-right corner radius, used by tags 3 and 4.
     pub top_right: f32,
+    /// Bottom-right corner radius, used by tags 3 and 4.
     pub bottom_right: f32,
+    /// Bottom-left corner radius, used by tags 3 and 4.
     pub bottom_left: f32,
 }
 
@@ -17,35 +26,35 @@ impl IntoFFI for ShapeKind {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            ShapeKind::Rect => WuiShapeKind {
+            Self::Rect => WuiShapeKind {
                 tag: 0,
                 top_left: 0.0,
                 top_right: 0.0,
                 bottom_right: 0.0,
                 bottom_left: 0.0,
             },
-            ShapeKind::Circle => WuiShapeKind {
+            Self::Circle => WuiShapeKind {
                 tag: 1,
                 top_left: 0.0,
                 top_right: 0.0,
                 bottom_right: 0.0,
                 bottom_left: 0.0,
             },
-            ShapeKind::Ellipse => WuiShapeKind {
+            Self::Ellipse => WuiShapeKind {
                 tag: 2,
                 top_left: 0.0,
                 top_right: 0.0,
                 bottom_right: 0.0,
                 bottom_left: 0.0,
             },
-            ShapeKind::RoundedRect { corner_radius } => WuiShapeKind {
+            Self::RoundedRect { corner_radius } => WuiShapeKind {
                 tag: 3,
                 top_left: corner_radius,
                 top_right: corner_radius,
                 bottom_right: corner_radius,
                 bottom_left: corner_radius,
             },
-            ShapeKind::UnevenRoundedRect {
+            Self::UnevenRoundedRect {
                 top_left,
                 top_right,
                 bottom_left,
@@ -57,14 +66,14 @@ impl IntoFFI for ShapeKind {
                 bottom_right,
                 bottom_left,
             },
-            ShapeKind::Capsule => WuiShapeKind {
+            Self::Capsule => WuiShapeKind {
                 tag: 5,
                 top_left: 0.0,
                 top_right: 0.0,
                 bottom_right: 0.0,
                 bottom_left: 0.0,
             },
-            ShapeKind::CustomPath => WuiShapeKind {
+            Self::CustomPath => WuiShapeKind {
                 tag: 6,
                 top_left: 0.0,
                 top_right: 0.0,
@@ -75,10 +84,16 @@ impl IntoFFI for ShapeKind {
     }
 }
 
+/// C ABI mirror of [`ResolvedShape`], the backend-native shape payload
+/// rendered directly by native backends.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiResolvedShape {
+    /// Shape kind for backend-side rendering optimization.
     pub kind: WuiShapeKind,
+    /// Path commands in unit coordinate space.
     pub commands: WuiArray<WuiPathCommand>,
+    /// Read-only signal for the environment-resolved fill color.
     pub fill: *mut WuiComputed<waterui_graphics::ResolvedColor>,
 }
 

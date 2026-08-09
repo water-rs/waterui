@@ -2,6 +2,7 @@ use crate::action::{WuiIndexAction, WuiMoveAction};
 use crate::reactive::WuiComputed;
 use crate::views::WuiAnyViews;
 use crate::{IntoFFI, WuiAnyView, WuiStr};
+use core::fmt;
 use nami::SignalExt;
 use waterui::Str;
 use waterui::component::list::{ListConfig, ListItem, ListSection};
@@ -11,8 +12,8 @@ use waterui::views::ViewsExt;
 ///
 /// `section_label` and `section_footer` are owned by the consumer — when
 /// they're empty the item carries no section break, otherwise the item opens
-/// a new logical section visible to the renderer (UITableView sections,
-/// NSTableView group rows, Material list groups, ...). Both fields are
+/// a new logical section visible to the renderer (`UITableView` sections,
+/// `NSTableView` group rows, Material list groups, ...). Both fields are
 /// passed by value so ownership of the underlying byte buffers transfers
 /// cleanly to the backend; no separate drop call is required.
 #[repr(C)]
@@ -26,6 +27,15 @@ pub struct WuiListItem {
     pub section_label: WuiStr,
     /// Section footer carried by this item, or empty when no footer is set.
     pub section_footer: WuiStr,
+}
+
+impl fmt::Debug for WuiListItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WuiListItem")
+            .field("content", &self.content)
+            .field("deletable", &self.deletable)
+            .finish_non_exhaustive()
+    }
 }
 
 fn empty_wuistr() -> WuiStr {
@@ -105,6 +115,7 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsLis
 
 /// FFI representation of a list.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiList {
     /// The list contents (array of list items).
     pub contents: *mut WuiAnyViews,

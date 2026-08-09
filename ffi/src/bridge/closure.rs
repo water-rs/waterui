@@ -6,6 +6,7 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
+use core::fmt;
 
 /// Cloneable ownership for a repeatable callback invoked across the native ABI.
 ///
@@ -13,6 +14,14 @@ use core::cell::RefCell;
 /// disposing the native view cannot free the callback while it is executing.
 #[doc(hidden)]
 pub struct RetainedCallback<T>(Rc<RefCell<T>>);
+
+impl<T> fmt::Debug for RetainedCallback<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `T` is always a boxed closure/handler here, which has no meaningful
+        // Debug representation, so only the wrapper's identity is reported.
+        f.debug_struct("RetainedCallback").finish_non_exhaustive()
+    }
+}
 
 impl<T> RetainedCallback<T> {
     pub(crate) fn new(callback: T) -> Self {
@@ -65,6 +74,7 @@ impl Drop for ForeignCallbackContext {
 /// This structure wraps a Rust `Fn` closure to allow it to be passed across
 /// the FFI boundary while maintaining proper memory management.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiFn<T> {
     data: *mut (),
     call: unsafe extern "C" fn(*const (), T),
@@ -86,6 +96,7 @@ impl<T: 'static> WuiFn<T> {
     ) -> Self {
         Self { data, call, drop }
     }
+    /// Invokes the wrapped native function with `value`.
     pub fn call(&self, value: T) {
         unsafe { (self.call)(self.data, value) }
     }
@@ -103,24 +114,24 @@ where
     T: 'static,
 {
     fn from(value: F) -> Self {
-        unsafe {
-            let data = Box::into_raw(Box::new(Rc::new(value))) as *mut ();
+        unsafe extern "C" fn call<F2, T2>(data: *const (), value: T2)
+        where
+            F2: Fn(T2),
+        {
+            let callback = unsafe { Rc::clone(&*data.cast::<Rc<F2>>()) };
+            callback(value);
+        }
+        unsafe extern "C" fn drop<F2, T2>(data: *mut ())
+        where
+            F2: Fn(T2),
+        {
+            unsafe {
+                let _ = Box::from_raw(data.cast::<Rc<F2>>());
+            }
+        }
 
-            unsafe extern "C" fn call<F2, T2>(data: *const (), value: T2)
-            where
-                F2: Fn(T2),
-            {
-                let callback = unsafe { Rc::clone(&*(data as *const Rc<F2>)) };
-                callback(value);
-            }
-            unsafe extern "C" fn drop<F2, T2>(data: *mut ())
-            where
-                F2: Fn(T2),
-            {
-                unsafe {
-                    let _ = Box::from_raw(data as *mut Rc<F2>);
-                }
-            }
+        unsafe {
+            let data = Box::into_raw(Box::new(Rc::new(value))).cast::<()>();
             Self::new(data, call::<F, T>, drop::<F, T>)
         }
     }

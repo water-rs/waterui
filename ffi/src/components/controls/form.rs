@@ -29,12 +29,19 @@ into_ffi! {KeyboardType, non_exhaustive, pub enum WuiKeyboardType {
     PhoneNumber
 }}
 
+/// FFI representation of the `TextField` component.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiTextField {
+    /// Semantic label slot for the field — see [`WuiLabel`].
     pub label: WuiLabel,
+    /// Reactive binding to the field's styled text content.
     pub value: *mut WuiBinding<StyledStr>,
+    /// Placeholder text shown when the field is empty.
     pub prompt: WuiText,
+    /// The on-screen keyboard variant to present while editing.
     pub keyboard: WuiKeyboardType,
+    /// Context menu items offered when the user selects text in the field.
     pub selection_menu: *mut crate::views::WuiAnyViews,
 }
 
@@ -69,6 +76,7 @@ into_ffi! {ToggleConfig,
 
 /// C representation of a range
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiRange<T> {
     /// Start of the range
     pub start: T,
@@ -143,10 +151,15 @@ into_ffi! {PickerStyle, non_exhaustive, pub enum WuiPickerStyle {
     Segmented,
 }}
 
+/// FFI representation of the `Picker` component.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiPicker {
+    /// The picker's items, rendered as an identity-tracked view collection.
     pub items: *mut crate::views::WuiAnyViews,
+    /// Reactive binding to the tag of the currently selected item.
     pub selection: *mut WuiBinding<Id>,
+    /// The visual presentation style for the picker.
     pub style: WuiPickerStyle,
 }
 
@@ -173,9 +186,13 @@ pub struct ResolvedPickerItem(PickerItem<Id>);
 
 waterui_core::raw_view!(ResolvedPickerItem);
 
+/// FFI representation of a single resolved picker item.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiPickerItem {
+    /// The stable identity tag used to track selection for this item.
     pub tag: WuiId,
+    /// Reactive computed label text displayed for this item.
     pub label: *mut WuiComputed<StyledStr>,
 }
 
@@ -288,7 +305,11 @@ impl crate::IntoRust for WuiDate {
     unsafe fn into_rust(self) -> Self::Rust {
         let year = i16::try_from(self.year)
             .expect("invalid year received from native DatePicker FFI bridge");
-        Date::new(year, self.month as i8, self.day as i8).unwrap_or_else(|_| {
+        let month = i8::try_from(self.month)
+            .expect("invalid month received from native DatePicker FFI bridge");
+        let day =
+            i8::try_from(self.day).expect("invalid day received from native DatePicker FFI bridge");
+        Date::new(year, month, day).unwrap_or_else(|_| {
             panic!(
                 "invalid date received from native DatePicker FFI bridge: year={}, month={}, day={}",
                 self.year, self.month, self.day
@@ -302,16 +323,17 @@ impl crate::IntoRust for WuiDateTime {
     unsafe fn into_rust(self) -> Self::Rust {
         let year = i16::try_from(self.year)
             .expect("invalid year received from native DatePicker FFI bridge");
-        DateTime::new(
-            year,
-            self.month as i8,
-            self.day as i8,
-            self.hour as i8,
-            self.minute as i8,
-            self.second as i8,
-            0,
-        )
-        .unwrap_or_else(|_| {
+        let month = i8::try_from(self.month)
+            .expect("invalid month received from native DatePicker FFI bridge");
+        let day =
+            i8::try_from(self.day).expect("invalid day received from native DatePicker FFI bridge");
+        let hour = i8::try_from(self.hour)
+            .expect("invalid hour received from native DatePicker FFI bridge");
+        let minute = i8::try_from(self.minute)
+            .expect("invalid minute received from native DatePicker FFI bridge");
+        let second = i8::try_from(self.second)
+            .expect("invalid second received from native DatePicker FFI bridge");
+        DateTime::new(year, month, day, hour, minute, second, 0).unwrap_or_else(|_| {
             panic!(
                 "invalid date-time received from native DatePicker FFI bridge: year={}, month={}, day={}, hour={}, minute={}, second={}",
                 self.year, self.month, self.day, self.hour, self.minute, self.second

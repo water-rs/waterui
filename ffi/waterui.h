@@ -29,7 +29,7 @@ typedef struct WuiArray {
 
 
 /**
- * FFI representation of StretchAxis enum.
+ * FFI representation of `StretchAxis` enum.
  *
  * Specifies which axis (or axes) a view stretches to fill available space.
  */
@@ -64,7 +64,13 @@ typedef enum WuiStretchAxis {
  * FFI lifecycle enum for one-time lifecycle events.
  */
 typedef enum WuiLifecycle {
+  /**
+   * The component appeared (attached to the view hierarchy).
+   */
   WuiLifecycle_Appear,
+  /**
+   * The component disappeared (detached from the view hierarchy).
+   */
   WuiLifecycle_Disappear,
 } WuiLifecycle;
 
@@ -72,8 +78,17 @@ typedef enum WuiLifecycle {
  * FFI event enum for repeatable interaction events.
  */
 typedef enum WuiEvent {
+  /**
+   * The cursor entered a component's bounds.
+   */
   WuiEvent_HoverEnter,
+  /**
+   * Pointer motion within a component's bounds.
+   */
   WuiEvent_HoverMove,
+  /**
+   * The cursor exited a component's bounds.
+   */
   WuiEvent_HoverExit,
 } WuiEvent;
 
@@ -98,7 +113,7 @@ typedef enum WuiMenuItemTag {
 /**
  * FFI-safe representation of a material blur style.
  *
- * Maps to SwiftUI's Material types on Apple platforms.
+ * Maps to `SwiftUI`'s Material types on Apple platforms.
  */
 typedef enum WuiMaterial {
   /**
@@ -123,10 +138,25 @@ typedef enum WuiMaterial {
   WuiMaterial_UltraThick = 4,
 } WuiMaterial;
 
+/**
+ * C ABI mirror of [`GradientType`], the discriminator for a resolved gradient's shape.
+ */
 typedef enum WuiGradientType {
+  /**
+   * Linear gradient along a line.
+   */
   WuiGradientType_Linear = 0,
+  /**
+   * Radial gradient from a center point.
+   */
   WuiGradientType_Radial = 1,
+  /**
+   * Angular (conic) gradient around a center point.
+   */
   WuiGradientType_Angular = 2,
+  /**
+   * 2D mesh gradient.
+   */
   WuiGradientType_Mesh = 3,
 } WuiGradientType;
 
@@ -134,21 +164,69 @@ typedef enum WuiGradientType {
  * FFI-safe cursor style enum.
  */
 typedef enum WuiCursorStyle {
+  /**
+   * Default arrow cursor (system default behavior).
+   */
   WuiCursorStyle_Arrow = 0,
+  /**
+   * Pointing hand cursor (for clickable/link elements).
+   */
   WuiCursorStyle_PointingHand = 1,
+  /**
+   * Text selection cursor (I-beam).
+   */
   WuiCursorStyle_IBeam = 2,
+  /**
+   * Crosshair cursor (for precise selection).
+   */
   WuiCursorStyle_Crosshair = 3,
+  /**
+   * Open hand cursor (for draggable content).
+   */
   WuiCursorStyle_OpenHand = 4,
+  /**
+   * Closed hand cursor (while dragging).
+   */
   WuiCursorStyle_ClosedHand = 5,
+  /**
+   * Not-allowed cursor (for disabled actions).
+   */
   WuiCursorStyle_NotAllowed = 6,
+  /**
+   * Resize left cursor.
+   */
   WuiCursorStyle_ResizeLeft = 7,
+  /**
+   * Resize right cursor.
+   */
   WuiCursorStyle_ResizeRight = 8,
+  /**
+   * Resize up cursor.
+   */
   WuiCursorStyle_ResizeUp = 9,
+  /**
+   * Resize down cursor.
+   */
   WuiCursorStyle_ResizeDown = 10,
+  /**
+   * Resize left-right cursor (horizontal resize).
+   */
   WuiCursorStyle_ResizeLeftRight = 11,
+  /**
+   * Resize up-down cursor (vertical resize).
+   */
   WuiCursorStyle_ResizeUpDown = 12,
+  /**
+   * Move cursor (for movable content).
+   */
   WuiCursorStyle_Move = 13,
+  /**
+   * Wait/loading cursor.
+   */
   WuiCursorStyle_Wait = 14,
+  /**
+   * Copy cursor (for copy operations).
+   */
   WuiCursorStyle_Copy = 15,
 } WuiCursorStyle;
 
@@ -266,15 +344,45 @@ typedef enum WuiFontSlot {
   WuiFontSlot_Footnote = 5,
 } WuiFontSlot;
 
+/**
+ *C ABI mirror of `FontWeight`.
+ */
 typedef enum WuiFontWeight {
+  /**
+   *Mirrors `FontWeight::Thin`.
+   */
   WuiFontWeight_Thin,
+  /**
+   *Mirrors `FontWeight::UltraLight`.
+   */
   WuiFontWeight_UltraLight,
+  /**
+   *Mirrors `FontWeight::Light`.
+   */
   WuiFontWeight_Light,
+  /**
+   *Mirrors `FontWeight::Normal`.
+   */
   WuiFontWeight_Normal,
+  /**
+   *Mirrors `FontWeight::Medium`.
+   */
   WuiFontWeight_Medium,
+  /**
+   *Mirrors `FontWeight::SemiBold`.
+   */
   WuiFontWeight_SemiBold,
+  /**
+   *Mirrors `FontWeight::Bold`.
+   */
   WuiFontWeight_Bold,
+  /**
+   *Mirrors `FontWeight::UltraBold`.
+   */
   WuiFontWeight_UltraBold,
+  /**
+   *Mirrors `FontWeight::Black`.
+   */
   WuiFontWeight_Black,
 } WuiFontWeight;
 
@@ -345,46 +453,139 @@ typedef enum WuiLabelDisplayMode {
   WuiLabelDisplayMode_Hidden,
 } WuiLabelDisplayMode;
 
+/**
+ *C ABI mirror of `ButtonStyle`.
+ */
 typedef enum WuiButtonStyle {
+  /**
+   *Mirrors `ButtonStyle::Automatic`.
+   */
   WuiButtonStyle_Automatic,
+  /**
+   *Mirrors `ButtonStyle::Plain`.
+   */
   WuiButtonStyle_Plain,
+  /**
+   *Mirrors `ButtonStyle::Link`.
+   */
   WuiButtonStyle_Link,
+  /**
+   *Mirrors `ButtonStyle::Borderless`.
+   */
   WuiButtonStyle_Borderless,
+  /**
+   *Mirrors `ButtonStyle::Bordered`.
+   */
   WuiButtonStyle_Bordered,
+  /**
+   *Mirrors `ButtonStyle::BorderedProminent`.
+   */
   WuiButtonStyle_BorderedProminent,
 } WuiButtonStyle;
 
+/**
+ *C ABI mirror of `KeyboardType`.
+ */
 typedef enum WuiKeyboardType {
+  /**
+   *Mirrors `KeyboardType::Text`.
+   */
   WuiKeyboardType_Text,
+  /**
+   *Mirrors `KeyboardType::Email`.
+   */
   WuiKeyboardType_Email,
+  /**
+   *Mirrors `KeyboardType::URL`.
+   */
   WuiKeyboardType_URL,
+  /**
+   *Mirrors `KeyboardType::Number`.
+   */
   WuiKeyboardType_Number,
+  /**
+   *Mirrors `KeyboardType::PhoneNumber`.
+   */
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
 
+/**
+ *C ABI mirror of `ToggleStyle`.
+ */
 typedef enum WuiToggleStyle {
+  /**
+   *Mirrors `ToggleStyle::Automatic`.
+   */
   WuiToggleStyle_Automatic,
+  /**
+   *Mirrors `ToggleStyle::Switch`.
+   */
   WuiToggleStyle_Switch,
+  /**
+   *Mirrors `ToggleStyle::Checkbox`.
+   */
   WuiToggleStyle_Checkbox,
 } WuiToggleStyle;
 
+/**
+ *C ABI mirror of `PickerStyle`.
+ */
 typedef enum WuiPickerStyle {
+  /**
+   *Mirrors `PickerStyle::Automatic`.
+   */
   WuiPickerStyle_Automatic,
+  /**
+   *Mirrors `PickerStyle::Menu`.
+   */
   WuiPickerStyle_Menu,
+  /**
+   *Mirrors `PickerStyle::Radio`.
+   */
   WuiPickerStyle_Radio,
+  /**
+   *Mirrors `PickerStyle::Segmented`.
+   */
   WuiPickerStyle_Segmented,
 } WuiPickerStyle;
 
+/**
+ *C ABI mirror of `DatePickerType`.
+ */
 typedef enum WuiDatePickerType {
+  /**
+   *Mirrors `DatePickerType::Date`.
+   */
   WuiDatePickerType_Date,
+  /**
+   *Mirrors `DatePickerType::HourAndMinute`.
+   */
   WuiDatePickerType_HourAndMinute,
+  /**
+   *Mirrors `DatePickerType::HourMinuteAndSecond`.
+   */
   WuiDatePickerType_HourMinuteAndSecond,
+  /**
+   *Mirrors `DatePickerType::DateHourAndMinute`.
+   */
   WuiDatePickerType_DateHourAndMinute,
+  /**
+   *Mirrors `DatePickerType::DateHourMinuteAndSecond`.
+   */
   WuiDatePickerType_DateHourMinuteAndSecond,
 } WuiDatePickerType;
 
+/**
+ *C ABI mirror of `ProgressStyle`.
+ */
 typedef enum WuiProgressStyle {
+  /**
+   *Mirrors `ProgressStyle::Linear`.
+   */
   WuiProgressStyle_Linear,
+  /**
+   *Mirrors `ProgressStyle::Circular`.
+   */
   WuiProgressStyle_Circular,
 } WuiProgressStyle;
 
@@ -410,28 +611,81 @@ typedef enum WuiMapStyle {
  * FFI-safe horizontal paragraph alignment.
  */
 typedef enum WuiHorizontalAlignment {
+  /**
+   * Align to the leading edge (left in left-to-right locales).
+   */
   WuiHorizontalAlignment_Leading = 0,
+  /**
+   * Center within the available width.
+   */
   WuiHorizontalAlignment_Center = 1,
+  /**
+   * Align to the trailing edge (right in left-to-right locales).
+   */
   WuiHorizontalAlignment_Trailing = 2,
 } WuiHorizontalAlignment;
 
+/**
+ * C ABI mirror of [`VerticalAlignment`], a named vertical alignment guide
+ * used for stack cross-axis alignment and explicit view dimension guides.
+ */
 typedef enum WuiVerticalAlignment {
+  /**
+   * Aligns to the top edge.
+   */
   WuiVerticalAlignment_Top = 0,
+  /**
+   * Aligns to the vertical center.
+   */
   WuiVerticalAlignment_Center = 1,
+  /**
+   * Aligns to the bottom edge.
+   */
   WuiVerticalAlignment_Bottom = 2,
+  /**
+   * Aligns to the first line's text baseline.
+   */
   WuiVerticalAlignment_FirstBaseline = 3,
+  /**
+   * Aligns to the last line's text baseline.
+   */
   WuiVerticalAlignment_LastBaseline = 4,
 } WuiVerticalAlignment;
 
+/**
+ * The stacking axis a layout advertises for lazy (virtualized) rendering,
+ * as reported by [`waterui_layout_lazy_stack_axis`].
+ */
 typedef enum WuiLazyStackAxis {
+  /**
+   * The layout does not support lazy stacking (not a `VStackLayout`/`HStackLayout`).
+   */
   WuiLazyStackAxis_Unsupported = 0,
+  /**
+   * The layout stacks children vertically (`VStackLayout`).
+   */
   WuiLazyStackAxis_Vertical = 1,
+  /**
+   * The layout stacks children horizontally (`HStackLayout`).
+   */
   WuiLazyStackAxis_Horizontal = 2,
 } WuiLazyStackAxis;
 
+/**
+ *C ABI mirror of `Axis`.
+ */
 typedef enum WuiAxis {
+  /**
+   *Mirrors `Axis::Horizontal`.
+   */
   WuiAxis_Horizontal,
+  /**
+   *Mirrors `Axis::Vertical`.
+   */
   WuiAxis_Vertical,
+  /**
+   *Mirrors `Axis::All`.
+   */
   WuiAxis_All,
 } WuiAxis;
 
@@ -439,8 +693,17 @@ typedef enum WuiAxis {
  * FFI representation of a media delivery strategy.
  */
 typedef enum WuiVideoDelivery {
+  /**
+   * A progressively downloaded single media file.
+   */
   WuiVideoDelivery_Progressive = 0,
+  /**
+   * HTTP Live Streaming (HLS).
+   */
   WuiVideoDelivery_Hls = 1,
+  /**
+   * MPEG-DASH adaptive streaming.
+   */
   WuiVideoDelivery_Dash = 2,
 } WuiVideoDelivery;
 
@@ -448,8 +711,17 @@ typedef enum WuiVideoDelivery {
  * Tagged subtitle selection used by the native player.
  */
 typedef enum WuiSubtitleSelectionType {
+  /**
+   * Let the player choose a subtitle track automatically.
+   */
   WuiSubtitleSelectionType_Auto = 0,
+  /**
+   * Disable subtitles.
+   */
   WuiSubtitleSelectionType_Off = 1,
+  /**
+   * Select a specific subtitle track by index.
+   */
   WuiSubtitleSelectionType_Track = 2,
 } WuiSubtitleSelectionType;
 
@@ -457,7 +729,13 @@ typedef enum WuiSubtitleSelectionType {
  * Tagged audio track selection used by the native player.
  */
 typedef enum WuiAudioTrackSelectionType {
+  /**
+   * Let the player choose an audio track automatically.
+   */
   WuiAudioTrackSelectionType_Auto = 0,
+  /**
+   * Select a specific audio track by index.
+   */
   WuiAudioTrackSelectionType_Track = 1,
 } WuiAudioTrackSelectionType;
 
@@ -465,7 +743,13 @@ typedef enum WuiAudioTrackSelectionType {
  * Tagged video-quality track selection used by the native player.
  */
 typedef enum WuiVideoTrackSelectionType {
+  /**
+   * Let the player choose a video-quality track automatically.
+   */
   WuiVideoTrackSelectionType_Auto = 0,
+  /**
+   * Select a specific video-quality track by index.
+   */
   WuiVideoTrackSelectionType_Track = 1,
 } WuiVideoTrackSelectionType;
 
@@ -473,9 +757,21 @@ typedef enum WuiVideoTrackSelectionType {
  * Native subtitle-track origin.
  */
 typedef enum WuiVideoSubtitleTrackOrigin {
+  /**
+   * Loaded from a separate sidecar subtitle file.
+   */
   WuiVideoSubtitleTrackOrigin_Sidecar = 0,
+  /**
+   * Embedded directly in the media container.
+   */
   WuiVideoSubtitleTrackOrigin_Embedded = 1,
+  /**
+   * Declared by an adaptive-streaming manifest (e.g. HLS/DASH).
+   */
   WuiVideoSubtitleTrackOrigin_Manifest = 2,
+  /**
+   * Sourced from a platform-native subtitle mechanism.
+   */
   WuiVideoSubtitleTrackOrigin_Native = 3,
 } WuiVideoSubtitleTrackOrigin;
 
@@ -483,18 +779,57 @@ typedef enum WuiVideoSubtitleTrackOrigin {
  * FFI representation of video events.
  */
 typedef enum WuiVideoEventType {
+  /**
+   * Playback is ready to begin (enough data buffered to play).
+   */
   WuiVideoEventType_ReadyToPlay = 0,
+  /**
+   * Playback reached the end of the media.
+   */
   WuiVideoEventType_Ended = 1,
+  /**
+   * A fatal playback error occurred; see `WuiVideoEvent::error_message`.
+   */
   WuiVideoEventType_Error = 2,
+  /**
+   * Playback stalled and is buffering.
+   */
   WuiVideoEventType_Buffering = 3,
+  /**
+   * A prior buffering stall has ended.
+   */
   WuiVideoEventType_BufferingEnded = 4,
+  /**
+   * The amount of buffered-ahead media changed.
+   */
   WuiVideoEventType_BufferLevel = 5,
+  /**
+   * Updated playback quality-of-service metrics are available.
+   */
   WuiVideoEventType_PlaybackMetrics = 6,
+  /**
+   * Picture-in-Picture presentation was entered or exited.
+   */
   WuiVideoEventType_PictureInPictureChanged = 7,
+  /**
+   * The user requested skipping to the next playlist item.
+   */
   WuiVideoEventType_NextRequested = 8,
+  /**
+   * The user requested skipping to the previous playlist item.
+   */
   WuiVideoEventType_PreviousRequested = 9,
+  /**
+   * The playing/paused state changed.
+   */
   WuiVideoEventType_PlaybackStateChanged = 10,
+  /**
+   * External playback (e.g., `AirPlay`, cast) was engaged or disengaged.
+   */
   WuiVideoEventType_ExternalPlaybackChanged = 11,
+  /**
+   * The active playback output architecture changed.
+   */
   WuiVideoEventType_PlaybackOutputPathChanged = 12,
 } WuiVideoEventType;
 
@@ -502,9 +837,21 @@ typedef enum WuiVideoEventType {
  * Native representation of the active playback output architecture.
  */
 typedef enum WuiVideoPlaybackOutputPath {
+  /**
+   * The platform's default managed decode/render pipeline.
+   */
   WuiVideoPlaybackOutputPath_PlatformManaged = 0,
+  /**
+   * Decoded PCM audio routed through the GPU-adjacent pipeline.
+   */
   WuiVideoPlaybackOutputPath_DecodedPcmGpu = 1,
+  /**
+   * Compressed audio handed off to a hardware offload path.
+   */
   WuiVideoPlaybackOutputPath_AudioOffload = 2,
+  /**
+   * Audio and video routed through hardware tunneling.
+   */
   WuiVideoPlaybackOutputPath_AudioVideoTunneling = 3,
 } WuiVideoPlaybackOutputPath;
 
@@ -512,14 +859,35 @@ typedef enum WuiVideoPlaybackOutputPath {
  * Native projection of a required playback power path.
  */
 typedef enum WuiVideoPlaybackPowerPolicy {
+  /**
+   * Let the platform choose the playback power path.
+   */
   WuiVideoPlaybackPowerPolicy_PlatformManaged = 0,
+  /**
+   * Require hardware audio offload decoding.
+   */
   WuiVideoPlaybackPowerPolicy_RequireAudioOffload = 1,
+  /**
+   * Require combined audio/video hardware tunneling.
+   */
   WuiVideoPlaybackPowerPolicy_RequireAudioVideoTunneling = 2,
 } WuiVideoPlaybackPowerPolicy;
 
+/**
+ * FFI representation of the video content's aspect-ratio fit mode.
+ */
 typedef enum WuiAspectRatio {
+  /**
+   * Scale to fit entirely within the bounds, preserving aspect ratio.
+   */
   WuiAspectRatio_Fit = 0,
+  /**
+   * Scale to fill the bounds, preserving aspect ratio and cropping overflow.
+   */
   WuiAspectRatio_Fill = 1,
+  /**
+   * Stretch to exactly fill the bounds, ignoring aspect ratio.
+   */
   WuiAspectRatio_Stretch = 2,
 } WuiAspectRatio;
 
@@ -527,7 +895,13 @@ typedef enum WuiAspectRatio {
  * Native projection support discriminator.
  */
 typedef enum WuiVideoProjection {
+  /**
+   * A conventional flat (non-projected) video frame.
+   */
   WuiVideoProjection_Rectilinear = 0,
+  /**
+   * A 360-degree equirectangular projection.
+   */
   WuiVideoProjection_Equirectangular = 1,
 } WuiVideoProjection;
 
@@ -535,14 +909,41 @@ typedef enum WuiVideoProjection {
  * Semantic native toolbar placement.
  */
 typedef enum WuiNavigationToolbarPlacement {
+  /**
+   * The default, platform-chosen placement.
+   */
   WuiNavigationToolbarPlacement_Principal = 0,
+  /**
+   * The primary action slot (e.g., a trailing "Save" or "Done" button).
+   */
   WuiNavigationToolbarPlacement_PrimaryAction = 1,
+  /**
+   * The secondary action slot (e.g., a leading "Edit" button).
+   */
   WuiNavigationToolbarPlacement_SecondaryAction = 2,
+  /**
+   * A confirmation action within a modal presentation.
+   */
   WuiNavigationToolbarPlacement_Confirmation = 3,
+  /**
+   * A cancellation action within a modal presentation.
+   */
   WuiNavigationToolbarPlacement_Cancellation = 4,
+  /**
+   * The bottom toolbar bar.
+   */
   WuiNavigationToolbarPlacement_BottomBar = 5,
+  /**
+   * A status item, typically centered.
+   */
   WuiNavigationToolbarPlacement_Status = 6,
+  /**
+   * The leading slot of the top bar.
+   */
   WuiNavigationToolbarPlacement_TopBarLeading = 7,
+  /**
+   * The trailing slot of the top bar.
+   */
   WuiNavigationToolbarPlacement_TopBarTrailing = 8,
 } WuiNavigationToolbarPlacement;
 
@@ -565,19 +966,46 @@ typedef enum WuiNavigationTitleDisplayMode {
 } WuiNavigationTitleDisplayMode;
 
 /**
- * FFI struct for NavigationStack<(),()>
+ * FFI representation of the kind of transition used for a navigation push/pop.
  */
 typedef enum WuiNavigationTransitionKind {
+  /**
+   * The platform-default transition.
+   */
   WuiNavigationTransitionKind_Automatic = 0,
+  /**
+   * A cross-fade transition.
+   */
   WuiNavigationTransitionKind_Fade = 1,
+  /**
+   * A zoom transition anchored at `WuiNavigationTransition::source_id`.
+   */
   WuiNavigationTransitionKind_Zoom = 2,
+  /**
+   * No transition; the destination appears instantly.
+   */
   WuiNavigationTransitionKind_None = 3,
+  /**
+   * A caller-supplied custom transition.
+   */
   WuiNavigationTransitionKind_Custom = 4,
 } WuiNavigationTransitionKind;
 
+/**
+ * FFI representation of a `NavigationSplitLayout`'s native presentation style.
+ */
 typedef enum WuiNavigationSplitStyle {
+  /**
+   * The platform-default split style.
+   */
   WuiNavigationSplitStyle_Automatic = 0,
+  /**
+   * Sidebar and detail columns share space evenly.
+   */
   WuiNavigationSplitStyle_Balanced = 1,
+  /**
+   * The detail column is given prominence over the sidebar.
+   */
   WuiNavigationSplitStyle_ProminentDetail = 2,
 } WuiNavigationSplitStyle;
 
@@ -585,8 +1013,17 @@ typedef enum WuiNavigationSplitStyle {
  * Native adaptive tab style.
  */
 typedef enum WuiTabStyle {
+  /**
+   * The platform-default tab presentation.
+   */
   WuiTabStyle_Automatic = 0,
+  /**
+   * A bottom tab bar.
+   */
   WuiTabStyle_TabBar = 1,
+  /**
+   * A sidebar of tabs.
+   */
   WuiTabStyle_Sidebar = 2,
 } WuiTabStyle;
 
@@ -653,7 +1090,7 @@ typedef enum WuiScriptInjectionTime {
 } WuiScriptInjectionTime;
 
 /**
- * FFI representation of WebView event types.
+ * FFI representation of `WebView` event types.
  */
 typedef enum WuiWebViewEventType {
   /**
@@ -1016,10 +1453,19 @@ typedef struct UnitPoint UnitPoint;
  */
 typedef struct Vec2 Vec2;
 
+/**
+ *Opaque FFI handle owning a `RetainedCallback<BoxedAction<()>>`.
+ */
 typedef struct WuiAction WuiAction;
 
+/**
+ *Opaque FFI handle owning a `waterui::AnyView`.
+ */
 typedef struct WuiAnyView WuiAnyView;
 
+/**
+ *Opaque FFI handle owning a `AnyViews<AnyView>`.
+ */
 typedef struct WuiAnyViews WuiAnyViews;
 
 /**
@@ -1029,6 +1475,9 @@ typedef struct WuiAppliedFilterState WuiAppliedFilterState;
 
 typedef struct WuiCefSurfaceState WuiCefSurfaceState;
 
+/**
+ *Opaque FFI handle owning a `Color`.
+ */
 typedef struct WuiColor WuiColor;
 
 /**
@@ -1037,14 +1486,23 @@ typedef struct WuiColor WuiColor;
 typedef struct WuiDraggableWrapper WuiDraggableWrapper;
 
 /**
- * Wrapper for DropDestination to avoid orphan rule issues.
+ * Wrapper for `DropDestination` to avoid orphan rule issues.
  */
 typedef struct WuiDropHandler WuiDropHandler;
 
+/**
+ *Opaque FFI handle owning a `Dynamic`.
+ */
 typedef struct WuiDynamic WuiDynamic;
 
+/**
+ *Opaque FFI handle owning a `waterui::Environment`.
+ */
 typedef struct WuiEnv WuiEnv;
 
+/**
+ *Opaque FFI handle owning a `Font`.
+ */
 typedef struct WuiFont WuiFont;
 
 /**
@@ -1056,6 +1514,9 @@ typedef struct WuiFont WuiFont;
  */
 typedef struct WuiGpuCaptureFence WuiGpuCaptureFence;
 
+/**
+ *Opaque FFI handle owning a `GpuRuntime`.
+ */
 typedef struct WuiGpuRuntime WuiGpuRuntime;
 
 /**
@@ -1066,8 +1527,14 @@ typedef struct WuiGpuRuntime WuiGpuRuntime;
  */
 typedef struct WuiGpuSurfaceState WuiGpuSurfaceState;
 
+/**
+ *Opaque FFI handle owning a `RetainedCallback<IndexHandler>`.
+ */
 typedef struct WuiIndexAction WuiIndexAction;
 
+/**
+ *Opaque FFI handle owning a `Box<dyn Layout>`.
+ */
 typedef struct WuiLayout WuiLayout;
 
 /**
@@ -1080,19 +1547,34 @@ typedef struct WuiLayoutWatcher WuiLayoutWatcher;
  */
 typedef struct WuiLifecycleHookHandler WuiLifecycleHookHandler;
 
+/**
+ *Opaque FFI handle owning a `RetainedCallback<MoveHandler>`.
+ */
 typedef struct WuiMoveAction WuiMoveAction;
 
 /**
- * Wrapper for OnEvent to avoid orphan rule issues.
+ * Wrapper for `OnEvent` to avoid orphan rule issues.
  */
 typedef struct WuiOnEventHandler WuiOnEventHandler;
 
+/**
+ *Opaque FFI handle owning a `SharedAction<()>`.
+ */
 typedef struct WuiSharedAction WuiSharedAction;
 
+/**
+ *Opaque FFI handle owning a `AnyViewBuilder<NavigationView>`.
+ */
 typedef struct WuiTabContent WuiTabContent;
 
+/**
+ *Opaque FFI handle owning a `PlayerController`.
+ */
 typedef struct WuiVideoController WuiVideoController;
 
+/**
+ *Opaque FFI handle owning a `Rc<BoundVideoEventHandler>`.
+ */
 typedef struct WuiVideoEventHandler WuiVideoEventHandler;
 
 /**
@@ -1100,62 +1582,227 @@ typedef struct WuiVideoEventHandler WuiVideoEventHandler;
  */
 typedef struct WuiViewEffectState WuiViewEffectState;
 
+/**
+ *Opaque FFI handle owning a `BoxWatcherGuard`.
+ */
 typedef struct WuiWatcherGuard WuiWatcherGuard;
 
+/**
+ *Opaque FFI handle owning a `Metadata`.
+ */
 typedef struct WuiWatcherMetadata WuiWatcherMetadata;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_AnyView WuiWatcher_AnyView;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_AudioTrackSelection WuiWatcher_AudioTrackSelection;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Color WuiWatcher_Color;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_ColorScheme WuiWatcher_ColorScheme;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_CursorStyle WuiWatcher_CursorStyle;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_DateTime WuiWatcher_DateTime;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Delivery WuiWatcher_Delivery;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_HorizontalAlignment WuiWatcher_HorizontalAlignment;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Id WuiWatcher_Id;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Rect WuiWatcher_Rect;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Region WuiWatcher_Region;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_ResolvedColor WuiWatcher_ResolvedColor;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_ResolvedFont WuiWatcher_ResolvedFont;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Secure WuiWatcher_Secure;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Size WuiWatcher_Size;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Str WuiWatcher_Str;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_StyledStr WuiWatcher_StyledStr;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_SubtitleSelection WuiWatcher_SubtitleSelection;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Vec_Annotation WuiWatcher_Vec_Annotation;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Vec_Date WuiWatcher_Vec_Date;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_VideoTrackSelection WuiWatcher_VideoTrackSelection;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_WindowState WuiWatcher_WindowState;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_bool WuiWatcher_bool;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_f32 WuiWatcher_f32;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_f64 WuiWatcher_f64;
 
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_i32 WuiWatcher_i32;
 
+/**
+ *Opaque FFI handle owning a `WebView`.
+ */
 typedef struct WuiWebView WuiWebView;
 
 /**
@@ -1165,15 +1812,30 @@ typedef struct WuiWebView WuiWebView;
  * which is required for the preview system that loads user code as a dylib.
  */
 typedef struct WuiTypeId {
+  /**
+   * The low 64 bits of the 128-bit FNV-1a type hash.
+   */
   uint64_t low;
+  /**
+   * The high 64 bits of the 128-bit FNV-1a type hash.
+   */
   uint64_t high;
 } WuiTypeId;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_u8 {
   uint8_t *head;
   uintptr_t len;
 } WuiArraySlice_u8;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_u8 {
   void (*drop)(void*);
   struct WuiArraySlice_u8 (*slice)(const void*);
@@ -1181,7 +1843,8 @@ typedef struct WuiArrayVTable_u8 {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -1191,21 +1854,37 @@ typedef struct WuiArray_u8 {
   struct WuiArrayVTable_u8 vtable;
 } WuiArray_u8;
 
+/**
+ * UTF-8 string represented as a byte array.
+ */
 typedef struct WuiStr {
   struct WuiArray_u8 _0;
 } WuiStr;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_____WuiEnv {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiEnv *value;
 } WuiMetadata_____WuiEnv;
 
 /**
  * Type alias for Metadata<Environment> FFI struct
- * Layout: { content: *mut WuiAnyView, value: *mut WuiEnv }
+ * Layout: { content: *mut `WuiAnyView`, value: *mut `WuiEnv` }
  */
 typedef struct WuiMetadata_____WuiEnv WuiMetadataEnv;
 
+/**
+ * FFI-compatible representation of [`waterui_core::id::Id`].
+ */
 typedef struct WuiId {
   /**
    * The inner integer value of the ID.
@@ -1213,8 +1892,18 @@ typedef struct WuiId {
   int32_t inner;
 } WuiId;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiId {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiId value;
 } WuiMetadata_WuiId;
 
@@ -1240,14 +1929,24 @@ typedef struct WuiSecureMarker {
   uint8_t _marker;
 } WuiSecureMarker;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiSecureMarker {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiSecureMarker value;
 } WuiMetadata_WuiSecureMarker;
 
 /**
  * Type alias for Metadata<Secure> FFI struct
- * Layout: { content: *mut WuiAnyView, value: WuiSecureMarker }
+ * Layout: { content: *mut `WuiAnyView`, value: `WuiSecureMarker` }
  */
 typedef struct WuiMetadata_WuiSecureMarker WuiMetadataSecure;
 
@@ -1255,11 +1954,25 @@ typedef struct WuiMetadata_WuiSecureMarker WuiMetadataSecure;
  * C-compatible empty marker struct for dynamic range metadata.
  */
 typedef struct WuiDynamicRangeMarker {
+  /**
+   * Placeholder field so the struct has a valid size in C; the value is
+   * meaningless.
+   */
   uint8_t _marker;
 } WuiDynamicRangeMarker;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiDynamicRangeMarker {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiDynamicRangeMarker value;
 } WuiMetadata_WuiDynamicRangeMarker;
 
@@ -1312,22 +2025,37 @@ typedef enum WuiGesture_Tag {
 } WuiGesture_Tag;
 
 typedef struct WuiGesture_Tap_Body {
+  /**
+   * Number of taps required to recognize the gesture.
+   */
   uint32_t count;
 } WuiGesture_Tap_Body;
 
 typedef struct WuiGesture_LongPress_Body {
+  /**
+   * Minimum press duration in milliseconds before the gesture fires.
+   */
   uint32_t duration;
 } WuiGesture_LongPress_Body;
 
 typedef struct WuiGesture_Drag_Body {
+  /**
+   * Minimum drag distance (in points) before the gesture fires.
+   */
   float min_distance;
 } WuiGesture_Drag_Body;
 
 typedef struct WuiGesture_Magnification_Body {
+  /**
+   * Scale factor the gesture starts recognizing from.
+   */
   float initial_scale;
 } WuiGesture_Magnification_Body;
 
 typedef struct WuiGesture_Rotation_Body {
+  /**
+   * Angle (in radians) the gesture starts recognizing from.
+   */
   float initial_angle;
 } WuiGesture_Rotation_Body;
 
@@ -1392,8 +2120,18 @@ typedef struct WuiGestureObserver {
   struct WuiAction *action;
 } WuiGestureObserver;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiGestureObserver {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiGestureObserver value;
 } WuiMetadata_WuiGestureObserver;
 
@@ -1416,8 +2154,18 @@ typedef struct WuiLifecycleHook {
   struct WuiLifecycleHookHandler *handler;
 } WuiLifecycleHook;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiLifecycleHook {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiLifecycleHook value;
 } WuiMetadata_WuiLifecycleHook;
 
@@ -1435,13 +2183,23 @@ typedef struct WuiOnEvent {
    */
   enum WuiEvent event;
   /**
-   * Opaque pointer to the OnEvent (owns the handler).
+   * Opaque pointer to the `OnEvent` (owns the handler).
    */
   struct WuiOnEventHandler *handler;
 } WuiOnEvent;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiOnEvent {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiOnEvent value;
 } WuiMetadata_WuiOnEvent;
 
@@ -1450,6 +2208,13 @@ typedef struct WuiMetadata_WuiOnEvent {
  */
 typedef struct WuiMetadata_WuiOnEvent WuiMetadataOnEvent;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_CursorStyle WuiComputed_CursorStyle;
 
 /**
@@ -1462,8 +2227,18 @@ typedef struct WuiCursor {
   WuiComputed_CursorStyle *style;
 } WuiCursor;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiCursor {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiCursor value;
 } WuiMetadata_WuiCursor;
 
@@ -1494,8 +2269,18 @@ typedef struct WuiShadow {
   float radius;
 } WuiShadow;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiShadow {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiShadow value;
 } WuiMetadata_WuiShadow;
 
@@ -1548,8 +2333,18 @@ typedef struct WuiBorder {
   struct WuiEdgeSet edges;
 } WuiBorder;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiBorder {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiBorder value;
 } WuiMetadata_WuiBorder;
 
@@ -1558,6 +2353,13 @@ typedef struct WuiMetadata_WuiBorder {
  */
 typedef struct WuiMetadata_WuiBorder WuiMetadataBorder;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_f32 WuiComputed_f32;
 
 /**
@@ -1594,8 +2396,18 @@ typedef struct WuiScale {
   struct WuiAnchor anchor;
 } WuiScale;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiScale {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiScale value;
 } WuiMetadata_WuiScale;
 
@@ -1619,8 +2431,18 @@ typedef struct WuiRotation {
   struct WuiAnchor anchor;
 } WuiRotation;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiRotation {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiRotation value;
 } WuiMetadata_WuiRotation;
 
@@ -1644,8 +2466,18 @@ typedef struct WuiOffset {
   WuiComputed_f32 *y;
 } WuiOffset;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiOffset {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiOffset value;
 } WuiMetadata_WuiOffset;
 
@@ -1665,8 +2497,18 @@ typedef struct WuiOpacity {
   WuiComputed_f32 *value;
 } WuiOpacity;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiOpacity {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiOpacity value;
 } WuiMetadata_WuiOpacity;
 
@@ -1675,6 +2517,13 @@ typedef struct WuiMetadata_WuiOpacity {
  */
 typedef struct WuiMetadata_WuiOpacity WuiMetadataOpacity;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_bool WuiBinding_bool;
 
 /**
@@ -1687,8 +2536,18 @@ typedef struct WuiFocused {
   WuiBinding_bool *binding;
 } WuiFocused;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiFocused {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiFocused value;
 } WuiMetadata_WuiFocused;
 
@@ -1698,7 +2557,7 @@ typedef struct WuiMetadata_WuiFocused {
 typedef struct WuiMetadata_WuiFocused WuiMetadataFocused;
 
 /**
- * FFI-safe representation of IgnoreSafeArea.
+ * FFI-safe representation of `IgnoreSafeArea`.
  */
 typedef struct WuiIgnoreSafeArea {
   /**
@@ -1707,8 +2566,18 @@ typedef struct WuiIgnoreSafeArea {
   struct WuiEdgeSet edges;
 } WuiIgnoreSafeArea;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiIgnoreSafeArea {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiIgnoreSafeArea value;
 } WuiMetadata_WuiIgnoreSafeArea;
 
@@ -1729,8 +2598,18 @@ typedef struct WuiRetain {
   void *_opaque;
 } WuiRetain;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiRetain {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiRetain value;
 } WuiMetadata_WuiRetain;
 
@@ -1771,37 +2650,97 @@ typedef enum WuiPathCommand_Tag {
 } WuiPathCommand_Tag;
 
 typedef struct WuiPathCommand_MoveTo_Body {
+  /**
+   * Target X coordinate.
+   */
   float x;
+  /**
+   * Target Y coordinate.
+   */
   float y;
 } WuiPathCommand_MoveTo_Body;
 
 typedef struct WuiPathCommand_LineTo_Body {
+  /**
+   * Target X coordinate.
+   */
   float x;
+  /**
+   * Target Y coordinate.
+   */
   float y;
 } WuiPathCommand_LineTo_Body;
 
 typedef struct WuiPathCommand_QuadTo_Body {
+  /**
+   * Control point X coordinate.
+   */
   float cx;
+  /**
+   * Control point Y coordinate.
+   */
   float cy;
+  /**
+   * End point X coordinate.
+   */
   float x;
+  /**
+   * End point Y coordinate.
+   */
   float y;
 } WuiPathCommand_QuadTo_Body;
 
 typedef struct WuiPathCommand_CubicTo_Body {
+  /**
+   * First control point X coordinate.
+   */
   float c1x;
+  /**
+   * First control point Y coordinate.
+   */
   float c1y;
+  /**
+   * Second control point X coordinate.
+   */
   float c2x;
+  /**
+   * Second control point Y coordinate.
+   */
   float c2y;
+  /**
+   * End point X coordinate.
+   */
   float x;
+  /**
+   * End point Y coordinate.
+   */
   float y;
 } WuiPathCommand_CubicTo_Body;
 
 typedef struct WuiPathCommand_Arc_Body {
+  /**
+   * Center X coordinate.
+   */
   float cx;
+  /**
+   * Center Y coordinate.
+   */
   float cy;
+  /**
+   * Radius along the X axis.
+   */
   float rx;
+  /**
+   * Radius along the Y axis.
+   */
   float ry;
+  /**
+   * Start angle in radians.
+   */
   float start;
+  /**
+   * Sweep angle in radians.
+   */
   float sweep;
 } WuiPathCommand_Arc_Body;
 
@@ -1816,11 +2755,20 @@ typedef struct WuiPathCommand {
   };
 } WuiPathCommand;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiPathCommand {
   struct WuiPathCommand *head;
   uintptr_t len;
 } WuiArraySlice_WuiPathCommand;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiPathCommand {
   void (*drop)(void*);
   struct WuiArraySlice_WuiPathCommand (*slice)(const void*);
@@ -1828,7 +2776,8 @@ typedef struct WuiArrayVTable_WuiPathCommand {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -1849,8 +2798,18 @@ typedef struct WuiClipShape {
   struct WuiArray_WuiPathCommand commands;
 } WuiClipShape;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiClipShape {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiClipShape value;
 } WuiMetadata_WuiClipShape;
 
@@ -1859,17 +2818,40 @@ typedef struct WuiMetadata_WuiClipShape {
  */
 typedef struct WuiMetadata_WuiClipShape WuiMetadataClipShape;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_StyledStr WuiComputed_StyledStr;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_HorizontalAlignment WuiComputed_HorizontalAlignment;
 
+/**
+ *C ABI mirror of `TextConfig`.
+ */
 typedef struct WuiText {
+  /**
+   *Mirrors the `content` field of `TextConfig`.
+   */
   WuiComputed_StyledStr *content;
+  /**
+   *Mirrors the `paragraph_alignment` field of `TextConfig`.
+   */
   WuiComputed_HorizontalAlignment *paragraph_alignment;
 } WuiText;
 
 /**
- * FFI representation of the SystemIcon component.
+ * FFI representation of the `SystemIcon` component.
  *
  * Native backends render this as platform-native icons when supported.
  *
@@ -1919,6 +2901,13 @@ typedef struct WuiShortcut {
   struct WuiShortcutModifiers modifiers;
 } WuiShortcut;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_bool WuiComputed_bool;
 
 /**
@@ -1969,8 +2958,18 @@ typedef struct WuiContextMenu {
   struct WuiAnyViews *items;
 } WuiContextMenu;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiContextMenu {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiContextMenu value;
 } WuiMetadata_WuiContextMenu;
 
@@ -2007,8 +3006,18 @@ typedef struct WuiDraggable {
   struct WuiDraggableWrapper *inner;
 } WuiDraggable;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiDraggable {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiDraggable value;
 } WuiMetadata_WuiDraggable;
 
@@ -2027,8 +3036,18 @@ typedef struct WuiDropDestination {
   struct WuiDropHandler *handler;
 } WuiDropDestination;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiDropDestination {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiDropDestination value;
 } WuiMetadata_WuiDropDestination;
 
@@ -2038,7 +3057,7 @@ typedef struct WuiMetadata_WuiDropDestination {
 typedef struct WuiMetadata_WuiDropDestination WuiMetadataDropDestination;
 
 /**
- * FFI-safe representation of IgnorableMetadata<MaterialBackground>
+ * FFI-safe representation of `IgnorableMetadata`<MaterialBackground>
  */
 typedef struct WuiIgnorableMetadataMaterialBackground {
   /**
@@ -2061,8 +3080,18 @@ typedef struct WuiHittable {
   WuiComputed_bool *enabled;
 } WuiHittable;
 
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
 typedef struct WuiMetadata_WuiHittable {
+  /**
+   * The view content wrapped by this metadata node.
+   */
   struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
   struct WuiHittable value;
 } WuiMetadata_WuiHittable;
 
@@ -2071,28 +3100,78 @@ typedef struct WuiMetadata_WuiHittable {
  */
 typedef struct WuiMetadata_WuiHittable WuiMetadataHittable;
 
+/**
+ *C ABI mirror of `ResolvedColor`.
+ */
 typedef struct WuiResolvedColor {
+  /**
+   *Mirrors the `red` field of `ResolvedColor`.
+   */
   float red;
+  /**
+   *Mirrors the `green` field of `ResolvedColor`.
+   */
   float green;
+  /**
+   *Mirrors the `blue` field of `ResolvedColor`.
+   */
   float blue;
+  /**
+   *Mirrors the `opacity` field of `ResolvedColor`.
+   */
   float opacity;
+  /**
+   *Mirrors the `headroom` field of `ResolvedColor`.
+   */
   float headroom;
 } WuiResolvedColor;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_Color WuiBinding_Color;
 
+/**
+ *C ABI mirror of `ResolvedGradientStop`.
+ */
 typedef struct WuiResolvedGradientStop {
+  /**
+   *Mirrors the `position` field of `ResolvedGradientStop`.
+   */
   float position;
+  /**
+   *Mirrors the `color` field of `ResolvedGradientStop`.
+   */
   struct WuiResolvedColor color;
 } WuiResolvedGradientStop;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiResolvedGradientStop {
   struct WuiResolvedGradientStop *head;
   uintptr_t len;
 } WuiArraySlice_WuiResolvedGradientStop;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiResolvedGradientStop {
   void (*drop)(void*);
   struct WuiArraySlice_WuiResolvedGradientStop (*slice)(const void*);
@@ -2100,7 +3179,8 @@ typedef struct WuiArrayVTable_WuiResolvedGradientStop {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2110,28 +3190,90 @@ typedef struct WuiArray_WuiResolvedGradientStop {
   struct WuiArrayVTable_WuiResolvedGradientStop vtable;
 } WuiArray_WuiResolvedGradientStop;
 
+/**
+ * C ABI mirror of [`ResolvedGradient`], the backend-native gradient payload
+ * produced once a gradient's dynamic inputs have been resolved.
+ */
 typedef struct WuiResolvedGradient {
+  /**
+   * Gradient kind (linear, radial, angular, or mesh).
+   */
   enum WuiGradientType gradient_type;
+  /**
+   * The gradient's resolved color stops.
+   */
   struct WuiArray_WuiResolvedGradientStop stops;
+  /**
+   * Start point (linear) or center (radial/angular) x-coordinate.
+   */
   float start_x;
+  /**
+   * Start point (linear) or center (radial/angular) y-coordinate.
+   */
   float start_y;
+  /**
+   * End point (linear) x-coordinate.
+   */
   float end_x;
+  /**
+   * End point (linear) y-coordinate.
+   */
   float end_y;
+  /**
+   * Start radius (radial) or start angle (angular).
+   */
   float start_value;
+  /**
+   * End radius (radial) or end angle (angular).
+   */
   float end_value;
 } WuiResolvedGradient;
 
+/**
+ * C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
+ * per-corner radii used only by the rounded-rect variants.
+ */
 typedef struct WuiShapeKind {
+  /**
+   * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
+   * (uniform radius), 4 = uneven rounded rect (per-corner radii),
+   * 5 = capsule, 6 = custom path.
+   */
   int32_t tag;
+  /**
+   * Top-left corner radius, used by tags 3 and 4.
+   */
   float top_left;
+  /**
+   * Top-right corner radius, used by tags 3 and 4.
+   */
   float top_right;
+  /**
+   * Bottom-right corner radius, used by tags 3 and 4.
+   */
   float bottom_right;
+  /**
+   * Bottom-left corner radius, used by tags 3 and 4.
+   */
   float bottom_left;
 } WuiShapeKind;
 
+/**
+ * C ABI mirror of [`ResolvedShape`], the backend-native shape payload
+ * rendered directly by native backends.
+ */
 typedef struct WuiResolvedShape {
+  /**
+   * Shape kind for backend-side rendering optimization.
+   */
   struct WuiShapeKind kind;
+  /**
+   * Path commands in unit coordinate space.
+   */
   struct WuiArray_WuiPathCommand commands;
+  /**
+   * Read-only signal for the environment-resolved fill color.
+   */
   WuiComputed_ResolvedColor *fill;
 } WuiResolvedShape;
 
@@ -2218,29 +3360,82 @@ typedef struct WuiDragData {
   struct WuiStr value;
 } WuiDragData;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_Str WuiBinding_Str;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_Str WuiComputed_Str;
 
+/**
+ *C ABI mirror of `Style`.
+ */
 typedef struct WuiTextStyle {
+  /**
+   *Mirrors the `font` field of `Style`.
+   */
   struct WuiFont *font;
+  /**
+   *Mirrors the `italic` field of `Style`.
+   */
   bool italic;
+  /**
+   *Mirrors the `underline` field of `Style`.
+   */
   bool underline;
+  /**
+   *Mirrors the `strikethrough` field of `Style`.
+   */
   bool strikethrough;
+  /**
+   *Mirrors the `foreground` field of `Style`.
+   */
   struct WuiColor *foreground;
+  /**
+   *Mirrors the `background` field of `Style`.
+   */
   struct WuiColor *background;
 } WuiTextStyle;
 
+/**
+ * FFI representation of a single run of text sharing one `WuiTextStyle`.
+ */
 typedef struct WuiStyledChunk {
+  /**
+   * The text content of this run.
+   */
   struct WuiStr text;
+  /**
+   * The style applied to this run.
+   */
   struct WuiTextStyle style;
 } WuiStyledChunk;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiStyledChunk {
   struct WuiStyledChunk *head;
   uintptr_t len;
 } WuiArraySlice_WuiStyledChunk;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiStyledChunk {
   void (*drop)(void*);
   struct WuiArraySlice_WuiStyledChunk (*slice)(const void*);
@@ -2248,7 +3443,8 @@ typedef struct WuiArrayVTable_WuiStyledChunk {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2258,20 +3454,68 @@ typedef struct WuiArray_WuiStyledChunk {
   struct WuiArrayVTable_WuiStyledChunk vtable;
 } WuiArray_WuiStyledChunk;
 
+/**
+ * FFI representation of a string composed of independently styled runs.
+ */
 typedef struct WuiStyledStr {
+  /**
+   * The styled runs that make up the string, in order.
+   */
   struct WuiArray_WuiStyledChunk chunks;
 } WuiStyledStr;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_StyledStr WuiBinding_StyledStr;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_i32 WuiComputed_i32;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_f64 WuiComputed_f64;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_i32 WuiBinding_i32;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_f32 WuiBinding_f32;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_f64 WuiBinding_f64;
 
 /**
@@ -2304,6 +3548,13 @@ typedef struct WuiDateTime {
   uint8_t second;
 } WuiDateTime;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_DateTime WuiBinding_DateTime;
 
 /**
@@ -2324,11 +3575,20 @@ typedef struct WuiDate {
   uint8_t day;
 } WuiDate;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiDate {
   struct WuiDate *head;
   uintptr_t len;
 } WuiArraySlice_WuiDate;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiDate {
   void (*drop)(void*);
   struct WuiArraySlice_WuiDate (*slice)(const void*);
@@ -2336,7 +3596,8 @@ typedef struct WuiArrayVTable_WuiDate {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2346,16 +3607,58 @@ typedef struct WuiArray_WuiDate {
   struct WuiArrayVTable_WuiDate vtable;
 } WuiArray_WuiDate;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_Vec_Date WuiBinding_Vec_Date;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_Vec_Date WuiComputed_Vec_Date;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_Secure WuiBinding_Secure;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_Id WuiBinding_Id;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_ResolvedFont WuiComputed_ResolvedFont;
 
 /**
@@ -2376,11 +3679,20 @@ typedef struct WuiResolvedFont {
   struct WuiStr family;
 } WuiResolvedFont;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiId {
   struct WuiId *head;
   uintptr_t len;
 } WuiArraySlice_WuiId;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiId {
   void (*drop)(void*);
   struct WuiArraySlice_WuiId (*slice)(const void*);
@@ -2388,7 +3700,8 @@ typedef struct WuiArrayVTable_WuiId {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2398,8 +3711,22 @@ typedef struct WuiArray_WuiId {
   struct WuiArrayVTable_WuiId vtable;
 } WuiArray_WuiId;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_WindowState WuiBinding_WindowState;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_Rect WuiBinding_Rect;
 
 /**
@@ -2421,6 +3748,9 @@ typedef enum WuiWindowBackground_Tag {
 } WuiWindowBackground_Tag;
 
 typedef struct WuiWindowBackground_Color_Body {
+  /**
+   * Pointer to the reactive color to resolve and apply as the window background.
+   */
   struct WuiColor *color;
 } WuiWindowBackground_Color_Body;
 
@@ -2431,6 +3761,13 @@ typedef struct WuiWindowBackground {
   };
 } WuiWindowBackground;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_Size WuiComputed_Size;
 
 /**
@@ -2511,7 +3848,7 @@ typedef struct WuiLabel {
   struct WuiAnyView *view;
   /**
    * Spoken accessibility text. Always non-null; backends should bind
-   * this to platform accessibility APIs (VoiceOver, TalkBack, etc.).
+   * this to platform accessibility APIs (`VoiceOver`, `TalkBack`, etc.).
    */
   WuiComputed_StyledStr *accessibility_label;
   /**
@@ -2520,13 +3857,22 @@ typedef struct WuiLabel {
   enum WuiLabelDisplayMode display_mode;
 } WuiLabel;
 
+/**
+ * FFI representation of the `Button` component.
+ */
 typedef struct WuiButton {
   /**
    * Semantic label slot. Carries the visual view, accessibility text, and
    * visual mode in a single struct — see [`WuiLabel`].
    */
   struct WuiLabel label;
+  /**
+   * The action invoked when the button is activated.
+   */
   struct WuiAction *action;
+  /**
+   * The visual presentation style for the button.
+   */
   enum WuiButtonStyle style;
   /**
    * Reactive disabled state: the control renders as inactive and must
@@ -2535,18 +3881,51 @@ typedef struct WuiButton {
   WuiComputed_bool *disabled;
 } WuiButton;
 
+/**
+ * FFI representation of the `TextField` component.
+ */
 typedef struct WuiTextField {
+  /**
+   * Semantic label slot for the field — see [`WuiLabel`].
+   */
   struct WuiLabel label;
+  /**
+   * Reactive binding to the field's styled text content.
+   */
   WuiBinding_StyledStr *value;
+  /**
+   * Placeholder text shown when the field is empty.
+   */
   struct WuiText prompt;
+  /**
+   * The on-screen keyboard variant to present while editing.
+   */
   enum WuiKeyboardType keyboard;
+  /**
+   * Context menu items offered when the user selects text in the field.
+   */
   struct WuiAnyViews *selection_menu;
 } WuiTextField;
 
+/**
+ *C ABI mirror of `ToggleConfig`.
+ */
 typedef struct WuiToggle {
+  /**
+   *Mirrors the `label` field of `ToggleConfig`.
+   */
   struct WuiLabel label;
+  /**
+   *Mirrors the `toggle` field of `ToggleConfig`.
+   */
   WuiBinding_bool *toggle;
+  /**
+   *Mirrors the `style` field of `ToggleConfig`.
+   */
   enum WuiToggleStyle style;
+  /**
+   *Mirrors the `disabled` field of `ToggleConfig`.
+   */
   WuiComputed_bool *disabled;
 } WuiToggle;
 
@@ -2564,12 +3943,33 @@ typedef struct WuiRange_f64 {
   double end;
 } WuiRange_f64;
 
+/**
+ *C ABI mirror of `SliderConfig`.
+ */
 typedef struct WuiSlider {
+  /**
+   *Mirrors the `label` field of `SliderConfig`.
+   */
   struct WuiLabel label;
+  /**
+   *Mirrors the `min_value_label` field of `SliderConfig`.
+   */
   struct WuiAnyView *min_value_label;
+  /**
+   *Mirrors the `max_value_label` field of `SliderConfig`.
+   */
   struct WuiAnyView *max_value_label;
+  /**
+   *Mirrors the `range` field of `SliderConfig`.
+   */
   struct WuiRange_f64 range;
+  /**
+   *Mirrors the `value` field of `SliderConfig`.
+   */
   WuiBinding_f64 *value;
+  /**
+   *Mirrors the `disabled` field of `SliderConfig`.
+   */
   WuiComputed_bool *disabled;
 } WuiSlider;
 
@@ -2587,34 +3987,97 @@ typedef struct WuiRange_i32 {
   int32_t end;
 } WuiRange_i32;
 
+/**
+ *C ABI mirror of `StepperConfig`.
+ */
 typedef struct WuiStepper {
+  /**
+   *Mirrors the `value` field of `StepperConfig`.
+   */
   WuiBinding_i32 *value;
+  /**
+   *Mirrors the `step` field of `StepperConfig`.
+   */
   WuiComputed_i32 *step;
+  /**
+   *Mirrors the `label` field of `StepperConfig`.
+   */
   struct WuiLabel label;
+  /**
+   *Mirrors the `value_formatter` field of `StepperConfig`.
+   */
   WuiComputed_StyledStr *value_formatter;
+  /**
+   *Mirrors the `range` field of `StepperConfig`.
+   */
   struct WuiRange_i32 range;
 } WuiStepper;
 
+/**
+ *C ABI mirror of `ColorPickerConfig`.
+ */
 typedef struct WuiColorPicker {
+  /**
+   *Mirrors the `label` field of `ColorPickerConfig`.
+   */
   struct WuiLabel label;
+  /**
+   *Mirrors the `value` field of `ColorPickerConfig`.
+   */
   WuiBinding_Color *value;
+  /**
+   *Mirrors the `support_alpha` field of `ColorPickerConfig`.
+   */
   bool support_alpha;
+  /**
+   *Mirrors the `support_hdr` field of `ColorPickerConfig`.
+   */
   bool support_hdr;
 } WuiColorPicker;
 
+/**
+ * FFI representation of the `Picker` component.
+ */
 typedef struct WuiPicker {
+  /**
+   * The picker's items, rendered as an identity-tracked view collection.
+   */
   struct WuiAnyViews *items;
+  /**
+   * Reactive binding to the tag of the currently selected item.
+   */
   WuiBinding_Id *selection;
+  /**
+   * The visual presentation style for the picker.
+   */
   enum WuiPickerStyle style;
 } WuiPicker;
 
+/**
+ *C ABI mirror of `SecureFieldConfig`.
+ */
 typedef struct WuiSecureField {
+  /**
+   *Mirrors the `label` field of `SecureFieldConfig`.
+   */
   struct WuiLabel label;
+  /**
+   *Mirrors the `value` field of `SecureFieldConfig`.
+   */
   WuiBinding_Secure *value;
 } WuiSecureField;
 
+/**
+ * FFI representation of a single resolved picker item.
+ */
 typedef struct WuiPickerItem {
+  /**
+   * The stable identity tag used to track selection for this item.
+   */
   struct WuiId tag;
+  /**
+   * Reactive computed label text displayed for this item.
+   */
   WuiComputed_StyledStr *label;
 } WuiPickerItem;
 
@@ -2632,10 +4095,25 @@ typedef struct WuiRange_WuiDateTime {
   struct WuiDateTime end;
 } WuiRange_WuiDateTime;
 
+/**
+ *C ABI mirror of `DatePickerConfig`.
+ */
 typedef struct WuiDatePicker {
+  /**
+   *Mirrors the `label` field of `DatePickerConfig`.
+   */
   struct WuiLabel label;
+  /**
+   *Mirrors the `value` field of `DatePickerConfig`.
+   */
   WuiBinding_DateTime *value;
+  /**
+   *Mirrors the `range` field of `DatePickerConfig`.
+   */
   struct WuiRange_WuiDateTime range;
+  /**
+   *Mirrors the `ty` field of `DatePickerConfig`.
+   */
   enum WuiDatePickerType ty;
 } WuiDatePicker;
 
@@ -2653,23 +4131,70 @@ typedef struct WuiRange_WuiDate {
   struct WuiDate end;
 } WuiRange_WuiDate;
 
+/**
+ *C ABI mirror of `MultiDatePickerConfig`.
+ */
 typedef struct WuiMultiDatePicker {
+  /**
+   *Mirrors the `label` field of `MultiDatePickerConfig`.
+   */
   struct WuiLabel label;
+  /**
+   *Mirrors the `value` field of `MultiDatePickerConfig`.
+   */
   WuiBinding_Vec_Date *value;
+  /**
+   *Mirrors the `range` field of `MultiDatePickerConfig`.
+   */
   struct WuiRange_WuiDate range;
+  /**
+   *Mirrors the `decorated` field of `MultiDatePickerConfig`.
+   */
   WuiComputed_Vec_Date *decorated;
 } WuiMultiDatePicker;
 
+/**
+ *C ABI mirror of `ProgressConfig`.
+ */
 typedef struct WuiProgress {
+  /**
+   *Mirrors the `label` field of `ProgressConfig`.
+   */
   struct WuiAnyView *label;
+  /**
+   *Mirrors the `value_label` field of `ProgressConfig`.
+   */
   struct WuiAnyView *value_label;
+  /**
+   *Mirrors the `value` field of `ProgressConfig`.
+   */
   WuiComputed_f64 *value;
+  /**
+   *Mirrors the `style` field of `ProgressConfig`.
+   */
   enum WuiProgressStyle style;
+  /**
+   *Mirrors the `four_color` field of `ProgressConfig`.
+   */
   bool four_color;
 } WuiProgress;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_Region WuiComputed_Region;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_Vec_Annotation WuiComputed_Vec_Annotation;
 
 /**
@@ -2756,11 +4281,20 @@ typedef struct WuiAnnotation {
   struct WuiStr subtitle;
 } WuiAnnotation;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiAnnotation {
   struct WuiAnnotation *head;
   uintptr_t len;
 } WuiArraySlice_WuiAnnotation;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiAnnotation {
   void (*drop)(void*);
   struct WuiArraySlice_WuiAnnotation (*slice)(const void*);
@@ -2768,7 +4302,8 @@ typedef struct WuiArrayVTable_WuiAnnotation {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2778,11 +4313,20 @@ typedef struct WuiArray_WuiAnnotation {
   struct WuiArrayVTable_WuiAnnotation vtable;
 } WuiArray_WuiAnnotation;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_____WuiAnyView {
   struct WuiAnyView **head;
   uintptr_t len;
 } WuiArraySlice_____WuiAnyView;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_____WuiAnyView {
   void (*drop)(void*);
   struct WuiArraySlice_____WuiAnyView (*slice)(const void*);
@@ -2790,7 +4334,8 @@ typedef struct WuiArrayVTable_____WuiAnyView {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2800,13 +4345,33 @@ typedef struct WuiArray_____WuiAnyView {
   struct WuiArrayVTable_____WuiAnyView vtable;
 } WuiArray_____WuiAnyView;
 
+/**
+ * C ABI mirror of [`FixedContainer`], a view that executes an arbitrary
+ * [`Layout`] over an eagerly-collected, fixed set of child views.
+ */
 typedef struct WuiFixedContainer {
+  /**
+   * Owning handle to the boxed [`Layout`] implementation driving this container.
+   */
   struct WuiLayout *layout;
+  /**
+   * The container's child views, collected eagerly at construction time.
+   */
   struct WuiArray_____WuiAnyView contents;
 } WuiFixedContainer;
 
+/**
+ * C ABI mirror of [`LazyContainer`], a view that executes an arbitrary
+ * [`Layout`] over a lazily reconstructed collection of child views.
+ */
 typedef struct WuiContainer {
+  /**
+   * Owning handle to the boxed [`Layout`] implementation driving this container.
+   */
   struct WuiLayout *layout;
+  /**
+   * Handle to the lazily reconstructed child view collection.
+   */
   struct WuiAnyViews *contents;
 } WuiContainer;
 
@@ -2815,31 +4380,66 @@ typedef struct WuiContainer {
  */
 typedef void (*WuiLayoutInvalidationCallback)(void *context);
 
+/**
+ *C ABI mirror of `Size`.
+ */
 typedef struct WuiSize {
+  /**
+   *Mirrors the `width` field of `Size`.
+   */
   float width;
+  /**
+   *Mirrors the `height` field of `Size`.
+   */
   float height;
 } WuiSize;
 
+/**
+ *C ABI mirror of `Point`.
+ */
 typedef struct WuiPoint {
+  /**
+   *Mirrors the `x` field of `Point`.
+   */
   float x;
+  /**
+   *Mirrors the `y` field of `Point`.
+   */
   float y;
 } WuiPoint;
 
+/**
+ * C ABI mirror of [`Rect`]: an axis-aligned rectangle expressed as an
+ * origin point and a size, relative to its parent's coordinate space.
+ */
 typedef struct WuiRect {
   struct WuiPoint origin;
   struct WuiSize size;
 } WuiRect;
 
+/**
+ * C ABI mirror of one explicit horizontal alignment guide entry from
+ * [`ViewDimensions`], pairing a named alignment with its measured offset.
+ */
 typedef struct WuiHorizontalGuide {
   enum WuiHorizontalAlignment alignment;
   float value;
 } WuiHorizontalGuide;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiHorizontalGuide {
   struct WuiHorizontalGuide *head;
   uintptr_t len;
 } WuiArraySlice_WuiHorizontalGuide;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiHorizontalGuide {
   void (*drop)(void*);
   struct WuiArraySlice_WuiHorizontalGuide (*slice)(const void*);
@@ -2847,7 +4447,8 @@ typedef struct WuiArrayVTable_WuiHorizontalGuide {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2857,16 +4458,29 @@ typedef struct WuiArray_WuiHorizontalGuide {
   struct WuiArrayVTable_WuiHorizontalGuide vtable;
 } WuiArray_WuiHorizontalGuide;
 
+/**
+ * C ABI mirror of one explicit vertical alignment guide entry from
+ * [`ViewDimensions`], pairing a named alignment with its measured offset.
+ */
 typedef struct WuiVerticalGuide {
   enum WuiVerticalAlignment alignment;
   float value;
 } WuiVerticalGuide;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiVerticalGuide {
   struct WuiVerticalGuide *head;
   uintptr_t len;
 } WuiArraySlice_WuiVerticalGuide;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiVerticalGuide {
   void (*drop)(void*);
   struct WuiArraySlice_WuiVerticalGuide (*slice)(const void*);
@@ -2874,7 +4488,8 @@ typedef struct WuiArrayVTable_WuiVerticalGuide {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2884,22 +4499,32 @@ typedef struct WuiArray_WuiVerticalGuide {
   struct WuiArrayVTable_WuiVerticalGuide vtable;
 } WuiArray_WuiVerticalGuide;
 
+/**
+ * C ABI mirror of [`ViewDimensions`]: a measured size together with any
+ * explicit horizontal/vertical alignment guides the view exposes to its
+ * parent layout.
+ */
 typedef struct WuiViewDimensions {
   struct WuiSize size;
   struct WuiArray_WuiHorizontalGuide horizontal_guides;
   struct WuiArray_WuiVerticalGuide vertical_guides;
 } WuiViewDimensions;
 
+/**
+ * C ABI mirror of [`ProposalSize`]: the size a parent layout suggests to a
+ * child. Either axis may be unspecified, encoded here as `f32::NAN` to mean
+ * "the child decides its own size along this axis".
+ */
 typedef struct WuiProposalSize {
   float width;
   float height;
 } WuiProposalSize;
 
 /**
- * VTable for SubView operations.
+ * `VTable` for `SubView` operations.
  *
  * This structure contains function pointers that allow native code to implement
- * the SubView protocol. The native backend provides these callbacks to participate
+ * the `SubView` protocol. The native backend provides these callbacks to participate
  * in layout negotiation.
  */
 typedef struct WuiSubViewVTable {
@@ -2910,13 +4535,13 @@ typedef struct WuiSubViewVTable {
   struct WuiViewDimensions (*measure)(void *context, struct WuiProposalSize proposal);
   /**
    * Cleans up the context when the subview is no longer needed.
-   * Called when the WuiSubView is dropped.
+   * Called when the `WuiSubView` is dropped.
    */
   void (*drop)(void *context);
 } WuiSubViewVTable;
 
 /**
- * FFI representation of a SubView proxy.
+ * FFI representation of a `SubView` proxy.
  *
  * This allows native code to participate in the layout negotiation protocol
  * by providing callbacks that can be called multiple times with different proposals.
@@ -2932,7 +4557,7 @@ typedef struct WuiSubView {
    */
   void *context;
   /**
-   * VTable containing measure and drop functions
+   * `VTable` containing measure and drop functions
    */
   struct WuiSubViewVTable vtable;
   /**
@@ -2945,11 +4570,20 @@ typedef struct WuiSubView {
   int32_t priority;
 } WuiSubView;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiSubView {
   struct WuiSubView *head;
   uintptr_t len;
 } WuiArraySlice_WuiSubView;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiSubView {
   void (*drop)(void*);
   struct WuiArraySlice_WuiSubView (*slice)(const void*);
@@ -2957,7 +4591,8 @@ typedef struct WuiArrayVTable_WuiSubView {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2967,11 +4602,20 @@ typedef struct WuiArray_WuiSubView {
   struct WuiArrayVTable_WuiSubView vtable;
 } WuiArray_WuiSubView;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiRect {
   struct WuiRect *head;
   uintptr_t len;
 } WuiArraySlice_WuiRect;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiRect {
   void (*drop)(void*);
   struct WuiArraySlice_WuiRect (*slice)(const void*);
@@ -2979,7 +4623,8 @@ typedef struct WuiArrayVTable_WuiRect {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -2989,11 +4634,34 @@ typedef struct WuiArray_WuiRect {
   struct WuiArrayVTable_WuiRect vtable;
 } WuiArray_WuiRect;
 
+/**
+ * C ABI mirror of [`ScrollView`], a container that scrolls content larger
+ * than its own frame along one or both axes.
+ */
 typedef struct WuiScrollView {
+  /**
+   * The axis (or axes) along which this scroll view allows scrolling.
+   */
   enum WuiAxis axis;
+  /**
+   * The scrollable content view.
+   */
   struct WuiAnyView *content;
+  /**
+   * Read-only signal for the horizontal scroll target requested via
+   * `ScrollController::scroll_to`, or null if no controller is attached.
+   */
   WuiComputed_f32 *target_x;
+  /**
+   * Read-only signal for the vertical scroll target requested via
+   * `ScrollController::scroll_to`, or null if no controller is attached.
+   */
   WuiComputed_f32 *target_y;
+  /**
+   * Monotonically increasing generation that changes each time a new
+   * scroll request is issued, letting the backend detect a repeated
+   * request to the same target. Null if no controller is attached.
+   */
   WuiComputed_i32 *scroll_generation;
 } WuiScrollView;
 
@@ -3002,8 +4670,8 @@ typedef struct WuiScrollView {
  *
  * `section_label` and `section_footer` are owned by the consumer — when
  * they're empty the item carries no section break, otherwise the item opens
- * a new logical section visible to the renderer (UITableView sections,
- * NSTableView group rows, Material list groups, ...). Both fields are
+ * a new logical section visible to the renderer (`UITableView` sections,
+ * `NSTableView` group rows, Material list groups, ...). Both fields are
  * passed by value so ownership of the underlying byte buffers transfers
  * cleanly to the backend; no separate drop call is required.
  */
@@ -3061,10 +4729,19 @@ typedef struct WuiList {
   bool uses_sections;
 } WuiList;
 
+/**
+ * C ABI mirror of [`TableConfig`], a view arranging its columns in a table layout.
+ */
 typedef struct WuiTable {
+  /**
+   * Handle to the table's column collection.
+   */
   struct WuiAnyViews *columns;
 } WuiTable;
 
+/**
+ * C ABI mirror of [`TableColumn`], one labeled column of a table.
+ */
 typedef struct WuiTableColumn {
   /**
    * The column label as styled text.
@@ -3076,12 +4753,22 @@ typedef struct WuiTableColumn {
   struct WuiAnyViews *rows;
 } WuiTableColumn;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
 typedef struct Computed_Delivery WuiComputed_Delivery;
 
 /**
  * FFI representation of [`SubtitleSelection`].
  */
 typedef struct WuiSubtitleSelection {
+  /**
+   * Which selection mode is active.
+   */
   enum WuiSubtitleSelectionType selection_type;
   /**
    * Track index. Read only when `selection_type` is `Track`.
@@ -3089,12 +4776,22 @@ typedef struct WuiSubtitleSelection {
   uintptr_t track_index;
 } WuiSubtitleSelection;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_SubtitleSelection WuiBinding_SubtitleSelection;
 
 /**
  * FFI representation of [`AudioTrackSelection`].
  */
 typedef struct WuiAudioTrackSelection {
+  /**
+   * Which selection mode is active.
+   */
   enum WuiAudioTrackSelectionType selection_type;
   /**
    * Track index. Read only when `selection_type` is `Track`.
@@ -3102,12 +4799,22 @@ typedef struct WuiAudioTrackSelection {
   uintptr_t track_index;
 } WuiAudioTrackSelection;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_AudioTrackSelection WuiBinding_AudioTrackSelection;
 
 /**
  * FFI representation of [`VideoTrackSelection`].
  */
 typedef struct WuiVideoTrackSelection {
+  /**
+   * Which selection mode is active.
+   */
   enum WuiVideoTrackSelectionType selection_type;
   /**
    * Track index. Read only when `selection_type` is `Track`.
@@ -3115,15 +4822,38 @@ typedef struct WuiVideoTrackSelection {
   uintptr_t track_index;
 } WuiVideoTrackSelection;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_VideoTrackSelection WuiBinding_VideoTrackSelection;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_TrackCatalog WuiBinding_TrackCatalog;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiStr {
   struct WuiStr *head;
   uintptr_t len;
 } WuiArraySlice_WuiStr;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiStr {
   void (*drop)(void*);
   struct WuiArraySlice_WuiStr (*slice)(const void*);
@@ -3131,7 +4861,8 @@ typedef struct WuiArrayVTable_WuiStr {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -3145,16 +4876,34 @@ typedef struct WuiArray_WuiStr {
  * Native representation of one selectable audio track.
  */
 typedef struct WuiVideoAudioTrackInfo {
+  /**
+   * Human-readable track label.
+   */
   struct WuiStr label;
+  /**
+   * The track's language, as an empty string when unknown.
+   */
   struct WuiStr language;
+  /**
+   * Track role tags (e.g. "main", "commentary").
+   */
   struct WuiArray_WuiStr roles;
 } WuiVideoAudioTrackInfo;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiVideoAudioTrackInfo {
   struct WuiVideoAudioTrackInfo *head;
   uintptr_t len;
 } WuiArraySlice_WuiVideoAudioTrackInfo;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiVideoAudioTrackInfo {
   void (*drop)(void*);
   struct WuiArraySlice_WuiVideoAudioTrackInfo (*slice)(const void*);
@@ -3162,7 +4911,8 @@ typedef struct WuiArrayVTable_WuiVideoAudioTrackInfo {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -3176,20 +4926,50 @@ typedef struct WuiArray_WuiVideoAudioTrackInfo {
  * Native representation of one selectable video representation.
  */
 typedef struct WuiVideoTrackInfo {
+  /**
+   * Stable identifier for the track.
+   */
   struct WuiStr id;
+  /**
+   * Human-readable track label.
+   */
   struct WuiStr label;
+  /**
+   * Bitrate in bits per second; `0` means unknown.
+   */
   uint64_t bandwidth;
+  /**
+   * Frame width in pixels; `0` together with `height == 0` means unknown.
+   */
   uint32_t width;
+  /**
+   * Frame height in pixels; `0` together with `width == 0` means unknown.
+   */
   uint32_t height;
+  /**
+   * Codec identifiers for this representation (e.g. "hvc1").
+   */
   struct WuiArray_WuiStr codecs;
+  /**
+   * Whether this representation is HDR.
+   */
   bool hdr;
 } WuiVideoTrackInfo;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiVideoTrackInfo {
   struct WuiVideoTrackInfo *head;
   uintptr_t len;
 } WuiArraySlice_WuiVideoTrackInfo;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiVideoTrackInfo {
   void (*drop)(void*);
   struct WuiArraySlice_WuiVideoTrackInfo (*slice)(const void*);
@@ -3197,7 +4977,8 @@ typedef struct WuiArrayVTable_WuiVideoTrackInfo {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -3211,18 +4992,42 @@ typedef struct WuiArray_WuiVideoTrackInfo {
  * Native representation of one selectable subtitle track.
  */
 typedef struct WuiVideoSubtitleTrackInfo {
+  /**
+   * Human-readable track label.
+   */
   struct WuiStr label;
+  /**
+   * The track's language, as an empty string when unknown.
+   */
   struct WuiStr language;
+  /**
+   * Track role tags (e.g. "caption", "commentary").
+   */
   struct WuiArray_WuiStr roles;
+  /**
+   * Whether this track is a forced (director-mandated) subtitle track.
+   */
   bool forced;
+  /**
+   * Where this track was sourced from.
+   */
   enum WuiVideoSubtitleTrackOrigin origin;
 } WuiVideoSubtitleTrackInfo;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiVideoSubtitleTrackInfo {
   struct WuiVideoSubtitleTrackInfo *head;
   uintptr_t len;
 } WuiArraySlice_WuiVideoSubtitleTrackInfo;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiVideoSubtitleTrackInfo {
   void (*drop)(void*);
   struct WuiArraySlice_WuiVideoSubtitleTrackInfo (*slice)(const void*);
@@ -3230,7 +5035,8 @@ typedef struct WuiArrayVTable_WuiVideoSubtitleTrackInfo {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -3240,6 +5046,13 @@ typedef struct WuiArray_WuiVideoSubtitleTrackInfo {
   struct WuiArrayVTable_WuiVideoSubtitleTrackInfo vtable;
 } WuiArray_WuiVideoSubtitleTrackInfo;
 
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
 typedef struct Binding_Option_LiveWindow WuiBinding_Option_LiveWindow;
 
 /**
@@ -3272,23 +5085,70 @@ typedef struct WuiVideoLiveWindow {
  * FFI representation of a video event.
  */
 typedef struct WuiVideoEvent {
+  /**
+   * Which kind of event this is; determines which other fields are meaningful.
+   */
   enum WuiVideoEventType event_type;
   /**
    * Rust-owned error string. Non-null exactly when `event_type` is `Error`.
    */
   struct WuiStr *error_message;
+  /**
+   * Playback position in milliseconds, read when `event_type` is `PlaybackMetrics`.
+   */
   uint64_t position_ms;
+  /**
+   * Buffered-ahead duration in milliseconds.
+   */
   uint32_t buffered_ms;
+  /**
+   * Time from load start to first playable frame, in milliseconds.
+   */
   uint64_t startup_time_ms;
+  /**
+   * Whether `av_drift_ms` carries a measured audio/video drift.
+   */
   bool av_drift_available;
+  /**
+   * Observed audio/video drift in milliseconds, read only when
+   * `av_drift_available` is `true`.
+   */
   float av_drift_ms;
+  /**
+   * Total number of video frames dropped so far.
+   */
   uint64_t dropped_video_frames;
+  /**
+   * Total number of rebuffering stalls observed so far.
+   */
   uint64_t rebuffer_count;
+  /**
+   * Cumulative time spent rebuffering, in milliseconds.
+   */
   uint64_t rebuffer_duration_ms;
+  /**
+   * Observed network throughput in bits per second; `0` means unknown.
+   */
   uint64_t observed_network_throughput_bps;
+  /**
+   * Whether Picture-in-Picture is currently active, read when `event_type`
+   * is `PictureInPictureChanged`.
+   */
   bool picture_in_picture_active;
+  /**
+   * Whether external playback is currently active, read when `event_type`
+   * is `ExternalPlaybackChanged`.
+   */
   bool external_playback_active;
+  /**
+   * Whether playback is currently playing, read when `event_type` is
+   * `PlaybackStateChanged`.
+   */
   bool playback_active;
+  /**
+   * The active playback output path, read when `event_type` is
+   * `PlaybackOutputPathChanged`.
+   */
   enum WuiVideoPlaybackOutputPath playback_output_path;
 } WuiVideoEvent;
 
@@ -3296,11 +5156,31 @@ typedef struct WuiVideoEvent {
  * Immutable buffering and realtime strategy for native playback.
  */
 typedef struct WuiVideoPlaybackPolicy {
+  /**
+   * Whether this stream is treated as a realtime/live source rather than
+   * video-on-demand.
+   */
   bool realtime;
+  /**
+   * Buffer duration to accumulate before starting VOD playback, in milliseconds.
+   */
   uint32_t vod_start_buffer_ms;
+  /**
+   * Buffer duration to accumulate before resuming VOD playback after a
+   * stall, in milliseconds.
+   */
   uint32_t vod_resume_buffer_ms;
+  /**
+   * Buffer duration below which VOD playback is considered stalled, in milliseconds.
+   */
   uint32_t vod_stall_buffer_ms;
+  /**
+   * Maximum allowed live-edge lag before the player is considered behind, in milliseconds.
+   */
   uint32_t live_max_video_late_ms;
+  /**
+   * The required playback power path for this policy.
+   */
   enum WuiVideoPlaybackPowerPolicy power;
 } WuiVideoPlaybackPolicy;
 
@@ -3449,7 +5329,7 @@ typedef struct WuiVideo {
 } WuiVideo;
 
 /**
- * FFI representation of the interactive VideoPlayer component.
+ * FFI representation of the interactive `VideoPlayer` component.
  */
 typedef struct WuiVideoPlayer {
   /**
@@ -3470,16 +5350,34 @@ typedef struct WuiVideoPlayer {
   bool show_controls;
 } WuiVideoPlayer;
 
+/**
+ * FFI representation of a single toolbar item and its placement.
+ */
 typedef struct WuiNavigationToolbarItem {
+  /**
+   * Where this item is placed within the bar.
+   */
   enum WuiNavigationToolbarPlacement placement;
+  /**
+   * The item's content view.
+   */
   struct WuiAnyView *content;
 } WuiNavigationToolbarItem;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiNavigationToolbarItem {
   struct WuiNavigationToolbarItem *head;
   uintptr_t len;
 } WuiArraySlice_WuiNavigationToolbarItem;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiNavigationToolbarItem {
   void (*drop)(void*);
   struct WuiArraySlice_WuiNavigationToolbarItem (*slice)(const void*);
@@ -3487,7 +5385,8 @@ typedef struct WuiArrayVTable_WuiNavigationToolbarItem {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -3497,47 +5396,133 @@ typedef struct WuiArray_WuiNavigationToolbarItem {
   struct WuiArrayVTable_WuiNavigationToolbarItem vtable;
 } WuiArray_WuiNavigationToolbarItem;
 
+/**
+ * FFI representation of a navigation bar's search field configuration.
+ */
 typedef struct WuiNavigationSearch {
+  /**
+   * Reactive binding to the current search query text.
+   */
   WuiBinding_Str *text;
+  /**
+   * Reactive computed placeholder text shown when the query is empty.
+   */
   WuiComputed_StyledStr *prompt;
 } WuiNavigationSearch;
 
+/**
+ * FFI representation of an optional navigation search configuration.
+ *
+ * Used in place of a nullable pointer because `WuiNavigationSearch` embeds
+ * value fields rather than being independently heap-allocated.
+ */
 typedef struct WuiOptionalNavigationSearch {
+  /**
+   * `true` if `value` holds a real search configuration.
+   */
   bool has_value;
+  /**
+   * The search configuration, meaningful only when `has_value` is `true`.
+   */
   struct WuiNavigationSearch value;
 } WuiOptionalNavigationSearch;
 
+/**
+ * FFI representation of a `NavigationView`'s bar: title, toolbar, search,
+ * and appearance.
+ */
 typedef struct WuiBar {
+  /**
+   * The bar's title view.
+   */
   struct WuiAnyView *title;
+  /**
+   * The bar's subtitle view.
+   */
   struct WuiAnyView *subtitle;
+  /**
+   * Toolbar items placed around the bar, keyed by placement.
+   */
   struct WuiArray_WuiNavigationToolbarItem toolbar;
+  /**
+   * The bar's optional search field configuration.
+   */
   struct WuiOptionalNavigationSearch search;
+  /**
+   * Reactive computed bar tint color, resolved against the environment.
+   */
   WuiComputed_ResolvedColor *color;
+  /**
+   * Reactive signal controlling whether the bar is hidden.
+   */
   WuiComputed_bool *hidden;
+  /**
+   * The title's display mode (automatic, inline, or large).
+   */
   enum WuiNavigationTitleDisplayMode display_mode;
 } WuiBar;
 
+/**
+ * FFI representation of a navigation destination's lifecycle and pop state.
+ */
 typedef struct WuiNavigationDestinationState {
+  /**
+   * Reactive signal reporting whether an interactive pop gesture is allowed.
+   */
   WuiComputed_bool *pop_enabled;
+  /**
+   * Action invoked when the user attempts an interactive pop.
+   */
   struct WuiAction *pop_attempted;
+  /**
+   * Action invoked when the destination appears on screen.
+   */
   struct WuiAction *appear;
+  /**
+   * Action invoked when the destination disappears from screen.
+   */
   struct WuiAction *disappear;
+  /**
+   * Action that programmatically pops this destination.
+   */
   struct WuiAction *pop;
 } WuiNavigationDestinationState;
 
+/**
+ *C ABI mirror of `NavigationView`.
+ */
 typedef struct WuiNavigationView {
+  /**
+   *Mirrors the `bar` field of `NavigationView`.
+   */
   struct WuiBar bar;
+  /**
+   *Mirrors the `content` field of `NavigationView`.
+   */
   struct WuiAnyView *content;
+  /**
+   *Mirrors the `state` field of `NavigationView`.
+   */
   struct WuiNavigationDestinationState state;
 } WuiNavigationView;
 
+/**
+ * FFI representation of a navigation push/pop transition and its source anchor.
+ */
 typedef struct WuiNavigationTransition {
+  /**
+   * The kind of transition to perform.
+   */
   enum WuiNavigationTransitionKind kind;
+  /**
+   * The zoom-transition source view identifier, meaningful only when
+   * `kind` is `WuiNavigationTransitionKind::Zoom`.
+   */
   int32_t source_id;
 } WuiNavigationTransition;
 
 /**
- * FFI struct for NavigationStack<(),()>
+ * FFI struct for `NavigationStack`<(),()>
  */
 typedef struct WuiNavigationStack {
   /**
@@ -3550,16 +5535,39 @@ typedef struct WuiNavigationStack {
   struct WuiNavigationTransition transition;
 } WuiNavigationStack;
 
+/**
+ * Opaque handle to a Rust-owned resolver for split-view detail content.
+ *
+ * The resolver builds detail content for a selected split identifier. Native
+ * backends only pass this pointer back into the FFI functions below; they
+ * never inspect its contents.
+ */
 typedef struct WuiNavigationSplitDetail {
   uint8_t _private[0];
 } WuiNavigationSplitDetail;
 
+/**
+ * FFI representation of a resizable sidebar's width constraints.
+ */
 typedef struct WuiNavigationColumnWidth {
+  /**
+   * Minimum allowed sidebar width.
+   */
   float min;
+  /**
+   * Preferred (default) sidebar width.
+   */
   float ideal;
+  /**
+   * Maximum allowed sidebar width.
+   */
   float max;
 } WuiNavigationColumnWidth;
 
+/**
+ * FFI representation of a `NavigationSplitLayout`'s columns, selections, and
+ * resolvers.
+ */
 typedef struct WuiNavigationSplitLayout {
   /**
    * Sidebar content.
@@ -3599,6 +5607,9 @@ typedef struct WuiNavigationSplitLayout {
   enum WuiNavigationSplitStyle style;
 } WuiNavigationSplitLayout;
 
+/**
+ * FFI representation of a single tab within a `Tabs` component.
+ */
 typedef struct WuiTab {
   /**
    * The unique identifier for the tab (raw u64 for FFI compatibility).
@@ -3622,11 +5633,20 @@ typedef struct WuiTab {
   WuiComputed_bool *enabled;
 } WuiTab;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiTab {
   struct WuiTab *head;
   uintptr_t len;
 } WuiArraySlice_WuiTab;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiTab {
   void (*drop)(void*);
   struct WuiArraySlice_WuiTab (*slice)(const void*);
@@ -3634,7 +5654,8 @@ typedef struct WuiArrayVTable_WuiTab {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -3644,6 +5665,9 @@ typedef struct WuiArray_WuiTab {
   struct WuiArrayVTable_WuiTab vtable;
 } WuiArray_WuiTab;
 
+/**
+ * FFI representation of the `Tabs` component.
+ */
 typedef struct WuiTabs {
   /**
    * The currently selected tab identifier.
@@ -3659,11 +5683,20 @@ typedef struct WuiTabs {
   enum WuiTabStyle style;
 } WuiTabs;
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiNavigationView {
   struct WuiNavigationView *head;
   uintptr_t len;
 } WuiArraySlice_WuiNavigationView;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiNavigationView {
   void (*drop)(void*);
   struct WuiArraySlice_WuiNavigationView (*slice)(const void*);
@@ -3671,7 +5704,8 @@ typedef struct WuiArrayVTable_WuiNavigationView {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -3685,14 +5719,29 @@ typedef struct WuiArray_WuiNavigationView {
  * One atomic navigation stack mutation passed to a native backend.
  */
 typedef struct WuiNavigationTransaction {
+  /**
+   * Monotonically increasing identifier used to acknowledge this
+   * transaction via `waterui_navigation_transition_completed` /
+   * `waterui_navigation_transition_cancelled`.
+   */
   uint64_t id;
+  /**
+   * Number of existing stack entries, counted from the root, that are
+   * retained unchanged by this transaction.
+   */
   uintptr_t retained_prefix;
+  /**
+   * Number of existing stack entries removed after the retained prefix.
+   */
   uintptr_t removed;
+  /**
+   * The views to insert after the retained prefix, replacing any removed entries.
+   */
   struct WuiArray_WuiNavigationView inserted;
 } WuiNavigationTransaction;
 
 /**
- * FFI representation of a GpuSurface view.
+ * FFI representation of a `GpuSurface` view.
  *
  * This struct is passed to the native backend when rendering the view tree.
  * The native backend consumes it with `waterui_gpu_surface_create`, then owns
@@ -3700,7 +5749,7 @@ typedef struct WuiNavigationTransaction {
  */
 typedef struct WuiGpuSurface {
   /**
-   * Opaque pointer to the boxed GpuSurface.
+   * Opaque pointer to the boxed `GpuSurface`.
    * This is consumed during state creation and should not be used after.
    */
   void *surface;
@@ -3763,7 +5812,7 @@ typedef struct WuiCefInputModifiers {
 } WuiCefInputModifiers;
 
 /**
- * FFI representation of a WebView event.
+ * FFI representation of a `WebView` event.
  */
 typedef struct WuiWebViewEvent {
   /**
@@ -3771,7 +5820,7 @@ typedef struct WuiWebViewEvent {
    */
   enum WuiWebViewEventType event_type;
   /**
-   * URL associated with the event (for WillNavigate, SslError, Error, Redirect from).
+   * URL associated with the event (for `WillNavigate`, `SslError`, Error, Redirect from).
    */
   struct WuiStr *url;
   /**
@@ -3779,7 +5828,7 @@ typedef struct WuiWebViewEvent {
    */
   struct WuiStr *url2;
   /**
-   * Error/message string (for SslError, Error).
+   * Error/message string (for `SslError`, Error).
    */
   struct WuiStr *message;
   /**
@@ -3787,11 +5836,11 @@ typedef struct WuiWebViewEvent {
    */
   float progress;
   /**
-   * Whether can navigate back (for StateChanged).
+   * Whether can navigate back (for `StateChanged`).
    */
   bool can_go_back;
   /**
-   * Whether can navigate forward (for StateChanged).
+   * Whether can navigate forward (for `StateChanged`).
    */
   bool can_go_forward;
 } WuiWebViewEvent;
@@ -3830,7 +5879,13 @@ typedef struct WuiJsCallback {
  * `reply` must be called exactly once for request/response semantics.
  */
 typedef struct WuiWebViewMessage {
+  /**
+   * Base64-encoded message bytes sent from JavaScript.
+   */
   struct WuiStr payload_base64;
+  /**
+   * One-shot callback used to send a base64-encoded reply back to JavaScript.
+   */
   struct WuiJsCallback reply;
 } WuiWebViewMessage;
 
@@ -3861,13 +5916,13 @@ typedef struct WuiStringCallback {
 } WuiStringCallback;
 
 /**
- * FFI representation of a WebView handle with function pointers.
+ * FFI representation of a `WebView` handle with function pointers.
  *
  * Native backends create this struct with function pointers to their implementation.
  */
 typedef struct WuiWebViewHandle {
   /**
-   * Opaque pointer to native WebView wrapper.
+   * Opaque pointer to native `WebView` wrapper.
    */
   void *data;
   /**
@@ -3944,7 +5999,7 @@ typedef struct WuiWebViewHandle {
 } WuiWebViewHandle;
 
 /**
- * Type for the native function that creates a new WebView.
+ * Type for the native function that creates a new `WebView`.
  */
 typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
 
@@ -3953,11 +6008,11 @@ typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
  */
 typedef struct WuiAppliedFilter {
   /**
-   * The child view to capture (pointer to WuiAnyView).
+   * The child view to capture (pointer to `WuiAnyView`).
    */
   struct WuiAnyView *content;
   /**
-   * Opaque pointer to the boxed AppliedFilter.
+   * Opaque pointer to the boxed `AppliedFilter`.
    * This is consumed during create and should not be used after.
    */
   void *filter;
@@ -4098,7 +6153,7 @@ typedef struct WuiGestureState {
 } WuiGestureState;
 
 /**
- * FFI-safe combined input state for a GpuSurface.
+ * FFI-safe combined input state for a `GpuSurface`.
  *
  * This keeps the native bridge minimal by forwarding pointer and gesture
  * snapshots in one call.
@@ -4133,11 +6188,20 @@ typedef enum WuiOutputSize_Tag {
 } WuiOutputSize_Tag;
 
 typedef struct WuiOutputSize_Fixed_Body {
+  /**
+   * Output width in pixels.
+   */
   uint32_t width;
+  /**
+   * Output height in pixels.
+   */
   uint32_t height;
 } WuiOutputSize_Fixed_Body;
 
 typedef struct WuiOutputSize_Scale_Body {
+  /**
+   * Multiplier applied to the input's width and height.
+   */
   float factor;
 } WuiOutputSize_Scale_Body;
 
@@ -4150,7 +6214,7 @@ typedef struct WuiOutputSize {
 } WuiOutputSize;
 
 /**
- * FFI representation of a ViewEffect view.
+ * FFI representation of a `ViewEffect` view.
  *
  * This struct is passed to the native backend when rendering the view tree.
  * The native backend should:
@@ -4162,7 +6226,7 @@ typedef struct WuiOutputSize {
  */
 typedef struct WuiViewEffect {
   /**
-   * The child view to capture (pointer to WuiAnyView).
+   * The child view to capture (pointer to `WuiAnyView`).
    */
   struct WuiAnyView *content;
   /**
@@ -4221,11 +6285,20 @@ typedef void (*ViewRenderFn)(void *context,
                              struct WuiSize size,
                              struct ViewRenderCallback callback);
 
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
 typedef struct WuiArraySlice_WuiWindow {
   struct WuiWindow *head;
   uintptr_t len;
 } WuiArraySlice_WuiWindow;
 
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
 typedef struct WuiArrayVTable_WuiWindow {
   void (*drop)(void*);
   struct WuiArraySlice_WuiWindow (*slice)(const void*);
@@ -4233,7 +6306,8 @@ typedef struct WuiArrayVTable_WuiWindow {
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
@@ -4377,12 +6451,12 @@ struct WuiStr *waterui_str_box(struct WuiStr value);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_env_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4392,12 +6466,12 @@ WuiMetadataEnv waterui_force_as_metadata_env(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_navigation_transition_source_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4407,12 +6481,12 @@ WuiMetadataNavigationTransitionSource waterui_force_as_metadata_navigation_trans
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_navigation_transition_destination_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4422,12 +6496,12 @@ WuiMetadataNavigationTransitionDestination waterui_force_as_metadata_navigation_
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_secure_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4437,12 +6511,12 @@ WuiMetadataSecure waterui_force_as_metadata_secure(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_standard_dynamic_range_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4452,12 +6526,12 @@ WuiMetadataStandardDynamicRange waterui_force_as_metadata_standard_dynamic_range
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_high_dynamic_range_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4467,12 +6541,12 @@ WuiMetadataHighDynamicRange waterui_force_as_metadata_high_dynamic_range(struct 
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_gesture_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4482,12 +6556,12 @@ WuiMetadataGesture waterui_force_as_metadata_gesture(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_lifecycle_hook_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4497,12 +6571,12 @@ WuiMetadataLifecycleHook waterui_force_as_metadata_lifecycle_hook(struct WuiAnyV
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_on_event_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4512,12 +6586,12 @@ WuiMetadataOnEvent waterui_force_as_metadata_on_event(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_cursor_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4527,12 +6601,12 @@ WuiMetadataCursor waterui_force_as_metadata_cursor(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_shadow_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4542,12 +6616,12 @@ WuiMetadataShadow waterui_force_as_metadata_shadow(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_border_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4557,12 +6631,12 @@ WuiMetadataBorder waterui_force_as_metadata_border(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_scale_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4572,12 +6646,12 @@ WuiMetadataScale waterui_force_as_metadata_scale(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_rotation_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4587,12 +6661,12 @@ WuiMetadataRotation waterui_force_as_metadata_rotation(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_offset_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4602,12 +6676,12 @@ WuiMetadataOffset waterui_force_as_metadata_offset(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_opacity_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4617,12 +6691,12 @@ WuiMetadataOpacity waterui_force_as_metadata_opacity(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_focused_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4632,12 +6706,12 @@ WuiMetadataFocused waterui_force_as_metadata_focused(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_ignore_safe_area_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4647,12 +6721,12 @@ WuiMetadataIgnoreSafeArea waterui_force_as_metadata_ignore_safe_area(struct WuiA
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_retain_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4671,12 +6745,12 @@ void waterui_drop_retain(struct WuiRetain retain);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_clip_shape_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4735,16 +6809,19 @@ struct WuiShortcut waterui_menu_item_take_shortcut(struct WuiShortcut *shortcut)
  */
 struct WuiMenuItem waterui_force_as_menu_item(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_menu_item_id(void);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_context_menu_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4761,16 +6838,19 @@ WuiMetadataContextMenu waterui_force_as_metadata_context_menu(struct WuiAnyView 
  */
 struct WuiMenu waterui_force_as_menu(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_menu_id(void);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_draggable_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4780,12 +6860,12 @@ WuiMetadataDraggable waterui_force_as_metadata_draggable(struct WuiAnyView *view
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_drop_destination_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4795,12 +6875,12 @@ WuiMetadataDropDestination waterui_force_as_metadata_drop_destination(struct Wui
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_ignorable_metadata_material_background_id(void);
 
 /**
- * Force-casts an AnyView to this ignorable metadata type
+ * Force-casts an `AnyView` to this ignorable metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4810,12 +6890,12 @@ struct WuiIgnorableMetadataMaterialBackground waterui_force_as_ignorable_metadat
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_hittable_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -4995,6 +7075,9 @@ struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
  */
 struct WuiResolvedColor waterui_force_as_resolved_color(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_resolved_color_id(void);
 
 /**
@@ -5057,6 +7140,9 @@ WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
  */
 struct WuiResolvedGradient waterui_force_as_resolved_gradient(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_resolved_gradient_id(void);
 
 /**
@@ -5068,6 +7154,9 @@ struct WuiTypeId waterui_resolved_gradient_id(void);
  */
 struct WuiResolvedShape waterui_force_as_resolved_shape(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_resolved_shape_id(void);
 
 /**
@@ -5120,7 +7209,7 @@ struct WuiWatcher_CursorStyle *waterui_new_watcher_cursor_style(void *data,
  *
  * # Safety
  *
- * * `draggable` must be a valid pointer to a WuiDraggable.
+ * * `draggable` must be a valid pointer to a `WuiDraggable`.
  */
 struct WuiDragData waterui_draggable_get_data(const struct WuiDraggable *draggable);
 
@@ -5129,7 +7218,7 @@ struct WuiDragData waterui_draggable_get_data(const struct WuiDraggable *draggab
  *
  * # Safety
  *
- * * `draggable` must be a valid pointer to a WuiDraggable.
+ * * `draggable` must be a valid pointer to a `WuiDraggable`.
  */
 void waterui_drop_draggable(struct WuiDraggable *draggable);
 
@@ -5138,9 +7227,9 @@ void waterui_drop_draggable(struct WuiDraggable *draggable);
  *
  * # Safety
  *
- * * `handler` must be a valid pointer to a WuiDropDestination.
- * * `env` must be a valid pointer to a WuiEnv.
- * * `data_tag` must be a valid WuiDragDataTag value.
+ * * `handler` must be a valid pointer to a `WuiDropDestination`.
+ * * `env` must be a valid pointer to a `WuiEnv`.
+ * * `data_tag` must be a valid `WuiDragDataTag` value.
  * * `data_value` must be a valid null-terminated UTF-8 string.
  */
 void waterui_call_drop_handler(const struct WuiDropDestination *dest,
@@ -5153,8 +7242,8 @@ void waterui_call_drop_handler(const struct WuiDropDestination *dest,
  *
  * # Safety
  *
- * * `dest` must be a valid pointer to a WuiDropDestination.
- * * `env` must be a valid pointer to a WuiEnv.
+ * * `dest` must be a valid pointer to a `WuiDropDestination`.
+ * * `env` must be a valid pointer to a `WuiEnv`.
  */
 void waterui_call_drop_enter_handler(const struct WuiDropDestination *dest,
                                      const struct WuiEnv *env);
@@ -5164,8 +7253,8 @@ void waterui_call_drop_enter_handler(const struct WuiDropDestination *dest,
  *
  * # Safety
  *
- * * `dest` must be a valid pointer to a WuiDropDestination.
- * * `env` must be a valid pointer to a WuiEnv.
+ * * `dest` must be a valid pointer to a `WuiDropDestination`.
+ * * `env` must be a valid pointer to a `WuiEnv`.
  */
 void waterui_call_drop_exit_handler(const struct WuiDropDestination *dest,
                                     const struct WuiEnv *env);
@@ -5175,7 +7264,7 @@ void waterui_call_drop_exit_handler(const struct WuiDropDestination *dest,
  *
  * # Safety
  *
- * * `dest` must be a valid pointer to a WuiDropDestination.
+ * * `dest` must be a valid pointer to a `WuiDropDestination`.
  */
 void waterui_drop_drop_destination(struct WuiDropDestination *dest);
 
@@ -5185,7 +7274,7 @@ void waterui_drop_drop_destination(struct WuiDropDestination *dest);
  * # Safety
  *
  * * `handler` must be a valid pointer to a `WuiLifecycleHookHandler`.
- * * `env` must be a valid pointer to a WuiEnv.
+ * * `env` must be a valid pointer to a `WuiEnv`.
  * * This consumes the handler - it can only be called once.
  */
 void waterui_call_lifecycle_hook(struct WuiLifecycleHookHandler *handler, const struct WuiEnv *env);
@@ -5200,23 +7289,23 @@ void waterui_call_lifecycle_hook(struct WuiLifecycleHookHandler *handler, const 
 void waterui_drop_lifecycle_hook(struct WuiLifecycleHookHandler *handler);
 
 /**
- * Calls an OnEvent handler with the given environment.
+ * Calls an `OnEvent` handler with the given environment.
  * This handler can be called multiple times (repeatable).
  *
  * # Safety
  *
- * * `handler` must be a valid pointer to a WuiOnEventHandler.
- * * `env` must be a valid pointer to a WuiEnv.
+ * * `handler` must be a valid pointer to a `WuiOnEventHandler`.
+ * * `env` must be a valid pointer to a `WuiEnv`.
  */
 void waterui_call_on_event(const struct WuiOnEventHandler *handler, const struct WuiEnv *env);
 
 /**
- * Calls an OnEvent hover-move handler with the given local pointer position.
+ * Calls an `OnEvent` hover-move handler with the given local pointer position.
  *
  * # Safety
  *
- * * `handler` must be a valid pointer to a WuiOnEventHandler.
- * * `env` must be a valid pointer to a WuiEnv.
+ * * `handler` must be a valid pointer to a `WuiOnEventHandler`.
+ * * `env` must be a valid pointer to a `WuiEnv`.
  */
 void waterui_call_on_hover_event(const struct WuiOnEventHandler *handler,
                                  const struct WuiEnv *env,
@@ -5224,16 +7313,16 @@ void waterui_call_on_hover_event(const struct WuiOnEventHandler *handler,
                                  float y);
 
 /**
- * Drops an OnEvent handler.
+ * Drops an `OnEvent` handler.
  *
  * # Safety
  *
- * * `handler` must be a valid pointer to a WuiOnEventHandler.
+ * * `handler` must be a valid pointer to a `WuiOnEventHandler`.
  */
 void waterui_drop_on_event(struct WuiOnEventHandler *handler);
 
 /**
- * Drops a WuiGesture, recursively freeing any composite variants.
+ * Drops a `WuiGesture`, recursively freeing any composite variants.
  *
  * # Safety
  *
@@ -5355,6 +7444,9 @@ void waterui_drop_binding_styled_str(WuiBinding_StyledStr *binding);
  *
  * Native text controls can pass their current editor string without first
  * constructing an owned FFI `WuiStr`.
+ *
+ * # Panics
+ * Panics if `bytes` is null while `len` is non-zero.
  *
  * # Safety
  * `binding` must be a valid pointer to `WuiBinding<StyledStr>`. `bytes` must
@@ -5957,7 +8049,7 @@ void waterui_theme_install_font(struct WuiEnv *env,
 WuiComputed_ResolvedFont *waterui_theme_font(const struct WuiEnv *env, enum WuiFontSlot slot);
 
 /**
- * Calls a ColorScheme watcher with the given value.
+ * Calls a `ColorScheme` watcher with the given value.
  * Used by native code to notify Rust when color scheme changes.
  * # Safety
  * The watcher pointer must be valid.
@@ -5966,14 +8058,14 @@ void waterui_call_watcher_color_scheme(const struct WuiWatcher_ColorScheme *watc
                                        enum WuiColorScheme value);
 
 /**
- * Drops a ColorScheme watcher.
+ * Drops a `ColorScheme` watcher.
  * # Safety
  * The watcher pointer must be valid.
  */
 void waterui_drop_watcher_color_scheme(struct WuiWatcher_ColorScheme *watcher);
 
 /**
- * Calls a ResolvedColor watcher with the given value.
+ * Calls a `ResolvedColor` watcher with the given value.
  * Used by native code to notify Rust when a color value changes.
  * # Safety
  * The watcher pointer must be valid.
@@ -5982,14 +8074,14 @@ void waterui_call_watcher_resolved_color(const struct WuiWatcher_ResolvedColor *
                                          struct WuiResolvedColor value);
 
 /**
- * Drops a ResolvedColor watcher.
+ * Drops a `ResolvedColor` watcher.
  * # Safety
  * The watcher pointer must be valid.
  */
 void waterui_drop_watcher_resolved_color(struct WuiWatcher_ResolvedColor *watcher);
 
 /**
- * Calls a ResolvedFont watcher with the given value.
+ * Calls a `ResolvedFont` watcher with the given value.
  * Used by native code to notify Rust when a font value changes.
  * # Safety
  * The watcher pointer must be valid.
@@ -5998,7 +8090,7 @@ void waterui_call_watcher_resolved_font(const struct WuiWatcher_ResolvedFont *wa
                                         struct WuiResolvedFont value);
 
 /**
- * Drops a ResolvedFont watcher.
+ * Drops a `ResolvedFont` watcher.
  * # Safety
  * The watcher pointer must be valid.
  */
@@ -6099,7 +8191,7 @@ struct WuiWatcher_WindowState *waterui_new_watcher_window_state(void *data,
                                                                 void (*drop)(void*));
 
 /**
- * Installs a WindowManager into the environment from a native function pointer.
+ * Installs a `WindowManager` into the environment from a native function pointer.
  *
  * Native backends call this during initialization to register their window
  * management implementation. When `Window` views are rendered, the provided
@@ -6127,6 +8219,9 @@ void waterui_env_install_window_manager(struct WuiEnv *env,
  */
 struct WuiStr waterui_force_as_plain(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_plain_id(void);
 
 /**
@@ -6143,6 +8238,9 @@ struct WuiTypeId waterui_empty_id(void);
  */
 struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_button_id(void);
 
 /**
@@ -6154,6 +8252,9 @@ struct WuiTypeId waterui_button_id(void);
  */
 struct WuiTextField waterui_force_as_text_field(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_text_field_id(void);
 
 /**
@@ -6165,6 +8266,9 @@ struct WuiTypeId waterui_text_field_id(void);
  */
 struct WuiToggle waterui_force_as_toggle(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_toggle_id(void);
 
 /**
@@ -6176,6 +8280,9 @@ struct WuiTypeId waterui_toggle_id(void);
  */
 struct WuiSlider waterui_force_as_slider(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_slider_id(void);
 
 /**
@@ -6187,6 +8294,9 @@ struct WuiTypeId waterui_slider_id(void);
  */
 struct WuiStepper waterui_force_as_stepper(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_stepper_id(void);
 
 /**
@@ -6198,6 +8308,9 @@ struct WuiTypeId waterui_stepper_id(void);
  */
 struct WuiColorPicker waterui_force_as_color_picker(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_color_picker_id(void);
 
 /**
@@ -6209,6 +8322,9 @@ struct WuiTypeId waterui_color_picker_id(void);
  */
 struct WuiPicker waterui_force_as_picker(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_picker_id(void);
 
 /**
@@ -6220,6 +8336,9 @@ struct WuiTypeId waterui_picker_id(void);
  */
 struct WuiSecureField waterui_force_as_secure_field(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_secure_field_id(void);
 
 /**
@@ -6231,6 +8350,9 @@ struct WuiTypeId waterui_secure_field_id(void);
  */
 struct WuiPickerItem waterui_force_as_picker_item(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_picker_item_id(void);
 
 /**
@@ -6242,6 +8364,9 @@ struct WuiTypeId waterui_picker_item_id(void);
  */
 struct WuiDatePicker waterui_force_as_date_picker(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_date_picker_id(void);
 
 /**
@@ -6253,6 +8378,9 @@ struct WuiTypeId waterui_date_picker_id(void);
  */
 struct WuiMultiDatePicker waterui_force_as_multi_date_picker(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_multi_date_picker_id(void);
 
 /**
@@ -6264,6 +8392,9 @@ struct WuiTypeId waterui_multi_date_picker_id(void);
  */
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_progress_id(void);
 
 /**
@@ -6275,6 +8406,9 @@ struct WuiTypeId waterui_progress_id(void);
  */
 struct WuiMap waterui_force_as_map(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_map_id(void);
 
 /**
@@ -6372,6 +8506,9 @@ struct WuiTypeId waterui_spacer_id(void);
  */
 struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_fixed_container_id(void);
 
 /**
@@ -6383,6 +8520,9 @@ struct WuiTypeId waterui_fixed_container_id(void);
  */
 struct WuiContainer waterui_force_as_layout_container(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_layout_container_id(void);
 
 /**
@@ -6567,6 +8707,9 @@ enum WuiVerticalAlignment waterui_layout_lazy_stack_vertical_alignment(struct Wu
  */
 struct WuiScrollView waterui_force_as_scroll_view(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_scroll_view_id(void);
 
 /**
@@ -6588,6 +8731,9 @@ struct WuiListItem waterui_force_as_list_item(struct WuiAnyView *view);
  */
 struct WuiList waterui_force_as_list(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_list_id(void);
 
 /**
@@ -6599,6 +8745,9 @@ struct WuiTypeId waterui_list_id(void);
  */
 struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_table_id(void);
 
 /**
@@ -6860,6 +9009,11 @@ void waterui_drop_video_controller(struct WuiVideoController *value);
 /**
  * Selects the next item through the session controller retained by a native player.
  *
+ * # Panics
+ *
+ * Panics if the native "next" command is enabled but the controller cannot
+ * resolve a next playlist item.
+ *
  * # Safety
  *
  * `controller` must be a live pointer from a video playback descriptor.
@@ -6868,6 +9022,11 @@ void waterui_video_controller_next(const struct WuiVideoController *controller);
 
 /**
  * Selects the previous item through the session controller retained by a native player.
+ *
+ * # Panics
+ *
+ * Panics if the native "previous" command is enabled but the controller
+ * cannot resolve a previous playlist item.
  *
  * # Safety
  *
@@ -6895,6 +9054,9 @@ void waterui_video_event_handler_call(const struct WuiVideoEventHandler *handler
  */
 struct WuiVideo waterui_force_as_video(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_video_id(void);
 
 /**
@@ -6906,6 +9068,9 @@ struct WuiTypeId waterui_video_id(void);
  */
 struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_video_player_id(void);
 
 /**
@@ -6917,6 +9082,9 @@ struct WuiTypeId waterui_video_player_id(void);
  */
 struct WuiNavigationView waterui_force_as_navigation_view(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_navigation_view_id(void);
 
 /**
@@ -6928,6 +9096,9 @@ struct WuiTypeId waterui_navigation_view_id(void);
  */
 struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_navigation_stack_id(void);
 
 /**
@@ -6972,6 +9143,9 @@ struct WuiNavigationView waterui_split_navigation_detail_content(struct WuiNavig
  */
 struct WuiNavigationSplitLayout waterui_force_as_split_navigation_container(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_split_navigation_container_id(void);
 
 /**
@@ -7002,6 +9176,9 @@ struct WuiNavigationView waterui_tab_content(struct WuiTabContent *handler,
  */
 struct WuiTabs waterui_force_as_tabs(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_tabs_id(void);
 
 /**
@@ -7022,7 +9199,7 @@ void waterui_env_install_navigation_controller(struct WuiEnv *env,
 /**
  * Checks if a navigation controller is installed in the environment.
  *
- * Returns true if a NavigationController is available, false otherwise.
+ * Returns true if a `NavigationController` is available, false otherwise.
  * Use this to determine whether to show a back button in navigation views.
  *
  * # Safety
@@ -7034,7 +9211,7 @@ bool waterui_env_has_navigation_controller(const struct WuiEnv *env);
 /**
  * Requests a user-initiated pop from the Rust navigation state.
  *
- * If no NavigationController is installed in the environment, this function does nothing.
+ * If no `NavigationController` is installed in the environment, this function does nothing.
  *
  * # Safety
  *
@@ -7044,6 +9221,10 @@ void waterui_navigation_pop(const struct WuiEnv *env);
 
 /**
  * Commits a pop already completed interactively by the native container.
+ *
+ * # Panics
+ *
+ * Panics if no `NavigationController` is installed in the environment.
  *
  * # Safety
  *
@@ -7058,6 +9239,10 @@ void waterui_navigation_complete_native_pop(const struct WuiEnv *env, uintptr_t 
  * Stale acknowledgements are ignored because a newer transaction owns the
  * native stack projection.
  *
+ * # Panics
+ *
+ * Panics if no `NavigationController` is installed in the environment.
+ *
  * # Safety
  *
  * `env` must point to the live environment for the reporting stack.
@@ -7066,6 +9251,10 @@ bool waterui_navigation_transition_completed(const struct WuiEnv *env, uint64_t 
 
 /**
  * Acknowledges cancellation of a native navigation transaction.
+ *
+ * # Panics
+ *
+ * Panics if no `NavigationController` is installed in the environment.
  *
  * # Safety
  *
@@ -7082,6 +9271,9 @@ bool waterui_navigation_transition_cancelled(const struct WuiEnv *env, uint64_t 
  */
 struct WuiCefSurface waterui_force_as_chromium(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_chromium_id(void);
 
 /**
@@ -7286,6 +9478,9 @@ void waterui_drop_dynamic(struct WuiDynamic *value);
  */
 struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_dynamic_id(void);
 
 /**
@@ -7305,6 +9500,9 @@ void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_AnyVi
  */
 struct WuiSystemIcon waterui_force_as_system_icon(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_system_icon_id(void);
 
 /**
@@ -7322,29 +9520,37 @@ void waterui_drop_web_view(struct WuiWebView *value);
  */
 struct WuiWebView *waterui_force_as_webview(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_webview_id(void);
 
 /**
- * Gets the native handle pointer from a WebView.
+ * Gets the native handle pointer from a `WebView`.
  *
- * Returns the opaque pointer to the native WebView wrapper (Swift/Kotlin).
+ * Returns the opaque pointer to the native `WebView` wrapper (Swift/Kotlin).
  * This pointer can be used by native backends to access the underlying
- * WKWebView or Android WebView.
+ * `WKWebView` or Android `WebView`.
  *
  * # Safety
  *
  * - The caller must ensure that `webview` is a valid pointer to a `WuiWebView`.
- * - The WebView must have been created via the FFI WebViewController (i.e., the handle
+ * - The `WebView` must have been created via the FFI `WebViewController` (i.e., the handle
  *   must be an `FfiWebViewHandle`). This is guaranteed when the native backend properly
- *   installed the WebViewController via `waterui_env_install_webview_controller`.
+ *   installed the `WebViewController` via `waterui_env_install_webview_controller`.
+ *
+ * # Panics
+ *
+ * Panics if the `WebView`'s handle was not created via the FFI `WebViewController`
+ * (i.e., it does not downcast to `FfiWebViewHandle`).
  */
 void *waterui_webview_native_handle(struct WuiWebView *webview);
 
 /**
- * Installs a WebViewController into the environment from a native factory function.
+ * Installs a `WebViewController` into the environment from a native factory function.
  *
- * Native backends call this during initialization to register their WebView factory.
- * The factory creates blank WebViews that can be navigated with `go_to()`.
+ * Native backends call this during initialization to register their `WebView` factory.
+ * The factory creates blank `WebViews` that can be navigated with `go_to()`.
  *
  * # Safety
  *
@@ -7355,7 +9561,7 @@ void *waterui_webview_native_handle(struct WuiWebView *webview);
 void waterui_env_install_webview_controller(struct WuiEnv *env, WuiCreateWebViewFn create_fn);
 
 /**
- * Returns whether a WebView controller is already installed in the environment.
+ * Returns whether a `WebView` controller is already installed in the environment.
  *
  * # Safety
  *
@@ -7452,6 +9658,9 @@ struct WuiWatcher_HorizontalAlignment *waterui_new_watcher_horizontal_alignment(
  */
 struct WuiText waterui_force_as_text(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_text_id(void);
 
 /**
@@ -7503,9 +9712,9 @@ WuiComputed_ResolvedFont *waterui_new_computed_resolved_font(void *data,
                                                              void (*drop)(void*));
 
 /**
- * Creates a new WuiResolvedFont with a properly initialized empty family string.
+ * Creates a new `WuiResolvedFont` with a properly initialized empty family string.
  *
- * This function is needed for native code (Android JNI) to create WuiResolvedFont
+ * This function is needed for native code (Android JNI) to create `WuiResolvedFont`
  * structs with valid vtables for the family field.
  */
 struct WuiResolvedFont waterui_resolved_font_new(float size, enum WuiFontWeight weight);
@@ -7533,12 +9742,12 @@ WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font,
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's TypeId (guaranteed unique within a single binary).
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_applied_filter_id(void);
 
 /**
- * Force-casts an AnyView to this metadata type
+ * Force-casts an `AnyView` to this metadata type.
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
@@ -7557,6 +9766,11 @@ struct WuiAppliedFilter waterui_force_as_metadata_applied_filter(struct WuiAnyVi
  * `filter_ffi` must be a valid, unconsumed descriptor returned by
  * `waterui_force_as_metadata_applied_filter`.
  * `env` must contain an installed GPU runtime.
+ *
+ * # Panics
+ *
+ * Panics if `filter_ffi`'s inner filter pointer is null, meaning the descriptor
+ * was already consumed by a previous call to this function.
  */
 struct WuiAppliedFilterState *waterui_applied_filter_create(struct WuiAppliedFilter *filter_ffi,
                                                             const struct WuiEnv *env);
@@ -7569,6 +9783,11 @@ struct WuiAppliedFilterState *waterui_applied_filter_create(struct WuiAppliedFil
  * - `state` must come from [`waterui_applied_filter_create`].
  * - `output_layer` must remain valid until [`waterui_applied_filter_detach`].
  * - The state must currently be detached.
+ *
+ * # Panics
+ *
+ * Panics if `state` already has an output surface attached, or if
+ * `input_width`/`input_height` is zero.
  */
 void waterui_applied_filter_attach(struct WuiAppliedFilterState *state,
                                    void *output_layer,
@@ -7582,6 +9801,10 @@ void waterui_applied_filter_attach(struct WuiAppliedFilterState *state,
  * # Safety
  *
  * `state` must be valid and currently attached.
+ *
+ * # Panics
+ *
+ * Panics if `state` does not currently have an output surface attached.
  */
 void waterui_applied_filter_detach(struct WuiAppliedFilterState *state);
 
@@ -7649,6 +9872,11 @@ bool waterui_applied_filter_is_ready(const struct WuiAppliedFilterState *state);
  * - `state` must be a valid pointer from `waterui_applied_filter_create`
  * - A presentation target must be attached
  * - `waterui_applied_filter_setup` must have completed
+ *
+ * # Panics
+ *
+ * Panics if the asynchronous setup started by `waterui_applied_filter_setup`
+ * has not completed yet.
  */
 bool waterui_applied_filter_render(struct WuiAppliedFilterState *state,
                                    uint32_t width,
@@ -7673,6 +9901,10 @@ struct WuiAppliedFilterOutputSize waterui_applied_filter_resolve_output_size(str
  * # Safety
  *
  * `state` must be a valid pointer from `waterui_applied_filter_create` with an attached target.
+ *
+ * # Panics
+ *
+ * Panics if `state` does not currently have an output surface attached.
  */
 void waterui_applied_filter_prepare_capture(struct WuiAppliedFilterState *state,
                                             uint32_t width,
@@ -7681,17 +9913,22 @@ void waterui_applied_filter_prepare_capture(struct WuiAppliedFilterState *state,
 /**
  * Get a pointer to the Metal texture backing the capture texture (Apple only).
  *
- * This exposes the underlying MTLTexture so native code can render directly
+ * This exposes the underlying `MTLTexture` so native code can render directly
  * into the wgpu capture texture without extra copies.
  *
  * # Safety
  *
  * `state` must be a valid pointer from `waterui_applied_filter_create` with an attached target.
+ *
+ * # Panics
+ *
+ * Panics if `state` does not currently have a capture texture, meaning the
+ * presentation target is detached.
  */
 void *waterui_applied_filter_get_capture_metal_texture(struct WuiAppliedFilterState *state);
 
 /**
- * Clean up AppliedFilter resources.
+ * Clean up `AppliedFilter` resources.
  *
  * # Safety
  *
@@ -7750,6 +9987,9 @@ void *waterui_gpu_runtime_metal_device(const struct WuiEnv *env);
  */
 struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_gpu_surface_id(void);
 
 /**
@@ -7776,6 +10016,11 @@ struct WuiGpuSurfaceHdrPreference waterui_gpu_surface_hdr_preference(const struc
  * - `surface` must be a valid, unconsumed descriptor returned by
  *   `waterui_force_as_gpu_surface`.
  * - `env` must remain valid for this call; the state stores its own clone.
+ *
+ * # Panics
+ *
+ * Panics if `surface`'s inner `GpuSurface` pointer is null, meaning the
+ * descriptor was already consumed by a previous call to this function.
  */
 struct WuiGpuSurfaceState *waterui_gpu_surface_create(struct WuiGpuSurface *surface,
                                                       const struct WuiEnv *env);
@@ -7812,6 +10057,11 @@ int32_t waterui_gpu_surface_priority(const struct WuiGpuSurfaceState *state);
  * - `state` must be a valid pointer returned by [`waterui_gpu_surface_create`].
  * - `layer` must remain valid until [`waterui_gpu_surface_detach`] is called.
  * - The state must currently be detached.
+ *
+ * # Panics
+ *
+ * Panics if `state` already has a native surface attached, or if `width` or
+ * `height` is zero.
  */
 void waterui_gpu_surface_attach(struct WuiGpuSurfaceState *state,
                                 void *layer,
@@ -7826,6 +10076,10 @@ void waterui_gpu_surface_attach(struct WuiGpuSurfaceState *state,
  * # Safety
  *
  * `state` must be valid and currently have an attached native surface.
+ *
+ * # Panics
+ *
+ * Panics if `state` does not currently have a native surface attached.
  */
 void waterui_gpu_surface_detach(struct WuiGpuSurfaceState *state);
 
@@ -7877,6 +10131,10 @@ bool waterui_gpu_surface_is_ready(const struct WuiGpuSurfaceState *state);
  * # Safety
  *
  * `state` must be valid and have an attached native surface.
+ *
+ * # Panics
+ *
+ * Panics if `width` or `height` is zero.
  */
 bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width, uint32_t height);
 
@@ -7897,6 +10155,10 @@ void waterui_gpu_surface_prepare_metal_texture(struct WuiGpuSurfaceState *state,
  *
  * # Safety
  * `state` must be valid, `texture` must point to a `MTLTexture`.
+ *
+ * # Panics
+ *
+ * Panics if `texture` is null.
  */
 struct WuiGpuCaptureFence *waterui_gpu_surface_render_to_metal_texture(struct WuiGpuSurfaceState *state,
                                                                        void *texture,
@@ -7926,7 +10188,7 @@ void waterui_gpu_capture_fence_on_complete(struct WuiGpuCaptureFence *fence,
 /**
  * Clean up GPU resources.
  *
- * This function should be called when the GpuSurface view is destroyed.
+ * This function should be called when the `GpuSurface` view is destroyed.
  *
  * # Safety
  *
@@ -7936,7 +10198,7 @@ void waterui_gpu_capture_fence_on_complete(struct WuiGpuCaptureFence *fence,
 void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
 
 /**
- * Update both pointer and gesture state for a GpuSurface.
+ * Update both pointer and gesture state for a `GpuSurface`.
  *
  * Native backends should prefer this API to minimize bridge calls.
  *
@@ -7961,6 +10223,9 @@ void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
  */
 struct WuiViewEffect waterui_force_as_view_effect(struct WuiAnyView *view);
 
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
 struct WuiTypeId waterui_view_effect_id(void);
 
 /**
@@ -7974,6 +10239,11 @@ struct WuiTypeId waterui_view_effect_id(void);
  * `effect` must be a valid, unconsumed descriptor returned by
  * `waterui_force_as_view_effect`.
  * `env` must contain an installed GPU runtime.
+ *
+ * # Panics
+ *
+ * Panics if `effect`'s inner effect pointer is null, meaning the descriptor
+ * was already consumed by a previous call to this function.
  */
 struct WuiViewEffectState *waterui_view_effect_create(struct WuiViewEffect *effect,
                                                       const struct WuiEnv *env);
@@ -7986,6 +10256,11 @@ struct WuiViewEffectState *waterui_view_effect_create(struct WuiViewEffect *effe
  * - `state` must come from [`waterui_view_effect_create`].
  * - `layer` must remain valid until [`waterui_view_effect_detach`].
  * - The state must currently be detached.
+ *
+ * # Panics
+ *
+ * Panics if `state` already has an output surface attached, if
+ * `input_width`/`input_height` is zero, or if the computed output size is zero.
  */
 void waterui_view_effect_attach(struct WuiViewEffectState *state,
                                 void *layer,
@@ -7999,6 +10274,10 @@ void waterui_view_effect_attach(struct WuiViewEffectState *state,
  * # Safety
  *
  * `state` must be valid and currently attached.
+ *
+ * # Panics
+ *
+ * Panics if `state` does not currently have an output surface attached.
  */
 void waterui_view_effect_detach(struct WuiViewEffectState *state);
 
@@ -8021,8 +10300,13 @@ void waterui_view_effect_set_redraw_callback(struct WuiViewEffectState *state,
  *
  * # Safety
  *
- * - state must be a valid pointer from waterui_view_effect_create.
- * - texture must point to a live MTLTexture for the duration of this call.
+ * - state must be a valid pointer from `waterui_view_effect_create`.
+ * - texture must point to a live `MTLTexture` for the duration of this call.
+ *
+ * # Panics
+ *
+ * Panics if the imported Metal texture did not resolve to a supported
+ * texture format.
  */
 void waterui_view_effect_set_input_metal_texture(struct WuiViewEffectState *state,
                                                  void *texture,
@@ -8056,11 +10340,15 @@ bool waterui_view_effect_is_ready(const struct WuiViewEffectState *state);
  * # Safety
  *
  * `state` must be a valid pointer from `waterui_view_effect_create` with an attached target.
+ *
+ * # Panics
+ *
+ * Panics if no input texture was imported before this call.
  */
 bool waterui_view_effect_render(struct WuiViewEffectState *state);
 
 /**
- * Clean up ViewEffect resources.
+ * Clean up `ViewEffect` resources.
  *
  * # Safety
  *

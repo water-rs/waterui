@@ -1,10 +1,10 @@
-//! FFI bindings for the ViewEffect raw view.
+//! FFI bindings for the `ViewEffect` raw view.
 //!
 //! This module provides the FFI interface for capturing view content and applying
 //! GPU effects using wgpu.
 //!
 //! The native backend is responsible for:
-//! 1. Creating a capture layer for the child view (CAMetalLayer on Apple, TextureView on Android)
+//! 1. Creating a capture layer for the child view (`CAMetalLayer` on Apple, `TextureView` on Android)
 //! 2. Creating an output layer for the effect result
 //! 3. Calling `waterui_view_effect_create` immediately to consume the semantic renderer
 //! 4. Attaching/detaching presentation targets independently of renderer lifetime
@@ -76,9 +76,17 @@ pub enum WuiOutputSize {
     /// Match the input view's size.
     MatchInput,
     /// Fixed pixel dimensions.
-    Fixed { width: u32, height: u32 },
+    Fixed {
+        /// Output width in pixels.
+        width: u32,
+        /// Output height in pixels.
+        height: u32,
+    },
     /// Scale factor relative to input.
-    Scale { factor: f32 },
+    Scale {
+        /// Multiplier applied to the input's width and height.
+        factor: f32,
+    },
 }
 
 impl From<OutputSize> for WuiOutputSize {
@@ -101,7 +109,7 @@ impl From<WuiOutputSize> for OutputSize {
     }
 }
 
-/// FFI representation of a ViewEffect view.
+/// FFI representation of a `ViewEffect` view.
 ///
 /// This struct is passed to the native backend when rendering the view tree.
 /// The native backend should:
@@ -111,8 +119,9 @@ impl From<WuiOutputSize> for OutputSize {
 /// 4. Render the child view to the capture layer
 /// 5. Call `waterui_view_effect_render` when rendering is scheduled
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiViewEffect {
-    /// The child view to capture (pointer to WuiAnyView).
+    /// The child view to capture (pointer to `WuiAnyView`).
     pub content: *mut WuiAnyView,
     /// Opaque pointer to the boxed effect renderer.
     /// This is consumed during init and should not be used after.
@@ -134,7 +143,7 @@ impl IntoFFI for ViewEffectErased {
         // Box the ViewEffectErased for FFI transfer
         // The effect renderer remains inside the erased wrapper
         let effect_wrapper = Box::new(ViewEffectRendererWrapper { erased: self });
-        let effect_ptr = Box::into_raw(effect_wrapper) as *mut c_void;
+        let effect_ptr = Box::into_raw(effect_wrapper).cast::<c_void>();
 
         WuiViewEffect {
             content,
@@ -144,7 +153,7 @@ impl IntoFFI for ViewEffectErased {
     }
 }
 
-/// Wrapper to hold ViewEffectErased for FFI calls.
+/// Wrapper to hold `ViewEffectErased` for FFI calls.
 struct ViewEffectRendererWrapper {
     erased: ViewEffectErased,
 }
@@ -182,6 +191,17 @@ pub struct WuiViewEffectState {
     output_size: OutputSize,
 }
 
+impl core::fmt::Debug for WuiViewEffectState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WuiViewEffectState")
+            .field("input_width", &self.input_width)
+            .field("input_height", &self.input_height)
+            .field("output_width", &self.output_width)
+            .field("output_height", &self.output_height)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Creates persistent state and immediately consumes the semantic effect renderer.
 ///
 /// Presentation targets are attached later with [`waterui_view_effect_attach`],
@@ -192,6 +212,11 @@ pub struct WuiViewEffectState {
 /// `effect` must be a valid, unconsumed descriptor returned by
 /// `waterui_force_as_view_effect`.
 /// `env` must contain an installed GPU runtime.
+///
+/// # Panics
+///
+/// Panics if `effect`'s inner effect pointer is null, meaning the descriptor
+/// was already consumed by a previous call to this function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_create(
     effect: *mut WuiViewEffect,
@@ -203,7 +228,7 @@ pub unsafe extern "C" fn waterui_view_effect_create(
         "waterui_view_effect_create: descriptor was already consumed"
     );
     let effect_wrapper: ViewEffectRendererWrapper =
-        unsafe { *Box::from_raw(wui_effect.effect as *mut ViewEffectRendererWrapper) };
+        unsafe { *Box::from_raw(wui_effect.effect.cast::<ViewEffectRendererWrapper>()) };
     wui_effect.effect = core::ptr::null_mut();
     let output_size: OutputSize = wui_effect.output_size.into();
 
@@ -287,6 +312,11 @@ fn create_configured_surface(
 /// - `state` must come from [`waterui_view_effect_create`].
 /// - `layer` must remain valid until [`waterui_view_effect_detach`].
 /// - The state must currently be detached.
+///
+/// # Panics
+///
+/// Panics if `state` already has an output surface attached, if
+/// `input_width`/`input_height` is zero, or if the computed output size is zero.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_attach(
     state: *mut WuiViewEffectState,
@@ -325,6 +355,10 @@ pub unsafe extern "C" fn waterui_view_effect_attach(
 /// # Safety
 ///
 /// `state` must be valid and currently attached.
+///
+/// # Panics
+///
+/// Panics if `state` does not currently have an output surface attached.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_detach(state: *mut WuiViewEffectState) {
     let state = unsafe { crate::borrow_ffi_mut(state) };
@@ -414,8 +448,13 @@ fn assert_setup_input_format(state: &WuiViewEffectState, input_format: wgpu::Tex
 ///
 /// # Safety
 ///
-/// - state must be a valid pointer from waterui_view_effect_create.
-/// - texture must point to a live MTLTexture for the duration of this call.
+/// - state must be a valid pointer from `waterui_view_effect_create`.
+/// - texture must point to a live `MTLTexture` for the duration of this call.
+///
+/// # Panics
+///
+/// Panics if the imported Metal texture did not resolve to a supported
+/// texture format.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_set_input_metal_texture(
@@ -461,6 +500,10 @@ pub unsafe extern "C" fn waterui_view_effect_is_ready(state: *const WuiViewEffec
 /// # Safety
 ///
 /// `state` must be a valid pointer from `waterui_view_effect_create` with an attached target.
+///
+/// # Panics
+///
+/// Panics if no input texture was imported before this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectState) -> bool {
     let state = unsafe { crate::borrow_ffi_mut(state) };
@@ -587,7 +630,7 @@ fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::Textu
     .detach();
 }
 
-/// Clean up ViewEffect resources.
+/// Clean up `ViewEffect` resources.
 ///
 /// # Safety
 ///
@@ -606,20 +649,20 @@ pub unsafe extern "C" fn waterui_view_effect_drop(state: *mut WuiViewEffectState
 /// enabling zero-copy texture sharing between the native view and the GPU effect pipeline.
 ///
 /// The native side (Swift) is responsible for:
-/// 1. Creating an IOSurface
-/// 2. Creating a Metal texture backed by that IOSurface
-/// 3. Passing the MTLTexture pointer to this function
+/// 1. Creating an `IOSurface`
+/// 2. Creating a Metal texture backed by that `IOSurface`
+/// 3. Passing the `MTLTexture` pointer to this function
 ///
 /// # Arguments
 ///
-/// * `state` - The ViewEffect state
-/// * `mtl_texture_ptr` - Pointer to an MTLTexture
+/// * `state` - The `ViewEffect` state
+/// * `mtl_texture_ptr` - Pointer to an `MTLTexture`
 /// * `width` - Width in pixels
 /// * `height` - Height in pixels
 ///
 /// # Safety
 ///
-/// The MTLTexture must remain valid for the lifetime of the imported texture.
+/// The `MTLTexture` must remain valid for the lifetime of the imported texture.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn import_metal_texture(
     state: &mut WuiViewEffectState,
@@ -646,10 +689,7 @@ fn import_metal_texture(
         MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
         MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
         other => {
-            panic!(
-                "view_effect::import_metal_texture: unsupported Metal format {:?}",
-                other
-            );
+            panic!("view_effect::import_metal_texture: unsupported Metal format {other:?}");
         }
     };
     assert_setup_input_format(state, wgpu_format);

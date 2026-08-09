@@ -12,6 +12,7 @@ use waterui_text::{Text, TextConfig};
 
 /// FFI representation of a resolved font.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiResolvedFont {
     /// Font size in points.
     pub size: f32,
@@ -76,14 +77,21 @@ into_ffi! {
     }
 }
 
+/// FFI representation of a single run of text sharing one `WuiTextStyle`.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiStyledChunk {
+    /// The text content of this run.
     pub text: WuiStr,
+    /// The style applied to this run.
     pub style: WuiTextStyle,
 }
 
+/// FFI representation of a string composed of independently styled runs.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiStyledStr {
+    /// The styled runs that make up the string, in order.
     pub chunks: WuiArray<WuiStyledChunk>,
 }
 
@@ -179,9 +187,12 @@ ffi_computed!(StyledStr, WuiStyledStr);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WuiHorizontalAlignment {
+    /// Align to the leading edge (left in left-to-right locales).
     Leading = 0,
+    /// Center within the available width.
     #[default]
     Center = 1,
+    /// Align to the trailing edge (right in left-to-right locales).
     Trailing = 2,
 }
 
@@ -189,9 +200,9 @@ impl IntoFFI for HorizontalAlignment {
     type FFI = WuiHorizontalAlignment;
 
     fn into_ffi(self) -> Self::FFI {
-        if self == HorizontalAlignment::Leading {
+        if self == Self::Leading {
             WuiHorizontalAlignment::Leading
-        } else if self == HorizontalAlignment::Trailing {
+        } else if self == Self::Trailing {
             WuiHorizontalAlignment::Trailing
         } else {
             WuiHorizontalAlignment::Center
@@ -204,9 +215,9 @@ impl IntoRust for WuiHorizontalAlignment {
 
     unsafe fn into_rust(self) -> Self::Rust {
         match self {
-            WuiHorizontalAlignment::Leading => HorizontalAlignment::Leading,
-            WuiHorizontalAlignment::Center => HorizontalAlignment::Center,
-            WuiHorizontalAlignment::Trailing => HorizontalAlignment::Trailing,
+            Self::Leading => HorizontalAlignment::Leading,
+            Self::Center => HorizontalAlignment::Center,
+            Self::Trailing => HorizontalAlignment::Trailing,
         }
     }
 }
@@ -238,9 +249,9 @@ ffi_view!(TextConfig, WuiText, text);
 ffi_computed!(ResolvedFont, WuiResolvedFont);
 ffi_computed_ctor!(ResolvedFont, WuiResolvedFont);
 
-/// Creates a new WuiResolvedFont with a properly initialized empty family string.
+/// Creates a new `WuiResolvedFont` with a properly initialized empty family string.
 ///
-/// This function is needed for native code (Android JNI) to create WuiResolvedFont
+/// This function is needed for native code (Android JNI) to create `WuiResolvedFont`
 /// structs with valid vtables for the family field.
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_resolved_font_new(size: f32, weight: WuiFontWeight) -> WuiResolvedFont {

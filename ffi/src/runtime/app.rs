@@ -12,6 +12,7 @@ use core::ffi::c_void;
 /// This struct is returned by value from `waterui_app()`.
 /// Native code can read fields directly.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiApp {
     /// Array of windows. The first window is the main window.
     pub windows: WuiArray<WuiWindow>,
@@ -47,7 +48,7 @@ impl WuiAndroidApp {
 
 #[cfg(any(feature = "android-jni", test))]
 impl WuiApp {
-    /// Projects a WaterUI app onto Android's single-activity model.
+    /// Projects a `WaterUI` app onto Android's single-activity model.
     ///
     /// Android owns exactly one root content view and its environment. Window
     /// chrome, menu-bar, sizing, and state handles have no Android owner and are
@@ -260,9 +261,8 @@ mod tests {
             let app = tracked_app(windows, &storage_drops, &menu_drops, &env_drops);
 
             let result = catch_unwind(AssertUnwindSafe(|| app.into_android_projection()));
-            let payload = match result {
-                Ok(_) => panic!("non-single-window Android app must panic"),
-                Err(payload) => payload,
+            let Err(payload) = result else {
+                panic!("non-single-window Android app must panic")
             };
 
             assert_eq!(

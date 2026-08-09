@@ -9,12 +9,17 @@ impl<T: IntoFFI + waterui_core::NativeView> IntoFFI for waterui_core::Native<T> 
 
 ffi_view!(waterui::Str, WuiStr, plain);
 
+/// FFI bindings for interactive controls (buttons, forms, progress indicators).
 pub mod controls;
+/// FFI bindings for data-driven components such as maps.
 pub mod data;
 mod layouting;
+/// FFI bindings for media playback components such as video.
 pub mod media;
 mod nav;
+/// FFI bindings for platform-integration components (icons, web views, dynamic content).
 pub mod platform;
+/// FFI bindings for text and typography components.
 pub mod typography;
 mod visual;
 

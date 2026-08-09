@@ -1,6 +1,6 @@
 //! # Locale FFI
 //!
-//! This module provides FFI bindings for locale/i18n support in WaterUI.
+//! This module provides FFI bindings for locale/i18n support in `WaterUI`.
 //!
 //! ## Overview
 //!
@@ -16,7 +16,7 @@
 //!
 //! ## Supported Locales
 //!
-//! WaterUI supports all BCP 47 locale identifiers including:
+//! `WaterUI` supports all BCP 47 locale identifiers including:
 //! - English: "en", "en-US", "en-GB"
 //! - Chinese: "zh", "zh-CN", "zh-TW", "zh-Hans", "zh-Hant"
 //! - Japanese: "ja", "ja-JP"
