@@ -11,6 +11,7 @@ use crate::IntoFFI;
 /// - Body structs for each variant with data
 /// - `WuiAnimation` struct with tag field and anonymous union
 #[repr(C)]
+#[derive(Debug)]
 pub enum WuiAnimation {
     /// No animation - changes apply immediately
     None,
@@ -45,27 +46,28 @@ impl IntoFFI for Animation {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Animation::Default => WuiAnimation::Bezier {
+            Self::Default => WuiAnimation::Bezier {
                 duration_ms: 250,
                 x1: 0.42,
                 y1: 0.0,
                 x2: 0.58,
                 y2: 1.0,
             },
-            Animation::Bezier {
+            Self::Bezier {
                 duration,
                 x1,
                 y1,
                 x2,
                 y2,
             } => WuiAnimation::Bezier {
-                duration_ms: duration.as_millis() as u64,
+                duration_ms: u64::try_from(duration.as_millis())
+                    .expect("Animation duration exceeds u64::MAX milliseconds"),
                 x1,
                 y1,
                 x2,
                 y2,
             },
-            Animation::Spring { stiffness, damping } => WuiAnimation::Spring { stiffness, damping },
+            Self::Spring { stiffness, damping } => WuiAnimation::Spring { stiffness, damping },
         }
     }
 }
@@ -81,7 +83,6 @@ pub unsafe extern "C" fn waterui_get_animation(
     unsafe {
         (*metadata)
             .try_get::<Animation>()
-            .map(IntoFFI::into_ffi)
-            .unwrap_or(WuiAnimation::None)
+            .map_or(WuiAnimation::None, IntoFFI::into_ffi)
     }
 }

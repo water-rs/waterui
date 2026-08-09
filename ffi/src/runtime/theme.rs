@@ -1,6 +1,6 @@
 //! # Theme FFI
 //!
-//! This module provides the FFI bindings for the WaterUI theme system, allowing
+//! This module provides the FFI bindings for the `WaterUI` theme system, allowing
 //! native backends (iOS, Android) to inject reactive color and font signals.
 //!
 //! ## Overview
@@ -8,7 +8,7 @@
 //! The theme FFI uses a **slot-based approach**:
 //! 1. Native code creates reactive signals (`WuiComputed<ResolvedColor>`, etc.)
 //! 2. Native installs signals for specific slots using enum-based APIs
-//! 3. WaterUI views resolve these slots to get reactive theme values
+//! 3. `WaterUI` views resolve these slots to get reactive theme values
 //!
 //! ## Color Scheme
 //!
@@ -79,8 +79,8 @@ pub enum WuiColorScheme {
 impl From<WuiColorScheme> for theme::ColorScheme {
     fn from(value: WuiColorScheme) -> Self {
         match value {
-            WuiColorScheme::Light => theme::ColorScheme::Light,
-            WuiColorScheme::Dark => theme::ColorScheme::Dark,
+            WuiColorScheme::Light => Self::Light,
+            WuiColorScheme::Dark => Self::Dark,
         }
     }
 }
@@ -88,8 +88,8 @@ impl From<WuiColorScheme> for theme::ColorScheme {
 impl From<theme::ColorScheme> for WuiColorScheme {
     fn from(value: theme::ColorScheme) -> Self {
         match value {
-            theme::ColorScheme::Light => WuiColorScheme::Light,
-            theme::ColorScheme::Dark => WuiColorScheme::Dark,
+            theme::ColorScheme::Light => Self::Light,
+            theme::ColorScheme::Dark => Self::Dark,
         }
     }
 }
@@ -193,23 +193,23 @@ pub unsafe extern "C" fn waterui_theme_install_color(
         WuiColorSlot::Background => install_color_signal::<color::Background>(env, computed),
         WuiColorSlot::Surface => install_color_signal::<color::Surface>(env, computed),
         WuiColorSlot::SurfaceVariant => {
-            install_color_signal::<color::SurfaceVariant>(env, computed)
+            install_color_signal::<color::SurfaceVariant>(env, computed);
         }
         WuiColorSlot::Border => install_color_signal::<color::Border>(env, computed),
         WuiColorSlot::Foreground => install_color_signal::<color::Foreground>(env, computed),
         WuiColorSlot::MutedForeground => {
-            install_color_signal::<color::MutedForeground>(env, computed)
+            install_color_signal::<color::MutedForeground>(env, computed);
         }
         WuiColorSlot::Accent => install_color_signal::<color::Accent>(env, computed),
         WuiColorSlot::AccentForeground => {
-            install_color_signal::<color::AccentForeground>(env, computed)
+            install_color_signal::<color::AccentForeground>(env, computed);
         }
         WuiColorSlot::AccentContainer => {
-            install_color_signal::<color::AccentContainer>(env, computed)
+            install_color_signal::<color::AccentContainer>(env, computed);
         }
         WuiColorSlot::Tertiary => install_color_signal::<color::Tertiary>(env, computed),
         WuiColorSlot::TertiaryContainer => {
-            install_color_signal::<color::TertiaryContainer>(env, computed)
+            install_color_signal::<color::TertiaryContainer>(env, computed);
         }
     }
 }
@@ -324,7 +324,7 @@ pub unsafe extern "C" fn waterui_theme_font(
 
 use crate::reactive::WuiWatcher;
 
-/// Calls a ColorScheme watcher with the given value.
+/// Calls a `ColorScheme` watcher with the given value.
 /// Used by native code to notify Rust when color scheme changes.
 /// # Safety
 /// The watcher pointer must be valid.
@@ -341,7 +341,7 @@ pub unsafe extern "C" fn waterui_call_watcher_color_scheme(
     }
 }
 
-/// Drops a ColorScheme watcher.
+/// Drops a `ColorScheme` watcher.
 /// # Safety
 /// The watcher pointer must be valid.
 #[unsafe(no_mangle)]
@@ -353,7 +353,7 @@ pub unsafe extern "C" fn waterui_drop_watcher_color_scheme(
     }
 }
 
-/// Calls a ResolvedColor watcher with the given value.
+/// Calls a `ResolvedColor` watcher with the given value.
 /// Used by native code to notify Rust when a color value changes.
 /// # Safety
 /// The watcher pointer must be valid.
@@ -370,7 +370,7 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_color(
     }
 }
 
-/// Drops a ResolvedColor watcher.
+/// Drops a `ResolvedColor` watcher.
 /// # Safety
 /// The watcher pointer must be valid.
 #[unsafe(no_mangle)]
@@ -382,7 +382,7 @@ pub unsafe extern "C" fn waterui_drop_watcher_resolved_color(
     }
 }
 
-/// Calls a ResolvedFont watcher with the given value.
+/// Calls a `ResolvedFont` watcher with the given value.
 /// Used by native code to notify Rust when a font value changes.
 /// # Safety
 /// The watcher pointer must be valid.
@@ -399,7 +399,7 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_font(
     }
 }
 
-/// Drops a ResolvedFont watcher.
+/// Drops a `ResolvedFont` watcher.
 /// # Safety
 /// The watcher pointer must be valid.
 #[unsafe(no_mangle)]
@@ -442,11 +442,11 @@ mod tests {
         let fg_ptr = fg_signal.into_ffi();
 
         unsafe {
-            waterui_theme_install_color(&mut env, WuiColorSlot::Foreground, fg_ptr);
+            waterui_theme_install_color(&raw mut env, WuiColorSlot::Foreground, fg_ptr);
         }
 
         // Query it back
-        let queried = unsafe { waterui_theme_color(&env, WuiColorSlot::Foreground) };
+        let queried = unsafe { waterui_theme_color(&raw const env, WuiColorSlot::Foreground) };
         assert!(!queried.is_null());
 
         let value = unsafe { crate::color::waterui_read_computed_resolved_color(queried) };

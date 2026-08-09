@@ -52,11 +52,15 @@ ffi_view!(
     all()
 );
 
+/// FFI representation of the video content's aspect-ratio fit mode.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum WuiAspectRatio {
+    /// Scale to fit entirely within the bounds, preserving aspect ratio.
     Fit = 0,
+    /// Scale to fill the bounds, preserving aspect ratio and cropping overflow.
     Fill = 1,
+    /// Stretch to exactly fill the bounds, ignoring aspect ratio.
     Stretch = 2,
 }
 
@@ -64,7 +68,9 @@ pub enum WuiAspectRatio {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiVideoProjection {
+    /// A conventional flat (non-projected) video frame.
     Rectilinear = 0,
+    /// A 360-degree equirectangular projection.
     Equirectangular = 1,
 }
 
@@ -73,8 +79,8 @@ impl IntoFFI for VideoProjection {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            VideoProjection::Rectilinear => WuiVideoProjection::Rectilinear,
-            VideoProjection::Equirectangular(_) => WuiVideoProjection::Equirectangular,
+            Self::Rectilinear => WuiVideoProjection::Rectilinear,
+            Self::Equirectangular(_) => WuiVideoProjection::Equirectangular,
         }
     }
 }
@@ -84,9 +90,9 @@ impl IntoFFI for AspectRatio {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            AspectRatio::Fit => WuiAspectRatio::Fit,
-            AspectRatio::Fill => WuiAspectRatio::Fill,
-            AspectRatio::Stretch => WuiAspectRatio::Stretch,
+            Self::Fit => WuiAspectRatio::Fit,
+            Self::Fill => WuiAspectRatio::Fill,
+            Self::Stretch => WuiAspectRatio::Stretch,
         }
     }
 }
@@ -95,8 +101,11 @@ impl IntoFFI for AspectRatio {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiVideoDelivery {
+    /// A progressively downloaded single media file.
     Progressive = 0,
+    /// HTTP Live Streaming (HLS).
     Hls = 1,
+    /// MPEG-DASH adaptive streaming.
     Dash = 2,
 }
 
@@ -105,9 +114,9 @@ impl IntoFFI for Delivery {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Delivery::Progressive => WuiVideoDelivery::Progressive,
-            Delivery::Hls => WuiVideoDelivery::Hls,
-            Delivery::Dash => WuiVideoDelivery::Dash,
+            Self::Progressive => WuiVideoDelivery::Progressive,
+            Self::Hls => WuiVideoDelivery::Hls,
+            Self::Dash => WuiVideoDelivery::Dash,
         }
     }
 }
@@ -130,18 +139,31 @@ crate::ffi_computed!(Delivery, WuiVideoDelivery, video_delivery);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiVideoEventType {
+    /// Playback is ready to begin (enough data buffered to play).
     ReadyToPlay = 0,
+    /// Playback reached the end of the media.
     Ended = 1,
+    /// A fatal playback error occurred; see `WuiVideoEvent::error_message`.
     Error = 2,
+    /// Playback stalled and is buffering.
     Buffering = 3,
+    /// A prior buffering stall has ended.
     BufferingEnded = 4,
+    /// The amount of buffered-ahead media changed.
     BufferLevel = 5,
+    /// Updated playback quality-of-service metrics are available.
     PlaybackMetrics = 6,
+    /// Picture-in-Picture presentation was entered or exited.
     PictureInPictureChanged = 7,
+    /// The user requested skipping to the next playlist item.
     NextRequested = 8,
+    /// The user requested skipping to the previous playlist item.
     PreviousRequested = 9,
+    /// The playing/paused state changed.
     PlaybackStateChanged = 10,
+    /// External playback (e.g., `AirPlay`, cast) was engaged or disengaged.
     ExternalPlaybackChanged = 11,
+    /// The active playback output architecture changed.
     PlaybackOutputPathChanged = 12,
 }
 
@@ -149,9 +171,13 @@ pub enum WuiVideoEventType {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiVideoPlaybackOutputPath {
+    /// The platform's default managed decode/render pipeline.
     PlatformManaged = 0,
+    /// Decoded PCM audio routed through the GPU-adjacent pipeline.
     DecodedPcmGpu = 1,
+    /// Compressed audio handed off to a hardware offload path.
     AudioOffload = 2,
+    /// Audio and video routed through hardware tunneling.
     AudioVideoTunneling = 3,
 }
 
@@ -168,22 +194,42 @@ impl From<WuiVideoPlaybackOutputPath> for PlaybackOutputPath {
 
 /// FFI representation of a video event.
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct WuiVideoEvent {
+    /// Which kind of event this is; determines which other fields are meaningful.
     pub event_type: WuiVideoEventType,
     /// Rust-owned error string. Non-null exactly when `event_type` is `Error`.
     pub error_message: *mut WuiStr,
+    /// Playback position in milliseconds, read when `event_type` is `PlaybackMetrics`.
     pub position_ms: u64,
+    /// Buffered-ahead duration in milliseconds.
     pub buffered_ms: u32,
+    /// Time from load start to first playable frame, in milliseconds.
     pub startup_time_ms: u64,
+    /// Whether `av_drift_ms` carries a measured audio/video drift.
     pub av_drift_available: bool,
+    /// Observed audio/video drift in milliseconds, read only when
+    /// `av_drift_available` is `true`.
     pub av_drift_ms: f32,
+    /// Total number of video frames dropped so far.
     pub dropped_video_frames: u64,
+    /// Total number of rebuffering stalls observed so far.
     pub rebuffer_count: u64,
+    /// Cumulative time spent rebuffering, in milliseconds.
     pub rebuffer_duration_ms: u64,
+    /// Observed network throughput in bits per second; `0` means unknown.
     pub observed_network_throughput_bps: u64,
+    /// Whether Picture-in-Picture is currently active, read when `event_type`
+    /// is `PictureInPictureChanged`.
     pub picture_in_picture_active: bool,
+    /// Whether external playback is currently active, read when `event_type`
+    /// is `ExternalPlaybackChanged`.
     pub external_playback_active: bool,
+    /// Whether playback is currently playing, read when `event_type` is
+    /// `PlaybackStateChanged`.
     pub playback_active: bool,
+    /// The active playback output path, read when `event_type` is
+    /// `PlaybackOutputPathChanged`.
     pub playback_output_path: WuiVideoPlaybackOutputPath,
 }
 
@@ -245,8 +291,11 @@ fn into_video_event(ffi_event: WuiVideoEvent) -> VideoEvent {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiSubtitleSelectionType {
+    /// Let the player choose a subtitle track automatically.
     Auto = 0,
+    /// Disable subtitles.
     Off = 1,
+    /// Select a specific subtitle track by index.
     Track = 2,
 }
 
@@ -254,6 +303,7 @@ pub enum WuiSubtitleSelectionType {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WuiSubtitleSelection {
+    /// Which selection mode is active.
     pub selection_type: WuiSubtitleSelectionType,
     /// Track index. Read only when `selection_type` is `Track`.
     pub track_index: usize,
@@ -264,15 +314,15 @@ impl IntoFFI for SubtitleSelection {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            SubtitleSelection::Auto => WuiSubtitleSelection {
+            Self::Auto => WuiSubtitleSelection {
                 selection_type: WuiSubtitleSelectionType::Auto,
                 track_index: 0,
             },
-            SubtitleSelection::Off => WuiSubtitleSelection {
+            Self::Off => WuiSubtitleSelection {
                 selection_type: WuiSubtitleSelectionType::Off,
                 track_index: 0,
             },
-            SubtitleSelection::Track(track_index) => WuiSubtitleSelection {
+            Self::Track(track_index) => WuiSubtitleSelection {
                 selection_type: WuiSubtitleSelectionType::Track,
                 track_index,
             },
@@ -301,7 +351,9 @@ crate::ffi_watcher!(SubtitleSelection, WuiSubtitleSelection, subtitle_selection)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiAudioTrackSelectionType {
+    /// Let the player choose an audio track automatically.
     Auto = 0,
+    /// Select a specific audio track by index.
     Track = 1,
 }
 
@@ -309,6 +361,7 @@ pub enum WuiAudioTrackSelectionType {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WuiAudioTrackSelection {
+    /// Which selection mode is active.
     pub selection_type: WuiAudioTrackSelectionType,
     /// Track index. Read only when `selection_type` is `Track`.
     pub track_index: usize,
@@ -319,11 +372,11 @@ impl IntoFFI for AudioTrackSelection {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            AudioTrackSelection::Auto => WuiAudioTrackSelection {
+            Self::Auto => WuiAudioTrackSelection {
                 selection_type: WuiAudioTrackSelectionType::Auto,
                 track_index: 0,
             },
-            AudioTrackSelection::Track(track_index) => WuiAudioTrackSelection {
+            Self::Track(track_index) => WuiAudioTrackSelection {
                 selection_type: WuiAudioTrackSelectionType::Track,
                 track_index,
             },
@@ -359,7 +412,9 @@ crate::ffi_watcher!(
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiVideoTrackSelectionType {
+    /// Let the player choose a video-quality track automatically.
     Auto = 0,
+    /// Select a specific video-quality track by index.
     Track = 1,
 }
 
@@ -367,6 +422,7 @@ pub enum WuiVideoTrackSelectionType {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WuiVideoTrackSelection {
+    /// Which selection mode is active.
     pub selection_type: WuiVideoTrackSelectionType,
     /// Track index. Read only when `selection_type` is `Track`.
     pub track_index: usize,
@@ -377,11 +433,11 @@ impl IntoFFI for VideoTrackSelection {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            VideoTrackSelection::Auto => WuiVideoTrackSelection {
+            Self::Auto => WuiVideoTrackSelection {
                 selection_type: WuiVideoTrackSelectionType::Auto,
                 track_index: 0,
             },
-            VideoTrackSelection::Track(track_index) => WuiVideoTrackSelection {
+            Self::Track(track_index) => WuiVideoTrackSelection {
                 selection_type: WuiVideoTrackSelectionType::Track,
                 track_index,
             },
@@ -415,10 +471,13 @@ crate::ffi_watcher!(
 
 /// Native representation of one selectable audio track.
 #[repr(C)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WuiVideoAudioTrackInfo {
+    /// Human-readable track label.
     pub label: WuiStr,
+    /// The track's language, as an empty string when unknown.
     pub language: WuiStr,
+    /// Track role tags (e.g. "main", "commentary").
     pub roles: WuiArray<WuiStr>,
 }
 
@@ -436,14 +495,21 @@ impl IntoRust for WuiVideoAudioTrackInfo {
 
 /// Native representation of one selectable video representation.
 #[repr(C)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WuiVideoTrackInfo {
+    /// Stable identifier for the track.
     pub id: WuiStr,
+    /// Human-readable track label.
     pub label: WuiStr,
+    /// Bitrate in bits per second; `0` means unknown.
     pub bandwidth: u64,
+    /// Frame width in pixels; `0` together with `height == 0` means unknown.
     pub width: u32,
+    /// Frame height in pixels; `0` together with `width == 0` means unknown.
     pub height: u32,
+    /// Codec identifiers for this representation (e.g. "hvc1").
     pub codecs: WuiArray<WuiStr>,
+    /// Whether this representation is HDR.
     pub hdr: bool,
 }
 
@@ -472,9 +538,13 @@ impl IntoRust for WuiVideoTrackInfo {
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum WuiVideoSubtitleTrackOrigin {
+    /// Loaded from a separate sidecar subtitle file.
     Sidecar = 0,
+    /// Embedded directly in the media container.
     Embedded = 1,
+    /// Declared by an adaptive-streaming manifest (e.g. HLS/DASH).
     Manifest = 2,
+    /// Sourced from a platform-native subtitle mechanism.
     #[default]
     Native = 3,
 }
@@ -492,12 +562,17 @@ impl From<WuiVideoSubtitleTrackOrigin> for SubtitleTrackOrigin {
 
 /// Native representation of one selectable subtitle track.
 #[repr(C)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WuiVideoSubtitleTrackInfo {
+    /// Human-readable track label.
     pub label: WuiStr,
+    /// The track's language, as an empty string when unknown.
     pub language: WuiStr,
+    /// Track role tags (e.g. "caption", "commentary").
     pub roles: WuiArray<WuiStr>,
+    /// Whether this track is a forced (director-mandated) subtitle track.
     pub forced: bool,
+    /// Where this track was sourced from.
     pub origin: WuiVideoSubtitleTrackOrigin,
 }
 
@@ -651,11 +726,19 @@ pub unsafe extern "C" fn waterui_drop_video_live_window_binding(
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WuiVideoPlaybackPolicy {
+    /// Whether this stream is treated as a realtime/live source rather than
+    /// video-on-demand.
     pub realtime: bool,
+    /// Buffer duration to accumulate before starting VOD playback, in milliseconds.
     pub vod_start_buffer_ms: u32,
+    /// Buffer duration to accumulate before resuming VOD playback after a
+    /// stall, in milliseconds.
     pub vod_resume_buffer_ms: u32,
+    /// Buffer duration below which VOD playback is considered stalled, in milliseconds.
     pub vod_stall_buffer_ms: u32,
+    /// Maximum allowed live-edge lag before the player is considered behind, in milliseconds.
     pub live_max_video_late_ms: u32,
+    /// The required playback power path for this policy.
     pub power: WuiVideoPlaybackPowerPolicy,
 }
 
@@ -663,8 +746,11 @@ pub struct WuiVideoPlaybackPolicy {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiVideoPlaybackPowerPolicy {
+    /// Let the platform choose the playback power path.
     PlatformManaged = 0,
+    /// Require hardware audio offload decoding.
     RequireAudioOffload = 1,
+    /// Require combined audio/video hardware tunneling.
     RequireAudioVideoTunneling = 2,
 }
 
@@ -707,6 +793,11 @@ opaque!(
 
 /// Selects the next item through the session controller retained by a native player.
 ///
+/// # Panics
+///
+/// Panics if the native "next" command is enabled but the controller cannot
+/// resolve a next playlist item.
+///
 /// # Safety
 ///
 /// `controller` must be a live pointer from a video playback descriptor.
@@ -719,6 +810,11 @@ pub unsafe extern "C" fn waterui_video_controller_next(controller: *const WuiVid
 }
 
 /// Selects the previous item through the session controller retained by a native player.
+///
+/// # Panics
+///
+/// Panics if the native "previous" command is enabled but the controller
+/// cannot resolve a previous playlist item.
 ///
 /// # Safety
 ///
@@ -764,6 +860,7 @@ pub unsafe extern "C" fn waterui_video_event_handler_call(
 
 /// Shared reactive playback state embedded by every native video descriptor.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiVideoPlaybackDescriptor {
     /// Retained playlist and transport controller.
     pub controller: *mut WuiVideoController,
@@ -825,7 +922,7 @@ pub struct WuiVideoPlaybackDescriptor {
     pub playback_policy: WuiVideoPlaybackPolicy,
 }
 
-fn playback_phase_code(phase: PlaybackPhase) -> i32 {
+const fn playback_phase_code(phase: PlaybackPhase) -> i32 {
     match phase {
         PlaybackPhase::Idle => 0,
         PlaybackPhase::Preparing => 1,
@@ -852,7 +949,7 @@ fn playback_phase_from_code(code: i32) -> PlaybackPhase {
     }
 }
 
-fn repeat_mode_code(mode: RepeatMode) -> i32 {
+const fn repeat_mode_code(mode: RepeatMode) -> i32 {
     match mode {
         RepeatMode::Off => 0,
         RepeatMode::One => 1,
@@ -869,12 +966,24 @@ fn repeat_mode_from_code(code: i32) -> RepeatMode {
     }
 }
 
+/// Narrows a monotonic generation counter to the wrapping `i32` token stored
+/// in FFI bindings.
+///
+/// The counter is intentionally allowed to wrap: only change-detection
+/// between successive values matters to native callers, not the token's
+/// numeric magnitude.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "seek/step generation tokens are wrapping counters by design; only change-detection matters, not magnitude"
+)]
+const fn generation_token(generation: u64) -> i32 {
+    generation as i32
+}
+
 fn generation_binding(generation: &Binding<u64>) -> Binding<i32> {
-    Binding::mapping(
-        generation,
-        |generation| generation as i32,
-        |generation, _| generation.set(generation.get().wrapping_add(1)),
-    )
+    Binding::mapping(generation, generation_token, |generation, _| {
+        generation.set(generation.get().wrapping_add(1));
+    })
 }
 
 fn into_playback_descriptor(
@@ -908,25 +1017,18 @@ fn into_playback_descriptor(
         playback_policy,
     } = playback;
 
-    let delivery = source.clone().map(|item| item.delivery).into_computed();
-    let source_str = source
-        .clone()
-        .map(|item| item.source.inner())
-        .into_computed();
+    let delivery = source.map(|item| item.delivery).into_computed();
+    let source_str = source.map(|item| item.source.inner()).into_computed();
     let title = source
-        .clone()
         .map(|item| item.metadata.title().unwrap_or_default().to_owned())
         .into_computed();
     let artist = source
-        .clone()
         .map(|item| item.metadata.artist().unwrap_or_default().to_owned())
         .into_computed();
     let album = source
-        .clone()
         .map(|item| item.metadata.album().unwrap_or_default().to_owned())
         .into_computed();
     let artwork_url = source
-        .clone()
         .map(|item| item.metadata.artwork_url().unwrap_or_default().to_owned())
         .into_computed();
     WuiVideoPlaybackDescriptor {
@@ -955,7 +1057,7 @@ fn into_playback_descriptor(
         has_next: has_next.into_ffi(),
         has_previous: has_previous.into_ffi(),
         volume: Binding::mapping(&volume, Volume::level, |volume, level| {
-            volume.set(Volume::new(level))
+            volume.set(Volume::new(level));
         })
         .into_ffi(),
         muted: muted.into_ffi(),
@@ -973,6 +1075,7 @@ fn into_playback_descriptor(
 
 /// FFI representation of the raw Video component (no native controls).
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiVideo {
     /// Shared reactive playback state.
     pub playback: WuiVideoPlaybackDescriptor,
@@ -1002,8 +1105,9 @@ impl IntoFFI for NativeVideoConfig {
     }
 }
 
-/// FFI representation of the interactive VideoPlayer component.
+/// FFI representation of the interactive `VideoPlayer` component.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiVideoPlayer {
     /// Shared reactive playback state.
     pub playback: WuiVideoPlaybackDescriptor,

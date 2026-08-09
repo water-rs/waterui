@@ -1,6 +1,6 @@
-//! WebView component FFI bindings.
+//! `WebView` component FFI bindings.
 //!
-//! This module provides FFI bindings for the WebView component, allowing native backends
+//! This module provides FFI bindings for the `WebView` component, allowing native backends
 //! to create and control web views.
 
 use alloc::boxed::Box;
@@ -39,8 +39,8 @@ impl IntoFFI for ScriptInjectionTime {
     type FFI = WuiScriptInjectionTime;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            ScriptInjectionTime::DocumentStart => WuiScriptInjectionTime::DocumentStart,
-            ScriptInjectionTime::DocumentEnd => WuiScriptInjectionTime::DocumentEnd,
+            Self::DocumentStart => WuiScriptInjectionTime::DocumentStart,
+            Self::DocumentEnd => WuiScriptInjectionTime::DocumentEnd,
         }
     }
 }
@@ -49,8 +49,8 @@ impl IntoRust for WuiScriptInjectionTime {
     type Rust = ScriptInjectionTime;
     unsafe fn into_rust(self) -> Self::Rust {
         match self {
-            WuiScriptInjectionTime::DocumentStart => ScriptInjectionTime::DocumentStart,
-            WuiScriptInjectionTime::DocumentEnd => ScriptInjectionTime::DocumentEnd,
+            Self::DocumentStart => ScriptInjectionTime::DocumentStart,
+            Self::DocumentEnd => ScriptInjectionTime::DocumentEnd,
         }
     }
 }
@@ -59,7 +59,7 @@ impl IntoRust for WuiScriptInjectionTime {
 // Event FFI Types
 // =============================================================================
 
-/// FFI representation of WebView event types.
+/// FFI representation of `WebView` event types.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiWebViewEventType {
@@ -81,26 +81,27 @@ pub enum WuiWebViewEventType {
     StateChanged = 7,
 }
 
-/// FFI representation of a WebView event.
+/// FFI representation of a `WebView` event.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiWebViewEvent {
     /// The type of event.
     pub event_type: WuiWebViewEventType,
-    /// URL associated with the event (for WillNavigate, SslError, Error, Redirect from).
+    /// URL associated with the event (for `WillNavigate`, `SslError`, Error, Redirect from).
     pub url: *mut WuiStr,
     /// Second URL (for Redirect to).
     pub url2: *mut WuiStr,
-    /// Error/message string (for SslError, Error).
+    /// Error/message string (for `SslError`, Error).
     pub message: *mut WuiStr,
     /// Loading progress (0.0 to 1.0, for Loading event).
     pub progress: f32,
-    /// Whether can navigate back (for StateChanged).
+    /// Whether can navigate back (for `StateChanged`).
     pub can_go_back: bool,
-    /// Whether can navigate forward (for StateChanged).
+    /// Whether can navigate forward (for `StateChanged`).
     pub can_go_forward: bool,
 }
 
-fn parse_url(s: Str) -> Url {
+fn parse_url(s: &Str) -> Url {
     Url::parse(s.as_str())
         .unwrap_or_else(|| panic!("WebView backend emitted invalid URL: {}", s.as_str()))
 }
@@ -116,18 +117,18 @@ impl IntoRust for WuiWebViewEvent {
         match self.event_type {
             WuiWebViewEventType::None => WebViewEvent::None,
             WuiWebViewEventType::WillNavigate => WebViewEvent::WillNavigate {
-                url: parse_url(unsafe { take_event_string(self.url) }),
+                url: parse_url(&unsafe { take_event_string(self.url) }),
             },
             WuiWebViewEventType::Loading => WebViewEvent::Loading {
                 progress: self.progress,
             },
             WuiWebViewEventType::Loaded => WebViewEvent::Loaded,
             WuiWebViewEventType::Redirect => WebViewEvent::Redirect {
-                from: parse_url(unsafe { take_event_string(self.url) }),
-                to: parse_url(unsafe { take_event_string(self.url2) }),
+                from: parse_url(&unsafe { take_event_string(self.url) }),
+                to: parse_url(&unsafe { take_event_string(self.url2) }),
             },
             WuiWebViewEventType::SslError => WebViewEvent::Error(WebViewError::Ssl {
-                url: parse_url(unsafe { take_event_string(self.url) }),
+                url: parse_url(&unsafe { take_event_string(self.url) }),
                 message: unsafe { take_event_string(self.message) },
             }),
             WuiWebViewEventType::Error => WebViewEvent::Error(WebViewError::LoadFailed(unsafe {
@@ -147,6 +148,7 @@ impl IntoRust for WuiWebViewEvent {
 
 /// Callback for JavaScript execution results.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiJsCallback {
     /// Opaque callback state consumed by `call`.
     pub data: *mut (),
@@ -157,6 +159,7 @@ pub struct WuiJsCallback {
 
 /// One-shot completion callback for an owned string result.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiStringCallback {
     /// Opaque callback state consumed by `call`.
     pub data: *mut (),
@@ -169,17 +172,21 @@ pub struct WuiStringCallback {
 /// `payload_base64` is base64-encoded bytes from JavaScript.
 /// `reply` must be called exactly once for request/response semantics.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiWebViewMessage {
+    /// Base64-encoded message bytes sent from JavaScript.
     pub payload_base64: WuiStr,
+    /// One-shot callback used to send a base64-encoded reply back to JavaScript.
     pub reply: WuiJsCallback,
 }
 
-/// FFI representation of a WebView handle with function pointers.
+/// FFI representation of a `WebView` handle with function pointers.
 ///
 /// Native backends create this struct with function pointers to their implementation.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiWebViewHandle {
-    /// Opaque pointer to native WebView wrapper.
+    /// Opaque pointer to native `WebView` wrapper.
     pub data: *mut (),
 
     // Navigation
@@ -239,16 +246,27 @@ pub struct WuiWebViewHandle {
     pub drop: unsafe extern "C" fn(*mut ()),
 }
 
+/// Registered Rust-side watchers for `WebView` events, shared so that the
+/// `WuiFn` trampoline installed on the native handle can fan out to all of them.
+type WebViewWatchers = Rc<RefCell<Vec<Rc<dyn Fn(WebViewEvent)>>>>;
+
 /// Rust wrapper that implements `WebViewHandle` by delegating to FFI function pointers.
 ///
 /// This struct is public so that the FFI layer can downcast `AnyWebViewHandle`
 /// to extract the native webview pointer for rendering.
-type WebViewWatchers = Rc<RefCell<Vec<Rc<dyn Fn(WebViewEvent)>>>>;
-
 pub struct FfiWebViewHandle {
     ffi: WuiWebViewHandle,
     watchers: WebViewWatchers,
     watcher_installed: Cell<bool>,
+}
+
+impl core::fmt::Debug for FfiWebViewHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FfiWebViewHandle")
+            .field("ffi", &self.ffi)
+            .field("watcher_installed", &self.watcher_installed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FfiWebViewHandle {
@@ -260,11 +278,11 @@ impl FfiWebViewHandle {
         }
     }
 
-    /// Returns the raw pointer to the native WebView wrapper.
+    /// Returns the raw pointer to the native `WebView` wrapper.
     ///
     /// This pointer points to the native `WebViewWrapper` (Swift/Kotlin)
-    /// which contains the underlying WKWebView or Android WebView.
-    pub fn native_ptr(&self) -> *mut () {
+    /// which contains the underlying `WKWebView` or Android `WebView`.
+    pub const fn native_ptr(&self) -> *mut () {
         self.ffi.data
     }
 }
@@ -337,7 +355,7 @@ impl WebViewHandle for FfiWebViewHandle {
             let event = unsafe { ffi_event.into_rust() };
             let snapshot = watchers.borrow().clone();
             for watcher in snapshot {
-                watcher(event.clone())
+                watcher(event.clone());
             }
         });
 
@@ -391,19 +409,23 @@ impl WebViewHandle for FfiWebViewHandle {
         unsafe { set_cookie(self.ffi.data, cookie.into_ffi()) }
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "WaterUI webview bridge futures resolve on the main-thread local executor and carry non-`Send` `Str` payloads by design"
+    )]
     fn get_cookies(&self) -> impl core::future::Future<Output = Vec<Cookie<'static>>> {
+        unsafe extern "C" fn cookies_callback(data: *mut (), result: WuiStr) {
+            let sender = unsafe { Box::from_raw(data.cast::<async_channel::Sender<Str>>()) };
+            let result = unsafe { result.into_rust() };
+            let _ = sender.try_send(result);
+        }
+
         let get_cookies = self
             .ffi
             .get_cookies
             .expect("WebView backend must implement `get_cookies`");
         let (sender, receiver) = async_channel::bounded::<Str>(1);
         let callback_data = Box::into_raw(Box::new(sender)).cast::<()>();
-
-        unsafe extern "C" fn cookies_callback(data: *mut (), result: WuiStr) {
-            let sender = unsafe { Box::from_raw(data.cast::<async_channel::Sender<Str>>()) };
-            let result = unsafe { result.into_rust() };
-            let _ = sender.try_send(result);
-        }
 
         unsafe {
             get_cookies(
@@ -431,16 +453,20 @@ impl WebViewHandle for FfiWebViewHandle {
         }
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "WaterUI webview bridge futures resolve on the main-thread local executor and carry non-`Send` `Str` payloads by design"
+    )]
     fn run_javascript(&self, script: &str) -> impl core::future::Future<Output = Result<Str, Str>> {
-        let (sender, receiver) = async_channel::bounded::<Result<Str, Str>>(1);
-        let callback_data = Box::into_raw(Box::new(sender)).cast::<()>();
-
         unsafe extern "C" fn js_callback_trampoline(data: *mut (), success: bool, result: WuiStr) {
             let sender =
                 unsafe { Box::from_raw(data.cast::<async_channel::Sender<Result<Str, Str>>>()) };
             let result = unsafe { result.into_rust() };
             let _ = sender.try_send(if success { Ok(result) } else { Err(result) });
         }
+
+        let (sender, receiver) = async_channel::bounded::<Result<Str, Str>>(1);
+        let callback_data = Box::into_raw(Box::new(sender)).cast::<()>();
 
         let ffi_callback = WuiJsCallback {
             data: callback_data,
@@ -468,18 +494,23 @@ impl WebViewHandle for FfiWebViewHandle {
 opaque!(WuiWebView, WebView);
 ffi_view!(WebView, *mut WuiWebView, webview, any());
 
-/// Gets the native handle pointer from a WebView.
+/// Gets the native handle pointer from a `WebView`.
 ///
-/// Returns the opaque pointer to the native WebView wrapper (Swift/Kotlin).
+/// Returns the opaque pointer to the native `WebView` wrapper (Swift/Kotlin).
 /// This pointer can be used by native backends to access the underlying
-/// WKWebView or Android WebView.
+/// `WKWebView` or Android `WebView`.
 ///
 /// # Safety
 ///
 /// - The caller must ensure that `webview` is a valid pointer to a `WuiWebView`.
-/// - The WebView must have been created via the FFI WebViewController (i.e., the handle
+/// - The `WebView` must have been created via the FFI `WebViewController` (i.e., the handle
 ///   must be an `FfiWebViewHandle`). This is guaranteed when the native backend properly
-///   installed the WebViewController via `waterui_env_install_webview_controller`.
+///   installed the `WebViewController` via `waterui_env_install_webview_controller`.
+///
+/// # Panics
+///
+/// Panics if the `WebView`'s handle was not created via the FFI `WebViewController`
+/// (i.e., it does not downcast to `FfiWebViewHandle`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView) -> *mut () {
     unsafe {
@@ -498,10 +529,10 @@ pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView)
 // WebViewController Installation
 // =============================================================================
 
-/// Type for the native function that creates a new WebView.
+/// Type for the native function that creates a new `WebView`.
 pub type WuiCreateWebViewFn = unsafe extern "C" fn() -> WuiWebViewHandle;
 
-/// FFI-compatible WebViewController implementation.
+/// FFI-compatible `WebViewController` implementation.
 struct FfiWebViewController {
     create_fn: WuiCreateWebViewFn,
 }
@@ -513,10 +544,10 @@ impl CustomWebViewController for FfiWebViewController {
     }
 }
 
-/// Installs a WebViewController into the environment from a native factory function.
+/// Installs a `WebViewController` into the environment from a native factory function.
 ///
-/// Native backends call this during initialization to register their WebView factory.
-/// The factory creates blank WebViews that can be navigated with `go_to()`.
+/// Native backends call this during initialization to register their `WebView` factory.
+/// The factory creates blank `WebViews` that can be navigated with `go_to()`.
 ///
 /// # Safety
 ///
@@ -534,7 +565,7 @@ pub unsafe extern "C" fn waterui_env_install_webview_controller(
     env.insert(controller);
 }
 
-/// Returns whether a WebView controller is already installed in the environment.
+/// Returns whether a `WebView` controller is already installed in the environment.
 ///
 /// # Safety
 ///

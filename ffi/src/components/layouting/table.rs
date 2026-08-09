@@ -7,8 +7,11 @@ use crate::{
     AnyView, IntoFFI, IntoRust, WuiAnyView, components::text::WuiText, views::WuiAnyViews,
 };
 
+/// C ABI mirror of [`TableConfig`], a view arranging its columns in a table layout.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiTable {
+    /// Handle to the table's column collection.
     pub columns: *mut WuiAnyViews,
 }
 
@@ -26,7 +29,9 @@ impl IntoFFI for TableConfig {
     }
 }
 
+/// C ABI mirror of [`TableColumn`], one labeled column of a table.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiTableColumn {
     /// The column label as styled text.
     pub label: WuiText,

@@ -1,6 +1,7 @@
 //! FFI bindings for drag and drop types.
 
 use alloc::boxed::Box;
+use nami::Signal;
 use waterui::drag_drop::{DragData, Draggable, DropDestination};
 use waterui_str::Str;
 
@@ -14,6 +15,7 @@ use core::ptr;
 
 /// FFI-safe representation of a drag data type tag.
 #[repr(C)]
+#[derive(Debug)]
 pub enum WuiDragDataTag {
     /// Plain text content.
     Text = 0,
@@ -23,6 +25,7 @@ pub enum WuiDragDataTag {
 
 /// FFI-safe representation of drag data.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiDragData {
     /// The type of data.
     pub tag: WuiDragDataTag,
@@ -34,11 +37,11 @@ impl IntoFFI for DragData {
     type FFI = WuiDragData;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            DragData::Text(s) => WuiDragData {
+            Self::Text(s) => WuiDragData {
                 tag: WuiDragDataTag::Text,
                 value: s.into_ffi(),
             },
-            DragData::Url(s) => WuiDragData {
+            Self::Url(s) => WuiDragData {
                 tag: WuiDragDataTag::Url,
                 value: s.into_ffi(),
             },
@@ -52,10 +55,12 @@ impl IntoFFI for DragData {
 // ============================================================================
 
 /// Opaque wrapper for Draggable.
+#[derive(Debug)]
 pub struct WuiDraggableWrapper(pub Draggable);
 
 /// FFI-safe representation of a draggable metadata.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiDraggable {
     /// Opaque pointer to the Draggable wrapper.
     pub inner: *mut WuiDraggableWrapper,
@@ -74,13 +79,12 @@ impl IntoFFI for Draggable {
 ///
 /// # Safety
 ///
-/// * `draggable` must be a valid pointer to a WuiDraggable.
+/// * `draggable` must be a valid pointer to a `WuiDraggable`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_draggable_get_data(draggable: *const WuiDraggable) -> WuiDragData {
     unsafe {
         let draggable = crate::borrow_ffi(draggable);
         let wrapper = crate::borrow_ffi(draggable.inner);
-        use nami::Signal;
         wrapper.0.data.get().into_ffi()
     }
 }
@@ -89,7 +93,7 @@ pub unsafe extern "C" fn waterui_draggable_get_data(draggable: *const WuiDraggab
 ///
 /// # Safety
 ///
-/// * `draggable` must be a valid pointer to a WuiDraggable.
+/// * `draggable` must be a valid pointer to a `WuiDraggable`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_draggable(draggable: *mut WuiDraggable) {
     unsafe {
@@ -104,11 +108,13 @@ pub unsafe extern "C" fn waterui_drop_draggable(draggable: *mut WuiDraggable) {
 // DropDestination FFI
 // ============================================================================
 
-/// Wrapper for DropDestination to avoid orphan rule issues.
+/// Wrapper for `DropDestination` to avoid orphan rule issues.
+#[derive(Debug)]
 pub struct WuiDropHandler(pub RetainedCallback<DropDestination>);
 
 /// FFI-safe representation of a drop destination metadata.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiDropDestination {
     /// Opaque pointer to the drop handler.
     pub handler: *mut WuiDropHandler,
@@ -131,9 +137,9 @@ impl IntoFFI for DropDestination {
 ///
 /// # Safety
 ///
-/// * `handler` must be a valid pointer to a WuiDropDestination.
-/// * `env` must be a valid pointer to a WuiEnv.
-/// * `data_tag` must be a valid WuiDragDataTag value.
+/// * `handler` must be a valid pointer to a `WuiDropDestination`.
+/// * `env` must be a valid pointer to a `WuiEnv`.
+/// * `data_tag` must be a valid `WuiDragDataTag` value.
 /// * `data_value` must be a valid null-terminated UTF-8 string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_drop_handler(
@@ -171,8 +177,8 @@ pub unsafe extern "C" fn waterui_call_drop_handler(
 ///
 /// # Safety
 ///
-/// * `dest` must be a valid pointer to a WuiDropDestination.
-/// * `env` must be a valid pointer to a WuiEnv.
+/// * `dest` must be a valid pointer to a `WuiDropDestination`.
+/// * `env` must be a valid pointer to a `WuiEnv`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_drop_enter_handler(
     dest: *const WuiDropDestination,
@@ -194,8 +200,8 @@ pub unsafe extern "C" fn waterui_call_drop_enter_handler(
 ///
 /// # Safety
 ///
-/// * `dest` must be a valid pointer to a WuiDropDestination.
-/// * `env` must be a valid pointer to a WuiEnv.
+/// * `dest` must be a valid pointer to a `WuiDropDestination`.
+/// * `env` must be a valid pointer to a `WuiEnv`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_drop_exit_handler(
     dest: *const WuiDropDestination,
@@ -217,7 +223,7 @@ pub unsafe extern "C" fn waterui_call_drop_exit_handler(
 ///
 /// # Safety
 ///
-/// * `dest` must be a valid pointer to a WuiDropDestination.
+/// * `dest` must be a valid pointer to a `WuiDropDestination`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_drop_destination(dest: *mut WuiDropDestination) {
     unsafe {

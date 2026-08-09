@@ -11,24 +11,33 @@ use crate::{IntoFFI, IntoRust};
 pub type WuiData = WuiArray<u8>;
 
 /// A generic array structure for FFI, representing a contiguous sequence of elements.
-/// `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+///
+/// `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
 /// or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
 /// For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
 /// We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiArray<T: 'static> {
     // Store the original boxed data for proper dropping
     data: NonNull<()>,
     vtable: WuiArrayVTable<T>,
 }
 
+/// The pair of function pointers `WuiArray` uses to view and free its backing storage.
+///
+/// `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+/// and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiArrayVTable<T> {
     drop: unsafe extern "C" fn(*mut ()),
     slice: unsafe extern "C" fn(*const ()) -> WuiArraySlice<T>,
 }
 
+/// A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiArraySlice<T> {
     head: *mut T,
     len: usize,
@@ -41,6 +50,10 @@ impl<T> Default for WuiArray<T> {
 }
 
 impl<T> WuiArrayVTable<T> {
+    /// Assembles a `WuiArrayVTable` from an explicit drop function and slice accessor.
+    ///
+    /// Use this when the backing storage's drop/slice behavior is supplied directly
+    /// (for instance, by native code) rather than generated for a known Rust type `U`.
     pub const fn from_raw(
         drop: unsafe extern "C" fn(*mut ()),
         slice: unsafe extern "C" fn(*const ()) -> WuiArraySlice<T>,
@@ -48,13 +61,17 @@ impl<T> WuiArrayVTable<T> {
         Self { drop, slice }
     }
 
+    /// Builds a vtable whose drop/slice functions are specialized for the concrete
+    /// backing type `U`, so the correct destructor and element view are used
+    /// regardless of what `T` the resulting `WuiArray<T>` is declared to hold.
+    #[must_use]
     pub const fn new<U>() -> Self
     where
         U: AsRef<[T]> + 'static,
     {
         unsafe extern "C" fn drop<U2>(data: *mut ()) {
             unsafe {
-                let _: Box<U2> = Box::from_raw(data as *mut U2);
+                let _: Box<U2> = Box::from_raw(data.cast::<U2>());
             }
         }
 
@@ -66,7 +83,7 @@ impl<T> WuiArrayVTable<T> {
                 let slice = &*data.cast::<U2>();
                 let s = slice.as_ref();
                 let len = s.len();
-                let head = s.as_ptr() as *mut T2;
+                let head = s.as_ptr().cast_mut();
                 WuiArraySlice { head, len }
             }
         }
@@ -92,24 +109,32 @@ impl<T> WuiArray<T> {
         }
     }
 
+    /// Creates a new `WuiArray` that takes ownership of `array` and exposes its
+    /// elements through a vtable generated for `U`'s concrete type.
     pub fn new<U>(array: U) -> Self
     where
         U: AsRef<[T]> + 'static,
     {
         let boxed = Box::new(array);
-        let data = Box::into_raw(boxed) as *mut ();
+        let data = Box::into_raw(boxed).cast::<()>();
         let vtable = WuiArrayVTable::new::<U>();
         unsafe { Self::from_raw(data, vtable) }
     }
 
+    /// Returns the number of elements in the array.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.as_slice().len()
     }
 
+    /// Returns `true` if the array has no elements.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Borrows the array's elements as a Rust slice.
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         unsafe {
             let slice = (self.vtable.slice)(self.data.as_ptr());
@@ -117,6 +142,7 @@ impl<T> WuiArray<T> {
         }
     }
 
+    /// Mutably borrows the array's elements as a Rust slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe {
             let slice = (self.vtable.slice)(self.data.as_ptr());
@@ -171,7 +197,7 @@ where
     fn into_ffi(self) -> Self::FFI {
         WuiArray::new(
             self.into_iter()
-                .map(|item| item.into_ffi())
+                .map(super::super::IntoFFI::into_ffi)
                 .collect::<Vec<_>>(),
         )
     }

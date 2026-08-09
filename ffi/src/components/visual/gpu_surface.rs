@@ -1,10 +1,10 @@
-//! FFI bindings for the GpuSurface raw view.
+//! FFI bindings for the `GpuSurface` raw view.
 //!
 //! This module provides the FFI interface for high-performance GPU rendering
 //! using wgpu. Uses a shared GPU context for efficient multi-view rendering.
 //!
 //! The native backend is responsible for:
-//! 1. Creating a native surface layer (CAMetalLayer on Apple, SurfaceView on Android)
+//! 1. Creating a native surface layer (`CAMetalLayer` on Apple, `SurfaceView` on Android)
 //! 2. Creating persistent renderer state with `waterui_gpu_surface_create`
 //! 3. Attaching and detaching native presentation surfaces as their lifecycle changes
 //! 4. Calling `waterui_gpu_surface_render` when the redraw callback fires
@@ -35,14 +35,15 @@ use waterui_graphics::shared_context::{GpuRuntime, GpuSubmissionCompletionDriver
 use crate::components::layouting::layout::{WuiProposalSize, WuiViewDimensions};
 use crate::{IntoFFI, IntoRust};
 
-/// FFI representation of a GpuSurface view.
+/// FFI representation of a `GpuSurface` view.
 ///
 /// This struct is passed to the native backend when rendering the view tree.
 /// The native backend consumes it with `waterui_gpu_surface_create`, then owns
 /// the returned state for the semantic view lifetime.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiGpuSurface {
-    /// Opaque pointer to the boxed GpuSurface.
+    /// Opaque pointer to the boxed `GpuSurface`.
     /// This is consumed during state creation and should not be used after.
     pub surface: *mut c_void,
     /// Whether this surface should register as a picture-in-picture host.
@@ -58,7 +59,7 @@ impl IntoFFI for GpuSurface {
         // Box the GpuSurface for FFI transfer.
         let boxed = Box::new(self);
         let picture_in_picture_host_id = boxed.picture_in_picture_host();
-        let ptr = Box::into_raw(boxed) as *mut c_void;
+        let ptr = Box::into_raw(boxed).cast::<c_void>();
         WuiGpuSurface {
             surface: ptr,
             has_picture_in_picture_host_id: picture_in_picture_host_id.is_some(),
@@ -111,6 +112,15 @@ pub struct WuiGpuSurfaceState {
     redraw_handle: RedrawHandle,
 }
 
+impl core::fmt::Debug for WuiGpuSurfaceState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WuiGpuSurfaceState")
+            .field("current_width", &self.current_width)
+            .field("current_height", &self.current_height)
+            .finish_non_exhaustive()
+    }
+}
+
 struct GpuSurfaceSemantic {
     gpu_surface: GpuSurface,
     env: waterui::Environment,
@@ -121,6 +131,7 @@ struct GpuSurfaceSemantic {
 /// The renderer state remains on its owning UI thread. Native consumes this
 /// token by registering a completion with
 /// [`waterui_gpu_capture_fence_on_complete`].
+#[derive(Debug)]
 pub struct WuiGpuCaptureFence {
     completion_driver: GpuSubmissionCompletionDriver,
     submission: wgpu::SubmissionIndex,
@@ -192,7 +203,7 @@ impl Drop for ForeignRedrawTarget {
 ///
 /// `has_preference = false` means the surface should follow backend/global policy.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct WuiGpuSurfaceHdrPreference {
     /// Whether the renderer provided an explicit HDR/SDR preference.
     pub has_preference: bool,
@@ -386,6 +397,11 @@ fn attached_config<'a>(
 /// - `surface` must be a valid, unconsumed descriptor returned by
 ///   `waterui_force_as_gpu_surface`.
 /// - `env` must remain valid for this call; the state stores its own clone.
+///
+/// # Panics
+///
+/// Panics if `surface`'s inner `GpuSurface` pointer is null, meaning the
+/// descriptor was already consumed by a previous call to this function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_create(
     surface: *mut WuiGpuSurface,
@@ -396,7 +412,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
         !wui_surface.surface.is_null(),
         "waterui_gpu_surface_create: descriptor was already consumed"
     );
-    let gpu_surface: GpuSurface = unsafe { *Box::from_raw(wui_surface.surface as *mut GpuSurface) };
+    let gpu_surface: GpuSurface =
+        unsafe { *Box::from_raw(wui_surface.surface.cast::<GpuSurface>()) };
     wui_surface.surface = core::ptr::null_mut();
 
     let msaa_max_samples = gpu_surface.msaa_sample_limit();
@@ -418,7 +435,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
         pointer_state: PointerState::default(),
         gesture_state: GestureState::default(),
         start_time: now,
-        last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
+        last_frame_time: now
+            .checked_sub(Duration::from_secs_f32(1.0 / 60.0))
+            .unwrap(),
         redraw_handle: RedrawHandle::new(),
     }))
 }
@@ -457,12 +476,14 @@ pub(crate) fn measure_state(
 /// `state` must be valid and this function must run on the renderer's owning
 /// thread.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_gpu_surface_priority(state: *const WuiGpuSurfaceState) -> i32 {
+pub const unsafe extern "C" fn waterui_gpu_surface_priority(
+    state: *const WuiGpuSurfaceState,
+) -> i32 {
     let state = unsafe { crate::borrow_ffi(state) };
     priority_state(state)
 }
 
-pub(crate) fn priority_state(state: &WuiGpuSurfaceState) -> i32 {
+pub(crate) const fn priority_state(state: &WuiGpuSurfaceState) -> i32 {
     state.priority
 }
 
@@ -476,6 +497,11 @@ pub(crate) fn priority_state(state: &WuiGpuSurfaceState) -> i32 {
 /// - `state` must be a valid pointer returned by [`waterui_gpu_surface_create`].
 /// - `layer` must remain valid until [`waterui_gpu_surface_detach`] is called.
 /// - The state must currently be detached.
+///
+/// # Panics
+///
+/// Panics if `state` already has a native surface attached, or if `width` or
+/// `height` is zero.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_attach(
     state: *mut WuiGpuSurfaceState,
@@ -513,6 +539,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
 /// # Safety
 ///
 /// `state` must be valid and currently have an attached native surface.
+///
+/// # Panics
+///
+/// Panics if `state` does not currently have a native surface attached.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_detach(state: *mut WuiGpuSurfaceState) {
     let state = unsafe { crate::borrow_ffi_mut(state) };
@@ -584,6 +614,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_is_ready(state: *const WuiGpuSurfac
 /// # Safety
 ///
 /// `state` must be valid and have an attached native surface.
+///
+/// # Panics
+///
+/// Panics if `width` or `height` is zero.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_render(
     state: *mut WuiGpuSurfaceState,
@@ -698,6 +732,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_prepare_metal_texture(
 ///
 /// # Safety
 /// `state` must be valid, `texture` must point to a `MTLTexture`.
+///
+/// # Panics
+///
+/// Panics if `texture` is null.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
@@ -827,7 +865,7 @@ pub unsafe extern "C" fn waterui_gpu_capture_fence_on_complete(
 
 /// Clean up GPU resources.
 ///
-/// This function should be called when the GpuSurface view is destroyed.
+/// This function should be called when the `GpuSurface` view is destroyed.
 ///
 /// # Safety
 ///
@@ -846,6 +884,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_drop(state: *mut WuiGpuSurfaceState
 /// Native backends should update this before each render call to provide
 /// current pointer/cursor information to the GPU renderer.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiPointerState {
     /// Whether the pointer is currently over this surface.
     pub has_position: bool,
@@ -862,7 +901,7 @@ pub struct WuiPointerState {
 }
 
 #[inline]
-fn pointer_state_from_ffi(pointer: WuiPointerState) -> PointerState {
+const fn pointer_state_from_ffi(pointer: &WuiPointerState) -> PointerState {
     PointerState {
         position: if pointer.has_position {
             Some(waterui_core::layout::Point::new(pointer.x, pointer.y))
@@ -885,6 +924,7 @@ fn pointer_state_from_ffi(pointer: WuiPointerState) -> PointerState {
 /// Native backends should update this when pinch, pan, or double-tap
 /// gestures are detected to enable interactive chart zoom/pan.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiGestureState {
     /// Whether a gesture is currently active.
     pub active: bool,
@@ -905,7 +945,7 @@ pub struct WuiGestureState {
 }
 
 #[inline]
-fn gesture_state_from_ffi(gesture: WuiGestureState) -> GestureState {
+const fn gesture_state_from_ffi(gesture: &WuiGestureState) -> GestureState {
     GestureState {
         pinch_scale: gesture.pinch_scale,
         pinch_center: if gesture.has_pinch_center {
@@ -922,11 +962,12 @@ fn gesture_state_from_ffi(gesture: WuiGestureState) -> GestureState {
     }
 }
 
-/// FFI-safe combined input state for a GpuSurface.
+/// FFI-safe combined input state for a `GpuSurface`.
 ///
 /// This keeps the native bridge minimal by forwarding pointer and gesture
 /// snapshots in one call.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiGpuSurfaceInput {
     /// Current pointer snapshot.
     pub pointer: WuiPointerState,
@@ -934,7 +975,7 @@ pub struct WuiGpuSurfaceInput {
     pub gesture: WuiGestureState,
 }
 
-/// Update both pointer and gesture state for a GpuSurface.
+/// Update both pointer and gesture state for a `GpuSurface`.
 ///
 /// Native backends should prefer this API to minimize bridge calls.
 ///
@@ -952,8 +993,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_input(
     input: WuiGpuSurfaceInput,
 ) {
     let state = unsafe { crate::borrow_ffi_mut(state) };
-    state.pointer_state = pointer_state_from_ffi(input.pointer);
-    state.gesture_state = gesture_state_from_ffi(input.gesture);
+    state.pointer_state = pointer_state_from_ffi(&input.pointer);
+    state.gesture_state = gesture_state_from_ffi(&input.gesture);
 }
 
 /// Create a wgpu Surface from a platform-specific layer pointer.
