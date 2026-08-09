@@ -83,6 +83,7 @@ impl WebViewProxy {
     ///
     /// The returned future is intentionally thread-local because native
     /// web views are main-thread-affine.
+    #[must_use]
     pub fn run_javascript<'a>(
         &'a self,
         script: &'a str,
