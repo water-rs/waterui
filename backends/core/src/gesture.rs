@@ -1018,14 +1018,12 @@ impl GestureDetector for RotationDetector {
             TouchPhase::Started => {
                 self.active = true;
                 self.angle = 0.0;
-                GestureDetection::recognized(GesturePayload::None)
             }
             TouchPhase::Moved => {
                 if !self.active {
                     return GestureDetection::default();
                 }
                 self.angle += delta;
-                GestureDetection::recognized(GesturePayload::None)
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 if !self.active {
@@ -1033,9 +1031,9 @@ impl GestureDetector for RotationDetector {
                 }
                 self.active = false;
                 self.angle += delta;
-                GestureDetection::recognized(GesturePayload::None)
             }
         }
+        GestureDetection::recognized(GesturePayload::None)
     }
 
     fn reset(&mut self) {
