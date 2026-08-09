@@ -196,4 +196,3 @@ pub fn demo() -> impl View {
         binding(0.5),
     )
 }
-
