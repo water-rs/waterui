@@ -7,7 +7,7 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{Binding, binding};
+use waterui::reactive::{binding, Binding};
 use waterui_particle::{ParticleShape, ParticleSystem};
 
 // --- Demos ---

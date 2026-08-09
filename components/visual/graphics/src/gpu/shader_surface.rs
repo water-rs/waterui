@@ -230,11 +230,8 @@ impl ShaderRenderer {
 
         let full_shader = self.build_full_shader();
         let shader_label = self.label.unwrap_or("ShaderSurface Shader");
-        let module = shaderloom::create_dynamic_wgsl_module(
-            ctx.device,
-            Some(shader_label),
-            &full_shader,
-        );
+        let module =
+            shaderloom::create_dynamic_wgsl_module(ctx.device, Some(shader_label), &full_shader);
         let layout = ctx
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

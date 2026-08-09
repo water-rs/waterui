@@ -9,7 +9,10 @@ use waterui_graphics::{GpuRuntime, GpuSurface, OffscreenRenderConfig, OffscreenS
 fn generate_code128_png_offscreen() {
     let content = std::env::var("WATERUI_CODE128_CONTENT")
         .unwrap_or_else(|_| "HELLO-WATERUI-128".to_string());
-    let out_path = std::env::var("WATERUI_CODE128_OUT").map_or_else(|_| PathBuf::from("/tmp/generated_code128.png"), PathBuf::from);
+    let out_path = std::env::var("WATERUI_CODE128_OUT").map_or_else(
+        |_| PathBuf::from("/tmp/generated_code128.png"),
+        PathBuf::from,
+    );
 
     let renderer = BarcodeRenderer::new(BarcodeSource::code128(content));
     let size = OffscreenSize::try_from_pixels(1024, 256).expect("valid output size");
@@ -17,12 +20,9 @@ fn generate_code128_png_offscreen() {
     let runtime = pollster::block_on(GpuRuntime::new())
         .expect("Code128 export test requires a working GPU runtime");
     let mut env = waterui_core::Environment::new();
-    let output = pollster::block_on(GpuSurface::new(renderer).render_offscreen(
-        &runtime,
-        config,
-        &mut env,
-    ))
-    .expect("offscreen Code128 render should succeed");
+    let output =
+        pollster::block_on(GpuSurface::new(renderer).render_offscreen(&runtime, config, &mut env))
+            .expect("offscreen Code128 render should succeed");
     assert_eq!(
         output.rgba8.len(),
         (output.width * output.height * 4) as usize

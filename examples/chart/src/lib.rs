@@ -5,7 +5,7 @@ use waterui::color::Srgb;
 use waterui::layout::grid::{grid as layout_grid, row};
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{Binding, binding, impl_constant};
+use waterui::reactive::{binding, impl_constant, Binding};
 use waterui_chart::{
     ArcAngles, AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint,
     Candle, CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint,
