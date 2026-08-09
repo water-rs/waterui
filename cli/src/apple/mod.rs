@@ -34,48 +34,61 @@ pub mod local {
         eyre!("apple::local is only supported on macOS")
     }
 
+    fn unsupported_async<T>() -> impl std::future::Future<Output = eyre::Result<T>> {
+        std::future::ready(Err(unsupported()))
+    }
+
     /// Stub: local window enumeration is unavailable outside macOS.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an unsupported-platform error.
     pub fn list_windows_by_pid(_pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         Err(unsupported())
     }
 
     /// Stub: local screenshot is unavailable outside macOS.
-    pub async fn screenshot(_output: &Path) -> eyre::Result<()> {
-        Err(unsupported())
+    pub fn screenshot(_output: &Path) -> impl std::future::Future<Output = eyre::Result<()>> {
+        unsupported_async()
     }
 
     /// Stub: local screenshot is unavailable outside macOS.
-    pub async fn screenshot_bytes() -> eyre::Result<Vec<u8>> {
-        Err(unsupported())
+    pub fn screenshot_bytes() -> impl std::future::Future<Output = eyre::Result<Vec<u8>>> {
+        unsupported_async()
     }
 
     /// Stub: local screenshot is unavailable outside macOS.
-    pub async fn screenshot_window(_window_id: u32, _output: &Path) -> eyre::Result<()> {
-        Err(unsupported())
+    pub fn screenshot_window(
+        _window_id: u32,
+        _output: &Path,
+    ) -> impl std::future::Future<Output = eyre::Result<()>> {
+        unsupported_async()
     }
 
     /// Stub: local screenshot is unavailable outside macOS.
-    pub async fn screenshot_window_bytes(_window_id: u32) -> eyre::Result<Vec<u8>> {
-        Err(unsupported())
+    pub fn screenshot_window_bytes(
+        _window_id: u32,
+    ) -> impl std::future::Future<Output = eyre::Result<Vec<u8>>> {
+        unsupported_async()
     }
 
     /// Stub: local tap is unavailable outside macOS.
-    pub async fn tap(_x: u32, _y: u32) -> eyre::Result<()> {
-        Err(unsupported())
+    pub fn tap(_x: u32, _y: u32) -> impl std::future::Future<Output = eyre::Result<()>> {
+        unsupported_async()
     }
 
     /// Stub: local swipe is unavailable outside macOS.
-    pub async fn swipe(
+    pub fn swipe(
         _from: (u32, u32),
         _to: (u32, u32),
         _duration_ms: Option<u32>,
-    ) -> eyre::Result<()> {
-        Err(unsupported())
+    ) -> impl std::future::Future<Output = eyre::Result<()>> {
+        unsupported_async()
     }
 
     /// Stub: local text input is unavailable outside macOS.
-    pub async fn text(_input: &str) -> eyre::Result<()> {
-        Err(unsupported())
+    pub fn text(_input: &str) -> impl std::future::Future<Output = eyre::Result<()>> {
+        unsupported_async()
     }
 }
 /// Apple platform configuration.
