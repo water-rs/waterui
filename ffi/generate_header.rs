@@ -1,8 +1,17 @@
+//! Regenerates `ffi/waterui.h` from the `waterui-ffi` crate via cbindgen and
+//! propagates the header to the native backend submodules.
 use std::{env, fs, path::PathBuf};
 
 use cbindgen::{Builder, Config};
 
 fn main() {
+    // cbindgen expands macros by running `cargo rustc -- -Zunpretty=expanded`,
+    // which prints expanded source instead of writing the declared artifacts.
+    // Artifact-caching rustc wrappers (sccache) fail while collecting those
+    // missing outputs, so the expansion subprocess must run unwrapped. The
+    // expansion produces nothing cacheable; every real build keeps its wrapper.
+    // SAFETY: called at the start of `main`, before any other thread exists.
+    unsafe { env::set_var("RUSTC_WRAPPER", "") };
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut config =
         Config::from_file(crate_dir.join("cbindgen.toml")).expect("failed to load cbindgen.toml");
