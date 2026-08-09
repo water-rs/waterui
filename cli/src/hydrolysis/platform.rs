@@ -16,10 +16,6 @@ use smol::{
 use target_lexicon::Triple;
 use tracing::info;
 
-#[cfg(target_os = "macos")]
-use crate::macos_bundle::package_cef_helper_app;
-#[cfg(target_os = "macos")]
-use crate::project::BrowserRuntimePlan;
 use crate::{
     assets, browser_runtime,
     build::{
@@ -28,12 +24,19 @@ use crate::{
     },
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
-    macos_bundle::{MacOsUsageDescription, package_binary_as_app, sign_macos_app as sign_app},
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::TemplateContext,
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::{command, run_command_os, which},
+};
+#[cfg(target_os = "macos")]
+use crate::{
+    macos_bundle::{
+        MacOsUsageDescription, package_binary_as_app, package_cef_helper_app,
+        sign_macos_app as sign_app,
+    },
+    project::BrowserRuntimePlan,
 };
 
 #[cfg(target_os = "macos")]
