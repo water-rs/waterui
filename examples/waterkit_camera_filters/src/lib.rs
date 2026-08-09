@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
+use shaderloom::CompiledShader;
 use waterkit_camera::Camera;
 use waterkit_permission::{Permission, PermissionStatus, check, request};
-use shaderloom::CompiledShader;
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::prelude::slider::slider;

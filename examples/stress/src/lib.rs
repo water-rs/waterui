@@ -1,4 +1,8 @@
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, reason = "intentional lossy numeric cast in rendering/layout code")]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
 //! Stress Example - High pressure real-app workload for profiling
 //!
 //! This app is intended for professional profiling through native tools and `WaterUI` preview perf.

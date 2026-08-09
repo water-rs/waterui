@@ -118,8 +118,9 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
             let viewbox_const = format!("{const_name}_VIEWBOX");
             let width = svg_data.viewbox.get(2).copied().unwrap_or(512.0);
             let height = svg_data.viewbox.get(3).copied().unwrap_or(512.0);
-            let ctor =
-                format!("crate::Svg::from_path({path_const}, {viewbox_const}.0, {viewbox_const}.1)");
+            let ctor = format!(
+                "crate::Svg::from_path({path_const}, {viewbox_const}.0, {viewbox_const}.1)"
+            );
             SvgConst {
                 path_const,
                 path_literal: format!("{:?}", svg_data.path),

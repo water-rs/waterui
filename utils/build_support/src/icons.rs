@@ -176,9 +176,7 @@ mod tests {
         };
         let out = render(&module);
         assert!(out.contains("pub const ACTIVITY_PATH: &str = \"M22 12\";\n"));
-        assert!(out.contains(
-            "    crate::Svg::from_stroke_path(ACTIVITY_PATH, 24.0, 24.0)\n"
-        ));
+        assert!(out.contains("    crate::Svg::from_stroke_path(ACTIVITY_PATH, 24.0, 24.0)\n"));
         assert!(!out.contains("IconGlyph"));
         assert!(!out.contains("icon as webfont glyph"));
     }
@@ -231,13 +229,13 @@ mod tests {
             "/// Font family name for solid icons.\npub const FONT_FAMILY: &str = \"Font Awesome 7 Free Solid\";\n"
         ));
         assert!(out.contains("#[cfg(feature = \"webfont\")]\npub use waterui_icon::IconGlyph;\n"));
-        assert!(out.contains(
-            "pub const STAR: IconGlyph = IconGlyph::new('\\u{f005}', FONT_FAMILY);\n"
-        ));
+        assert!(
+            out.contains("pub const STAR: IconGlyph = IconGlyph::new('\\u{f005}', FONT_FAMILY);\n")
+        );
         assert!(out.contains("pub const STAR_VIEWBOX: (f32, f32) = (576.0, 512.0);\n"));
-        assert!(out.contains(
-            "    crate::Svg::from_path(STAR_PATH, STAR_VIEWBOX.0, STAR_VIEWBOX.1)\n"
-        ));
+        assert!(
+            out.contains("    crate::Svg::from_path(STAR_PATH, STAR_VIEWBOX.0, STAR_VIEWBOX.1)\n")
+        );
         assert!(out.contains(
             "pub const GLYPH_ONLY: IconGlyph = IconGlyph::new('\\u{f006}', FONT_FAMILY);\n"
         ));

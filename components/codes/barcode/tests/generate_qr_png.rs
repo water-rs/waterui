@@ -9,7 +9,8 @@ use waterui_graphics::{GpuRuntime, GpuSurface, OffscreenRenderConfig, OffscreenS
 fn generate_qr_png_offscreen() {
     let content =
         std::env::var("WATERUI_QR_CONTENT").unwrap_or_else(|_| "https://waterui.dev".to_string());
-    let out_path = std::env::var("WATERUI_QR_OUT").map_or_else(|_| PathBuf::from("target/generated_qr.png"), PathBuf::from);
+    let out_path = std::env::var("WATERUI_QR_OUT")
+        .map_or_else(|_| PathBuf::from("target/generated_qr.png"), PathBuf::from);
 
     let renderer = BarcodeRenderer::new(BarcodeSource::qr(content));
     let size = OffscreenSize::try_from_pixels(768, 768).expect("valid output size");
@@ -17,12 +18,9 @@ fn generate_qr_png_offscreen() {
     let runtime = pollster::block_on(GpuRuntime::new())
         .expect("QR export test requires a working GPU runtime");
     let mut env = waterui_core::Environment::new();
-    let output = pollster::block_on(GpuSurface::new(renderer).render_offscreen(
-        &runtime,
-        config,
-        &mut env,
-    ))
-    .expect("offscreen QR render should succeed");
+    let output =
+        pollster::block_on(GpuSurface::new(renderer).render_offscreen(&runtime, config, &mut env))
+            .expect("offscreen QR render should succeed");
     assert_eq!(
         output.rgba8.len(),
         (output.width * output.height * 4) as usize

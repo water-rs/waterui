@@ -1,6 +1,9 @@
 #![cfg_attr(
     test,
-    allow(clippy::float_cmp, reason = "tests assert exact animation/geometry values")
+    allow(
+        clippy::float_cmp,
+        reason = "tests assert exact animation/geometry values"
+    )
 )]
 //! Core backend infrastructure for `WaterUI`.
 //!

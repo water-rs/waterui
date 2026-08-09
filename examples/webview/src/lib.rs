@@ -96,14 +96,18 @@ fn handle_webview_event(
             let address = address.clone();
             spawn_local(async move {
                 if let Ok(url) = webview.run_javascript("location.href").await
-                    && !url.as_str().is_empty() && url.as_str() != "null" {
-                        address.set(url);
-                    }
+                    && !url.as_str().is_empty()
+                    && url.as_str() != "null"
+                {
+                    address.set(url);
+                }
                 if system_user_agent.get().as_str().is_empty()
                     && let Ok(ua) = webview.run_javascript("navigator.userAgent").await
-                        && !ua.as_str().is_empty() && ua.as_str() != "null" {
-                            system_user_agent.set(ua);
-                        }
+                    && !ua.as_str().is_empty()
+                    && ua.as_str() != "null"
+                {
+                    system_user_agent.set(ua);
+                }
             })
             .detach();
         }
