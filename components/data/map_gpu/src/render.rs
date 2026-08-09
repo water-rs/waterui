@@ -1946,14 +1946,17 @@ impl MapPainter {
         let width = f64::from(layout.width());
         let height = f64::from(layout.height());
         let origin = label_origin(anchor, offset, width, height, text_anchor);
-        let rotated_width = width * angle.cos().abs() + height * angle.sin().abs();
-        let rotated_height = width * angle.sin().abs() + height * angle.cos().abs();
-        let center = (origin.0 + width * 0.5, origin.1 + height * 0.5);
+        let rotated_width = f64::mul_add(height, angle.sin().abs(), width * angle.cos().abs());
+        let rotated_height = f64::mul_add(height, angle.cos().abs(), width * angle.sin().abs());
+        let center = (
+            f64::mul_add(width, 0.5, origin.0),
+            f64::mul_add(height, 0.5, origin.1),
+        );
         let bounds = Rect::new(
-            center.0 - rotated_width * 0.5 - padding,
-            center.1 - rotated_height * 0.5 - padding,
-            center.0 + rotated_width * 0.5 + padding,
-            center.1 + rotated_height * 0.5 + padding,
+            rotated_width.mul_add(-0.5, center.0) - padding,
+            rotated_height.mul_add(-0.5, center.1) - padding,
+            rotated_width.mul_add(0.5, center.0) + padding,
+            rotated_height.mul_add(0.5, center.1) + padding,
         );
         if self
             .occupied_labels
