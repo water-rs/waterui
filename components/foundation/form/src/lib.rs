@@ -275,7 +275,6 @@ pub use secure::{SecureField, secure};
 /// # Returns
 ///
 /// A view that renders interactive form controls for all fields in the bound data structure
-#[must_use]
 pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
     T::view(binding, Str::default(), Str::default())
 }
