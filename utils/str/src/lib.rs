@@ -207,12 +207,9 @@ impl Str {
             return Self::new();
         }
 
-        unsafe {
-            Self {
-                ptr: NonNull::new_unchecked(Box::into_raw(Box::new(Shared::new(string))))
-                    .cast::<()>(),
-                len: -len.cast_signed(),
-            }
+        Self {
+            ptr: NonNull::from(Box::leak(Box::new(Shared::new(string)))).cast::<()>(),
+            len: -len.cast_signed(),
         }
     }
 
