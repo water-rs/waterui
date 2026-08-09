@@ -27,7 +27,7 @@ fn pump_for(app: &mut OffscreenApp, total_ms: u64) {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn switch_toggle_slides_and_reveals_checkmark() {
     let value_for_view = binding(false);
     let mut app = ui()

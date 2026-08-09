@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::future::{Future, ready};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -183,20 +184,19 @@ impl WebViewHandle for FakeWebViewHandle {
         self.state.borrow_mut().cookies.push(cookie);
     }
 
-    #[expect(
-        clippy::future_not_send,
-        reason = "test double for a main-thread `WebViewController`; its `RefCell` state is `!Send` by design"
-    )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
-        self.state.borrow().cookies.clone()
+    fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> {
+        ready(self.state.borrow().cookies.clone())
     }
 
     #[expect(
         clippy::future_not_send,
-        reason = "test double for a main-thread `WebViewController`; its `RefCell` state is `!Send` by design"
+        reason = "test double for a main-thread `WebViewController`; `Str` is `!Send` by design"
     )]
-    async fn run_javascript(&self, script: &str) -> Result<waterui::Str, waterui::Str> {
-        Ok(waterui::Str::from(script.to_owned()))
+    fn run_javascript(
+        &self,
+        script: &str,
+    ) -> impl Future<Output = Result<waterui::Str, waterui::Str>> {
+        ready(Ok(waterui::Str::from(script.to_owned())))
     }
 }
 

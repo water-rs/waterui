@@ -264,3 +264,8 @@ panic = "abort"    # Smaller panic handling
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
+# to quick-xml 0.41, but has not released that change yet.
+[patch.crates-io]
+xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }

@@ -29,13 +29,13 @@ use crate::widgets::util::widget_theme;
 /// The retained render state of a slider. A `SliderConfig`'s value-end labels are
 /// move-only `AnyView`s (they cannot be re-dispatched twice), so the persistent
 /// `Widget` node holds them as [`RetainedSubview`]s built once and re-flushed each
-/// frame; the clonable `label`/`range`/`value` drive the track and accessibility.
+/// frame; the cloneable `label`/`range`/`value` drive the track and accessibility.
 pub(crate) struct SliderRenderState {
     label: Label,
     disabled: nami::Computed<bool>,
     /// The main label as a retained node sub-view, re-flushed each frame at its
     /// rect (reactive content stays live through the node's own re-flush). The
-    /// clonable `label` is kept alongside for accessibility resolution.
+    /// cloneable `label` is kept alongside for accessibility resolution.
     label_view: RetainedSubview,
     min_value_label: RetainedSubview,
     max_value_label: RetainedSubview,

@@ -5,7 +5,9 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo::rerun-if-changed=native/macos_application.mm");
     println!("cargo::rerun-if-changed=native/windows_sandbox.cc");
-    if std::env::var_os("CARGO_FEATURE_CEF_RUNTIME").is_none() {
+    let cef_runtime_enabled = std::env::var_os("CARGO_FEATURE_CEF_RUNTIME").is_some();
+    let compile_only_enabled = std::env::var_os("CARGO_FEATURE_COMPILE_ONLY").is_some();
+    if !cef_runtime_enabled || compile_only_enabled {
         return;
     }
 

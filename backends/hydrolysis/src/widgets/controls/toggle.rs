@@ -20,7 +20,7 @@ use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
 use crate::widgets::util::widget_theme;
 
-/// The retained render state of a toggle: the clonable [`ToggleConfig`] drives the
+/// The retained render state of a toggle: the cloneable [`ToggleConfig`] drives the
 /// control + accessibility, and its main label is held as a [`RetainedSubview`]
 /// built once and re-flushed each frame so reactive label content stays live.
 pub(crate) struct ToggleRenderState {

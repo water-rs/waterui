@@ -56,7 +56,7 @@ jobs:
         run: |
           mkdir -p target/llvm-cov-target
           printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > target/llvm-cov-target/CACHEDIR.TAG
-      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - run: cargo llvm-cov --workspace --features waterui/all --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v4
         with:
           use_oidc: true
@@ -101,7 +101,7 @@ jobs:
       - name: Check kit licenses
         if: ${{ hashFiles('kit/Cargo.toml') != '' }}
         working-directory: kit
-        run: cargo deny check licenses -c ../deny.toml
+        run: cargo deny check -c ../deny.toml licenses
 
   unused-deps:
     name: Unused Dependencies

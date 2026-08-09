@@ -13,6 +13,7 @@ use waterui_chromium::ChromiumController;
 use waterui_webview::WebViewController;
 
 use crate::app::new_app;
+#[cfg(any(feature = "chromium", feature = "webview"))]
 use crate::page::CefController;
 
 const MAXIMUM_PUMP_INTERVAL: Duration = Duration::from_millis(1000 / 30);
@@ -471,6 +472,7 @@ struct RuntimeInner {
     _library: LoadedCefLibrary,
     pump_requests: Receiver<PumpDeadline>,
     next_pump: Cell<Instant>,
+    #[cfg(any(feature = "chromium", feature = "webview"))]
     cache_root: PathBuf,
     _sandbox: PlatformSandbox,
 }
@@ -506,18 +508,19 @@ impl CefRuntime {
     /// subprocess dispatch, or CEF initialization fails.
     #[must_use]
     pub fn initialize(configuration: CefRuntimeConfiguration) -> Self {
+        let CefRuntimeConfiguration { paths, cache_root } = configuration;
         #[cfg(target_os = "macos")]
         crate::application_mac::assert_macos_application_active();
-        configuration.paths.validate();
+        paths.validate();
         assert!(
-            configuration.cache_root.is_absolute(),
+            cache_root.is_absolute(),
             "CEF cache root must be absolute: {}",
-            configuration.cache_root.display()
+            cache_root.display()
         );
-        std::fs::create_dir_all(&configuration.cache_root).unwrap_or_else(|error| {
+        std::fs::create_dir_all(&cache_root).unwrap_or_else(|error| {
             panic!(
                 "failed to create CEF cache root {}: {error}",
-                configuration.cache_root.display()
+                cache_root.display()
             )
         });
 
@@ -527,7 +530,7 @@ impl CefRuntime {
             library,
             mut app,
             pump_requests,
-        } = bootstrap(&configuration.paths).unwrap_or_else(|exit_code| {
+        } = bootstrap(&paths).unwrap_or_else(|exit_code| {
             std::process::exit(exit_code);
         });
         #[cfg(target_os = "windows")]
@@ -535,9 +538,9 @@ impl CefRuntime {
         #[cfg(not(target_os = "windows"))]
         let sandbox_info = PlatformSandbox::info();
 
-        let resources = configuration.paths.resources();
+        let resources = paths.resources();
         #[cfg(target_os = "macos")]
-        let framework = Some(configuration.paths.framework());
+        let framework = Some(paths.framework());
         #[cfg(not(target_os = "macos"))]
         let framework = CefRuntimePaths::framework();
         #[cfg(target_os = "macos")]
@@ -558,7 +561,7 @@ impl CefRuntime {
             windowless_rendering_enabled: 1,
             external_message_pump: 1,
             disable_signal_handlers: 1,
-            root_cache_path: configuration.cache_root.to_string_lossy().as_ref().into(),
+            root_cache_path: cache_root.to_string_lossy().as_ref().into(),
             resources_dir_path: resources.to_string_lossy().as_ref().into(),
             locales_dir_path,
             framework_dir_path: framework
@@ -578,7 +581,7 @@ impl CefRuntime {
             ),
             1,
             "CEF initialization failed with sandbox enabled and runtime {}",
-            configuration.paths.root().display()
+            paths.root().display()
         );
 
         Self {
@@ -587,7 +590,8 @@ impl CefRuntime {
                 _library: library,
                 pump_requests,
                 next_pump: Cell::new(Instant::now()),
-                cache_root: configuration.cache_root,
+                #[cfg(any(feature = "chromium", feature = "webview"))]
+                cache_root,
                 _sandbox: sandbox,
             }),
         }
@@ -636,6 +640,7 @@ impl CefRuntime {
         ChromiumController::new(CefController::new(self.clone()))
     }
 
+    #[cfg(any(feature = "chromium", feature = "webview"))]
     pub(crate) fn cache_root(&self) -> &Path {
         &self.inner.cache_root
     }

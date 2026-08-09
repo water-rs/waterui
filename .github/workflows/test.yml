@@ -23,6 +23,12 @@ jobs:
       - name: Install nasm
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
+      - name: Install DirectX Shader Compiler
+        if: runner.os == 'Windows'
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Verify DirectX Shader Compiler
+        if: runner.os == 'Windows'
+        run: dxc --version
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}

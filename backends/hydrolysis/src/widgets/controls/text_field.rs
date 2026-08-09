@@ -19,7 +19,7 @@ use waterui_core::{AnyView, Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
 use waterui_text::styled::StyledStr;
 
-/// The retained render state of a text field: the clonable [`ResolvedTextFieldConfig`]
+/// The retained render state of a text field: the cloneable [`ResolvedTextFieldConfig`]
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
@@ -48,7 +48,7 @@ impl TextFieldRenderState {
     }
 }
 
-/// The retained render state of a secure field: the clonable [`SecureFieldConfig`]
+/// The retained render state of a secure field: the cloneable [`SecureFieldConfig`]
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
@@ -143,7 +143,7 @@ pub(crate) fn render_text_field_parts(
         .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();
     // Read every retained field from the retained config each frame: the `label`/
-    // `value`/`prompt`/`selection_menu` are clonable signals (the value is read
+    // `value`/`prompt`/`selection_menu` are cloneable signals (the value is read
     // through `read_signal` below so a binding change schedules a frame). The label
     // is a retained node sub-view flushed under the animated transform each frame.
     let (label, value_binding, prompt_signal, selection_menu, line_limit_raw) = {
@@ -452,7 +452,7 @@ pub(crate) fn render_secure_field_parts(
         .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();
     // Read the retained label/value from the retained config each frame (the value
-    // is a clonable `Binding<Secure>`; it is read through `read_signal` below so a
+    // is a cloneable `Binding<Secure>`; it is read through `read_signal` below so a
     // binding change schedules a frame). The label is a retained node sub-view
     // flushed under the animated transform each frame.
     let (label, value_binding) = {

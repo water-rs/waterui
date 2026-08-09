@@ -20,7 +20,7 @@ use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
 use crate::widgets::util::{inset_rect, widget_theme};
 
-/// The retained render state of a date picker: the clonable [`DatePickerConfig`]
+/// The retained render state of a date picker: the cloneable [`DatePickerConfig`]
 /// drives the field + accessibility, and its main label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.

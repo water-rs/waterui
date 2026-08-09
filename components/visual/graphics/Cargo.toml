@@ -22,7 +22,6 @@ gpu = [
     "dep:peniko",
     "dep:bytemuck",
     "dep:encase",
-    "dep:glam",
     "dep:tracing",
     "dep:image",
     "dep:png",
@@ -45,7 +44,6 @@ kurbo = { workspace = true, optional = true }
 peniko = { workspace = true, optional = true }
 bytemuck = { version = "1.25", optional = true }
 encase = { workspace = true, optional = true }
-glam = { version = "0.33", optional = true }
 tracing = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"], optional = true }
 png = { version = "0.18", optional = true }
@@ -71,3 +69,7 @@ harness = false
 
 [lints]
 workspace = true
+
+# `waterui-build-support` and `naga` are used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["naga", "waterui-build-support"]

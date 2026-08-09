@@ -24,7 +24,6 @@ async-channel.workspace = true
 blocking.workspace = true
 encase.workspace = true
 executor-core.workspace = true
-glam = "0.33"
 num-traits = { version = "0.2", default-features = false }
 futures.workspace = true
 tracing.workspace = true
@@ -35,3 +34,7 @@ waterui-build-support.workspace = true
 [dev-dependencies]
 waterui.workspace = true
 waterui-testing.workspace = true
+
+# `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["waterui-build-support"]

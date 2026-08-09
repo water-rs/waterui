@@ -12,7 +12,7 @@ fn save(app: &mut OffscreenApp, stage: &str) {
 }
 
 #[test]
-#[ignore = "writes visual acceptance PNGs for direct image review"]
+#[ignore = "writes visual acceptance PNG files for direct image review"]
 fn snackbar_fades_and_slides_into_place() {
     let (manager, overlay) = SnackbarManager::new();
     let mut app = ui()
