@@ -221,14 +221,14 @@ fn spring_ease(t: f32, stiffness: f32, damping: f32) -> f32 {
     if zeta >= 1.0 {
         // Critically damped or overdamped - no oscillation
         let decay = (-omega * zeta * t).exp();
-        1.0 - decay * (omega * zeta).mul_add(t, 1.0)
+        decay.mul_add(-(omega * zeta).mul_add(t, 1.0), 1.0)
     } else {
         // Underdamped - oscillates
-        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        let omega_d = omega * zeta.mul_add(-zeta, 1.0).sqrt();
         let decay = (-zeta * omega * t).exp();
         let cos_part = (omega_d * t).cos();
         let sin_part = (zeta * omega / omega_d) * (omega_d * t).sin();
-        1.0 - decay * (cos_part + sin_part)
+        decay.mul_add(-(cos_part + sin_part), 1.0)
     }
 }
 
