@@ -1707,8 +1707,8 @@ fn linear_to_pq(luminance_nits: f32) -> f32 {
     let c2 = 2413.0 / 128.0;
     let c3 = 2392.0 / 128.0;
     let ym1 = y.powf(m1);
-    let num = c1 + c2 * ym1;
-    let den = 1.0 + c3 * ym1;
+    let num = c2.mul_add(ym1, c1);
+    let den = c3.mul_add(ym1, 1.0);
     (num / den).powf(m2)
 }
 

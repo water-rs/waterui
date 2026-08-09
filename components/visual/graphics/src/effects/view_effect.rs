@@ -454,6 +454,7 @@ impl ViewEffectErased {
     }
 
     /// Returns a reference to the child view.
+    #[must_use]
     pub const fn content(&self) -> &waterui_core::AnyView {
         &self.content
     }
