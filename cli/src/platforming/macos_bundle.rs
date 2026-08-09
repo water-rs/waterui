@@ -6,8 +6,10 @@ use askama::Template;
 use color_eyre::eyre::{self, bail};
 use fs_extra::dir::CopyOptions;
 use smol::fs;
+#[cfg(target_os = "macos")]
 use smol::stream::StreamExt as _;
 
+#[cfg(target_os = "macos")]
 use crate::utils::run_command_os;
 
 const CEF_HELPER_VARIANTS: [(&str, &str); 5] = [
