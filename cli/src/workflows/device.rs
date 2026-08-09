@@ -1035,8 +1035,11 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
 
 /// Run a macOS .app bundle on non-macOS platforms (not supported).
 #[cfg(not(target_os = "macos"))]
-async fn run_macos_app(_artifact: Artifact, _options: RunOptions) -> Result<Running, FailToRun> {
-    Err(FailToRun::InvalidArtifact) // .app bundles only work on macOS
+fn run_macos_app(
+    _artifact: Artifact,
+    _options: RunOptions,
+) -> impl std::future::Future<Output = Result<Running, FailToRun>> {
+    std::future::ready(Err(FailToRun::InvalidArtifact)) // .app bundles only work on macOS
 }
 
 /// Run a binary executable directly.
