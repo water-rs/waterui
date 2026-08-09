@@ -137,30 +137,38 @@ impl CdpState {
     }
 }
 
-cef::wrap_dev_tools_message_observer! {
-    struct WaterDevToolsObserver {
-        state: Rc<CdpState>,
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_dev_tools_observer(state: Rc<CdpState>) -> DevToolsMessageObserver {
+    cef::wrap_dev_tools_message_observer! {
+        struct WaterDevToolsObserver {
+            state: Rc<CdpState>,
+        }
+
+        impl DevToolsMessageObserver {
+            fn on_dev_tools_message(
+                &self,
+                _browser: Option<&mut Browser>,
+                message: Option<&[u8]>,
+            ) -> std::os::raw::c_int {
+                let message = message.expect("CEF DevTools callback must contain a message");
+                self.state.handle_message(message);
+                1
+            }
+
+            fn on_dev_tools_agent_attached(&self, _browser: Option<&mut Browser>) {
+                self.state.attached();
+            }
+
+            fn on_dev_tools_agent_detached(&self, _browser: Option<&mut Browser>) {
+                self.state.detached();
+            }
+        }
     }
 
-    impl DevToolsMessageObserver {
-        fn on_dev_tools_message(
-            &self,
-            _browser: Option<&mut Browser>,
-            message: Option<&[u8]>,
-        ) -> std::os::raw::c_int {
-            let message = message.expect("CEF DevTools callback must contain a message");
-            self.state.handle_message(message);
-            1
-        }
-
-        fn on_dev_tools_agent_attached(&self, _browser: Option<&mut Browser>) {
-            self.state.attached();
-        }
-
-        fn on_dev_tools_agent_detached(&self, _browser: Option<&mut Browser>) {
-            self.state.detached();
-        }
-    }
+    WaterDevToolsObserver::new(state)
 }
 
 /// In-process CDP transport owned by one CEF page.
@@ -183,7 +191,7 @@ impl core::fmt::Debug for CefCdpSession {
 impl CefCdpSession {
     pub(crate) fn attach(host: BrowserHost) -> Self {
         let state = Rc::new(CdpState::default());
-        let mut observer = WaterDevToolsObserver::new(Rc::clone(&state));
+        let mut observer = new_dev_tools_observer(Rc::clone(&state));
         let registration = host
             .add_dev_tools_message_observer(Some(&mut observer))
             .expect("CEF refused to register the in-process DevTools observer");

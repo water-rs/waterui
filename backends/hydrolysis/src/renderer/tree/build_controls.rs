@@ -100,7 +100,7 @@ impl RenderNode {
 
     /// Build a persistent toggle node: its main label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
-    /// to build on); the clonable config drives the control + accessibility, and its
+    /// to build on); the cloneable config drives the control + accessibility, and its
     /// `toggle` binding is read through `resolve_toggle_progress` which watches it.
     pub(super) fn build_toggle(
         config: ToggleConfig,
@@ -134,7 +134,7 @@ impl RenderNode {
 
     /// Build a persistent stepper node: its main label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
-    /// to build on); the clonable config drives the buttons + accessibility, and its
+    /// to build on); the cloneable config drives the buttons + accessibility, and its
     /// value/step signals are read through `read_signal` so a change schedules a frame.
     pub(super) fn build_stepper(
         config: StepperConfig,
@@ -184,7 +184,7 @@ impl RenderNode {
 
     /// Build a persistent date-picker node: its main label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
-    /// to build on); the clonable config drives the field + accessibility, and its
+    /// to build on); the cloneable config drives the field + accessibility, and its
     /// value is read through `read_signal` so a change schedules a frame. Stretch is
     /// content-sized (read from the config).
     pub(super) fn build_date_picker(
@@ -202,7 +202,7 @@ impl RenderNode {
 
     /// Build a persistent color-picker node: its main label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
-    /// to build on); the clonable config drives the swatch + accessibility, and its
+    /// to build on); the cloneable config drives the swatch + accessibility, and its
     /// value is read through `read_signal` so a change schedules a frame. Stretch is
     /// content-sized (read from the config).
     pub(super) fn build_color_picker(
@@ -231,7 +231,7 @@ impl RenderNode {
     /// Build a persistent text-field node: its floating label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on) and re-flushed under the animated label transform each frame; the
-    /// clonable config's prompt/value/selection_menu are read each frame, with the
+    /// cloneable config's prompt/value/selection_menu are read each frame, with the
     /// value `Binding<StyledStr>` read through `read_signal` so typing or a binding
     /// change schedules a frame. The node re-runs the same text-input target
     /// registration each flush, so cursor/focus/IME state is preserved. Stretch is
@@ -252,7 +252,7 @@ impl RenderNode {
     /// Build a persistent secure-field node: its floating label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on) and re-flushed under the animated label transform each frame; the
-    /// clonable config's `Binding<Secure>` value is read through `read_signal` each
+    /// cloneable config's `Binding<Secure>` value is read through `read_signal` each
     /// frame so typing or a binding change schedules a frame and the masked display
     /// updates. The node re-runs the same text-input target registration each flush,
     /// preserving cursor/focus/IME state. Stretch is horizontal (read from the config).

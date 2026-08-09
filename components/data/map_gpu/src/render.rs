@@ -2671,6 +2671,7 @@ mod tests {
     use std::num::NonZeroU32;
 
     use kurbo::{PathEl, Point};
+    use num_traits::ToPrimitive as _;
     use waterui_core::Environment;
     use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize};
     use waterui_map::{MapInteractivity, MapVisibility};
@@ -2849,7 +2850,16 @@ mod tests {
             state.last_error = Some(String::from("simulated connection timeout"));
         }
 
-        let frame = map.resolve_frame(viewport.width as f32, viewport.height as f32);
+        let frame = map.resolve_frame(
+            viewport
+                .width
+                .to_f32()
+                .expect("test viewport width must fit into f32"),
+            viewport
+                .height
+                .to_f32()
+                .expect("test viewport height must fit into f32"),
+        );
 
         assert_eq!(frame.viewport, viewport);
         assert!(frame.camera.is_none());
@@ -2901,7 +2911,16 @@ mod tests {
             state.last_error = Some(String::from("simulated connection timeout"));
         }
 
-        let frame = map.resolve_frame(viewport.width as f32, viewport.height as f32);
+        let frame = map.resolve_frame(
+            viewport
+                .width
+                .to_f32()
+                .expect("test viewport width must fit into f32"),
+            viewport
+                .height
+                .to_f32()
+                .expect("test viewport height must fit into f32"),
+        );
 
         assert!(frame.camera.is_some());
         assert_eq!(frame.prepared_generation, Some(1));

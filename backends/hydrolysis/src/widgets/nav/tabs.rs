@@ -21,7 +21,7 @@ use crate::widgets::widget_theme;
 
 /// The retained render state of one tab. Its `label` is a move-only `AnyView`, so
 /// it is held as a [`RetainedSubview`] built once and re-flushed each frame; its
-/// `content` is a clonable `Rc`-backed builder rebuilt fresh each frame; `tag`
+/// `content` is a cloneable `Rc`-backed builder rebuilt fresh each frame; `tag`
 /// drives selection.
 struct TabRenderState {
     tag: Id,

@@ -490,7 +490,7 @@ fn body_dispatched_once_then_every_frame_refreshes() {
 
 /// Visual verification of the chart-switch fix: a `watch`-driven swap between two
 /// distinctly-coloured boxes (through the same `Captured` path a `SceneView`
-/// chart takes) rendered via the render-tree path. Exports before/after PNGs for
+/// chart takes) rendered via the render-tree path. Exports before/after PNG files for
 /// direct inspection — the switch must visibly take effect (red -> blue).
 #[test]
 fn render_tree_chart_switch_snapshot() {
@@ -630,7 +630,7 @@ fn render_tree_scene_view_switch_snapshot() {
 }
 
 /// Verifies scroll works on the render-tree path: a fixed-content scroll view is
-/// scrolled, and the exported before/after PNGs must show the content shifted
+/// scrolled, and the exported before/after PNG files must show the content shifted
 /// (different colour band at the top). Tells us whether a dedicated `ScrollNode`
 /// is needed or the Captured scroll replays at the current offset correctly.
 #[test]

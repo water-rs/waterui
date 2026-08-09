@@ -23,3 +23,7 @@ wgpu.workspace = true
 
 [build-dependencies]
 waterui-build-support.workspace = true
+
+# `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["waterui-build-support"]

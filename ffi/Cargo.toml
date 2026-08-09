@@ -55,9 +55,7 @@ waterui-video-gpu.workspace = true
 tracing-android = "0.2"
 ndk-context = "0.1.1"
 jni = "0.22.4"
-ndk = { version = "0.9", features = ["api-level-26"] }
 ndk-sys = "0.6"
-ash = "0.38"
 wgpu-hal = { workspace = true, features = ["vulkan"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]

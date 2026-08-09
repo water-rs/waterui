@@ -51,7 +51,7 @@ fn back_button_title_reserve(env: &Environment) -> f64 {
 /// `Widget` node holds each as a [`RetainedSubview`] built once and re-flushed at
 /// its rect every frame (so reactive descendants inside them stay live). The bar's
 /// reactive appearance signals (`color`/`hidden`) are kept and read through
-/// `read_signal`; the static `display_mode` and the `search` model (clonable, used
+/// `read_signal`; the static `display_mode` and the `search` model (cloneable, used
 /// to build a fresh `TextField` each frame) are kept by value.
 pub(crate) struct NavigationViewRenderState {
     title: RetainedSubview,

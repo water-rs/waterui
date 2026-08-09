@@ -228,7 +228,7 @@ pub(crate) struct MenuRenderState {
 /// label `AnyView`.
 enum MenuLabel {
     /// A `Label` with `TitleOnly` display: rendered as centered styled text fresh
-    /// each frame (clonable, like a button title).
+    /// each frame (cloneable, like a button title).
     Title(Label),
     /// Any other view: re-flushed from a retained sub-view each frame.
     View(RetainedSubview),
