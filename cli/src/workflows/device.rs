@@ -1,7 +1,7 @@
 //! Device management and application running utilities for `WaterUI` CLI.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     fmt::Debug,
     path::{Path, PathBuf},
     pin::Pin,
@@ -13,6 +13,8 @@ use smol::{
     stream::Stream,
 };
 
+#[cfg(target_os = "macos")]
+use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
