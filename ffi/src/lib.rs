@@ -1,4 +1,4 @@
-//! # WaterUI FFI
+//! # `WaterUI` FFI
 //!
 //! This crate provides a set of traits and utilities for safely converting between
 //! Rust types and FFI-compatible representations with a clean, type-safe interface.
@@ -34,6 +34,7 @@ mod reactivity;
 mod runtime;
 mod ty;
 
+/// C ABI exports for every bridged `WaterUI` component family.
 pub mod components;
 pub use bridge::{action, array, closure, locale};
 use core::ptr::null_mut;
@@ -68,7 +69,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// `ptr` must be non-null and point to a valid, initialized `T` that stays
 /// alive and unaliased for the duration of the returned `'a` borrow.
 #[inline]
-pub unsafe fn borrow_ffi<'a, T>(ptr: *const T) -> &'a T {
+pub const unsafe fn borrow_ffi<'a, T>(ptr: *const T) -> &'a T {
     unsafe { &*ptr }
 }
 
@@ -83,6 +84,8 @@ pub unsafe fn borrow_ffi_mut<'a, T>(ptr: *mut T) -> &'a mut T {
     unsafe { &mut *ptr }
 }
 
+/// Generates the FFI entry points (`waterui_init`, `waterui_app`, and the
+/// Android variants) for the application crate that calls it.
 #[macro_export]
 macro_rules! export {
     () => {
@@ -165,7 +168,7 @@ macro_rules! export {
 /// Installs optional packaged browser runtimes selected by the generated FFI crate.
 #[doc(hidden)]
 #[inline]
-pub fn __configure_browser_environment(env: &mut waterui::Environment) {
+pub const fn __configure_browser_environment(env: &mut waterui::Environment) {
     #[cfg(any(feature = "cef-runtime", feature = "cef-header"))]
     components::platform::browser_cef::configure_environment(env);
     #[cfg(not(any(feature = "cef-runtime", feature = "cef-header")))]
@@ -181,7 +184,7 @@ pub fn __configure_browser_environment(env: &mut waterui::Environment) {
 /// Must only be called once from JNI_OnLoad.
 #[doc(hidden)]
 #[cfg(all(target_os = "android", feature = "android-jni"))]
-#[inline(always)]
+#[inline]
 pub unsafe fn __jni_init(vm: *mut core::ffi::c_void) -> i32 {
     unsafe { jni::init(vm as *mut jni::jni::sys::JavaVM) }
 }
@@ -192,15 +195,15 @@ compile_error!("waterui-ffi requires the `android-jni` feature when targeting An
 /// JNI initialization stub for non-Android platforms.
 #[doc(hidden)]
 #[cfg(not(target_os = "android"))]
-#[inline(always)]
-pub unsafe fn __jni_init(_vm: *mut core::ffi::c_void) -> i32 {
+#[inline]
+pub const unsafe fn __jni_init(_vm: *mut core::ffi::c_void) -> i32 {
     0x0001_0006
 }
 
 /// # Safety
 /// You have to ensure this is only called once, and on main thread.
 #[doc(hidden)]
-#[inline(always)]
+#[inline]
 pub unsafe fn __init() {
     unsafe { __init_impl() };
 }
@@ -296,9 +299,14 @@ pub trait IntoFFI: 'static {
     fn into_ffi(self) -> Self::FFI;
 }
 
+/// Conversion to an FFI representation that has a dedicated null value,
+/// letting `Option<T>` cross the FFI boundary without an extra wrapper.
 pub trait IntoNullableFFI: 'static {
+    /// The FFI-compatible type that this Rust type converts to.
     type FFI: 'static;
+    /// Converts this Rust type into its FFI-compatible representation.
     fn into_ffi(self) -> Self::FFI;
+    /// Returns the FFI value representing `None`.
     fn null() -> Self::FFI;
 }
 
@@ -306,10 +314,7 @@ impl<T: IntoNullableFFI> IntoFFI for Option<T> {
     type FFI = T::FFI;
 
     fn into_ffi(self) -> Self::FFI {
-        match self {
-            Some(value) => value.into_ffi(),
-            None => T::null(),
-        }
+        self.map_or_else(T::null, <T as IntoNullableFFI>::into_ffi)
     }
 }
 
@@ -321,7 +326,10 @@ impl<T: IntoNullableFFI> IntoFFI for T {
     }
 }
 
+/// Types with a designated sentinel value that the C ABI treats as invalid or
+/// absent.
 pub trait InvalidValue {
+    /// Returns the sentinel value treated as invalid/absent by the FFI.
     fn invalid() -> Self;
 }
 
@@ -446,12 +454,13 @@ impl crate::IntoFFI for waterui_controls::label::LabelDisplayMode {
 /// mode itself. The `view` field is always non-null but renders to an empty
 /// view when `display_mode` is [`WuiLabelDisplayMode::Hidden`].
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiLabel {
     /// Visual chrome rendered by the backend. When `display_mode` is
     /// `Hidden` the rendered view collapses to an empty zero-size view.
     pub view: *mut WuiAnyView,
     /// Spoken accessibility text. Always non-null; backends should bind
-    /// this to platform accessibility APIs (VoiceOver, TalkBack, etc.).
+    /// this to platform accessibility APIs (`VoiceOver`, `TalkBack`, etc.).
     pub accessibility_label: *mut crate::reactive::WuiComputed<waterui_text::styled::StyledStr>,
     /// Visual presentation mode.
     pub display_mode: WuiLabelDisplayMode,
@@ -542,9 +551,9 @@ pub unsafe extern "C" fn waterui_view_stretch_axis(
 // WuiStr - UTF-8 string for FFI
 // ============================================================================
 
-// UTF-8 string represented as a byte array
+/// UTF-8 string represented as a byte array.
 #[repr(C)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WuiStr(WuiArray<u8>);
 
 impl IntoFFI for Str {
@@ -566,6 +575,7 @@ impl WuiStr {
     ///
     /// # Safety
     /// The caller must ensure the underlying bytes are valid UTF-8.
+    #[must_use]
     pub unsafe fn as_str(&self) -> &str {
         unsafe { core::str::from_utf8_unchecked(self.0.as_slice()) }
     }
@@ -590,9 +600,14 @@ impl IntoRust for WuiStr {
     }
 }
 
+/// Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+/// attached metadata value.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiMetadata<T> {
+    /// The view content wrapped by this metadata node.
     pub content: *mut WuiAnyView,
+    /// The metadata value attached to `content`.
     pub value: T,
 }
 
@@ -610,7 +625,7 @@ impl<T: IntoFFI + MetadataKey> IntoFFI for Metadata<T> {
 // Used by WithEnv to pass a new environment to child views
 
 /// Type alias for Metadata<Environment> FFI struct
-/// Layout: { content: *mut WuiAnyView, value: *mut WuiEnv }
+/// Layout: { content: *mut `WuiAnyView`, value: *mut `WuiEnv` }
 pub type WuiMetadataEnv = WuiMetadata<*mut WuiEnv>;
 
 // Generate waterui_metadata_env_id() and waterui_force_as_metadata_env()
@@ -662,6 +677,7 @@ use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 /// C-compatible empty marker struct for Secure metadata.
 /// This is needed because `()` (unit type) is not representable in C.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiSecureMarker {
     /// Placeholder field to ensure struct has valid size in C.
     /// The actual value is meaningless - Secure is just a marker type.
@@ -676,7 +692,7 @@ impl IntoFFI for Secure {
 }
 
 /// Type alias for Metadata<Secure> FFI struct
-/// Layout: { content: *mut WuiAnyView, value: WuiSecureMarker }
+/// Layout: { content: *mut `WuiAnyView`, value: `WuiSecureMarker` }
 pub type WuiMetadataSecure = WuiMetadata<WuiSecureMarker>;
 
 // Generate waterui_metadata_secure_id() and waterui_force_as_metadata_secure()
@@ -687,7 +703,10 @@ ffi_metadata!(Secure, WuiMetadataSecure, secure);
 
 /// C-compatible empty marker struct for dynamic range metadata.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiDynamicRangeMarker {
+    /// Placeholder field so the struct has a valid size in C; the value is
+    /// meaningless.
     _marker: u8,
 }
 
@@ -782,9 +801,9 @@ use waterui::background::Material;
 
 /// FFI-safe representation of a material blur style.
 ///
-/// Maps to SwiftUI's Material types on Apple platforms.
+/// Maps to `SwiftUI`'s Material types on Apple platforms.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum WuiMaterial {
     /// Ultra-thin blur, most transparent.
     UltraThin = 0,
@@ -802,11 +821,11 @@ impl IntoFFI for Material {
     type FFI = WuiMaterial;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Material::UltraThin => WuiMaterial::UltraThin,
-            Material::Thin => WuiMaterial::Thin,
-            Material::Regular => WuiMaterial::Regular,
-            Material::Thick => WuiMaterial::Thick,
-            Material::UltraThick => WuiMaterial::UltraThick,
+            Self::UltraThin => WuiMaterial::UltraThin,
+            Self::Thin => WuiMaterial::Thin,
+            Self::Regular => WuiMaterial::Regular,
+            Self::Thick => WuiMaterial::Thick,
+            Self::UltraThick => WuiMaterial::UltraThick,
         }
     }
 }
@@ -818,6 +837,7 @@ use waterui::style::Shadow;
 
 /// FFI-safe representation of a shadow.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiShadow {
     /// Shadow color (as opaque pointer - needs environment to resolve).
     pub color: *mut WuiColor,
@@ -854,6 +874,7 @@ use waterui::border::Border;
 
 /// FFI-safe representation of a border.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiBorder {
     /// Border color (as opaque pointer - needs environment to resolve).
     pub color: *mut WuiColor,
@@ -890,7 +911,7 @@ use waterui::style::{Anchor, Offset, Rotation, Scale};
 /// FFI-safe representation of an anchor point.
 /// Normalized coordinates: (0.0, 0.0) = top-left, (0.5, 0.5) = center, (1.0, 1.0) = bottom-right.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct WuiAnchor {
     /// X coordinate (0.0 = left, 0.5 = center, 1.0 = right)
     pub x: f32,
@@ -911,6 +932,7 @@ impl IntoFFI for Anchor {
 /// FFI-safe representation of a scale transform.
 /// All values are reactive (Computed) and can be animated.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiScale {
     /// Scale factor along X axis (1.0 = no scale)
     pub x: *mut WuiComputed<f32>,
@@ -943,6 +965,7 @@ ffi_metadata!(Scale, WuiMetadataScale, scale);
 /// FFI-safe representation of a rotation transform.
 /// All values are reactive (Computed) and can be animated.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiRotation {
     /// Rotation angle in degrees (positive = clockwise)
     pub angle: *mut WuiComputed<f32>,
@@ -972,6 +995,7 @@ ffi_metadata!(Rotation, WuiMetadataRotation, rotation);
 /// FFI-safe representation of an offset transform.
 /// All values are reactive (Computed) and can be animated.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiOffset {
     /// Offset along X axis in points
     pub x: *mut WuiComputed<f32>,
@@ -1003,6 +1027,7 @@ use waterui::filter::Opacity;
 /// FFI-safe representation of compositor opacity metadata.
 /// All values are reactive (`Computed`) and can be animated.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiOpacity {
     /// Opacity value (0 = transparent, 1 = opaque).
     pub value: *mut WuiComputed<f32>,
@@ -1031,6 +1056,7 @@ use waterui::component::focus::Focused;
 
 /// FFI-safe representation of focused state.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiFocused {
     /// Binding to the focus state (true = focused).
     pub binding: *mut WuiBinding<bool>,
@@ -1058,6 +1084,7 @@ use waterui_layout::IgnoreSafeArea;
 
 /// FFI-safe representation of edge set for safe area.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiEdgeSet {
     /// Ignore safe area on top edge.
     pub top: bool,
@@ -1081,8 +1108,9 @@ impl IntoFFI for waterui_layout::EdgeSet {
     }
 }
 
-/// FFI-safe representation of IgnoreSafeArea.
+/// FFI-safe representation of `IgnoreSafeArea`.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiIgnoreSafeArea {
     /// Which edges should ignore safe area.
     pub edges: WuiEdgeSet,
@@ -1111,6 +1139,7 @@ use waterui_core::Retain;
 /// FFI-safe representation of Retain metadata.
 /// The actual retained value is opaque - renderers just need to keep it alive.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiRetain {
     /// Opaque pointer to the retained value (Box<dyn Any>).
     /// This must be kept alive and dropped when the view is disposed.
@@ -1135,7 +1164,7 @@ impl IntoFFI for Retain {
         // The native side will call waterui_drop_retain to clean up
         let boxed = Box::new(self);
         WuiRetain {
-            _opaque: Box::into_raw(boxed) as *mut (),
+            _opaque: Box::into_raw(boxed).cast::<()>(),
         }
     }
 }
@@ -1152,9 +1181,13 @@ ffi_metadata!(Retain, WuiMetadataRetain, retain);
 /// The caller must ensure that `retain` is a valid pointer returned from
 /// `waterui_force_as_metadata_retain` and has not been dropped before.
 #[unsafe(no_mangle)]
+#[expect(
+    clippy::used_underscore_binding,
+    reason = "the `_opaque` field name is part of the checked-in C ABI; the underscore signals native code must treat it as opaque"
+)]
 pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
     unsafe {
-        drop(Box::from_raw(retain._opaque as *mut Retain));
+        drop(Box::from_raw(retain._opaque.cast::<Retain>()));
     }
 }
 
@@ -1166,29 +1199,61 @@ use waterui::shape::{ClipShape, PathCommand};
 /// FFI-safe representation of a path command.
 /// All coordinates are normalized (0.0-1.0) and scale with view bounds.
 #[repr(C)]
+#[derive(Debug)]
 pub enum WuiPathCommand {
     /// Move to a position without drawing.
-    MoveTo { x: f32, y: f32 },
+    MoveTo {
+        /// Target X coordinate.
+        x: f32,
+        /// Target Y coordinate.
+        y: f32,
+    },
     /// Draw a straight line to a position.
-    LineTo { x: f32, y: f32 },
+    LineTo {
+        /// Target X coordinate.
+        x: f32,
+        /// Target Y coordinate.
+        y: f32,
+    },
     /// Draw a quadratic bezier curve.
-    QuadTo { cx: f32, cy: f32, x: f32, y: f32 },
+    QuadTo {
+        /// Control point X coordinate.
+        cx: f32,
+        /// Control point Y coordinate.
+        cy: f32,
+        /// End point X coordinate.
+        x: f32,
+        /// End point Y coordinate.
+        y: f32,
+    },
     /// Draw a cubic bezier curve.
     CubicTo {
+        /// First control point X coordinate.
         c1x: f32,
+        /// First control point Y coordinate.
         c1y: f32,
+        /// Second control point X coordinate.
         c2x: f32,
+        /// Second control point Y coordinate.
         c2y: f32,
+        /// End point X coordinate.
         x: f32,
+        /// End point Y coordinate.
         y: f32,
     },
     /// Draw an arc.
     Arc {
+        /// Center X coordinate.
         cx: f32,
+        /// Center Y coordinate.
         cy: f32,
+        /// Radius along the X axis.
         rx: f32,
+        /// Radius along the Y axis.
         ry: f32,
+        /// Start angle in radians.
         start: f32,
+        /// Sweep angle in radians.
         sweep: f32,
     },
     /// Close the current subpath.
@@ -1199,10 +1264,10 @@ impl IntoFFI for PathCommand {
     type FFI = WuiPathCommand;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            PathCommand::MoveTo { x, y } => WuiPathCommand::MoveTo { x, y },
-            PathCommand::LineTo { x, y } => WuiPathCommand::LineTo { x, y },
-            PathCommand::QuadTo { cx, cy, x, y } => WuiPathCommand::QuadTo { cx, cy, x, y },
-            PathCommand::CubicTo {
+            Self::MoveTo { x, y } => WuiPathCommand::MoveTo { x, y },
+            Self::LineTo { x, y } => WuiPathCommand::LineTo { x, y },
+            Self::QuadTo { cx, cy, x, y } => WuiPathCommand::QuadTo { cx, cy, x, y },
+            Self::CubicTo {
                 c1x,
                 c1y,
                 c2x,
@@ -1217,7 +1282,7 @@ impl IntoFFI for PathCommand {
                 x,
                 y,
             },
-            PathCommand::Arc {
+            Self::Arc {
                 cx,
                 cy,
                 rx,
@@ -1232,7 +1297,7 @@ impl IntoFFI for PathCommand {
                 start,
                 sweep,
             },
-            PathCommand::Close => WuiPathCommand::Close,
+            Self::Close => WuiPathCommand::Close,
         }
     }
 }
@@ -1240,6 +1305,7 @@ impl IntoFFI for PathCommand {
 /// FFI-safe representation of a clip shape.
 /// Contains the path commands that define the clipping mask.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiClipShape {
     /// Array of path commands defining the shape.
     pub commands: WuiArray<WuiPathCommand>,
@@ -1338,6 +1404,7 @@ impl IntoFFI for ShortcutModifiers {
 
 /// FFI-safe keyboard shortcut payload.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiShortcut {
     /// The key equivalent.
     pub key: WuiStr,
@@ -1358,6 +1425,7 @@ impl IntoFFI for Shortcut {
 
 /// FFI-safe representation of a menu item.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiMenuItem {
     /// The menu node kind.
     pub tag: WuiMenuItemTag,
@@ -1506,6 +1574,7 @@ pub(crate) fn menu_items_views(
 
 /// FFI-safe representation of a context menu.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiContextMenu {
     /// Identity-aware reactive menu items.
     pub items: *mut WuiAnyViews,
@@ -1531,6 +1600,7 @@ ffi_metadata!(ResolvedContextMenu, WuiMetadataContextMenu, context_menu);
 
 /// FFI-safe representation of a Menu component.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiMenu {
     /// The label view displayed on the menu button.
     pub label: *mut WuiAnyView,
@@ -1586,8 +1656,9 @@ ffi_metadata!(
 #[cfg(feature = "c-api")]
 use waterui::background::MaterialBackground;
 
-/// FFI-safe representation of IgnorableMetadata<MaterialBackground>
+/// FFI-safe representation of `IgnorableMetadata`<MaterialBackground>
 #[repr(C)]
+#[derive(Debug)]
 #[cfg(feature = "c-api")]
 pub struct WuiIgnorableMetadataMaterialBackground {
     /// The view content wrapped by this metadata
@@ -1624,6 +1695,7 @@ use waterui::interaction::Hittable;
 
 /// FFI-safe representation of Hittable metadata.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiHittable {
     /// Whether hit testing is enabled (reactive).
     pub enabled: *mut WuiComputed<bool>,
@@ -1689,7 +1761,7 @@ mod tests {
         action_ptr.set(action);
         let env = WuiEnv(waterui::Environment::new());
 
-        unsafe { waterui_call_shared_action(action, &env) };
+        unsafe { waterui_call_shared_action(action, &raw const env) };
 
         assert!(callback_finished.get());
     }

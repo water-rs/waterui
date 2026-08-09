@@ -74,6 +74,9 @@ name = "generate_header"
 path = "generate_header.rs"
 required-features = ["cbindgen"]
 
+[lints]
+workspace = true
+
 [features]
 default = ["std", "c-api"]
 std = []

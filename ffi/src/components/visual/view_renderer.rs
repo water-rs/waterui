@@ -17,6 +17,7 @@ use crate::components::layout::WuiSize;
 
 /// Callback for returning rendered RGBA data to Rust.
 #[repr(C)]
+#[derive(Debug)]
 pub struct ViewRenderCallback {
     /// Opaque data pointer passed to the callback.
     pub data: *mut (),
@@ -64,25 +65,9 @@ impl CustomViewRenderer for FFIViewRenderer {
         view: AnyView,
         size: RenderSize,
     ) -> impl Future<Output = RenderResult> {
-        let render_fn = self.render_fn;
-        let view_ptr = Box::into_raw(Box::new(view));
-        let view_ptr_void = view_ptr.cast::<()>();
-        let wui_size = WuiSize {
-            width: size.width,
-            height: size.height,
-        };
-
-        // Use a oneshot channel pattern for callback handoff.
-        let (tx, rx) = async_channel::bounded::<RenderResult>(1);
-
         struct CallbackData {
             sender: async_channel::Sender<RenderResult>,
         }
-
-        // Create callback data that owns the sender.
-        // The view pointer is consumed by native (waterui_view_body) and must not be dropped here.
-        let callback_data = Box::new(CallbackData { sender: tx });
-        let callback_data = Box::into_raw(callback_data).cast::<()>();
 
         unsafe extern "C" fn render_trampoline(
             data: *mut (),
@@ -110,6 +95,22 @@ impl CustomViewRenderer for FFIViewRenderer {
             // invokes the callback once so this payload is released.
             let _ = sender.try_send(result);
         }
+
+        let render_fn = self.render_fn;
+        let view_ptr = Box::into_raw(Box::new(view));
+        let view_ptr_void = view_ptr.cast::<()>();
+        let wui_size = WuiSize {
+            width: size.width,
+            height: size.height,
+        };
+
+        // Use a oneshot channel pattern for callback handoff.
+        let (tx, rx) = async_channel::bounded::<RenderResult>(1);
+
+        // Create callback data that owns the sender.
+        // The view pointer is consumed by native (waterui_view_body) and must not be dropped here.
+        let callback_data = Box::new(CallbackData { sender: tx });
+        let callback_data = Box::into_raw(callback_data).cast::<()>();
 
         let callback = ViewRenderCallback {
             data: callback_data,
