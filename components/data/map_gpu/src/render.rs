@@ -109,7 +109,11 @@ impl TileCache {
 }
 
 /// A fully loaded map scene ready for Vello encoding.
-pub struct PreparedMap {
+///
+/// This is an internal loading product: it is produced by the tile loader and
+/// consumed by the painter, and there is no way (nor reason) to build one from
+/// outside the crate.
+pub(crate) struct PreparedMap {
     style: MapStyle,
     camera: Camera,
     tiles: SourceTiles,
@@ -132,21 +136,19 @@ impl std::fmt::Debug for PreparedMap {
 }
 
 impl PreparedMap {
-    /// Loads the style metadata and visible vector tiles for a viewport.
+    /// Loads the style metadata and visible vector tiles for a viewport,
+    /// standing up a fresh tile cache. This is the test entry point; the live
+    /// scene path drives [`Self::load_with_style`] with a shared cache instead.
     ///
     /// # Errors
     ///
     /// Returns provider, style-expression, or vector-tile decode failures.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called outside a `WaterUI` runtime with no global `Send`
-    /// executor installed.
+    #[cfg(test)]
     #[allow(
         clippy::future_not_send,
         reason = "prepared maps load on WaterUI's main-thread local executor and retain main-thread caches"
     )]
-    pub async fn load(
+    pub(crate) async fn load(
         options: &MapGpuOptions,
         region: Region,
         width: u32,
@@ -234,19 +236,7 @@ impl PreparedMap {
         })
     }
 
-    /// Adds annotations to this prepared scene.
-    #[must_use]
-    pub fn annotations(mut self, annotations: Vec<Annotation>) -> Self {
-        self.annotations = annotations;
-        self
-    }
 
-    /// Adds a `WaterKit` user location and horizontal-accuracy circle.
-    #[must_use]
-    pub const fn user_location(mut self, location: Location) -> Self {
-        self.location = Some(location);
-        self
-    }
 }
 
 #[allow(
@@ -1660,7 +1650,22 @@ impl GpuView for MapGpuRenderer {
     }
 }
 
-pub fn map_surface(map: MapScene, interaction: Option<Rc<MapGestureController>>) -> GpuSurface {
+/// Renders a custom [`MapScene`] as a GPU surface.
+///
+/// This is the public path from a hand-built scene to a renderable view: build
+/// a [`MapScene`] from a [`MapConfig`](waterui_map::MapConfig), hand it here,
+/// and place the returned [`GpuSurface`] like any other view. The built-in
+/// [`Map`](crate::Map) view goes through the same surface, adding the gesture
+/// controller that drives pan and zoom.
+#[must_use]
+pub fn map_surface(map: MapScene) -> GpuSurface {
+    map_surface_with_interaction(map, None)
+}
+
+pub(crate) fn map_surface_with_interaction(
+    map: MapScene,
+    interaction: Option<Rc<MapGestureController>>,
+) -> GpuSurface {
     GpuSurface::new(MapGpuRenderer::new(map, interaction))
 }
 

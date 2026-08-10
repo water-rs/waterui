@@ -25,7 +25,7 @@
 //!
 //! // With custom loading view
 //! let view = Suspense::new(fetch_user_data())
-//!     .loading::<_, Text>("Loading user data...");
+//!     .loading(Text::new("Loading user data..."));
 //!
 //! // With default loading view from environment
 //! let view = Suspense::new(fetch_user_data());
@@ -66,7 +66,7 @@ use crate::component::Dynamic;
 /// }
 ///
 /// let view = Suspense::new(fetch_data())
-///     .loading::<_, Text>(Text::new("Loading data..."));
+///     .loading(Text::new("Loading data..."));
 /// ```
 ///
 /// ## With Default Loading View
@@ -208,7 +208,7 @@ impl DefaultLoadingView {
 /// // This will use the default loading view from environment
 /// let view = Suspense::new(async_content());
 /// // Equivalent to:
-/// let view = Suspense::new(async_content()).loading::<_,()>(UseDefaultLoadingView);
+/// let view = Suspense::new(async_content()).loading(UseDefaultLoadingView);
 /// ```
 #[derive(Debug)]
 pub struct UseDefaultLoadingView;
@@ -246,7 +246,7 @@ impl<V, Loading> Suspense<V, Loading> {
     /// # Returns
     ///
     /// A new `Suspense` with the specified loading view
-    pub fn loading<Loading2, Output: View>(self, loading: Loading2) -> Suspense<V, Loading2> {
+    pub fn loading<Loading2: View>(self, loading: Loading2) -> Suspense<V, Loading2> {
         Suspense {
             content: self.content,
             loading,

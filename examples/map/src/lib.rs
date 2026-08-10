@@ -80,7 +80,6 @@ fn content(state: MapExampleState) -> impl View {
     let location_control = button(label("Use My Location").icon(lucide::locate_fixed()))
         .label_style(LabelDisplayMode::IconOnly)
         .plain()
-        .disabled(locating.clone())
         .action_async(
             |State(location): State<Binding<Option<Location>>>,
              State(region): State<Binding<Region>>,
@@ -115,7 +114,8 @@ fn content(state: MapExampleState) -> impl View {
         .state(&region)
         .state(&location_status)
         .state(&locating)
-        .floating();
+        .floating()
+        .disabled(locating.clone());
 
     let zoom_in = button(label("Zoom In").icon(lucide::plus()))
         .label_style(LabelDisplayMode::IconOnly)

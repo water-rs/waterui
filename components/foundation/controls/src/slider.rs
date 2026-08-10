@@ -8,9 +8,7 @@
 use core::ops::RangeInclusive;
 
 use crate::label::{IntoLabel, Label, impl_label_style_methods};
-use nami::signal::IntoComputed;
-use nami::{Binding, Computed};
-use waterui_core::interaction::Disabled;
+use nami::Binding;
 use waterui_core::{AnyView, Environment, configurable, layout::StretchAxis};
 
 /// Configuration for the [`Slider`] widget.
@@ -27,10 +25,6 @@ pub struct SliderConfig {
     pub range: RangeInclusive<f64>,
     /// The binding to the current value of the slider.
     pub value: Binding<f64>,
-    /// Whether the slider is disabled: it renders as inactive and ignores
-    /// input. Resolved from the explicit [`Slider::disabled`] signal combined
-    /// with any enclosing `.disabled(...)` scope.
-    pub disabled: Computed<bool>,
 }
 
 configurable!(
@@ -78,7 +72,6 @@ impl SliderConfig {
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
-        self.disabled = Disabled::resolve(env, self.disabled);
         self
     }
 }
@@ -98,7 +91,6 @@ impl Slider {
             max_value_label: AnyView::default(),
             range: 0.0..=1.0,
             value: value.clone(),
-            disabled: Computed::constant(false),
         })
     }
 
@@ -120,17 +112,6 @@ impl Slider {
     #[must_use]
     pub fn max_value_label(mut self, label: impl IntoLabel) -> Self {
         self.0.max_value_label = AnyView::new(label.into_label());
-        self
-    }
-
-    /// Sets whether the slider is disabled.
-    ///
-    /// A disabled slider renders as inactive and ignores input. This combines
-    /// with any enclosing `.disabled(...)` scope: the slider is disabled while
-    /// either signal is `true`.
-    #[must_use]
-    pub fn disabled(mut self, disabled: impl IntoComputed<bool>) -> Self {
-        self.0.disabled = disabled.into_computed();
         self
     }
 }

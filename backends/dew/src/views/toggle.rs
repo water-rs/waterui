@@ -69,7 +69,7 @@ pub fn build(config: ToggleConfig, env: &Environment) -> Box<dyn DewNode> {
     require_switch_style(config.style);
     let pointer = PointerTargetHandle::new(TogglePointer {
         toggle: config.toggle.clone(),
-        disabled: config.disabled.clone(),
+        disabled: crate::views::view_disabled(env),
         armed: false,
     });
     Box::new(ToggleNode {
@@ -86,7 +86,7 @@ impl DewNode for ToggleNode {
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
         render(renderer, ctx, &self.config, &self.env);
-        if !self.config.disabled.get() {
+        if !crate::views::view_disabled(&self.env).get() {
             renderer.register_pointer_target(ctx.window_bounds(), self.pointer.clone());
         }
     }
@@ -104,7 +104,7 @@ fn render(
 ) {
     require_switch_style(config.style);
     let on = renderer.read_signal(&config.toggle);
-    let disabled = renderer.read_signal(&config.disabled);
+    let disabled = renderer.read_signal(&crate::views::view_disabled(env));
     let bounds = ctx.bounds;
 
     let track_left = (bounds.x1 - TRACK_WIDTH).max(bounds.x0);

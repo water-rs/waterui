@@ -333,15 +333,22 @@ impl Environment {
             .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
     }
 
-    /// Retrieves the `index`-th visible value of type `T` from oldest to newest.
+    /// Retrieves the `index`-th visible value of type `T`, counting from the
+    /// nearest (most recently overlaid) value outwards.
+    ///
+    /// `get_nth(0)` therefore always agrees with [`get`](Self::get).
     ///
     /// This is primarily used by action extractors to support repeated
-    /// same-typed [`crate::extract::State`] values in a single handler.
+    /// same-typed [`crate::extract::State`] values in a single handler, and
+    /// nearest-first is what gives those handlers positional correspondence:
+    /// `.state(&a).state(&b)` wraps `b` outermost, so `b`'s overlay is applied
+    /// first and `a` ends up nearest — and `a` is what the first `State<T>`
+    /// handler parameter must bind to.
     #[must_use]
     pub fn get_nth<T: 'static>(&self, index: usize) -> Option<&T> {
         let mut matches = Vec::new();
         Self::collect_matches_in_state(self.state.as_ref(), &mut matches);
-        matches.into_iter().nth(index)
+        matches.into_iter().nth_back(index)
     }
 
     /// Retrieves a reference to a value from the environment by its type,
@@ -507,6 +514,26 @@ mod tests {
             }
             EnvironmentState::Map(_) => panic!("extending must create overlay state"),
         }
+    }
+
+    #[test]
+    fn get_nth_counts_from_the_nearest_overlay_outwards() {
+        let env = Environment::new()
+            .extending(1_i32)
+            .extending(2_i32)
+            .extending(3_i32);
+
+        assert_eq!(env.get_nth::<i32>(0), Some(&3_i32));
+        assert_eq!(env.get_nth::<i32>(1), Some(&2_i32));
+        assert_eq!(env.get_nth::<i32>(2), Some(&1_i32));
+        assert_eq!(env.get_nth::<i32>(3), None);
+    }
+
+    #[test]
+    fn get_nth_zero_agrees_with_get() {
+        let env = Environment::new().extending(1_i32).extending(2_i32);
+
+        assert_eq!(env.get_nth::<i32>(0), env.get::<i32>());
     }
 
     #[test]

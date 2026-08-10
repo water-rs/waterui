@@ -4,7 +4,7 @@
 
 - [x] Basic widgets: stack, text, scroll, form, ...
 - [x] SwiftUI backend
-- [x] ~~MVP of gtk4 backend~~ (Warning: GTK4 backend is not supported no longer)
+- [x] MVP of gtk4 backend
 - [x] Stabilized the design of the core
 
 ## 0.2.0 - Usable

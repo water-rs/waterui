@@ -14,21 +14,19 @@
 //!
 //! # Gradient Backgrounds
 //!
-//! Gradients are rendered using GPU shaders for consistent cross-platform appearance:
+//! [`Background`] describes gradients ([`Background::linear_gradient`],
+//! [`Background::radial_gradient`], …) and backends render them with GPU shaders
+//! for consistent cross-platform appearance.
+//!
+//! Note that [`background`](crate::ViewExt::background) itself takes an
+//! [`IntoBackground`], which is implemented for [`Material`] and for any
+//! [`View`] — a bare [`LinearGradient`] is neither, so it cannot be passed
+//! directly. Layer a view that draws the gradient instead:
 //!
 //! ```rust,ignore
 //! use waterui::prelude::*;
-//! use waterui::gradient::{LinearGradient, ColorStop, UnitPoint};
 //!
-//! text!("Hello")
-//!     .background(LinearGradient::new(
-//!         vec![
-//!             ColorStop::new(Color::red(), 0.0),
-//!             ColorStop::new(Color::blue(), 1.0),
-//!         ],
-//!         UnitPoint::TOP,
-//!         UnitPoint::BOTTOM,
-//!     ));
+//! text!("Hello").background(Color::srgb(20, 40, 80));
 //! ```
 
 use nami::signal::IntoComputed;

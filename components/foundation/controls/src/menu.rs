@@ -8,6 +8,7 @@ use waterui_core::{
     AnyView, Environment, View,
     extract::State,
     handler::{Handler, SharedAction, shared_action},
+    interaction::Disabled,
     layout::StretchAxis,
     raw_view,
 };
@@ -210,7 +211,7 @@ impl Command {
             action: shared_action(move |env: Environment| {
                 action.call(&captured_env.layered_on(&env));
             }),
-            disabled: self.disabled,
+            disabled: Disabled::resolve(env, self.disabled),
             selected: self.selected,
             shortcut: self.shortcut,
             identity: self.identity,

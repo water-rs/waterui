@@ -1675,6 +1675,18 @@ impl HydrolysisRenderer {
                     self.dismiss_active_popup_menu();
                     changed
                 }
+                KeyCode::Named(value) if value == "Enter" => {
+                    // Enter inserts a newline like any other text. The model's
+                    // line limit is what decides whether it survives: a
+                    // single-line field strips it (and the edit reports no
+                    // change), a capped field refuses the edit that would
+                    // exceed the limit, and an unlimited field accepts it.
+                    if self.text_editing.ime_preedit.is_some() {
+                        false
+                    } else {
+                        self.insert_text_into_focused_target("\n")
+                    }
+                }
                 KeyCode::Character(text) => {
                     if self.text_editing.ime_preedit.is_some() || text.is_empty() {
                         false

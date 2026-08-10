@@ -15,8 +15,12 @@ use crate::metadata::MetadataKey;
 
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccessibilityLabel(Str);
+///
+/// The label is reactive: a label derived from app state (`"3 unread
+/// messages"`) stays current without rebuilding the subtree, matching
+/// [`AccessibilityStateSignal`].
+#[derive(Debug, Clone)]
+pub struct AccessibilityLabel(Computed<Str>);
 
 impl MetadataKey for AccessibilityLabel {}
 
@@ -24,17 +28,19 @@ impl AccessibilityLabel {
     /// Creates a label announced by assistive technologies when the default
     /// `WaterUI` text would be misleading or absent.
     ///
+    /// Accepts a constant or any signal of [`Str`].
+    ///
     /// ```
     /// # use waterui_core::accessibility::AccessibilityLabel;
     /// let label = AccessibilityLabel::new("Delete draft");
     /// ```
-    pub fn new(label: impl Into<Str>) -> Self {
-        Self(label.into())
+    pub fn new(label: impl IntoComputed<Str>) -> Self {
+        Self(label.into_computed())
     }
 
-    /// Returns the raw label string.
+    /// The reactive label signal.
     #[must_use]
-    pub const fn as_str(&self) -> &Str {
+    pub const fn signal(&self) -> &Computed<Str> {
         &self.0
     }
 }
