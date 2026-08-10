@@ -15,6 +15,7 @@ use nami::{Signal, SignalExt};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::ViewExt as _;
+use waterui::floating::FloatingScope;
 use waterui::style::FloatingStyle;
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
@@ -65,7 +66,7 @@ impl ButtonRenderState {
         let theme = widget_theme(env);
         let style = self.config.style;
         let interaction_style = env.get::<InteractionStyle>();
-        let floating_style = env.get::<FloatingStyle>();
+        let floating_style = env.get::<FloatingScope>().map(|scope| &scope.0);
         let color = disabled_aware_label_color(
             theme,
             style,
@@ -175,7 +176,7 @@ pub(crate) fn measure_button_node(
         theme,
         render_state.config.style,
         env.get::<InteractionStyle>(),
-        env.get::<FloatingStyle>(),
+        env.get::<FloatingScope>().map(|scope| &scope.0),
     );
     let label_size = match &render_state.label_view {
         Some(subview) => subview.measure_built(state, env),
@@ -364,7 +365,7 @@ pub(crate) fn render_button_parts(
     let theme = widget_theme(env);
     let style = state.borrow().config.style;
     let interaction_style = env.get::<InteractionStyle>().cloned();
-    let floating_style = env.get::<FloatingStyle>().cloned();
+    let floating_style = env.get::<FloatingScope>().map(|scope| scope.0.clone());
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
     // and this persistent node re-renders the new text.
     {
@@ -563,7 +564,7 @@ pub(crate) fn measure_button_intrinsic(
         theme,
         button.style,
         env.get::<InteractionStyle>(),
-        env.get::<FloatingStyle>(),
+        env.get::<FloatingScope>().map(|scope| &scope.0),
     );
     let label_size = measure_button_label_intrinsic(theme, button.style, &button.label, state, env);
     button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)

@@ -535,6 +535,51 @@ fn floating_button_measurement_uses_style_tokens() {
     assert_eq!(intrinsic_bounds.height(), 41.0);
 }
 
+/// A button takes its size and chrome from floating-surface tokens only when it
+/// is actually inside such a surface.
+///
+/// `FloatingStyle` in the environment is ambient theme data — it is what a bare
+/// `.floating()` resolves against, so every themed app has one. A backend that
+/// reads its presence as "I am inside a floating surface" reaches that
+/// conclusion for every button in the app, and they all lose their own
+/// container. The enclosing surface announces itself with `FloatingScope`
+/// instead.
+#[test]
+fn button_outside_a_floating_surface_ignores_ambient_floating_tokens() {
+    let env = test_environment();
+    // Distinctive minimums: a button that wrongly adopted them is unmistakable.
+    let ambient_tokens = FloatingStyle {
+        minimum_width: 137.0,
+        minimum_height: 141.0,
+        ..FloatingStyle::default()
+    };
+
+    let mut renderer = test_renderer();
+    capture_root_window(
+        &mut renderer,
+        vstack((button(label("Plain").icon(()))
+            .label_style(LabelDisplayMode::IconOnly)
+            .plain(),))
+        .install(ambient_tokens),
+        &env,
+        Rect::new(0.0, 0.0, 400.0, 400.0),
+    );
+
+    let bounds = renderer
+        .hit_test
+        .pointer_targets
+        .first()
+        .expect("button must register a pointer target")
+        .bounds;
+    assert!(
+        bounds.width() < 137.0 && bounds.height() < 141.0,
+        "a button merely in an app with floating tokens sized itself as a floating \
+         surface ({}x{}); only a button inside `.floating()` may do that",
+        bounds.width(),
+        bounds.height()
+    );
+}
+
 #[test]
 fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
     let env = test_environment();

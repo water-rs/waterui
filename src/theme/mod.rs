@@ -466,8 +466,6 @@ impl Plugin for Theme {
     /// Only non-None fields are installed. Existing values for unspecified
     /// fields remain unchanged.
     fn install(self, env: &mut Environment) {
-        env.insert(crate::style::FloatingStyle::default());
-
         // Install color scheme if specified
         if let Some(scheme) = self.color_scheme {
             env.insert(ColorSchemeSignal(scheme));

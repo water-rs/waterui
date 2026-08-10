@@ -1,12 +1,31 @@
 //! Floating-surface presentation for elevated interactive views.
 
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, View, plugin::Plugin};
 use waterui_shape::{RoundedRectangle, ShapeExt as _};
 
 use crate::{
     ViewExt as _,
     style::{FloatingStyle, Shadow, Vector},
 };
+
+/// Marks the content of a [`Floating`] surface, carrying the style that surface
+/// resolved.
+///
+/// This is what tells a descendant that it is *inside* an elevated surface, as
+/// opposed to merely being in an app whose theme defines what such a surface
+/// would look like. A [`FloatingStyle`] in the environment answers the second
+/// question only: it is the ambient token set a bare
+/// [`floating`](crate::ViewExt::floating) resolves against, and every themed app
+/// has one. A backend that treats its presence as "I am inside a floating
+/// surface" concludes that of every view in the app — which is exactly how
+/// Material buttons lost their containers.
+///
+/// Backends should read this instead. It answers both questions at once: whether
+/// there is an enclosing floating surface, and with which style.
+#[derive(Debug, Clone)]
+pub struct FloatingScope(pub FloatingStyle);
+
+impl Plugin for FloatingScope {}
 
 /// A view promoted to the floating interaction layer.
 #[derive(Debug)]
@@ -57,7 +76,7 @@ where
         );
 
         self.content
-            .install(style.clone())
+            .install(FloatingScope(style.clone()))
             .background(shape.fill(style.container_color))
             .clip(shape)
             .shadow(ambient_shadow)
