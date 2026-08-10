@@ -22,6 +22,8 @@ pub fn initialize_macos_application() {
         "the CEF macOS application must be initialized on the main thread"
     );
     assert_ne!(
+        // SAFETY: a C entry point in this crate's own helper library taking no
+        // arguments and returning a status code.
         unsafe { waterui_cef_initialize_macos_application() },
         0,
         "CEF must install its NSApplication subclass before another framework creates NSApplication"
@@ -30,6 +32,7 @@ pub fn initialize_macos_application() {
 
 pub fn assert_macos_application_active() {
     assert_ne!(
+        // SAFETY: as above — no arguments, status code out.
         unsafe { waterui_cef_macos_application_is_active() },
         0,
         "CEF requires a CefAppProtocol NSApplication subclass before runtime initialization"

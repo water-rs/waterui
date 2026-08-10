@@ -122,7 +122,11 @@ pub unsafe extern "C" fn waterui_theme_install_color_scheme(
     env: *mut WuiEnv,
     signal: *mut WuiComputed<theme::ColorScheme>,
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
+    // SAFETY: the caller contract makes `signal` an owning pointer from the matching
+    // FFI constructor, so reclaiming the box frees it exactly once.
     let computed = unsafe { Box::from_raw(signal) }.0;
     install_color_scheme(env, computed);
 }
@@ -135,6 +139,8 @@ pub unsafe extern "C" fn waterui_theme_install_color_scheme(
 pub unsafe extern "C" fn waterui_theme_color_scheme(
     env: *const WuiEnv,
 ) -> *mut WuiComputed<theme::ColorScheme> {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let computed = theme::current_color_scheme(env);
     computed.into_ffi()
@@ -186,7 +192,11 @@ pub unsafe extern "C" fn waterui_theme_install_color(
     slot: WuiColorSlot,
     signal: *mut WuiComputed<ResolvedColor>,
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
+    // SAFETY: the caller contract makes `signal` an owning pointer from the matching
+    // FFI constructor, so reclaiming the box frees it exactly once.
     let computed = unsafe { Box::from_raw(signal) }.0;
 
     match slot {
@@ -225,6 +235,8 @@ pub unsafe extern "C" fn waterui_theme_color(
     env: *const WuiEnv,
     slot: WuiColorSlot,
 ) -> *mut WuiComputed<ResolvedColor> {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
 
     let computed = match slot {
@@ -280,7 +292,11 @@ pub unsafe extern "C" fn waterui_theme_install_font(
     slot: WuiFontSlot,
     signal: *mut WuiComputed<ResolvedFont>,
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
+    // SAFETY: the caller contract makes `signal` an owning pointer from the matching
+    // FFI constructor, so reclaiming the box frees it exactly once.
     let computed = unsafe { Box::from_raw(signal) }.0;
 
     match slot {
@@ -304,6 +320,8 @@ pub unsafe extern "C" fn waterui_theme_font(
     env: *const WuiEnv,
     slot: WuiFontSlot,
 ) -> *mut WuiComputed<ResolvedFont> {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
 
     let computed = match slot {
@@ -333,6 +351,8 @@ pub unsafe extern "C" fn waterui_call_watcher_color_scheme(
     watcher: *const WuiWatcher<theme::ColorScheme>,
     value: WuiColorScheme,
 ) {
+    // SAFETY: the caller contract requires `watcher` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe {
         let watcher = crate::borrow_ffi(watcher);
         let rust_value: theme::ColorScheme = value.into();
@@ -348,6 +368,8 @@ pub unsafe extern "C" fn waterui_call_watcher_color_scheme(
 pub unsafe extern "C" fn waterui_drop_watcher_color_scheme(
     watcher: *mut WuiWatcher<theme::ColorScheme>,
 ) {
+    // SAFETY: the caller contract makes `watcher` an owning pointer from the matching
+    // constructor that has not been dropped.
     unsafe {
         drop(Box::from_raw(watcher));
     }
@@ -362,6 +384,8 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_color(
     watcher: *const WuiWatcher<ResolvedColor>,
     value: WuiResolvedColor,
 ) {
+    // SAFETY: the caller contract requires `watcher` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe {
         let watcher = crate::borrow_ffi(watcher);
         let rust_value = value.into_rust();
@@ -377,6 +401,8 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_color(
 pub unsafe extern "C" fn waterui_drop_watcher_resolved_color(
     watcher: *mut WuiWatcher<ResolvedColor>,
 ) {
+    // SAFETY: the caller contract makes `watcher` an owning pointer from the matching
+    // constructor that has not been dropped.
     unsafe {
         drop(Box::from_raw(watcher));
     }
@@ -391,6 +417,8 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_font(
     watcher: *const WuiWatcher<ResolvedFont>,
     value: WuiResolvedFont,
 ) {
+    // SAFETY: the caller contract requires `watcher` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe {
         let watcher = crate::borrow_ffi(watcher);
         let rust_value = value.into_rust();
@@ -406,6 +434,8 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_font(
 pub unsafe extern "C" fn waterui_drop_watcher_resolved_font(
     watcher: *mut WuiWatcher<ResolvedFont>,
 ) {
+    // SAFETY: the caller contract makes `watcher` an owning pointer from the matching
+    // constructor that has not been dropped.
     unsafe {
         drop(Box::from_raw(watcher));
     }
@@ -420,8 +450,10 @@ mod tests {
     fn color_scheme_roundtrip() {
         let ptr = waterui::Computed::constant(theme::ColorScheme::Dark).into_ffi();
         assert!(!ptr.is_null());
+        // SAFETY: `ptr` is the owning handle created just above in this test.
         let value = unsafe { waterui_read_computed_color_scheme(ptr) };
         assert_eq!(value, WuiColorScheme::Dark);
+        // SAFETY: `ptr` is that same handle, dropped once here at end of test.
         unsafe {
             waterui_drop_computed_color_scheme(ptr);
         }
@@ -441,17 +473,22 @@ mod tests {
         });
         let fg_ptr = fg_signal.into_ffi();
 
+        // SAFETY: `env` is a live local and `fg_ptr` an owning color handle the
+        // install consumes.
         unsafe {
             waterui_theme_install_color(&raw mut env, WuiColorSlot::Foreground, fg_ptr);
         }
 
         // Query it back
+        // SAFETY: `env` is a live local for the duration of the call.
         let queried = unsafe { waterui_theme_color(&raw const env, WuiColorSlot::Foreground) };
         assert!(!queried.is_null());
 
+        // SAFETY: `queried` is the non-null owning handle just returned.
         let value = unsafe { crate::color::waterui_read_computed_resolved_color(queried) };
         assert!((value.red - 1.0).abs() < 0.001);
 
+        // SAFETY: `queried` is that same handle, dropped once here.
         unsafe {
             crate::color::waterui_drop_computed_resolved_color(queried);
         }

@@ -59,6 +59,8 @@ unsafe impl Sync for ForeignRedrawTarget {}
 
 impl ForeignRedrawTarget {
     fn wake(&self) {
+        // SAFETY: `wake` and `context` were registered together by the backend, and
+        // the context outlives this waker.
         unsafe {
             (self.wake)(self.context as *mut c_void);
         }
@@ -67,6 +69,7 @@ impl ForeignRedrawTarget {
 
 impl Drop for ForeignRedrawTarget {
     fn drop(&mut self) {
+        // SAFETY: `drop` and `context` are one registration, and `Drop` runs once.
         unsafe {
             (self.drop)(self.context as *mut c_void);
         }
@@ -226,16 +229,22 @@ pub unsafe extern "C" fn waterui_view_effect_create(
     effect: *mut WuiViewEffect,
     env: *const crate::WuiEnv,
 ) -> *mut WuiViewEffectState {
+    // SAFETY: the caller contract requires `effect` to be a valid descriptor that no
+    // one else is borrowing for this call.
     let wui_effect = unsafe { &mut *effect };
     assert!(
         !wui_effect.effect.is_null(),
         "waterui_view_effect_create: descriptor was already consumed"
     );
     let effect_wrapper: ViewEffectRendererWrapper =
+        // SAFETY: the assert above proves the descriptor still owns its renderer, and
+        // the field is nulled immediately after, so it is reclaimed once.
         unsafe { *Box::from_raw(wui_effect.effect.cast::<ViewEffectRendererWrapper>()) };
     wui_effect.effect = core::ptr::null_mut();
     let output_size: OutputSize = wui_effect.output_size.into();
 
+    // SAFETY: the caller contract requires `env` to be a valid handle alive for this
+    // call; it is only borrowed.
     let runtime = super::gpu_runtime::gpu_runtime(&unsafe { &*env }.0);
     let redraw_handle = effect_wrapper.erased.redraw_handle();
     Box::into_raw(Box::new(WuiViewEffectState {
@@ -329,6 +338,8 @@ pub unsafe extern "C" fn waterui_view_effect_attach(
     input_height: u32,
     prefers_hdr: bool,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     assert!(
         state.output_surface.is_none(),
@@ -365,6 +376,8 @@ pub unsafe extern "C" fn waterui_view_effect_attach(
 /// Panics if `state` does not currently have an output surface attached.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_detach(state: *mut WuiViewEffectState) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let surface = state
         .output_surface
@@ -394,6 +407,8 @@ pub unsafe extern "C" fn waterui_view_effect_set_redraw_callback(
     wake: WuiViewEffectRedrawCallback,
     drop_callback: WuiViewEffectRedrawCallback,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let target = ForeignRedrawTarget {
         context: context as usize,
@@ -472,6 +487,8 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_metal_texture(
     width: u32,
     height: u32,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     ensure_dimensions(state, width, height);
     import_metal_texture(state, texture, width, height);
@@ -490,6 +507,8 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_metal_texture(
 /// `state` must be a valid pointer returned by [`waterui_view_effect_create`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_is_ready(state: *const WuiViewEffectState) -> bool {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
     state.setup_ready.get()
 }
@@ -515,6 +534,8 @@ pub unsafe extern "C" fn waterui_view_effect_is_ready(state: *const WuiViewEffec
 /// Panics if no input texture was imported before this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectState) -> bool {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let input_format = state
         .imported_format
@@ -652,6 +673,8 @@ fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::Textu
 /// and must not be used after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_drop(state: *mut WuiViewEffectState) {
+    // SAFETY: the caller contract makes `state` an owning handle from the matching
+    // constructor that has not been dropped.
     unsafe {
         let _ = Box::from_raw(state);
     }
@@ -686,6 +709,8 @@ fn import_metal_texture(
 ) {
     use wgpu_hal::Api;
 
+    // SAFETY: the caller contract requires the pointer to be a live `MTLTexture`;
+    // `retain` takes its own reference, so it stays alive for the work below.
     let metal_texture = unsafe {
         Retained::<ProtocolObject<dyn MTLTexture>>::retain(mtl_texture_ptr.cast())
             .expect("view_effect::import_metal_texture received a null texture")
@@ -709,6 +734,8 @@ fn import_metal_texture(
     assert_setup_input_format(state, wgpu_format);
 
     // Create HAL texture from the Metal texture
+    // SAFETY: `metal_texture` is the retained texture above, described with the format
+    // and size read from that same texture.
     let hal_texture = unsafe {
         <MetalApi as Api>::Device::texture_from_raw(
             metal_texture,
@@ -741,6 +768,8 @@ fn import_metal_texture(
     };
 
     // Create wgpu texture from HAL texture
+    // SAFETY: the HAL texture above came from this runtime's device, which is the
+    // device the wgpu texture is created on.
     let wgpu_texture = unsafe {
         state
             .runtime

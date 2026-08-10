@@ -155,6 +155,8 @@ impl LargeFile {
                 // SAFETY: offset is within bounds (0..len), ptr is valid for the
                 // duration of this closure because we await the task.
                 let ptr = ptr_addr as *const u8;
+                // SAFETY: `offset` is stepped below the mapping's length, so every
+                // read is inside the mapped region, which stays mapped for this loop.
                 sum = sum.wrapping_add(unsafe { *ptr.add(offset) });
             }
 

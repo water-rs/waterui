@@ -268,6 +268,8 @@ impl Stream for Running {
         // SAFETY: We only project to the `receiver` field, which is safe to pin
         // because we never move out of it and the other fields don't affect pinning
         let receiver = unsafe { &mut self.get_unchecked_mut().receiver };
+        // SAFETY: `receiver` is reached through a pinned `&mut self`, so it is already
+        // pinned and this only re-states that; it is never moved out.
         unsafe { std::pin::Pin::new_unchecked(receiver) }.poll_next(cx)
     }
 }

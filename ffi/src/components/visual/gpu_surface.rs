@@ -151,12 +151,16 @@ struct ForeignGpuCaptureCompletion {
 
 impl ForeignGpuCaptureCompletion {
     fn complete(self) {
+        // SAFETY: `callback` and `context` were registered together by the backend,
+        // and the context outlives this handle.
         unsafe { (self.callback)(self.context as *mut c_void) };
     }
 }
 
 impl Drop for ForeignGpuCaptureCompletion {
     fn drop(&mut self) {
+        // SAFETY: `drop` and `context` are one registration from the backend, and
+        // `Drop` runs once.
         unsafe { (self.drop)(self.context as *mut c_void) };
     }
 }
@@ -189,12 +193,16 @@ unsafe impl Sync for ForeignRedrawTarget {}
 
 impl ForeignRedrawTarget {
     fn wake(&self) {
+        // SAFETY: `wake` and `context` were registered together by the backend, and
+        // the context outlives this waker.
         unsafe { (self.wake)(self.context as *mut c_void) };
     }
 }
 
 impl Drop for ForeignRedrawTarget {
     fn drop(&mut self) {
+        // SAFETY: `drop` and `context` are one registration from the backend, and
+        // `Drop` runs once.
         unsafe { (self.drop)(self.context as *mut c_void) };
     }
 }
@@ -223,7 +231,11 @@ pub struct WuiGpuSurfaceHdrPreference {
 pub unsafe extern "C" fn waterui_gpu_surface_hdr_preference(
     surface: *const WuiGpuSurface,
 ) -> WuiGpuSurfaceHdrPreference {
+    // SAFETY: the caller contract requires `surface` to be a valid descriptor alive
+    // for this call.
     let wui_surface = unsafe { &*surface };
+    // SAFETY: a descriptor that has not been consumed holds a live `GpuSurface`; the
+    // consuming path below nulls the field, so a stale read cannot reach here.
     let gpu_surface = unsafe { &*(wui_surface.surface as *const GpuSurface) };
     let explicit = gpu_surface.resolved_hdr_preference();
     WuiGpuSurfaceHdrPreference {
@@ -407,17 +419,23 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
     surface: *mut WuiGpuSurface,
     env: *const crate::WuiEnv,
 ) -> *mut WuiGpuSurfaceState {
+    // SAFETY: the caller contract requires `surface` to be a valid descriptor that no
+    // one else is borrowing for this call.
     let wui_surface = unsafe { &mut *surface };
     assert!(
         !wui_surface.surface.is_null(),
         "waterui_gpu_surface_create: descriptor was already consumed"
     );
     let gpu_surface: GpuSurface =
+        // SAFETY: the assert above proves the descriptor still owns its `GpuSurface`,
+        // and the field is nulled immediately after, so it is reclaimed once.
         unsafe { *Box::from_raw(wui_surface.surface.cast::<GpuSurface>()) };
     wui_surface.surface = core::ptr::null_mut();
 
     let msaa_max_samples = gpu_surface.msaa_sample_limit();
     let priority = gpu_surface.priority();
+    // SAFETY: the caller contract requires `env` to be a valid handle alive for this
+    // call; it is only borrowed before cloning.
     let env = unsafe { &*env }.0.clone();
     let runtime = super::gpu_runtime::gpu_runtime(&env);
     let now = Instant::now();
@@ -453,7 +471,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_measure(
     state: *const WuiGpuSurfaceState,
     proposal: WuiProposalSize,
 ) -> WuiViewDimensions {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
+    // SAFETY: the caller contract makes `proposal` an owning handle from the
+    // matching FFI constructor; it is consumed here and not observed again.
     measure_state(state, unsafe { proposal.into_rust() }).into_ffi()
 }
 
@@ -479,6 +501,8 @@ pub(crate) fn measure_state(
 pub const unsafe extern "C" fn waterui_gpu_surface_priority(
     state: *const WuiGpuSurfaceState,
 ) -> i32 {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
     priority_state(state)
 }
@@ -510,6 +534,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
     height: u32,
     prefers_hdr: bool,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     assert!(
         state.wgpu_surface.is_none(),
@@ -545,6 +571,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
 /// Panics if `state` does not currently have a native surface attached.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_detach(state: *mut WuiGpuSurfaceState) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let surface = state
         .wgpu_surface
@@ -571,6 +599,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_redraw_callback(
     wake: WuiGpuSurfaceRedrawCallback,
     drop_callback: WuiGpuSurfaceRedrawCallback,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let target = ForeignRedrawTarget {
         context: context as usize,
@@ -592,6 +622,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_redraw_callback(
 /// `state` must be a valid pointer returned by [`waterui_gpu_surface_create`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_is_ready(state: *const WuiGpuSurfaceState) -> bool {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
     state.setup_ready.get()
 }
@@ -624,6 +656,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     width: u32,
     height: u32,
 ) -> bool {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     assert!(
         width > 0 && height > 0,
@@ -723,7 +757,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_prepare_metal_texture(
     state: *mut WuiGpuSurfaceState,
     texture: *mut c_void,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
+    // SAFETY: the caller contract requires `texture` to be a live `MTLTexture` that
+    // stays alive for this call; it is only borrowed to read its pixel format.
     let texture = unsafe { &*texture.cast::<ProtocolObject<dyn MTLTexture>>() };
     start_renderer_setup(state, metal_texture_format(texture));
 }
@@ -744,7 +782,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
     width: u32,
     height: u32,
 ) -> *mut WuiGpuCaptureFence {
+    // SAFETY: the caller contract requires `state` to be a valid handle that no one
+    // else is borrowing for this call.
     let state = unsafe { &mut *state };
+    // SAFETY: the caller contract requires `texture` to be a live `MTLTexture`;
+    // `retain` takes its own reference, so it stays alive for the render below.
     let metal_texture = unsafe {
         Retained::<ProtocolObject<dyn MTLTexture>>::retain(texture.cast())
             .expect("waterui_gpu_surface_render_to_metal_texture received a null texture")
@@ -761,6 +803,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         "waterui_gpu_surface_render_to_metal_texture called before asynchronous setup completed"
     );
 
+    // SAFETY: `metal_texture` is the retained texture above, and the format and size
+    // passed alongside it are read from that same texture, so the HAL description
+    // matches the real resource.
     let hal_texture = unsafe {
         <MetalApi as Api>::Device::texture_from_raw(
             metal_texture,
@@ -790,6 +835,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         view_formats: &[],
     };
 
+    // SAFETY: the HAL texture above was created from this runtime's device, which is
+    // the device the wgpu texture is being created on.
     let wgpu_texture = unsafe {
         state
             .runtime
@@ -852,6 +899,8 @@ pub unsafe extern "C" fn waterui_gpu_capture_fence_on_complete(
     callback: WuiGpuCaptureCompletionCallback,
     drop: WuiGpuCaptureCompletionDrop,
 ) {
+    // SAFETY: the caller contract makes `fence` an owning pointer from the matching
+    // FFI constructor, so reclaiming the box frees it exactly once.
     let fence = unsafe { Box::from_raw(fence) };
     let completion = ForeignGpuCaptureCompletion {
         context: context as usize,
@@ -873,6 +922,9 @@ pub unsafe extern "C" fn waterui_gpu_capture_fence_on_complete(
 /// and must not be used after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_drop(state: *mut WuiGpuSurfaceState) {
+    // SAFETY: the caller contract makes `state` an owning handle from the matching
+    // constructor that has not been dropped; clearing the waker before it falls out of
+    // scope releases the backend's context first.
     unsafe {
         let state = Box::from_raw(state);
         state.redraw_handle.set_waker(None);
@@ -992,6 +1044,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_input(
     state: *mut WuiGpuSurfaceState,
     input: WuiGpuSurfaceInput,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     state.pointer_state = pointer_state_from_ffi(&input.pointer);
     state.gesture_state = gesture_state_from_ffi(&input.gesture);
@@ -1004,6 +1058,8 @@ pub(crate) fn create_surface_from_layer(
     layer: *mut c_void,
 ) -> wgpu::Surface<'static> {
     // Apple backends provide a CAMetalLayer pointer.
+    // SAFETY: `layer` is the caller's `CAMetalLayer`, which must outlive the surface
+    // created from it — that is the contract this entry point documents.
     unsafe {
         instance
             .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))
