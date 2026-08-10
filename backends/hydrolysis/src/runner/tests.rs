@@ -7,8 +7,9 @@ use super::{
 use crate::platform::{
     InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError, SurfaceFrame, SurfaceProvider,
 };
-use crate::renderer::HydrolysisRenderer;
+use crate::renderer::{HydrolysisRenderer, InteractionKey};
 use core::time::Duration;
+use std::rc::Rc;
 use std::time::Instant;
 use waterui::window::{Window, WindowState};
 use waterui_backend_core::widget::TextCaretMotion;
@@ -128,7 +129,14 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
     };
     runtime.renderer.set_frame_instant(now);
     runtime.renderer.set_text_caret_motion(motion);
-    assert!(runtime.renderer.set_focused_text_input(Some(0)));
+    // Focus by identity: the caret animates off the focused field's identity, and
+    // this runtime emits no text-input targets, so there is no position to name.
+    let focused_field = Rc::new(());
+    assert!(
+        runtime
+            .renderer
+            .set_focused_text_input_key(Some(InteractionKey::for_rc(&focused_field, 0)))
+    );
     assert!(runtime.renderer.take_patch_request());
     assert!(!runtime.renderer.take_rebuild_request());
     runtime.clear_frame_mode();

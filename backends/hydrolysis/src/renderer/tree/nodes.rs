@@ -140,7 +140,7 @@ impl RetainedSubview {
             .map_or(StretchAxis::None, RenderNode::stretch)
     }
 
-    fn collect_dynamic_identities_into(&self, out: &mut Vec<usize>) {
+    fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
         if let Some(node) = &self.node {
             node.collect_dynamic_identities_into(out);
         }
@@ -300,8 +300,7 @@ impl RetainedSubview {
 /// retained, keyed by a stable identity, so a long collection costs only its
 /// visible rows. Items are built lazily as they scroll into view and evicted once
 /// they leave the visible set — matching virtualization, where scrolled-away item
-/// state is intentionally not preserved (the same lifetime the old dispatch path
-/// gave each re-dispatched item). While an item stays visible its node is reused,
+/// state is intentionally not preserved. While an item stays visible its node is reused,
 /// so its reactive content stays live through the node's own per-frame re-flush.
 pub(crate) struct VisibleSubviewCache<K: Eq + core::hash::Hash + Clone> {
     entries: std::collections::HashMap<K, RetainedSubview>,
@@ -350,7 +349,7 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
     }
 
     /// Add every connected `Dynamic` owned by a visible retained item.
-    pub(crate) fn collect_dynamic_identities_into(&self, out: &mut Vec<usize>) {
+    pub(crate) fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
         for entry in self.entries.values() {
             entry.collect_dynamic_identities_into(out);
         }
@@ -431,9 +430,9 @@ pub(super) enum WrapperEffect {
     /// the registered text input's `focus_binding`/focus state is set from the
     /// child's just-flushed targets — reactive descendants reach their own nodes.
     Focused(Focused),
-    /// An `.on_appear`/`.on_disappear` lifecycle hook, made node-owned (the slot
-    /// cursor that bound the old dispatch path is gone — the same fix class as the
-    /// `SceneView` Bug 1). Appear fires after the child's first flush; disappear
+    /// An `.on_appear`/`.on_disappear` lifecycle hook, owned by this node rather
+    /// than by a frame-ordered slot, so it cannot drift onto another subtree's
+    /// hook. Appear fires after the child's first flush; disappear
     /// fires from this effect's [`Drop`] when the node leaves the retained tree (a
     /// `Dynamic` / collection reconcile that drops the subtree, or app teardown).
     LifeCycle(LifeCycleEffect),
@@ -809,7 +808,8 @@ impl AppliedFilterNode {
 
 pub(crate) struct DynamicHostNode {
     /// The source `Dynamic`, kept alive so its identity cannot be reused while
-    /// this node lives (the ABA guard from the legacy `DynamicNode`). Also read by
+    /// this node lives — otherwise a freed identity could be reallocated to a
+    /// different `Dynamic` and confused for this one. Also read by
     /// [`RenderNode::collect_dynamic_identities`] to keep the measure-path dynamic
     /// dimension cache pruned to the identities still live in the retained tree.
     pub(super) source: waterui_core::dynamic::Dynamic,

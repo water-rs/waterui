@@ -314,6 +314,15 @@ pub trait PlatformWindow: 'static {
     ) {
         let _ = (min, max);
     }
+    /// Whether this window acts on content-derived size limits.
+    ///
+    /// Deriving them costs four extra whole-tree measure passes per frame, so a
+    /// surface that cannot resize to fit its content — offscreen capture, an
+    /// embedded GPU host, a fixed-size shell — leaves this `false` and never pays
+    /// for them. Defaults to `false` alongside the no-op [`Self::set_size_limits`].
+    fn applies_size_limits(&self) -> bool {
+        false
+    }
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
     /// Returns a thread-safe wake bridge for nested GPU surfaces.
@@ -837,6 +846,10 @@ impl PlatformWindow for OffscreenWindow {
         max: Option<waterui_core::layout::Size>,
     ) {
         self.size_limits = Some((min, max));
+    }
+
+    fn applies_size_limits(&self) -> bool {
+        true
     }
 
     fn drain_events(&mut self) -> Vec<InputEvent> {
@@ -1810,6 +1823,10 @@ mod winit_impl {
                 self.surface.resize(size.width, size.height);
             }
             &mut self.surface
+        }
+
+        fn applies_size_limits(&self) -> bool {
+            true
         }
 
         fn set_size_limits(

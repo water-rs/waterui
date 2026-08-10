@@ -19,9 +19,22 @@
 //! through one cache.
 
 use super::*;
+use core::hash::{Hash, Hasher};
+use core::num::NonZeroUsize;
 use core::ops::Range;
-use rustc_hash::FxHashMap;
-use std::sync::Mutex;
+use lru::LruCache;
+use rustc_hash::FxHasher;
+use std::sync::{Arc, Mutex};
+
+/// Upper bound on retained shaped layouts.
+///
+/// Shaping is keyed by content *and* fitted width, so one text leaf mints an
+/// entry per distinct proposal a container probes it with, and reactive text — a
+/// clock, a counter, a field's value — mints one per distinct string. Unbounded,
+/// the cache grows for the life of the process. This holds several times a dense
+/// screen's working set, so steady-state UI still never misses, while a long
+/// session evicts what it has stopped drawing.
+const TEXT_LAYOUT_CACHE_CAPACITY: usize = 4096;
 
 /// Thread-safe text shaping service shared by the render path and layout
 /// measurement. Cheaply cloneable shaping scratch is pooled so each worker
@@ -33,8 +46,10 @@ pub(crate) struct TextMeasureService {
     fonts: parley::FontContext,
     /// Shared layout cache — one source of truth for main-thread render and
     /// worker-thread measurement. Locked only to get/insert; shaping happens
-    /// outside the lock.
-    cache: Mutex<FxHashMap<TextLayoutCacheKey, parley::Layout<[u8; 4]>>>,
+    /// outside the lock. Bounded at [`TEXT_LAYOUT_CACHE_CAPACITY`], evicting
+    /// least-recently-shaped entries. Layouts are shared as [`Arc`] so a hit
+    /// hands out a handle instead of copying the glyph runs.
+    cache: Mutex<LruCache<TextLayoutCacheKey, Arc<parley::Layout<[u8; 4]>>>>,
     /// Reusable `(FontContext, LayoutContext)` shaping scratch, checked out per
     /// shape call. Each entry is a clone of [`Self::fonts`] (carrying the
     /// registered resource fonts) plus a fresh layout context; the pool size
@@ -52,7 +67,10 @@ impl TextMeasureService {
     pub(crate) fn new() -> Self {
         Self {
             fonts: parley::FontContext::new(),
-            cache: Mutex::new(FxHashMap::default()),
+            cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(TEXT_LAYOUT_CACHE_CAPACITY)
+                    .expect("text layout cache capacity must be non-zero"),
+            )),
             scratch: Mutex::new(Vec::new()),
         }
     }
@@ -77,13 +95,17 @@ impl TextMeasureService {
 
     /// Shape `input` into a parley layout, reusing the shared cache. Safe to call
     /// from any thread.
+    ///
+    /// The layout is shared rather than copied: measurement only reads it, and
+    /// copying glyph runs on every probe is the bulk of a cache hit's cost. Call
+    /// [`Self::shape_owned`] when the caller needs its own layout to mutate.
     pub(crate) fn shape(
         &self,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
-    ) -> parley::Layout<[u8; 4]> {
+    ) -> Arc<parley::Layout<[u8; 4]>> {
         if input.plain.is_empty() {
-            return parley::Layout::new();
+            return Arc::new(parley::Layout::new());
         }
 
         let cache_key = input.cache_key(max_width);
@@ -93,18 +115,27 @@ impl TextMeasureService {
             .expect("hydrolysis text layout cache mutex poisoned")
             .get(&cache_key)
         {
-            return layout.clone();
+            return Arc::clone(layout);
         }
 
         let mut scratch = self.checkout_scratch();
-        let layout = build_parley_layout(&mut scratch, input, max_width);
+        let layout = Arc::new(build_parley_layout(&mut scratch, input, max_width));
         self.return_scratch(scratch);
 
         self.cache
             .lock()
             .expect("hydrolysis text layout cache mutex poisoned")
-            .insert(cache_key, layout.clone());
+            .put(cache_key, Arc::clone(&layout));
         layout
+    }
+
+    /// Shape `input` into a layout the caller owns outright.
+    pub(crate) fn shape_owned(
+        &self,
+        input: &ResolvedTextLayoutInput,
+        max_width: Option<f32>,
+    ) -> parley::Layout<[u8; 4]> {
+        (*self.shape(input, max_width)).clone()
     }
 
     fn checkout_scratch(&self) -> TextShapingScratch {
@@ -144,31 +175,14 @@ pub(crate) struct ResolvedTextLayoutInput {
     default_brush: [u8; 4],
     locale: String,
     alignment: HorizontalAlignment,
+    /// This input's width-independent cache identity, built with the input.
+    identity: Arc<TextLayoutIdentity>,
 }
 
 impl ResolvedTextLayoutInput {
     fn cache_key(&self, max_width: Option<f32>) -> TextLayoutCacheKey {
-        let alignment_id = self.alignment.stable_id();
         TextLayoutCacheKey {
-            text: self.plain.clone(),
-            spans: self
-                .spans
-                .iter()
-                .map(|(range, style)| TextLayoutSpanCacheKey {
-                    start: range.start,
-                    end: range.end,
-                    font: text_layout_font_cache_key(&style.font),
-                    foreground: style.foreground,
-                    italic: style.italic,
-                    underline: style.underline,
-                    strikethrough: style.strikethrough,
-                })
-                .collect(),
-            default_font: text_layout_font_cache_key(&self.default_font),
-            default_brush: self.default_brush,
-            locale: self.locale.clone(),
-            alignment_low: alignment_id.low(),
-            alignment_high: alignment_id.high(),
+            identity: Arc::clone(&self.identity),
             max_width: max_width.map(f32::to_bits),
         }
     }
@@ -214,6 +228,27 @@ pub(crate) fn resolve_text_layout_input(
     let default_font = font_spec(&waterui_text::font::Font::default().resolve(env).get());
     let default_brush = default_text_brush(env);
     let locale = text_layout_locale(env);
+    let alignment_id = alignment.stable_id();
+    let identity = Arc::new(TextLayoutIdentity::new(
+        plain.clone(),
+        spans
+            .iter()
+            .map(|(range, style)| TextLayoutSpanCacheKey {
+                start: range.start,
+                end: range.end,
+                font: text_layout_font_cache_key(&style.font),
+                foreground: style.foreground,
+                italic: style.italic,
+                underline: style.underline,
+                strikethrough: style.strikethrough,
+            })
+            .collect(),
+        text_layout_font_cache_key(&default_font),
+        default_brush,
+        locale.clone(),
+        alignment_id.low(),
+        alignment_id.high(),
+    ));
     ResolvedTextLayoutInput {
         plain,
         spans,
@@ -221,6 +256,7 @@ pub(crate) fn resolve_text_layout_input(
         default_brush,
         locale,
         alignment,
+        identity,
     }
 }
 
@@ -427,18 +463,83 @@ const fn text_font_weight_cache_key(weight: TextFontWeight) -> u16 {
     }
 }
 
-/// Cache key for a shaped [`parley::Layout`]. All fields are owned and `Send`,
-/// so the cache can be shared across threads.
+/// Everything that identifies a shaped layout except the width it is fitted to.
+///
+/// Built once per [`ResolvedTextLayoutInput`] and shared by every width probe of
+/// that text: a container measuring one leaf against several proposals then
+/// allocates this once instead of once per probe. All fields are owned and
+/// `Send`, so the cache can be shared across threads.
+#[derive(Debug, Eq)]
+struct TextLayoutIdentity {
+    text: String,
+    spans: Vec<TextLayoutSpanCacheKey>,
+    default_font: TextLayoutFontCacheKey,
+    default_brush: [u8; 4],
+    locale: String,
+    alignment_low: u64,
+    alignment_high: u64,
+    /// Hash of every field above, computed once at construction. [`Hash`] writes
+    /// only this, so a cache probe never re-walks the text and its spans;
+    /// equality still compares the fields, so a collision cannot return the
+    /// wrong layout.
+    hash: u64,
+}
+
+impl TextLayoutIdentity {
+    fn new(
+        text: String,
+        spans: Vec<TextLayoutSpanCacheKey>,
+        default_font: TextLayoutFontCacheKey,
+        default_brush: [u8; 4],
+        locale: String,
+        alignment_low: u64,
+        alignment_high: u64,
+    ) -> Self {
+        let mut hasher = FxHasher::default();
+        text.hash(&mut hasher);
+        spans.hash(&mut hasher);
+        default_font.hash(&mut hasher);
+        default_brush.hash(&mut hasher);
+        locale.hash(&mut hasher);
+        alignment_low.hash(&mut hasher);
+        alignment_high.hash(&mut hasher);
+        Self {
+            text,
+            spans,
+            default_font,
+            default_brush,
+            locale,
+            alignment_low,
+            alignment_high,
+            hash: hasher.finish(),
+        }
+    }
+}
+
+impl PartialEq for TextLayoutIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash
+            && self.text == other.text
+            && self.spans == other.spans
+            && self.default_font == other.default_font
+            && self.default_brush == other.default_brush
+            && self.locale == other.locale
+            && self.alignment_low == other.alignment_low
+            && self.alignment_high == other.alignment_high
+    }
+}
+
+impl Hash for TextLayoutIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+/// Cache key for a shaped [`parley::Layout`]: what to shape, and how wide.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct TextLayoutCacheKey {
-    pub(crate) text: String,
-    pub(crate) spans: Vec<TextLayoutSpanCacheKey>,
-    pub(crate) default_font: TextLayoutFontCacheKey,
-    pub(crate) default_brush: [u8; 4],
-    pub(crate) locale: String,
-    pub(crate) alignment_low: u64,
-    pub(crate) alignment_high: u64,
-    pub(crate) max_width: Option<u32>,
+struct TextLayoutCacheKey {
+    identity: Arc<TextLayoutIdentity>,
+    max_width: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

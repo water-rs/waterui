@@ -443,8 +443,9 @@ impl RenderNode {
         };
         // GPU/effect leaves and wrappers: each owns its effect runtime directly
         // (textures, setup state, redraw handle), so a reactive swap renders the
-        // new content and a per-frame re-flush re-binds the *same* runtime — no
-        // cursor-ordered effect slot to desync (the chart Bug 1 fix, generalized).
+        // new content and a per-frame re-flush re-binds the *same* runtime. Holding
+        // the runtime in a frame-ordered slot instead lets the ordering drift out of
+        // step with the tree and hand a leaf another leaf's runtime.
         let view = match view.downcast::<Native<GpuSurface>>() {
             Ok(surface) => {
                 return RenderNode::build_gpu_surface((*surface).into_inner(), env, renderer);

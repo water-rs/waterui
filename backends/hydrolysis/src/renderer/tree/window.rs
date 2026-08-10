@@ -9,8 +9,8 @@ impl RenderNode {
     /// Apply pending reactive `Dynamic` content changes by rebuilding only the
     /// affected child subtree — no whole-window re-dispatch. Returns whether
     /// anything changed; the caller relays the whole (retained, cheap) tree out
-    /// when so, which lets a size-changing swap reflow its ancestors (e.g. the
-    /// chart's spacers) without the legacy reset-and-redispatch flash (Bug 2).
+    /// when so, which lets a size-changing swap reflow its ancestors without
+    /// resetting the scene and re-dispatching, which is visible as a flash.
     /// Walks the whole tree.
     pub(crate) fn patch(&mut self, renderer: &mut HydrolysisRenderer) -> bool {
         // No environment is threaded through: a rebuild uses the node's own captured
@@ -83,17 +83,18 @@ impl RenderNode {
     /// Collect the identities of every live `DynamicHostNode` in this retained
     /// subtree, so the measure-path dynamic dimension cache can be pruned to the
     /// `Dynamic`s still present in the tree. Walks the same child-bearing variants
-    /// as [`RenderNode::patch`].
-    pub(crate) fn collect_dynamic_identities(&self) -> Vec<usize> {
-        let mut out = Vec::new();
+    /// as [`RenderNode::patch`]. A set, not a list: the prune tests every cached
+    /// identity against it, which is quadratic over a linear scan.
+    pub(crate) fn collect_dynamic_identities(&self) -> FxHashSet<usize> {
+        let mut out = FxHashSet::default();
         self.collect_dynamic_identities_into(&mut out);
         out
     }
 
-    pub(super) fn collect_dynamic_identities_into(&self, out: &mut Vec<usize>) {
+    pub(super) fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
         match self {
             RenderNode::Dynamic(node) => {
-                out.push(node.source.identity());
+                out.insert(node.source.identity());
                 node.child.collect_dynamic_identities_into(out);
             }
             RenderNode::Container(container) => {
@@ -175,7 +176,6 @@ impl HydrolysisRenderer {
         if let Some(mut tree) = self.render_tree.take() {
             tree.patch(self);
             tree.layout(self, env, size);
-            self.refresh_content_size_limits(&tree, env);
             tree.flush(self, ctx, env);
             self.render_tree = Some(tree);
             return;
@@ -183,7 +183,6 @@ impl HydrolysisRenderer {
         self.render_depth = 0;
         let mut node = RenderNode::build(content, env, self);
         node.layout(self, env, size);
-        self.refresh_content_size_limits(&node, env);
         node.flush(self, ctx, env);
         self.render_tree = Some(node);
     }
@@ -271,7 +270,6 @@ impl HydrolysisRenderer {
             // renegotiate content-derived window limits.
             let size = Size::new(bounds.width() as f32, bounds.height() as f32);
             tree.layout(self, env, size);
-            self.refresh_content_size_limits(&tree, env);
         }
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
@@ -287,10 +285,7 @@ impl HydrolysisRenderer {
             // Dynamic measurements belonging to subtrees removed by the patch.
             self.animation_controller
                 .finish_rebuild_frame_with_inactive_slot_retention(false);
-            let live_dynamics = tree.collect_dynamic_identities();
-            self.state
-                .measurement
-                .retain_dynamic_identities(|identity| live_dynamics.contains(&identity));
+            self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
         self.lifecycle.finish_rebuild_frame();
         // Drop focus or drag targets that are no longer emitted, then publish the
@@ -302,13 +297,32 @@ impl HydrolysisRenderer {
         true
     }
 
-    /// Re-measures the window content's per-axis minimum and maximum sizes.
+    /// Measures the window content's per-axis minimum and maximum sizes, or
+    /// `None` before the tree is built.
     ///
+    /// This is four whole-tree measure passes at proposals the frame's own
+    /// layout never uses, so it is demand-driven rather than run on every
+    /// refresh: only the runner calls it, and only once it knows the answer will
+    /// reach a window that acts on it (see `apply_window_size_limits`).
+    pub(crate) fn measure_content_size_limits(
+        &mut self,
+        env: &Environment,
+    ) -> Option<ContentSizeLimits> {
+        let tree = self.render_tree.take()?;
+        let limits = self.content_size_limits_of(&tree, env);
+        self.render_tree = Some(tree);
+        Some(limits)
+    }
+
     /// Each axis is negotiated independently: a zero proposal asks for the hard
     /// minimum and an infinite proposal asks for the hard maximum. The other axis
     /// stays unspecified so cross-axis layout does not turn one dimension's
     /// constraint into the other dimension's result.
-    fn refresh_content_size_limits(&mut self, tree: &RenderNode, env: &Environment) {
+    fn content_size_limits_of(
+        &mut self,
+        tree: &RenderNode,
+        env: &Environment,
+    ) -> ContentSizeLimits {
         let min_width = tree
             .measure(&mut self.state, env, ProposalSize::new(Some(0.0), None))
             .size
@@ -345,14 +359,7 @@ impl HydrolysisRenderer {
                 "hydrolysis window layout reported maximum {maximum:?} below minimum {minimum:?}"
             );
         }
-        self.content_size_limits = Some(ContentSizeLimits { minimum, maximum });
-    }
-
-    /// The window content's size limits from the latest layout pass, or `None`
-    /// before the first build.
-    #[must_use]
-    pub(crate) fn content_size_limits(&self) -> Option<ContentSizeLimits> {
-        self.content_size_limits
+        ContentSizeLimits { minimum, maximum }
     }
 }
 

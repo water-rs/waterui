@@ -464,7 +464,7 @@ impl HydrolysisRenderer {
         max_width: Option<f32>,
     ) -> parley::Layout<[u8; 4]> {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        state.text.shape(&input, max_width)
+        state.text.shape_owned(&input, max_width)
     }
 
     pub(crate) fn measure_text_dimensions(

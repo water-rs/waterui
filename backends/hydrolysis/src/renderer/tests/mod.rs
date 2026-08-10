@@ -1654,6 +1654,105 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
     );
 }
 
+/// Targets are re-emitted in flush order every frame, so a field's position is
+/// not its identity. Inserting a row above the focused field must not hand focus
+/// — and with it the caret, selection and IME — to whichever field slid into the
+/// old position.
+#[test]
+fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
+    let mut renderer = test_renderer();
+    renderer.set_text_caret_motion(MinimalTestTheme.text_caret_motion());
+    let first = Rc::new(RefCell::new(TextSelectionSlot::default()));
+    let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
+    let emit = |renderer: &mut HydrolysisRenderer, targets: &[(&str, &Rc<RefCell<TextSelectionSlot>>)]| {
+        renderer.text_editing.text_input_targets.clear();
+        for (value, selection) in targets {
+            renderer
+                .text_editing
+                .text_input_targets
+                .push(text_input_target(
+                    text_field_model(value, None),
+                    Rc::clone(selection),
+                ));
+        }
+    };
+
+    emit(&mut renderer, &[("first", &first), ("focused", &focused)]);
+    assert!(renderer.set_focused_text_input(Some(1)));
+    let focused_key = renderer
+        .text_editing
+        .focused_key()
+        .expect("the second field is focused");
+
+    // The next frame emits a newly inserted row ahead of both fields, so the
+    // focused field moves from position 1 to position 2.
+    let inserted = Rc::new(RefCell::new(TextSelectionSlot::default()));
+    emit(
+        &mut renderer,
+        &[
+            ("inserted", &inserted),
+            ("first", &first),
+            ("focused", &focused),
+        ],
+    );
+    renderer.validate_focused_text_input_after_flush();
+
+    assert_eq!(
+        renderer.text_editing.focused_key().as_ref(),
+        Some(&focused_key),
+        "focus identity must survive a reflow that reorders targets"
+    );
+    assert_eq!(
+        renderer.text_editing.focused_index(),
+        Some(2),
+        "focus must resolve to the focused field's new position"
+    );
+    let (_, model, _) = renderer
+        .focused_text_target_data()
+        .expect("the focused field is still emitted");
+    assert_eq!(
+        model.plain_text(),
+        "focused",
+        "typing must reach the field the user focused, not the one now at its old position"
+    );
+}
+
+/// The counterpart: when the focused field is genuinely gone from the tree,
+/// focus is dropped rather than resolving to some other field.
+#[test]
+fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
+    let mut renderer = test_renderer();
+    renderer.set_text_caret_motion(MinimalTestTheme.text_caret_motion());
+    let survivor = Rc::new(RefCell::new(TextSelectionSlot::default()));
+    let removed = Rc::new(RefCell::new(TextSelectionSlot::default()));
+    for (value, selection) in [("survivor", &survivor), ("removed", &removed)] {
+        renderer
+            .text_editing
+            .text_input_targets
+            .push(text_input_target(
+                text_field_model(value, None),
+                Rc::clone(selection),
+            ));
+    }
+    assert!(renderer.set_focused_text_input(Some(1)));
+
+    renderer.text_editing.text_input_targets.clear();
+    renderer
+        .text_editing
+        .text_input_targets
+        .push(text_input_target(
+            text_field_model("survivor", None),
+            Rc::clone(&survivor),
+        ));
+    renderer.validate_focused_text_input_after_flush();
+
+    assert!(
+        !renderer.text_editing.has_focus(),
+        "focus must be cleared when its field leaves the tree"
+    );
+    assert!(renderer.focused_text_target_data().is_none());
+}
+
 #[test]
 fn text_selection_pointer_update_uses_transient_redraw_path() {
     let mut renderer = test_renderer();
