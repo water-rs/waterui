@@ -1,3 +1,5 @@
+//! GTK widget implementations for `WaterUI` control components.
+
 pub mod button;
 pub mod color_picker;
 pub mod date_picker;

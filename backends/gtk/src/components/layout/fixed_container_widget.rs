@@ -51,7 +51,7 @@ fn trace_layout_rects(
 mod imp {
     use super::*;
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     pub struct WuiFixedContainer {
         pub layout: RefCell<Option<Box<dyn Layout>>>,
         pub children: RefCell<Vec<(Widget, StretchAxis)>>,
@@ -196,31 +196,6 @@ impl WuiFixedContainer {
         measure_layout(layout.as_ref(), proposal, &refs)
     }
 
-    pub(crate) fn layout_size_that_fits(&self, proposal: ProposalSize) -> Size {
-        let imp = self.imp();
-        let layout_borrow = imp.layout.borrow();
-        let Some(layout) = layout_borrow.as_ref() else {
-            panic!("WuiFixedContainer: missing layout (internal error)");
-        };
-
-        let children = imp.children.borrow();
-        if children.is_empty() {
-            return Size::zero();
-        }
-
-        let subviews: Vec<GtkSubView> = children
-            .iter()
-            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
-            .collect();
-        let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
-
-        let dimensions = measure_layout(layout.as_ref(), proposal, &refs);
-        Size::new(
-            dimensions.size.width.max(0.0),
-            dimensions.size.height.max(0.0),
-        )
-    }
-
     fn relayout(&self) {
         let width = self.width();
         let height = self.height();
@@ -274,6 +249,7 @@ impl WuiFixedContainer {
         *last_rects = rects;
     }
 
+    /// Creates a container that lays `children` out with `layout`.
     #[must_use]
     pub fn new(layout: Box<dyn Layout>, children: Vec<(Widget, StretchAxis)>) -> Self {
         let obj: Self = glib::Object::new();

@@ -44,6 +44,13 @@ impl PreviewLibrary {
         Ok((library, timings))
     }
 
+    /// Load a library from an on-disk cache path.
+    ///
+    /// # Safety
+    /// The library must be a valid `WaterUI` preview library with the expected ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the library cannot be loaded.
     #[cfg(all(unix, not(target_os = "macos")))]
     pub async unsafe fn load_from_path(
         path: &Path,
@@ -184,6 +191,13 @@ impl PreviewLibrary {
         Ok((library, timings))
     }
 
+    /// Load a library from bytes by writing to a temp file.
+    ///
+    /// # Safety
+    /// The library must be a valid `WaterUI` preview library with the expected ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the library cannot be loaded.
     #[cfg(all(unix, not(target_os = "macos")))]
     pub async unsafe fn load_from_bytes(
         id: DylibId,
@@ -238,6 +252,15 @@ impl PreviewLibrary {
         Ok((library, timings))
     }
 
+    /// Load a library from a local filesystem path by copying it into the preview cache first.
+    ///
+    /// This avoids sending large dylib payloads over TCP.
+    ///
+    /// # Safety
+    /// The library at `source_path` must be a valid `WaterUI` preview library with the expected ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the source path cannot be cached or the library cannot be loaded.
     #[cfg(all(unix, not(target_os = "macos")))]
     pub async unsafe fn load_from_local_path(
         id: DylibId,
