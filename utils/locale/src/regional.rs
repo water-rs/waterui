@@ -379,8 +379,21 @@ fn detect_system_context() -> RegionalContext {
 }
 
 fn normalize_locale_tag(raw: &str) -> String {
+    // POSIX locale names are `language[_territory][.codeset][@modifier]`, and
+    // neither the codeset nor the modifier belongs in a BCP-47 tag. No valid
+    // tag contains `.` or `@`, so dropping those suffixes is unambiguous.
+    let raw = raw.trim();
+    let raw = raw.split('@').next().unwrap_or(raw);
+    let raw = raw.split('.').next().unwrap_or(raw);
     let cleaned = raw.trim().replace('_', "-");
     if cleaned.is_empty() {
+        return "en-US".to_string();
+    }
+
+    // POSIX spells "no localization" as the `C`/`POSIX` locale. Those are not
+    // language tags, so they get the same default as an unspecified locale
+    // rather than being parsed as a one-letter language.
+    if cleaned.eq_ignore_ascii_case("C") || cleaned.eq_ignore_ascii_case("POSIX") {
         return "en-US".to_string();
     }
 
@@ -464,6 +477,22 @@ mod tests {
         assert_eq!(normalize_locale_tag("en_us"), "en-US");
         assert_eq!(normalize_locale_tag("ZH-hant-hk"), "zh-Hant-HK");
         assert_eq!(normalize_locale_tag("  fr-FR  "), "fr-FR");
+    }
+
+    #[test]
+    fn normalize_locale_tag_maps_posix_locales_to_the_default() {
+        // `LANG=C` is the common CI default and is not a BCP-47 tag.
+        assert_eq!(normalize_locale_tag("C"), "en-US");
+        assert_eq!(normalize_locale_tag("c"), "en-US");
+        assert_eq!(normalize_locale_tag("POSIX"), "en-US");
+        assert_eq!(normalize_locale_tag("C.UTF-8"), "en-US");
+    }
+
+    #[test]
+    fn normalize_locale_tag_drops_posix_codeset_and_modifier() {
+        assert_eq!(normalize_locale_tag("en_US.UTF-8"), "en-US");
+        assert_eq!(normalize_locale_tag("de_DE@euro"), "de-DE");
+        assert_eq!(normalize_locale_tag("sr_RS.UTF-8@latin"), "sr-RS");
     }
 
     #[test]
