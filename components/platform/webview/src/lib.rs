@@ -33,7 +33,9 @@ mod proxy;
 pub use proxy::WebViewProxy;
 
 // Re-export waterui-internal types for FFI layer
-pub use waterui_url::Url;
+pub use waterui_url::{IntoUrl, Url};
+mod url_signal;
+pub use url_signal::IntoUrlSignal;
 
 use waterui_core::{
     Binding, Computed, Environment, Signal, View, binding,
@@ -114,7 +116,7 @@ pub struct WebView {
     handle: AnyWebViewHandle,
     can_go_back: Binding<bool>,
     can_go_forward: Binding<bool>,
-    navigation: Option<Rc<(Computed<Str>, BoxWatcherGuard)>>,
+    navigation: Option<Rc<(Computed<Url>, BoxWatcherGuard)>>,
 }
 
 impl Clone for WebView {
@@ -205,18 +207,17 @@ impl WebView {
     /// [`WebViewProxy`] when you need refresh / history navigation /
     /// `run_javascript` from a child handler.
     ///
-    /// `url` is reactive: changing a `Binding<String>`, `Binding<Str>`, or
-    /// compatible computed URL navigates the existing native web view without
-    /// rebuilding it.
+    /// `url` is reactive: writing a new [`Url`] into a bound `Binding<Url>`
+    /// navigates the existing native web view without rebuilding it.
     ///
     /// ```ignore
-    /// let url = binding(String::from("https://waterui.dev"));
+    /// let url = binding(Url::new("https://waterui.dev"));
     /// let webview = WebView::open(url.clone());
-    /// url.set(String::from("https://waterui.dev/docs"));
+    /// url.set(Url::new("https://waterui.dev/docs"));
     /// ```
-    pub fn open(url: impl IntoComputed<Str>) -> WebViewOpen {
+    pub fn open(url: impl IntoUrlSignal) -> WebViewOpen {
         WebViewOpen {
-            url: url.into_computed(),
+            url: url.into_url_signal(),
             redirects_enabled: None,
         }
     }
@@ -267,13 +268,18 @@ impl WebView {
     }
 
     /// Navigates to the specified URL.
-    pub fn go_to(&self, url: &str) {
-        self.handle.go_to(url);
+    ///
+    /// `url` is anything that already names a URL — a literal, a [`Url`], or a
+    /// `const` built with [`Url::new`]. Text that only exists at runtime has to be
+    /// parsed first, with [`Url::parse_user_input`] or `str::parse`, so a
+    /// malformed address is handled where it originates instead of at the backend.
+    pub fn go_to(&self, url: impl IntoUrl) {
+        self.handle.go_to(&url.into_url());
     }
 
-    fn bind_navigation(mut self, url: Computed<Str>) -> Self {
+    fn bind_navigation(mut self, url: Computed<Url>) -> Self {
         let handle = self.handle.clone();
-        let guard = subscribe_navigation(&url, move |url| handle.go_to(url.as_str()));
+        let guard = subscribe_navigation(&url, move |url| handle.go_to(&url));
         self.navigation = Some(Rc::new((url, guard)));
         self
     }
@@ -370,8 +376,8 @@ impl WebView {
 
 fn subscribe_navigation<S, F>(url: &S, navigate: F) -> S::Guard
 where
-    S: Signal<Output = Str>,
-    F: Clone + Fn(Str) + 'static,
+    S: Signal<Output = Url>,
+    F: Clone + Fn(Url) + 'static,
 {
     let emitted_during_subscription = Rc::new(Cell::new(false));
     let guard = url.watch({
@@ -397,7 +403,7 @@ where
 /// retained for the native view's lifetime and drives navigation precisely.
 #[must_use = "a WebViewOpen must be rendered to create its native web view"]
 pub struct WebViewOpen {
-    url: Computed<Str>,
+    url: Computed<Url>,
     redirects_enabled: Option<Computed<bool>>,
 }
 
@@ -461,17 +467,17 @@ mod tests {
 
     use super::subscribe_navigation;
     use waterui_core::{Binding, Signal, reactive::watcher::Context};
-    use waterui_str::Str;
+    use waterui_url::Url;
 
     #[derive(Clone)]
     struct EmitsDuringSubscription {
-        source: Binding<Str>,
-        replacement: Str,
+        source: Binding<Url>,
+        replacement: Url,
     }
 
     impl Signal for EmitsDuringSubscription {
-        type Output = Str;
-        type Guard = <Binding<Str> as Signal>::Guard;
+        type Output = Url;
+        type Guard = <Binding<Url> as Signal>::Guard;
 
         fn get(&self) -> Self::Output {
             self.source.get()
@@ -487,8 +493,8 @@ mod tests {
 
     #[test]
     fn navigation_subscription_does_not_repeat_synchronous_emission() {
-        let replacement = Str::from("https://waterui.dev/docs");
-        let source = Binding::container(Str::from("https://waterui.dev"));
+        let replacement = Url::new("https://waterui.dev/docs");
+        let source = Binding::container(Url::new("https://waterui.dev"));
         let signal = EmitsDuringSubscription {
             source: source.clone(),
             replacement: replacement.clone(),
@@ -499,7 +505,7 @@ mod tests {
             let navigations = Rc::clone(&navigations);
             move |url| navigations.borrow_mut().push(url)
         });
-        let next = Str::from("https://waterui.dev/components");
+        let next = Url::new("https://waterui.dev/components");
         source.set(next.clone());
 
         assert_eq!(*navigations.borrow(), vec![replacement, next]);

@@ -13,56 +13,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
-use waterui::webview::{ScriptInjectionTime, WebView, WebViewController, WebViewEvent};
-
-fn normalize_address_input(input: &str) -> Option<Str> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if waterui::webview::Url::parse(trimmed).is_some() {
-        return Some(Str::from(trimmed.to_owned()));
-    }
-
-    if !trimmed.contains("://") {
-        let with_https = format!("https://{trimmed}");
-        if waterui::webview::Url::parse(&with_https).is_some() {
-            return Some(Str::from(with_https));
-        }
-    }
-
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_address_input;
-
-    #[test]
-    fn accepts_absolute_url() {
-        let normalized = normalize_address_input("https://waterui.dev");
-        assert_eq!(
-            normalized.as_ref().map(|s| s.as_str()),
-            Some("https://waterui.dev")
-        );
-    }
-
-    #[test]
-    fn prefixes_https_for_host_only_input() {
-        let normalized = normalize_address_input("waterui.dev/docs");
-        assert_eq!(
-            normalized.as_ref().map(|s| s.as_str()),
-            Some("https://waterui.dev/docs")
-        );
-    }
-
-    #[test]
-    fn rejects_empty_or_whitespace() {
-        assert!(normalize_address_input("").is_none());
-        assert!(normalize_address_input("   ").is_none());
-    }
-}
+use waterui::webview::{ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent};
 
 /// Handles WebView events and updates UI state accordingly.
 fn handle_webview_event(
@@ -142,9 +93,9 @@ fn scene(webview: WebView) -> impl View {
     let can_go_back = webview.can_go_back();
     let can_go_forward = webview.can_go_forward();
 
-    if let Some(normalized) = normalize_address_input(address.get().as_str()) {
-        address.set(normalized.clone());
-        webview.go_to(normalized.as_str());
+    if let Some(url) = Url::parse_user_input(address.get().as_str()) {
+        address.set(Str::from(url.as_str().to_owned()));
+        webview.go_to(url);
     } else {
         status.set(Str::from_static("Invalid URL"));
     }
@@ -161,9 +112,9 @@ fn scene(webview: WebView) -> impl View {
                     |State(wv): State<WebView>,
                      State(addr): State<Binding<Str>>,
                      State(status): State<Binding<Str>>| {
-                        if let Some(normalized) = normalize_address_input(addr.get().as_str()) {
-                            addr.set(normalized.clone());
-                            wv.go_to(normalized.as_str());
+                        if let Some(url) = Url::parse_user_input(addr.get().as_str()) {
+                            addr.set(Str::from(url.as_str().to_owned()));
+                            wv.go_to(url);
                         } else {
                             status.set(Str::from_static("Invalid URL"));
                         }

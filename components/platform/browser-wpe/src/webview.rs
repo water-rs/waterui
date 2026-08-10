@@ -5,6 +5,7 @@ use cookie::{Cookie, SameSite, time::OffsetDateTime};
 use nami::watcher::BoxWatcherGuard;
 use serde::Deserialize;
 use waterui_core::{Computed, Signal};
+use waterui_url::Url;
 use waterui_webview::{CustomWebViewController, ScriptInjectionTime, WebViewEvent, WebViewHandle};
 
 use crate::{WpePage, WpeRuntime, WpeRuntimePaths};
@@ -85,8 +86,8 @@ impl WebViewHandle for WpeWebViewHandle {
         self.page.go_forward();
     }
 
-    fn go_to(&self, url: &str) {
-        self.page.load_uri(url);
+    fn go_to(&self, url: &Url) {
+        self.page.load_uri(url.as_str());
     }
 
     fn inject_script(&self, script: &str, time: ScriptInjectionTime) {

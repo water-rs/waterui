@@ -6,6 +6,7 @@ use waterui_core::{Computed, Signal, impl_debug};
 use waterui_str::Str;
 
 use crate::WebViewEvent;
+use waterui_url::Url;
 
 type ScriptMessageHandler = dyn Fn(&[u8]) -> Vec<u8> + 'static;
 
@@ -38,7 +39,7 @@ pub trait WebViewHandle: 'static {
     /// Navigates forward in the web view's history.
     fn go_forward(&self);
     /// Navigates to the specified URL.
-    fn go_to(&self, url: &str);
+    fn go_to(&self, url: &Url);
 
     /// Injects a script that will run on every page load.
     ///
@@ -122,7 +123,7 @@ trait WebViewHandleImpl: Any {
     fn go_forward(&self);
     fn stop(&self);
     fn refresh(&self);
-    fn go_to(&self, url: &str);
+    fn go_to(&self, url: &Url);
     fn inject_script(&self, script: &str, time: ScriptInjectionTime);
     fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>);
     fn set_user_agent(&self, user_agent: &str);
@@ -150,7 +151,7 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
         WebViewHandle::go_back(self);
     }
 
-    fn go_to(&self, url: &str) {
+    fn go_to(&self, url: &Url) {
         WebViewHandle::go_to(self, url);
     }
 
@@ -226,7 +227,7 @@ impl AnyWebViewHandle {
     }
 
     /// Navigates to the specified URL.
-    pub fn go_to(&self, url: &str) {
+    pub fn go_to(&self, url: &Url) {
         self.inner.go_to(url);
     }
 

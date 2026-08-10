@@ -8,6 +8,7 @@ use num_traits::ToPrimitive as _;
 use serde_json::{Value, json};
 use waterui_core::{Computed, Signal};
 use waterui_str::Str;
+use waterui_url::Url;
 use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, WebViewEvent, WebViewHandle,
 };
@@ -78,11 +79,8 @@ impl WebViewHandle for CefWebViewHandle {
             .go_forward();
     }
 
-    fn go_to(&self, url: &str) {
-        let url: waterui_url::Url = url
-            .parse()
-            .unwrap_or_else(|error| panic!("CEF WebView received an invalid URL: {error}"));
-        self.page.navigate(&url);
+    fn go_to(&self, url: &Url) {
+        self.page.navigate(url);
     }
 
     fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
