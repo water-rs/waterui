@@ -56,7 +56,7 @@ impl LifeCycleHook {
     }
 
     /// Consumes the hook and returns the boxed handler.
-    #[must_use]
+    #[must_use = "the hook is consumed, so dropping the handler discards the callback"]
     pub fn into_handler(self) -> BoxedActionOnce<()> {
         self.handler
     }
