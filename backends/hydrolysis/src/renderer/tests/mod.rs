@@ -1664,7 +1664,8 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     renderer.set_text_caret_motion(MinimalTestTheme.text_caret_motion());
     let first = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    let emit = |renderer: &mut HydrolysisRenderer, targets: &[(&str, &Rc<RefCell<TextSelectionSlot>>)]| {
+    let emit = |renderer: &mut HydrolysisRenderer,
+                targets: &[(&str, &Rc<RefCell<TextSelectionSlot>>)]| {
         renderer.text_editing.text_input_targets.clear();
         for (value, selection) in targets {
             renderer

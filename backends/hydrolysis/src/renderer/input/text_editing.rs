@@ -957,7 +957,11 @@ impl HydrolysisRenderer {
         }
         let focus_binding = |key: Option<&InteractionKey>| {
             key.and_then(|key| self.text_editing.index_of(key))
-                .and_then(|index| self.text_editing.text_input_targets[index].focus_binding.clone())
+                .and_then(|index| {
+                    self.text_editing.text_input_targets[index]
+                        .focus_binding
+                        .clone()
+                })
         };
         let previous_binding = focus_binding(previous.as_ref());
         let next_binding = focus_binding(focused.as_ref());
