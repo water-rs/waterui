@@ -52,6 +52,7 @@ impl FixedContainer {
     }
 
     /// Returns borrowed access to the boxed layout and collected children.
+    #[must_use = "this borrows the container's parts without consuming it"]
     pub fn as_parts(&self) -> (&dyn Layout, &[AnyView]) {
         (self.layout.as_ref(), &self.contents)
     }

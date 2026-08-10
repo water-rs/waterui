@@ -127,6 +127,7 @@ impl ScrollView {
     }
 
     /// Returns borrowed access to axis, content, and controller.
+    #[must_use = "this borrows the scroll view's parts without consuming it"]
     pub const fn as_parts(&self) -> (Axis, &AnyView, Option<&ScrollController<Point>>) {
         (self.axis, &self.content, self.controller.as_ref())
     }
