@@ -56,6 +56,10 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.set_size_limits(min, max);
     }
 
+    fn applies_size_limits(&self) -> bool {
+        self.inner.applies_size_limits()
+    }
+
     fn drain_events(&mut self) -> Vec<InputEvent> {
         self.pending_events.drain(..).collect()
     }

@@ -38,6 +38,7 @@ waterui-locale.workspace = true
 vello.workspace = true
 parley = { workspace = true, features = ["system"] }
 wgpu.workspace = true
+lru.workspace = true
 rayon = "1.12"
 pollster.workspace = true
 executor-core.workspace = true

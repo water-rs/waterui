@@ -14,17 +14,82 @@ pub(crate) enum TextInputModel {
     },
 }
 
+/// Text editing state that outlives a frame.
+///
+/// [`Self::text_input_targets`] is pure emission: it is cleared in
+/// `reset_scene` and re-pushed in flush order every frame, so a position in it
+/// only means anything within the frame that produced it. Everything here that
+/// survives a frame — focus, the drag-selection target, the multi-click streak,
+/// the open context menu — therefore stores the target's stable
+/// [`InteractionKey`] and resolves it back to a position through
+/// [`Self::index_of`] at the point of use. Storing a position instead would let
+/// focus, caret and selection migrate to a different field whenever flush order
+/// changes (a row inserted above a focused field, a `when(...)` revealing an
+/// earlier one).
 #[derive(Default)]
 pub(crate) struct TextEditingState {
     pub(crate) text_input_targets: Vec<TextInputTarget>,
-    pub(crate) active_text_selection_drag: Option<usize>,
+    pub(crate) active_text_selection_drag: Option<InteractionKey>,
     pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
     pub(crate) active_text_context_menu: Option<ActiveTextContextMenu>,
-    pub(crate) focused_text_input: Cell<Option<usize>>,
+    focused_text_input: RefCell<Option<InteractionKey>>,
     pub(crate) ime_preedit: Option<Str>,
     pub(crate) text_caret_fade_started_at: Option<Instant>,
     pub(crate) text_caret_next_frame_at: Option<Instant>,
     pub(crate) text_caret_motion: Option<TextCaretMotion>,
+}
+
+impl TextEditingState {
+    /// This frame's position for a stable target identity, if that target is
+    /// still emitted.
+    pub(crate) fn index_of(&self, key: &InteractionKey) -> Option<usize> {
+        self.text_input_targets
+            .iter()
+            .position(|target| &target.interaction_key == key)
+    }
+
+    /// The stable identity of this frame's target at `index`.
+    pub(crate) fn key_at(&self, index: usize) -> Option<&InteractionKey> {
+        self.text_input_targets
+            .as_slice()
+            .get(index)
+            .map(|target| &target.interaction_key)
+    }
+
+    /// The focused input's identity, whether or not it is emitted this frame.
+    pub(crate) fn focused_key(&self) -> Option<InteractionKey> {
+        self.focused_text_input.borrow().clone()
+    }
+
+    /// This frame's position of the focused input, if it is still emitted.
+    pub(crate) fn focused_index(&self) -> Option<usize> {
+        let focused = self.focused_text_input.borrow();
+        self.index_of(focused.as_ref()?)
+    }
+
+    /// This frame's focused target, if it is still emitted.
+    pub(crate) fn focused_target(&self) -> Option<&TextInputTarget> {
+        self.text_input_targets
+            .as_slice()
+            .get(self.focused_index()?)
+    }
+
+    pub(crate) fn is_focused(&self, key: &InteractionKey) -> bool {
+        self.focused_text_input.borrow().as_ref() == Some(key)
+    }
+
+    pub(crate) fn has_focus(&self) -> bool {
+        self.focused_text_input.borrow().is_some()
+    }
+
+    fn store_focused_key(&self, key: Option<InteractionKey>) {
+        *self.focused_text_input.borrow_mut() = key;
+    }
+
+    /// This frame's position of the drag-selected input, if it is still emitted.
+    pub(crate) fn selection_drag_index(&self) -> Option<usize> {
+        self.index_of(self.active_text_selection_drag.as_ref()?)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -34,9 +99,9 @@ pub(crate) struct TextSelectionSlot {
     pub(crate) initialized: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct TextSelectionClickState {
-    pub(crate) target_index: usize,
+    pub(crate) target: InteractionKey,
     pub(crate) point: vello::kurbo::Point,
     pub(crate) at: Instant,
     pub(crate) count: u8,
@@ -124,11 +189,11 @@ pub(crate) struct TextContextMenuOverlay {
 #[derive(Clone)]
 pub(crate) enum ActiveTextContextMenu {
     Overlay {
-        index: usize,
+        target: InteractionKey,
         overlay: TextContextMenuOverlay,
     },
     NativeWindow {
-        index: usize,
+        target: InteractionKey,
         state: nami::Binding<WindowState>,
     },
 }
@@ -774,7 +839,7 @@ impl HydrolysisRenderer {
         env: &Environment,
         transform: vello::kurbo::Affine,
     ) {
-        let focused = self.text_editing.focused_text_input.get();
+        let focused = self.text_editing.focused_index();
         let menu_target = self.active_text_context_menu_target();
         let mut scene = vello::Scene::new();
         let theme = widget_theme(env);
@@ -819,7 +884,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn advance_text_caret_animation(&mut self, now: Instant) -> bool {
-        if self.text_editing.focused_text_input.get().is_none() {
+        if !self.text_editing.has_focus() {
             return false;
         }
         let motion = self.text_caret_motion();
@@ -845,7 +910,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn text_caret_opacity(&self, now: Instant) -> f32 {
-        if self.text_editing.focused_text_input.get().is_none() {
+        if !self.text_editing.has_focus() {
             return 0.0;
         }
         let motion = self.text_caret_motion();
@@ -861,27 +926,58 @@ impl HydrolysisRenderer {
         motion.min_opacity + (1.0 - motion.min_opacity) * wave
     }
 
+    /// Move focus to this frame's text input at `focused`, or clear it with
+    /// `None`.
+    ///
+    /// The index is frame-local, so it is resolved to the target's stable
+    /// [`InteractionKey`] here and only that key is retained. An index with no
+    /// target is a call-site bug, not a recoverable state.
     pub(crate) fn set_focused_text_input(&mut self, focused: Option<usize>) -> bool {
-        let previous = self.text_editing.focused_text_input.get();
+        let key = focused.map(|index| {
+            self.text_editing
+                .key_at(index)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "hydrolysis text input focus index {index} has no target ({} emitted this frame)",
+                        self.text_editing.text_input_targets.len()
+                    )
+                })
+                .clone()
+        });
+        self.set_focused_text_input_key(key)
+    }
+
+    /// Move focus to the text input with this stable identity, or clear it with
+    /// `None`. The target need not be emitted this frame; focus simply resolves
+    /// to nothing until it is.
+    pub(crate) fn set_focused_text_input_key(&mut self, focused: Option<InteractionKey>) -> bool {
+        let previous = self.text_editing.focused_key();
         if previous == focused {
             return false;
         }
-        let previous_binding = previous
-            .and_then(|index| self.text_editing.text_input_targets.as_slice().get(index))
-            .and_then(|target| target.focus_binding.clone());
-        let next_binding = focused
-            .and_then(|index| self.text_editing.text_input_targets.as_slice().get(index))
-            .and_then(|target| target.focus_binding.clone());
+        let focus_binding = |key: Option<&InteractionKey>| {
+            key.and_then(|key| self.text_editing.index_of(key))
+                .and_then(|index| self.text_editing.text_input_targets[index].focus_binding.clone())
+        };
+        let previous_binding = focus_binding(previous.as_ref());
+        let next_binding = focus_binding(focused.as_ref());
         if let Some(binding) = previous_binding {
             binding.set(false);
         }
-        self.text_editing.focused_text_input.set(focused);
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            previous_focus = ?previous,
+            next_focus = ?focused,
+            "text input focus changed"
+        );
+        let focused_something = focused.is_some();
+        self.text_editing.store_focused_key(focused);
         if let Some(binding) = next_binding {
             binding.set(true);
         }
         self.text_editing.active_text_selection_drag = None;
         self.text_editing.ime_preedit = None;
-        if focused.is_some() {
+        if focused_something {
             self.reset_text_caret_animation(self.frame_instant());
         } else {
             self.clear_text_caret_animation();
@@ -889,12 +985,6 @@ impl HydrolysisRenderer {
             self.dismiss_active_popup_menu();
         }
         self.request_refresh();
-        tracing::trace!(
-            target: "waterui::hydrolysis::input",
-            previous_focus = ?previous,
-            next_focus = ?focused,
-            "text input focus changed"
-        );
         true
     }
 
@@ -907,14 +997,14 @@ impl HydrolysisRenderer {
         }
     }
 
+    /// This frame's position of the input whose context menu is open, if that
+    /// input is still emitted.
     pub(crate) fn active_text_context_menu_target(&self) -> Option<usize> {
-        self.text_editing
-            .active_text_context_menu
-            .as_ref()
-            .map(|menu| match menu {
-                ActiveTextContextMenu::Overlay { index, .. }
-                | ActiveTextContextMenu::NativeWindow { index, .. } => *index,
-            })
+        let key = match self.text_editing.active_text_context_menu.as_ref()? {
+            ActiveTextContextMenu::Overlay { target, .. }
+            | ActiveTextContextMenu::NativeWindow { target, .. } => target,
+        };
+        self.text_editing.index_of(key)
     }
 
     pub(crate) fn render_active_text_context_menu_overlay(
@@ -1035,11 +1125,13 @@ impl HydrolysisRenderer {
     pub(crate) fn focused_text_target_data(
         &mut self,
     ) -> Option<(usize, TextInputModel, Rc<RefCell<TextSelectionSlot>>)> {
-        let index = self.text_editing.focused_text_input.get()?;
-        let Some(target) = self.text_editing.text_input_targets.as_slice().get(index) else {
-            self.set_focused_text_input(None);
+        // Input handling runs between frames, when the target list is complete:
+        // a focused identity that resolves to nothing here is genuinely gone.
+        let Some(index) = self.text_editing.focused_index() else {
+            self.set_focused_text_input_key(None);
             return None;
         };
+        let target = &self.text_editing.text_input_targets[index];
         Some((index, target.model.clone(), Rc::clone(&target.selection)))
     }
 
@@ -1079,26 +1171,34 @@ impl HydrolysisRenderer {
         )
     }
 
+    /// Advance the double/triple-click streak for this frame's target at
+    /// `target_index`. The streak is remembered by stable identity, so it
+    /// continues across a reflow and never carries over to a different field
+    /// that happens to land at the same position.
     pub(crate) fn next_text_selection_click_count(
         &mut self,
         target_index: usize,
         point: vello::kurbo::Point,
         at: Instant,
     ) -> u8 {
-        let count = if let Some(previous) = self.text_editing.last_text_selection_click {
-            if previous.target_index == target_index
-                && at.saturating_duration_since(previous.at) <= TEXT_SELECTION_MULTI_CLICK_INTERVAL
-                && previous.point.distance(point) <= TEXT_SELECTION_MULTI_CLICK_DISTANCE
+        let target = self
+            .text_editing
+            .key_at(target_index)
+            .expect("hydrolysis text selection click target must be emitted this frame")
+            .clone();
+        let count = match self.text_editing.last_text_selection_click.as_ref() {
+            Some(previous)
+                if previous.target == target
+                    && at.saturating_duration_since(previous.at)
+                        <= TEXT_SELECTION_MULTI_CLICK_INTERVAL
+                    && previous.point.distance(point) <= TEXT_SELECTION_MULTI_CLICK_DISTANCE =>
             {
                 previous.count.saturating_add(1).min(3)
-            } else {
-                1
             }
-        } else {
-            1
+            _ => 1,
         };
         self.text_editing.last_text_selection_click = Some(TextSelectionClickState {
-            target_index,
+            target,
             point,
             at,
             count,
@@ -1311,6 +1411,7 @@ impl HydrolysisRenderer {
         else {
             return false;
         };
+        let target_key = target.interaction_key.clone();
         let entries = Self::build_text_context_menu_entries(&target);
         if entries.is_empty() {
             self.dismiss_active_text_context_menu();
@@ -1338,7 +1439,7 @@ impl HydrolysisRenderer {
                 });
             }
             self.text_editing.active_text_context_menu = Some(ActiveTextContextMenu::Overlay {
-                index,
+                target: target_key,
                 overlay: TextContextMenuOverlay {
                     bounds,
                     rows,
@@ -1412,7 +1513,7 @@ impl HydrolysisRenderer {
         ));
         popup.show(env);
         self.text_editing.active_text_context_menu = Some(ActiveTextContextMenu::NativeWindow {
-            index,
+            target: target_key,
             state: menu_state,
         });
         true
@@ -1423,7 +1524,7 @@ impl HydrolysisRenderer {
         if text.is_empty() {
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
-                focused = ?self.text_editing.focused_text_input.get(),
+                focused = ?self.text_editing.focused_key(),
                 preedit_cleared,
                 "text input ignored empty payload"
             );
@@ -1435,7 +1536,7 @@ impl HydrolysisRenderer {
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
-            focused = ?self.text_editing.focused_text_input.get(),
+            focused = ?self.text_editing.focused_key(),
             text = text,
             changed,
             "text input handled"
@@ -1444,7 +1545,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_ime_preedit(&mut self, text: &str) -> bool {
-        if self.text_editing.focused_text_input.get().is_none() {
+        if !self.text_editing.has_focus() {
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
                 text = text,
@@ -1464,7 +1565,7 @@ impl HydrolysisRenderer {
         self.reset_text_caret_animation(self.frame_instant());
         tracing::trace!(
             target: "waterui::hydrolysis::input",
-            focused = ?self.text_editing.focused_text_input.get(),
+            focused = ?self.text_editing.focused_key(),
             preedit = ?self.text_editing.ime_preedit,
             "ime preedit updated"
         );
@@ -1502,7 +1603,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
-        if self.text_editing.focused_text_input.get().is_none() {
+        if !self.text_editing.has_focus() {
             return false;
         }
 
@@ -1587,7 +1688,7 @@ impl HydrolysisRenderer {
             target: "waterui::hydrolysis::input",
             key = ?key,
             modifiers = ?modifiers,
-            focused = ?self.text_editing.focused_text_input.get(),
+            focused = ?self.text_editing.focused_key(),
             changed,
             "key handled"
         );

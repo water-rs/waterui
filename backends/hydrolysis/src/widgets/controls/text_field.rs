@@ -222,8 +222,7 @@ pub(crate) fn render_text_field_parts(
     }
     let field_rect = ctx.bounds;
     let hit_transform = ctx.hit_transform;
-    let text_input_index = ctx.renderer_mut().next_text_input_index();
-    let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
+    let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
     let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
         interaction_key.clone(),
         transformed_rect(hit_transform, field_rect),
@@ -508,8 +507,7 @@ pub(crate) fn render_secure_field_parts(
     }
     let field_rect = ctx.bounds;
     let hit_transform = ctx.hit_transform;
-    let text_input_index = ctx.renderer_mut().next_text_input_index();
-    let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
+    let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
     let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
         interaction_key.clone(),
         transformed_rect(hit_transform, field_rect),

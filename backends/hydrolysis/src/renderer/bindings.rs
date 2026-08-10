@@ -31,9 +31,7 @@ impl HydrolysisRenderer {
 
     #[cfg(feature = "accessibility")]
     pub(super) fn focused_text_input_accessibility_node(&self) -> Option<AccessibilityNodeId> {
-        let index = self.text_editing.focused_text_input.get()?;
-        let target = self.text_editing.text_input_targets.as_slice().get(index)?;
-        target.accessibility_node_id
+        self.text_editing.focused_target()?.accessibility_node_id
     }
 
     #[cfg(feature = "accessibility")]
@@ -48,8 +46,7 @@ impl HydrolysisRenderer {
             .position(|target| target.accessibility_node_id == Some(node_id))
             .unwrap_or_else(|| {
                 panic!(
-                    "hydrolysis accessibility focus target node {:?} has no matching text input target",
-                    node_id
+                    "hydrolysis accessibility focus target node {node_id:?} has no matching text input target"
                 )
             });
         self.set_focused_text_input(Some(focused))
@@ -66,12 +63,11 @@ impl HydrolysisRenderer {
             .unwrap_or_else(|| panic!("lazy viewport stack underflow in {caller}"));
     }
 
-    pub(crate) fn next_text_input_index(&self) -> usize {
-        self.text_editing.text_input_targets.len()
-    }
-
-    pub(crate) fn is_text_input_focused(&self, index: usize) -> bool {
-        self.text_editing.focused_text_input.get() == Some(index)
+    /// Whether the text input with this stable identity holds focus. Asked by a
+    /// field while it is being flushed, before it has registered its target, so
+    /// it must not depend on a position in this frame's target list.
+    pub(crate) fn is_text_input_focused(&self, key: &InteractionKey) -> bool {
+        self.text_editing.is_focused(key)
     }
 
     pub(crate) fn current_ime_preedit(&self) -> Option<Str> {
@@ -80,8 +76,7 @@ impl HydrolysisRenderer {
 
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
-        let index = self.text_editing.focused_text_input.get()?;
-        let target = self.text_editing.text_input_targets.as_slice().get(index)?;
+        let target = self.text_editing.focused_target()?;
         Some(TextInputState {
             x: target.cursor_area.x0,
             y: target.cursor_area.y0,
@@ -160,9 +155,9 @@ impl HydrolysisRenderer {
         let gesture_deadline = self.gesture_engine.next_deadline();
         let caret_deadline = self
             .text_editing
-            .focused_text_input
-            .get()
-            .and(self.text_editing.text_caret_next_frame_at);
+            .has_focus()
+            .then_some(self.text_editing.text_caret_next_frame_at)
+            .flatten();
         match (gesture_deadline, caret_deadline) {
             (Some(left), Some(right)) => Some(left.min(right)),
             (Some(left), None) => Some(left),

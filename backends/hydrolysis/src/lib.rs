@@ -1,7 +1,5 @@
 //! Hydrolysis backend.
 //!
-//! The legacy `Node`/`RenderCommand` prototype has been removed.
-//!
 //! `HydrolysisExt` provides `.hydrolysis()` to wrap any cloneable view into
 //! a `GpuSurface` rendered by hydrolysis.
 

@@ -192,17 +192,12 @@ impl HydrolysisRenderer {
             "hydrolysis does not allow multiple .focused() modifiers to target the same control"
         );
         target.focus_binding = Some(value.0.clone());
+        let target_key = target.interaction_key.clone();
 
         if should_focus {
-            renderer.set_focused_text_input(Some(start));
-            return;
-        }
-
-        if matches!(
-            renderer.text_editing.focused_text_input.get(),
-            Some(index) if index >= start && index < end
-        ) {
-            renderer.set_focused_text_input(None);
+            renderer.set_focused_text_input_key(Some(target_key));
+        } else if renderer.text_editing.is_focused(&target_key) {
+            renderer.set_focused_text_input_key(None);
         }
     }
 
@@ -248,17 +243,18 @@ impl HydrolysisRenderer {
         }
         renderer.hit_test.hover_targets.truncate(hover_start);
         renderer.hit_test.scroll_targets.truncate(scroll_start);
-        let text_end = renderer.text_editing.text_input_targets.len();
+        // The focused field may be registered later in this frame, so "not
+        // currently emitted" is not yet meaningful here — ask instead whether the
+        // focused identity is among the targets this modifier is dropping.
+        let focus_was_dropped = renderer.text_editing.text_input_targets[text_start..]
+            .iter()
+            .any(|target| renderer.text_editing.is_focused(&target.interaction_key));
         renderer
             .text_editing
             .text_input_targets
             .truncate(text_start);
-
-        if matches!(
-            renderer.text_editing.focused_text_input.get(),
-            Some(index) if index >= text_start && index < text_end
-        ) {
-            renderer.set_focused_text_input(None);
+        if focus_was_dropped {
+            renderer.set_focused_text_input_key(None);
         }
     }
 

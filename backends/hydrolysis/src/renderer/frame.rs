@@ -113,6 +113,16 @@ impl HydrolysisRenderer {
         self.reuse_applied_filter_inputs = reuse;
     }
 
+    /// Drop cached `Dynamic` measurements whose node has left the retained tree.
+    ///
+    /// Shared by the two frames that can remove nodes: the one-time build and any
+    /// refresh that applied a structural patch.
+    pub(crate) fn prune_dynamic_measurements(&mut self, live: &FxHashSet<usize>) {
+        self.state
+            .measurement
+            .retain_dynamic_identities(|identity| live.contains(&identity));
+    }
+
     pub(crate) fn begin_redraw_frame(&mut self) {
         // Clear the per-frame `stable_ptr`-keyed view-dimension cache, not just the
         // counters: the refresh path now runs full layout every frame, so it measures
@@ -129,18 +139,22 @@ impl HydrolysisRenderer {
         self.frame_applied_filter_effect = Duration::ZERO;
     }
 
-    /// Drop text-input focus / selection-drag indices that point past the
-    /// text-input targets re-emitted this frame. Targets are pure-emission (rebuilt
-    /// in flush order every frame), so after any flush — rebuild or refresh — a
-    /// previously focused field may no longer exist. Shared by both frame paths.
+    /// Drop text-input focus / the selection drag when the target they name is
+    /// no longer emitted. Targets are pure-emission (rebuilt in flush order every
+    /// frame), so after any flush — rebuild or refresh — a previously focused
+    /// field may be gone. Both are held by stable identity, so this only asks
+    /// whether that identity still resolves; it can never mistake a different
+    /// field that moved into the old position for the focused one. Shared by both
+    /// frame paths.
     pub(crate) fn validate_focused_text_input_after_flush(&mut self) {
         let modal_active = self.hit_test.modal_interaction.is_some();
-        if matches!(
-            self.text_editing.focused_text_input.get(),
-            Some(index) if index >= self.text_editing.text_input_targets.len()
-                || (modal_active && !self.text_editing.text_input_targets[index].modal)
-        ) {
-            self.set_focused_text_input(None);
+        let focus_is_live = !self.text_editing.has_focus()
+            || self
+                .text_editing
+                .focused_target()
+                .is_some_and(|target| !modal_active || target.modal);
+        if !focus_is_live {
+            self.set_focused_text_input_key(None);
         }
         let keyboard_focus_is_live =
             self.hit_test.keyboard_focus.as_ref().is_none_or(|focused| {
@@ -157,10 +171,12 @@ impl HydrolysisRenderer {
         if !keyboard_focus_is_live {
             self.set_keyboard_focus(None, false);
         }
-        if matches!(
-            self.text_editing.active_text_selection_drag,
-            Some(index) if index >= self.text_editing.text_input_targets.len()
-        ) {
+        let selection_drag_is_live = self
+            .text_editing
+            .active_text_selection_drag
+            .as_ref()
+            .is_none_or(|key| self.text_editing.index_of(key).is_some());
+        if !selection_drag_is_live {
             self.text_editing.active_text_selection_drag = None;
         }
     }
@@ -183,9 +199,7 @@ impl HydrolysisRenderer {
             .as_ref()
             .map(RenderNode::collect_dynamic_identities)
             .unwrap_or_default();
-        self.state
-            .measurement
-            .retain_dynamic_identities(|identity| live_dynamics.contains(&identity));
+        self.prune_dynamic_measurements(&live_dynamics);
 
         self.validate_focused_text_input_after_flush();
 

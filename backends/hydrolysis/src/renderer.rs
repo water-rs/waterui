@@ -65,6 +65,7 @@ pub(crate) use render::{
     resolved_color_to_peniko, resolved_gradient_to_brush, resolved_morph_shape_to_path,
     resolved_shape_to_path, transformed_rect,
 };
+use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -252,10 +253,6 @@ pub struct HydrolysisRenderer {
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
     /// rebuild and re-flushed each frame. `None` before the first build.
     render_tree: Option<RenderNode>,
-    /// The window content's per-axis minimum and maximum sizes, refreshed on
-    /// every layout pass. The runner feeds these to the platform window whenever
-    /// the app does not set explicit limits.
-    content_size_limits: Option<ContentSizeLimits>,
     /// Set when a widget-owned [`RetainedSubview`] applied a structural patch
     /// (a `Dynamic` swap or a collection membership reconcile) during a flush.
     /// The subview patch runs mid-flush — after the window pump's structural
@@ -356,7 +353,6 @@ impl HydrolysisRenderer {
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
-            content_size_limits: None,
             subview_structural_change: false,
         }
     }
