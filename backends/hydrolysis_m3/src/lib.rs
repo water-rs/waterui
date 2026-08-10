@@ -100,6 +100,10 @@ pub use segmented_button::{
     OutlinedSegmentedButton, OutlinedSegmentedButtonSet, SegmentedButtonShape,
     outlined_segmented_button, outlined_segmented_button_set,
 };
+/// The Material Design 3 motion token scale — the duration and easing tokens
+/// this theme's component motion is built from, re-exported so app and backend
+/// code can animate on the same scale instead of re-deriving the numbers.
+pub use theme::motion::tokens as motion_tokens;
 pub use theme::colors::{
     MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
     MaterialContrastLevel, MaterialRoleColor,
