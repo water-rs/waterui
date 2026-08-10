@@ -51,7 +51,7 @@ impl PreviewLibrary {
     ///
     /// # Errors
     /// Returns an error if the library cannot be loaded.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     pub async unsafe fn load_from_path(
         path: &Path,
     ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
@@ -198,7 +198,7 @@ impl PreviewLibrary {
     ///
     /// # Errors
     /// Returns an error if the library cannot be loaded.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     pub async unsafe fn load_from_bytes(
         id: DylibId,
         data: &[u8],
@@ -261,7 +261,7 @@ impl PreviewLibrary {
     ///
     /// # Errors
     /// Returns an error if the source path cannot be cached or the library cannot be loaded.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     pub async unsafe fn load_from_local_path(
         id: DylibId,
         source_path: &Path,
