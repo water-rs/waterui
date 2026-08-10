@@ -46,9 +46,16 @@ main() {
   mkdir -p "$WORKSPACE_ROOT"
   workspace_root="$(canonical_dir "$WORKSPACE_ROOT")"
 
+  # A workspace on the same volume clones `target/` with APFS copy-on-write, which
+  # is why the default root lives under $HOME. A different volume is still allowed
+  # — it is the usual answer when the boot disk is out of space — but clonefile
+  # cannot span volumes, so `cp -c` degrades to a full byte copy: slower to create,
+  # and the copy occupies real space instead of sharing blocks.
   source_device="$(device_id "$source_root")"
   workspace_device="$(device_id "$workspace_root")"
-  [[ "$source_device" == "$workspace_device" ]] || die "workspace root must be on the same filesystem as $SOURCE_REPO"
+  if [[ "$source_device" != "$workspace_device" ]]; then
+    warn "workspace root is on a different volume than ${SOURCE_REPO}; target/ will be copied in full rather than cloned"
+  fi
 
   ensure_apfs "$source_root"
   ensure_apfs "$workspace_root"
