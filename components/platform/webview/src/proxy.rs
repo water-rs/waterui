@@ -83,7 +83,7 @@ impl WebViewProxy {
     ///
     /// The returned future is intentionally thread-local because native
     /// web views are main-thread-affine.
-    #[must_use]
+    #[must_use = "the script only runs once the returned future is awaited"]
     pub fn run_javascript<'a>(
         &'a self,
         script: &'a str,
