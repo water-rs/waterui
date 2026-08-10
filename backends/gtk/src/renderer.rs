@@ -7,7 +7,7 @@ use glib::object::ObjectExt;
 use glib::value::ToValue;
 use gtk4::Widget;
 use gtk4::prelude::*;
-use gtk4::{Align, CssProvider, Overflow};
+use gtk4::{Align, Overflow};
 use nami::{Signal, watcher::BoxWatcherGuard};
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
@@ -72,7 +72,7 @@ use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
 use crate::components::menu::rebuild_menu_popover;
-use crate::util::{store_watcher_guard, subscribe_then_get};
+use crate::util::{ScopedCss, store_watcher_guard, subscribe_then_get};
 
 const FOCUS_ANCHOR_DATA_KEY: &str = "waterui_focus_anchor";
 const FOCUS_METADATA_GUARDS_DATA_KEY: &str = "waterui_focus_metadata_guards";
@@ -300,18 +300,8 @@ fn wrap_for_metadata(child: Widget) -> gtk4::Box {
     wrapper
 }
 
-fn attach_css_provider(widget: &impl IsA<gtk4::Widget>, class_name: &str) -> CssProvider {
-    let provider = CssProvider::new();
-    widget
-        .style_context()
-        .add_provider(&provider, GTK_METADATA_CSS_PRIORITY);
-    widget.add_css_class(class_name);
-    provider
-}
-
-fn apply_class_css(provider: &CssProvider, class_name: &str, body: &str) {
-    let css = format!(".{class_name} {{ {body} }}");
-    provider.load_from_data(&css);
+fn attach_css_provider(widget: &impl IsA<gtk4::Widget>, class_name: &str) -> ScopedCss {
+    ScopedCss::attach(widget, class_name, GTK_METADATA_CSS_PRIORITY)
 }
 
 fn cursor_style_to_gtk_name(style: CursorStyle) -> &'static str {
@@ -336,14 +326,15 @@ fn cursor_style_to_gtk_name(style: CursorStyle) -> &'static str {
     }
 }
 
-fn apply_shadow_css(provider: &CssProvider, resolved: ResolvedColor, x: f32, y: f32, blur: f32) {
+fn apply_shadow_css(css: &ScopedCss, resolved: ResolvedColor, x: f32, y: f32, blur: f32) {
     let color = crate::util::resolved_color_to_css_rgba(resolved);
-    let css = format!("box-shadow: {x:.2}px {y:.2}px {blur:.2}px {color};");
-    apply_class_css(provider, CSS_CLASS_SHADOW, &css);
+    css.set_declarations(&format!(
+        "box-shadow: {x:.2}px {y:.2}px {blur:.2}px {color};"
+    ));
 }
 
 fn apply_border_css(
-    provider: &CssProvider,
+    css: &ScopedCss,
     resolved: ResolvedColor,
     width: f32,
     corner_radius: f32,
@@ -354,39 +345,35 @@ fn apply_border_css(
     let left = if edges.leading { width } else { 0.0 };
     let bottom = if edges.bottom { width } else { 0.0 };
     let right = if edges.trailing { width } else { 0.0 };
-    let css = format!(
+    css.set_declarations(&format!(
         "border-style: solid; border-color: {color}; \
          border-top-width: {top:.2}px; border-left-width: {left:.2}px; \
          border-bottom-width: {bottom:.2}px; border-right-width: {right:.2}px; \
          border-radius: {corner_radius:.2}px;"
-    );
-    apply_class_css(provider, CSS_CLASS_BORDER, &css);
+    ));
 }
 
-fn apply_scale_css(provider: &CssProvider, x: f32, y: f32, anchor: waterui::style::Anchor) {
+fn apply_scale_css(css: &ScopedCss, x: f32, y: f32, anchor: waterui::style::Anchor) {
     let origin_x = anchor.x * 100.0;
     let origin_y = anchor.y * 100.0;
-    let css = format!(
+    css.set_declarations(&format!(
         "transform: scale({x:.5}, {y:.5}); transform-origin: {origin_x:.3}% {origin_y:.3}%;"
-    );
-    apply_class_css(provider, CSS_CLASS_SCALE, &css);
+    ));
 }
 
-fn apply_rotation_css(provider: &CssProvider, angle_degrees: f32, anchor: waterui::style::Anchor) {
+fn apply_rotation_css(css: &ScopedCss, angle_degrees: f32, anchor: waterui::style::Anchor) {
     let origin_x = anchor.x * 100.0;
     let origin_y = anchor.y * 100.0;
-    let css = format!(
+    css.set_declarations(&format!(
         "transform: rotate({angle_degrees:.5}deg); transform-origin: {origin_x:.3}% {origin_y:.3}%;"
-    );
-    apply_class_css(provider, CSS_CLASS_ROTATION, &css);
+    ));
 }
 
-fn apply_offset_css(provider: &CssProvider, x: f32, y: f32) {
-    let css = format!("transform: translate({x:.2}px, {y:.2}px);");
-    apply_class_css(provider, CSS_CLASS_OFFSET, &css);
+fn apply_offset_css(css: &ScopedCss, x: f32, y: f32) {
+    css.set_declarations(&format!("transform: translate({x:.2}px, {y:.2}px);"));
 }
 
-fn apply_clip_shape_css(provider: &CssProvider, shape: ClipShapeCss) {
+fn apply_clip_shape_css(css: &ScopedCss, shape: ClipShapeCss) {
     let body = match shape {
         ClipShapeCss::Rectangle => "overflow: hidden;",
         ClipShapeCss::Ellipse => "overflow: hidden; border-radius: 50%;",
@@ -400,14 +387,12 @@ fn apply_clip_shape_css(provider: &CssProvider, shape: ClipShapeCss) {
             let tr = top_right * 100.0;
             let br = bottom_right * 100.0;
             let bl = bottom_left * 100.0;
-            return apply_class_css(
-                provider,
-                CSS_CLASS_CLIP_SHAPE,
-                &format!("overflow: hidden; border-radius: {tl:.3}% {tr:.3}% {br:.3}% {bl:.3}%;"),
-            );
+            return css.set_declarations(&format!(
+                "overflow: hidden; border-radius: {tl:.3}% {tr:.3}% {br:.3}% {bl:.3}%;"
+            ));
         }
     };
-    apply_class_css(provider, CSS_CLASS_CLIP_SHAPE, body);
+    css.set_declarations(body);
 }
 
 fn approx_eq(a: f32, b: f32) -> bool {
@@ -448,8 +433,8 @@ fn clip_shape_css(shape: &ClipShape) -> ClipShapeCss {
             PathCommand::Arc {
                 cx: _,
                 cy: tr,
-                rx: tr_rx,
-                ry: tr_ry,
+                rx: top_right_radius_x,
+                ry: top_right_radius_y,
                 start: _,
                 sweep: _,
             },
@@ -457,8 +442,8 @@ fn clip_shape_css(shape: &ClipShape) -> ClipShapeCss {
             PathCommand::Arc {
                 cx: _,
                 cy: _,
-                rx: br_rx,
-                ry: br_ry,
+                rx: bottom_right_radius_x,
+                ry: bottom_right_radius_y,
                 start: _,
                 sweep: _,
             },
@@ -466,8 +451,8 @@ fn clip_shape_css(shape: &ClipShape) -> ClipShapeCss {
             PathCommand::Arc {
                 cx: _,
                 cy: _,
-                rx: bl_rx,
-                ry: bl_ry,
+                rx: bottom_left_radius_x,
+                ry: bottom_left_radius_y,
                 start: _,
                 sweep: _,
             },
@@ -475,17 +460,18 @@ fn clip_shape_css(shape: &ClipShape) -> ClipShapeCss {
             PathCommand::Arc {
                 cx: _,
                 cy: _,
-                rx: tl_rx,
-                ry: tl_ry,
+                rx: top_left_radius_x,
+                ry: top_left_radius_y,
                 start: _,
                 sweep: _,
             },
             PathCommand::Close,
         ] => {
-            let top_left = (*tl + *tl_rx + *tl_ry + *y8) / 4.0;
-            let top_right = ((1.0 - *x2) + *tr + *tr_rx + *tr_ry) / 4.0;
-            let bottom_right = ((1.0 - *y4) + *br_rx + *br_ry) / 3.0;
-            let bottom_left = (*bl + *bl_rx + *bl_ry) / 3.0;
+            let top_left = (*tl + *top_left_radius_x + *top_left_radius_y + *y8) / 4.0;
+            let top_right = ((1.0 - *x2) + *tr + *top_right_radius_x + *top_right_radius_y) / 4.0;
+            let bottom_right =
+                ((1.0 - *y4) + *bottom_right_radius_x + *bottom_right_radius_y) / 3.0;
+            let bottom_left = (*bl + *bottom_left_radius_x + *bottom_left_radius_y) / 3.0;
             ClipShapeCss::Rounded {
                 top_left,
                 top_right,
@@ -963,17 +949,17 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(content);
-            let provider = attach_css_provider(&wrapper, CSS_CLASS_SHADOW);
+            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SHADOW);
             let shadow = metadata.value;
             let color_signal = shadow.color.resolve(env);
             let (initial, guard) = subscribe_then_get(&color_signal, {
-                let provider = provider.clone();
+                let scoped_css = scoped_css.clone();
                 move |ctx| {
                     let resolved = ctx.into_value();
-                    let provider = provider.clone();
+                    let scoped_css = scoped_css.clone();
                     glib::idle_add_local_once(move || {
                         apply_shadow_css(
-                            &provider,
+                            &scoped_css,
                             resolved,
                             shadow.offset.x,
                             shadow.offset.y,
@@ -983,7 +969,7 @@ impl GtkRenderer {
                 }
             });
             apply_shadow_css(
-                &provider,
+                &scoped_css,
                 initial,
                 shadow.offset.x,
                 shadow.offset.y,
@@ -1055,17 +1041,17 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(content);
-            let provider = attach_css_provider(&wrapper, CSS_CLASS_BORDER);
+            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_BORDER);
             let border = metadata.value;
             let color_signal = border.color.resolve(env);
             let (initial, guard) = subscribe_then_get(&color_signal, {
-                let provider = provider.clone();
+                let scoped_css = scoped_css.clone();
                 move |ctx| {
                     let resolved = ctx.into_value();
-                    let provider = provider.clone();
+                    let scoped_css = scoped_css.clone();
                     glib::idle_add_local_once(move || {
                         apply_border_css(
-                            &provider,
+                            &scoped_css,
                             resolved,
                             border.width,
                             border.corner_radius,
@@ -1075,7 +1061,7 @@ impl GtkRenderer {
                 }
             });
             apply_border_css(
-                &provider,
+                &scoped_css,
                 initial,
                 border.width,
                 border.corner_radius,
@@ -1090,32 +1076,32 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(content);
-            let provider = attach_css_provider(&wrapper, CSS_CLASS_SCALE);
+            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SCALE);
             let scale = metadata.value;
             let values = Rc::new(ReactiveAxisPair::default());
             let (initial_x, x_guard) = subscribe_then_get(&scale.x, {
-                let provider = provider.clone();
+                let scoped_css = scoped_css.clone();
                 let values = values.clone();
                 move |ctx| {
                     values.update_x(ctx.into_value());
                     if let Some((x, y)) = values.values() {
-                        let provider = provider.clone();
+                        let scoped_css = scoped_css.clone();
                         glib::idle_add_local_once(move || {
-                            apply_scale_css(&provider, x, y, scale.anchor);
+                            apply_scale_css(&scoped_css, x, y, scale.anchor);
                         });
                     }
                 }
             });
             values.update_x(initial_x);
             let (initial_y, y_guard) = subscribe_then_get(&scale.y, {
-                let provider = provider.clone();
+                let scoped_css = scoped_css.clone();
                 let values = values.clone();
                 move |ctx| {
                     values.update_y(ctx.into_value());
                     if let Some((x, y)) = values.values() {
-                        let provider = provider.clone();
+                        let scoped_css = scoped_css.clone();
                         glib::idle_add_local_once(move || {
-                            apply_scale_css(&provider, x, y, scale.anchor);
+                            apply_scale_css(&scoped_css, x, y, scale.anchor);
                         });
                     }
                 }
@@ -1124,7 +1110,7 @@ impl GtkRenderer {
             let (x, y) = values
                 .values()
                 .expect("GTK scale signals must be initialized after subscription");
-            apply_scale_css(&provider, x, y, scale.anchor);
+            apply_scale_css(&scoped_css, x, y, scale.anchor);
             crate::util::store_watcher_guards(&wrapper, vec![Box::new(x_guard), Box::new(y_guard)]);
             wrapper.upcast()
         });
@@ -1134,19 +1120,19 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(content);
-            let provider = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
+            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
             let rotation = metadata.value;
             let (initial, guard) = subscribe_then_get(&rotation.angle, {
-                let provider = provider.clone();
+                let scoped_css = scoped_css.clone();
                 move |ctx| {
                     let angle = ctx.into_value();
-                    let provider = provider.clone();
+                    let scoped_css = scoped_css.clone();
                     glib::idle_add_local_once(move || {
-                        apply_rotation_css(&provider, angle, rotation.anchor);
+                        apply_rotation_css(&scoped_css, angle, rotation.anchor);
                     });
                 }
             });
-            apply_rotation_css(&provider, initial, rotation.anchor);
+            apply_rotation_css(&scoped_css, initial, rotation.anchor);
             store_watcher_guard(&wrapper, Box::new(guard));
             wrapper.upcast()
         });
@@ -1156,32 +1142,32 @@ impl GtkRenderer {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(content);
-            let provider = attach_css_provider(&wrapper, CSS_CLASS_OFFSET);
+            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_OFFSET);
             let offset = metadata.value;
             let values = Rc::new(ReactiveAxisPair::default());
             let (initial_x, x_guard) = subscribe_then_get(&offset.x, {
-                let provider = provider.clone();
+                let scoped_css = scoped_css.clone();
                 let values = values.clone();
                 move |ctx| {
                     values.update_x(ctx.into_value());
                     if let Some((x, y)) = values.values() {
-                        let provider = provider.clone();
+                        let scoped_css = scoped_css.clone();
                         glib::idle_add_local_once(move || {
-                            apply_offset_css(&provider, x, y);
+                            apply_offset_css(&scoped_css, x, y);
                         });
                     }
                 }
             });
             values.update_x(initial_x);
             let (initial_y, y_guard) = subscribe_then_get(&offset.y, {
-                let provider = provider.clone();
+                let scoped_css = scoped_css.clone();
                 let values = values.clone();
                 move |ctx| {
                     values.update_y(ctx.into_value());
                     if let Some((x, y)) = values.values() {
-                        let provider = provider.clone();
+                        let scoped_css = scoped_css.clone();
                         glib::idle_add_local_once(move || {
-                            apply_offset_css(&provider, x, y);
+                            apply_offset_css(&scoped_css, x, y);
                         });
                     }
                 }
@@ -1190,7 +1176,7 @@ impl GtkRenderer {
             let (x, y) = values
                 .values()
                 .expect("GTK offset signals must be initialized after subscription");
-            apply_offset_css(&provider, x, y);
+            apply_offset_css(&scoped_css, x, y);
             crate::util::store_watcher_guards(&wrapper, vec![Box::new(x_guard), Box::new(y_guard)]);
             wrapper.upcast()
         });
@@ -1201,9 +1187,9 @@ impl GtkRenderer {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(content);
             wrapper.set_overflow(Overflow::Hidden);
-            let provider = attach_css_provider(&wrapper, CSS_CLASS_CLIP_SHAPE);
+            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_CLIP_SHAPE);
             let css = clip_shape_css(&metadata.value);
-            apply_clip_shape_css(&provider, css);
+            apply_clip_shape_css(&scoped_css, css);
             wrapper.upcast()
         });
 

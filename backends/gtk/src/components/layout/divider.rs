@@ -20,7 +20,8 @@ impl GtkComponent for Divider {
 
         let orientation = match axis {
             Some(waterui_layout::stack::Axis::Vertical) => gtk4::Orientation::Horizontal,
-            Some(waterui_layout::stack::Axis::Horizontal) | Some(_) => gtk4::Orientation::Vertical,
+            // Horizontal stacks, and any future axis, get a vertical rule.
+            Some(_) => gtk4::Orientation::Vertical,
             None => gtk4::Orientation::Horizontal, // Default to horizontal
         };
 
