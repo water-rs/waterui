@@ -1,6 +1,11 @@
 use super::*;
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::future::Future;
 use std::rc::Rc;
+
+use executor_core::LocalExecutor;
+use executor_core::async_task::{self, AsyncTask, Runnable};
 
 mod perf_full_rebuild;
 mod perf_scroll;
@@ -42,10 +47,48 @@ fn test_renderer() -> HydrolysisRenderer {
     renderer
 }
 
+/// Queues `spawn_local` futures for unit tests without running them.
+///
+/// `NativeExecutor` cannot be used here. On non-Apple targets it delegates to the
+/// polyfill, whose `spawn_main_local` asserts it runs on the thread registered by
+/// `start_main_executor` — a blocking entry point a test binary never calls, so
+/// `MAIN_THREAD_ID` is never set and every spawn panics. Test threads are also
+/// assigned by the harness, so no process-global main thread can be pinned.
+///
+/// This mirrors what the Apple path does in a test: `spawn_local` hands the work
+/// to the main queue and returns, and a unit test never runs a main loop, so the
+/// future is simply never polled. Runnables are therefore parked in a
+/// thread-local queue and dropped when the thread ends. Do not run them inline —
+/// these futures re-enter the renderer and its GPU work, which deadlocks when
+/// polled in the middle of the render call that spawned them.
+#[derive(Clone, Copy, Debug, Default)]
+struct TestLocalExecutor;
+
+thread_local! {
+    /// Parks runnables so dropping them (which would cancel the task) is deferred
+    /// to thread teardown rather than happening inside `schedule`.
+    static PARKED_RUNNABLES: RefCell<Vec<Runnable>> = const { RefCell::new(Vec::new()) };
+}
+
+impl LocalExecutor for TestLocalExecutor {
+    type Task<T: 'static> = AsyncTask<T>;
+
+    fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+    where
+        Fut: Future + 'static,
+    {
+        let (runnable, task) = async_task::spawn_local(fut, |runnable: Runnable| {
+            PARKED_RUNNABLES.with(|parked| parked.borrow_mut().push(runnable));
+        });
+        runnable.schedule();
+        task
+    }
+}
+
 pub(crate) fn test_environment() -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        native_executor::NativeExecutor::new(),
+        TestLocalExecutor,
     ));
     let mut env = Environment::new();
     crate::testing::install_theme(&mut env);
