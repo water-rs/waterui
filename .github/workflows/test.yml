@@ -5,6 +5,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
 jobs:
@@ -31,6 +34,7 @@ jobs:
       - name: Verify DirectX Shader Compiler
         if: runner.os == 'Windows'
         run: dxc --version
+      - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
