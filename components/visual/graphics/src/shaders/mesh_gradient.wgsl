@@ -19,8 +19,10 @@ struct GradientUniforms {
     num_stops: u32,
     mesh_width: u32,
     mesh_height: u32,
-    start_point: vec2<f32>,
-    end_point: vec2<f32>,
+    start_x: f32,
+    start_y: f32,
+    end_x: f32,
+    end_y: f32,
     start_value: f32,
     end_value: f32,
     smooths_colors: u32,
@@ -125,8 +127,8 @@ fn sample_gradient(t: f32) -> vec4<f32> {
 
 // Linear gradient
 fn linear_gradient(uv: vec2<f32>) -> vec4<f32> {
-    let start = uniforms.start_point;
-    let end = uniforms.end_point;
+    let start = vec2<f32>(uniforms.start_x, uniforms.start_y);
+    let end = vec2<f32>(uniforms.end_x, uniforms.end_y);
     let dir = end - start;
     let len_sq = dot(dir, dir);
 
@@ -140,7 +142,7 @@ fn linear_gradient(uv: vec2<f32>) -> vec4<f32> {
 
 // Radial gradient
 fn radial_gradient(uv: vec2<f32>) -> vec4<f32> {
-    let center = uniforms.start_point;
+    let center = vec2<f32>(uniforms.start_x, uniforms.start_y);
     let dist = length(uv - center);
 
     let start_r = uniforms.start_value;
@@ -157,7 +159,7 @@ fn radial_gradient(uv: vec2<f32>) -> vec4<f32> {
 
 // Angular (conic) gradient
 fn angular_gradient(uv: vec2<f32>) -> vec4<f32> {
-    let center = uniforms.start_point;
+    let center = vec2<f32>(uniforms.start_x, uniforms.start_y);
     let delta = uv - center;
 
     // atan2 returns angle in [-PI, PI], we normalize to [0, 1]
