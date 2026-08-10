@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install nasm
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev
