@@ -234,7 +234,12 @@ fn material_button_reserves_its_container_box_for_every_style() {
 
     let mut previous_bottom = f32::MIN;
     for label in ["Filled", "Outlined", "Prominent"] {
-        let bounds = app.query().role(Role::BUTTON).label(label).single().bounds();
+        let bounds = app
+            .query()
+            .role(Role::BUTTON)
+            .label(label)
+            .single()
+            .bounds();
         assert!(
             bounds.height() >= MIN_HEIGHT,
             "{label} button is {}pt tall, below the {MIN_HEIGHT}pt Material minimum — \
