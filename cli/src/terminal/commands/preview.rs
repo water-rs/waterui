@@ -2244,9 +2244,11 @@ fn native_preview_platform() -> Result<CliPreviewPlatform> {
 
     #[cfg(not(target_os = "macos"))]
     {
+        // `bail!` expands to a `return`, so the trailing semicolon keeps this a
+        // statement rather than a macro invocation in expression position.
         bail!(
             "No native preview platform is configured for this host. Pass `--platform` explicitly."
-        )
+        );
     }
 }
 

@@ -86,10 +86,10 @@ fn apply_path_command(cr: &gtk4::cairo::Context, command: PathCommand, width: f6
             let (sx, sy) = cr
                 .current_point()
                 .expect("quad command requires an active current point");
-            let c1x = f64::mul_add((2.0 / 3.0), cx - sx, sx);
-            let c1y = f64::mul_add((2.0 / 3.0), cy - sy, sy);
-            let c2x = f64::mul_add((2.0 / 3.0), cx - x, x);
-            let c2y = f64::mul_add((2.0 / 3.0), cy - y, y);
+            let c1x = f64::mul_add(2.0 / 3.0, cx - sx, sx);
+            let c1y = f64::mul_add(2.0 / 3.0, cy - sy, sy);
+            let c2x = f64::mul_add(2.0 / 3.0, cx - x, x);
+            let c2y = f64::mul_add(2.0 / 3.0, cy - y, y);
             cr.curve_to(c1x, c1y, c2x, c2y, x, y);
         }
         PathCommand::CubicTo {

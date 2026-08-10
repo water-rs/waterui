@@ -116,7 +116,7 @@ pub(crate) fn mark_focus_anchor(widget: &impl IsA<Widget>) {
     }
 }
 
-fn attach_focus_metadata(widget: Widget, binding: Binding<bool>) -> Widget {
+fn attach_focus_metadata(widget: Widget, binding: &Binding<bool>) -> Widget {
     let anchor = resolve_single_focus_anchor(&widget);
 
     anchor.connect_has_focus_notify({
@@ -297,11 +297,11 @@ enum ClipShapeCss {
     },
 }
 
-fn wrap_for_metadata(child: Widget) -> gtk4::Box {
+fn wrap_for_metadata(child: &Widget) -> gtk4::Box {
     let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     wrapper.set_halign(Align::Fill);
     wrapper.set_valign(Align::Fill);
-    wrapper.append(&child);
+    wrapper.append(child);
     wrapper
 }
 
@@ -972,7 +972,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Shadow>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(content);
+            let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SHADOW);
             let shadow = metadata.value;
             let color_signal = shadow.color.resolve(env);
@@ -1007,7 +1007,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Focused>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
-            attach_focus_metadata(widget, metadata.value.0)
+            attach_focus_metadata(widget, &metadata.value.0)
         });
 
         // Metadata<Cursor> - update pointer cursor while hovering
@@ -1062,7 +1062,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Border>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(content);
+            let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_BORDER);
             let border = metadata.value;
             let color_signal = border.color.resolve(env);
@@ -1097,7 +1097,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Scale>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(content);
+            let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SCALE);
             let scale = metadata.value;
             let values = Rc::new(ReactiveAxisPair::default());
@@ -1141,7 +1141,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Rotation>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(content);
+            let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
             let rotation = metadata.value;
             let (initial, guard) = subscribe_then_get(&rotation.angle, {
@@ -1163,7 +1163,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Offset>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(content);
+            let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_OFFSET);
             let offset = metadata.value;
             let values = Rc::new(ReactiveAxisPair::default());
@@ -1207,7 +1207,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<ClipShape>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(content);
+            let wrapper = wrap_for_metadata(&content);
             wrapper.set_overflow(Overflow::Hidden);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_CLIP_SHAPE);
             let css = clip_shape_css(&metadata.value);
