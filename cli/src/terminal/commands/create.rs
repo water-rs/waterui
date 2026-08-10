@@ -455,8 +455,11 @@ mod tests {
 
     use super::{
         Backend, PackageType, find_waterui_repo_root, next_run_command, parse_backends,
-        resolve_default_waterui_path, validate_backends_on_host,
+        resolve_default_waterui_path,
     };
+    // Only the non-Linux host test exercises this.
+    #[cfg(not(target_os = "linux"))]
+    use super::validate_backends_on_host;
     use tempfile::tempdir;
     use waterui_cli::build_info::BuildKind;
 

@@ -20,6 +20,8 @@ use std::sync::Arc;
 
 use alloc::boxed::Box;
 use alloc::vec;
+// Only the Apple Metal input-import path drives asynchronous effect setup.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use executor_core::spawn_local;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -31,8 +33,10 @@ use {
 
 use waterui_graphics::RedrawHandle;
 use waterui_graphics::shared_context::GpuRuntime;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use waterui_graphics::view_effect::ViewEffectContext;
 use waterui_graphics::view_effect::{
-    OutputSize, ViewEffectContext, ViewEffectErased, ViewEffectInput, ViewEffectOutput,
+    OutputSize, ViewEffectErased, ViewEffectInput, ViewEffectOutput,
 };
 
 use crate::{IntoFFI, WuiAnyView};

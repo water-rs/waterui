@@ -2216,7 +2216,7 @@ fn resolve_preview_backend(
     Ok(backend)
 }
 
-const fn resolve_preview_platform(
+fn resolve_preview_platform(
     platform_override: Option<CliPreviewPlatform>,
 ) -> Result<CliPreviewPlatform> {
     if let Some(platform) = platform_override {
@@ -2225,11 +2225,18 @@ const fn resolve_preview_platform(
     native_preview_platform()
 }
 
-#[expect(
+// Both lints are host-dependent, so neither `expect` can be fulfilled everywhere:
+// on macOS the body is an infallible `const`-compatible `Ok`, while every other host
+// bails at runtime with an unsupported-host error.
+#[allow(
     clippy::unnecessary_wraps,
     reason = "non-macOS hosts return an explicit unsupported-host error"
 )]
-const fn native_preview_platform() -> Result<CliPreviewPlatform> {
+#[allow(
+    clippy::missing_const_for_fn,
+    reason = "non-macOS hosts call the non-const `bail!`"
+)]
+fn native_preview_platform() -> Result<CliPreviewPlatform> {
     #[cfg(target_os = "macos")]
     {
         Ok(CliPreviewPlatform::Macos)

@@ -1,3 +1,5 @@
+//! GTK widget implementations for platform-backed `WaterUI` components.
+
 #[cfg(feature = "chromium")]
 pub mod chromium;
 pub mod dynamic;

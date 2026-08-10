@@ -1,3 +1,5 @@
+//! GTK widget implementations for `WaterUI` layout containers.
+
 pub mod container;
 pub mod divider;
 pub mod fixed_container_widget;
