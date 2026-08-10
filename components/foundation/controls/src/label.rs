@@ -541,6 +541,7 @@ impl Label {
     }
 
     /// Returns the semantic text carried by this label.
+    #[must_use = "this borrows the label's text without consuming the label"]
     pub const fn semantic_text(&self) -> &Text {
         match &self.content {
             LabelContent::Semantic { text, .. } => text,
