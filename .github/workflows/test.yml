@@ -34,6 +34,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
+          cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --profile ci
       - run: cargo nextest run --all-features --profile ci
