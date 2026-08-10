@@ -46,6 +46,24 @@ These are constraints on every WaterUI feature, refactor, and review — not jus
 
 DO NOT be over-engineer or write defensive code. If you encounter a problem, ask user for solution with your own idea, do not say "Let's have a simpler approach". You are expected to face the real problem and make code clean, reusable and elegant. Never take a workaround.
 
+**A bug you find is a bug you fix, even when you did not introduce it.** Do not
+route around it, do not leave it for someone else, and do not merely report it
+and move on. This explicitly covers:
+
+- latent failures your own fix unmasks, which is the common case — clearing one
+  blocker regularly exposes the next one that was hiding behind it;
+- infrastructure that rotted while nobody was looking (a script hardcoding a
+  layout that has since moved, a job that has not actually run in months, a
+  workflow that silently degraded);
+- defects in neighbouring code you had to read in order to do the task.
+
+Say plainly in the commit message and to the user that the defect was
+pre-existing, so the diff stays understandable, then fix it. Keep the fix scoped
+to the defect itself — repairing a bug is not licence to refactor the area
+around it. If the correct fix turns out to be large or architectural, surface it
+with a concrete recommendation and let the user decide, rather than either
+silently expanding the change or quietly abandoning it.
+
 Keep the change set strictly scoped to the task.
 
 - Keep top-level folders semantic and minimal. Do not add generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders whose only purpose is a single package manifest. Put crates under the existing domain folder (`components/`, `utils/`, `backends/`, `kit/`, etc. — icon sets live under `components/icon/`) or under `src/` when they describe the root `waterui` package itself. Crate families that share a non-`waterui` prefix belong under one family directory such as `utils/filtrate/`, not as repeated sibling folders like `filtrate-core` / `filtrate-derive`.
