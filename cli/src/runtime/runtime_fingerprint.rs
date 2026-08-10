@@ -7,6 +7,7 @@ use color_eyre::eyre::{Context as _, Result, bail};
 use tracing::info;
 
 use crate::runtime_compat::{runtime_fingerprint_root_dirs, runtime_fingerprint_root_files};
+use crate::templates::scaffold_template_digest;
 
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn runtime_package_identity(package: &cargo_metadata::Package) -> String {
@@ -26,12 +27,19 @@ pub(crate) async fn compute_runtime_fingerprint(
 fn compute_runtime_fingerprint_sync(waterui_root: &Path, runtime_identity: &str) -> Result<String> {
     let git_fingerprint_start = std::time::Instant::now();
     let git_fingerprint = compute_git_clean_fingerprint(waterui_root, runtime_identity)?;
+    // The generated host crate is a product of *both* the runtime source and the
+    // scaffold templates baked into this CLI. Two CLI builds at the same WaterUI
+    // commit can emit different code, so a fingerprint over the runtime alone
+    // lets a stale generated crate survive a CLI upgrade — it then fails to
+    // compile against the API it was regenerated for. Mixing the template digest
+    // in makes a template edit invalidate the cache the way a source edit does.
+    let fingerprint = format!("{git_fingerprint}-{}", scaffold_template_digest());
     info!(
         waterui_root = %waterui_root.display(),
         elapsed_ms = git_fingerprint_start.elapsed().as_millis(),
-        "Runtime fingerprint used clean git commit"
+        "Runtime fingerprint used clean git commit and scaffold template digest"
     );
-    Ok(git_fingerprint)
+    Ok(fingerprint)
 }
 
 fn compute_git_clean_fingerprint(root: &Path, runtime_identity: &str) -> Result<String> {
