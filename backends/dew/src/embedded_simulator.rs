@@ -43,8 +43,14 @@ pub fn run(
 ) {
     // Reactive text and timers spawn local tasks; give the main thread its
     // executors (no-ops when the host app already initialized them).
+    //
+    // The local executor must be the cooperative one this event loop drives, the
+    // same as `espidf`. `NativeExecutor` cannot fill this slot: on non-Apple hosts
+    // it delegates to the polyfill, whose `spawn_main_local` asserts it runs on the
+    // thread registered by `start_main_executor` — a blocking entry point no
+    // event-loop-owning host ever calls.
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+    crate::embedded_executor::install();
 
     let runtime = DewRuntime::new(HostBoard::new(width, height), env, 16, build_root);
     let event_loop = EventLoop::new().expect("simulator event loop");
@@ -234,6 +240,8 @@ impl ApplicationHandler for SimulatorApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Drive the cooperative executor so reactive watchers make progress.
+        crate::embedded_executor::tick();
         (self.on_tick)();
         if self.runtime.pump().is_some()
             && let Some(panel) = self.window.as_ref()

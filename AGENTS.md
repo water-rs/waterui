@@ -85,6 +85,20 @@ Keep the change set strictly scoped to the task.
 - Do not write `waterui::text!`. Always import the macro first, then use the short `text!` form.
 - Do not inline absolute paths like `::waterui_core::views::ForEach` inside macro bodies or expanded code. Bring the names into scope with `use ...;` at the call site (or in the surrounding module) and reference them with bare identifiers — `ForEach`, `Collection`, `Identifiable`, `View`. The same applies to plain function/type usage: import first, use bare names. Long absolute paths add visual noise and break the look of declarative WaterUI code.
 - Do not add `anyhow` as a direct dependency in any `Cargo.toml` in this workspace. The error type is re-exported as `waterui_core::Error`; reach for that re-export when implementing traits whose associated error is `anyhow::Error` (e.g. `Extractor`). `thiserror` and other error-construction utilities are unaffected.
+- **Whoever owns the main loop supplies the `LocalExecutor`.** Every WaterUI host
+  already has one — winit (`WinitMainThreadExecutor`), GTK
+  (`GtkMainThreadExecutor`, via `glib::idle_add_local_once`), headless
+  (`HeadlessMainThreadExecutor`), dew (`embedded_executor::install()` plus a
+  per-frame `tick()`). Give `try_init_local_executor` an executor bound to that
+  loop; never hand it `native_executor::NativeExecutor`. On non-Apple targets
+  `NativeExecutor` delegates to the polyfill, whose `spawn_main_local` asserts it
+  runs on the thread registered by `start_main_executor` — a blocking, never-
+  returning entry point that a loop-owning host must not call, because it would
+  declare some unrelated thread "main" while `MainThreadBound`, layout and the
+  GPU surface all live on the loop thread. `NativeExecutor` remains correct for
+  `try_init_global_executor`, which needs no main-thread affinity. The mistake is
+  made at install time but only panics at the first `spawn_local`, so it is worth
+  checking explicitly whenever a new host or test harness is added.
 - Measurement caching is the `SubView`'s responsibility, never the `Layout`'s. The `Layout` trait deliberately has no cache — containers probe children freely with many proposals — so any caching (text shaping above all, which **must** cache) lives in the `SubView` implementation. Because layout measurement is designed to run in parallel across worker threads, a `SubView`'s cache must be thread-safe (a lock or lock-free map), not a `RefCell`. A `SubView` whose measurement must stay on the main thread confines its `!Send` state in `waterui_core::MainThreadBound` and returns `true` from `SubView::require_main_thread()`; parallelizable measures (text, media, shapes) return `false`. Do not add caching to `Layout`, and do not use a non-`Sync` cache in a `SubView`.
 
 <important>
