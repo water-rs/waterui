@@ -1,14 +1,12 @@
 //! Window management utilities for GTK backend.
 
-use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow};
 use nami::Signal;
 use waterui::window::WindowBackground;
 use waterui_core::Environment;
-use waterui_core::resolve::Resolvable;
 use waterui_graphics::color::ResolvedColor;
 
-use crate::util::{resolved_color_to_css_rgba, store_watcher_guard};
+use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guard};
 
 /// Creates a new application window with the specified properties.
 #[must_use]
@@ -30,24 +28,24 @@ pub fn apply_window_background(
     match background {
         WindowBackground::Opaque => {}
         WindowBackground::Color(color) => {
-            let provider = gtk4::CssProvider::new();
-            window
-                .style_context()
-                .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
-            window.add_css_class("waterui-window-background");
+            let css = ScopedCss::attach(
+                window,
+                "waterui-window-background",
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
 
             let signal = color.resolve(env);
 
             // Initial apply
-            apply_background_css(&provider, signal.get());
+            apply_background_css(&css, signal.get());
 
             // Reactive updates
             let guard = signal.watch({
-                let provider = provider.clone();
+                let css = css.clone();
                 move |ctx| {
                     let resolved = ctx.into_value();
-                    let provider = provider.clone();
-                    glib::idle_add_local_once(move || apply_background_css(&provider, resolved));
+                    let css = css.clone();
+                    glib::idle_add_local_once(move || apply_background_css(&css, resolved));
                 }
             });
 
@@ -56,10 +54,9 @@ pub fn apply_window_background(
     }
 }
 
-fn apply_background_css(provider: &gtk4::CssProvider, resolved: ResolvedColor) {
-    let css = format!(
-        ".waterui-window-background {{ background-color: {}; }}",
+fn apply_background_css(css: &ScopedCss, resolved: ResolvedColor) {
+    css.set_declarations(&format!(
+        "background-color: {};",
         resolved_color_to_css_rgba(resolved)
-    );
-    provider.load_from_data(&css);
+    ));
 }

@@ -2,6 +2,7 @@
 
 use gtk4::Widget;
 use gtk4::prelude::*;
+use waterui_core::MainThreadBound;
 use waterui_core::layout::{
     ProposalSize, Size, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
 };
@@ -16,9 +17,12 @@ fn layout_debug_enabled() -> bool {
 ///
 /// This allows `waterui-layout` algorithms to measure GTK widgets
 /// without knowing about GTK internals.
+///
+/// GTK widget measurement is main-thread only, so the widget is confined in a
+/// [`MainThreadBound`] and [`SubView::require_main_thread`] returns `true`.
 #[derive(Debug)]
 pub struct GtkSubView {
-    widget: Widget,
+    widget: MainThreadBound<Widget>,
     stretch_axis: StretchAxis,
     priority: i32,
 }
@@ -28,7 +32,7 @@ impl GtkSubView {
     #[must_use]
     pub fn new(widget: Widget, stretch_axis: StretchAxis) -> Self {
         Self {
-            widget,
+            widget: MainThreadBound::new(widget),
             stretch_axis,
             priority: 0,
         }
@@ -38,15 +42,19 @@ impl GtkSubView {
     #[must_use]
     pub fn with_priority(widget: Widget, stretch_axis: StretchAxis, priority: i32) -> Self {
         Self {
-            widget,
+            widget: MainThreadBound::new(widget),
             stretch_axis,
             priority,
         }
     }
 
     /// Returns a reference to the underlying GTK widget.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called off the main thread.
     #[must_use]
-    pub const fn widget(&self) -> &Widget {
+    pub fn widget(&self) -> &Widget {
         &self.widget
     }
 }
@@ -179,6 +187,11 @@ impl SubView for GtkSubView {
 
     fn priority(&self) -> i32 {
         self.priority
+    }
+
+    fn require_main_thread(&self) -> bool {
+        // GTK widget measurement must run on the thread that owns the widget.
+        true
     }
 }
 

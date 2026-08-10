@@ -41,8 +41,8 @@ struct PixelSize {
 impl PixelSize {
     fn from_widget(area: &gtk4::GLArea) -> Self {
         let scale = area.scale_factor().max(1) as u32;
-        let w = area.allocated_width().max(1) as u32;
-        let h = area.allocated_height().max(1) as u32;
+        let w = area.width().max(1) as u32;
+        let h = area.height().max(1) as u32;
         Self {
             width: w.saturating_mul(scale),
             height: h.saturating_mul(scale),
@@ -875,8 +875,8 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
     area.connect_map(|area| {
         tracing::debug!(
             "[gtk-gpu] GLArea map size={}x{}",
-            area.allocated_width(),
-            area.allocated_height()
+            area.width(),
+            area.height()
         );
         area.queue_render();
     });

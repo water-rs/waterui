@@ -14,7 +14,7 @@ impl GtkComponent for Native<FixedContainer> {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let (layout, children) = self.into_inner().into_inner();
 
-        let rendered: Vec<(gtk4::Widget, StretchAxis)> = children
+        let children_with_axes: Vec<(gtk4::Widget, StretchAxis)> = children
             .into_iter()
             .map(|view| {
                 let axis = effective_stretch_axis(&view);
@@ -23,6 +23,6 @@ impl GtkComponent for Native<FixedContainer> {
             })
             .collect();
 
-        WuiFixedContainer::new(layout, rendered).upcast()
+        WuiFixedContainer::new(layout, children_with_axes).upcast()
     }
 }

@@ -19,12 +19,12 @@ use waterui_navigation::{
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::{resolved_color_to_css_rgba, store_watcher_guards};
+use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guards};
 
 fn css_for_header_bar_color(color: waterui_graphics::color::Color, env: &Environment) -> String {
     let resolved = color.resolve(env).get();
     format!(
-        ".waterui-navigation-headerbar {{ background-color: {}; }}",
+        "background-color: {};",
         resolved_color_to_css_rgba(resolved)
     )
 }
@@ -127,11 +127,11 @@ impl GtkComponent for NavigationView {
         container.set_vexpand(true);
 
         let header_bar = gtk4::HeaderBar::new();
-        header_bar.add_css_class("waterui-navigation-headerbar");
-        let provider = gtk4::CssProvider::new();
-        header_bar
-            .style_context()
-            .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        let scoped_css = ScopedCss::attach(
+            &header_bar,
+            "waterui-navigation-headerbar",
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
 
         let leading_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         let trailing_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
@@ -159,15 +159,15 @@ impl GtkComponent for NavigationView {
         });
 
         let env_for_color = env.clone();
-        let provider_for_color = provider.clone();
+        let scoped_css_for_color = scoped_css.clone();
         let color_guard = bar.color.as_ref().map(|color| {
             color.watch(
                 move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
                     let color = ctx.into_value();
-                    let css = css_for_header_bar_color(color, &env_for_color);
-                    let provider = provider_for_color.clone();
+                    let declarations = css_for_header_bar_color(color, &env_for_color);
+                    let scoped_css = scoped_css_for_color.clone();
                     glib::idle_add_local_once(move || {
-                        provider.load_from_data(&css);
+                        scoped_css.set_declarations(&declarations);
                     });
                 },
             )
@@ -177,7 +177,7 @@ impl GtkComponent for NavigationView {
             header_bar.set_visible(false);
         }
         if let Some(color) = &bar.color {
-            provider.load_from_data(&css_for_header_bar_color(color.get(), env));
+            scoped_css.set_declarations(&css_for_header_bar_color(color.get(), env));
         }
 
         container.append(&header_bar);
@@ -215,11 +215,11 @@ impl GtkComponent for NavigationStack<(), ()> {
         container.append(&bar_container);
 
         let header_bar = gtk4::HeaderBar::new();
-        header_bar.add_css_class("waterui-navigation-headerbar");
-        let provider = gtk4::CssProvider::new();
-        header_bar
-            .style_context()
-            .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        let scoped_css = ScopedCss::attach(
+            &header_bar,
+            "waterui-navigation-headerbar",
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
         bar_container.append(&header_bar);
 
         let back_button = gtk4::Button::with_label("Back");
@@ -263,7 +263,7 @@ impl GtkComponent for NavigationStack<(), ()> {
             search_holder.clone(),
             bottom_holder.clone(),
             back_button.clone(),
-            provider.clone(),
+            scoped_css.clone(),
             &child_env,
         );
         let navigation_controller = NavigationController::new(controller.clone());
@@ -310,7 +310,7 @@ struct GtkNavigationControllerInner {
     search_holder: gtk4::Box,
     bottom_holder: gtk4::Box,
     back_button: gtk4::Button,
-    color_provider: gtk4::CssProvider,
+    color_css: ScopedCss,
     view_stack: Vec<NavigationViewState>,
     active_bar_guards: Vec<nami::watcher::BoxWatcherGuard>,
     next_id: usize,
@@ -339,7 +339,7 @@ impl GtkNavigationController {
         search_holder: gtk4::Box,
         bottom_holder: gtk4::Box,
         back_button: gtk4::Button,
-        color_provider: gtk4::CssProvider,
+        color_css: ScopedCss,
         env: &Environment,
     ) -> Self {
         Self {
@@ -352,7 +352,7 @@ impl GtkNavigationController {
                 search_holder,
                 bottom_holder,
                 back_button,
-                color_provider,
+                color_css,
                 view_stack: vec![NavigationViewState {
                     id: "root".to_string(),
                     title_widget: None,
@@ -525,23 +525,23 @@ impl GtkNavigationControllerInner {
         }
 
         if let Some(color) = &top.bar_color {
-            self.color_provider
-                .load_from_data(&css_for_header_bar_color(color.get(), &self.env));
+            self.color_css
+                .set_declarations(&css_for_header_bar_color(color.get(), &self.env));
             let env = self.env.clone();
-            let provider = self.color_provider.clone();
+            let scoped_css = self.color_css.clone();
             let color_guard = color.watch(
                 move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
                     let color = ctx.into_value();
-                    let css = css_for_header_bar_color(color, &env);
-                    let provider = provider.clone();
+                    let declarations = css_for_header_bar_color(color, &env);
+                    let scoped_css = scoped_css.clone();
                     glib::idle_add_local_once(move || {
-                        provider.load_from_data(&css);
+                        scoped_css.set_declarations(&declarations);
                     });
                 },
             );
             self.active_bar_guards.push(color_guard);
         } else {
-            self.color_provider.load_from_data("");
+            self.color_css.clear();
         }
     }
 }
