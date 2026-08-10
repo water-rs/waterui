@@ -150,6 +150,39 @@ jobs:
       # does not build on its own.
       - run: cargo hack check --each-feature --no-dev-deps
 
+  ffi-header:
+    name: FFI Header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # The only job that needs nightly: cbindgen expands the FFI macros through
+      # `cargo rustc -- -Zunpretty=expanded`, and the exported functions are
+      # macro-generated, so the expansion cannot be skipped.
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-ubuntu-nightly
+          cache-on-failure: true
+      - name: Regenerate the header
+        run: cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+      - name: Verify the committed header matches
+        run: |
+          set -euo pipefail
+          status=0
+          check() {
+            if ! git -C "$1" diff --exit-code -- "$2"; then
+              echo "::error file=$2::$2 is stale; run 'cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml' and commit the result"
+              status=1
+            fi
+          }
+          check . ffi/waterui.h
+          check backends/apple Sources/CWaterUI/include/waterui.h
+          check backends/android runtime/src/main/cpp/waterui.h
+          exit "$status"
+
   test:
     name: Test
     uses: ./.github/workflows/test.yml
