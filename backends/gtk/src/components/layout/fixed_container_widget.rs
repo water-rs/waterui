@@ -1,7 +1,7 @@
-//! A GTK widget implementing WaterUI's `FixedContainer` layout contract.
+//! A GTK widget implementing `WaterUI`'s `FixedContainer` layout contract.
 //!
 //! This is a `gtk4::Fixed` subclass that delegates measurement and placement
-//! to WaterUI's Rust `Layout` engine, mirroring the Apple backend behavior.
+//! to `WaterUI`'s Rust `Layout` engine, mirroring the Apple backend behavior.
 
 use std::cell::RefCell;
 
@@ -71,6 +71,11 @@ mod imp {
     impl FixedImpl for WuiFixedContainer {}
 
     impl WidgetImpl for WuiFixedContainer {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+        )]
         fn measure(&self, orientation: gtk4::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let layout_borrow = self.layout.borrow();
             let Some(layout) = layout_borrow.as_ref() else {
@@ -123,6 +128,10 @@ mod imp {
             }
         }
 
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+        )]
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.parent_size_allocate(width, height, baseline);
 
@@ -196,6 +205,10 @@ impl WuiFixedContainer {
         measure_layout(layout.as_ref(), proposal, &refs)
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+    )]
     fn relayout(&self) {
         let width = self.width();
         let height = self.height();

@@ -1,6 +1,6 @@
-//! GTK4 LazyContainer component with virtual scrolling.
+//! GTK4 `LazyContainer` component with virtual scrolling.
 //!
-//! Uses GTK4's ListView with SignalListItemFactory for lazy view reconstruction.
+//! Uses GTK4's `ListView` with `SignalListItemFactory` for lazy view reconstruction.
 
 use std::rc::Rc;
 
@@ -44,7 +44,7 @@ impl GtkComponent for Native<LazyContainer> {
         // Create factory for lazy binding
         let factory = gtk4::SignalListItemFactory::new();
         let contents_clone = contents.clone();
-        let env_clone = env.clone();
+        let env_clone = env;
 
         factory.connect_setup(|_, item| {
             let list_item = item.downcast_ref::<gtk4::ListItem>().unwrap();

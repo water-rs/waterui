@@ -1,4 +1,4 @@
-//! GTK ResolvedColor component implementation.
+//! GTK `ResolvedColor` component implementation.
 
 use gtk4::Widget;
 use gtk4::prelude::*;

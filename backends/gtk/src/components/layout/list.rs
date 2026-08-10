@@ -1,6 +1,6 @@
 //! GTK4 List component implementation.
 //!
-//! Renders a WaterUI List as a GTK4 ListView inside a ScrolledWindow
+//! Renders a `WaterUI` List as a GTK4 `ListView` inside a `ScrolledWindow`
 //! for efficient handling of large lists.
 
 use std::rc::Rc;
@@ -20,8 +20,8 @@ use crate::util::{store_watcher_guard, store_watcher_guards};
 impl GtkComponent for Native<ListConfig> {
     /// Renders a `WaterUI` `List` as a GTK4 scrollable list.
     ///
-    /// Uses GTK ListView recycling so rows are created lazily for visible items.
-    /// Each ListItem is rendered as a row with optional delete functionality.
+    /// Uses GTK `ListView` recycling so rows are created lazily for visible items.
+    /// Each `ListItem` is rendered as a row with optional delete functionality.
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let config = self.into_inner();
         let contents = config.contents;
@@ -50,9 +50,9 @@ impl GtkComponent for Native<ListConfig> {
         let factory = gtk4::SignalListItemFactory::new();
         {
             let contents = contents.clone();
-            let editing = editing.clone();
+            let editing = editing;
             let on_delete = on_delete.clone();
-            let env = env.clone();
+            let env = env;
             factory.connect_bind(move |_, item| {
                 let Some(list_item) = item.downcast_ref::<gtk4::ListItem>() else {
                     return;

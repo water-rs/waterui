@@ -45,7 +45,7 @@ impl GtkComponent for Native<StepperConfig> {
 
         // Two-way binding: Binding -> SpinButton
         let binding = config.value;
-        let value_guard = binding.clone().computed().watch({
+        let value_guard = binding.computed().watch({
             let spin_button = spin_button.clone();
             move |ctx: nami::watcher::Context<i32>| {
                 let value = ctx.into_value();
@@ -61,7 +61,7 @@ impl GtkComponent for Native<StepperConfig> {
         });
 
         let step_guard = config.step.watch({
-            let adjustment = adjustment.clone();
+            let adjustment = adjustment;
             move |ctx| {
                 let step = ctx.into_value();
                 let adjustment = adjustment.clone();
@@ -74,7 +74,7 @@ impl GtkComponent for Native<StepperConfig> {
         store_watcher_guards(&spin_button, vec![value_guard, step_guard]);
 
         // Two-way binding: SpinButton -> Binding
-        let binding_for_signal = binding.clone();
+        let binding_for_signal = binding;
         spin_button.connect_value_changed(move |btn| {
             #[allow(clippy::cast_possible_truncation)]
             let value = btn.value() as i32;

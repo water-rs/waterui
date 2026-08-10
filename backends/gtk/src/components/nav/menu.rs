@@ -26,7 +26,7 @@ impl GtkComponent for Native<ResolvedMenu> {
         rebuild_menu_popover(&popover, menu.items.get(), env);
 
         let guard = menu.items.watch({
-            let popover = popover.clone();
+            let popover = popover;
             let env = env.clone();
             move |ctx| {
                 let items = ctx.into_value();
@@ -85,7 +85,7 @@ pub(crate) fn append_menu_items(
                 let env = env.clone();
                 let on_activate = on_activate.clone();
                 button.connect_clicked(move |_| {
-                    let _ = action.call(&env);
+                    let () = action.call(&env);
                     on_activate();
                 });
 

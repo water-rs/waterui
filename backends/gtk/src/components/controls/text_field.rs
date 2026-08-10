@@ -50,7 +50,7 @@ impl GtkComponent for Native<ResolvedTextFieldConfig> {
 
         // Watch for binding changes -> update entry
         // Clone before .computed() since it consumes self
-        let value_guard = binding.clone().computed().watch({
+        let value_guard = binding.computed().watch({
             let entry = entry.clone();
             move |ctx| {
                 let value = ctx.into_value().to_plain().to_string();
@@ -106,6 +106,10 @@ impl GtkComponent for Native<ResolvedTextFieldConfig> {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "widget-model indices are bounded by the collection length"
+)]
 fn install_selection_menu(
     entry: &gtk4::Entry,
     env: Environment,
@@ -118,9 +122,9 @@ fn install_selection_menu(
     click.set_propagation_phase(gtk4::PropagationPhase::Capture);
     click.connect_pressed({
         let entry = entry.clone();
-        let selection_items = selection_items.clone();
-        let env = env.clone();
-        let popover_state = popover_state.clone();
+        let selection_items = selection_items;
+        let env = env;
+        let popover_state = popover_state;
         move |gesture, _n_press, x, y| {
             if entry.selection_bounds().is_none() {
                 return;
