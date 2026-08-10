@@ -269,8 +269,16 @@ unsafe fn __init_impl() {
     init_global_executor(native_executor::NativeExecutor::new());
     let inspector_probe = waterui::inspector::maybe_init_from_env()
         .map(waterui::inspector::InspectorRuntime::into_runtime_probe);
+    // The FFI entry point runs under a real platform main thread (the Apple main
+    // queue, or Android's looper after `register_android_main_thread`). Failing
+    // here names the missing setup, instead of panicking at the first spawn.
+    let main_executor = native_executor::NativeMainExecutor::new().expect(
+        "waterui_init requires a platform main thread; on Android call \
+         register_android_main_thread on the UI thread first, and on a host that \
+         owns its own event loop install that loop's LocalExecutor instead",
+    );
     init_local_executor(waterui::task::monitored_local_executor_with_probes(
-        native_executor::NativeExecutor::new(),
+        main_executor,
         inspector_probe,
     ));
 }

@@ -15,7 +15,15 @@ categories = ["gui", "embedded"]
 default = ["system-fonts", "progress"]
 # Embedded-device simulator: a desktop window standing in for the panel of
 # an embedded device, running the full dew pipeline natively (winit + softbuffer).
-embedded-simulator = ["dep:winit", "dep:softbuffer", "dep:executor-core", "dep:native-executor"]
+embedded-simulator = [
+    "dep:winit",
+    "dep:softbuffer",
+    "dep:executor-core",
+    "dep:native-executor",
+    # The simulator owns a winit loop, so it drives the same cooperative
+    # executor the firmware entry point uses.
+    "dep:async-executor",
+]
 # ESP-IDF runtime entry: a complete firmware main-loop for ESP32-class
 # chips; generated harnesses call `espidf::run` and nothing else.
 espidf = [
@@ -61,6 +69,7 @@ waterui = { version = "0.2.1", path = "../..", default-features = false, optiona
 esp-idf-svc = { version = "0.52", optional = true }
 
 [dev-dependencies]
+waterui-testing.workspace = true
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 executor-core.workspace = true
 native-executor.workspace = true

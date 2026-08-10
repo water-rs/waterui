@@ -96,7 +96,7 @@ impl HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
-struct HeadlessMainThreadExecutor {
+pub(crate) struct HeadlessMainThreadExecutor {
     runnable_tx: mpsc::Sender<Runnable>,
     runnable_rx: Rc<mpsc::Receiver<Runnable>>,
 }

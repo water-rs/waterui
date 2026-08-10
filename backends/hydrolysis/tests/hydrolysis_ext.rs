@@ -238,9 +238,7 @@ impl View for GpuSurfaceAppliedFilterView {
 
 fn gpu_runtime() -> GpuRuntime {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        native_executor::NativeExecutor::new(),
-    ));
+    waterui_testing::install_test_executor();
     pollster::block_on(GpuRuntime::new())
         .expect("hydrolysis extension tests require a high-performance GPU")
 }
