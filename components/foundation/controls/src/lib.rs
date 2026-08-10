@@ -7,7 +7,7 @@ extern crate alloc;
 
 #[cfg(test)]
 pub(crate) fn init_test_executor() {
-    let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+    waterui_testing::install_test_executor();
 }
 
 pub mod label;

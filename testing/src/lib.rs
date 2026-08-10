@@ -56,6 +56,7 @@
 mod app;
 mod artifacts;
 pub(crate) mod driver;
+mod executor;
 mod perf;
 pub mod protocol;
 mod query;
@@ -67,6 +68,7 @@ pub(crate) mod wait;
 pub use app::{OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, ui};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::FrameTiming;
+pub use executor::{TestLocalExecutor, install_test_executor};
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 pub use query::Query;
 pub use selector::{ElementRef, ElementSet, Selector};
