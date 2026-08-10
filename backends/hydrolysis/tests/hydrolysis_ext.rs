@@ -236,6 +236,25 @@ impl View for GpuSurfaceAppliedFilterView {
     }
 }
 
+/// Compares a blended pixel, allowing the one-unit difference that compositing
+/// produces across GPU implementations.
+///
+/// Solid fills are compared exactly; only blended output needs this. CI
+/// rasterizes in software while development machines use a hardware GPU, and
+/// the two round the same blend differently.
+#[track_caller]
+fn assert_pixel_close(actual: &[u8], expected: [u8; 4], message: &str) {
+    const TOLERANCE: i16 = 1;
+    let close = actual
+        .iter()
+        .zip(expected)
+        .all(|(&got, want)| i16::from(got).abs_diff(i16::from(want)) <= TOLERANCE.unsigned_abs());
+    assert!(
+        close,
+        "{message}\n  actual:   {actual:?}\n  expected: {expected:?} (tolerance {TOLERANCE})"
+    );
+}
+
 fn gpu_runtime() -> GpuRuntime {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     waterui_testing::install_test_executor();
@@ -310,10 +329,10 @@ fn hydrolysis_ext_preserves_gpu_surface_under_vello_overlay() {
     ))
     .expect("hydrolysis extension offscreen render failed");
 
-    assert_eq!(
+    assert_pixel_close(
         &output.rgba8[..4],
-        &[243, 149, 124, 255],
-        "a later transparent Vello layer must preserve the underlying GPU surface"
+        [243, 149, 124, 255],
+        "a later transparent Vello layer must preserve the underlying GPU surface",
     );
 }
 
