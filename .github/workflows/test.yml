@@ -36,10 +36,27 @@ jobs:
           shared-key: test-${{ matrix.os }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --workspace --profile ci
-      - run: cargo nextest run --all-features --profile ci
+      # waterui-dylib is the dynamic-link anchor: it is a Rust `dylib` on
+      # purpose, so the preview system can share one copy of the framework
+      # across dynamically loaded preview libraries. That exports every Rust
+      # symbol — 290k of them — and a PE export table stops at 65535. The
+      # preview system targets macOS, the iOS Simulator and Android, not
+      # Windows, so the anchor is simply not built there.
+      - name: Select workspace members
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "WORKSPACE_EXCLUDES=--exclude waterui-dylib" >> "$GITHUB_ENV"
+          else
+            echo "WORKSPACE_EXCLUDES=" >> "$GITHUB_ENV"
+          fi
+      - shell: bash
+        run: cargo nextest run --workspace $WORKSPACE_EXCLUDES --profile ci
+      - shell: bash
+        run: cargo nextest run --all-features --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --doc --workspace
+      - shell: bash
+        run: cargo test --doc --workspace $WORKSPACE_EXCLUDES
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
