@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::preview_symbol;
-use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton};
+use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton, PointerKind};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_preview::{RenderResult, RenderResultExt as _};
 use waterui_preview_protocol::hydrolysis::{
@@ -148,20 +148,29 @@ fn input_event(event: ScenarioEvent) -> InputEvent {
     };
     match event.kind {
         ScenarioEventKind::PointerMove => InputEvent::PointerMove {
+            id: 0,
+            kind: PointerKind::Mouse,
             x: event.x,
             y: event.y,
         },
         ScenarioEventKind::PointerDown => InputEvent::PointerDown {
+            id: 0,
+            kind: PointerKind::Mouse,
             x: event.x,
             y: event.y,
             button,
         },
         ScenarioEventKind::PointerUp => InputEvent::PointerUp {
+            id: 0,
+            kind: PointerKind::Mouse,
             x: event.x,
             y: event.y,
             button,
         },
-        ScenarioEventKind::PointerCancel => InputEvent::PointerCancel,
+        ScenarioEventKind::PointerCancel => InputEvent::PointerCancel {
+            id: 0,
+            kind: PointerKind::Mouse,
+        },
         ScenarioEventKind::Scroll => InputEvent::Scroll {
             x: event.x,
             y: event.y,
