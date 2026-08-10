@@ -775,6 +775,15 @@ pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
     core::ptr::from_ref(raw).cast_mut().cast::<c_void>()
 }
 
+/// Get a pointer to the Metal texture backing the capture texture (Apple only).
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_applied_filter_create` with an attached target.
+///
+/// # Panics
+///
+/// Always panics: Metal textures only exist on Apple platforms.
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
