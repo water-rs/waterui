@@ -17,6 +17,15 @@ use super::presenter::{OwnedFrameMailbox, TexturePresenter, copy_source_texture}
 use super::{CefViewport, request_browser_frame};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
+// # Safety
+//
+// The `unsafe` in this file rests on one fact stated by
+// [`AcceleratedFrameSink::import`]: CEF hands the sink a frame whose
+// `IOSurface` is valid for the duration of that call and returns it to its pool
+// immediately afterwards. Everything here therefore either runs inside that
+// call, or operates on the surface this module retained during it. Sites that
+// depend on something else say so.
+
 struct RetainedIoSurface {
     surface: CFRetained<IOSurfaceRef>,
     width: u32,
@@ -25,12 +34,19 @@ struct RetainedIoSurface {
 }
 
 impl RetainedIoSurface {
+    /// # Safety
+    ///
+    /// `frame.shared_texture_io_surface` must be the surface of a live
+    /// accelerated paint callback, so that retaining it happens while it is
+    /// still valid.
     unsafe fn retain(frame: &AcceleratedPaintInfo) -> Self {
         let size = &frame.extra.coded_size;
         let width = u32::try_from(size.width).expect("CEF IOSurface width must be positive");
         let height = u32::try_from(size.height).expect("CEF IOSurface height must be positive");
         let pointer = NonNull::new(frame.shared_texture_io_surface.cast::<IOSurfaceRef>())
             .expect("CEF accelerated paint returned a null IOSurface");
+        // SAFETY: the caller contract makes `pointer` a live `IOSurface`; retaining
+        // it here is what keeps it valid after CEF reclaims the frame.
         let surface = unsafe { CFRetained::retain(pointer) };
         let format = if frame.format == ColorType::BGRA_8888 {
             wgpu::TextureFormat::Bgra8Unorm
@@ -67,6 +83,8 @@ impl AcceleratedFrameSink for MacFrameSink {
         _dirty_rects: &[Rect],
         frame: &AcceleratedPaintInfo,
     ) {
+        // SAFETY: `import` is the accelerated paint callback, so `frame` names a
+        // surface that is valid for exactly this call.
         let surface = unsafe { RetainedIoSurface::retain(frame) };
         let size = (surface.width, surface.height);
         if self.imported_size.replace(size) != size {
@@ -198,6 +216,8 @@ fn import_iosurface(
         _ => panic!("CEF IOSurface has unsupported wgpu format {format:?}"),
     };
     let hal_texture = objc2::rc::autoreleasepool(|_| {
+        // SAFETY: the handle is only borrowed to read the raw `MTLDevice`, and it is
+        // not kept past this closure.
         let hal_device = unsafe {
             device
                 .as_hal::<wgpu::hal::api::Metal>()
@@ -205,6 +225,7 @@ fn import_iosurface(
         };
         let raw_device = hal_device.raw_device();
         let metal_descriptor = MTLTextureDescriptor::new();
+        // SAFETY: plain setters on a descriptor this scope just allocated and owns.
         unsafe {
             metal_descriptor.setWidth(width.to_usize().expect("CEF IOSurface width exceeds usize"));
             metal_descriptor.setHeight(
@@ -221,10 +242,15 @@ fn import_iosurface(
         } else {
             MTLStorageMode::Managed
         });
+        // SAFETY: `handle` comes from `RetainedIoSurface::pointer`, which hands out
+        // the surface this import retained, so it outlives the borrow.
         let surface = unsafe { &*handle.cast::<IOSurfaceRef>() };
         let texture = raw_device
             .newTextureWithDescriptor_iosurface_plane(&metal_descriptor, surface, 0)
             .expect("Metal rejected CEF IOSurface import");
+        // SAFETY: the texture was created from `metal_descriptor` immediately above,
+        // so the format, type, mip and layer counts repeated here match it, and
+        // ownership of the `MTLTexture` transfers to the returned hal texture.
         unsafe {
             <wgpu::hal::api::Metal as wgpu::hal::Api>::Device::texture_from_raw(
                 texture,
@@ -240,5 +266,7 @@ fn import_iosurface(
             )
         }
     });
+    // SAFETY: `hal_texture` was built for this device with `descriptor`'s format and
+    // size, and is moved into the wgpu texture that now owns it.
     unsafe { device.create_texture_from_hal::<wgpu::hal::api::Metal>(hal_texture, &descriptor) }
 }

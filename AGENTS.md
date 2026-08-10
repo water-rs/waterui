@@ -192,8 +192,9 @@ cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.to
 # Build Apple backend
 cd backends/apple && swift build
 
-# Build Android runtime
-./gradlew -p backends/android runtime:assembleDebug
+# Build Android runtime (the wrapper lives in the submodule, not at the repo root;
+# `local.properties` is gitignored, so point Gradle at the SDK yourself)
+cd backends/android && ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew runtime:assembleDebug
 
 # Run demo app (after creating a project)
 water run --platform ios

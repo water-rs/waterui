@@ -52,11 +52,24 @@ unsafe impl<T> Sync for MainThreadBound<T> {}
 
 impl<T> MainThreadBound<T> {
     /// Bind `value` to the current (main) thread.
+    ///
+    /// Recording the owning thread needs `std`; without it there is no thread to
+    /// record and the binding is a plain wrapper, so that build gets a `const`
+    /// constructor.
+    #[cfg(feature = "std")]
     #[must_use]
     pub fn new(value: T) -> Self {
         Self {
-            #[cfg(feature = "std")]
             owner: std::thread::current().id(),
+            value: ManuallyDrop::new(value),
+        }
+    }
+
+    /// Bind `value` to the current (main) thread.
+    #[cfg(not(feature = "std"))]
+    #[must_use]
+    pub const fn new(value: T) -> Self {
+        Self {
             value: ManuallyDrop::new(value),
         }
     }
