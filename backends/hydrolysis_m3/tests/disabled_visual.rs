@@ -69,7 +69,7 @@ fn disabled_controls_render_md3_disabled_palette() {
     let _ = app.snapshot();
     app.queue_pointer_down(cx, cy);
     let _ = app.snapshot();
-    std::thread::sleep(Duration::from_millis(60));
+    app.pump_for(Duration::from_millis(60));
     save(&mut app, "pressed-on-disabled-switch");
     app.queue_pointer_up(cx, cy);
     let _ = app.snapshot();
