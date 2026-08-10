@@ -807,6 +807,39 @@ impl OffscreenWindow {
         }
     }
 
+    /// Renders at `scale_factor` physical pixels per logical pixel.
+    ///
+    /// Layout stays in logical units; only the surface allocation and the
+    /// reported [`PlatformWindow::scale_factor`] change, so a 2x offscreen
+    /// window produces a HiDPI-sharp image of the very same layout.
+    /// Sets the physical-pixels-per-logical-pixel ratio, reallocating the
+    /// surface to match. See [`Self::with_scale_factor`].
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "offscreen scale factor must be finite and positive, got {scale_factor}"
+        );
+        let logical_width = f64::from(self.surface.size().0) / self.scale_factor;
+        let logical_height = f64::from(self.surface.size().1) / self.scale_factor;
+        self.scale_factor = scale_factor;
+        self.resize_to_logical(logical_width, logical_height);
+    }
+
+    #[must_use]
+    pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "offscreen scale factor must be finite and positive, got {scale_factor}"
+        );
+        self.set_scale_factor(scale_factor);
+        self
+    }
+
+    fn resize_to_logical(&mut self, width: f64, height: f64) {
+        let physical = |value: f64| (value * self.scale_factor).round().max(1.0) as u32;
+        self.surface.resize(physical(width), physical(height));
+    }
+
     #[must_use]
     pub fn surface_ref(&self) -> &OffscreenSurface {
         &self.surface
@@ -834,10 +867,10 @@ impl PlatformWindow for OffscreenWindow {
             return;
         }
         let frame = window.frame.get();
-        self.surface.resize(
-            frame.width().max(1.0) as u32,
-            frame.height().max(1.0) as u32,
-        );
+        // `frame` is in logical units; the surface is allocated in physical
+        // pixels, so the scale factor has to be applied here or a HiDPI window
+        // would rasterize at one physical pixel per logical pixel.
+        self.resize_to_logical(f64::from(frame.width().max(1.0)), f64::from(frame.height().max(1.0)));
     }
 
     fn set_size_limits(

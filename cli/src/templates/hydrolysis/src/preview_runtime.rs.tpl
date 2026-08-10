@@ -55,18 +55,42 @@ fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
     let mut env = waterui::env::Environment::new();
     preview_symbol::install_preview_theme(&mut env);
     let content = AnyViewBuilder::new(preview_symbol::load_preview_view);
+    // Previews are read on HiDPI displays, so render at 2x: the layout stays in
+    // logical units and only the captured image gets sharper.
+    const PREVIEW_SCALE_FACTOR: f64 = 2.0;
+
     HeadlessRuntime::new(
         env,
         content,
         dimension_to_u32(width),
         dimension_to_u32(height),
     )
+    .with_scale_factor(PREVIEW_SCALE_FACTOR)
+}
+
+/// Pumps until the frame stops changing.
+///
+/// A `GpuView`'s `setup` is an async future spawned onto the local executor, so
+/// its pipelines do not exist during the first frame. Capturing immediately
+/// yields a snapshot of the surface before any GPU content was drawn — the
+/// window background and nothing else. `rebuilt` is the real readiness signal
+/// here, so pump on it rather than waiting a fixed amount of time.
+fn settle(runtime: &mut HeadlessRuntime, at: Instant) {
+    const MAX_PUMPS: usize = 64;
+
+    for _ in 0..MAX_PUMPS {
+        if !runtime.pump_at(false, at).rebuilt {
+            return;
+        }
+    }
+    panic!("hydrolysis preview: frame never settled after {MAX_PUMPS} pumps");
 }
 
 fn run_image(output_path: &Path, width: f32, height: f32) {
     let mut runtime = new_runtime(width, height);
     let frame_at = Instant::now();
     let _ = runtime.pump_semantic_at(frame_at);
+    settle(&mut runtime, frame_at);
     let result = runtime.pump_at(true, frame_at);
     let snapshot = result
         .snapshot

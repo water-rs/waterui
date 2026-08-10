@@ -1040,3 +1040,132 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
         );
     }
 }
+
+// ============================================================================
+// Async GPU setup must complete before a frame is captured (issue #149)
+// ============================================================================
+
+use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
+
+/// A `GpuView` whose `setup` yields before it is ready, the way a real one does
+/// while it builds pipelines. It draws nothing until setup has completed, so a
+/// capture taken before the executor has driven that future sees only the
+/// window background.
+#[derive(Debug)]
+struct DeferredClearRenderer {
+    color: wgpu::Color,
+    ready: Rc<Cell<bool>>,
+}
+
+impl GpuView for DeferredClearRenderer {
+    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+        YieldOnce::default().await;
+        self.ready.set(true);
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        if !self.ready.get() {
+            return;
+        }
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hydrolysis_deferred_gpu_surface_encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hydrolysis_deferred_gpu_surface_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        frame.queue.submit([encoder.finish()]);
+    }
+}
+
+/// Returns `Pending` exactly once, so a future awaiting it needs a second poll.
+#[derive(Default)]
+struct YieldOnce {
+    polled: bool,
+}
+
+impl std::future::Future for YieldOnce {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if self.polled {
+            return std::task::Poll::Ready(());
+        }
+        self.polled = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
+}
+
+/// A `GpuSurface` must reach the captured frame even though its `setup` is
+/// async. Capturing the very first pumped frame photographs the surface before
+/// any GPU content exists — the regression that made every GPU preview in the
+/// book render as a flat background.
+#[test]
+fn headless_capture_waits_for_async_gpu_setup() {
+    let ready = Rc::new(Cell::new(false));
+    let ready_for_view = Rc::clone(&ready);
+    let content = AnyViewBuilder::new(move || {
+        AnyView::new(GpuSurface::new(DeferredClearRenderer {
+            color: wgpu::Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            ready: Rc::clone(&ready_for_view),
+        }))
+    });
+
+    let mut env = Environment::new();
+    hydrolysis::testing::install_theme(&mut env);
+    install_m3(&mut env);
+    let mut runtime = hydrolysis::HeadlessRuntime::new_for_tests(env, content, 64, 64);
+
+    // Pump until the frame settles, exactly as the preview runtime does.
+    let mut settled = false;
+    for _ in 0..64 {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "frame never settled");
+    assert!(
+        ready.get(),
+        "the async GpuView::setup must have been driven to completion"
+    );
+
+    let snapshot = runtime
+        .pump_at(true, std::time::Instant::now())
+        .snapshot
+        .expect("capture must produce a snapshot");
+    let center = ((snapshot.width as usize / 2)
+        + (snapshot.height as usize / 2) * snapshot.width as usize)
+        * 4;
+    assert_eq!(
+        &snapshot.rgba8[center..center + 3],
+        &[255, 0, 0],
+        "the GpuSurface content must be present in the captured frame"
+    );
+}
+

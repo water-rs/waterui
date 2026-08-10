@@ -77,6 +77,33 @@ fn init_main_thread_executors() -> Option<Arc<dyn waterui::task::RuntimeProbe>> 
         .map(waterui::inspector::InspectorRuntime::into_runtime_probe)
 }
 
+/// Physical pixels per logical pixel for offscreen rendering, from
+/// `WATERUI_HYDROLYSIS_OFFSCREEN_SCALE`.
+///
+/// Offscreen output is usually viewed on a HiDPI display (a preview image in
+/// docs, a snapshot opened on a laptop), where rendering one physical pixel per
+/// logical pixel looks soft. Defaults to 2.
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
+fn offscreen_scale_factor() -> f64 {
+    const VARIABLE: &str = "WATERUI_HYDROLYSIS_OFFSCREEN_SCALE";
+    const DEFAULT: f64 = 2.0;
+
+    let Some(raw) = std::env::var_os(VARIABLE) else {
+        return DEFAULT;
+    };
+    let raw = raw
+        .to_str()
+        .unwrap_or_else(|| panic!("{VARIABLE} must be valid UTF-8"));
+    let parsed: f64 = raw
+        .parse()
+        .unwrap_or_else(|error| panic!("{VARIABLE} must be a number, got {raw:?}: {error}"));
+    assert!(
+        parsed.is_finite() && parsed > 0.0,
+        "{VARIABLE} must be finite and positive, got {parsed}"
+    );
+    parsed
+}
+
 fn install_native_component_hooks(env: &mut Environment) {
     waterui_video_gpu::install(env);
     #[cfg(any(test, feature = "testing"))]
@@ -116,8 +143,12 @@ pub fn run(app: App) {
     let inspector_probe = init_main_thread_executors();
     // This path renders each window once offscreen and returns; it owns no event
     // loop, so it supplies the headless executor rather than a platform one.
+    // Keep a handle on the executor: the render loop below has to drive it, or
+    // any async work a view starts (a `GpuView`'s `setup`, above all) never
+    // completes and the frame is rendered against uninitialized state.
+    let local_executor = headless::HeadlessMainThreadExecutor::default();
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
-        headless::HeadlessMainThreadExecutor::default(),
+        local_executor.clone(),
         inspector_probe,
     ));
     let (windows, _menu_bar, env) = app.into_parts();
@@ -135,7 +166,8 @@ pub fn run(app: App) {
         let frame = window.frame.get();
         let width = frame.width().max(1.0) as u32;
         let height = frame.height().max(1.0) as u32;
-        let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm);
+        let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
+            .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
@@ -143,7 +175,7 @@ pub fn run(app: App) {
         };
         load_native_resource_fonts(&mut renderer);
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
-        render_window(&mut runtime, &env, &mut || false);
+        render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }
 }
