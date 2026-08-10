@@ -211,6 +211,49 @@ fn material_filter_chip_toggles_selection_and_exposes_button_semantics() {
     );
 }
 
+/// The plain `button()` control is the most-used Material component and had no
+/// coverage of its own. A Material button is a container with a label inside it,
+/// so its box must be at least the 40dp minimum height and wider than the label
+/// by the style's horizontal padding — a button rendered as a bare label would
+/// collapse to text metrics and satisfy neither.
+#[test]
+fn material_button_reserves_its_container_box_for_every_style() {
+    const MIN_HEIGHT: f32 = 40.0;
+    // The narrowest label still has to clear min-width plus the container's own
+    // horizontal padding on both sides.
+    const CONTAINER_PADDING_X: f32 = 24.0;
+
+    let mut app = mount_m3(|| {
+        vstack((
+            button("Filled"),
+            button("Outlined").bordered(),
+            button("Prominent").bordered_prominent(),
+        ))
+        .spacing(8.0)
+    });
+
+    let mut previous_bottom = f32::MIN;
+    for label in ["Filled", "Outlined", "Prominent"] {
+        let bounds = app.query().role(Role::BUTTON).label(label).single().bounds();
+        assert!(
+            bounds.height() >= MIN_HEIGHT,
+            "{label} button is {}pt tall, below the {MIN_HEIGHT}pt Material minimum — \
+             a button drawn as a bare label collapses to its text height",
+            bounds.height()
+        );
+        assert!(
+            bounds.width() >= 2.0 * CONTAINER_PADDING_X,
+            "{label} button is {}pt wide, narrower than its own horizontal padding",
+            bounds.width()
+        );
+        assert!(
+            bounds.y() >= previous_bottom,
+            "{label} button overlaps the one above it"
+        );
+        previous_bottom = bounds.y() + bounds.height();
+    }
+}
+
 #[test]
 fn material_filter_chip_selected_state_changes_intrinsic_layout() {
     let unselected = Binding::bool(false);
