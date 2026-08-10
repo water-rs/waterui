@@ -30,6 +30,10 @@ _waterui_resolve_source_repo() {
 }
 typeset -gr SOURCE_REPO="${WATERUI_AGENT_SOURCE_REPO:-$(_waterui_resolve_source_repo)}"
 
+warn() {
+  print -u2 -- "warning: $*"
+}
+
 die() {
   print -u2 -- "error: $*"
   exit 1
