@@ -305,11 +305,23 @@ mod tests {
             motion_spec.focus_enter,
             motion_spec.focus_exit,
         ] {
-            assert_eq!(cross_fade, motion(easing::STANDARD, RIPPLE_STATE_LAYER_FADE));
+            assert_eq!(
+                cross_fade,
+                motion(easing::STANDARD, RIPPLE_STATE_LAYER_FADE)
+            );
         }
-        assert_eq!(motion_spec.press_grow, motion(easing::STANDARD, RIPPLE_RADIUS_IN));
-        assert_eq!(motion_spec.press_fade_in, Animation::linear(RIPPLE_OPACITY_IN));
-        assert_eq!(motion_spec.press_fade_out, Animation::linear(RIPPLE_OPACITY_OUT));
+        assert_eq!(
+            motion_spec.press_grow,
+            motion(easing::STANDARD, RIPPLE_RADIUS_IN)
+        );
+        assert_eq!(
+            motion_spec.press_fade_in,
+            Animation::linear(RIPPLE_OPACITY_IN)
+        );
+        assert_eq!(
+            motion_spec.press_fade_out,
+            Animation::linear(RIPPLE_OPACITY_OUT)
+        );
     }
 
     /// A release must not rewind the growth: the fade-out is gated until the
@@ -334,13 +346,20 @@ mod tests {
     #[test]
     fn dialog_enters_decelerating_and_leaves_accelerating() {
         let opened = Binding::bool(false);
-        let transitions = record_transitions(&dialog_transform(opened.computed(), 0.0, 1.0), &opened);
+        let transitions =
+            record_transitions(&dialog_transform(opened.computed(), 0.0, 1.0), &opened);
 
         assert_eq!(
             transitions.as_slice(),
             &[
-                (1.0, motion(easing::EMPHASIZED_DECELERATE, duration::MEDIUM_4)),
-                (0.0, motion(easing::EMPHASIZED_ACCELERATE, duration::SHORT_4)),
+                (
+                    1.0,
+                    motion(easing::EMPHASIZED_DECELERATE, duration::MEDIUM_4)
+                ),
+                (
+                    0.0,
+                    motion(easing::EMPHASIZED_ACCELERATE, duration::SHORT_4)
+                ),
             ]
         );
     }
@@ -359,7 +378,10 @@ mod tests {
         );
 
         let opened = Binding::bool(false);
-        let scrim = record_transitions(&navigation_drawer_scrim(opened.computed(), 0.0, 0.4), &opened);
+        let scrim = record_transitions(
+            &navigation_drawer_scrim(opened.computed(), 0.0, 0.4),
+            &opened,
+        );
         assert_eq!(
             scrim.as_slice(),
             &[
@@ -374,7 +396,8 @@ mod tests {
     #[test]
     fn navigation_drawer_closes_faster_than_it_opens() {
         let opened = Binding::bool(false);
-        let transitions = record_transitions(&navigation_drawer(opened.computed(), -360.0, 0.0), &opened);
+        let transitions =
+            record_transitions(&navigation_drawer(opened.computed(), -360.0, 0.0), &opened);
 
         assert_eq!(
             transitions.as_slice(),
@@ -404,8 +427,14 @@ mod tests {
             motion_spec.inner_grow,
             motion(easing::EMPHASIZED_DECELERATE, duration::MEDIUM_2)
         );
-        assert_eq!(motion_spec.inner_opacity, Animation::linear(duration::SHORT_1));
-        assert_eq!(motion_spec.outer_color, Animation::linear(duration::SHORT_1));
+        assert_eq!(
+            motion_spec.inner_opacity,
+            Animation::linear(duration::SHORT_1)
+        );
+        assert_eq!(
+            motion_spec.outer_color,
+            Animation::linear(duration::SHORT_1)
+        );
     }
 
     /// Navigation is a full-screen transition, so it uses the emphasized curve
