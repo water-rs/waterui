@@ -1,3 +1,22 @@
+//! The macOS `WKWebView` bridge.
+//!
+//! # Safety
+//!
+//! Nearly every `unsafe` here is an Objective-C message send, and they all rest on
+//! the same two facts, so the per-site comments state only what is specific to
+//! each.
+//!
+//! * **Receivers are owned and live.** Every object messaged is held in a
+//!   `Retained<_>` by this wrapper, or handed to a delegate callback by WebKit
+//!   itself, which keeps it alive for the duration of that call.
+//! * **Everything runs on the main thread.** `WKWebView` and its collaborators are
+//!   `MainThreadOnly`; the wrapper is built with a `MainThreadMarker` and WebKit
+//!   dispatches its delegate callbacks on the main thread.
+//!
+//! What those two facts do not cover — a raw `msg_send!` whose signature is
+//! asserted by hand, or a nullable pointer WebKit hands back — is spelled out at
+//! the site.
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -68,12 +87,18 @@ impl SharedState {
 
     fn emit_navigation_state(&self, web_view: &WKWebView) {
         self.emit(WebViewEvent::StateChanged {
+            // SAFETY: main-thread message send to an object this wrapper retains;
+            // see the module safety note.
             can_go_back: unsafe { web_view.canGoBack() },
+            // SAFETY: main-thread message send to an object this wrapper retains;
+            // see the module safety note.
             can_go_forward: unsafe { web_view.canGoForward() },
         });
     }
 
     fn current_url(web_view: &WKWebView) -> Option<String> {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             web_view
                 .URL()
@@ -164,6 +189,8 @@ define_class!(
                     url: SharedState::parse_url(to),
                 });
             } else {
+                // SAFETY: main-thread message send to an object this wrapper
+                // retains; see the module safety note.
                 unsafe {
                     web_view.stopLoading();
                 }
@@ -178,6 +205,8 @@ define_class!(
             _navigation: Option<&WKNavigation>,
         ) {
             self.ivars().shared.emit(WebViewEvent::Loading {
+                // SAFETY: main-thread message send to an object this wrapper
+                // retains; see the module safety note.
                 progress: unsafe { web_view.estimatedProgress() } as f32,
             });
         }
@@ -235,7 +264,11 @@ define_class!(
             _user_content_controller: &WKUserContentController,
             message: &WKScriptMessage,
         ) {
+            // SAFETY: main-thread message send to an object this wrapper retains;
+            // see the module safety note.
             let name = unsafe { message.name() }.to_string();
+            // SAFETY: main-thread message send to an object this wrapper retains;
+            // see the module safety note.
             let body = unsafe { message.body() };
             let body = body.downcast_ref::<NSString>().unwrap_or_else(|| {
                 panic!("Hydrolysis WKWebView handler `{name}` received a non-string bridge body")
@@ -262,8 +295,12 @@ define_class!(
             let script = NSString::from_str(&format!(
                 "window.__wateruiResolve({request_id},true,{reply});"
             ));
+            // SAFETY: WebKit sets the source web view on every script message it
+            // delivers.
             let web_view = unsafe { message.webView() }
                 .expect("Hydrolysis WKWebView bridge message must have a source web view");
+            // SAFETY: main-thread message send to an object this wrapper retains;
+            // see the module safety note.
             unsafe {
                 web_view.evaluateJavaScript_completionHandler(&script, None);
             }
@@ -274,6 +311,9 @@ define_class!(
 impl WebViewDelegate {
     fn new(mtm: MainThreadMarker, shared: Rc<SharedState>) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(WebViewDelegateIvars { shared });
+        // SAFETY: `msg_send!` to `super.init` is the designated superclass
+        // initializer for a `define_class!` type, and the `->
+        // Retained<Self>` signature is the one objc2 expects here.
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -304,7 +344,11 @@ impl MacSystemWebViewHandle {
             .expect("Hydrolysis WKWebView must be created on the macOS main thread");
         let shared = Rc::new(SharedState::default());
         let delegate = WebViewDelegate::new(mtm, Rc::clone(&shared));
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         let web_view = unsafe {
             WKWebView::initWithFrame_configuration(
                 WKWebView::alloc(mtm),
@@ -312,6 +356,8 @@ impl MacSystemWebViewHandle {
                 &configuration,
             )
         };
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             web_view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         }
@@ -331,6 +377,8 @@ impl MacSystemWebViewHandle {
     }
 
     fn user_content_controller(&self) -> Retained<WKUserContentController> {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe { self.inner.web_view.configuration().userContentController() }
     }
 
@@ -346,6 +394,8 @@ impl MacSystemWebViewHandle {
         };
         let mtm = MainThreadMarker::new()
             .expect("Hydrolysis WKWebView scripts must be installed on the macOS main thread");
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         let script = unsafe {
             WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
                 WKUserScript::alloc(mtm),
@@ -354,6 +404,8 @@ impl MacSystemWebViewHandle {
                 false,
             )
         };
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             controller.addUserScript(&script);
         }
@@ -367,6 +419,8 @@ impl MacSystemWebViewHandle {
 
     fn rebuild_user_scripts(&self) {
         let controller = self.user_content_controller();
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             controller.removeAllUserScripts();
         }
@@ -435,12 +489,16 @@ impl MacSystemWebViewHandle {
 
 impl WebViewHandle for MacSystemWebViewHandle {
     fn go_back(&self) {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.inner.web_view.goBack();
         }
     }
 
     fn go_forward(&self) {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.inner.web_view.goForward();
         }
@@ -450,6 +508,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
         let url = NSURL::URLWithString(&NSString::from_str(url))
             .unwrap_or_else(|| panic!("Hydrolysis WKWebView received an invalid URL: {url}"));
         let request = NSURLRequest::requestWithURL(&url);
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.inner.web_view.loadRequest(&request);
         }
@@ -480,6 +540,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
         );
         let controller = self.user_content_controller();
         let name = NSString::from_str(name);
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             controller.addScriptMessageHandler_name(
                 ProtocolObject::from_ref(&*self.inner.delegate),
@@ -495,6 +557,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
             removed.is_some(),
             "Hydrolysis WKWebView handler `{name}` is not registered"
         );
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.user_content_controller()
                 .removeScriptMessageHandlerForName(&NSString::from_str(name));
@@ -503,12 +567,16 @@ impl WebViewHandle for MacSystemWebViewHandle {
     }
 
     fn stop(&self) {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.inner.web_view.stopLoading();
         }
     }
 
     fn refresh(&self) {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.inner.web_view.reload();
         }
@@ -516,6 +584,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     fn set_user_agent(&self, user_agent: &str) {
         let user_agent = (!user_agent.trim().is_empty()).then(|| NSString::from_str(user_agent));
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.inner
                 .web_view
@@ -539,15 +609,21 @@ impl WebViewHandle for MacSystemWebViewHandle {
     }
 
     fn can_go_back(&self) -> bool {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe { self.inner.web_view.canGoBack() }
     }
 
     fn can_go_forward(&self) -> bool {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe { self.inner.web_view.canGoForward() }
     }
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
         let cookie = Self::native_cookie(&cookie, &self.inner.web_view);
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         let store = unsafe {
             self.inner
                 .web_view
@@ -555,12 +631,16 @@ impl WebViewHandle for MacSystemWebViewHandle {
                 .websiteDataStore()
                 .httpCookieStore()
         };
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             store.setCookie_completionHandler(&cookie, None);
         }
     }
 
     async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         let store = unsafe {
             self.inner
                 .web_view
@@ -571,6 +651,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
         let (sender, receiver) = oneshot::channel();
         let sender = RefCell::new(Some(sender));
         let completion = RcBlock::new(move |cookies: NonNull<NSArray<NSHTTPCookie>>| {
+            // SAFETY: WebKit hands the completion block a non-null cookie array that
+            // lives for the duration of the call.
             let cookies = unsafe { cookies.as_ref() };
             let values = (0..cookies.count())
                 .map(|index| {
@@ -584,6 +666,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
                 .expect("Hydrolysis WKWebView cookie callback invoked twice");
             let _ = sender.send(values);
         });
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             store.getAllCookies(&completion);
         }
@@ -596,9 +680,16 @@ impl WebViewHandle for MacSystemWebViewHandle {
         let (sender, receiver) = oneshot::channel();
         let sender = RefCell::new(Some(sender));
         let completion = RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+            // SAFETY: WebKit passes a nullable `NSError` to the completion block;
+            // `as_ref` is the null check.
             let result = if let Some(error) = unsafe { error.as_ref() } {
                 Err(Str::from(error.localizedDescription().to_string()))
+            // SAFETY: WebKit passes a nullable result to the completion block;
+            // `as_ref` is the null check.
             } else if let Some(value) = unsafe { value.as_ref() } {
+                // SAFETY: `value` is the non-null result WebKit handed the
+                // completion block, and `-description` is defined on every
+                // `NSObject`, returning a retained string.
                 let description: Retained<NSString> = unsafe { msg_send![value, description] };
                 Ok(Str::from(description.to_string()))
             } else {
@@ -610,6 +701,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
                 .expect("Hydrolysis WKWebView JavaScript callback invoked twice");
             let _ = sender.send(result);
         });
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
         unsafe {
             self.inner.web_view.evaluateJavaScript_completionHandler(
                 &NSString::from_str(script),

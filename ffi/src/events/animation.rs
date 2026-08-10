@@ -80,6 +80,8 @@ impl IntoFFI for Animation {
 pub unsafe extern "C" fn waterui_get_animation(
     metadata: *const WuiWatcherMetadata,
 ) -> WuiAnimation {
+    // SAFETY: the caller contract requires `metadata` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe {
         (*metadata)
             .try_get::<Animation>()

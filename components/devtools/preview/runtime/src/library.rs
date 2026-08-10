@@ -1,6 +1,13 @@
 //! Dynamic library loading for preview.
 //!
 //! Handles loading dylibs received from the CLI and resolving preview symbols.
+//!
+//! # Safety
+//!
+//! A preview dylib is loaded with `dlopen` and its preview symbols resolved by
+//! name, so the `unsafe` here asserts that a symbol found under a
+//! `waterui_preview_*` name really has the signature the macro generates. The
+//! `Library` is kept alive for as long as any view resolved from it.
 
 use std::ffi::CString;
 use std::path::Path;
@@ -186,6 +193,8 @@ impl PreviewLibrary {
             "Preview library ensured dylib cache file"
         );
 
+        // SAFETY: preview dylib load or symbol resolution; see the module safety
+        // note.
         let (library, mut timings) = unsafe { Self::load_from_path(&cache_path) }.await?;
         timings.cache_file_ms = cache_file_ms;
         Ok((library, timings))
@@ -247,6 +256,8 @@ impl PreviewLibrary {
             "Preview library cached dylib from local path"
         );
 
+        // SAFETY: preview dylib load or symbol resolution; see the module safety
+        // note.
         let (library, mut timings) = unsafe { Self::load_from_path(&cache_path) }.await?;
         timings.cache_file_ms = cache_file_ms;
         Ok((library, timings))
@@ -290,6 +301,8 @@ impl PreviewLibrary {
             return false;
         };
 
+        // SAFETY: preview dylib load or symbol resolution; see the module safety
+        // note.
         unsafe { self.lib.get::<*const ()>(c_name.as_bytes_with_nul()) }.is_ok()
     }
 
@@ -305,12 +318,20 @@ impl PreviewLibrary {
         let mut c_name_bytes = Vec::with_capacity(symbol_bytes.len() + 1);
         c_name_bytes.extend_from_slice(symbol_bytes);
         c_name_bytes.push(0);
+        // SAFETY: preview dylib load or symbol resolution; see the module safety
+        // note.
         let c_name = unsafe { CString::from_vec_with_nul_unchecked(c_name_bytes) };
 
         let func: libloading::Symbol<unsafe extern "C" fn() -> *mut ()> =
+            // SAFETY: preview dylib load or symbol resolution; see the module safety
+            // note.
             unsafe { self.lib.get(c_name.as_bytes_with_nul())? };
 
+        // SAFETY: preview dylib load or symbol resolution; see the module safety
+        // note.
         let ptr = unsafe { func() };
+        // SAFETY: preview dylib load or symbol resolution; see the module safety
+        // note.
         let boxed: Box<AnyView> = unsafe { Box::from_raw(ptr.cast()) };
         Ok(*boxed)
     }
@@ -327,6 +348,8 @@ async fn dlopen_via_blocking(
         let path = path.to_path_buf();
         move || {
             let closure_start = Instant::now();
+            // SAFETY: preview dylib load or symbol resolution; see the module safety
+            // note.
             let result = unsafe { libloading::Library::new(&path).map_err(LoadError::Library) };
             (result, elapsed_ms(closure_start))
         }

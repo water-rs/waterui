@@ -24,6 +24,8 @@ pub unsafe extern "C" fn waterui_anyviews_get_view(
     anyview: *const WuiAnyViews,
     index: usize,
 ) -> *mut WuiAnyView {
+    // SAFETY: the caller contract requires `anyview` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe { (&*anyview).get_view(index).into_ffi() }
 }
 
@@ -33,6 +35,8 @@ pub unsafe extern "C" fn waterui_anyviews_get_view(
 /// The caller must ensure that `anyviews` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_anyviews_len(anyviews: *const WuiAnyViews) -> usize {
+    // SAFETY: the caller contract requires `anyviews` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe { (&*anyviews).len().get() }
 }
 
@@ -58,6 +62,8 @@ pub unsafe extern "C" fn waterui_anyviews_get_ids_in_range(
     start: usize,
     end: usize,
 ) -> WuiArray<WuiId> {
+    // SAFETY: the caller contract requires `anyviews` to be a valid handle alive for
+    // this call; it is only borrowed while the ids are collected.
     unsafe { WuiArray::new(collect_ids_in_range(&*anyviews, start, end)) }
 }
 
@@ -85,6 +91,7 @@ pub unsafe extern "C" fn waterui_anyviews_watch_range(
 
     impl Drop for ForeignWatcher {
         fn drop(&mut self) {
+            // SAFETY: `drop` and `data` are one registration, and `Drop` runs once.
             unsafe { (self.drop)(self.data) }
         }
     }
@@ -102,6 +109,8 @@ pub unsafe extern "C" fn waterui_anyviews_watch_range(
 
     impl WatcherGuard for Guard {}
 
+    // SAFETY: the caller contract requires `anyviews` to be a valid handle alive for
+    // this call, and `data`/`call`/`drop` to be one registration from the backend.
     unsafe {
         let anyviews = &*anyviews;
         let watcher = alloc::rc::Rc::new(ForeignWatcher { data, call, drop });

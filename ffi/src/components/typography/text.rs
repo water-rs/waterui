@@ -38,7 +38,13 @@ impl IntoFFI for ResolvedFont {
 impl IntoRust for WuiResolvedFont {
     type Rust = ResolvedFont;
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `weight` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         let weight = unsafe { self.weight.into_rust() };
+        // SAFETY: the caller contract makes `family` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         let family_str: waterui::Str = unsafe { self.family.into_rust() };
         if family_str.is_empty() {
             ResolvedFont::new(self.size, weight)
@@ -124,11 +130,17 @@ impl IntoRust for WuiTextStyle {
     type Rust = Style;
 
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `font` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         let font = unsafe { self.font.into_rust() };
 
         let foreground = if self.foreground.is_null() {
             None
         } else {
+            // SAFETY: the caller contract makes `foreground` an owning handle from
+            // the matching FFI constructor; it is consumed here and not
+            // observed again.
             Some(unsafe { self.foreground.into_rust() })
         };
 
@@ -137,6 +149,9 @@ impl IntoRust for WuiTextStyle {
         } else if self.background == self.foreground && foreground.is_some() {
             foreground.clone()
         } else {
+            // SAFETY: the caller contract makes `background` an owning handle from
+            // the matching FFI constructor; it is consumed here and not
+            // observed again.
             Some(unsafe { self.background.into_rust() })
         };
 
@@ -155,7 +170,13 @@ impl IntoRust for WuiStyledChunk {
     type Rust = (Str, Style);
 
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `text` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         let text = unsafe { self.text.into_rust() };
+        // SAFETY: the caller contract makes `style` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         let style = unsafe { self.style.into_rust() };
         (text, style)
     }
@@ -171,7 +192,13 @@ impl IntoRust for WuiStyledStr {
         let ptr = chunks.as_mut_ptr();
 
         for index in 0..len {
+            // SAFETY: `index` is below the length the caller supplied alongside `ptr`,
+            // so the element is in bounds and initialized; each index is read once, so
+            // ownership is taken exactly once.
             let chunk = unsafe { core::ptr::read(ptr.add(index)) };
+            // SAFETY: the caller contract makes `chunk` an owning handle from the
+            // matching FFI constructor; it is consumed here and not observed
+            // again.
             let (text, style) = unsafe { chunk.into_rust() };
             styled.push(text, style);
         }
@@ -274,7 +301,11 @@ pub unsafe extern "C" fn waterui_font_from_resolved(
     weight: WuiFontWeight,
     family: WuiStr,
 ) -> *mut WuiFont {
+    // SAFETY: the caller contract makes `weight` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let weight = unsafe { weight.into_rust() };
+    // SAFETY: the caller contract makes `family` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let family: Str = unsafe { family.into_rust() };
 
     let mut font = Font::from(Body).size(size).weight(weight);
@@ -293,7 +324,10 @@ pub unsafe extern "C" fn waterui_resolve_font(
     font: *const WuiFont,
     env: *const WuiEnv,
 ) -> *mut WuiComputed<ResolvedFont> {
+    // SAFETY: the caller contract requires `font` to be a valid handle alive for this
+    // call; it is only borrowed.
     let font = unsafe { &*font };
+    // SAFETY: likewise for `env`.
     let env = unsafe { &*env };
     let resolved = font.resolve(env);
     resolved.into_ffi()

@@ -1,3 +1,9 @@
+//! # Safety
+//!
+//! Resolving a symbol asserts that the bridge library exports it at the declared
+//! signature — the contract between this crate and the bridge it is built
+//! against. The `Library` outlives every pointer taken out of it.
+
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 
 pub const ABI_VERSION: u32 = 1;
@@ -109,6 +115,8 @@ pub struct WpeApi {
 impl WpeApi {
     pub unsafe fn load(library: &libloading::Library) -> Self {
         unsafe fn symbol<T: Copy>(library: &libloading::Library, name: &[u8]) -> T {
+            // SAFETY: symbol resolved from the bridge library, at the signature
+            // declared here; see the module safety note.
             *unsafe {
                 library
                     .get::<T>(name)
@@ -116,6 +124,8 @@ impl WpeApi {
             }
         }
 
+        // SAFETY: symbol resolved from the bridge library, at the signature declared
+        // here; see the module safety note.
         unsafe {
             Self {
                 abi_version: symbol(library, b"water_wpe_abi_version\0"),

@@ -47,7 +47,11 @@ pub unsafe extern "C" fn waterui_gpu_runtime_create(
     complete: WuiGpuRuntimeCreateCallback,
     drop_context: WuiGpuRuntimeCreateContextDrop,
 ) {
+    // SAFETY: the caller contract requires `context` and `drop_context` to be one
+    // registration from the backend.
     let context = unsafe { ForeignCallbackContext::new(context, drop_context) };
+    // SAFETY: `complete` belongs to that same registration, and the context is moved
+    // into the closure, so it is alive when the completion fires.
     create_gpu_runtime(move |runtime| unsafe {
         complete(context.data(), runtime.into_ffi());
     });
@@ -74,7 +78,11 @@ pub unsafe extern "C" fn waterui_env_install_gpu_runtime(
     env: *mut WuiEnv,
     runtime: *mut WuiGpuRuntime,
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
+    // SAFETY: the caller contract makes `runtime` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let runtime = unsafe { runtime.into_rust() };
     install_gpu_runtime(&mut env.0, runtime);
 }
@@ -92,8 +100,12 @@ pub unsafe extern "C" fn waterui_env_install_gpu_runtime(
 pub unsafe extern "C" fn waterui_gpu_runtime_metal_device(
     env: *const WuiEnv,
 ) -> *mut core::ffi::c_void {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let runtime = gpu_runtime(&env.0);
+    // SAFETY: this entry point is Metal-only, so the runtime's device has `MetalApi`
+    // as its HAL type.
     let device = unsafe { runtime.context().device.as_hal::<MetalApi>() }
         .expect("WaterUI GPU runtime did not create a Metal device");
     Retained::as_ptr(device.raw_device()).cast_mut().cast()

@@ -341,7 +341,10 @@ unsafe fn resolve_navigation_stack_root(
     root: *mut WuiAnyView,
     env: *const WuiEnv,
 ) -> *mut WuiAnyView {
+    // SAFETY: the caller contract makes `root` an owning view handle consumed here.
     let root: waterui::AnyView = unsafe { crate::IntoRust::into_rust(root) };
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let root = waterui_navigation::resolve_navigation_root(root, &env.0);
     waterui::AnyView::new(waterui_core::Native::new(root)).into_ffi()
@@ -360,6 +363,8 @@ pub unsafe extern "C" fn waterui_navigation_stack_root(
     root: *mut WuiAnyView,
     env: *const WuiEnv,
 ) -> *mut WuiAnyView {
+    // SAFETY: this entry point shares its callee's contract — `root` is an owning
+    // handle and `env` a valid handle alive for the call.
     unsafe { resolve_navigation_stack_root(root, env) }
 }
 
@@ -479,6 +484,8 @@ impl crate::IntoRust for *mut WuiNavigationSplitDetail {
     type Rust = NavigationSplitDetailBuilder;
 
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: `IntoRust::into_rust` requires an owning pointer from the matching
+        // `into_ffi`, which boxed this builder.
         unsafe { *Box::from_raw(self.cast::<NavigationSplitDetailBuilder>()) }
     }
 }
@@ -494,6 +501,7 @@ impl crate::IntoRust for *mut WuiNavigationSplitDetail {
 pub unsafe extern "C" fn waterui_drop_split_navigation_detail(
     value: *mut WuiNavigationSplitDetail,
 ) {
+    // SAFETY: the caller contract makes `value` an owning handle, dropped once here.
     let _ = unsafe { crate::IntoRust::into_rust(value) };
 }
 
@@ -529,8 +537,13 @@ pub unsafe extern "C" fn waterui_split_navigation_detail_content(
     selected: crate::id::WuiId,
     env: *const WuiEnv,
 ) -> WuiNavigationView {
+    // SAFETY: the caller contract requires `handler` to be a valid builder handle
+    // alive for this call; it is only borrowed.
     let handler = unsafe { crate::borrow_ffi(handler as *const NavigationSplitDetailBuilder) };
+    // SAFETY: the caller contract makes `selected` an owning handle consumed here.
     let selected = unsafe { crate::IntoRust::into_rust(selected) };
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let mut view = handler.build(selected);
     view.resolve_native_fields(&env.0);
@@ -669,6 +682,8 @@ pub unsafe extern "C" fn waterui_tab_content(
     handler: *mut WuiTabContent,
     env: *const WuiEnv,
 ) -> WuiNavigationView {
+    // SAFETY: the caller contract requires both handles to be valid and alive for
+    // this call; both are only borrowed.
     unsafe {
         let handler = crate::borrow_ffi(handler);
         let env = crate::borrow_ffi(env);
@@ -750,6 +765,8 @@ impl CustomNavigationController for ForeignNavigationController {
             .map(|builder| builder.build())
             .map(IntoFFI::into_ffi)
             .collect::<alloc::vec::Vec<_>>();
+        // SAFETY: `apply` and the context were registered together by the backend, and
+        // the `ForeignCallbackContext` keeps the data alive for as long as `self`.
         unsafe {
             (self.apply)(
                 self.context.data(),
@@ -779,8 +796,12 @@ pub unsafe extern "C" fn waterui_env_install_navigation_controller(
     apply: unsafe extern "C" fn(*mut (), WuiNavigationTransaction),
     drop_context: unsafe extern "C" fn(*mut ()),
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
     let controller = ForeignNavigationController {
+        // SAFETY: the caller contract requires `context` and `drop_context` to be one
+        // registration from the backend.
         context: unsafe { ForeignCallbackContext::new(context, drop_context) },
         apply,
     };
@@ -834,6 +855,8 @@ pub unsafe extern "C" fn waterui_navigation_pop(env: *const WuiEnv) {
 /// native stack that completed the pop.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_navigation_complete_native_pop(env: *const WuiEnv, count: usize) {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let controller = env
         .get::<NavigationController>()
@@ -858,6 +881,8 @@ pub unsafe extern "C" fn waterui_navigation_transition_completed(
     env: *const WuiEnv,
     id: u64,
 ) -> bool {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let controller = env
         .get::<NavigationController>()
@@ -879,6 +904,8 @@ pub unsafe extern "C" fn waterui_navigation_transition_cancelled(
     env: *const WuiEnv,
     id: u64,
 ) -> bool {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let controller = env
         .get::<NavigationController>()

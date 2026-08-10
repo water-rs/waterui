@@ -49,7 +49,9 @@ ffi_view!(ResolvedColor, WuiResolvedColor, resolved_color);
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_force_as_color(view: *mut crate::WuiAnyView) -> *mut WuiColor {
+    // SAFETY: the caller contract makes `view` a valid owning handle consumed here.
     let any: waterui::AnyView = unsafe { IntoRust::into_rust(view) };
+    // SAFETY: the same contract guarantees the erased value is a `Native<Color>`.
     let native = unsafe { *any.downcast_unchecked::<waterui_core::Native<Color>>() };
     native.into_ffi()
 }
@@ -86,7 +88,9 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsCol
     view_ptr: crate::jni::jlong,
 ) -> crate::jni::jlong {
     let view = view_ptr as *mut crate::WuiAnyView;
+    // SAFETY: the caller contract makes `view_ptr` a valid owning handle consumed here.
     let any: waterui::AnyView = unsafe { IntoRust::into_rust(view) };
+    // SAFETY: the same contract guarantees the erased value is a `Native<Color>`.
     let native = unsafe { *any.downcast_unchecked::<waterui_core::Native<Color>>() };
     native.into_ffi() as crate::jni::jlong
 }
@@ -158,6 +162,8 @@ pub unsafe extern "C" fn waterui_color_from_srgba(
     blue: f32,
     alpha: f32,
 ) -> *mut WuiColor {
+    // SAFETY: the callee takes only plain floats and allocates its own return value,
+    // so there is no pointer precondition to uphold.
     unsafe { waterui_color_from_linear_rgba_headroom(red, green, blue, alpha, 0.0) }
 }
 
@@ -171,6 +177,8 @@ pub unsafe extern "C" fn waterui_resolve_color(
     color: *const WuiColor,
     env: *const WuiEnv,
 ) -> *mut WuiComputed<ResolvedColor> {
+    // SAFETY: the caller contract requires `color` and `env` to be valid handles that
+    // stay alive for this call; both are only borrowed here.
     unsafe {
         let color = &*color;
         let env = &*env;

@@ -65,6 +65,8 @@ impl WuiApp {
 
         if window_count != 1 {
             for window in windows.as_mut_slice() {
+                // SAFETY: `window` points at an initialized element of the array the
+                // caller handed over, and each element is read once.
                 let window = unsafe { core::ptr::read(window) };
                 window.dispose_android();
             }
@@ -72,6 +74,9 @@ impl WuiApp {
             panic!("Android backend requires exactly one window, got {window_count}");
         }
 
+        // SAFETY: the branch above proves the array is non-empty, so the first element
+        // is initialized; `consume` below frees the buffer without dropping elements,
+        // so this moves out exactly once.
         let window = unsafe { windows.as_mut_slice().as_mut_ptr().read() };
         windows.consume();
         drop(menu_bar);
@@ -240,7 +245,9 @@ mod tests {
         assert!(!projection.env.as_ptr().is_null());
 
         let (content, env) = projection.into_raw_parts();
+        // SAFETY: the caller contract makes `content` an owning handle consumed here.
         let content: AnyView = unsafe { IntoRust::into_rust(content) };
+        // SAFETY: likewise for `env`.
         let env: Environment = unsafe { IntoRust::into_rust(env) };
         drop(content);
         drop(env);

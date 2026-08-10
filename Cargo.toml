@@ -80,6 +80,8 @@ clippy.perf = "warn"
 clippy.pedantic = "warn"
 clippy.nursery = "warn"
 clippy.cargo = "warn"
+# Every `unsafe` must state why it is sound, in a form the compiler checks.
+clippy.undocumented_unsafe_blocks = "warn"
 clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 

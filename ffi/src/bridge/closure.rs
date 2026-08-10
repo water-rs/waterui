@@ -65,6 +65,9 @@ impl ForeignCallbackContext {
 
 impl Drop for ForeignCallbackContext {
     fn drop(&mut self) {
+        // SAFETY: `data` and `drop` were registered together by the native side for
+        // exactly this context, and `Drop` runs once, so the destructor is invoked once
+        // with the pointer it was paired with.
         unsafe { (self.drop)(self.data) };
     }
 }
@@ -98,12 +101,15 @@ impl<T: 'static> WuiFn<T> {
     }
     /// Invokes the wrapped native function with `value`.
     pub fn call(&self, value: T) {
+        // SAFETY: `call` and `data` come from the same registration, and `&self` proves
+        // the context has not been dropped yet.
         unsafe { (self.call)(self.data, value) }
     }
 }
 
 impl<T> Drop for WuiFn<T> {
     fn drop(&mut self) {
+        // SAFETY: as for `call`, with `Drop` guaranteeing the destructor runs once.
         unsafe { (self.drop)(self.data) }
     }
 }
@@ -118,6 +124,10 @@ where
         where
             F2: Fn(T2),
         {
+            // SAFETY: this vtable entry is only reachable through a `WuiFn` built
+            // below, which boxed an `Rc<F>` and paired it with `call::<F, T>`, so `F2`
+            // is that `F` and `data` points at the live `Rc`. Cloning it leaves the
+            // boxed original owned by the `WuiFn`.
             let callback = unsafe { Rc::clone(&*data.cast::<Rc<F2>>()) };
             callback(value);
         }
@@ -125,11 +135,16 @@ where
         where
             F2: Fn(T2),
         {
+            // SAFETY: as for `call`, and `WuiFn::drop` invokes this once before
+            // releasing the pointer.
             unsafe {
                 let _ = Box::from_raw(data.cast::<Rc<F2>>());
             }
         }
 
+        // SAFETY: `data` is the pointer `Box::into_raw` just produced for an
+        // `Rc<F>`, and it is paired with the `call`/`drop` entries instantiated for that
+        // same `F`, which is exactly what those two functions expect.
         unsafe {
             let data = Box::into_raw(Box::new(Rc::new(value))).cast::<()>();
             Self::new(data, call::<F, T>, drop::<F, T>)
@@ -156,6 +171,8 @@ mod tests {
         let drop_for_callback = Rc::clone(&drop_callback);
         let callback_finished_for_callback = Rc::clone(&callback_finished);
         let callback = ManuallyDrop::new(WuiFn::from(move |()| {
+            // SAFETY: the test installs the drop callback into the cell before invoking
+            // this closure, and the `expect` above proves it is present.
             unsafe {
                 drop_for_callback
                     .get()
@@ -168,6 +185,8 @@ mod tests {
         data.set(callback.data);
         drop_callback.set(Some(callback.drop));
 
+        // SAFETY: `call` and `data` belong to the `callback` still alive in this
+        // scope (it is `ManuallyDrop`, so nothing has freed it).
         unsafe { (callback.call)(callback.data, ()) };
 
         assert!(callback_finished.get());

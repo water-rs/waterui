@@ -106,8 +106,20 @@ fn parse_url(s: &Str) -> Url {
         .unwrap_or_else(|| panic!("WebView backend emitted invalid URL: {}", s.as_str()))
 }
 
+/// Takes ownership of a string field out of a `WuiWebViewEvent`.
+///
+/// # Safety
+///
+/// `value` must be an owning `WuiStr` the backend attached to the event, and may
+/// be taken only once.
+// SAFETY: the backend fills the string fields its event type defines with owning
+// `WuiStr` handles, and each arm reads only its own fields, exactly once.
 unsafe fn take_event_string(value: *mut WuiStr) -> Str {
+    // SAFETY: the caller contract makes `value` an owning pointer from the matching
+    // FFI constructor, so reclaiming the box frees it exactly once.
     let value = unsafe { Box::from_raw(value) };
+    // SAFETY: the caller contract makes `value` a valid owning event pointer; it is
+    // read once and converted here.
     unsafe { (*value).into_rust() }
 }
 
@@ -117,6 +129,9 @@ impl IntoRust for WuiWebViewEvent {
         match self.event_type {
             WuiWebViewEventType::None => WebViewEvent::None,
             WuiWebViewEventType::WillNavigate => WebViewEvent::WillNavigate {
+                // SAFETY: the backend fills the string fields its event type defines
+                // with owning `WuiStr` handles, and each arm reads only its
+                // own fields, exactly once.
                 url: parse_url(&unsafe { take_event_string(self.url) }),
             },
             WuiWebViewEventType::Loading => WebViewEvent::Loading {
@@ -124,14 +139,29 @@ impl IntoRust for WuiWebViewEvent {
             },
             WuiWebViewEventType::Loaded => WebViewEvent::Loaded,
             WuiWebViewEventType::Redirect => WebViewEvent::Redirect {
+                // SAFETY: the backend fills the string fields its event type defines
+                // with owning `WuiStr` handles, and each arm reads only its
+                // own fields, exactly once.
                 from: parse_url(&unsafe { take_event_string(self.url) }),
+                // SAFETY: the backend fills the string fields its event type defines
+                // with owning `WuiStr` handles, and each arm reads only its
+                // own fields, exactly once.
                 to: parse_url(&unsafe { take_event_string(self.url2) }),
             },
             WuiWebViewEventType::SslError => WebViewEvent::Error(WebViewError::Ssl {
+                // SAFETY: the backend fills the string fields its event type defines
+                // with owning `WuiStr` handles, and each arm reads only its
+                // own fields, exactly once.
                 url: parse_url(&unsafe { take_event_string(self.url) }),
+                // SAFETY: the backend fills the string fields its event type defines
+                // with owning `WuiStr` handles, and each arm reads only its
+                // own fields, exactly once.
                 message: unsafe { take_event_string(self.message) },
             }),
             WuiWebViewEventType::Error => WebViewEvent::Error(WebViewError::LoadFailed(unsafe {
+                // SAFETY: the backend fills the string fields its event type defines
+                // with owning `WuiStr` handles, and each arm reads only its
+                // own fields, exactly once.
                 take_event_string(self.message)
             })),
             WuiWebViewEventType::StateChanged => WebViewEvent::StateChanged {
@@ -290,6 +320,9 @@ impl FfiWebViewHandle {
 impl Drop for FfiWebViewHandle {
     fn drop(&mut self) {
         unsafe {
+            // SAFETY: `ffi.data` and this function pointer were registered together
+            // by the backend for this controller, which is alive for as long
+            // as `self` is.
             (self.ffi.drop)(self.ffi.data);
         }
     }
@@ -297,47 +330,77 @@ impl Drop for FfiWebViewHandle {
 
 impl WebViewHandle for FfiWebViewHandle {
     fn go_back(&self) {
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.go_back)(self.ffi.data) }
     }
 
     fn go_forward(&self) {
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.go_forward)(self.ffi.data) }
     }
 
     fn go_to(&self, url: &str) {
         let owned_url = Str::from(url.to_string());
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.go_to)(self.ffi.data, owned_url.into_ffi()) }
     }
 
     fn stop(&self) {
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.stop)(self.ffi.data) }
     }
 
     fn refresh(&self) {
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.refresh)(self.ffi.data) }
     }
 
     fn can_go_back(&self) -> bool {
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.can_go_back)(self.ffi.data) }
     }
 
     fn can_go_forward(&self) -> bool {
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.can_go_forward)(self.ffi.data) }
     }
 
     fn set_user_agent(&self, user_agent: &str) {
         let owned_ua = Str::from(user_agent.to_string());
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.set_user_agent)(self.ffi.data, owned_ua.into_ffi()) }
     }
 
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
         unsafe {
+            // SAFETY: `ffi.data` and this function pointer were registered together
+            // by the backend for this controller, which is alive for as long
+            // as `self` is.
             (self.ffi.set_redirects_enabled)(self.ffi.data, enabled.computed().into_ffi());
         }
     }
 
     fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
         let owned_script = Str::from(script.to_string());
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.inject_script)(self.ffi.data, owned_script.into_ffi(), time.into_ffi()) }
     }
 
@@ -352,6 +415,9 @@ impl WebViewHandle for FfiWebViewHandle {
         // Wrap a single Rust closure in a WuiFn that converts FFI events to Rust events
         // and fan-outs to all registered watchers.
         let callback = WuiFn::from(move |ffi_event: WuiWebViewEvent| {
+            // SAFETY: the caller contract makes `ffi_event` an owning handle from
+            // the matching FFI constructor; it is consumed here and not
+            // observed again.
             let event = unsafe { ffi_event.into_rust() };
             let snapshot = watchers.borrow().clone();
             for watcher in snapshot {
@@ -359,6 +425,9 @@ impl WebViewHandle for FfiWebViewHandle {
             }
         });
 
+        // SAFETY: `ffi.data` and this function pointer were registered together by
+        // the backend for this controller, which is alive for as long as
+        // `self` is.
         unsafe { (self.ffi.watch)(self.ffi.data, callback) }
     }
 
@@ -371,11 +440,17 @@ impl WebViewHandle for FfiWebViewHandle {
         let engine = base64::engine::general_purpose::STANDARD;
         let name = Str::from(name.to_string());
         let callback = WuiFn::from(move |msg: WuiWebViewMessage| {
+            // SAFETY: the caller contract makes `payload_base64` an owning handle
+            // from the matching FFI constructor; it is consumed here and not
+            // observed again.
             let payload_b64: Str = unsafe { msg.payload_base64.into_rust() };
             let payload = match engine.decode(payload_b64.as_str()) {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     let message = Str::from(err.to_string());
+                    // SAFETY: the backend registered `reply.call` with `reply.data`
+                    // for this message; the early return below makes this the only
+                    // reply sent.
                     unsafe { (msg.reply.call)(msg.reply.data, false, message.into_ffi()) };
                     return;
                 }
@@ -384,9 +459,14 @@ impl WebViewHandle for FfiWebViewHandle {
             let reply_bytes = handler(&payload);
             let reply_b64 = engine.encode(reply_bytes);
             let reply = Str::from(reply_b64);
+            // SAFETY: as above — the failure path returned early, so this is the
+            // single reply for this message.
             unsafe { (msg.reply.call)(msg.reply.data, true, reply.into_ffi()) };
         });
 
+        // SAFETY: `add_handler` and `ffi.data` were registered together for this
+        // controller, which outlives the call; the name and callback are passed by
+        // value into backend ownership.
         unsafe { add_handler(self.ffi.data, name.into_ffi(), callback) }
     }
 
@@ -397,6 +477,7 @@ impl WebViewHandle for FfiWebViewHandle {
             .expect("WebView backend must implement `remove_handler`");
 
         let name = Str::from(name.to_string());
+        // SAFETY: as for `add_handler` — same controller, same registration.
         unsafe { remove_handler(self.ffi.data, name.into_ffi()) }
     }
 
@@ -406,6 +487,7 @@ impl WebViewHandle for FfiWebViewHandle {
             .set_cookie
             .expect("WebView backend must implement `set_cookie`");
         let cookie = Str::from(cookie.to_string());
+        // SAFETY: as for `add_handler` — same controller, same registration.
         unsafe { set_cookie(self.ffi.data, cookie.into_ffi()) }
     }
 
@@ -415,7 +497,13 @@ impl WebViewHandle for FfiWebViewHandle {
     )]
     fn get_cookies(&self) -> impl core::future::Future<Output = Vec<Cookie<'static>>> {
         unsafe extern "C" fn cookies_callback(data: *mut (), result: WuiStr) {
+            // SAFETY: `data` is the sender this callback was registered with, boxed
+            // by the caller below; the backend invokes the callback once, so the box
+            // is reclaimed once.
             let sender = unsafe { Box::from_raw(data.cast::<async_channel::Sender<Str>>()) };
+            // SAFETY: the caller contract makes `result` an owning handle from the
+            // matching FFI constructor; it is consumed here and not observed
+            // again.
             let result = unsafe { result.into_rust() };
             let _ = sender.try_send(result);
         }
@@ -427,6 +515,8 @@ impl WebViewHandle for FfiWebViewHandle {
         let (sender, receiver) = async_channel::bounded::<Str>(1);
         let callback_data = Box::into_raw(Box::new(sender)).cast::<()>();
 
+        // SAFETY: `get_cookies` and `ffi.data` come from the same registration, and
+        // the callback below owns the boxed sender it will reclaim.
         unsafe {
             get_cookies(
                 self.ffi.data.cast_const(),
@@ -460,7 +550,12 @@ impl WebViewHandle for FfiWebViewHandle {
     fn run_javascript(&self, script: &str) -> impl core::future::Future<Output = Result<Str, Str>> {
         unsafe extern "C" fn js_callback_trampoline(data: *mut (), success: bool, result: WuiStr) {
             let sender =
+                // SAFETY: as for the cookie callback — `data` is the boxed sender
+                // this callback was registered with, invoked once.
                 unsafe { Box::from_raw(data.cast::<async_channel::Sender<Result<Str, Str>>>()) };
+            // SAFETY: the caller contract makes `result` an owning handle from the
+            // matching FFI constructor; it is consumed here and not observed
+            // again.
             let result = unsafe { result.into_rust() };
             let _ = sender.try_send(if success { Ok(result) } else { Err(result) });
         }
@@ -475,6 +570,9 @@ impl WebViewHandle for FfiWebViewHandle {
 
         let owned_script = Str::from(script.to_string());
         unsafe {
+            // SAFETY: `ffi.data` and this function pointer were registered together
+            // by the backend for this controller, which is alive for as long
+            // as `self` is.
             (self.ffi.run_javascript)(self.ffi.data, owned_script.into_ffi(), ffi_callback);
         }
 
@@ -513,6 +611,8 @@ ffi_view!(WebView, *mut WuiWebView, webview, any());
 /// (i.e., it does not downcast to `FfiWebViewHandle`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView) -> *mut () {
+    // SAFETY: the caller contract requires `webview` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     unsafe {
         let webview = crate::borrow_ffi(webview);
         let handle = webview.0.handle();
@@ -539,6 +639,8 @@ struct FfiWebViewController {
 
 impl CustomWebViewController for FfiWebViewController {
     fn open(&self) -> impl WebViewHandle {
+        // SAFETY: `create_fn` is the backend's constructor, registered on this
+        // factory; it takes no arguments and hands back an owning handle.
         let handle = unsafe { (self.create_fn)() };
         FfiWebViewHandle::new(handle)
     }
@@ -559,6 +661,8 @@ pub unsafe extern "C" fn waterui_env_install_webview_controller(
     env: *mut WuiEnv,
     create_fn: WuiCreateWebViewFn,
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
 
     let controller = WebViewController::new(FfiWebViewController { create_fn });
@@ -572,6 +676,8 @@ pub unsafe extern "C" fn waterui_env_install_webview_controller(
 /// `env` must be a valid pointer to a live `WuiEnv`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_has_webview_controller(env: *const WuiEnv) -> bool {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     env.get::<WebViewController>().is_some()
 }
