@@ -41,14 +41,13 @@ use objc2_web_kit::{
 };
 use waterui_core::{Computed, Environment, Str};
 use waterui_webview::{
-    Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController, WebViewError,
-    WebViewEvent, WebViewHandle,
+    Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
 };
 
 const BRIDGE_SCRIPT: &str = include_str!("bridge.js");
 const HANDLER_SCRIPT: &str = include_str!("handler.js");
 
-type Watcher = Rc<dyn Fn(WebViewEvent)>;
 type JavaScriptHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
 
 #[derive(Clone)]
@@ -58,7 +57,7 @@ struct InjectedScript {
 }
 
 struct SharedState {
-    watchers: RefCell<Vec<Watcher>>,
+    watchers: WatcherSet<WebViewEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handlers: RefCell<HashMap<String, JavaScriptHandler>>,
     scripts: RefCell<Vec<InjectedScript>>,
@@ -68,7 +67,7 @@ struct SharedState {
 impl Default for SharedState {
     fn default() -> Self {
         Self {
-            watchers: RefCell::new(Vec::new()),
+            watchers: WatcherSet::new(),
             redirects_enabled: RefCell::new(Computed::new(true)),
             handlers: RefCell::new(HashMap::new()),
             scripts: RefCell::new(Vec::new()),
@@ -79,10 +78,7 @@ impl Default for SharedState {
 
 impl SharedState {
     fn emit(&self, event: WebViewEvent) {
-        let watchers = self.watchers.borrow().clone();
-        for watcher in watchers {
-            watcher(event.clone());
-        }
+        self.watchers.emit(&event);
     }
 
     fn emit_navigation_state(&self, web_view: &WKWebView) {
@@ -600,12 +596,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
             .replace(Computed::new(enabled));
     }
 
-    fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) {
-        self.inner
-            .shared
-            .watchers
-            .borrow_mut()
-            .push(Rc::new(watcher));
+    fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+        self.inner.shared.watchers.insert(watcher)
     }
 
     fn can_go_back(&self) -> bool {
