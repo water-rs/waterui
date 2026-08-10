@@ -38,13 +38,13 @@ pub struct MainThreadBound<T> {
     value: ManuallyDrop<T>,
 }
 
-// SAFETY: the inner value is only ever accessed on the owning thread (enforced at
-// runtime by `assert_owner`), and is leaked rather than dropped off-thread, so it
-// never crosses a thread boundary in practice.
 #[allow(
     clippy::non_send_fields_in_send_ty,
     reason = "`MainThreadBound` deliberately carries non-`Send` data; the `Send` impl is sound because access is confined to the owning thread by `assert_owner`"
 )]
+// SAFETY: the inner value is only ever accessed on the owning thread (enforced at
+// runtime by `assert_owner`), and is leaked rather than dropped off-thread, so it
+// never crosses a thread boundary in practice.
 unsafe impl<T> Send for MainThreadBound<T> {}
 // SAFETY: see the `Send` impl — shared access is likewise confined to the owning
 // thread by `assert_owner`.

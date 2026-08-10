@@ -348,6 +348,8 @@ impl Drop for WuiSubView {
 // measures it on a worker. It must remain `#[repr(C)]`, so it cannot embed a
 // `MainThreadBound` runtime guard; the native main-thread contract is the invariant.
 unsafe impl Send for WuiSubView {}
+// SAFETY: see the `Send` impl — shared access is confined to the platform main
+// thread by the same `require_main_thread()` contract.
 unsafe impl Sync for WuiSubView {}
 
 impl SubView for WuiSubView {

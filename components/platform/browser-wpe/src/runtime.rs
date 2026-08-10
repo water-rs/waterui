@@ -143,9 +143,12 @@ impl RuntimeApi {
     }
 }
 
-// The bridge ABI explicitly permits frame completion functions from wgpu's
-// completion thread. libloading keeps the module mapped until the final Arc.
+// SAFETY: the bridge ABI explicitly permits calling the frame-completion
+// functions from wgpu's completion thread, and libloading keeps the module mapped
+// until the final `Arc` drops, so the function pointers stay valid.
 unsafe impl Send for RuntimeApi {}
+// SAFETY: see the `Send` impl — the API holds only function pointers into a module
+// that stays mapped, with no interior mutability.
 unsafe impl Sync for RuntimeApi {}
 
 struct RuntimeInner {

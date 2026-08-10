@@ -3,6 +3,11 @@
 //! `HydrolysisExt` provides `.hydrolysis()` to wrap any cloneable view into
 //! a `GpuSurface` rendered by hydrolysis.
 
+// Every `unsafe` here must say why it is sound, in a form the compiler checks.
+// The crate is at zero; the FFI layer and the platform bridges are not yet, which
+// is why this is set per-crate rather than in the workspace lint table.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod engine;
 mod env;
 mod gpu_view;
