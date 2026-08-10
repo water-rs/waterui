@@ -80,8 +80,12 @@ impl GtkApp {
     /// Runs the application with the provided root view.
     ///
     /// This method blocks until the application exits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the GPU runtime cannot be created.
+    #[must_use = "the returned value is the process exit status"]
     pub fn run<V: View + Clone + 'static>(self, view: V, env: Environment) -> i32 {
-        let view = view;
         // `env` is only mutated when a browser feature installs services into it.
         #[cfg(any(
             feature = "webview-default",

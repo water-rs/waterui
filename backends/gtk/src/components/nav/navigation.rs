@@ -21,7 +21,7 @@ use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guards};
 
-fn css_for_header_bar_color(color: waterui_graphics::color::Color, env: &Environment) -> String {
+fn css_for_header_bar_color(color: &waterui_graphics::color::Color, env: &Environment) -> String {
     let resolved = color.resolve(env).get();
     format!(
         "background-color: {};",
@@ -165,7 +165,7 @@ impl GtkComponent for NavigationView {
             color.watch(
                 move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
                     let color = ctx.into_value();
-                    let declarations = css_for_header_bar_color(color, &env_for_color);
+                    let declarations = css_for_header_bar_color(&color, &env_for_color);
                     let scoped_css = scoped_css_for_color.clone();
                     glib::idle_add_local_once(move || {
                         scoped_css.set_declarations(&declarations);
@@ -178,7 +178,7 @@ impl GtkComponent for NavigationView {
             header_bar.set_visible(false);
         }
         if let Some(color) = &bar.color {
-            scoped_css.set_declarations(&css_for_header_bar_color(color.get(), env));
+            scoped_css.set_declarations(&css_for_header_bar_color(&color.get(), env));
         }
 
         container.append(&header_bar);
@@ -527,13 +527,13 @@ impl GtkNavigationControllerInner {
 
         if let Some(color) = &top.bar_color {
             self.color_css
-                .set_declarations(&css_for_header_bar_color(color.get(), &self.env));
+                .set_declarations(&css_for_header_bar_color(&color.get(), &self.env));
             let env = self.env.clone();
             let scoped_css = self.color_css.clone();
             let color_guard = color.watch(
                 move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
                     let color = ctx.into_value();
-                    let declarations = css_for_header_bar_color(color, &env);
+                    let declarations = css_for_header_bar_color(&color, &env);
                     let scoped_css = scoped_css.clone();
                     glib::idle_add_local_once(move || {
                         scoped_css.set_declarations(&declarations);
