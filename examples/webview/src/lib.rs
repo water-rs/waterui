@@ -225,7 +225,7 @@ fn scene(webview: WebView) -> impl View {
     .spacing(5.0)
     .width(250.0);
 
-    let event_signal = WebView::event(&webview);
+    let event_signal = webview.events();
     let event_guard = {
         let webview = webview.clone();
         event_signal.watch(move |ctx| {
