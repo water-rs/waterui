@@ -129,7 +129,7 @@ fn attach_focus_metadata(widget: Widget, binding: &Binding<bool>) -> Widget {
         }
     });
 
-    let (focused, guard) = subscribe_then_get(&binding, {
+    let (focused, guard) = subscribe_then_get(binding, {
         let anchor = anchor.clone();
         move |ctx| {
             if ctx.into_value() {
