@@ -26,7 +26,7 @@ waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = "0.38"
-glow = "0.17"
+glow.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 wgpu.workspace = true
 

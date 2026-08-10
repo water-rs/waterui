@@ -180,7 +180,9 @@ skrifa = "0.42.1"
 vello_cpu = "0.0.9"
 lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
-glow = "0.18"
+# Must match the `glow` version wgpu-hal links against, or GLES handles from
+# `wgpu::hal::gles` fail to unify with locally created ones.
+glow = "0.17"
 tiny-skia = "0.12"
 zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend", "ws"] }
 pastey = "0.2.3"
