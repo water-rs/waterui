@@ -35,7 +35,7 @@ use waterui_chromium::{
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
 #[cfg(feature = "webview")]
-use waterui_webview::{WebViewError, WebViewEvent};
+use waterui_webview::{WatcherSet, WebViewError, WebViewEvent};
 
 #[cfg(feature = "chromium")]
 use crate::cdp::CefCdpError;
@@ -243,8 +243,7 @@ pub enum CefPageEvent {
 
 #[cfg(feature = "chromium")]
 type PageWatcher = Box<dyn Fn(CefPageEvent)>;
-#[cfg(feature = "webview")]
-type WebViewWatcher = Box<dyn Fn(WebViewEvent)>;
+
 
 struct PageState {
     mode: CefPageMode,
@@ -255,7 +254,7 @@ struct PageState {
     #[cfg(feature = "chromium")]
     watchers: RefCell<Vec<PageWatcher>>,
     #[cfg(feature = "webview")]
-    webview_watchers: RefCell<Vec<WebViewWatcher>>,
+    webview_watchers: WatcherSet<WebViewEvent>,
     #[cfg(feature = "webview")]
     redirects_enabled: RefCell<Computed<bool>>,
     #[cfg(feature = "webview")]
@@ -279,7 +278,7 @@ impl PageState {
             #[cfg(feature = "chromium")]
             watchers: RefCell::new(Vec::new()),
             #[cfg(feature = "webview")]
-            webview_watchers: RefCell::new(Vec::new()),
+            webview_watchers: WatcherSet::new(),
             #[cfg(feature = "webview")]
             redirects_enabled: RefCell::new(Computed::constant(true)),
             #[cfg(feature = "webview")]
@@ -333,9 +332,7 @@ impl PageState {
 
     #[cfg(feature = "webview")]
     fn emit_webview(&self, event: &WebViewEvent) {
-        for watcher in self.webview_watchers.borrow().iter() {
-            watcher(event.clone());
-        }
+        self.webview_watchers.emit(event);
     }
 }
 
@@ -1102,11 +1099,11 @@ impl CefPageHandle {
     }
 
     #[cfg(feature = "webview")]
-    pub(crate) fn watch_webview(&self, watcher: impl Fn(WebViewEvent) + 'static) {
-        self.state
-            .webview_watchers
-            .borrow_mut()
-            .push(Box::new(watcher));
+    pub(crate) fn watch_webview(
+        &self,
+        watcher: impl Fn(WebViewEvent) + 'static,
+    ) -> waterui_webview::WatcherGuard {
+        self.state.webview_watchers.insert(watcher)
     }
 
     #[cfg(feature = "webview")]

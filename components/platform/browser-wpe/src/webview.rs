@@ -6,7 +6,9 @@ use nami::watcher::BoxWatcherGuard;
 use serde::Deserialize;
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
-use waterui_webview::{CustomWebViewController, ScriptInjectionTime, WebViewEvent, WebViewHandle};
+use waterui_webview::{
+    CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewEvent, WebViewHandle,
+};
 
 use crate::{WpePage, WpeRuntime, WpeRuntimePaths};
 
@@ -125,8 +127,8 @@ impl WebViewHandle for WpeWebViewHandle {
         self.redirects.replace(Some((enabled, guard)));
     }
 
-    fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) {
-        self.page.watch(watcher);
+    fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+        self.page.watch(watcher)
     }
 
     fn can_go_back(&self) -> bool {

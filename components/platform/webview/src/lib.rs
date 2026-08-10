@@ -36,6 +36,8 @@ pub use proxy::WebViewProxy;
 pub use waterui_url::{IntoUrl, Url};
 mod url_signal;
 pub use url_signal::IntoUrlSignal;
+mod watcher;
+pub use watcher::{WatcherGuard, WatcherSet};
 
 use waterui_core::{
     Binding, Computed, Environment, Signal, View, binding,
@@ -117,6 +119,9 @@ pub struct WebView {
     can_go_back: Binding<bool>,
     can_go_forward: Binding<bool>,
     navigation: Option<Rc<(Computed<Url>, BoxWatcherGuard)>>,
+    /// Keeps the internal watcher that drives `can_go_back` / `can_go_forward`
+    /// and the public event signal subscribed for as long as any clone lives.
+    state_watcher: Rc<WatcherGuard>,
 }
 
 impl Clone for WebView {
@@ -127,6 +132,7 @@ impl Clone for WebView {
             can_go_back: self.can_go_back.clone(),
             can_go_forward: self.can_go_forward.clone(),
             navigation: self.navigation.clone(),
+            state_watcher: Rc::clone(&self.state_watcher),
         }
     }
 }
@@ -152,7 +158,7 @@ impl WebView {
         let can_go_forward = binding(handle.can_go_forward());
 
         // Set up event handler to update reactive state
-        handle.watch({
+        let state_watcher = handle.watch({
             let event = event.clone();
             let can_go_back = can_go_back.clone();
             let can_go_forward = can_go_forward.clone();
@@ -178,6 +184,7 @@ impl WebView {
             can_go_back,
             can_go_forward,
             navigation: None,
+            state_watcher: Rc::new(state_watcher),
         }
     }
 

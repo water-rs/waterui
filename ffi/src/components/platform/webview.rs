@@ -4,10 +4,9 @@
 //! to create and control web views.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 
 use crate::closure::WuiFn;
 use crate::reactive::WuiComputed;
@@ -17,8 +16,8 @@ use cookie::Cookie;
 use nami::{Signal, SignalExt};
 use waterui_str::Str;
 use waterui_webview::{
-    CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewError,
-    WebViewEvent, WebViewHandle,
+    CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
 };
 
 // =============================================================================
@@ -284,17 +283,15 @@ pub struct WuiWebViewHandle {
     pub drop: unsafe extern "C" fn(*mut ()),
 }
 
-/// Registered Rust-side watchers for `WebView` events, shared so that the
-/// `WuiFn` trampoline installed on the native handle can fan out to all of them.
-type WebViewWatchers = Rc<RefCell<Vec<Rc<dyn Fn(WebViewEvent)>>>>;
-
 /// Rust wrapper that implements `WebViewHandle` by delegating to FFI function pointers.
 ///
 /// This struct is public so that the FFI layer can downcast `AnyWebViewHandle`
 /// to extract the native webview pointer for rendering.
 pub struct FfiWebViewHandle {
     ffi: WuiWebViewHandle,
-    watchers: WebViewWatchers,
+    /// Rust-side watchers, so the single `WuiFn` trampoline installed on the
+    /// native handle can fan out to all of them and each can be removed.
+    watchers: WatcherSet<WebViewEvent>,
     watcher_installed: Cell<bool>,
 }
 
@@ -311,7 +308,7 @@ impl FfiWebViewHandle {
     pub(crate) fn new(ffi: WuiWebViewHandle) -> Self {
         Self {
             ffi,
-            watchers: Rc::new(RefCell::new(Vec::new())),
+            watchers: WatcherSet::new(),
             watcher_installed: Cell::new(false),
         }
     }
@@ -412,11 +409,11 @@ impl WebViewHandle for FfiWebViewHandle {
         unsafe { (self.ffi.inject_script)(self.ffi.data, owned_script.into_ffi(), time.into_ffi()) }
     }
 
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
-        self.watchers.borrow_mut().push(Rc::new(f));
+    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+        let guard = self.watchers.insert(f);
 
         if self.watcher_installed.replace(true) {
-            return;
+            return guard;
         }
 
         let watchers = self.watchers.clone();
@@ -427,16 +424,14 @@ impl WebViewHandle for FfiWebViewHandle {
             // the matching FFI constructor; it is consumed here and not
             // observed again.
             let event = unsafe { ffi_event.into_rust() };
-            let snapshot = watchers.borrow().clone();
-            for watcher in snapshot {
-                watcher(event.clone());
-            }
+            watchers.emit(&event);
         });
 
         // SAFETY: `ffi.data` and this function pointer were registered together by
         // the backend for this controller, which is alive for as long as
         // `self` is.
-        unsafe { (self.ffi.watch)(self.ffi.data, callback) }
+        unsafe { (self.ffi.watch)(self.ffi.data, callback) };
+        guard
     }
 
     fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
