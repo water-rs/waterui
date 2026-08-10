@@ -434,6 +434,8 @@ const fn backend(_device: &wgpu::Device) -> Backend {
 #[cfg(not(target_arch = "wasm32"))]
 fn backend(device: &wgpu::Device) -> Backend {
     #[cfg(target_vendor = "apple")]
+    // SAFETY: `as_hal` only exposes the handle when the device really is that backend,
+    // and this only reads whether it matched — the handle never escapes.
     if unsafe { device.as_hal::<wgpu::hal::api::Metal>() }.is_some() {
         return Backend::Metal;
     }

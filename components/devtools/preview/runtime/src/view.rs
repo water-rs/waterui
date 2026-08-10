@@ -485,6 +485,8 @@ impl DylibCache {
         }
 
         let path = preview_dylib_cache_path(id);
+        // SAFETY: loading a preview dylib runs its initializers and trusts its
+        // exported symbols; `path` is a dylib this toolchain just built for preview.
         let (library, timings) = match unsafe { PreviewLibrary::load_from_path(&path) }.await {
             Ok(loaded) => loaded,
             Err(LoadError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
@@ -604,6 +606,8 @@ async fn ensure_dylib_cached(
             if !cache.contains(&id) {
                 #[cfg(unix)]
                 {
+                    // SAFETY: as above — `bytes` are the preview dylib this session
+                    // received for `id`.
                     let (library, timings) = unsafe { PreviewLibrary::load_from_bytes(id, &bytes) }
                         .await
                         .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
@@ -625,6 +629,7 @@ async fn ensure_dylib_cached(
                 #[cfg(unix)]
                 {
                     let (library, timings) =
+                        // SAFETY: as above — a locally built preview dylib for `id`.
                         unsafe { PreviewLibrary::load_from_local_path(id, &path) }
                             .await
                             .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
@@ -666,6 +671,8 @@ fn load_preview_view(
         return Err(PreviewError::SymbolNotFound(symbol.to_string()));
     }
 
+    // SAFETY: `symbol` is a `waterui_preview_*` name, which the `#[preview]` macro
+    // only ever generates with the signature `load_view` expects.
     unsafe { library.load_view(symbol) }.map_err(|e| PreviewError::RenderFailed(e.to_string()))
 }
 

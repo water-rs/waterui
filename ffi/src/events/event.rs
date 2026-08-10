@@ -71,7 +71,11 @@ pub unsafe extern "C" fn waterui_call_lifecycle_hook(
     handler: *mut WuiLifecycleHookHandler,
     env: *const crate::WuiEnv,
 ) {
+    // SAFETY: the caller contract makes `handler` an owning pointer from the
+    // matching FFI constructor, so reclaiming the box frees it exactly once.
     let hook = unsafe { alloc::boxed::Box::from_raw(handler) };
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) }.0.clone();
     hook.0.handle(&env);
 }
@@ -83,6 +87,8 @@ pub unsafe extern "C" fn waterui_call_lifecycle_hook(
 /// * `handler` must be a valid pointer to a `WuiLifecycleHookHandler`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifecycleHookHandler) {
+    // SAFETY: the caller contract makes `handler` an owning pointer from the matching
+    // constructor that has not been dropped.
     unsafe {
         drop(alloc::boxed::Box::from_raw(handler));
     }
@@ -155,7 +161,11 @@ pub unsafe extern "C" fn waterui_call_on_event(
     handler: *const WuiOnEventHandler,
     env: *const crate::WuiEnv,
 ) {
+    // SAFETY: the caller contract requires `handler` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let handler = unsafe { crate::borrow_ffi(handler) }.0.clone();
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) }.0.clone();
     handler.call(|handler| handler.handle(&env));
 }
@@ -173,7 +183,11 @@ pub unsafe extern "C" fn waterui_call_on_hover_event(
     x: f32,
     y: f32,
 ) {
+    // SAFETY: the caller contract requires `handler` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let handler = unsafe { crate::borrow_ffi(handler) }.0.clone();
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) }.0.clone();
     let env_with_hover = env.extending(HoverEvent::new(Point::new(x, y)));
     handler.call(|handler| handler.handle(&env_with_hover));
@@ -186,6 +200,8 @@ pub unsafe extern "C" fn waterui_call_on_hover_event(
 /// * `handler` must be a valid pointer to a `WuiOnEventHandler`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_on_event(handler: *mut WuiOnEventHandler) {
+    // SAFETY: the caller contract makes `handler` an owning pointer from the matching
+    // constructor that has not been dropped.
     unsafe {
         drop(alloc::boxed::Box::from_raw(handler));
     }
@@ -205,6 +221,8 @@ mod tests {
         let handler_ptr_for_callback = Rc::clone(&handler_ptr);
         let callback_finished_for_callback = Rc::clone(&callback_finished);
         let event = OnEvent::new(Event::HoverEnter, move || {
+            // SAFETY: the cell holds the handler installed before this callback runs,
+            // and the callback runs once.
             unsafe { waterui_drop_on_event(handler_ptr_for_callback.get()) };
             callback_finished_for_callback.set(true);
         })
@@ -212,6 +230,8 @@ mod tests {
         handler_ptr.set(event.handler);
         let env = crate::WuiEnv(waterui::Environment::new());
 
+        // SAFETY: `event.handler` is the live handle built above and `env` a live
+        // local.
         unsafe { waterui_call_on_event(event.handler, &raw const env) };
 
         assert!(callback_finished.get());

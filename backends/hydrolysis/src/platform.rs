@@ -1053,6 +1053,9 @@ mod winit_impl {
             let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(
                 std::ptr::from_ref(layer).cast_mut().cast(),
             );
+            // SAFETY: the layer handed to `create_surface_unsafe` is the window's own
+            // `CAMetalLayer`, which the window keeps alive for at least as long as the
+            // surface created from it.
             let surface = unsafe {
                 gpu.instance
                     .create_surface_unsafe(target)
@@ -1250,6 +1253,8 @@ mod winit_impl {
             let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
                 panic!("Hydrolysis macOS window returned a non-AppKit handle");
             };
+            // SAFETY: winit hands out the window's live `NSView` pointer, and the
+            // borrow does not outlive the window handle it came from.
             unsafe { appkit.ns_view.cast::<NSView>().as_ref() }
         }
 
@@ -1385,6 +1390,8 @@ mod winit_impl {
                     );
                     let mask = CAShapeLayer::layer();
                     mask.setFrame(local_bounds);
+                    // SAFETY: main-thread Core Graphics call with a by-value rect and
+                    // radii; the returned path is owned by this scope.
                     let path = unsafe {
                         CGPath::with_rounded_rect(
                             clip_local_rect,
@@ -1394,6 +1401,8 @@ mod winit_impl {
                         )
                     };
                     mask.setPath(Some(&path));
+                    // SAFETY: main-thread message send to layers this window owns;
+                    // `mask` is retained by the layer for as long as it is set.
                     unsafe {
                         clip_layer.setMask(Some(&mask));
                     }

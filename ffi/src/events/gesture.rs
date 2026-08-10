@@ -104,6 +104,8 @@ impl IntoFFI for Gesture {
 /// The gesture pointer must be valid and properly initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_gesture(gesture: *mut WuiGesture) {
+    // SAFETY: the caller contract makes `gesture` an owning pointer from the matching
+    // constructor, reclaimed once here.
     unsafe {
         let gesture = Box::from_raw(gesture);
         match *gesture {

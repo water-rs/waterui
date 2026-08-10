@@ -18,6 +18,8 @@ pub unsafe extern "C" fn waterui_dynamic_connect(
     dynamic: *mut WuiDynamic,
     watcher: *mut WuiWatcher<AnyView>,
 ) {
+    // SAFETY: the caller contract makes `watcher` an owning pointer consumed here and
+    // `dynamic` a valid handle that stays owned by the native side, as noted below.
     unsafe {
         let watcher = (*Box::from_raw(watcher)).into_inner();
         // IMPORTANT: do NOT consume/free `dynamic` here. The native side still owns the

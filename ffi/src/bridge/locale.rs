@@ -72,8 +72,14 @@ pub unsafe extern "C" fn waterui_env_install_locale_tag(
     env: *mut WuiEnv,
     locale_tag: *const c_char,
 ) {
+    // SAFETY: the caller contract requires a valid `WuiEnv` handle that no one else
+    // is borrowing for the duration of this call.
     let env = unsafe { crate::borrow_ffi_mut(env) };
+    // SAFETY: the caller contract requires `locale_tag` to be a valid NUL-terminated
+    // C string that stays alive for this call.
     let c_str = unsafe { core::ffi::CStr::from_ptr(locale_tag) };
+    // SAFETY: the caller contract requires the tag to be UTF-8; a BCP 47 language tag
+    // is ASCII by construction.
     let locale_id = unsafe { core::str::from_utf8_unchecked(c_str.to_bytes()) };
     install_locale_tag(env, locale_id);
 }
@@ -107,6 +113,8 @@ mod tests {
     #[test]
     fn install_locale_reuses_reactive_environment_binding() {
         let env_ptr = Box::into_raw(Box::new(WuiEnv(waterui::Environment::new())));
+        // SAFETY: `env_ptr` is the live box created just above, and the C strings below
+        // outlive each call, which is what these entry points require.
         unsafe {
             let initial = CString::new("en-GB").expect("valid locale C string");
             waterui_env_install_locale_tag(env_ptr, initial.as_ptr());

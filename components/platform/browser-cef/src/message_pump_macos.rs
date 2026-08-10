@@ -33,6 +33,8 @@ impl CefMacOsMessagePump {
             let _ = runtime.pump();
         });
         let interval = TIMER_INTERVAL.as_secs_f64();
+        // SAFETY: Core Foundation timer construction; the handler block is retained
+        // by the timer, and the timer is owned by the `Self` returned below.
         let timer = unsafe {
             CFRunLoopTimer::with_handler(
                 None,
@@ -45,6 +47,8 @@ impl CefMacOsMessagePump {
         }
         .expect("failed to create the CEF Core Foundation message-pump timer");
         let run_loop = CFRunLoop::main().expect("the macOS process has no main run loop");
+        // SAFETY: `kCFRunLoopCommonModes` is a Core Foundation constant string with
+        // static lifetime.
         run_loop.add_timer(Some(&timer), unsafe { kCFRunLoopCommonModes });
         Self { timer }
     }

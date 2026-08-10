@@ -1,3 +1,11 @@
+//! # Safety
+//!
+//! Loading the bridge means `dlopen` plus symbol lookup, so the `unsafe` here is
+//! unavoidable: the library must actually export the symbols at the signatures
+//! declared in `abi`, which is the contract between this crate and the bridge it
+//! is built against. `libloading` keeps the module mapped for as long as the
+//! `Library` lives, and the `Arc` holding it outlives every resolved pointer.
+
 use std::ffi::{CStr, c_char};
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -124,13 +132,19 @@ impl RuntimeApi {
     fn load(paths: &WpeRuntimePaths) -> Arc<Self> {
         paths.validate();
         let bridge = paths.bridge();
+        // SAFETY: symbol resolved from the bridge library kept mapped by this
+        // runtime; see the module safety note.
         let library = unsafe { libloading::Library::new(&bridge) }.unwrap_or_else(|error| {
             panic!(
                 "failed to load bundled WPE bridge {}: {error}",
                 bridge.display()
             )
         });
+        // SAFETY: symbol resolved from the bridge library kept mapped by this
+        // runtime; see the module safety note.
         let api = unsafe { WpeApi::load(&library) };
+        // SAFETY: symbol resolved from the bridge library kept mapped by this
+        // runtime; see the module safety note.
         let version = unsafe { (api.abi_version)() };
         assert_eq!(
             version, ABI_VERSION,
@@ -158,6 +172,8 @@ struct RuntimeInner {
 
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
+        // SAFETY: symbol resolved from the bridge library kept mapped by this
+        // runtime; see the module safety note.
         unsafe { (self.api.api.runtime_free)(self.raw.as_ptr()) };
     }
 }
@@ -185,6 +201,8 @@ impl WpeRuntime {
     pub fn initialize(paths: &WpeRuntimePaths) -> Self {
         let api = RuntimeApi::load(paths);
         let mut error = std::ptr::null_mut::<c_char>();
+        // SAFETY: symbol resolved from the bridge library kept mapped by this
+        // runtime; see the module safety note.
         let raw = unsafe { (api.api.runtime_new)(&raw mut error) };
         let raw = NonNull::new(raw).unwrap_or_else(|| {
             let message = take_error(&api, error);
@@ -204,6 +222,8 @@ impl WpeRuntime {
     /// Backends call this from their native event loop before rendering.
     #[must_use]
     pub fn iteration(&self) -> bool {
+        // SAFETY: symbol resolved from the bridge library kept mapped by this
+        // runtime; see the module safety note.
         unsafe { (self.inner.api.api.runtime_iteration)(self.inner.raw.as_ptr()) }
     }
 
@@ -218,9 +238,13 @@ impl WpeRuntime {
 
 pub fn take_error(api: &RuntimeApi, error: *mut c_char) -> String {
     assert!(!error.is_null(), "WPE failed without an error message");
+    // SAFETY: symbol resolved from the bridge library kept mapped by this runtime;
+    // see the module safety note.
     let message = unsafe { CStr::from_ptr(error) }
         .to_string_lossy()
         .into_owned();
+    // SAFETY: symbol resolved from the bridge library kept mapped by this runtime;
+    // see the module safety note.
     unsafe { (api.api.string_free)(error) };
     message
 }

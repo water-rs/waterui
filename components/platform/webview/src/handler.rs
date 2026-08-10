@@ -339,6 +339,8 @@ impl AnyWebViewHandle {
     /// and later retrieves it via FFI).
     #[must_use]
     pub unsafe fn downcast_ref_unchecked<T: WebViewHandle>(&self) -> &T {
+        // SAFETY: the caller contract requires the erased handler to be a `T`; the
+        // borrow is tied to `&self`.
         unsafe { &*std::ptr::from_ref::<dyn Any>(self.inner.as_ref()).cast::<T>() }
     }
 }

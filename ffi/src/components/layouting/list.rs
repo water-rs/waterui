@@ -75,7 +75,9 @@ impl IntoFFI for ListItem {
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_force_as_list_item(view: *mut WuiAnyView) -> WuiListItem {
+    // SAFETY: the caller contract makes `view` a valid owning handle consumed here.
     let any: waterui::AnyView = unsafe { crate::IntoRust::into_rust(view) };
+    // SAFETY: the same contract guarantees the erased value is a `ListItem`.
     unsafe { (*any.downcast_unchecked::<ListItem>()).into_ffi() }
 }
 

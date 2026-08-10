@@ -278,7 +278,10 @@ fn into_video_event(ffi_event: WuiVideoEvent) -> VideoEvent {
             VideoEvent::PlaybackMetrics { metrics }
         }
         WuiVideoEventType::Error => {
+            // SAFETY: an `Error` event carries an owning message pointer the backend
+            // allocated for it, reclaimed once by this arm.
             let error_message = unsafe { Box::from_raw(ffi_event.error_message) };
+            // SAFETY: that box holds an owning `WuiStr`, converted once here.
             let error_message: waterui::Str = unsafe { (*error_message).into_rust() };
             VideoEvent::Error {
                 message: String::from(error_message),
@@ -486,6 +489,9 @@ impl IntoRust for WuiVideoAudioTrackInfo {
 
     unsafe fn into_rust(self) -> Self::Rust {
         AudioTrackInfo::new(
+            // SAFETY: the caller contract makes `label` an owning handle from the
+            // matching FFI constructor; it is consumed here and not observed
+            // again.
             unsafe { self.label.into_rust() }.to_string(),
             optional_string(self.language),
             string_array(self.roles),
@@ -524,7 +530,13 @@ impl IntoRust for WuiVideoTrackInfo {
             _ => panic!("native video-track dimensions must both be zero or both be non-zero"),
         };
         VideoTrackInfo::new(
+            // SAFETY: the caller contract makes `id` an owning handle from the
+            // matching FFI constructor; it is consumed here and not observed
+            // again.
             unsafe { self.id.into_rust() }.to_string(),
+            // SAFETY: the caller contract makes `label` an owning handle from the
+            // matching FFI constructor; it is consumed here and not observed
+            // again.
             unsafe { self.label.into_rust() }.to_string(),
             bandwidth,
             dimensions,
@@ -581,6 +593,9 @@ impl IntoRust for WuiVideoSubtitleTrackInfo {
 
     unsafe fn into_rust(self) -> Self::Rust {
         SubtitleTrackInfo::new(
+            // SAFETY: the caller contract makes `label` an owning handle from the
+            // matching FFI constructor; it is consumed here and not observed
+            // again.
             unsafe { self.label.into_rust() }.to_string(),
             optional_string(self.language),
             string_array(self.roles),
@@ -591,11 +606,15 @@ impl IntoRust for WuiVideoSubtitleTrackInfo {
 }
 
 fn optional_string(value: WuiStr) -> Option<String> {
+    // SAFETY: the caller contract makes `value` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let value = unsafe { value.into_rust() }.to_string();
     (!value.is_empty()).then_some(value)
 }
 
 fn string_array(values: WuiArray<WuiStr>) -> Vec<String> {
+    // SAFETY: the caller contract makes `values` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     unsafe { values.into_rust() }
         .into_iter()
         .map(|value| value.to_string())
@@ -613,7 +632,11 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_audio(
     binding: *const WuiBinding<TrackCatalog>,
     tracks: WuiArray<WuiVideoAudioTrackInfo>,
 ) {
+    // SAFETY: the caller contract makes `tracks` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let tracks = unsafe { tracks.into_rust() };
+    // SAFETY: the caller contract requires `binding` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
     binding.set(binding.get().replacing_audio(tracks));
 }
@@ -629,7 +652,11 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_video(
     binding: *const WuiBinding<TrackCatalog>,
     tracks: WuiArray<WuiVideoTrackInfo>,
 ) {
+    // SAFETY: the caller contract makes `tracks` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let tracks = unsafe { tracks.into_rust() };
+    // SAFETY: the caller contract requires `binding` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
     binding.set(binding.get().replacing_video(tracks));
 }
@@ -645,7 +672,11 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_subtitles(
     binding: *const WuiBinding<TrackCatalog>,
     tracks: WuiArray<WuiVideoSubtitleTrackInfo>,
 ) {
+    // SAFETY: the caller contract makes `tracks` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let tracks = unsafe { tracks.into_rust() };
+    // SAFETY: the caller contract requires `binding` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
     binding.set(binding.get().replacing_subtitles(tracks));
 }
@@ -660,6 +691,8 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_subtitles(
 pub unsafe extern "C" fn waterui_drop_video_track_catalog_binding(
     binding: *mut WuiBinding<TrackCatalog>,
 ) {
+    // SAFETY: the caller contract makes `binding` an owning pointer from the
+    // matching FFI constructor, so reclaiming the box frees it exactly once.
     unsafe { drop(alloc::boxed::Box::from_raw(binding)) };
 }
 
@@ -689,6 +722,8 @@ pub unsafe extern "C" fn waterui_video_live_window_replace(
     binding: *const WuiBinding<Option<LiveWindow>>,
     window: WuiVideoLiveWindow,
 ) {
+    // SAFETY: the caller contract requires `binding` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
     let window = window.present.then(|| {
         LiveWindow::new(
@@ -719,6 +754,8 @@ fn duration_from_native_seconds(seconds: f64, field: &str) -> core::time::Durati
 pub unsafe extern "C" fn waterui_drop_video_live_window_binding(
     binding: *mut WuiBinding<Option<LiveWindow>>,
 ) {
+    // SAFETY: the caller contract makes `binding` an owning pointer from the
+    // matching FFI constructor, so reclaiming the box frees it exactly once.
     unsafe { drop(alloc::boxed::Box::from_raw(binding)) };
 }
 
@@ -803,6 +840,8 @@ opaque!(
 /// `controller` must be a live pointer from a video playback descriptor.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_video_controller_next(controller: *const WuiVideoController) {
+    // SAFETY: the caller contract requires `controller` to be a valid handle that
+    // stays alive for this call; it is only borrowed.
     unsafe { crate::borrow_ffi(controller) }
         .0
         .next()
@@ -821,6 +860,8 @@ pub unsafe extern "C" fn waterui_video_controller_next(controller: *const WuiVid
 /// `controller` must be a live pointer from a video playback descriptor.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_video_controller_previous(controller: *const WuiVideoController) {
+    // SAFETY: the caller contract requires `controller` to be a valid handle that
+    // stays alive for this call; it is only borrowed.
     unsafe { crate::borrow_ffi(controller) }
         .0
         .previous()
@@ -854,6 +895,8 @@ pub unsafe extern "C" fn waterui_video_event_handler_call(
     handler: *const WuiVideoEventHandler,
     event: WuiVideoEvent,
 ) {
+    // SAFETY: the caller contract requires `handler` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let handler = Rc::clone(&unsafe { crate::borrow_ffi(handler) }.0);
     handler.call(into_video_event(event));
 }
@@ -1157,6 +1200,7 @@ mod tests {
     fn native_track_catalog_updates_preserve_complete_metadata() {
         let binding = binding(TrackCatalog::default()).into_ffi();
 
+        // SAFETY: `binding` is the live handle this test created above.
         unsafe {
             waterui_video_track_catalog_replace_audio(
                 binding,
@@ -1190,6 +1234,8 @@ mod tests {
             );
         }
 
+        // SAFETY: the caller contract requires `binding` to be a valid handle that
+        // stays alive for this call; it is only borrowed.
         let catalog = unsafe { crate::borrow_ffi(binding) }.get();
         assert_eq!(catalog.audio()[0].roles(), &[String::from("main")]);
         assert_eq!(catalog.video()[0].bandwidth(), None);
@@ -1197,6 +1243,7 @@ mod tests {
         assert!(catalog.video()[0].is_hdr());
         assert_eq!(catalog.subtitles()[0].origin(), SubtitleTrackOrigin::Native);
 
+        // SAFETY: `binding` is that same handle, dropped once at end of test.
         unsafe { waterui_drop_video_track_catalog_binding(binding) };
     }
 
@@ -1204,6 +1251,7 @@ mod tests {
     fn native_live_window_is_replaced_as_one_validated_snapshot() {
         let binding = binding(None::<LiveWindow>).into_ffi();
 
+        // SAFETY: `binding` is the live handle this test created above.
         unsafe {
             waterui_video_live_window_replace(
                 binding,
@@ -1217,6 +1265,8 @@ mod tests {
             );
         }
 
+        // SAFETY: the caller contract requires `binding` to be a valid handle that
+        // stays alive for this call; it is only borrowed.
         let window = unsafe { crate::borrow_ffi(binding) }
             .get()
             .expect("native live snapshot must be present");
@@ -1226,10 +1276,14 @@ mod tests {
             core::time::Duration::from_secs(6)
         );
 
+        // SAFETY: `binding` is still the live handle from this test.
         unsafe {
             waterui_video_live_window_replace(binding, WuiVideoLiveWindow::default());
         }
+        // SAFETY: the caller contract requires `binding` to be a valid handle that
+        // stays alive for this call; it is only borrowed.
         assert!(unsafe { crate::borrow_ffi(binding) }.get().is_none());
+        // SAFETY: `binding` is that same handle, dropped once at end of test.
         unsafe { waterui_drop_video_live_window_binding(binding) };
     }
 

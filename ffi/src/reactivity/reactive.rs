@@ -57,6 +57,9 @@ where
     where
         T: IntoFFI + 'static,
     {
+        // SAFETY: the caller contract requires `data` and the three function pointers
+        // to be one registration from the backend, which is what `FFIComputed` calls
+        // them as.
         unsafe { Self(Computed::new(FFIComputed::new(data, get, watch, drop))) }
     }
 }
@@ -74,6 +77,8 @@ struct NativeComputedData {
 
 impl Drop for NativeComputedData {
     fn drop(&mut self) {
+        // SAFETY: `drop` and `ptr` come from the same registration, and `Drop` runs
+        // once, so the backend's destructor sees its pointer exactly once.
         unsafe { (self.drop)(self.ptr) };
     }
 }
@@ -85,6 +90,8 @@ where
     type Output = T;
     type Guard = BoxWatcherGuard;
     fn get(&self) -> Self::Output {
+        // SAFETY: `get` and `data.ptr` come from the same registration, and `&self`
+        // proves it has not been dropped; `get` hands back an owning value.
         unsafe { (self.get)(self.data.ptr.cast_const()).into_rust() }
     }
 
@@ -92,6 +99,8 @@ where
         let watcher: Watcher<Self::Output> = Rc::new(watcher);
         let watcher = watcher.into_ffi();
 
+        // SAFETY: `watch` belongs to the same registration as `data.ptr`, and it
+        // returns an owning guard pointer that this call takes responsibility for.
         unsafe {
             let guard_ptr = (self.watch)(self.data.ptr.cast_const(), watcher);
             let guard = Box::from_raw(guard_ptr);
@@ -214,6 +223,8 @@ macro_rules! ffi_watcher {
             where
                 $ty: $crate::IntoFFI + 'static,
             {
+                // SAFETY: the caller contract requires `data`, `call` and `drop` to be
+                // one registration from the backend.
                 let watcher = unsafe {
                     $crate::reactive::WuiWatcher::<$ty>::new(data, call, drop)
                 };
@@ -254,6 +265,8 @@ macro_rules! ffi_computed {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_read_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> $ffi {
                 use waterui::Signal;
+                // SAFETY: the caller contract requires `computed` to be a valid handle
+                // alive for this call; it is only borrowed.
                 unsafe { $crate::IntoFFI::into_ffi((&(*computed)).get()) }
             }
 
@@ -268,6 +281,9 @@ macro_rules! ffi_computed {
                 watcher: *mut $crate::reactive::WuiWatcher<$ty>,
             ) -> *mut $crate::reactive::WuiWatcherGuard {
                 use waterui::Signal;
+                // SAFETY: the caller contract makes `watcher` an owning pointer from
+                // the matching constructor, consumed here, and `computed` a valid handle
+                // that is only borrowed.
                 unsafe {
                     let watcher = (*alloc::boxed::Box::from_raw(watcher)).into_inner();
                     let guard = (&*computed).watch(move |ctx| {
@@ -286,6 +302,9 @@ macro_rules! ffi_computed {
             /// The caller must ensure that `computed` is a valid pointer.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_drop_computed_ $ident >](computed: *mut $crate::reactive::WuiComputed<$ty>) {
+                // SAFETY: the caller contract makes `computed` an owning pointer
+                // from the matching FFI constructor, so reclaiming the box
+                // frees it exactly once.
                 unsafe { drop(alloc::boxed::Box::from_raw(computed)); }
             }
 
@@ -400,6 +419,8 @@ macro_rules! ffi_computed_ctor {
                 $ty: $crate::IntoFFI + 'static,
                 <$ty as $crate::IntoFFI>::FFI: $crate::IntoRust<Rust = $ty>,
             {
+                // SAFETY: the caller contract requires these four to be one
+                // registration from the backend.
                 let computed = unsafe { $crate::reactive::WuiComputed::new(data, get, watch, drop) };
                 alloc::boxed::Box::into_raw(alloc::boxed::Box::new(computed))
             }
@@ -434,6 +455,8 @@ macro_rules! ffi_binding {
             /// The binding pointer must be valid and point to a properly initialized binding object.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_read_binding_ $ident >](binding: *const $crate::reactive::WuiBinding<$ty>) -> $ffi {
+                // SAFETY: the caller contract requires `binding` to be a valid handle
+                // alive for this call; it is only borrowed.
                 unsafe { (*binding).get().into_ffi() }
             }
 
@@ -443,6 +466,8 @@ macro_rules! ffi_binding {
             /// The binding pointer must be valid and point to a properly initialized binding object.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_set_binding_ $ident >](binding: *mut $crate::reactive::WuiBinding<$ty>, value: $ffi) {
+                // SAFETY: the caller contract requires `binding` to be a valid handle
+                // and `value` an owning handle, consumed by the set.
                 unsafe {
                     (*binding).set($crate::IntoRust::into_rust(value));
                 }
@@ -460,6 +485,8 @@ macro_rules! ffi_binding {
             ) -> *mut $crate::reactive::WuiWatcherGuard {
                 use waterui::Signal;
 
+                // SAFETY: as for the computed watch — `watcher` is owned and consumed,
+                // `binding` is a valid handle that is only borrowed.
                 unsafe {
                     let watcher = (*alloc::boxed::Box::from_raw(watcher)).into_inner();
                     let guard = (*binding).watch(move |ctx| {
@@ -478,6 +505,8 @@ macro_rules! ffi_binding {
             /// The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_drop_binding_ $ident >](binding: *mut $crate::reactive::WuiBinding<$ty>) {
+                // SAFETY: the caller contract makes `binding` an owning pointer from
+                // the matching constructor that has not been dropped.
                 unsafe {
                     drop(alloc::boxed::Box::from_raw(binding));
                 }
@@ -609,9 +638,14 @@ pub unsafe extern "C" fn waterui_set_binding_styled_str_utf8(
     let bytes = if len == 0 {
         &[]
     } else {
+        // SAFETY: the caller contract requires `bytes` to point at `len` initialized
+        // bytes that stay alive for this call.
         unsafe { core::slice::from_raw_parts(bytes, len) }
     };
+    // SAFETY: the caller contract requires those bytes to be valid UTF-8.
     let plain = unsafe { Str::from_utf8_unchecked(bytes.to_vec()) };
+    // SAFETY: the caller contract requires `binding` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe { (*binding).set(StyledStr::plain(plain)) };
 }
 
@@ -753,6 +787,8 @@ impl<T: IntoFFI> WuiWatcher<T> {
 
         impl Drop for Cleaner {
             fn drop(&mut self) {
+                // SAFETY: `drop` and `data` are one registration, and `Drop` runs
+                // once.
                 unsafe { (self.drop)(self.data) }
             }
         }
@@ -761,6 +797,9 @@ impl<T: IntoFFI> WuiWatcher<T> {
             let cleaner = Rc::clone(&cleaner);
             let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
             let value = ctx.into_value();
+            // SAFETY: `call` and `cleaner.data` are one registration, and the `Rc`
+            // captured here keeps the cleaner (and therefore the data) alive for every
+            // invocation.
             unsafe {
                 call(cleaner.data, value.into_ffi(), metadata.into_ffi());
             }
@@ -801,6 +840,7 @@ pub extern "C" fn waterui_new_watcher_guard(
 
     impl Drop for Cleaner {
         fn drop(&mut self) {
+            // SAFETY: `drop` and `data` are one registration, and `Drop` runs once.
             unsafe { (self.drop)(self.data) }
         }
     }
@@ -823,6 +863,8 @@ use waterui_form::secure::Secure;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_read_binding_secure(binding: *const WuiBinding<Secure>) -> WuiStr {
     use alloc::string::String;
+    // SAFETY: the caller contract requires `binding` to be a valid handle alive for
+    // this call; it is only borrowed.
     unsafe {
         let secure = (*binding).get();
         // Create an owned String, then convert to Str
@@ -840,6 +882,8 @@ pub unsafe extern "C" fn waterui_set_binding_secure(
     binding: *mut WuiBinding<Secure>,
     value: WuiStr,
 ) {
+    // SAFETY: the caller contract requires `binding` to be a valid handle and `value`
+    // an owning string handle, consumed here.
     unsafe {
         let str_value: Str = value.into_rust();
         (*binding).set(Secure::new(str_value.into_string()));
@@ -858,6 +902,8 @@ pub unsafe extern "C" fn waterui_watch_binding_secure(
 ) -> *mut WuiWatcherGuard {
     use waterui::Signal;
 
+    // SAFETY: the caller contract makes `watcher` an owning pointer consumed here and
+    // `binding` a valid handle that is only borrowed.
     unsafe {
         let watcher = (*Box::from_raw(watcher)).into_inner();
         let guard = (*binding).watch(move |ctx| {
@@ -876,6 +922,8 @@ pub unsafe extern "C" fn waterui_watch_binding_secure(
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_binding_secure(binding: *mut WuiBinding<Secure>) {
+    // SAFETY: the caller contract makes `binding` an owning pointer from the matching
+    // constructor that has not been dropped.
     unsafe {
         drop(alloc::boxed::Box::from_raw(binding));
     }
@@ -892,6 +940,8 @@ pub unsafe extern "C" fn waterui_new_watcher_secure(
     drop: unsafe extern "C" fn(*mut ()),
 ) -> *mut WuiWatcher<Secure> {
     use alloc::boxed::Box;
+    // SAFETY: the caller contract requires `data`, `call` and `drop` to be one
+    // registration from the backend.
     let watcher = unsafe { WuiWatcher::new(data, call, drop) };
     Box::into_raw(Box::new(watcher))
 }
@@ -914,12 +964,17 @@ mod tests {
         _value: u32,
         metadata: *mut WuiWatcherMetadata,
     ) {
+        // SAFETY: the test registers this callback with a pointer to its own live
+        // `NativeWatcherData`.
         let data = unsafe { &*data.cast::<NativeWatcherData>() };
         data.events.borrow_mut().push("call");
+        // SAFETY: the watcher hands the callback an owning metadata handle to release.
         unsafe { super::waterui_drop_watcher_metadata(metadata) };
     }
 
     unsafe extern "C" fn record_drop(data: *mut ()) {
+        // SAFETY: `data` is the boxed `NativeWatcherData` this drop entry was
+        // registered with, and the watcher invokes it once.
         let data = unsafe { Box::from_raw(data.cast::<NativeWatcherData>()) };
         data.events.borrow_mut().push("drop");
     }
@@ -932,6 +987,8 @@ mod tests {
         }))
         .cast();
 
+        // SAFETY: `data` is the boxed test payload above, paired with the two entries
+        // written for it.
         let watcher = unsafe { WuiWatcher::<u32>::new(data, record_call, record_drop) };
         let callback = watcher.into_inner();
 

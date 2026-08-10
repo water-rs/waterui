@@ -1,3 +1,10 @@
+//! # Safety
+//!
+//! As in `page`, the `unsafe` here is calls through the WPE bridge ABI. The
+//! function pointers come from a `RuntimeApi` the runtime keeps mapped, and the
+//! frame pointer is the one this lease owns. The bridge marshals the WPE object
+//! operations back onto the runtime's `GMainContext`.
+
 use std::os::fd::{AsRawFd, OwnedFd};
 #[cfg(feature = "webview")]
 use std::os::fd::{FromRawFd, IntoRawFd};
@@ -151,6 +158,8 @@ impl DmaBufFrame {
             .map(|index| {
                 assert!(frame.fds[index] >= 0, "WPE DMA-BUF plane fd is invalid");
                 DmaBufPlane {
+                    // SAFETY: bridge ABI call on the frame this lease owns; see the
+                    // module safety note.
                     fd: unsafe { OwnedFd::from_raw_fd(frame.fds[index]) },
                     offset: frame.offsets[index],
                     stride: frame.strides[index],
@@ -158,6 +167,8 @@ impl DmaBufFrame {
             })
             .collect();
         let rendering_fence = (frame.rendering_fence_fd >= 0)
+            // SAFETY: bridge ABI call on the frame this lease owns; see the module
+            // safety note.
             .then(|| unsafe { OwnedFd::from_raw_fd(frame.rendering_fence_fd) });
         Self {
             width: frame.width,
@@ -190,6 +201,8 @@ impl DmaBufFrame {
             events: libc::POLLIN,
             revents: 0,
         };
+        // SAFETY: bridge ABI call on the frame this lease owns; see the module
+        // safety note.
         let result = unsafe { libc::poll(&raw mut descriptor, 1, 0) };
         assert!(result >= 0, "failed to poll WPE rendering fence");
         result == 1
@@ -283,6 +296,8 @@ impl WpeFrameLease {
     /// Panics when the frame was already presented.
     pub fn presented(&mut self) {
         assert!(!self.presented, "WPE frame was presented more than once");
+        // SAFETY: bridge ABI call on the frame this lease owns; see the module
+        // safety note.
         unsafe { (self.api.api.frame_presented)(self.token) };
         self.presented = true;
     }
@@ -295,6 +310,8 @@ impl WpeFrameLease {
     pub fn release(mut self, release_fence_fd: Option<OwnedFd>) {
         assert!(self.presented, "WPE frame must be presented before release");
         let fd = release_fence_fd.map_or(-1, IntoRawFd::into_raw_fd);
+        // SAFETY: bridge ABI call on the frame this lease owns; see the module
+        // safety note.
         unsafe { (self.api.api.frame_release)(self.token, fd) };
         self.released = true;
     }
@@ -307,8 +324,12 @@ impl Drop for WpeFrameLease {
             return;
         }
         if !self.presented {
+            // SAFETY: bridge ABI call on the frame this lease owns; see the module
+            // safety note.
             unsafe { (self.api.api.frame_presented)(self.token) };
         }
+        // SAFETY: bridge ABI call on the frame this lease owns; see the module
+        // safety note.
         unsafe { (self.api.api.frame_release)(self.token, -1) };
     }
 }

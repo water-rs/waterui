@@ -76,12 +76,17 @@ impl CustomViewRenderer for FFIViewRenderer {
             width: u32,
             height: u32,
         ) {
+            // SAFETY: `data` is the boxed `CallbackData` this callback was registered
+            // with, and the backend invokes the callback once.
             let CallbackData { sender } = *unsafe { Box::from_raw(data.cast::<CallbackData>()) };
 
             // Copy the RGBA data (native owns the original buffer)
             let rgba_data = if rgba_len == 0 {
                 Vec::new()
             } else {
+                // SAFETY: the backend passes `rgba_len` initialized bytes at
+                // `rgba_ptr`, valid for the duration of this callback; the copy is
+                // taken before returning, so the borrow does not escape.
                 unsafe { core::slice::from_raw_parts(rgba_ptr, rgba_len) }.to_vec()
             };
 
@@ -119,6 +124,8 @@ impl CustomViewRenderer for FFIViewRenderer {
 
         // Native owns the view and callback payload until it invokes the
         // callback exactly once. Rendering may complete asynchronously.
+        // SAFETY: `render_fn` and the context are one registration, kept alive by
+        // `self`; the view pointer and callback are handed to backend ownership.
         unsafe {
             (render_fn)(self.context.data(), view_ptr_void, wui_size, callback);
         }
@@ -151,9 +158,13 @@ pub unsafe extern "C" fn waterui_env_install_view_renderer(
     render_fn: ViewRenderFn,
     drop_context: unsafe extern "C" fn(*mut ()),
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
 
     let renderer = ViewRenderer::new(FFIViewRenderer {
+        // SAFETY: the caller contract requires `context` and `drop_context` to be one
+        // registration from the backend.
         context: unsafe { ForeignCallbackContext::new(context, drop_context) },
         render_fn,
     });

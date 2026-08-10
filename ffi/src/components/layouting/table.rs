@@ -59,7 +59,9 @@ ffi_view!(TableConfig, WuiTable, table, any());
 /// `view` must own a `Native<TableColumn>` and must not be used after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_force_as_table_column(view: *mut WuiAnyView) -> WuiTableColumn {
+    // SAFETY: the caller contract makes `view` a valid owning handle consumed here.
     let any: AnyView = unsafe { IntoRust::into_rust(view) };
+    // SAFETY: the same contract guarantees the erased value is a `Native<TableColumn>`.
     let column = unsafe { *any.downcast_unchecked::<waterui_core::Native<TableColumn>>() };
     column.into_ffi()
 }

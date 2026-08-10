@@ -180,6 +180,8 @@ impl<T> OwnedFfiHandle<T> {
 #[cfg(any(feature = "android-jni", test))]
 impl<T> Drop for OwnedFfiHandle<T> {
     fn drop(&mut self) {
+        // SAFETY: this wrapper owns the boxed value `self.0` points at, and `Drop`
+        // runs once.
         unsafe {
             drop(alloc::boxed::Box::from_raw(self.0.as_ptr()));
         }
@@ -295,6 +297,8 @@ struct FFIWindowManager {
 impl FFIWindowManager {
     fn show(&self, window: Window) {
         let ffi_window = window.into_ffi();
+        // SAFETY: `show_fn` and the context are one registration, kept alive by
+        // `self`; the window is handed to backend ownership.
         unsafe {
             (self.show_fn)(self.context.data(), ffi_window);
         }
@@ -321,9 +325,13 @@ pub unsafe extern "C" fn waterui_env_install_window_manager(
     show_fn: WindowShowFn,
     drop_context: unsafe extern "C" fn(*mut ()),
 ) {
+    // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
+    // otherwise borrowed for this call; the exclusive borrow ends here.
     let env = unsafe { crate::borrow_ffi_mut(env) };
 
     let ffi_manager = FFIWindowManager {
+        // SAFETY: the caller contract requires `context` and `drop_context` to be one
+        // registration from the backend.
         context: unsafe { ForeignCallbackContext::new(context, drop_context) },
         show_fn,
     };

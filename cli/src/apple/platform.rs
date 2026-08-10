@@ -587,6 +587,9 @@ pub async fn package_apple(
     run_command_os("xcodebuild", args).await?;
 
     // Reset the environment variable
+    // SAFETY: `set_var` is unsound only when another thread is touching the
+    // environment concurrently; this runs during single-threaded CLI setup, before
+    // any worker is spawned.
     unsafe {
         env::set_var("WATERUI_SKIP_RUST_BUILD", "0");
     }

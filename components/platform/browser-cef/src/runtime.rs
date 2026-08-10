@@ -1,3 +1,9 @@
+//! # Safety
+//!
+//! Loading CEF means `dlopen` plus symbol lookup, so the `unsafe` here asserts
+//! that the framework exports those entry points at the declared signatures.
+//! `libloading` keeps the framework mapped for as long as the `Library` lives.
+
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -36,12 +42,16 @@ struct PlatformSandbox {
 impl PlatformSandbox {
     fn initialize(paths: &CefRuntimePaths, args: &cef::MainArgs) -> Self {
         let library_path = paths.framework().join("Libraries/libcef_sandbox.dylib");
+        // SAFETY: CEF framework load or symbol resolution; see the module safety
+        // note.
         let library = unsafe { libloading::Library::new(&library_path) }.unwrap_or_else(|error| {
             panic!(
                 "failed to load CEF sandbox library {}: {error}",
                 library_path.display()
             )
         });
+        // SAFETY: CEF framework load or symbol resolution; see the module safety
+        // note.
         let initialize = unsafe {
             library
                 .get::<extern "C" fn(
@@ -63,6 +73,8 @@ impl PlatformSandbox {
 #[cfg(target_os = "macos")]
 impl Drop for PlatformSandbox {
     fn drop(&mut self) {
+        // SAFETY: CEF framework load or symbol resolution; see the module safety
+        // note.
         let destroy = unsafe {
             self.library
                 .get::<extern "C" fn(*mut std::ffi::c_void)>(b"cef_sandbox_destroy")
@@ -392,6 +404,8 @@ impl LoadedCefLibrary {
         let encoded = CString::new(encoded)
             .unwrap_or_else(|_| panic!("CEF runtime path contains NUL: {}", path.display()));
         assert_eq!(
+            // SAFETY: CEF framework load or symbol resolution; see the module safety
+            // note.
             cef::load_library(Some(unsafe { &*encoded.as_ptr() })),
             1,
             "failed to load CEF runtime library from {}",

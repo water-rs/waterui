@@ -25,7 +25,11 @@ impl IntoFFI for BoxedAction<()> {
 /// * `env` must be a valid pointer to a `waterui_env` struct.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_action(action: *const WuiAction, env: *const WuiEnv) {
+    // SAFETY: the caller contract requires `action` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let action = unsafe { crate::borrow_ffi(action) }.0.clone();
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) }.0.clone();
     action.call(|action| action(&env));
 }
@@ -73,7 +77,11 @@ pub unsafe extern "C" fn waterui_call_index_action(
     env: *const WuiEnv,
     index: usize,
 ) {
+    // SAFETY: the caller contract requires `action` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let action = unsafe { crate::borrow_ffi(action) }.0.clone();
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) }.0.clone();
     action.call(|action| (action.0)(&env, index));
 }
@@ -122,7 +130,11 @@ pub unsafe extern "C" fn waterui_call_move_action(
     from_index: usize,
     to_index: usize,
 ) {
+    // SAFETY: the caller contract requires `action` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let action = unsafe { crate::borrow_ffi(action) }.0.clone();
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) }.0.clone();
     action.call(|action| (action.0)(&env, Move::new(from_index, to_index)));
 }
@@ -151,6 +163,8 @@ mod tests {
         let action_ptr = action.into_ffi();
         let env_ptr = test_env();
 
+        // SAFETY: both pointers are the live handles this test created above; the
+        // action is invoked twice deliberately, which the contract allows.
         unsafe {
             waterui_call_action(action_ptr, env_ptr);
             waterui_call_action(action_ptr, env_ptr);
@@ -158,6 +172,7 @@ mod tests {
 
         assert_eq!(hits.load(Ordering::SeqCst), 2);
 
+        // SAFETY: both handles are still live and each is released once here.
         unsafe {
             waterui_drop_action(action_ptr);
             let _ = Box::from_raw(env_ptr.cast::<waterui::Environment>());
@@ -171,6 +186,8 @@ mod tests {
         let action_ptr_for_callback = Rc::clone(&action_ptr);
         let callback_finished_for_callback = Rc::clone(&callback_finished);
         let action: BoxedAction<()> = Box::new(move |_| {
+            // SAFETY: the cell holds the action handle installed before this callback
+            // runs, and the callback runs once.
             unsafe { waterui_drop_action(action_ptr_for_callback.get()) };
             callback_finished_for_callback.set(true);
         });
@@ -178,9 +195,11 @@ mod tests {
         action_ptr.set(action);
         let env = test_env();
 
+        // SAFETY: both are the live handles built above in this test.
         unsafe { waterui_call_action(action, env) };
 
         assert!(callback_finished.get());
+        // SAFETY: `env` is the boxed environment this test leaked above, freed once.
         unsafe {
             let _ = Box::from_raw(env.cast::<waterui::Environment>());
         }

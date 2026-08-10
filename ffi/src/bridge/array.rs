@@ -70,6 +70,10 @@ impl<T> WuiArrayVTable<T> {
         U: AsRef<[T]> + 'static,
     {
         unsafe extern "C" fn drop<U2>(data: *mut ()) {
+            // SAFETY: this vtable entry is only reachable through a `WuiArray` built by
+            // `from_boxed`, which boxed a `U` and paired it with `drop::<U>`, so `U2` is
+            // that same `U` and `data` is its `Box::into_raw` pointer. `consume` invokes
+            // it once and then gives up the pointer.
             unsafe {
                 let _: Box<U2> = Box::from_raw(data.cast::<U2>());
             }
@@ -79,6 +83,9 @@ impl<T> WuiArrayVTable<T> {
         where
             U2: AsRef<[T2]>,
         {
+            // SAFETY: as for `drop`, `data` is the live `Box<U2>` allocation this
+            // vtable was built for. The borrow lasts only for this call, which the
+            // callers (`as_slice` / `as_mut_slice`) hold behind a borrow of the array.
             unsafe {
                 let slice = &*data.cast::<U2>();
                 let s = slice.as_ref();
@@ -104,6 +111,8 @@ impl<T> WuiArray<T> {
     /// The memory must remain valid for the lifetime of the `WuiArray`.
     pub const unsafe fn from_raw(data: *mut (), vtable: WuiArrayVTable<T>) -> Self {
         Self {
+            // SAFETY: the caller contract above requires `data` to be a valid pointer,
+            // and a valid pointer is never null.
             data: unsafe { NonNull::new_unchecked(data) },
             vtable,
         }
@@ -118,6 +127,9 @@ impl<T> WuiArray<T> {
         let boxed = Box::new(array);
         let data = Box::into_raw(boxed).cast::<()>();
         let vtable = WuiArrayVTable::new::<U>();
+        // SAFETY: `data` is the pointer `Box::into_raw` just produced for this `U`, and
+        // `vtable` is the one built for that same `U`, so the array owns a live buffer
+        // its vtable can describe and free.
         unsafe { Self::from_raw(data, vtable) }
     }
 
@@ -136,6 +148,9 @@ impl<T> WuiArray<T> {
     /// Borrows the array's elements as a Rust slice.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
+        // SAFETY: the vtable reports the head and length of the buffer this array owns,
+        // which stays live and unmoved for as long as the array does; the returned slice
+        // borrows from `&self`, so it cannot outlive it.
         unsafe {
             let slice = (self.vtable.slice)(self.data.as_ptr());
             &*slice_from_raw_parts(slice.head, slice.len)
@@ -144,6 +159,8 @@ impl<T> WuiArray<T> {
 
     /// Mutably borrows the array's elements as a Rust slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: as for `as_slice`, and the `&mut self` borrow makes this the only live
+        // reference to the buffer.
         unsafe {
             let slice = (self.vtable.slice)(self.data.as_ptr());
             &mut *slice_from_raw_parts_mut(slice.head, slice.len)
@@ -155,6 +172,7 @@ impl<T: IntoRust + Default> IntoIterator for WuiArray<T> {
     type Item = T::Rust;
     type IntoIter = alloc::vec::IntoIter<T::Rust>;
     fn into_iter(self) -> Self::IntoIter {
+        // SAFETY: `into_rust` requires ownership of a live array, which `self` is.
         unsafe { self.into_rust().into_iter() }
     }
 }
@@ -176,6 +194,9 @@ impl<T> WuiArray<T> {
     /// Consumes the array and frees the array buffer WITHOUT dropping elements.
     /// Use this if the elements are POD or ownership has been moved elsewhere.
     pub fn consume(self) {
+        // SAFETY: the vtable's `drop` is paired with the allocation `data` points at,
+        // and taking `self` by value means it runs exactly once and the pointer is never
+        // observed again.
         unsafe {
             (self.vtable.drop)(self.data.as_ptr());
         }
@@ -209,6 +230,9 @@ impl<T: Default + IntoRust> IntoRust for WuiArray<T> {
         let values = self
             .deref_mut()
             .iter_mut()
+            // SAFETY: each slot holds a live `T` this array owns, and `mem::take`
+            // replaces it with `T::default()` so the buffer stays valid for the
+            // `consume` below — no element is converted twice.
             .map(|item| unsafe { core::mem::take(item).into_rust() })
             .collect::<Vec<_>>();
         self.consume();

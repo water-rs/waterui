@@ -135,12 +135,15 @@ struct ForeignLayoutInvalidation {
 
 impl ForeignLayoutInvalidation {
     fn invalidate(&self) {
+        // SAFETY: `invalidate` and `context` were registered together by the backend
+        // and the context outlives this watcher.
         unsafe { (self.invalidate)(self.context) };
     }
 }
 
 impl Drop for ForeignLayoutInvalidation {
     fn drop(&mut self) {
+        // SAFETY: `drop` and `context` are one registration, and `Drop` runs once.
         unsafe { (self.drop)(self.context) };
     }
 }
@@ -170,6 +173,8 @@ pub unsafe extern "C" fn waterui_layout_watch_invalidation(
     invalidate: WuiLayoutInvalidationCallback,
     drop_callback: WuiLayoutInvalidationCallback,
 ) -> *mut WuiLayoutWatcher {
+    // SAFETY: the caller contract requires `layout` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let layout = unsafe { crate::borrow_ffi(layout) };
 
     let target = Rc::new(ForeignLayoutInvalidation {
@@ -196,6 +201,8 @@ pub unsafe extern "C" fn waterui_layout_watch_invalidation(
 /// previously dropped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_watcher_drop(watcher: *mut WuiLayoutWatcher) {
+    // SAFETY: the caller contract makes `watcher` an owning pointer from the
+    // matching FFI constructor, so reclaiming the box frees it exactly once.
     unsafe { drop(Box::from_raw(watcher)) };
 }
 
@@ -338,6 +345,7 @@ pub struct WuiSubView {
 
 impl Drop for WuiSubView {
     fn drop(&mut self) {
+        // SAFETY: the vtable was registered with this `context`, and `Drop` runs once.
         unsafe { (self.vtable.drop)(self.context) }
     }
 }
@@ -354,7 +362,12 @@ unsafe impl Sync for WuiSubView {}
 
 impl SubView for WuiSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        // SAFETY: the vtable was registered with this `context`, which is alive for as
+        // long as `self`; the proposal is passed by value into backend ownership.
         let result = unsafe { (self.vtable.measure)(self.context, proposal.into_ffi()) };
+        // SAFETY: the caller contract makes `result` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         unsafe { result.into_rust() }
     }
 
@@ -475,6 +488,9 @@ impl IntoRust for WuiHorizontalGuide {
     type Rust = (HorizontalAlignment, f32);
 
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `alignment` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         (unsafe { self.alignment.into_rust() }, self.value)
     }
 }
@@ -492,6 +508,9 @@ impl IntoRust for WuiVerticalGuide {
     type Rust = (VerticalAlignment, f32);
 
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `alignment` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         (unsafe { self.alignment.into_rust() }, self.value)
     }
 }
@@ -545,10 +564,19 @@ impl IntoRust for WuiViewDimensions {
     type Rust = ViewDimensions;
 
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `size` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         let mut dimensions = ViewDimensions::new(unsafe { self.size.into_rust() });
+        // SAFETY: the caller contract makes `horizontal_guides` an owning handle
+        // from the matching FFI constructor; it is consumed here and not
+        // observed again.
         for (alignment, value) in unsafe { self.horizontal_guides.into_rust() } {
             dimensions.set_horizontal(alignment, value);
         }
+        // SAFETY: the caller contract makes `vertical_guides` an owning handle from
+        // the matching FFI constructor; it is consumed here and not observed
+        // again.
         for (alignment, value) in unsafe { self.vertical_guides.into_rust() } {
             dimensions.set_vertical(alignment, value);
         }
@@ -568,6 +596,9 @@ pub struct WuiRect {
 impl IntoRust for WuiRect {
     type Rust = Rect;
     unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `origin` an owning handle from the
+        // matching FFI constructor; it is consumed here and not observed
+        // again.
         unsafe { Rect::new(self.origin.into_rust(), self.size.into_rust()) }
     }
 }
@@ -607,7 +638,11 @@ pub unsafe extern "C" fn waterui_layout_measure(
     proposal: WuiProposalSize,
     mut children: WuiArray<WuiSubView>,
 ) -> WuiViewDimensions {
+    // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
+    // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    // SAFETY: the caller contract makes `proposal` an owning handle from the
+    // matching FFI constructor; it is consumed here and not observed again.
     let proposal = unsafe { proposal.into_rust() };
     let children_slice = children.as_mut_slice();
     let subview_refs: Vec<&dyn SubView> =
@@ -633,7 +668,11 @@ pub unsafe extern "C" fn waterui_layout_place(
     bounds: WuiRect,
     mut children: WuiArray<WuiSubView>,
 ) -> WuiArray<WuiRect> {
+    // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
+    // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    // SAFETY: the caller contract makes `bounds` an owning handle from the matching
+    // FFI constructor; it is consumed here and not observed again.
     let bounds = unsafe { bounds.into_rust() };
 
     // Get slice of WuiSubView and create trait object references
@@ -657,6 +696,8 @@ pub unsafe extern "C" fn waterui_layout_place(
 pub unsafe extern "C" fn waterui_layout_lazy_stack_axis(
     layout: *mut WuiLayout,
 ) -> WuiLazyStackAxis {
+    // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
+    // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     lazy_stack_descriptor(layout)
         .map_or(WuiLazyStackAxis::Unsupported, |descriptor| descriptor.axis)
@@ -669,6 +710,8 @@ pub unsafe extern "C" fn waterui_layout_lazy_stack_axis(
 /// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_lazy_stack_spacing(layout: *mut WuiLayout) -> f32 {
+    // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
+    // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     required_lazy_stack_descriptor(layout).spacing
 }
@@ -682,6 +725,8 @@ pub unsafe extern "C" fn waterui_layout_lazy_stack_spacing(layout: *mut WuiLayou
 pub unsafe extern "C" fn waterui_layout_lazy_stack_horizontal_alignment(
     layout: *mut WuiLayout,
 ) -> WuiHorizontalAlignment {
+    // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
+    // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     required_lazy_stack_descriptor(layout).horizontal_alignment
 }
@@ -695,6 +740,8 @@ pub unsafe extern "C" fn waterui_layout_lazy_stack_horizontal_alignment(
 pub unsafe extern "C" fn waterui_layout_lazy_stack_vertical_alignment(
     layout: *mut WuiLayout,
 ) -> WuiVerticalAlignment {
+    // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
+    // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     required_lazy_stack_descriptor(layout).vertical_alignment
 }
@@ -788,6 +835,8 @@ mod tests {
                 alignment: HorizontalAlignment::Trailing,
                 spacing: Computed::constant(12.0),
             },
+            // SAFETY: the harness hands the closure a pointer to the live layout
+            // handle it just built.
             |layout| unsafe {
                 assert_eq!(
                     waterui_layout_lazy_stack_axis(layout),
@@ -813,6 +862,8 @@ mod tests {
                 alignment: VerticalAlignment::Bottom,
                 spacing: Computed::constant(7.0),
             },
+            // SAFETY: the harness hands the closure a pointer to the live layout
+            // handle it just built.
             |layout| unsafe {
                 assert_eq!(
                     waterui_layout_lazy_stack_axis(layout),
@@ -836,11 +887,15 @@ mod tests {
         struct Target(Rc<Cell<usize>>);
 
         unsafe extern "C" fn invalidate(context: *mut c_void) {
+            // SAFETY: the test registers this callback with a pointer to its own
+            // live `Target`.
             let target = unsafe { &*(context as *const Target) };
             target.0.set(target.0.get() + 1);
         }
 
         unsafe extern "C" fn drop_target(context: *mut c_void) {
+            // SAFETY: `context` is the boxed `Target` this callback was registered
+            // with, and the drop entry runs once.
             unsafe { drop(Box::from_raw(context.cast::<Target>())) };
         }
 
@@ -851,6 +906,8 @@ mod tests {
         }));
         let invalidations = Rc::new(Cell::new(0));
         let context = Box::into_raw(Box::new(Target(Rc::clone(&invalidations)))).cast();
+        // SAFETY: `layout` is a live local, and `context`/`invalidate`/`drop_target`
+        // are one registration built just above.
         let watcher = unsafe {
             waterui_layout_watch_invalidation(&raw const layout, context, invalidate, drop_target)
         };
@@ -858,10 +915,12 @@ mod tests {
         spacing.set(12.0);
         assert_eq!(invalidations.get(), 1);
         assert_eq!(
+            // SAFETY: `layout` is a live local for the duration of the call.
             unsafe { waterui_layout_lazy_stack_spacing(&raw mut layout) },
             12.0
         );
 
+        // SAFETY: `watcher` is the owning handle returned above, dropped once here.
         unsafe { waterui_layout_watcher_drop(watcher) };
     }
 }

@@ -77,6 +77,9 @@ impl DemandLinkTarget {
         let this = Self::alloc(mtm).set_ivars(DemandLinkTargetIvars {
             demand_until: Cell::new(Instant::now()),
         });
+        // SAFETY: `msg_send!` to `super.init` is the designated superclass
+        // initializer for a `define_class!` type, and the `-> Retained<Self>`
+        // signature is the one objc2 expects here.
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -96,12 +99,17 @@ impl FrameRateDemandLink {
         };
         // The handle's view pointer is valid while the winit window lives;
         // the reference does not escape this call.
+        // SAFETY: winit hands out the window's live `NSView` pointer, and the borrow
+        // does not outlive the window handle it came from.
         let view = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
         if !view.respondsToSelector(sel!(displayLinkWithTarget:selector:)) {
             return None;
         }
         let target = DemandLinkTarget::new(mtm);
         let target_object: &AnyObject = &target;
+        // SAFETY: the `respondsToSelector` check above proves this macOS version has
+        // the selector; `target_object` is retained by `self` for the link's lifetime,
+        // and `step:` is defined on it. Main thread, as `NSView` requires.
         let link = unsafe { view.displayLinkWithTarget_selector(target_object, sel!(step:)) };
         link.setPreferredFrameRateRange(CAFrameRateRange::new(
             FRAME_RATE_MIN,
@@ -109,6 +117,8 @@ impl FrameRateDemandLink {
             FRAME_RATE_MAX,
         ));
         link.setPaused(true);
+        // SAFETY: main-thread message send to the link created just above, registering
+        // it with the main run loop it will fire on.
         unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
         Some(Self { link, target })
     }

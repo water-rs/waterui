@@ -72,6 +72,10 @@ macro_rules! ffi_view {
             #[cfg(feature = "c-api")]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_force_as_ $ident>](view: *mut $crate::WuiAnyView) -> $ffi {
+                // SAFETY: the caller contract above makes `view` a valid owning handle
+                // that this call consumes, so taking ownership is sound, and guarantees
+                // its erased value is a `Native<$view>`, which is what the unchecked
+                // downcast relies on.
                 unsafe {
                     let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
                     let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
@@ -170,6 +174,9 @@ macro_rules! ffi_metadata {
             pub unsafe extern "C" fn [<waterui_force_as_metadata_ $ident>](
                 view: *mut $crate::WuiAnyView
             ) -> $ffi {
+                // SAFETY: the caller contract above makes `view` a valid owning handle
+                // holding a `Metadata<$ty>`, which is what the unchecked downcast relies
+                // on; the handle is consumed here.
                 unsafe {
                     let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
                     // Metadata<T> is stored directly, not wrapped in Native<T>
@@ -252,6 +259,9 @@ macro_rules! ffi_ignorable_metadata {
             pub unsafe extern "C" fn [<waterui_force_as_ignorable_metadata_ $ident>](
                 view: *mut $crate::WuiAnyView
             ) -> $ffi {
+                // SAFETY: the caller contract above makes `view` a valid owning handle
+                // holding an `IgnorableMetadata<$ty>`, which is what the unchecked
+                // downcast relies on; the handle is consumed here.
                 unsafe {
                     let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
                     // IgnorableMetadata<T> is stored directly, not wrapped in Native<T>
@@ -341,6 +351,9 @@ macro_rules! opaque {
         impl $crate::IntoRust for *mut $name {
             type Rust = $ty;
             unsafe fn into_rust(self) -> Self::Rust {
+                // SAFETY: `IntoRust::into_rust` requires an owning pointer produced by
+                // the matching `into_ffi`, which boxed this very type, so reclaiming the
+                // box is the exact inverse.
                 unsafe { alloc::boxed::Box::from_raw(self).0 }
             }
         }
@@ -352,6 +365,9 @@ macro_rules! opaque {
             /// The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_drop_ $ident>](value: *mut $name) {
+                // SAFETY: the caller contract above makes `value` a pointer from the
+                // matching FFI constructor that has not been dropped, so reclaiming it
+                // once and letting it fall out of scope frees it exactly once.
                 unsafe {
                     let _ = $crate::IntoRust::into_rust(value);
                 }

@@ -82,6 +82,8 @@ impl IntoFFI for Draggable {
 /// * `draggable` must be a valid pointer to a `WuiDraggable`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_draggable_get_data(draggable: *const WuiDraggable) -> WuiDragData {
+    // SAFETY: the caller contract requires `draggable` to be a valid handle alive for
+    // this call, and a live draggable holds a valid inner handle; both are borrowed.
     unsafe {
         let draggable = crate::borrow_ffi(draggable);
         let wrapper = crate::borrow_ffi(draggable.inner);
@@ -96,6 +98,8 @@ pub unsafe extern "C" fn waterui_draggable_get_data(draggable: *const WuiDraggab
 /// * `draggable` must be a valid pointer to a `WuiDraggable`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_draggable(draggable: *mut WuiDraggable) {
+    // SAFETY: the caller contract requires `draggable` to be a valid handle that no
+    // one else is borrowing for this call.
     unsafe {
         let draggable = crate::borrow_ffi_mut(draggable);
         let inner = draggable.inner;
@@ -148,6 +152,8 @@ pub unsafe extern "C" fn waterui_call_drop_handler(
     data_tag: WuiDragDataTag,
     data_value: *const core::ffi::c_char,
 ) {
+    // SAFETY: the caller contract requires `dest` to be a valid handle alive for this
+    // call, and a live destination holds a valid handler handle; both are borrowed.
     unsafe {
         let dest = crate::borrow_ffi(dest);
         let handler = crate::borrow_ffi(dest.handler).0.clone();
@@ -184,6 +190,8 @@ pub unsafe extern "C" fn waterui_call_drop_enter_handler(
     dest: *const WuiDropDestination,
     env: *const WuiEnv,
 ) {
+    // SAFETY: the caller contract requires `dest` to be a valid handle alive for this
+    // call, and a live destination holds a valid handler handle; both are borrowed.
     unsafe {
         let dest = crate::borrow_ffi(dest);
         let handler = crate::borrow_ffi(dest.handler).0.clone();
@@ -207,6 +215,8 @@ pub unsafe extern "C" fn waterui_call_drop_exit_handler(
     dest: *const WuiDropDestination,
     env: *const WuiEnv,
 ) {
+    // SAFETY: the caller contract requires `dest` to be a valid handle alive for this
+    // call, and a live destination holds a valid handler handle; both are borrowed.
     unsafe {
         let dest = crate::borrow_ffi(dest);
         let handler = crate::borrow_ffi(dest.handler).0.clone();
@@ -226,6 +236,8 @@ pub unsafe extern "C" fn waterui_call_drop_exit_handler(
 /// * `dest` must be a valid pointer to a `WuiDropDestination`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_drop_destination(dest: *mut WuiDropDestination) {
+    // SAFETY: the caller contract requires `dest` to be a valid handle that no one
+    // else is borrowing for this call.
     unsafe {
         let dest = crate::borrow_ffi_mut(dest);
         let handler = dest.handler;

@@ -52,6 +52,8 @@ unsafe impl Sync for ForeignRedrawTarget {}
 
 impl ForeignRedrawTarget {
     fn wake(&self) {
+        // SAFETY: `wake` and `context` were registered together by the backend, and
+        // the context outlives this waker.
         unsafe {
             (self.wake)(self.context as *mut c_void);
         }
@@ -60,6 +62,7 @@ impl ForeignRedrawTarget {
 
 impl Drop for ForeignRedrawTarget {
     fn drop(&mut self) {
+        // SAFETY: `drop` and `context` are one registration, and `Drop` runs once.
         unsafe {
             (self.drop)(self.context as *mut c_void);
         }
@@ -289,15 +292,21 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
     filter_ffi: *mut WuiAppliedFilter,
     env: *const crate::WuiEnv,
 ) -> *mut WuiAppliedFilterState {
+    // SAFETY: the caller contract requires `filter_ffi` to be a valid descriptor that
+    // no one else is borrowing for this call.
     let wui_filter = unsafe { &mut *filter_ffi };
     assert!(
         !wui_filter.filter.is_null(),
         "waterui_applied_filter_create: descriptor was already consumed"
     );
     let filter: AppliedFilter =
+        // SAFETY: the assert above proves the descriptor still owns its filter, and the
+        // field is nulled immediately after, so it is reclaimed once.
         unsafe { *Box::from_raw(wui_filter.filter.cast::<AppliedFilter>()) };
     wui_filter.filter = core::ptr::null_mut();
 
+    // SAFETY: the caller contract requires `env` to be a valid handle alive for this
+    // call; it is only borrowed.
     let runtime = super::gpu_runtime::gpu_runtime(&unsafe { &*env }.0);
     let redraw_handle = filter.redraw_handle();
     Box::into_raw(Box::new(WuiAppliedFilterState {
@@ -409,6 +418,8 @@ pub unsafe extern "C" fn waterui_applied_filter_attach(
     input_height: u32,
     prefers_hdr: bool,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     assert!(
         state.output_surface.is_none(),
@@ -453,6 +464,8 @@ pub unsafe extern "C" fn waterui_applied_filter_attach(
 /// Panics if `state` does not currently have an output surface attached.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_detach(state: *mut WuiAppliedFilterState) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let surface = state
         .output_surface
@@ -487,6 +500,8 @@ pub unsafe extern "C" fn waterui_applied_filter_set_redraw_callback(
     wake: WuiAppliedFilterRedrawCallback,
     drop_callback: WuiAppliedFilterRedrawCallback,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let target = ForeignRedrawTarget {
         context: context as usize,
@@ -510,6 +525,8 @@ pub unsafe extern "C" fn waterui_applied_filter_set_redraw_callback(
 /// - A presentation target must be attached
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_setup(state: *mut WuiAppliedFilterState) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     let input_format = current_applied_filter_input_format(state);
     start_applied_filter_setup(state, input_format);
@@ -526,6 +543,8 @@ pub unsafe extern "C" fn waterui_applied_filter_setup(state: *mut WuiAppliedFilt
 pub unsafe extern "C" fn waterui_applied_filter_is_ready(
     state: *const WuiAppliedFilterState,
 ) -> bool {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
     state.setup_ready.get()
 }
@@ -562,6 +581,8 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     width: u32,
     height: u32,
 ) -> bool {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
 
     ensure_dimensions(state, width, height);
@@ -717,6 +738,8 @@ pub unsafe extern "C" fn waterui_applied_filter_resolve_output_size(
     input_width: u32,
     input_height: u32,
 ) -> WuiAppliedFilterOutputSize {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     resolve_output_size(state, input_width, input_height)
 }
@@ -738,6 +761,8 @@ pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
     width: u32,
     height: u32,
 ) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
 
     ensure_dimensions(state, width, height);
@@ -765,10 +790,14 @@ pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
 pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
     state: *mut WuiAppliedFilterState,
 ) -> *mut c_void {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
     let texture = state.capture_texture.as_ref().expect(
         "waterui_applied_filter_get_capture_metal_texture: presentation target is detached",
     );
+    // SAFETY: this path is only reached on the Metal backend, so the texture's HAL
+    // type is `MetalApi` and the downcast cannot fail.
     let hal_texture = unsafe { texture.as_hal::<MetalApi>().unwrap_unchecked() };
 
     let raw = hal_texture.raw_handle();
@@ -800,6 +829,8 @@ pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
 /// and must not be used after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_drop(state: *mut WuiAppliedFilterState) {
+    // SAFETY: the caller contract makes `state` an owning handle from the matching
+    // constructor that has not been dropped.
     unsafe {
         let _ = Box::from_raw(state);
     }
