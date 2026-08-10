@@ -39,6 +39,51 @@ fn cargo_version_req(version: &str) -> cargo_toml::VersionReq {
 }
 
 /// Embedded template directories.
+/// A stable digest of every scaffold template baked into this CLI.
+///
+/// The generated host crates are a product of these templates, so anything that
+/// caches a generated crate has to treat a template edit the same way it treats
+/// a runtime source edit. Without this, upgrading the CLI leaves previously
+/// generated crates in place, and they fail to compile against the API they
+/// were meant to be regenerated for.
+pub(crate) fn scaffold_template_digest() -> String {
+    use sha2::Digest as _;
+
+    fn hash_dir(hasher: &mut sha2::Sha256, dir: &Dir<'_>) {
+        // `include_dir` yields entries in a stable order, but sort anyway so the
+        // digest cannot depend on directory-walk order.
+        let mut files: Vec<_> = dir.files().collect();
+        files.sort_by_key(|file| file.path());
+        for file in files {
+            hasher.update(file.path().to_string_lossy().as_bytes());
+            hasher.update(file.contents());
+        }
+        let mut dirs: Vec<_> = dir.dirs().collect();
+        dirs.sort_by_key(|entry| entry.path());
+        for entry in dirs {
+            hash_dir(hasher, entry);
+        }
+    }
+
+    let mut hasher = sha2::Sha256::new();
+    for dir in [
+        &embedded::ROOT,
+        &embedded::HYDROLYSIS,
+        &embedded::PREVIEW,
+        &embedded::PREVIEW_FFI,
+        &embedded::INSPECTOR,
+        &embedded::FFI,
+    ] {
+        hash_dir(&mut hasher, dir);
+    }
+    let digest = hasher.finalize();
+    digest.iter().take(8).fold(String::new(), |mut out, byte| {
+        use core::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
+}
+
 mod embedded {
     use super::{Dir, include_dir};
 
@@ -3222,5 +3267,35 @@ pub mod inspector {
             dependencies,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod template_digest_tests {
+    /// The digest must be stable across calls, or every invocation would
+    /// invalidate the generated-crate cache and force a full rebuild.
+    #[test]
+    fn scaffold_template_digest_is_stable() {
+        assert_eq!(
+            super::scaffold_template_digest(),
+            super::scaffold_template_digest()
+        );
+    }
+
+    /// It must actually depend on template contents. A digest that ignored them
+    /// would let a stale generated crate survive a CLI upgrade — the rot this
+    /// exists to prevent.
+    #[test]
+    fn scaffold_template_digest_covers_template_contents() {
+        let digest = super::scaffold_template_digest();
+        assert_eq!(digest.len(), 16, "digest must be a 16-char hex prefix");
+
+        let hydrolysis_preview = super::embedded::HYDROLYSIS
+            .get_file("src/preview_runtime.rs.tpl")
+            .expect("the hydrolysis preview runtime template must be embedded");
+        assert!(
+            !hydrolysis_preview.contents().is_empty(),
+            "the template the digest is meant to track must be non-empty"
+        );
     }
 }
