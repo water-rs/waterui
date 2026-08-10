@@ -2,7 +2,6 @@ use gtk4::Widget;
 #[cfg(feature = "webview-system")]
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
-#[cfg(any(feature = "webview-wpe", feature = "webview-cef"))]
 use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
