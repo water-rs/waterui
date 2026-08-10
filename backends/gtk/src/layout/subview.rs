@@ -107,9 +107,9 @@ impl SubView for GtkSubView {
         // Use GTK's measurement API
         // -1 means "no constraint" in GTK's measure()
 
-        let for_height = proposal.height.map(|h| h as i32).unwrap_or(-1);
+        let for_height = proposal.height.map_or(-1, |h| h as i32);
 
-        let for_width = proposal.width.map(|w| w as i32).unwrap_or(-1);
+        let for_width = proposal.width.map_or(-1, |w| w as i32);
 
         // Measure horizontal (width)
         let (_min_width, natural_width, _min_baseline, _nat_baseline) = self
@@ -121,15 +121,13 @@ impl SubView for GtkSubView {
             self.widget.measure(gtk4::Orientation::Vertical, for_width);
 
         // Default behavior: intrinsic size clamped by proposal.
-        let mut width = match proposal.width {
-            Some(proposed) => proposed.min(natural_width as f32),
-            None => natural_width as f32,
-        };
+        let mut width = proposal.width.map_or(natural_width as f32, |proposed| {
+            proposed.min(natural_width as f32)
+        });
 
-        let mut height = match proposal.height {
-            Some(proposed) => proposed.min(natural_height as f32),
-            None => natural_height as f32,
-        };
+        let mut height = proposal.height.map_or(natural_height as f32, |proposed| {
+            proposed.min(natural_height as f32)
+        });
 
         // For stretch axes, fill the proposed extent instead of shrinking to
         // intrinsic size. This prevents feedback loops where a transient narrow

@@ -133,6 +133,11 @@ impl GtkApp {
     ///
     /// This extracts the main window's content and environment from the App
     /// and renders it using GTK.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the app has no windows, or if the GPU runtime cannot be created.
+    #[must_use = "the returned value is the process exit status"]
     pub fn run_app(self, waterui_app: App) -> i32 {
         let (windows, _menu_bar, env) = waterui_app.into_parts();
         // `env` is only mutated when a browser feature installs services into it.

@@ -128,11 +128,11 @@ fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
         font_weight_to_pango_value(resolved_font.weight)
     );
 
-    if let Some(family) = resolved_font.family {
-        if !family.is_empty() {
-            let family = escape_markup_attr(family.as_str());
-            let _ = write!(attrs, " font_family=\"{family}\"");
-        }
+    if let Some(family) = resolved_font.family
+        && !family.is_empty()
+    {
+        let family = escape_markup_attr(family.as_str());
+        let _ = write!(attrs, " font_family=\"{family}\"");
     }
 
     if style.italic {
@@ -162,7 +162,7 @@ fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
     attrs
 }
 
-fn font_weight_to_pango_value(weight: FontWeight) -> u16 {
+const fn font_weight_to_pango_value(weight: FontWeight) -> u16 {
     match weight {
         FontWeight::Thin => 100,
         FontWeight::UltraLight => 200,

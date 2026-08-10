@@ -64,8 +64,8 @@ impl GtkComponent for Native<ResolvedGradient> {
                     let gradient =
                         gtk4::cairo::RadialGradient::new(cx, cy, start_radius, cx, cy, end_radius);
                     for stop in &stops {
-                        let normalized = (start_radius
-                            + (end_radius - start_radius) * f64::from(stop.position))
+                        let normalized = (end_radius - start_radius)
+                            .mul_add(f64::from(stop.position), start_radius)
                             / end_radius;
                         let (red, green, blue, alpha) = to_rgba(stop.color);
                         gradient.add_color_stop_rgba(normalized, red, green, blue, alpha);
@@ -130,7 +130,10 @@ fn draw_angular_gradient(
 
         cr.new_sub_path();
         cr.move_to(cx, cy);
-        cr.line_to(cx + radius * angle0.cos(), radius.mul_add(angle0.sin(), cy));
+        cr.line_to(
+            radius.mul_add(angle0.cos(), cx),
+            radius.mul_add(angle0.sin(), cy),
+        );
         cr.arc(cx, cy, radius, angle0, angle1);
         cr.close_path();
         cr.set_source_rgba(red, green, blue, alpha);

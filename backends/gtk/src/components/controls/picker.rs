@@ -77,26 +77,25 @@ impl GtkComponent for Native<PickerConfig> {
         dropdown.connect_selected_notify(move |dropdown| {
             let selected_idx = dropdown.selected() as usize;
             let ids_ref = ids_for_handler.borrow();
-            if let Some(selected_id) = ids_ref.as_slice().get(selected_idx).copied() {
-                if selection_for_handler.get() != selected_id {
-                    selection_for_handler.set(selected_id);
-                }
+            if let Some(selected_id) = ids_ref.as_slice().get(selected_idx).copied()
+                && selection_for_handler.get() != selected_id
+            {
+                selection_for_handler.set(selected_id);
             }
         });
 
         // Watch binding changes -> update dropdown
         let selection_guard = selection.computed().watch({
             let dropdown = dropdown.clone();
-            let ids = ids;
             move |ctx| {
                 let value = ctx.into_value();
                 let dropdown = dropdown.clone();
                 let ids = ids.clone();
                 glib::idle_add_local_once(move || {
-                    if let Some(idx) = ids.borrow().iter().position(|id| *id == value) {
-                        if dropdown.selected() != idx as u32 {
-                            dropdown.set_selected(idx as u32);
-                        }
+                    if let Some(idx) = ids.borrow().iter().position(|id| *id == value)
+                        && dropdown.selected() != idx as u32
+                    {
+                        dropdown.set_selected(idx as u32);
                     }
                 });
             }
