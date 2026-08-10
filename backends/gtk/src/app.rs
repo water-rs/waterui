@@ -80,8 +80,17 @@ impl GtkApp {
     /// Runs the application with the provided root view.
     ///
     /// This method blocks until the application exits.
-    pub fn run<V: View + Clone + 'static>(self, view: V, mut env: Environment) -> i32 {
+    pub fn run<V: View + Clone + 'static>(self, view: V, env: Environment) -> i32 {
         let view = view.clone();
+        // `env` is only mutated when a browser feature installs services into it.
+        #[cfg(any(
+            feature = "webview-default",
+            feature = "webview-system",
+            feature = "webview-wpe",
+            feature = "webview-cef",
+            feature = "chromium"
+        ))]
+        let mut env = env;
         #[cfg(any(
             feature = "webview-default",
             feature = "webview-system",
@@ -125,7 +134,16 @@ impl GtkApp {
     /// This extracts the main window's content and environment from the App
     /// and renders it using GTK.
     pub fn run_app(self, waterui_app: App) -> i32 {
-        let (windows, _menu_bar, mut env) = waterui_app.into_parts();
+        let (windows, _menu_bar, env) = waterui_app.into_parts();
+        // `env` is only mutated when a browser feature installs services into it.
+        #[cfg(any(
+            feature = "webview-default",
+            feature = "webview-system",
+            feature = "webview-wpe",
+            feature = "webview-cef",
+            feature = "chromium"
+        ))]
+        let mut env = env;
         let main_window = windows
             .into_iter()
             .next()

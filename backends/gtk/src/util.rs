@@ -1,6 +1,10 @@
 //! Shared utilities for the GTK backend.
 
-use glib::object::ObjectExt;
+use std::rc::Rc;
+
+use glib::object::{ObjectExt, ObjectType};
+use gtk4::prelude::{IsA, WidgetExt};
+use gtk4::{CssProvider, Widget, gdk};
 use nami::{
     Signal,
     watcher::{BoxWatcherGuard, Context},
@@ -57,6 +61,70 @@ pub fn store_watcher_guard(widget: &impl ObjectExt, guard: BoxWatcherGuard) {
 /// to be kept alive with the widget.
 pub fn store_watcher_guards(widget: &impl ObjectExt, guards: Vec<BoxWatcherGuard>) {
     unsafe { widget.set_data("waterui_watcher_guards", guards) }
+}
+
+/// A CSS provider that styles exactly one widget.
+///
+/// GTK 4.10 removed per-widget style contexts, so a provider can only be
+/// registered display-wide. To keep a rule from bleeding into every other widget
+/// sharing the same semantic class, the handle mints a CSS class that is unique
+/// to the widget instance and emits rules for that class alone. The handle keeps
+/// itself alive as widget data, so the display loses the provider exactly when
+/// the widget goes away.
+#[derive(Debug, Clone)]
+pub struct ScopedCss(Rc<ScopedCssProvider>);
+
+#[derive(Debug)]
+struct ScopedCssProvider {
+    display: gdk::Display,
+    provider: CssProvider,
+    class: String,
+}
+
+impl Drop for ScopedCssProvider {
+    fn drop(&mut self) {
+        gtk4::style_context_remove_provider_for_display(&self.display, &self.provider);
+    }
+}
+
+impl ScopedCss {
+    /// Registers a provider scoped to `widget` and tags the widget with both
+    /// `class` and the instance-unique class that scopes the provider.
+    ///
+    /// The declaration block starts out empty; call
+    /// [`ScopedCss::set_declarations`] to style the widget.
+    pub fn attach(widget: &impl IsA<Widget>, class: &str, priority: u32) -> Self {
+        let display = widget.display();
+        let provider = CssProvider::new();
+        gtk4::style_context_add_provider_for_display(&display, &provider, priority);
+
+        // The widget address is unique among live widgets, and this handle dies
+        // with the widget, so the scoped class can never collide.
+        let scoped_class = format!("{class}-{:x}", widget.as_ref().as_ptr() as usize);
+        widget.add_css_class(class);
+        widget.add_css_class(&scoped_class);
+
+        let handle = Self(Rc::new(ScopedCssProvider {
+            display,
+            provider,
+            class: scoped_class.clone(),
+        }));
+        unsafe { widget.set_data(&scoped_class, handle.clone()) };
+        handle
+    }
+
+    /// Applies `declarations` (a CSS declaration block without braces) to the
+    /// scoped widget, replacing whatever was applied before.
+    pub fn set_declarations(&self, declarations: &str) {
+        self.0
+            .provider
+            .load_from_string(&format!(".{} {{ {declarations} }}", self.0.class));
+    }
+
+    /// Drops every declaration previously applied to the scoped widget.
+    pub fn clear(&self) {
+        self.0.provider.load_from_string("");
+    }
 }
 
 /// Converts a resolved color to clamped sRGBA byte channels.

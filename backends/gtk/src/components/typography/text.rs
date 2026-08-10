@@ -5,7 +5,6 @@ use gtk4::{Label, Widget};
 use nami::Signal;
 use std::fmt::Write;
 use waterui_core::layout::HorizontalAlignment;
-use waterui_core::resolve::Resolvable;
 use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
 use waterui_text::font::{FontWeight, ResolvedFont};

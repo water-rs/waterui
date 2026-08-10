@@ -1,6 +1,10 @@
 //! GTK ResolvedShape component implementation.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gtk4::Widget;
+use gtk4::glib;
 use gtk4::prelude::*;
 use waterui::shape::{PathCommand, ResolvedShape};
 use waterui_core::{Environment, Native};
@@ -8,7 +12,7 @@ use waterui_graphics::color::ResolvedColor;
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::resolved_color_to_srgba_f64;
+use crate::util::{resolved_color_to_srgba_f64, store_watcher_guard, subscribe_then_get};
 
 impl GtkComponent for Native<ResolvedShape> {
     fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
@@ -18,13 +22,33 @@ impl GtkComponent for Native<ResolvedShape> {
         area.set_hexpand(true);
         area.set_vexpand(true);
 
+        // The resolved fill stays reactive to theme changes, so the draw function
+        // reads the latest color from a shared cell that the watcher repaints on.
+        let fill = Rc::new(Cell::new(ResolvedColor::default()));
+        let (initial_fill, fill_guard) = subscribe_then_get(&resolved.fill, {
+            let area = area.clone();
+            let fill = Rc::clone(&fill);
+            move |ctx| {
+                let color = ctx.into_value();
+                let area = area.clone();
+                let fill = Rc::clone(&fill);
+                glib::idle_add_local_once(move || {
+                    fill.set(color);
+                    area.queue_draw();
+                });
+            }
+        });
+        fill.set(initial_fill);
+        store_watcher_guard(&area, Box::new(fill_guard));
+
+        let commands = resolved.commands;
         area.set_draw_func(move |_area, cr, width, height| {
             let width = f64::from(width);
             let height = f64::from(height);
-            let (red, green, blue, alpha) = to_rgba(resolved.fill);
+            let (red, green, blue, alpha) = to_rgba(fill.get());
 
             cr.new_path();
-            for command in &resolved.commands {
+            for command in &commands {
                 apply_path_command(cr, *command, width, height);
             }
 

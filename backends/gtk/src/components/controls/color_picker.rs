@@ -1,7 +1,7 @@
 //! GTK4 ColorPicker component implementation.
 
 use gtk4::prelude::*;
-use gtk4::{ColorButton, Widget, gdk};
+use gtk4::{ColorDialog, ColorDialogButton, Widget, gdk};
 use nami::Signal;
 use waterui_core::{Environment, Native};
 use waterui_form::picker::color::ColorPickerConfig;
@@ -19,8 +19,9 @@ impl GtkComponent for Native<ColorPickerConfig> {
         let label = renderer.render(config.label, env);
         root.append(&label);
 
-        let button = ColorButton::new();
-        button.set_use_alpha(config.support_alpha);
+        let dialog = ColorDialog::new();
+        dialog.set_with_alpha(config.support_alpha);
+        let button = ColorDialogButton::new(Some(dialog));
 
         if config.support_hdr {
             tracing::debug!(
@@ -55,7 +56,7 @@ impl GtkComponent for Native<ColorPickerConfig> {
     }
 }
 
-fn apply_color_button_rgba(button: &ColorButton, color: Color, env: &Environment) {
+fn apply_color_button_rgba(button: &ColorDialogButton, color: Color, env: &Environment) {
     let resolved = color.resolve(env).get();
     let srgb = resolved.to_srgb_with_headroom();
     let rgba = gdk::RGBA::new(srgb.red, srgb.green, srgb.blue, resolved.opacity);
