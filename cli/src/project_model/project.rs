@@ -734,8 +734,12 @@ impl Project {
         // Build template context for root files
         let ctx = TemplateContext::for_create_options(&options, crate_name.clone());
 
-        // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
-        templates::root::scaffold(&path, &ctx)
+        // The assets root is derived once and shared with both the scaffold and
+        // the manifest, so the created directory and `Water.toml` cannot disagree.
+        let assets_path = default_assets_path();
+
+        // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore, assets/README.md)
+        templates::root::scaffold(&path, &ctx, &assets_path)
             .await
             .map_err(FailToCreateProject::Scaffold)?;
 
@@ -751,7 +755,7 @@ impl Project {
                 package_type,
                 name: options.name.clone(),
                 bundle_identifier: options.bundle_identifier.clone(),
-                assets_path: default_assets_path(),
+                assets_path,
                 accessory: false,
             },
             backends,
@@ -1817,6 +1821,50 @@ bundle_identifier = "dev.waterui.test.webview"
         assert!(
             !webview.contains_key("waterui-chromium"),
             "WebView example graph: {webview:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod scaffold_tests {
+    use super::{BundleIdentifier, CreateOptions, PackageType, Project};
+
+    /// The documented `assets!` workflow requires the assets root to exist: the
+    /// planner walks it recursively, so a missing directory fails the first
+    /// `assets!` call. `water create` must therefore produce it, tracked, and at
+    /// exactly the path the generated `Water.toml` declares.
+    #[test]
+    fn create_scaffolds_the_assets_directory_declared_by_the_manifest() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("water-example");
+
+        let project = smol::block_on(Project::create(
+            &root,
+            CreateOptions {
+                name: "Water Example".to_string(),
+                bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
+                    .expect("bundle identifier"),
+                package_type: PackageType::Playground,
+                waterui_path: None,
+                author: "Lexo Liu".to_string(),
+            },
+        ))
+        .expect("project creation must succeed");
+
+        let assets = project.assets_dir();
+        assert!(
+            assets.is_dir(),
+            "the assets root {} must exist after `water create`",
+            assets.display()
+        );
+        assert_eq!(
+            assets,
+            root.join(project.assets_path()),
+            "the scaffolded directory must be the one the manifest declares"
+        );
+        assert!(
+            assets.join("README.md").is_file(),
+            "a tracked file keeps the assets directory present in git"
         );
     }
 }

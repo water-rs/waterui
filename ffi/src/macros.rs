@@ -409,9 +409,11 @@ macro_rules! opaque {
 /// # Example
 /// ```ignore
 /// into_ffi!{
-///   ListConfig,
-///   struct WuiList{
-///      contents: *mut WuiAnyViews,
+///   ToggleConfig,
+///   pub struct WuiToggle{
+///      label: WuiLabel,
+///      toggle: *mut WuiBinding<bool>,
+///      style: WuiToggleStyle,
 ///   }
 /// }
 /// ```

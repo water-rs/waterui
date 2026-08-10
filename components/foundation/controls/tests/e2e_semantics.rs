@@ -2,9 +2,12 @@
 
 mod support;
 
+use core::num::NonZeroUsize;
+
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
+use nami::SignalExt as _;
 use waterui::{Binding, Str};
 use waterui_controls::{
     Menu, TextField, Toggle, button, label, slider::slider, stepper::stepper, toggle,
@@ -46,6 +49,91 @@ fn button_tap_triggers_action() {
         .role(Role::LABEL)
         .label("count:1")
         .assert_exists();
+}
+
+#[test]
+fn disabled_scope_reaches_every_control_in_the_subtree() {
+    // No control carries a `disabled` field: `.disabled(...)` installs a scoped
+    // environment attribute and each control reads the state in force at its
+    // own position. A scope on the container must therefore reach a stepper and
+    // a text field just as it reaches a button, toggle and slider.
+    let value = Binding::i32(0);
+    let text = Binding::container(Str::from("hello"));
+    let flag = Binding::bool(false);
+    let amount = Binding::f64(0.5);
+
+    let mut app = mount_view(move || {
+        control_shell(
+            vstack((
+                button("Act").action(|| {}),
+                toggle("Flag", &flag),
+                slider(label("Amount"), &amount),
+                stepper("Count", &value),
+                TextField::new(&text).label("Note"),
+            ))
+            .disabled(true),
+        )
+    });
+
+    for (role, label) in [
+        (Some(Role::BUTTON), "Act"),
+        (Some(Role::SWITCH), "Flag"),
+        (Some(Role::SLIDER), "Amount"),
+        // The stepper reports accesskit's spin-button role, which the testing
+        // harness has no `Role` constant for yet, so it is matched by label.
+        (None, "Count"),
+        (Some(Role::TEXT_INPUT), "Note"),
+    ] {
+        let query = app.query();
+        let query = match role {
+            Some(role) => query.role(role),
+            None => query,
+        };
+        let element = query.label(label).single();
+        assert!(
+            !element.node().enabled(),
+            "{label}: an enclosing .disabled(...) scope must disable this control"
+        );
+    }
+}
+
+#[test]
+fn repeated_state_calls_bind_in_argument_order() {
+    let first = Binding::i32(0);
+    let second = Binding::i32(0);
+    let first_for_view = first.clone();
+    let second_for_view = second.clone();
+
+    let mut app = mount_view(move || {
+        control_shell(
+            button("Bind")
+                .action(
+                    |waterui::State(first): waterui::State<Binding<i32>>,
+                     waterui::State(second): waterui::State<Binding<i32>>| {
+                        first.set(1);
+                        second.set(2);
+                    },
+                )
+                .state(&first_for_view)
+                .state(&second_for_view),
+        )
+    });
+
+    assert!(
+        app.query().role(Role::BUTTON).label("Bind").tap(),
+        "button tap should succeed"
+    );
+
+    assert_eq!(
+        first.get(),
+        1,
+        "the first `State` parameter must bind to the first `.state()` call"
+    );
+    assert_eq!(
+        second.get(),
+        2,
+        "the second `State` parameter must bind to the second `.state()` call"
+    );
 }
 
 #[test]
@@ -273,6 +361,77 @@ fn text_field_focus_updates_ui_focus() {
         "text field focus should succeed"
     );
     app.assert_ui_focus(&selector);
+}
+
+#[test]
+fn multi_line_text_field_accepts_newlines_up_to_its_limit() {
+    // A multi-line field must be reachable through the public API: `line_limit`
+    // takes any `NonZeroUsize`, and a field with a limit above one both reports
+    // the multi-line accessibility role and accepts newline input, refusing only
+    // the edit that would push it past the limit.
+    let value = Binding::container(Str::from(""));
+    let observed = value.clone();
+
+    let mut app = mount_view(move || {
+        control_shell(
+            TextField::new(&value)
+                .label("Notes")
+                .line_limit(NonZeroUsize::new(2).expect("two lines")),
+        )
+    });
+
+    // A multi-line field reports accesskit's multi-line text-input role, which
+    // the testing harness has no `Role` constant for yet, so it is matched by
+    // label — the newline behaviour below is what actually pins the contract.
+    assert!(
+        app.query().label("Notes").focus(),
+        "multi-line field focus should succeed"
+    );
+
+    app.press_character_key("a");
+    app.press_named_key("Enter");
+    app.press_character_key("b");
+    assert_eq!(
+        observed.get().as_str(),
+        "a\nb",
+        "a multi-line field must accept a newline"
+    );
+
+    // The third line exceeds `line_limit(2)`, so the edit is refused and the
+    // existing value survives intact.
+    app.press_named_key("Enter");
+    app.press_character_key("c");
+    assert_eq!(
+        observed.get().as_str(),
+        "a\nbc",
+        "input beyond the line limit must not add a line, and must not truncate"
+    );
+}
+
+#[test]
+fn accessibility_label_follows_a_signal_without_rebuilding() {
+    // An accessibility label derived from app state must stay current the way
+    // accessibility *state* already does, instead of freezing at the value it
+    // had when the subtree was built.
+    let unread = Binding::i32(3);
+    let label = unread.clone().map(|count| Str::from(format!("{count} unread messages")));
+
+    let mut app = mount_view(move || control_shell(button("Inbox").a11y_label(label.clone())));
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("3 unread messages")
+        .assert_exists();
+
+    unread.set(7);
+
+    assert!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("7 unread messages")
+            .wait_for_existence(core::time::Duration::from_secs(2)),
+        "the accessibility label must follow its signal"
+    );
 }
 
 #[test]

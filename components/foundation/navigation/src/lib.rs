@@ -39,6 +39,7 @@ pub use path::{
 };
 pub use router::NavigationRouter;
 pub use search::NavigationSearch;
+pub use tab::{Tab, Tabs, tab_style};
 pub use split::{
     ColumnWidth, NativeNavigationSplitStyle, NavigationSplitColumnVisibility,
     NavigationSplitLayout, NavigationSplitStyle, NavigationSplitView, split_style,

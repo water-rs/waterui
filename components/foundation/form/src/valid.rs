@@ -7,12 +7,14 @@ use core::{
     ops::Range,
 };
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use nami::{Binding, SignalExt};
 use regex::Regex;
+use waterui_controls::text_field::TextField;
 use waterui_core::{Str, View};
 use waterui_layout::stack::vstack;
 use waterui_text::Text;
+use waterui_text::styled::StyledStr;
 
 macro_rules! impl_error {
     ($ident:ident,$message:expr) => {
@@ -275,11 +277,127 @@ impl<T> Validator<Option<T>> for Required {
     }
 }
 
-impl<'a> Validator<&'a str> for Required {
-    type Err = RequiredError;
+macro_rules! impl_required_for_text {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl Validator<$ty> for Required {
+                type Err = RequiredError;
 
-    fn validate(&self, value: &'a str) -> Result<(), Self::Err> {
-        // we consider a string with only whitespace as empty
-        value.trim().is_empty().then_some(()).ok_or(RequiredError)
+                fn validate(&self, value: $ty) -> Result<(), Self::Err> {
+                    // we consider a string with only whitespace as empty
+                    (!AsRef::<str>::as_ref(&value).trim().is_empty())
+                        .then_some(())
+                        .ok_or(RequiredError)
+                }
+            }
+        )*
+    };
+}
+
+impl_required_for_text!(&str, Str, String);
+
+/// Lifts a validator over plain text onto styled text.
+///
+/// Text inputs are backed by [`StyledStr`], but validators are naturally written
+/// against plain text (`Required`, [`Regex`], …). `Plain` bridges the two so a
+/// single plain-text validator works on a styled field, instead of every
+/// validator needing a second styled implementation:
+///
+/// ```rust,ignore
+/// ValidatableView::new(field, Plain(Required))
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Plain<V>(pub V);
+
+impl<V> Validator<StyledStr> for Plain<V>
+where
+    V: Validator<Str>,
+{
+    type Err = V::Err;
+
+    fn validate(&self, value: StyledStr) -> Result<(), Self::Err> {
+        self.0.validate(value.to_plain())
+    }
+}
+
+impl Validatable for TextField {
+    type Value = StyledStr;
+
+    fn validable(&mut self) -> &mut Binding<Self::Value> {
+        self.value_binding()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Required, Validator};
+    use alloc::string::ToString;
+    use nami::Binding;
+    use regex::Regex;
+    use waterui_core::Str;
+
+    #[test]
+    fn required_accepts_non_empty_str_and_rejects_blank() {
+        assert!(Required.validate("water").is_ok());
+        assert!(Required.validate(" ui ").is_ok());
+        assert!(Required.validate("").is_err());
+        assert!(Required.validate("   \t\n").is_err());
+    }
+
+    #[test]
+    fn required_covers_the_owned_string_types() {
+        assert!(Required.validate(Str::from("water")).is_ok());
+        assert!(Required.validate(Str::new()).is_err());
+        assert!(Required.validate("water".to_string()).is_ok());
+        assert!(Required.validate("  ".to_string()).is_err());
+    }
+
+    #[test]
+    fn required_option_impl_agrees_with_the_string_impls() {
+        assert!(Required.validate(Some(1)).is_ok());
+        assert!(Required.validate(Option::<i32>::None).is_err());
+    }
+
+    #[test]
+    fn plain_lifts_a_text_validator_onto_a_styled_field() {
+        use super::Plain;
+        use waterui_text::styled::StyledStr;
+
+        let validator = Plain(Required);
+        assert!(validator.validate(StyledStr::plain("water")).is_ok());
+        assert!(validator.validate(StyledStr::plain("  ")).is_err());
+        // Styling is irrelevant to a plain-text rule.
+        assert!(
+            validator
+                .validate(StyledStr::plain("water").italic(true))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validatable_view_accepts_a_text_field() {
+        use super::{Plain, ValidatableView};
+        use waterui_controls::text_field::TextField;
+        use waterui_core::View;
+
+        // `Validatable` had no implementations, so `ValidatableView` could not be
+        // constructed at all. Building one over a `TextField` and asserting it is
+        // a `View` is what pins the surface as usable.
+        fn assert_view<V: View>(_: &V) {}
+
+        let value = Binding::container(Str::from(""));
+        let view = ValidatableView::new(TextField::new(&value), Plain(Required));
+        assert_view(&view);
+    }
+
+    #[test]
+    fn required_and_regex_rejects_blank_input() {
+        let validator = Validator::<&str>::and(Required, Regex::new("^[a-z]+$").unwrap());
+        assert!(validator.validate("water").is_ok());
+        // The blank string matches no pattern arm, but `Required` must be the
+        // one that rejects it — this is the regression guard for the inverted
+        // condition, which made `Required` pass on empty input.
+        assert!(validator.validate("").is_err());
+        assert!(Required.validate("").is_err());
     }
 }

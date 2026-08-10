@@ -14,7 +14,8 @@ use waterui_controls::button::button;
 use waterui_controls::slider::slider;
 use waterui_controls::stepper::stepper;
 use waterui_controls::toggle::toggle;
-use waterui_core::AnyView;
+use waterui_core::interaction::Disabled;
+use waterui_core::{AnyView, Environment, Metadata, env::use_env};
 use waterui_dew::{DewRuntime, HostBoard, PointerSample, render_view_png};
 
 mod support;
@@ -147,13 +148,15 @@ fn disabled_button_ignores_pointer_input() {
         16,
         move || {
             let action_invocations = Rc::clone(&action_invocations);
-            AnyView::new(
-                button("Unavailable")
-                    .action(move || {
+            AnyView::new(use_env(move |mut env: Environment| {
+                Disabled::install(&mut env, true);
+                Metadata::new(
+                    button("Unavailable").action(move || {
                         action_invocations.set(action_invocations.get() + 1);
-                    })
-                    .disabled(true),
-            )
+                    }),
+                    env,
+                )
+            }))
         },
     );
     runtime.pump().expect("initial frame renders");

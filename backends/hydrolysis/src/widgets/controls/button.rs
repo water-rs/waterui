@@ -28,7 +28,7 @@ use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
-use crate::widgets::util::{inset_rect, widget_theme};
+use crate::widgets::util::{widget_disabled, inset_rect, widget_theme};
 
 /// The retained render state of a button. A `TitleOnly` label is rendered as
 /// centered styled text fresh each frame (so its reactive title stays live); any
@@ -70,7 +70,7 @@ impl ButtonRenderState {
         let color = disabled_aware_label_color(
             theme,
             style,
-            &self.config.disabled,
+            &widget_disabled(env),
             interaction_style,
             floating_style,
         );
@@ -118,7 +118,7 @@ pub(crate) fn button_accessibility(
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         // A disabled button stays in the tree (focusable, announced as
         // disabled) but exposes no click action and no action target.
-        let disabled = renderer.read_signal(&button.disabled);
+        let disabled = renderer.read_signal(&widget_disabled(env));
         let action_target = if disabled {
             node.set_disabled();
             None
@@ -376,7 +376,7 @@ pub(crate) fn render_button_parts(
     // and this persistent node re-renders (and re-registers input) with the
     // new state.
     let disabled = {
-        let signal = state.borrow().config.disabled.clone();
+        let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
     let bounds = ctx.bounds;

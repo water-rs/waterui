@@ -28,7 +28,7 @@ use waterui_core::{
 use waterui_map::{Coordinate, MapConfig, Region};
 use waterui_url::Url;
 
-pub use render::{MapScene, PreparedMap};
+pub use render::{MapScene, map_surface};
 
 /// Retry policy for transient style, source, and vector-tile request failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,12 +234,12 @@ pub fn install(env: &mut Environment) {
             .expect("GPU Map requires MapGpuOptions in the application environment")
             .clone();
         if !config.interactivity.is_interactive() {
-            return AnyView::new(render::map_surface(MapScene::new(config, options), None));
+            return AnyView::new(render::map_surface(MapScene::new(config, options)));
         }
 
         let controller = Rc::new(MapGestureController::new(&config.region));
         config.region = Computed::new(controller.region.clone());
-        let scene = render::map_surface(
+        let scene = render::map_surface_with_interaction(
             MapScene::with_viewport_signal(
                 config,
                 options,

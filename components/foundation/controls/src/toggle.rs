@@ -2,9 +2,7 @@
 //!
 //! ![Toggle](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/toggle.svg)
 
-use nami::signal::IntoComputed;
-use nami::{Binding, Computed};
-use waterui_core::interaction::Disabled;
+use nami::Binding;
 use waterui_core::{Environment, configurable};
 
 use crate::label::{IntoLabel, Label, impl_label_style_methods};
@@ -33,10 +31,6 @@ pub struct ToggleConfig {
     pub toggle: Binding<bool>,
     /// The visual style of the toggle.
     pub style: ToggleStyle,
-    /// Whether the toggle is disabled: it renders as inactive and ignores
-    /// input. Resolved from the explicit [`Toggle::disabled`] signal combined
-    /// with any enclosing `.disabled(...)` scope.
-    pub disabled: Computed<bool>,
 }
 
 configurable!(
@@ -87,7 +81,6 @@ impl ToggleConfig {
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
-        self.disabled = Disabled::resolve(env, self.disabled);
         self
     }
 }
@@ -102,7 +95,6 @@ impl Toggle {
             label: Label::default(),
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
-            disabled: Computed::constant(false),
         })
     }
     #[must_use]
@@ -130,16 +122,6 @@ impl Toggle {
         self.style(ToggleStyle::Checkbox)
     }
 
-    /// Sets whether the toggle is disabled.
-    ///
-    /// A disabled toggle renders as inactive and ignores input. This combines
-    /// with any enclosing `.disabled(...)` scope: the toggle is disabled while
-    /// either signal is `true`.
-    #[must_use]
-    pub fn disabled(mut self, disabled: impl IntoComputed<bool>) -> Self {
-        self.0.disabled = disabled.into_computed();
-        self
-    }
 }
 
 impl_label_style_methods!(Toggle);

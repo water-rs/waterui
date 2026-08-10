@@ -55,7 +55,6 @@ pub enum StretchAxis {
     MainAxis,
     /// Stretch along the parent container's cross axis.
     /// In `VStack`: expands horizontally. In `HStack`: expands vertically.
-    /// Used by Divider.
     CrossAxis,
 }
 
@@ -697,7 +696,7 @@ pub trait Layout: Debug + Any {
     /// Which axis this container stretches to fill available space.
     ///
     /// - `VStack`: `.horizontal` (fills available width, intrinsic height)
-    /// - `HStack`: `.none` (content-sized by default)
+    /// - `HStack`: `.vertical` (fills available height, intrinsic width)
     /// - `ZStack`: `.none` (content-sized by default)
     /// - Other layouts: `.none` by default
     ///

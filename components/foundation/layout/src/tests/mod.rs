@@ -1681,3 +1681,78 @@ fn test_hstack_preserves_horizontal_stretch_min_width_when_fixed_content_overflo
         "Horizontal stretch controls such as Slider must keep their intrinsic minimum width"
     );
 }
+
+/// A mock [`SubView`] that reports the stretch axis a nested stack container
+/// would report, so nesting behaviour can be exercised without building a
+/// full view tree.
+struct NestedStackView {
+    size: Size,
+    stretch_axis: StretchAxis,
+}
+
+impl SubView for NestedStackView {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        self.stretch_axis
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+#[test]
+fn test_stack_cross_axis_stretch_is_symmetric() {
+    let vstack = VStackLayout {
+        alignment: HorizontalAlignment::Leading,
+        spacing: Computed::constant(0.0),
+    };
+    let hstack = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    assert_eq!(
+        vstack.stretch_axis(),
+        StretchAxis::Horizontal,
+        "VStack claims its horizontal cross-axis"
+    );
+    assert_eq!(
+        hstack.stretch_axis(),
+        StretchAxis::Vertical,
+        "HStack must claim its vertical cross-axis, mirroring VStack"
+    );
+}
+
+#[test]
+fn test_hstack_gives_nested_hstack_the_full_cross_axis_height() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let mut nested = NestedStackView {
+        size: Size::new(40.0, 20.0),
+        stretch_axis: layout.stretch_axis(),
+    };
+    let mut sibling = FixedSizeView {
+        size: Size::new(40.0, 20.0),
+    };
+
+    let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
+    let children: Vec<&dyn SubView> = vec![&mut nested, &mut sibling];
+    let rects = layout.place(bounds, &children);
+
+    assert_eq!(
+        rects[0].height(),
+        100.0,
+        "A nested HStack fills the parent HStack's height, as a nested VStack fills a VStack's width"
+    );
+    assert_eq!(
+        rects[0].width(),
+        40.0,
+        "A nested HStack keeps its intrinsic main-axis width"
+    );
+    assert_eq!(rects[1].height(), 20.0);
+}

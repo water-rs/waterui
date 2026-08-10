@@ -97,7 +97,7 @@ pub fn build(
     let pointer = PointerTargetHandle::new(SliderPointer {
         range: config.range.clone(),
         value: config.value.clone(),
-        disabled: config.disabled.clone(),
+        disabled: crate::views::view_disabled(env),
         track: Rc::clone(&track),
     });
     Box::new(SliderNode {
@@ -106,7 +106,7 @@ pub fn build(
         max_value_label: build_node(renderer, config.max_value_label, env, depth),
         range: config.range,
         value: config.value,
-        disabled: config.disabled,
+        disabled: crate::views::view_disabled(env),
         env: env.clone(),
         track,
         pointer,

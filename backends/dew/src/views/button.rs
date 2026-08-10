@@ -62,9 +62,11 @@ pub fn build(config: ButtonConfig, env: &Environment) -> Box<dyn DewNode> {
         label,
         action,
         style,
-        disabled,
         ..
     } = config;
+    // Disabled state is a scoped subtree attribute, read from the environment
+    // in force at this leaf rather than carried on the control's config.
+    let disabled = crate::views::view_disabled(env);
     let pointer = PointerTargetHandle::new(ButtonPointer {
         action,
         disabled: disabled.clone(),

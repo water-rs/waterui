@@ -43,6 +43,12 @@ pub struct WuiTextField {
     pub keyboard: WuiKeyboardType,
     /// Context menu items offered when the user selects text in the field.
     pub selection_menu: *mut crate::views::WuiAnyViews,
+    /// Maximum number of lines the field accepts.
+    ///
+    /// `1` is a single-line field; a larger value caps a multi-line field; `0`
+    /// means the field has no line limit. Backends must reject input that would
+    /// exceed the limit rather than truncating the existing value.
+    pub line_limit: usize,
 }
 
 impl IntoFFI for ResolvedTextFieldConfig {
@@ -55,6 +61,7 @@ impl IntoFFI for ResolvedTextFieldConfig {
             prompt: self.prompt.into_ffi(),
             keyboard: self.keyboard.into_ffi(),
             selection_menu: crate::menu_items_views(self.selection_menu),
+            line_limit: self.line_limit.map_or(0, core::num::NonZeroUsize::get),
         }
     }
 }
@@ -70,7 +77,6 @@ into_ffi! {ToggleConfig,
         label: WuiLabel,
         toggle: *mut WuiBinding<bool>,
         style: WuiToggleStyle,
-        disabled: *mut WuiComputed<bool>,
     }
 }
 
@@ -91,7 +97,6 @@ into_ffi! {SliderConfig,
         max_value_label: *mut WuiAnyView,
         range: WuiRange<f64>,
         value: *mut WuiBinding<f64>,
-        disabled: *mut WuiComputed<bool>,
     }
 }
 

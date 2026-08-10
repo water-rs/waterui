@@ -174,7 +174,7 @@ The `raw_view!` macro simplifies creating native views:
 
 ```rust
 raw_view!(Spacer, StretchAxis::MainAxis);
-raw_view!(Divider, StretchAxis::CrossAxis);
+raw_view!(Color, StretchAxis::Both);
 ```
 
 ## Examples

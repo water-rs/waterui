@@ -517,9 +517,12 @@ pub trait ViewExt: View + Sized {
 
     /// Sets the accessibility label for this view.
     ///
+    /// The label is reactive: pass a signal and a label derived from app state
+    /// (`"3 unread messages"`) stays current without rebuilding the subtree.
+    ///
     /// # Arguments
-    /// * `label` - The accessibility label to apply
-    fn a11y_label(self, label: impl Into<Str>) -> IgnorableMetadata<AccessibilityLabel> {
+    /// * `label` - The accessibility label to apply, constant or reactive
+    fn a11y_label(self, label: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityLabel> {
         IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
     }
 
@@ -644,34 +647,6 @@ pub trait ViewExt: View + Sized {
         H: Handler<Args, ()>,
     {
         self.gesture(LongPressGesture::new(minimum_duration_ms), action)
-    }
-
-    /// Adds a gesture intended to recognize alongside existing gestures.
-    ///
-    /// This follows `SwiftUI` naming and currently maps to `gesture(...)`.
-    fn simultaneous_gesture<H, Args>(
-        self,
-        gesture: impl Into<Gesture>,
-        action: H,
-    ) -> Metadata<GestureObserver>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.gesture(gesture, action)
-    }
-
-    /// Adds a gesture intended to have higher recognition precedence.
-    ///
-    /// This follows `SwiftUI` naming and currently maps to `gesture(...)`.
-    fn high_priority_gesture<H, Args>(
-        self,
-        gesture: impl Into<Gesture>,
-        action: H,
-    ) -> Metadata<GestureObserver>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.gesture(gesture, action)
     }
 
     /// Adds a tap gesture recognizer and triggers haptic impact feedback.

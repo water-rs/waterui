@@ -262,7 +262,8 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 - **`android/`** - Git submodule, Android Views + JNI (Gradle project)
 - **`hydrolysis/`** - Self-drawn GPU renderer (Vello on `wgpu`) - experimental. The high-end / game-engine renderer (see "Rendering backend philosophy" below)
 - **`dew/`** - Self-drawn CPU renderer (`vello_cpu` sparse-strip) - experimental. The embedded / constrained-device renderer (see "Rendering backend philosophy" below)
-- **`tui/`** - Terminal UI backend - WIP
+- **`gtk/`** - GTK4 backend
+- **`hydrolysis_m3/`** - Material 3 widget theme for the Hydrolysis renderer
 
 #### Rendering backend philosophy: Hydrolysis vs Dew (self-drawn renderers)
 
@@ -311,7 +312,7 @@ Native backends call into Rust via:
    - `waterui_theme_install_color()` (slot-based colors)
    - `waterui_theme_install_font()` (slot-based fonts)
    - Legacy: `waterui_env_install_theme()` is deprecated
-3. `waterui_main()` - Get root view tree
+3. `waterui_app(env)` - Hand the environment to the app and get its root view tree
 4. Render loop: `waterui_view_id()` to identify view type, then either extract data (`waterui_force_as_*`) for raw views or recurse via `waterui_view_body()` for composite views
 
 Raw views are leaf components (Text, Button, etc.) that map to native widgets. Composite views have a `body()` returning other views.

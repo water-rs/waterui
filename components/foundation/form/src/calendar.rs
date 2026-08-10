@@ -14,7 +14,10 @@ use jiff::{
 use nami::{Binding, Computed, SignalExt, collection::SignalCollection, signal::IntoComputed};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{IntoLabel, button};
-use waterui_core::{AnyView, Environment, View, id::Identifiable, views::ForEach};
+use waterui_core::interaction::Disabled;
+use waterui_core::{
+    AnyView, Environment, Metadata, View, env::use_env, id::Identifiable, views::ForEach,
+};
 use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
@@ -320,14 +323,18 @@ fn month_navigation_button(
     visible_month: Binding<VisibleMonth>,
     step: fn(VisibleMonth) -> VisibleMonth,
 ) -> impl View {
-    button(label)
-        .borderless()
-        .disabled(disabled)
-        .action(move || {
-            let mut month = visible_month.get_mut();
-            let next = step(*month);
-            *month = next;
-        })
+    let content = button(label).borderless().action(move || {
+        let mut month = visible_month.get_mut();
+        let next = step(*month);
+        *month = next;
+    });
+    // Disabled is a scoped environment attribute: install it for the subtree and
+    // let the button read the state in force at its own position. `Metadata`
+    // carries the extended environment across every backend, native included.
+    use_env(move |mut env: Environment| {
+        Disabled::install(&mut env, disabled);
+        Metadata::new(content, env)
+    })
 }
 
 /// Wraps day-grid content in its column cell: ideally [`CALENDAR_DAY_SIZE`]

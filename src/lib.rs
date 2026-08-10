@@ -182,11 +182,20 @@ pub use waterui_url::Url;
 #[doc(inline)]
 pub use waterui_core::{
     AnyView, Str, animation,
+    easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    extract::State,
+    event,
+    extract::{self, Extractor, State, Use},
     id::{self, Identifiable},
-    impl_extractor, raw_view, views,
+    impl_extractor, raw_view,
+    resolve::{self, AnyResolvable, Resolvable},
+    views,
 };
+
+/// Haptic feedback intensity for the `on_*_haptic` modifiers.
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use waterkit_haptic::Intensity;
 
 pub(crate) mod view_ext;
 pub use nami as reactive;

@@ -920,6 +920,21 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeFont<'local>
     unsafe { crate::theme::waterui_theme_font(wui_env, slot) as jlong }
 }
 
+/// Returns the disabled signal in force at this point in the view tree.
+///
+/// Disabled state is a scoped subtree attribute installed by `.disabled(...)`,
+/// never a field on an individual control's configuration; every interactive
+/// control reads it from the environment it is already handed.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envDisabled<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+) -> jlong {
+    let wui_env = env_ptr as *const crate::WuiEnv;
+    unsafe { crate::waterui_env_disabled(wui_env) as jlong }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<'local>(
     _env: EnvUnowned<'local>,

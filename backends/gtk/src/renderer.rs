@@ -571,6 +571,7 @@ fn install_gesture_observer(
 ) {
     use waterui::gesture::{
         DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent,
+        RotationEvent,
         TapEvent,
     };
 
@@ -713,8 +714,20 @@ fn install_gesture_observer(
             let rotate = gtk4::GestureRotate::new();
             let env_for_handler = env;
             let action_for_handler = action.clone();
-            rotate.connect_angle_changed(move |gesture, _angle, _delta| {
-                let local_env = env_for_handler.clone();
+            rotate.connect_angle_changed(move |gesture, angle, _delta| {
+                let center = gesture.bounding_box().map_or_else(
+                    || GesturePoint::new(0.0, 0.0),
+                    |bbox| GesturePoint::new(bbox.x() as f32, bbox.y() as f32),
+                );
+                let event = RotationEvent {
+                    phase: GesturePhase::Updated,
+                    center,
+                    angle: angle as f32,
+                    // GTK reports no angular velocity, matching the zoom gesture.
+                    velocity: 0.0,
+                };
+                let mut local_env = env_for_handler.clone();
+                local_env.insert(event);
                 call_boxed_action(&action_for_handler, &local_env);
                 gesture.set_state(gtk4::EventSequenceState::Claimed);
             });

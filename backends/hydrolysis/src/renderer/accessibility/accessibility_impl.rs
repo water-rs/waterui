@@ -660,8 +660,11 @@ impl HydrolysisRenderer {
         env: &Environment,
         default_label: Option<String>,
     ) -> Option<String> {
-        env.get::<AccessibilityLabel>()
-            .map(|label| label.as_str().as_str().to_owned())
+        // Reading the label through `read_signal` subscribes it, so a reactive
+        // label ("3 unread messages") republishes without a subtree rebuild.
+        let signal = env.get::<AccessibilityLabel>().map(|label| label.signal().clone());
+        signal
+            .map(|signal| self.read_signal(&signal).as_str().to_owned())
             .or(default_label)
     }
 

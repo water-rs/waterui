@@ -234,6 +234,13 @@ fn compress_children_evenly(
 
 #[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
+    /// `HStack` stretches vertically to fill available height (cross-axis).
+    /// It uses intrinsic width based on children (main-axis), mirroring
+    /// `VStackLayout::stretch_axis`, which claims the horizontal cross-axis.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Vertical
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
             return Size::zero();

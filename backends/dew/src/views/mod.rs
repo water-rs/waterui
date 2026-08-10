@@ -38,6 +38,19 @@ pub mod toggle;
     clippy::cast_possible_truncation,
     reason = "logical-pixel geometry is far below f32 precision limits"
 )]
+/// The disabled state in force at this point in the view tree.
+///
+/// Disabled is a scoped environment attribute installed by `.disabled(...)`,
+/// not a field on any control's configuration: a control reads the state at its
+/// own position. Reads `false` when no enclosing scope disables the subtree.
+pub fn view_disabled(env: &Environment) -> nami::Computed<bool> {
+    env.get::<waterui_core::interaction::Disabled>()
+        .map_or_else(
+            || nami::Computed::constant(false),
+            |scope| scope.signal().clone(),
+        )
+}
+
 pub const fn to_f32(value: f64) -> f32 {
     value as f32
 }

@@ -13,7 +13,6 @@ use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 use waterui_backend_core::widget::ModalInteraction;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
@@ -83,7 +82,7 @@ use accesskit::{
 };
 
 use crate::renderer::local_interaction_state;
-use crate::widgets::util::widget_theme;
+use crate::widgets::util::{widget_disabled, widget_theme};
 
 const FLOATING_LABEL_SCALE: f64 = 0.75;
 const CONTENT_VISIBLE_PORTION: f32 = 5.0 / 9.0;
@@ -135,13 +134,18 @@ pub(crate) fn render_text_field_parts(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
-    let disabled = env
-        .get::<Disabled>()
-        .map(|disabled| disabled.signal().clone())
-        .is_some_and(|disabled| ctx.renderer_mut().read_signal(&disabled));
     ctx.renderer_mut()
         .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();
+    // The config's `disabled` already OR-combines the explicit
+    // `TextField::disabled` signal with any enclosing `.disabled(...)` scope
+    // (`TextFieldConfig` resolves it through `Disabled::resolve`). Reading it
+    // watches it, so a change schedules a frame and this persistent node
+    // re-renders (and re-registers input) with the new state.
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
     // Read every retained field from the retained config each frame: the `label`/
     // `value`/`prompt`/`selection_menu` are cloneable signals (the value is read
     // through `read_signal` below so a binding change schedules a frame). The label
@@ -443,10 +447,10 @@ pub(crate) fn render_secure_field_parts(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
-    let disabled = env
-        .get::<Disabled>()
-        .map(|disabled| disabled.signal().clone())
-        .is_some_and(|disabled| ctx.renderer_mut().read_signal(&disabled));
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
     ctx.renderer_mut()
         .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();

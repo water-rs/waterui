@@ -2724,27 +2724,42 @@ pub mod root {
     };
     use std::collections::BTreeMap;
 
-    /// Root template files (only .tpl files at the root level, excluding Cargo.toml).
-    static ROOT_TEMPLATES: &[&str] = &["lib.rs.tpl", ".gitignore.tpl"];
+    /// Root template files, paired with their destination relative to the
+    /// project root. The assets README is what makes the documented `assets!`
+    /// workflow work out of the box: the planner walks the assets root
+    /// recursively, so the directory has to exist before the first `assets!`
+    /// call, and a tracked file is what keeps it present in git.
+    static ROOT_TEMPLATES: &[(&str, &str)] = &[
+        ("lib.rs.tpl", "src/lib.rs"),
+        (".gitignore.tpl", ".gitignore"),
+    ];
 
     /// Write root templates to the given directory.
+    ///
+    /// `assets_dir` is the project's assets root, relative to `base_dir`, and
+    /// comes from the manifest so the scaffold and `Water.toml` cannot disagree.
     ///
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        assets_dir: &str,
+    ) -> io::Result<()> {
         // Generate Cargo.toml programmatically using toml_edit
         generate_cargo_toml(base_dir, ctx).await?;
 
+        let assets_readme = format!("{assets_dir}/README.md");
+        let templates = ROOT_TEMPLATES
+            .iter()
+            .map(|(template, dest)| (*template, (*dest).to_string()))
+            .chain(core::iter::once(("assets_readme.md.tpl", assets_readme)));
+
         // Process remaining templates
-        for template_name in ROOT_TEMPLATES {
+        for (template_name, dest) in templates {
             if let Some(file) = embedded::ROOT.get_file(template_name) {
-                let dest_name = template_name.strip_suffix(".tpl").unwrap_or(template_name);
-                let dest_path = if dest_name == "lib.rs" {
-                    base_dir.join("src").join(dest_name)
-                } else {
-                    base_dir.join(dest_name)
-                };
+                let dest_path = base_dir.join(&dest);
 
                 // Create parent directories
                 if let Some(parent) = dest_path.parent() {

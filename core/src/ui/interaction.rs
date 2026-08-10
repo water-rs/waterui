@@ -2,9 +2,10 @@
 //!
 //! The central type is [`Disabled`], the environment-driven disabled state
 //! for interactive controls. The `.disabled(...)` view modifier installs it,
-//! so a container can disable its entire subtree; controls fold it into
-//! their configuration at body time via [`Disabled::resolve`], combining the
-//! inherited state with their own explicit disabled signal.
+//! so a container can disable its entire subtree; controls read the state in
+//! force at their own position out of the environment they are handed, the
+//! same way they read a theme color, and never carry it on their own
+//! configuration.
 
 use nami::{Computed, SignalExt, signal::IntoComputed, zip::zip};
 

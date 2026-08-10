@@ -518,6 +518,36 @@ pub unsafe extern "C" fn waterui_clone_env(env: *const WuiEnv) -> *mut WuiEnv {
     env.0.clone().into_ffi()
 }
 
+/// Returns the disabled state in force at this point in the view tree.
+///
+/// Disabled state is a scoped subtree attribute installed by `.disabled(...)`,
+/// never a field on an individual control's configuration. Every interactive
+/// control reads it here, from the same environment it already receives through
+/// [`waterui_view_body`], and renders as inactive and ignores input while the
+/// signal is `true`.
+///
+/// Always returns a non-null signal; it reads `false` when no `.disabled(...)`
+/// scope encloses the view. Returns a new reference to the signal — the caller
+/// must drop it when done.
+///
+/// # Safety
+/// The caller must ensure that `env` is a valid pointer to a properly initialized
+/// `waterui::Environment` instance and that the environment remains valid for the
+/// duration of this function call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_disabled(
+    env: *const WuiEnv,
+) -> *mut crate::reactive::WuiComputed<bool> {
+    let env = unsafe { borrow_ffi(env) };
+    env.0
+        .get::<waterui_core::interaction::Disabled>()
+        .map_or_else(
+            || waterui::Computed::constant(false),
+            |scope| scope.signal().clone(),
+        )
+        .into_ffi()
+}
+
 /// Gets the body of a view given the environment
 ///
 /// # Safety

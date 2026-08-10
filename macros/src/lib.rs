@@ -124,12 +124,15 @@ pub fn derive_identifiable(input: TokenStream) -> TokenStream {
 ///
 /// | Rust Type | Form Component | Description |
 /// |-----------|----------------|-------------|
-/// | `String`, `&str`, `alloc::string::String` | `TextField` | Single-line text input |
+/// | `Str`, `alloc::string::String` | `TextField` | Single-line text input |
 /// | `bool` | `Toggle` | Switch/checkbox for boolean values |
-/// | `i8`, `i16`, `i32`, `i64`, `i128`, `isize` | `Stepper` | Numeric input with +/- buttons |
-/// | `u8`, `u16`, `u32`, `u64`, `u128`, `usize` | `Stepper` | Unsigned numeric input |
-/// | `f64` | `Slider` | Slider with 0.0-1.0 range |
+/// | `i32` | `Stepper` | Numeric input with +/- buttons |
+/// | `f32`, `f64` | `Slider` | Slider with 0.0-1.0 range |
 /// | `Color` | `ColorPicker` | Color selection widget |
+///
+/// Other widths (`i8`/`u32`/`usize`/…) have no `FormBuilder` implementation:
+/// convert the field to one of the types above, or implement `FormBuilder`
+/// yourself for a newtype around it.
 ///
 /// # Panics
 ///

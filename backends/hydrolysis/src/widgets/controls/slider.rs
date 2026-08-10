@@ -24,7 +24,7 @@ use waterui_core::layout::{ProposalSize, ViewDimensions};
 
 use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
-use crate::widgets::util::widget_theme;
+use crate::widgets::util::{widget_disabled, widget_theme};
 
 /// The retained render state of a slider. A `SliderConfig`'s value-end labels are
 /// move-only `AnyView`s (they cannot be re-dispatched twice), so the persistent
@@ -32,7 +32,6 @@ use crate::widgets::util::widget_theme;
 /// frame; the cloneable `label`/`range`/`value` drive the track and accessibility.
 pub(crate) struct SliderRenderState {
     label: Label,
-    disabled: nami::Computed<bool>,
     /// The main label as a retained node sub-view, re-flushed each frame at its
     /// rect (reactive content stays live through the node's own re-flush). The
     /// cloneable `label` is kept alongside for accessibility resolution.
@@ -51,13 +50,11 @@ impl SliderRenderState {
             max_value_label,
             range,
             value,
-            disabled,
             ..
         } = config;
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
             label,
-            disabled,
             min_value_label: RetainedSubview::new(min_value_label),
             max_value_label: RetainedSubview::new(max_value_label),
             range,
@@ -190,7 +187,7 @@ pub(crate) fn render_slider_node(
             &slider.label,
             &slider.range,
             &slider.value,
-            &slider.disabled,
+            &widget_disabled(env),
             env,
         );
     }
@@ -210,7 +207,7 @@ pub(crate) fn render_slider_parts(
     // and this persistent node re-renders (and re-registers input) with the
     // new state.
     let disabled = {
-        let signal = state.disabled.clone();
+        let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
     // Every label is a retained node sub-view re-flushed at its rect; reactive

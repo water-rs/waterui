@@ -1823,6 +1823,15 @@ typedef struct WuiTypeId {
 } WuiTypeId;
 
 /**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_bool WuiComputed_bool;
+
+/**
  * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
  */
 typedef struct WuiArraySlice_u8 {
@@ -2902,15 +2911,6 @@ typedef struct WuiShortcut {
 } WuiShortcut;
 
 /**
- * FFI-owned wrapper around a [`waterui::Computed`] signal.
- *
- * Opaque to native code; accessed only through the `waterui_read_computed_*`,
- * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
- * by the `ffi_computed!` macro.
- */
-typedef struct Computed_bool WuiComputed_bool;
-
-/**
  * FFI-safe representation of a menu item.
  */
 typedef struct WuiMenuItem {
@@ -3874,11 +3874,6 @@ typedef struct WuiButton {
    * The visual presentation style for the button.
    */
   enum WuiButtonStyle style;
-  /**
-   * Reactive disabled state: the control renders as inactive and must
-   * ignore input while this signal is `true`.
-   */
-  WuiComputed_bool *disabled;
 } WuiButton;
 
 /**
@@ -3905,6 +3900,14 @@ typedef struct WuiTextField {
    * Context menu items offered when the user selects text in the field.
    */
   struct WuiAnyViews *selection_menu;
+  /**
+   * Maximum number of lines the field accepts.
+   *
+   * `1` is a single-line field; a larger value caps a multi-line field; `0`
+   * means the field has no line limit. Backends must reject input that would
+   * exceed the limit rather than truncating the existing value.
+   */
+  uintptr_t line_limit;
 } WuiTextField;
 
 /**
@@ -3923,10 +3926,6 @@ typedef struct WuiToggle {
    *Mirrors the `style` field of `ToggleConfig`.
    */
   enum WuiToggleStyle style;
-  /**
-   *Mirrors the `disabled` field of `ToggleConfig`.
-   */
-  WuiComputed_bool *disabled;
 } WuiToggle;
 
 /**
@@ -3967,10 +3966,6 @@ typedef struct WuiSlider {
    *Mirrors the `value` field of `SliderConfig`.
    */
   WuiBinding_f64 *value;
-  /**
-   *Mirrors the `disabled` field of `SliderConfig`.
-   */
-  WuiComputed_bool *disabled;
 } WuiSlider;
 
 /**
@@ -6405,6 +6400,26 @@ struct WuiTypeId waterui_anyview_id(void);
  * duration of this function call.
  */
 struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
+
+/**
+ * Returns the disabled state in force at this point in the view tree.
+ *
+ * Disabled state is a scoped subtree attribute installed by `.disabled(...)`,
+ * never a field on an individual control's configuration. Every interactive
+ * control reads it here, from the same environment it already receives through
+ * [`waterui_view_body`], and renders as inactive and ignores input while the
+ * signal is `true`.
+ *
+ * Always returns a non-null signal; it reads `false` when no `.disabled(...)`
+ * scope encloses the view. Returns a new reference to the signal — the caller
+ * must drop it when done.
+ *
+ * # Safety
+ * The caller must ensure that `env` is a valid pointer to a properly initialized
+ * `waterui::Environment` instance and that the environment remains valid for the
+ * duration of this function call.
+ */
+WuiComputed_bool *waterui_env_disabled(const struct WuiEnv *env);
 
 /**
  * Gets the body of a view given the environment

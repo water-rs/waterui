@@ -67,6 +67,36 @@ mod tests {
     use super::*;
     use format::date::{DateStyle, SimpleDate, format_date};
     use format::unit::{Gram, Kilogram, Mass};
+    use waterui_core::Environment;
+
+    // =========================================================
+    // Locale Binding Tests
+    // =========================================================
+
+    #[test]
+    fn locale_binding_uses_static_locale_from_environment() {
+        let mut env = Environment::new();
+        env.insert(locales::EN_GB);
+
+        let locale = locale_binding(&env).get();
+        assert_eq!(locale.language.as_str(), "en");
+        assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("GB"));
+    }
+
+    #[test]
+    fn locale_binding_prefers_an_explicit_binding_over_a_static_locale() {
+        let binding = nami::Binding::container(locales::ZH_CN);
+        let mut env = Environment::new();
+        env.insert(locales::EN_GB);
+        env.insert(binding.clone());
+
+        let resolved = locale_binding(&env);
+        assert_eq!(resolved.get().language.as_str(), "zh");
+
+        // The returned binding is the very same one, so later writes are visible.
+        binding.set(locales::EN_US);
+        assert_eq!(resolved.get().language.as_str(), "en");
+    }
 
     // =========================================================
     // Plural Rules Tests

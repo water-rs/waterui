@@ -22,7 +22,7 @@ macro_rules! impl_debug {
 ///
 /// ```ignore
 /// // Default stretch axis (None)
-/// raw_view!(Text);
+/// raw_view!(Str);
 ///
 /// // With explicit stretch axis
 /// raw_view!(Color, StretchAxis::Both);
