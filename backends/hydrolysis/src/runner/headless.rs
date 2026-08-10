@@ -29,6 +29,10 @@ impl HeadlessPlatformWindow {
         }
     }
 
+    pub(super) fn set_scale_factor(&mut self, scale_factor: f64) {
+        self.inner.set_scale_factor(scale_factor);
+    }
+
     pub(super) fn push_event(&mut self, event: InputEvent) {
         self.pending_events.push_back(event);
     }
@@ -114,7 +118,13 @@ impl Default for HeadlessMainThreadExecutor {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessMainThreadExecutor {
-    fn drain(&self) -> bool {
+    /// Runs every runnable currently queued, returning whether any ran.
+    ///
+    /// The offscreen runner must call this while rendering: a `GpuView`'s
+    /// `setup` is an async future spawned onto this executor, so a frame
+    /// rendered without draining would run `render` against a renderer that has
+    /// not built its pipelines yet and would emit nothing.
+    pub(super) fn drain(&self) -> bool {
         let mut ran = false;
         loop {
             let Ok(runnable) = self.runnable_rx.try_recv() else {
@@ -183,6 +193,17 @@ impl HeadlessRuntime {
         height: u32,
     ) -> Self {
         Self::new_with_platform_window(env, content, width, height, HeadlessPlatformWindow::new)
+    }
+
+    /// Renders at `scale_factor` physical pixels per logical pixel.
+    ///
+    /// The layout is unchanged — it stays in logical units — so this only makes
+    /// the captured image sharper. A preview meant to be viewed on a HiDPI
+    /// display should raise this above 1.
+    #[must_use]
+    pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
+        self.runtime.platform.set_scale_factor(scale_factor);
+        self
     }
 
     /// Creates a headless runtime for WaterUI test hosts.

@@ -441,3 +441,26 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
         "AppliedFilter must capture its nested GpuSurface"
     );
 }
+
+/// Offscreen rendering at 2x must allocate twice the pixels without touching
+/// the logical layout, so previews are sharp on HiDPI displays.
+#[test]
+fn offscreen_window_scale_factor_scales_the_surface_only() {
+    use hydrolysis::{PlatformWindow as _, SurfaceProvider as _};
+
+    let mut window = hydrolysis::OffscreenWindow::new_for_tests(
+        320,
+        200,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
+    assert_eq!(window.surface_ref().size(), (320, 200));
+    assert!((window.scale_factor() - 1.0).abs() < f64::EPSILON);
+
+    let window = window.with_scale_factor(2.0);
+    assert_eq!(
+        window.surface_ref().size(),
+        (640, 400),
+        "a 2x window allocates twice the physical pixels"
+    );
+    assert!((window.scale_factor() - 2.0).abs() < f64::EPSILON);
+}
