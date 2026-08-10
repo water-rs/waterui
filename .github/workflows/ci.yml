@@ -6,8 +6,10 @@ permissions:
   id-token: write
 
 on:
+  # Integration branches only: a branch that also has a PR would otherwise run
+  # the whole matrix twice for one commit.
   push:
-    branches: ["**"]
+    branches: [main, dev]
   pull_request:
     branches: ["**"]
 
@@ -52,11 +54,12 @@ jobs:
         with:
           shared-key: ci-ubuntu
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
       - name: Prepare coverage target dir
         run: |
           mkdir -p target/llvm-cov-target
           printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > target/llvm-cov-target/CACHEDIR.TAG
-      - run: cargo llvm-cov --workspace --features waterui/all --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest --workspace --features waterui/all --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v4
         with:
           use_oidc: true
@@ -133,8 +136,13 @@ jobs:
         with:
           shared-key: ci-ubuntu
       - uses: taiki-e/install-action@cargo-hack
+      # `--feature-powerset` is deliberately absent. The workspace has ~33_800
+      # feature combinations (waterui alone has 14 features = 16_384), so the
+      # sweep either ran for 105 minutes or was cancelled at ~27 minutes having
+      # proved nothing — it produced no signal in any recent run. `--each-feature`
+      # is linear and catches the failure that actually happens: a feature that
+      # does not build on its own.
       - run: cargo hack check --each-feature --no-dev-deps
-      - run: cargo hack check --feature-powerset --no-dev-deps
 
   test:
     name: Test
