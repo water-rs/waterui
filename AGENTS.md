@@ -358,7 +358,7 @@ waterui_ffi::export!();  // Generates FFI entry points
 
 ## Key Development Notes
 
-- Rust edition 2024, minimum rustc 1.95 (`rust-version` in the root manifest); CI builds on latest stable
+- Rust edition 2024; the supported toolchain floor lives in `rust-version` in the root manifest, not here
 - Workspace lints enforce strict clippy rules including pedantic/nursery
 - `backends/apple` and `backends/android` are git submodules inside the monorepo
 - Start every new feature in its own git worktree (one worktree per feature branch)
