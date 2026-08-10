@@ -223,6 +223,26 @@ impl OffscreenApp {
         &mut self.app
     }
 
+    /// Advances the animation clock by `duration`, pumping frames as it goes.
+    ///
+    /// The clock moves when frames are pumped, not when wall-clock time passes.
+    /// A bare `thread::sleep` therefore freezes it: the next snapshot applies
+    /// every deferred step at once, so a capture meant to show a transition
+    /// mid-flight shows its end state instead. Use this to sample a phase.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the offscreen driver does not produce a snapshot.
+    pub fn pump_for(&mut self, duration: Duration) {
+        // One frame per display interval, matching what a real host would do.
+        const FRAME: Duration = Duration::from_millis(16);
+        let deadline = Instant::now() + duration;
+        while Instant::now() < deadline {
+            std::thread::sleep(FRAME.min(deadline.saturating_duration_since(Instant::now())));
+            let _ = self.snapshot();
+        }
+    }
+
     /// Captures the latest RGBA snapshot from the offscreen renderer.
     ///
     /// # Panics

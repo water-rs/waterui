@@ -45,11 +45,11 @@ fn plain_button_press_shows_growing_ripple() {
     // the 225ms ripple growth instead of pumping straight past it.
     app.queue_pointer_down(cx - 40.0, cy + 10.0);
     save(&mut app, "press-0ms");
-    std::thread::sleep(Duration::from_millis(60));
+    app.pump_for(Duration::from_millis(60));
     save(&mut app, "press-60ms");
-    std::thread::sleep(Duration::from_millis(80));
+    app.pump_for(Duration::from_millis(80));
     save(&mut app, "press-140ms");
-    std::thread::sleep(Duration::from_millis(120));
+    app.pump_for(Duration::from_millis(120));
     save(&mut app, "press-260ms");
 }
 
@@ -71,15 +71,15 @@ fn released_ripple_fades_at_full_size_without_shrinking() {
     let _ = app.snapshot();
     // Hold until the growth (225ms) has completed, then release: the fade-out
     // applies immediately (the minimum press duration equals the grow time).
-    std::thread::sleep(Duration::from_millis(250));
+    app.pump_for(Duration::from_millis(250));
     save(&mut app, "hold-250ms-full-size");
     app.queue_pointer_up(px, py);
     let _ = app.snapshot();
-    std::thread::sleep(Duration::from_millis(50));
+    app.pump_for(Duration::from_millis(50));
     save(&mut app, "release-50ms-fading");
-    std::thread::sleep(Duration::from_millis(60));
+    app.pump_for(Duration::from_millis(60));
     save(&mut app, "release-110ms-fainter");
-    std::thread::sleep(Duration::from_millis(120));
+    app.pump_for(Duration::from_millis(120));
     save(&mut app, "release-230ms-gone");
 }
 
@@ -103,12 +103,12 @@ fn rapid_represses_overlap_independent_waves() {
     app.queue_pointer_up(p1x, p1y);
     let _ = app.snapshot();
     // The first wave finishes growing (225ms) and starts its deferred fade.
-    std::thread::sleep(Duration::from_millis(240));
+    app.pump_for(Duration::from_millis(240));
     app.queue_pointer_down(p2x, p2y);
     let _ = app.snapshot();
-    std::thread::sleep(Duration::from_millis(60));
+    app.pump_for(Duration::from_millis(60));
     save(&mut app, "repress-overlap-60ms");
-    std::thread::sleep(Duration::from_millis(80));
+    app.pump_for(Duration::from_millis(80));
     save(&mut app, "repress-140ms-second-wave");
 }
 
@@ -122,7 +122,7 @@ fn plain_button_hover_shows_state_layer() {
     let _ = press_center(&mut app, "Hover Me");
     save(&mut app, "hover-before");
     let _ = app.query().label("Hover Me").hover();
-    std::thread::sleep(Duration::from_millis(120));
+    app.pump_for(Duration::from_millis(120));
     save(&mut app, "hover-120ms");
 }
 
@@ -157,8 +157,8 @@ fn ripple_survives_same_frame_structural_patch() {
         "release must activate"
     );
     app.query().label("Swapped content").assert_exists();
-    std::thread::sleep(Duration::from_millis(80));
+    app.pump_for(Duration::from_millis(80));
     save(&mut app, "patch-press-80ms");
-    std::thread::sleep(Duration::from_millis(140));
+    app.pump_for(Duration::from_millis(140));
     save(&mut app, "patch-press-220ms");
 }
