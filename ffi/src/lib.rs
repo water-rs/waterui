@@ -57,10 +57,6 @@ pub use waterui_video_gpu;
 use waterui_core::metadata::MetadataKey;
 
 use crate::array::WuiArray;
-#[cfg(feature = "std")]
-use tracing_subscriber::layer::SubscriberExt;
-#[cfg(feature = "std")]
-use tracing_subscriber::util::SubscriberInitExt;
 
 /// Reborrows a raw pointer as a shared reference.
 ///
@@ -226,6 +222,8 @@ unsafe fn __init_impl() {
         // Forwards tracing to platform's logging system
         #[cfg(target_os = "android")]
         {
+            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
             let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .or_else(|_| {
                     tracing_subscriber::EnvFilter::try_new(
@@ -244,6 +242,8 @@ unsafe fn __init_impl() {
 
         #[cfg(target_vendor = "apple")]
         {
+            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
             let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .or_else(|_| {
                     tracing_subscriber::EnvFilter::try_new(
