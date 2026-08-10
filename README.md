@@ -233,11 +233,11 @@ Default crate features:
 - `gpu`
 - `assets`
 - `media` and `video`
-- `webview`
 - `flow-markdown`
 
 Opt-in capabilities:
 
+- `webview`
 - `chart`
 - `barcode`
 - `map`

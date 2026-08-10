@@ -980,7 +980,7 @@ impl ToJavaStruct for crate::components::text::WuiText {
     }
 }
 
-/// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long, disabledPtr: Long)
+/// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long)
 ///
 /// `label` is now a `WuiLabel` struct; we project its `view` pointer as the
 /// labelPtr and its `accessibility_label` pointer separately. Display mode is
@@ -993,13 +993,12 @@ impl ToJavaStruct for crate::components::button::WuiButton {
             .expect("ButtonStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJIJJ)V"),
+            jni_sig!("(JJIJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.action as jlong),
                 JValue::Int(self.style as i32),
                 JValue::Long(self.label.accessibility_label as jlong),
-                JValue::Long(self.disabled as jlong),
             ],
         )
         .expect("Failed to create ButtonStruct")
@@ -1007,7 +1006,7 @@ impl ToJavaStruct for crate::components::button::WuiButton {
 }
 
 /// WuiTextField -> TextFieldStruct(labelPtr, accessibilityLabelPtr, valuePtr,
-/// promptPtr, promptAlignmentPtr, keyboardType, selectionMenuItemsPtr)
+/// promptPtr, promptAlignmentPtr, keyboardType, selectionMenuItemsPtr, lineLimit)
 impl ToJavaStruct for crate::components::form::WuiTextField {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1015,7 +1014,7 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
             .expect("TextFieldStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJJJJIJ)V"),
+            jni_sig!("(JJJJJIJI)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -1024,6 +1023,7 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
                 JValue::Long(self.prompt.paragraph_alignment as jlong),
                 JValue::Int(self.keyboard as i32),
                 JValue::Long(self.selection_menu as jlong),
+                JValue::Int(i32::try_from(self.line_limit).unwrap_or(i32::MAX)),
             ],
         )
         .expect("Failed to create TextFieldStruct")
@@ -1049,7 +1049,7 @@ impl ToJavaStruct for crate::components::form::WuiSecureField {
     }
 }
 
-/// WuiToggle -> ToggleStruct(labelPtr, accessibilityLabelPtr, bindingPtr, style, disabledPtr)
+/// WuiToggle -> ToggleStruct(labelPtr, accessibilityLabelPtr, bindingPtr, style)
 impl ToJavaStruct for crate::components::form::WuiToggle {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1057,13 +1057,12 @@ impl ToJavaStruct for crate::components::form::WuiToggle {
             .expect("ToggleStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJJIJ)V"),
+            jni_sig!("(JJJI)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
                 JValue::Long(self.toggle as jlong),
                 JValue::Int(self.style as i32),
-                JValue::Long(self.disabled as jlong),
             ],
         )
         .expect("Failed to create ToggleStruct")
@@ -1078,7 +1077,7 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
             .expect("SliderStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJJJDDJJ)V"),
+            jni_sig!("(JJJJDDJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -1087,7 +1086,6 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
                 JValue::Double(self.range.start),
                 JValue::Double(self.range.end),
                 JValue::Long(self.value as jlong),
-                JValue::Long(self.disabled as jlong),
             ],
         )
         .expect("Failed to create SliderStruct")

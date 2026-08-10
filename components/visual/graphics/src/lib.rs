@@ -63,6 +63,13 @@ pub use view_effect::{
     EffectRenderer, OutputSize, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
 };
 
+/// The `Effect` family that `.filter(F)` requires, at the graphics root
+/// alongside the `ViewEffect` family it mirrors.
+#[cfg(feature = "gpu")]
+pub use filter_view::{
+    Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
+    EffectRedrawCallback, EffectRenderResult, EffectSetupResult,
+};
 #[cfg(feature = "gpu")]
 pub use filter_view::{
     AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
@@ -110,3 +117,9 @@ pub use rayon;
 /// Re-export bytemuck for safe byte conversions in GPU programming.
 #[cfg(feature = "gpu")]
 pub use bytemuck;
+
+/// The exact `wgpu` this build links, re-exported so applications implementing
+/// `GpuView` or [`Effect`] cannot end up with a version-mismatched `wgpu` and
+/// the confusing type-identity errors that follow.
+#[cfg(feature = "gpu")]
+pub use wgpu;

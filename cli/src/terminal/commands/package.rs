@@ -109,7 +109,7 @@ pub struct Args {
     path: PathBuf,
 
     /// Target architectures for Android (comma-separated).
-    /// Examples: --arch arm64, --arch `arm64,x86_64`
+    /// Examples: --arch arm64, --arch `arm64,x86-64`
     /// Required when packaging Android backend.
     #[arg(long, value_enum, value_delimiter = ',')]
     arch: Vec<AndroidArch>,
@@ -479,7 +479,7 @@ fn validate_arch_args(backend: TargetBackend, arch: &[AndroidArch]) -> Result<()
             "Android backend requires --arch.\n\
              Examples:\n  \
              water package --platform android --backend android --arch arm64\n  \
-             water package --platform android --backend android --arch arm64,x86_64"
+             water package --platform android --backend android --arch arm64,x86-64"
         );
     }
 

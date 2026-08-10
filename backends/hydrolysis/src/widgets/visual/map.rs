@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use nami::SignalExt;
+use nami::{Signal as _, SignalExt};
 use waterui::ViewExt as _;
 use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -21,7 +21,7 @@ const MAP_SURFACE_HEIGHT: f32 = 184.0;
 
 fn map_surface_label(env: &Environment) -> String {
     env.get::<AccessibilityLabel>()
-        .map(|label| label.as_str().as_str().to_owned())
+        .map(|label| label.signal().get().as_str().to_owned())
         .unwrap_or_else(|| String::from("Map viewport"))
 }
 

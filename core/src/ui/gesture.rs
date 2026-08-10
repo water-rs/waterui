@@ -140,6 +140,23 @@ pub struct MagnificationEvent {
     pub velocity: f32,
 }
 
+/// Payload describing an in-flight rotation gesture.
+///
+/// This payload accompanies [`Gesture::Rotation`] entries in the environment
+/// when rotation gestures are recognised, mirroring [`MagnificationEvent`] for
+/// the other two-finger transform gesture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RotationEvent {
+    /// Phase of the rotation gesture.
+    pub phase: GesturePhase,
+    /// Pivot point the rotation is measured around.
+    pub center: GesturePoint,
+    /// Current angle in radians relative to the gesture start.
+    pub angle: f32,
+    /// Rate of change of the angle, in radians per second.
+    pub velocity: f32,
+}
+
 /// Describes a tap interaction that must occur a specific number of times.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

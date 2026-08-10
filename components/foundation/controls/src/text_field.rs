@@ -29,9 +29,7 @@ pub struct TextFieldConfig {
     ///
     /// These actions are shown by native text selection UI.
     pub selection_menu: Computed<Vec<MenuItem>>,
-    /// Reserved for future multi-line support.
-    ///
-    /// Currently only `Some(1)` is supported across backends.
+    /// Maximum number of lines the field renders. `None` removes the limit.
     pub line_limit: Option<NonZeroUsize>,
 }
 
@@ -48,7 +46,7 @@ pub struct ResolvedTextFieldConfig {
     pub keyboard: KeyboardType,
     /// Optional selected-text menu items resolved for the effective locale.
     pub selection_menu: Computed<Vec<ResolvedMenuItem>>,
-    /// Reserved for future multi-line support.
+    /// Maximum number of lines the field renders. `None` removes the limit.
     pub line_limit: Option<NonZeroUsize>,
 }
 
@@ -137,6 +135,25 @@ impl TextField {
     #[must_use]
     pub fn selection_menu(mut self, items: impl MenuView) -> Self {
         self.0.selection_menu = items.into_menu_items();
+        self
+    }
+
+    /// The binding backing this field's text.
+    ///
+    /// This is the escape hatch that lets wrappers observe or replace the
+    /// field's text source — [`waterui_form::valid::ValidatableView`] uses it to
+    /// splice a validating binding in front of the field.
+    #[must_use]
+    pub const fn value_binding(&mut self) -> &mut Binding<StyledStr> {
+        &mut self.0.value
+    }
+
+    /// Sets the on-screen keyboard the field requests while editing.
+    ///
+    /// Platforms without a software keyboard ignore this hint.
+    #[must_use]
+    pub fn keyboard(mut self, keyboard: KeyboardType) -> Self {
+        self.0.keyboard = keyboard;
         self
     }
 }

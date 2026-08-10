@@ -100,6 +100,7 @@ impl Stepper {
             range: i32::MIN..=i32::MAX,
         })
     }
+
     /// Sets the step size for the stepper.
     #[must_use]
     pub fn step(mut self, step: impl IntoComputed<i32>) -> Self {

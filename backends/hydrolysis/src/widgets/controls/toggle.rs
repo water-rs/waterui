@@ -18,7 +18,7 @@ use waterui_core::{AnyView, Environment, Native};
 
 use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
-use crate::widgets::util::widget_theme;
+use crate::widgets::util::{widget_disabled, widget_theme};
 
 /// The retained render state of a toggle: the cloneable [`ToggleConfig`] drives the
 /// control + accessibility, and its main label is held as a [`RetainedSubview`]
@@ -82,7 +82,7 @@ pub(crate) fn toggle_accessibility(
         node.add_action(AccessibilityAction::Focus);
         // A disabled toggle stays in the tree (focusable, announced as
         // disabled) but exposes no click action and no action target.
-        let disabled = renderer.read_signal(&toggle.disabled);
+        let disabled = renderer.read_signal(&widget_disabled(env));
         let action_target = if disabled {
             node.set_disabled();
             None
@@ -154,7 +154,7 @@ pub(crate) fn render_toggle_parts(
     // and this persistent node re-renders (and re-registers input) with the
     // new state.
     let disabled = {
-        let signal = state.config.disabled.clone();
+        let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
     // The label is a retained node sub-view re-flushed at its rect; reactive
