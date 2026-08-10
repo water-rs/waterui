@@ -76,10 +76,10 @@ impl GtkComponent for Native<Tabs> {
         notebook.connect_switch_page({
             let tab_ids = tab_ids.clone();
             move |_, _, page_num| {
-                if let Some(id) = tab_ids.as_slice().get(page_num as usize) {
-                    if binding.get() != *id {
-                        binding.set(*id);
-                    }
+                if let Some(id) = tab_ids.as_slice().get(page_num as usize)
+                    && binding.get() != *id
+                {
+                    binding.set(*id);
                 }
             }
         });

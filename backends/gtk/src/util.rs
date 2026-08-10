@@ -144,6 +144,10 @@ pub fn resolved_color_to_rgba8(color: ResolvedColor) -> (u8, u8, u8, f32) {
 }
 
 /// Converts a resolved color to clamped SDR sRGBA float channels in `[0.0, 1.0]`.
+///
+/// # Panics
+///
+/// Panics if any channel of the resolved color is not finite.
 #[must_use]
 pub fn resolved_color_to_srgba_f64(color: ResolvedColor) -> (f64, f64, f64, f64) {
     let srgb = color.to_srgb_with_headroom();
