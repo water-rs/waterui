@@ -3,29 +3,35 @@
 //! The Rust crate never links the host's WPE or `WebKit` libraries. `water`
 //! stages an exact runtime next to the application and this crate loads its
 //! narrow, versioned `libwaterui_wpe` ABI.
+//!
+//! WPE is a Linux engine — the runtime polls dma-buf fences through `poll(2)`
+//! and passes dma-buf file descriptors — so this crate is empty elsewhere,
+//! the same way `waterui-gtk` is.
 
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 mod abi;
+#[cfg(target_os = "linux")]
 mod frame;
 #[cfg(target_os = "linux")]
 mod gpu;
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 mod page;
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 mod runtime;
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 mod webview;
 
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 pub use frame::WpeFrameLease;
+#[cfg(target_os = "linux")]
 pub use frame::{DmaBufFormat, DmaBufFrame, DmaBufPlane};
 #[cfg(all(target_os = "linux", feature = "webview"))]
 pub use gpu::WpeGpuView;
 #[cfg(target_os = "linux")]
 pub use gpu::{DmaBufFrameCopier, DmaBufFrameSource, DmaBufGpuView, WpeViewport};
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 pub use page::{PointerButton, WpePage};
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 pub use runtime::{WPE_WEBKIT_VERSION, WpeRuntime, WpeRuntimePaths};
-#[cfg(feature = "webview")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 pub use webview::{WpeController, WpeWebViewHandle};
