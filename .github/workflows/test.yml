@@ -12,7 +12,9 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      # Report every platform in one run. Cancelling the other two hides their
+      # results, so a cross-platform break costs one round trip per platform.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
@@ -32,8 +34,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
-      - run: cargo test --verbose --workspace
-      - run: cargo test --verbose --all-features
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --profile ci
+      - run: cargo nextest run --all-features --profile ci
+      # nextest cannot run doctests, and this workspace has plenty of them.
+      - run: cargo test --doc --workspace
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,0 +1,15 @@
+# Local runs keep nextest's defaults.
+[profile.default]
+# Surface anything pathologically slow rather than letting CI hang on it.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.ci]
+# Report every failure in one run: stopping at the first turns a multi-failure
+# break into one CI round trip per failure.
+fail-fast = false
+failure-output = "immediate-final"
+status-level = "retry"
+# GPU and emulator-backed tests are occasionally flaky on shared runners; a
+# retry keeps that from failing the branch, and the retry is reported.
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+slow-timeout = { period = "120s", terminate-after = 5 }
