@@ -18,17 +18,16 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Computed, Environment, Signal, Str};
 use waterui_webview::{
-    Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController, WebViewError,
-    WebViewEvent, WebViewHandle,
+    Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
 };
 
-type Watcher = Rc<dyn Fn(WebViewEvent)>;
 type JsHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
 
 const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
 
 struct SharedState {
-    watchers: RefCell<Vec<Watcher>>,
+    watchers: WatcherSet<WebViewEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handler_callbacks: RefCell<HashMap<String, JsHandler>>,
     cookie_cache: RefCell<String>,
@@ -37,17 +36,14 @@ struct SharedState {
 
 impl SharedState {
     fn emit(&self, event: WebViewEvent) {
-        let snapshot = self.watchers.borrow().clone();
-        for watcher in snapshot {
-            watcher(event.clone());
-        }
+        self.watchers.emit(&event);
     }
 }
 
 impl Default for SharedState {
     fn default() -> Self {
         Self {
-            watchers: RefCell::new(Vec::new()),
+            watchers: WatcherSet::new(),
             redirects_enabled: RefCell::new(Computed::new(true)),
             handler_callbacks: RefCell::new(HashMap::new()),
             cookie_cache: RefCell::new(String::new()),
@@ -1372,8 +1368,8 @@ impl WebViewHandle for GtkWebViewHandle {
             .replace(Computed::new(enabled));
     }
 
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
-        self.shared.watchers.borrow_mut().push(Rc::new(f));
+    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+        self.shared.watchers.insert(f)
     }
 
     fn can_go_back(&self) -> bool {

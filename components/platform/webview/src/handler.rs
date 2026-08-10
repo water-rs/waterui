@@ -5,7 +5,7 @@ use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Computed, Signal, impl_debug};
 use waterui_str::Str;
 
-use crate::WebViewEvent;
+use crate::{WatcherGuard, WebViewEvent};
 use waterui_url::Url;
 
 type ScriptMessageHandler = dyn Fn(&[u8]) -> Vec<u8> + 'static;
@@ -90,11 +90,11 @@ pub trait WebViewHandle: 'static {
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>);
     /// Watches for web view events.
     ///
-    /// Multiple watchers can be active at the same time.
-    ///
-    /// Watchers are invoked in registration order. Backends should ensure a watcher is not
-    /// dropped while it may still be called.
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static);
+    /// Multiple watchers can be active at the same time and are invoked in
+    /// registration order. Dropping the returned guard unregisters the watcher;
+    /// backends get that bookkeeping from [`WatcherSet`](crate::WatcherSet)
+    /// rather than implementing it each.
+    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard;
 
     /// Returns whether the web view can navigate back in its history.
     fn can_go_back(&self) -> bool;
@@ -125,7 +125,7 @@ trait WebViewHandleImpl: Any {
     fn refresh(&self);
     fn go_to(&self, url: &Url);
     fn inject_script(&self, script: &str, time: ScriptInjectionTime);
-    fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>);
+    fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>) -> WatcherGuard;
     fn set_user_agent(&self, user_agent: &str);
     fn set_redirects_enabled(&self, enabled: Computed<bool>);
     fn can_go_back(&self) -> bool;
@@ -171,8 +171,8 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
         WebViewHandle::inject_script(self, script, time);
     }
 
-    fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>) {
-        WebViewHandle::watch(self, f);
+    fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>) -> WatcherGuard {
+        WebViewHandle::watch(self, f)
     }
 
     fn set_user_agent(&self, user_agent: &str) {
@@ -241,9 +241,9 @@ impl AnyWebViewHandle {
         self.inner.go_forward();
     }
 
-    /// Watches for web view events.
-    pub fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
-        self.inner.watch(Box::new(f));
+    /// Watches for web view events. Dropping the guard unregisters the watcher.
+    pub fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+        self.inner.watch(Box::new(f))
     }
 
     /// Sets the user agent string for the web view.

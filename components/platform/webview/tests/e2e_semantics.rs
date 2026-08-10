@@ -15,8 +15,8 @@ use waterui::{Computed, Environment, Signal, SignalExt, View};
 use waterui_core::binding;
 use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
 use waterui_webview::{
-    CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent,
-    WebViewHandle,
+    CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
+    WebViewController, WebViewEvent, WebViewHandle,
 };
 const DOCS_URL: &str = "https://waterui.dev/docs";
 const API_URL: &str = "https://waterui.dev/api";
@@ -50,7 +50,7 @@ struct FakeWebViewState {
     user_agent: Option<String>,
     redirects_enabled: Option<Computed<bool>>,
     cookies: Vec<Cookie<'static>>,
-    watchers: Vec<Box<dyn Fn(WebViewEvent) + 'static>>,
+    watchers: WatcherSet<WebViewEvent>,
     handlers: MessageHandlers,
 }
 
@@ -60,10 +60,8 @@ impl FakeWebViewHandle {
         reason = "test double; takes the event by value to mirror the real handle's API"
     )]
     fn emit(&self, event: WebViewEvent) {
-        let state = self.state.borrow();
-        for watcher in &state.watchers {
-            watcher(event.clone());
-        }
+        let watchers = self.state.borrow().watchers.clone();
+        watchers.emit(&event);
     }
 
     fn emit_state_changed(&self) {
@@ -164,8 +162,9 @@ impl WebViewHandle for FakeWebViewHandle {
         self.state.borrow_mut().redirects_enabled = Some(Computed::new(enabled));
     }
 
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
-        self.state.borrow_mut().watchers.push(Box::new(f));
+    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+        let watchers = self.state.borrow().watchers.clone();
+        watchers.insert(f)
     }
 
     fn can_go_back(&self) -> bool {

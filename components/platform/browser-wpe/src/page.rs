@@ -20,7 +20,7 @@ use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
 use waterui_str::Str;
 use waterui_url::Url;
-use waterui_webview::{WebViewError, WebViewEvent};
+use waterui_webview::{WatcherSet, WebViewError, WebViewEvent};
 
 use crate::abi::{WaterWpeBytes, WaterWpeFrame, WaterWpePage};
 use crate::frame::DmaBufFrame;
@@ -34,12 +34,11 @@ const EVENT_LOAD_FAILED: u32 = 5;
 const EVENT_TLS_FAILED: u32 = 6;
 const EVENT_HISTORY_CHANGED: u32 = 7;
 
-type Watcher = Rc<dyn Fn(WebViewEvent)>;
 type MessageHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
 
 struct PageState {
     api: std::sync::Arc<RuntimeApi>,
-    watchers: RefCell<Vec<Watcher>>,
+    watchers: WatcherSet<WebViewEvent>,
     handlers: RefCell<HashMap<String, MessageHandler>>,
     frame: RefCell<Option<DmaBufFrame>>,
     frame_waker: RefCell<Option<Rc<dyn Fn()>>>,
@@ -48,9 +47,7 @@ struct PageState {
 
 impl PageState {
     fn emit(&self, event: &WebViewEvent) {
-        for watcher in self.watchers.borrow().iter() {
-            watcher(event.clone());
-        }
+        self.watchers.emit(event);
     }
 }
 
@@ -109,7 +106,7 @@ impl WpePage {
     pub fn new(runtime: WpeRuntime) -> Self {
         let state = Rc::new(PageState {
             api: std::sync::Arc::clone(runtime.api()),
-            watchers: RefCell::new(Vec::new()),
+            watchers: WatcherSet::new(),
             handlers: RefCell::new(HashMap::new()),
             frame: RefCell::new(None),
             frame_waker: RefCell::new(None),
@@ -368,12 +365,11 @@ impl WpePage {
     }
 
     /// Watches semantic `WebView` events.
-    pub fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) {
-        self.inner
-            .state
-            .watchers
-            .borrow_mut()
-            .push(Rc::new(watcher));
+    pub fn watch(
+        &self,
+        watcher: impl Fn(WebViewEvent) + 'static,
+    ) -> waterui_webview::WatcherGuard {
+        self.inner.state.watchers.insert(watcher)
     }
 
     /// Installs a callback used to wake the host renderer when WPE submits a frame.
