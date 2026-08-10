@@ -503,8 +503,14 @@ mod shader_types {
         pub(super) num_stops: u32,
         pub(super) mesh_width: u32,
         pub(super) mesh_height: u32,
-        pub(super) start_point: [f32; 2],
-        pub(super) end_point: [f32; 2],
+        // Scalars, not `[f32; 2]`: encase maps a Rust array to a WGSL `array`,
+        // whose stride must be a multiple of 16 in the uniform address space, so
+        // a `[f32; 2]` field makes the whole struct illegal there. Four scalars
+        // occupy exactly the same bytes as the two `vec2<f32>` they mirror.
+        pub(super) start_x: f32,
+        pub(super) start_y: f32,
+        pub(super) end_x: f32,
+        pub(super) end_y: f32,
         pub(super) start_value: f32,
         pub(super) end_value: f32,
         pub(super) smooths_colors: u32,
@@ -676,8 +682,10 @@ fn write_mesh_data<I>(
         num_stops: 0,
         mesh_width: width,
         mesh_height: height,
-        start_point: [0.0, 0.0],
-        end_point: [1.0, 1.0],
+        start_x: 0.0,
+        start_y: 0.0,
+        end_x: 1.0,
+        end_y: 1.0,
         start_value: 0.0,
         end_value: 1.0,
         smooths_colors: u32::from(smooths_colors),
@@ -1020,4 +1028,23 @@ fn usize_to_f32(value: usize) -> f32 {
     value
         .to_f32()
         .expect("gradient_renderer: index must be representable as f32")
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod uniform_layout_tests {
+    use super::shader_types::GradientUniforms;
+    use encase::ShaderType;
+
+    /// `GradientUniforms` must be legal in the uniform address space.
+    ///
+    /// WGSL requires an array in a uniform buffer to have a stride that is a
+    /// multiple of 16, and encase maps every Rust array to a WGSL array — so a
+    /// `[f32; 2]` field silently makes the struct illegal. Nothing catches that
+    /// until the first draw calls `UniformBuffer::write`, which is deep inside
+    /// the GPU path and only reachable once a `GpuView`'s async setup has
+    /// completed. This asserts the layout up front instead.
+    #[test]
+    fn gradient_uniforms_are_uniform_address_space_compatible() {
+        GradientUniforms::assert_uniform_compat();
+    }
 }
