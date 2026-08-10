@@ -15,7 +15,11 @@ use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guards;
 
 impl GtkComponent for Native<PickerConfig> {
-    /// Renders a `WaterUI` `Picker` as a GTK4 DropDown.
+    /// Renders a `WaterUI` `Picker` as a GTK4 `DropDown`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "widget-model indices are bounded by the collection length"
+    )]
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let config = self.into_inner();
         let items = config.items;
@@ -83,7 +87,7 @@ impl GtkComponent for Native<PickerConfig> {
         // Watch binding changes -> update dropdown
         let selection_guard = selection.computed().watch({
             let dropdown = dropdown.clone();
-            let ids = ids.clone();
+            let ids = ids;
             move |ctx| {
                 let value = ctx.into_value();
                 let dropdown = dropdown.clone();

@@ -257,7 +257,7 @@ impl RenderContext {
     /// Creates a context with a renderer reference.
     fn with_renderer(renderer: &mut GtkRenderer) -> Self {
         Self {
-            renderer_ptr: renderer as *mut GtkRenderer,
+            renderer_ptr: std::ptr::from_mut::<GtkRenderer>(renderer),
         }
     }
 
@@ -540,10 +540,16 @@ fn drag_data_from_drop_value(value: &glib::Value) -> Option<DragData> {
 
 fn call_boxed_action(action: &Rc<RefCell<BoxedAction<()>>>, env: &Environment) {
     if let Ok(mut handler) = action.try_borrow_mut() {
-        (&mut **handler)(env);
+        (**handler)(env);
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 fn install_gesture_observer(
     widget: &Widget,
     gesture: waterui::gesture::Gesture,
@@ -561,7 +567,7 @@ fn install_gesture_observer(
             click.set_button(1);
             click.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let required_count = tap.count;
-            let env_for_handler = env.clone();
+            let env_for_handler = env;
             let action_for_handler = action.clone();
             click.connect_pressed(move |gesture, n_press, x, y| {
                 if n_press as u32 >= required_count {
@@ -581,7 +587,7 @@ fn install_gesture_observer(
             let press = gtk4::GestureLongPress::new();
             press.set_delay_factor(long_press.duration as f64 / 500.0);
             press.set_propagation_phase(gtk4::PropagationPhase::Capture);
-            let env_for_handler = env.clone();
+            let env_for_handler = env;
             let action_for_handler = action.clone();
             let duration = long_press.duration;
             press.connect_pressed(move |gesture, x, y| {
@@ -624,7 +630,7 @@ fn install_gesture_observer(
                 let action_for_handler = action.clone();
                 let drag_started = drag_started.clone();
                 drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
-                    let distance = (offset_x * offset_x + offset_y * offset_y).sqrt() as f32;
+                    let distance = offset_x.hypot(offset_y) as f32;
                     if distance < min_distance && !*drag_started.borrow() {
                         return;
                     }
@@ -645,9 +651,9 @@ fn install_gesture_observer(
                 });
             }
             {
-                let env_for_handler = env.clone();
+                let env_for_handler = env;
                 let action_for_handler = action.clone();
-                let drag_started = drag_started.clone();
+                let drag_started = drag_started;
                 drag_gesture.connect_drag_end(move |gesture, offset_x, offset_y| {
                     if !*drag_started.borrow() {
                         return;
@@ -671,7 +677,7 @@ fn install_gesture_observer(
         }
         Gesture::Magnification(_) => {
             let zoom = gtk4::GestureZoom::new();
-            let env_for_handler = env.clone();
+            let env_for_handler = env;
             let action_for_handler = action.clone();
             zoom.connect_scale_changed(move |gesture, scale| {
                 let center = gesture
@@ -693,7 +699,7 @@ fn install_gesture_observer(
         }
         Gesture::Rotation(_) => {
             let rotate = gtk4::GestureRotate::new();
-            let env_for_handler = env.clone();
+            let env_for_handler = env;
             let action_for_handler = action.clone();
             rotate.connect_angle_changed(move |gesture, _angle, _delta| {
                 let local_env = env_for_handler.clone();
@@ -711,7 +717,7 @@ fn install_gesture_observer(
                 }
             })));
             let second_action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(Box::new({
-                let armed = armed.clone();
+                let armed = armed;
                 let chained_action = action.clone();
                 move |env: &Environment| {
                     if !*armed.borrow() {
@@ -748,7 +754,7 @@ fn install_gesture_observer(
                 }
             })));
             let second_action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(Box::new({
-                let consumed = consumed.clone();
+                let consumed = consumed;
                 let shared_action = action.clone();
                 move |env: &Environment| {
                     if *consumed.borrow() {
@@ -876,6 +882,10 @@ impl GtkRenderer {
     }
 
     /// Registers handlers for metadata wrapper views.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+    )]
     fn register_metadata_handlers(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
         use waterui::component::focus::Focused;
         use waterui::filter::Opacity;
@@ -1013,7 +1023,7 @@ impl GtkRenderer {
             let motion = gtk4::EventControllerMotion::new();
             {
                 let hovered = hovered.clone();
-                let style_state = style_state.clone();
+                let style_state = style_state;
                 let widget = widget.clone();
                 motion.connect_enter(move |_, _, _| {
                     hovered.set(true);
@@ -1024,7 +1034,7 @@ impl GtkRenderer {
                 });
             }
             {
-                let hovered = hovered.clone();
+                let hovered = hovered;
                 let widget = widget.clone();
                 motion.connect_leave(move |_| {
                     hovered.set(false);
@@ -1222,8 +1232,8 @@ impl GtkRenderer {
             let motion = gtk4::EventControllerMotion::new();
             match expected {
                 Event::HoverEnter => {
-                    let env = env.clone();
-                    let handler = handler.clone();
+                    let env = env;
+                    let handler = handler;
                     motion.connect_enter(move |_, _, _| {
                         if let Ok(mut on_event) = handler.try_borrow_mut() {
                             on_event.handle(&env);
@@ -1231,8 +1241,8 @@ impl GtkRenderer {
                     });
                 }
                 Event::HoverMove => {
-                    let env = env.clone();
-                    let handler = handler.clone();
+                    let env = env;
+                    let handler = handler;
                     motion.connect_motion(move |_, x, y| {
                         if let Ok(mut on_event) = handler.try_borrow_mut() {
                             let hover_env = env.extending(HoverEvent::new(
@@ -1243,8 +1253,8 @@ impl GtkRenderer {
                     });
                 }
                 Event::HoverExit => {
-                    let env = env.clone();
-                    let handler = handler.clone();
+                    let env = env;
+                    let handler = handler;
                     motion.connect_leave(move |_| {
                         if let Ok(mut on_event) = handler.try_borrow_mut() {
                             on_event.handle(&env);
@@ -1279,7 +1289,7 @@ impl GtkRenderer {
             click.connect_pressed({
                 let widget = widget.clone();
                 let env = env.clone();
-                let popover_state = popover_state.clone();
+                let popover_state = popover_state;
                 move |_, _, x, y| {
                     let entries = items.get();
                     if entries.is_empty() {
@@ -1369,7 +1379,7 @@ impl GtkRenderer {
                     let mut local_env = env.clone();
                     local_env.insert(data);
                     if let Ok(mut handler) = drop.try_borrow_mut() {
-                        (&mut **handler)(&local_env);
+                        (**handler)(&local_env);
                         return true;
                     }
                     false

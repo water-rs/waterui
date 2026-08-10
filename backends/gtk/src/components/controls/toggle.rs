@@ -41,7 +41,7 @@ impl GtkComponent for Native<ToggleConfig> {
 
         // Watch for binding changes -> update switch
         // Clone before .computed() since it consumes self
-        let guard = binding.clone().computed().watch({
+        let guard = binding.computed().watch({
             let switch = switch.clone();
             move |ctx| {
                 let value = ctx.into_value();

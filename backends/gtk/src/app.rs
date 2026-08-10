@@ -58,7 +58,7 @@ pub fn init_main_thread_executors() {
     ));
 }
 
-/// GTK4 application wrapper for WaterUI.
+/// GTK4 application wrapper for `WaterUI`.
 #[derive(Debug)]
 pub struct GtkApp {
     app: Application,
@@ -81,7 +81,7 @@ impl GtkApp {
     ///
     /// This method blocks until the application exits.
     pub fn run<V: View + Clone + 'static>(self, view: V, env: Environment) -> i32 {
-        let view = view.clone();
+        let view = view;
         // `env` is only mutated when a browser feature installs services into it.
         #[cfg(any(
             feature = "webview-default",
@@ -99,7 +99,7 @@ impl GtkApp {
         ensure_webview_controller(&mut env);
         #[cfg(any(feature = "webview-cef", feature = "chromium"))]
         let cef_runtime = crate::browser_cef::ensure_runtime(&mut env);
-        let env = env.clone();
+        let env = env;
         #[cfg(any(feature = "webview-cef", feature = "chromium"))]
         let cef_pump_started = Rc::new(Cell::new(false));
 
@@ -129,7 +129,7 @@ impl GtkApp {
         self.app.run().into()
     }
 
-    /// Runs a WaterUI `App` as a GTK application.
+    /// Runs a `WaterUI` `App` as a GTK application.
     ///
     /// This extracts the main window's content and environment from the App
     /// and renders it using GTK.

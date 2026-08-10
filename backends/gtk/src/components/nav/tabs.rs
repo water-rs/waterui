@@ -13,6 +13,10 @@ use crate::util::store_watcher_guard;
 
 impl GtkComponent for Native<Tabs> {
     /// Renders `WaterUI` `Tabs` as a GTK4 `Notebook`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "widget-model indices are bounded by the collection length"
+    )]
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let tabs = self.into_inner();
 
@@ -53,7 +57,7 @@ impl GtkComponent for Native<Tabs> {
 
         // Watch for selection binding changes -> update notebook
         let binding = tabs.selection;
-        let guard = binding.clone().computed().watch({
+        let guard = binding.computed().watch({
             let notebook = notebook.clone();
             let tab_ids = tab_ids.clone();
             move |ctx: nami::watcher::Context<Id>| {

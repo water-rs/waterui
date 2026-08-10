@@ -1,4 +1,4 @@
-//! GTK4 ColorPicker component implementation.
+//! GTK4 `ColorPicker` component implementation.
 
 use gtk4::prelude::*;
 use gtk4::{ColorDialog, ColorDialogButton, Widget, gdk};

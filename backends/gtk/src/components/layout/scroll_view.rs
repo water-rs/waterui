@@ -1,4 +1,4 @@
-//! GTK4 ScrollView component implementation.
+//! GTK4 `ScrollView` component implementation.
 
 use std::cell::Cell;
 use std::rc::Rc;

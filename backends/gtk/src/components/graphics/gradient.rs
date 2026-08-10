@@ -1,4 +1,4 @@
-//! GTK ResolvedGradient component implementation.
+//! GTK `ResolvedGradient` component implementation.
 
 use gtk4::Widget;
 use gtk4::prelude::*;
@@ -88,6 +88,11 @@ impl GtkComponent for Native<ResolvedGradient> {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 fn draw_angular_gradient(
     cr: &gtk4::cairo::Context,
     resolved: &ResolvedGradient,
@@ -111,7 +116,7 @@ fn draw_angular_gradient(
     for segment in 0..ANGULAR_SEGMENTS {
         let t0 = segment as f64 / ANGULAR_SEGMENTS as f64;
         let t1 = (segment + 1) as f64 / ANGULAR_SEGMENTS as f64;
-        let tm = 0.5 * (t0 + t1);
+        let tm = f64::midpoint(t0, t1);
         let mapped = if tm <= sweep_fraction {
             (tm / sweep_fraction) as f32
         } else {
@@ -120,12 +125,12 @@ fn draw_angular_gradient(
 
         let color = sample_stop_color(stops, mapped);
         let (red, green, blue, alpha) = to_rgba(color);
-        let angle0 = start + t0 * core::f64::consts::TAU;
-        let angle1 = start + t1 * core::f64::consts::TAU;
+        let angle0 = t0.mul_add(core::f64::consts::TAU, start);
+        let angle1 = t1.mul_add(core::f64::consts::TAU, start);
 
         cr.new_sub_path();
         cr.move_to(cx, cy);
-        cr.line_to(cx + radius * angle0.cos(), cy + radius * angle0.sin());
+        cr.line_to(cx + radius * angle0.cos(), radius.mul_add(angle0.sin(), cy));
         cr.arc(cx, cy, radius, angle0, angle1);
         cr.close_path();
         cr.set_source_rgba(red, green, blue, alpha);

@@ -12,6 +12,10 @@ use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guards;
 
 impl GtkComponent for Native<MultiDatePickerConfig> {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "widget-model indices are bounded by the collection length"
+    )]
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let config = self.into_inner();
 
@@ -21,7 +25,7 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
 
         let calendar = Calendar::new();
         let value = config.value.clone();
-        let decorated = config.decorated.clone();
+        let decorated = config.decorated;
 
         apply_multi_date_state(&calendar, &value.get(), &decorated.get());
 
@@ -96,6 +100,10 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "widget-model indices are bounded by the collection length"
+)]
 fn apply_multi_date_state(calendar: &Calendar, selected: &[Date], decorated: &[Date]) {
     for day in 1..=31 {
         calendar.unmark_day(day);

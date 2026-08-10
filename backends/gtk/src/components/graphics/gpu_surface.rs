@@ -39,6 +39,10 @@ struct PixelSize {
 }
 
 impl PixelSize {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "OpenGL enums and object names are non-negative"
+    )]
     fn from_widget(area: &gtk4::GLArea) -> Self {
         let scale = area.scale_factor().max(1) as u32;
         let w = area.width().max(1) as u32;
@@ -85,7 +89,9 @@ impl GpuState {
         let msaa_max_samples = gpu_surface.msaa_sample_limit();
         Self {
             start_time: Instant::now(),
-            last_frame_time: Instant::now() - Duration::from_secs_f32(1.0 / 60.0),
+            last_frame_time: Instant::now()
+                .checked_sub(Duration::from_secs_f32(1.0 / 60.0))
+                .unwrap(),
             gpu_surface: Some(gpu_surface),
             msaa_max_samples,
             wgpu_instance: None,
@@ -109,6 +115,10 @@ impl GpuState {
     }
 }
 
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "OpenGL enums and object names are non-negative"
+)]
 fn map_gl_internal_format_to_wgpu(internal: i32) -> wgpu::TextureFormat {
     match internal as u32 {
         glow::RGBA8 => wgpu::TextureFormat::Rgba8Unorm,
@@ -121,6 +131,10 @@ fn map_gl_internal_format_to_wgpu(internal: i32) -> wgpu::TextureFormat {
     }
 }
 
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "OpenGL enums and object names are non-negative"
+)]
 fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
     // GLArea binds its framebuffer before invoking the "render" signal.
     let obj_type = unsafe {
@@ -201,6 +215,10 @@ fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
     }
 }
 
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "OpenGL enums and object names are non-negative"
+)]
 fn current_framebuffer(gl: &glow::Context) -> glow::NativeFramebuffer {
     let id = unsafe { gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING) };
     glow::NativeFramebuffer(NonZeroU32::new(id as u32).unwrap_or_else(|| {
@@ -212,6 +230,10 @@ fn current_framebuffer(gl: &glow::Context) -> glow::NativeFramebuffer {
 
 const FRAMEBUFFER_ATTACHMENT_TEXTURE_TARGET_PNAME: u32 = 0x8CD2;
 
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "OpenGL enums and object names are non-negative"
+)]
 fn current_color_attachment(gl: &glow::Context) -> glow::NativeFramebuffer {
     let obj_type = unsafe {
         gl.get_framebuffer_attachment_parameter_i32(
@@ -452,7 +474,7 @@ fn init_wgpu_if_needed(
     let state_clone = Rc::clone(state);
     let area_clone = area.clone();
     let descriptor = descriptor.clone();
-    let adapter_for_task = adapter.clone();
+    let adapter_for_task = adapter;
     gtk4::glib::MainContext::default().spawn_local(async move {
         let result = adapter_for_task.request_device(&descriptor).await;
         {
@@ -533,9 +555,9 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
 
     let state_clone = Rc::clone(state);
     let area_clone = area.clone();
-    let device = device.clone();
-    let queue = queue.clone();
-    let adapter = adapter.clone();
+    let device = device;
+    let queue = queue;
+    let adapter = adapter;
     gtk4::glib::MainContext::default().spawn_local(async move {
         let mut gpu_surface = gpu_surface;
         let mut env = env;
@@ -713,6 +735,11 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     needs_redraw
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     let motion = gtk4::EventControllerMotion::new();
     motion.connect_enter({
@@ -835,8 +862,8 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
             st.gesture.active = true;
             st.gesture.pinch_scale = scale as f32;
             st.gesture.pinch_center = gesture.bounding_box().map(|bbox| {
-                let center_x = bbox.x() as f32 + bbox.width() as f32 * 0.5;
-                let center_y = bbox.y() as f32 + bbox.height() as f32 * 0.5;
+                let center_x = (bbox.width() as f32).mul_add(0.5, bbox.x() as f32);
+                let center_y = (bbox.height() as f32).mul_add(0.5, bbox.y() as f32);
                 waterui_core::layout::Point::new(center_x * scale_factor, center_y * scale_factor)
             });
             st.last_pinch_update = Some(Instant::now());

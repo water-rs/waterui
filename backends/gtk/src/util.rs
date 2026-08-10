@@ -129,6 +129,11 @@ impl ScopedCss {
 
 /// Converts a resolved color to clamped sRGBA byte channels.
 #[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "channels are clamped to the target range before the cast"
+)]
 pub fn resolved_color_to_rgba8(color: ResolvedColor) -> (u8, u8, u8, f32) {
     let srgb = color.to_srgb_with_headroom();
     let red = (srgb.red.clamp(0.0, 1.0) * 255.0) as u8;

@@ -60,6 +60,11 @@ impl GtkSubView {
 }
 
 impl SubView for GtkSubView {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+    )]
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         if let Some(container) = self.widget.downcast_ref::<WuiFixedContainer>() {
             let margin_h = (self.widget.margin_start() + self.widget.margin_end()) as f32;

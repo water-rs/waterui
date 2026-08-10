@@ -1,4 +1,4 @@
-//! GTK4 DatePicker component implementation.
+//! GTK4 `DatePicker` component implementation.
 
 use gtk4::prelude::*;
 use gtk4::{Calendar, Widget};

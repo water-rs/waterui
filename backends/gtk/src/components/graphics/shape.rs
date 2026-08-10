@@ -1,4 +1,4 @@
-//! GTK ResolvedShape component implementation.
+//! GTK `ResolvedShape` component implementation.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -60,6 +60,10 @@ impl GtkComponent for Native<ResolvedShape> {
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 fn apply_path_command(cr: &gtk4::cairo::Context, command: PathCommand, width: f64, height: f64) {
     match command {
         PathCommand::MoveTo { x, y } => {
@@ -77,10 +81,10 @@ fn apply_path_command(cr: &gtk4::cairo::Context, command: PathCommand, width: f6
             let (sx, sy) = cr
                 .current_point()
                 .expect("quad command requires an active current point");
-            let c1x = sx + (2.0 / 3.0) * (cx - sx);
-            let c1y = sy + (2.0 / 3.0) * (cy - sy);
-            let c2x = x + (2.0 / 3.0) * (cx - x);
-            let c2y = y + (2.0 / 3.0) * (cy - y);
+            let c1x = f64::mul_add((2.0 / 3.0), cx - sx, sx);
+            let c1y = f64::mul_add((2.0 / 3.0), cy - sy, sy);
+            let c2x = f64::mul_add((2.0 / 3.0), cx - x, x);
+            let c2y = f64::mul_add((2.0 / 3.0), cy - y, y);
             cr.curve_to(c1x, c1y, c2x, c2y, x, y);
         }
         PathCommand::CubicTo {
@@ -116,15 +120,15 @@ fn apply_path_command(cr: &gtk4::cairo::Context, command: PathCommand, width: f6
             let segments = 32usize;
             let start = f64::from(start);
             let step = f64::from(sweep) / segments as f64;
-            let start_x = center_x + radius_x * start.cos();
-            let start_y = center_y + radius_y * start.sin();
+            let start_x = radius_x.mul_add(start.cos(), center_x);
+            let start_y = radius_y.mul_add(start.sin(), center_y);
 
             cr.line_to(start_x, start_y);
             let mut angle = start;
             for _ in 0..segments {
                 angle += step;
-                let x = center_x + radius_x * angle.cos();
-                let y = center_y + radius_y * angle.sin();
+                let x = radius_x.mul_add(angle.cos(), center_x);
+                let y = radius_y.mul_add(angle.sin(), center_y);
                 cr.line_to(x, y);
             }
         }
