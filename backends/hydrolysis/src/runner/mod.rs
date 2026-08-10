@@ -114,8 +114,10 @@ fn install_headless_window_managers(
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 pub fn run(app: App) {
     let inspector_probe = init_main_thread_executors();
+    // This path renders each window once offscreen and returns; it owns no event
+    // loop, so it supplies the headless executor rather than a platform one.
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
-        native_executor::NativeExecutor::new(),
+        headless::HeadlessMainThreadExecutor::default(),
         inspector_probe,
     ));
     let (windows, _menu_bar, env) = app.into_parts();

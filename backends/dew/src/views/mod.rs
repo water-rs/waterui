@@ -128,7 +128,7 @@ mod tests {
 
     fn render_commands(view: impl waterui_core::View, width: f64, height: f64) -> Vec<DrawCommand> {
         let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-        let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+        waterui_testing::install_test_executor();
         let mut renderer = DewRenderer::default();
         let list = renderer.render_tree(AnyView::new(view), &Environment::new(), width, height);
         list.commands().to_vec()

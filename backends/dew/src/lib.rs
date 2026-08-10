@@ -33,7 +33,12 @@ pub mod compositor;
 pub mod dispatch;
 pub mod display;
 pub mod display_list;
-#[cfg(all(feature = "espidf", target_os = "espidf"))]
+// Used by the espidf firmware loop and by the desktop simulator: both own a
+// loop and drive this executor themselves.
+#[cfg(any(
+    all(feature = "espidf", target_os = "espidf"),
+    feature = "embedded-simulator"
+))]
 pub mod embedded_executor;
 #[cfg(feature = "embedded-simulator")]
 pub mod embedded_simulator;

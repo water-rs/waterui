@@ -5,7 +5,7 @@ use waterui_text::font::{FontWeight, ResolvedFont};
 
 pub fn test_environment() -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
+    waterui_testing::install_test_executor();
 
     let mut environment = Environment::new();
     Theme::new()

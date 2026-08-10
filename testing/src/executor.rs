@@ -1,0 +1,50 @@
+//! A `LocalExecutor` for tests that have no event loop.
+
+use core::cell::RefCell;
+use core::future::Future;
+
+use executor_core::LocalExecutor;
+use executor_core::async_task::{self, AsyncTask, Runnable};
+
+thread_local! {
+    /// Parks runnables so dropping them — which cancels the task — is deferred to
+    /// thread teardown rather than happening inside `schedule`.
+    static PARKED_RUNNABLES: RefCell<Vec<Runnable>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Queues `spawn_local` work without running it.
+///
+/// `NativeExecutor` cannot fill this slot. Its main-thread half is
+/// `NativeMainExecutor`, which only exists where a platform main thread has been
+/// established — and a test binary establishes none, since thread assignment
+/// belongs to the harness. This mirrors what Apple's dispatch backend does in a
+/// test anyway: `spawn_local` hands the future to the main queue, and a unit
+/// test runs no main loop, so it is never polled.
+///
+/// Runnables are deliberately not run inline. Reactive work re-enters the code
+/// under test, which deadlocks when polled in the middle of the call that
+/// spawned it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestLocalExecutor;
+
+impl LocalExecutor for TestLocalExecutor {
+    type Task<T: 'static> = AsyncTask<T>;
+
+    fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+    where
+        Fut: Future + 'static,
+    {
+        let (runnable, task) = async_task::spawn_local(fut, |runnable: Runnable| {
+            PARKED_RUNNABLES.with(|parked| parked.borrow_mut().push(runnable));
+        });
+        runnable.schedule();
+        task
+    }
+}
+
+/// Installs [`TestLocalExecutor`] as the process-wide local executor.
+///
+/// Idempotent, so every test can call it without coordinating with the others.
+pub fn install_test_executor() {
+    let _ = executor_core::try_init_local_executor(TestLocalExecutor);
+}
