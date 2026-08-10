@@ -473,10 +473,7 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.text_editing.active_text_context_menu,
-            Some(ActiveTextContextMenu::Overlay {
-                index: _,
-                overlay: _
-            })
+            Some(ActiveTextContextMenu::Overlay { .. })
         );
         if overlay_hit {
             let changed = self.handle_text_context_menu_overlay_pointer_down(point);
@@ -586,7 +583,8 @@ impl HydrolysisRenderer {
                         let click_count = self.next_text_selection_click_count(index, point, at);
                         changed |=
                             self.apply_text_selection_click_gesture(index, point, click_count);
-                        self.text_editing.active_text_selection_drag = Some(index);
+                        self.text_editing.active_text_selection_drag =
+                            self.text_editing.key_at(index).cloned();
                     }
                     PointerButton::Secondary => {
                         let keep_selection = {
@@ -859,7 +857,7 @@ impl HydrolysisRenderer {
         let at = self.frame_instant();
         let mut refresh_requested = false;
         let mut drag_changed = false;
-        if let Some(index) = self.text_editing.active_text_selection_drag {
+        if let Some(index) = self.text_editing.selection_drag_index() {
             let text_drag_changed = self.update_text_selection_from_pointer(index, point, true);
             drag_changed |= text_drag_changed;
             refresh_requested |= text_drag_changed;

@@ -126,8 +126,8 @@ pub(crate) enum RenderNode {
     /// pushed viewport, so scrolling reveals new rows without re-dispatch.
     LazyStack(Box<LazyStackNode>),
     /// A self-drawn scene (`Canvas`/SVG/chart): owns its `SceneContent` directly
-    /// (no cursor-bound effect slot), so a `Dynamic` swap to a different scene
-    /// renders the new content correctly — the real fix for chart Bug 1.
+    /// rather than through a frame-ordered effect slot, so a `Dynamic` swap to a
+    /// different scene renders the new content instead of the previous scene's.
     SceneView(Box<SceneViewNode>),
     /// An embedded `GpuSurface` leaf owning its `EmbeddedGpuSurfaceRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
@@ -138,10 +138,11 @@ pub(crate) enum RenderNode {
     /// An `AppliedFilter` wrapper owning its `AppliedFilterRuntime` (textures) and
     /// recursing into its child node (no cursor-bound effect slot).
     AppliedFilter(Box<AppliedFilterNode>),
-    /// A reactive `Dynamic` host: holds the live `Dynamic`, rebuilds only its own
-    /// child subtree when the content changes (incremental patch + relayout), with
-    /// no whole-window rebuild — the structural seam that fixes the chart's
-    /// flicker (Bug 2). Layout-transparent around its child.
+    /// A reactive `Dynamic` host: holds the live `Dynamic` and rebuilds only its
+    /// own child subtree when the content changes (incremental patch + relayout).
+    /// This is the structural seam that keeps a content swap from resetting the
+    /// scene and re-dispatching the whole window, which is visible as a flicker.
+    /// Layout-transparent around its child.
     Dynamic(Box<DynamicHostNode>),
     /// A transparent metadata wrapper that applies a visual/interaction effect
     /// every flush and *recurses into* its child node (instead of capturing the
@@ -155,8 +156,8 @@ pub(crate) enum RenderNode {
     /// signal-holding config — never baked. Its `builder` reconstructs the leaf view
     /// (actions retained as `Rc`, label/value signals kept) and the flush re-dispatches
     /// it, so the handler re-reads its live signals and reactive content (a `text!`
-    /// label, a bound value) stays live. Re-dispatching a *leaf* is cheap (no body
-    /// expansion, no structural rebuild) — this is the new-architecture replacement
-    /// for the old capture-once capture/replay path, now removed.
+    /// label, a bound value) stays live. Re-dispatching a *leaf* is cheap: no body
+    /// expansion and no structural rebuild, so the leaf never has to be captured
+    /// and replayed to stay affordable.
     Widget(WidgetNode),
 }
