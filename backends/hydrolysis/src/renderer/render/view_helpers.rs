@@ -467,7 +467,10 @@ pub(crate) fn resolved_shape_to_path(
 
 /// Bounds-aware path for the structured shape kinds; `None` for custom paths,
 /// which only exist as unit-space commands.
-fn shape_kind_path(kind: ShapeKind, bounds: vello::kurbo::Rect) -> Option<vello::kurbo::BezPath> {
+pub(crate) fn shape_kind_path(
+    kind: ShapeKind,
+    bounds: vello::kurbo::Rect,
+) -> Option<vello::kurbo::BezPath> {
     use vello::kurbo::Shape as _;
     const PATH_TOLERANCE: f64 = 0.05;
     match kind {
