@@ -126,9 +126,8 @@ impl WebViewHandle for FakeWebViewHandle {
         self.emit_state_changed();
     }
 
-    fn go_to(&self, url: &str) {
-        let parsed = Url::parse(url).expect("fake webview handle requires parseable web URL");
-        self.navigate_to(parsed);
+    fn go_to(&self, url: &Url) {
+        self.navigate_to(url.clone());
     }
 
     fn inject_script(&self, _script: &str, _time: ScriptInjectionTime) {}
@@ -224,7 +223,7 @@ fn redirect_policy_retains_the_reactive_signal() {
 fn open_tracks_url_binding_without_recreating_the_webview() {
     let backend = FakeWebViewController::default();
     let controller = WebViewController::new(backend.clone());
-    let url = binding(String::from(DOCS_URL));
+    let url = binding(Url::new(DOCS_URL));
     let url_for_view = url.clone();
 
     let mut env = Environment::new();
@@ -242,7 +241,7 @@ fn open_tracks_url_binding_without_recreating_the_webview() {
         assert_eq!(state.history[0].as_str(), DOCS_URL);
     }
 
-    url.set(String::from(API_URL));
+    url.set(Url::new(API_URL));
 
     let state = backend.state.borrow();
     assert_eq!(state.open_count, 1);
