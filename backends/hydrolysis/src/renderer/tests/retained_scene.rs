@@ -5,7 +5,7 @@
 //! that parametric updates (animation ticks, scroll offset changes) stop forcing
 //! whole-window re-dispatch and re-measurement.
 //!
-//! The legacy engine only avoids a full rebuild for one narrow case: an animated
+//! A capture-and-replay engine only avoids a full rebuild for one narrow case: an animated
 //! *transform* (scale/rotation/offset) inside a single window-filling scroll view,
 //! which it captures as a replayable `DynamicTransformDraw`. Every other animation
 //! — a non-transform property such as opacity, or any animation at the window root
@@ -52,7 +52,7 @@ struct ScenarioMetrics {
 }
 
 /// A long scrollable list of fixed-size rows, used to pad scenarios so the scroll
-/// view is the exclusive window-filling root the legacy fast-path expects.
+/// view is the exclusive window-filling root that a whole-window fast path requires.
 fn padding_list() -> impl waterui::View {
     let rows = (0..40).map(SelfId::new).collect::<Vec<_>>();
     VStack::for_each(rows, |_| ().size(360.0, 44.0))
@@ -71,7 +71,7 @@ fn opacity_at_root(value: &Binding<f32>) -> AnyView {
 }
 
 /// Case B — animated **opacity inside a scroll view**. The opacity is baked into
-/// the captured scroll content, so the legacy cache is `animation_dependent` and
+/// the captured scroll content, so a capture cache is `animation_dependent` and
 /// bails to a full rebuild every frame.
 fn opacity_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
@@ -95,7 +95,7 @@ fn transform_at_root(value: &Binding<f32>) -> AnyView {
 }
 
 /// Case C — animated **transform (scale) inside a scroll view**. This is the one
-/// case the legacy retained-scroll path already replays without a rebuild; it
+/// case a captured-scroll path can already replay without a rebuild; it
 /// exists here as a no-regression guard for the refactor.
 fn transform_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
@@ -225,8 +225,8 @@ fn dynamic_changing_size_visible(value: &Binding<i32>) -> AnyView {
 
 /// The retained tree reflows a size-changing `Dynamic` content change incrementally
 /// — it relays out the persistent tree in place (the surrounding rows shift down)
-/// without a whole-window structural rebuild. This is the fix for the chart's layout
-/// flicker (Bug 2): the legacy engine reset the scene and re-dispatched the whole
+/// without a whole-window structural rebuild. Resetting the scene and re-dispatching
+/// the whole window instead is visible as a layout flicker: that engine re-ran the whole
 /// window for any size-affecting change, which flashed. The reflowed frame must be
 /// pixel-identical to composing the same content statically.
 #[test]
@@ -259,7 +259,7 @@ fn dynamic_size_change_reflows_without_rebuild() {
     assert_eq!(
         result.profile.counters.rebuild_iterations, 0,
         "a size-changing Dynamic change must reflow via incremental relayout, not a \
-         whole-window structural rebuild (Bug 2 — the flicker): {:?}",
+         whole-window structural rebuild, which is visible as a flicker: {:?}",
         result.profile.counters
     );
     let snapshot = result
@@ -414,7 +414,7 @@ const PARAMETRIC_FRAMES: u32 = 20;
 
 /// Phase 2B: an opacity animation at the window root is captured as a replayable
 /// dynamic opacity layer and replays through the window frame without a rebuild or
-/// re-measure (legacy baked opacity and rebuilt every frame).
+/// re-measure. Baking the opacity into the capture instead forces a rebuild every frame.
 #[test]
 fn opacity_at_root_never_rebuilds() {
     let metrics = run_scenario(opacity_at_root, PARAMETRIC_FRAMES);

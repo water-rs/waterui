@@ -268,9 +268,10 @@ impl core::fmt::Debug for WpeFrameLease {
     }
 }
 
-// Completion is intentionally thread-safe in the bridge: it marshals the WPE
-// object operations back onto the runtime's GMainContext.
 #[cfg(feature = "webview")]
+// SAFETY: completion is thread-safe in the bridge — it marshals every WPE object
+// operation back onto the runtime's GMainContext, so the lease itself carries no
+// thread affinity.
 unsafe impl Send for WpeFrameLease {}
 
 #[cfg(feature = "webview")]
