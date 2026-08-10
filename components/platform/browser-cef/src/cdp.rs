@@ -65,17 +65,24 @@ impl CdpState {
     }
 
     fn handle_message(&self, message: &[u8]) {
-        let message: Value = serde_json::from_slice(message)
-            .unwrap_or_else(|error| panic!("CEF emitted malformed CDP JSON: {error}"));
+        let message: Value = match serde_json::from_slice(message) {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::error!(%error, "CEF emitted malformed CDP JSON; ignoring the message");
+                return;
+            }
+        };
         if let Some(id) = message.get("id").and_then(Value::as_i64) {
-            let id = i32::try_from(id)
-                .unwrap_or_else(|_| panic!("CEF emitted an out-of-range CDP message id: {id}"));
+            let Ok(id) = i32::try_from(id) else {
+                tracing::error!(id, "CEF emitted an out-of-range CDP message id; ignoring");
+                return;
+            };
             let Some(command) = self.pending.borrow_mut().remove(&id) else {
                 return;
             };
             let result = if let Some(error) = message.get("error") {
                 Err(CefCdpError::Protocol {
-                    method: command.method,
+                    method: command.method.clone(),
                     code: error
                         .get("code")
                         .and_then(Value::as_i64)
@@ -89,14 +96,23 @@ impl CdpState {
             } else {
                 Ok(message.get("result").cloned().unwrap_or(Value::Null))
             };
-            let _ = command.response.send(result);
+            // A dropped receiver means the command was issued fire-and-forget, which is a
+            // supported pattern. A *failure* nobody awaited would otherwise vanish
+            // silently, so report it here instead of at every call site.
+            if let Err(Err(error)) = command.response.send(result) {
+                tracing::error!(
+                    method = %command.method,
+                    %error,
+                    "CDP command failed and its result was never awaited"
+                );
+            }
             return;
         }
 
-        let method = message
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("CEF emitted a CDP message without `id` or `method`"));
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            tracing::error!("CEF emitted a CDP message with neither `id` nor `method`; ignoring");
+            return;
+        };
         let event = CefCdpEvent {
             method: method.to_string(),
             params: message.get("params").cloned().unwrap_or(Value::Null),
