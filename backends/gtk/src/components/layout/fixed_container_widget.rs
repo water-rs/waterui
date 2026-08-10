@@ -49,16 +49,13 @@ fn trace_layout_rects(
 }
 
 mod imp {
-    use super::{
-        Cast, CellRendererExt, CellRendererTextExt, Fixed, FixedImpl, GtkSubView, IsAttribute,
-        IsRenderNode, Layout, ListModelExtManual, ObjectExt, ObjectImpl, ObjectInterfaceType,
-        ObjectSubclass, ObjectSubclassExt, ObjectSubclassType, PixbufAnimationExt,
-        PixbufAnimationExtManual, ProposalSize, RecentManagerExt, Rect, RefCell, RendererExt,
-        ScaleExt, Size, SocketClientExt, SocketControlMessageExt, SocketControlMessageImpl,
-        SocketExt, StretchAxis, SubView, SurfaceExt, TextTagExt, TextureExt, TreeModelExt,
-        TypeModuleExt, Widget, WidgetExt, WidgetImpl, WidgetImplExt, glib, layout_debug_enabled,
-        measure_layout, place_children, trace_layout_rects, update_positions,
-    };
+    // The glib subclass macros expand against the parent scope, so this module
+    // deliberately re-exports it wholesale rather than tracking each generated use.
+    #[allow(
+        clippy::wildcard_imports,
+        reason = "glib subclass macros expand against the parent scope"
+    )]
+    use super::*;
 
     #[derive(Debug, Default)]
     pub struct WuiFixedContainer {

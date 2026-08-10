@@ -29,7 +29,7 @@ impl GtkComponent for Native<ColorPickerConfig> {
             );
         }
 
-        apply_color_button_rgba(&button, config.value.get(), env);
+        apply_color_button_rgba(&button, &config.value.get(), env);
 
         let value = config.value.clone();
         button.connect_rgba_notify(move |button| {
@@ -45,7 +45,7 @@ impl GtkComponent for Native<ColorPickerConfig> {
                 let button = button.clone();
                 let env = env.clone();
                 glib::idle_add_local_once(move || {
-                    apply_color_button_rgba(&button, color, &env);
+                    apply_color_button_rgba(&button, &color, &env);
                 });
             }
         });
@@ -56,7 +56,7 @@ impl GtkComponent for Native<ColorPickerConfig> {
     }
 }
 
-fn apply_color_button_rgba(button: &ColorDialogButton, color: Color, env: &Environment) {
+fn apply_color_button_rgba(button: &ColorDialogButton, color: &Color, env: &Environment) {
     let resolved = color.resolve(env).get();
     let srgb = resolved.to_srgb_with_headroom();
     let rgba = gdk::RGBA::new(srgb.red, srgb.green, srgb.blue, resolved.opacity);
