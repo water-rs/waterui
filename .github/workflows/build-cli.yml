@@ -76,7 +76,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install zig (for linux aarch64)
         if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
@@ -137,11 +137,12 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: browser-runtime-${{ matrix.architecture }}
+          cache-on-failure: true
 
       - name: Build self-contained WPE runtime
         run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
