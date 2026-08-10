@@ -13,8 +13,15 @@ impl HydrolysisRenderer {
         value: &ClipShape,
         render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let clip_path = path_commands_to_path(value.commands(), ctx.bounds);
-        if let Some(regular_clip) = regular_clip_shape(value.commands(), ctx.bounds) {
+        // Resolve from the structured kind, exactly as a fill of the same shape
+        // does, and fall back to the unit-space commands only for a custom path.
+        // The commands are normalized per axis, so resolving them against a
+        // non-square rect makes every circular corner elliptical.
+        let clip_path = shape_kind_path(value.kind(), ctx.bounds)
+            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
+        if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
+            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
+        {
             match regular_clip {
                 RegularClipShape::Rect(rect) => {
                     renderer.push_layer_rect(1.0, ctx.transform, rect);
@@ -492,6 +499,30 @@ enum RegularClipShape {
     },
 }
 
+/// The fast rounded-rect/rect clip for a structured shape kind.
+///
+/// A normalized radius resolves against the shorter side, so corners stay
+/// circular and a fully-rounded shape is a stadium rather than an ellipse.
+fn kind_clip_shape(kind: ShapeKind, bounds: vello::kurbo::Rect) -> Option<RegularClipShape> {
+    let min_side = bounds.width().min(bounds.height()).max(0.0);
+    let uniform = |radius: f32| {
+        let corner = f64::from(radius.clamp(0.0, 0.5)) * min_side;
+        Some(RegularClipShape::RoundedRect {
+            rect: bounds,
+            corner_width: corner,
+            corner_height: corner,
+        })
+    };
+    match kind {
+        ShapeKind::Rect => Some(RegularClipShape::Rect(bounds)),
+        ShapeKind::RoundedRect { corner_radius } => uniform(corner_radius),
+        ShapeKind::Capsule | ShapeKind::Circle => uniform(0.5),
+        // An ellipse is not a rounded rect, and uneven corners need the path
+        // mask; both stay on the general route.
+        ShapeKind::Ellipse | ShapeKind::UnevenRoundedRect { .. } | ShapeKind::CustomPath => None,
+    }
+}
+
 fn regular_clip_shape(
     commands: &[PathCommand],
     bounds: vello::kurbo::Rect,
@@ -628,10 +659,16 @@ fn regular_rounded_rect(
         return None;
     }
 
+    // A normalized corner radius resolves against the shorter side, so the corner
+    // stays circular on a non-square rect. Scaling each axis by its own extent
+    // instead turns every rounded-rect *clip* into an ellipse while the identical
+    // shape *fills* as a rounded rect, because the fill route (`rounded_rect_path`)
+    // already resolves against `min_side`. The two must agree.
+    let min_side = bounds.width().min(bounds.height()).max(0.0);
     Some(RegularClipShape::RoundedRect {
         rect: resolve_normalized_rect(*x0, *y0, *x1, *y1, bounds),
-        corner_width: f64::from(*rx) * bounds.width(),
-        corner_height: f64::from(*ry) * bounds.height(),
+        corner_width: f64::from(*rx) * min_side,
+        corner_height: f64::from(*ry) * min_side,
     })
 }
 
@@ -674,8 +711,13 @@ mod regular_clip_tests {
         );
     }
 
+    /// A normalized corner radius resolves against the shorter side, so the
+    /// corners stay circular on a non-square rect and a clip matches the fill of
+    /// the same shape. Resolving each axis against its own extent produced
+    /// elliptical corners — a fully-rounded clip came out as an ellipse instead
+    /// of a pill.
     #[test]
-    fn recognizes_uniform_rounded_rectangle() {
+    fn uniform_rounded_rectangle_clip_keeps_circular_corners() {
         let Some(RegularClipShape::RoundedRect {
             rect,
             corner_width,
@@ -684,9 +726,33 @@ mod regular_clip_tests {
         else {
             panic!("uniform rounded rectangle must use the regular clip route");
         };
+        let min_side = BOUNDS.width().min(BOUNDS.height());
         assert_eq!(rect, BOUNDS);
-        assert!((corner_width - 20.0).abs() < 1.0e-5);
-        assert!((corner_height - 10.0).abs() < 1.0e-5);
+        assert!((corner_width - 0.1 * min_side).abs() < 1.0e-5);
+        assert!(
+            (corner_width - corner_height).abs() < 1.0e-5,
+            "a uniform rounded rectangle must clip with circular corners, got \
+             {corner_width}x{corner_height} on a {}x{} rect",
+            BOUNDS.width(),
+            BOUNDS.height()
+        );
+    }
+
+    /// The fully-rounded case: a clip at the maximum normalized radius is a
+    /// stadium whose caps are half the shorter side, not an ellipse.
+    #[test]
+    fn fully_rounded_clip_is_a_stadium_not_an_ellipse() {
+        let Some(RegularClipShape::RoundedRect {
+            corner_width,
+            corner_height,
+            ..
+        }) = regular_clip_shape(&RoundedRectangle::new(0.5).path(), BOUNDS)
+        else {
+            panic!("a fully-rounded rectangle must use the regular clip route");
+        };
+        let cap = BOUNDS.width().min(BOUNDS.height()) / 2.0;
+        assert!((corner_width - cap).abs() < 1.0e-5);
+        assert!((corner_height - cap).abs() < 1.0e-5);
     }
 
     #[test]

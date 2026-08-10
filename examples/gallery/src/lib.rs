@@ -31,12 +31,11 @@ use waterui::preview;
 use waterui::reactive::Computed;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List as ReactiveList;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::Capsule;
 use waterui_icons_material_icon as mdi;
 
 // Material 3 navigation-drawer metrics (mdui reference: list-item / nav-drawer).
 const DRAWER_ITEM_HEIGHT: f32 = 56.0;
-const DRAWER_ITEM_RADIUS: f32 = 28.0; // full-rounded active indicator at 56dp
 const DRAWER_ICON_SIZE: f32 = 24.0;
 const DRAWER_ITEM_PADDING: f32 = 16.0;
 const DRAWER_ITEM_INDENT: f32 = 8.0; // control items nest slightly under their header
@@ -282,7 +281,10 @@ fn drawer_row(
             DRAWER_ITEM_PADDING,
         ))
         .background(pill)
-        .clip(RoundedRectangle::new(DRAWER_ITEM_RADIUS))
+        // MD3's drawer active indicator is fully rounded: a pill, whose caps are
+        // half the row height. `Capsule` says that directly and stays correct at any
+        // row height, where a normalized `RoundedRectangle` radius would not.
+        .clip(Capsule)
 }
 
 /// Sidebar: a fixed title above a reactive collection of drawer rows. Headers
