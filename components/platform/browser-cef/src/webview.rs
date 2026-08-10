@@ -44,47 +44,7 @@ impl CefWebViewHandle {
                 if event.method != "Runtime.bindingCalled" {
                     return;
                 }
-                let payload = event
-                    .params
-                    .get("payload")
-                    .and_then(Value::as_str)
-                    .expect("CEF Runtime.bindingCalled must contain a string payload");
-                let payload: Value = serde_json::from_str(payload)
-                    .unwrap_or_else(|error| panic!("invalid WaterUI bridge payload: {error}"));
-                let id = payload
-                    .get("id")
-                    .and_then(Value::as_u64)
-                    .expect("WaterUI bridge payload must contain an integer id");
-                let name = payload
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .expect("WaterUI bridge payload must contain a handler name");
-                let data = payload
-                    .get("data")
-                    .and_then(Value::as_array)
-                    .expect("WaterUI bridge payload must contain a byte array")
-                    .iter()
-                    .map(|value| {
-                        let byte = value
-                            .as_u64()
-                            .expect("WaterUI bridge data must contain unsigned bytes");
-                        u8::try_from(byte).expect("WaterUI bridge byte exceeds u8")
-                    })
-                    .collect::<Vec<_>>();
-                let response =
-                    handlers.borrow().get(name).unwrap_or_else(|| {
-                        panic!("CEF WebView handler `{name}` is not registered")
-                    })(&data);
-                let expression = format!(
-                    "globalThis.__wateruiResolve({id}, {})",
-                    serde_json::to_string(&response)
-                        .expect("WaterUI bridge response bytes must serialize")
-                );
-                execute_without_result(
-                    &session,
-                    "Runtime.evaluate",
-                    &json!({"expression": expression}),
-                );
+                dispatch_bridge_call(&session, &handlers, &event.params);
             }
         });
         Self { page, handlers }
@@ -145,21 +105,17 @@ impl WebViewHandle for CefWebViewHandle {
             !name.is_empty(),
             "CEF WebView handler name must not be empty"
         );
-        let previous = self
-            .handlers
+        // Registering the same name twice replaces the handler, matching every other
+        // backend; the previous one is simply dropped.
+        self.handlers
             .borrow_mut()
             .insert(name.to_string(), Rc::from(handler));
-        assert!(
-            previous.is_none(),
-            "CEF WebView handler `{name}` is already registered"
-        );
     }
 
     fn remove_handler(&self, name: &str) {
-        assert!(
-            self.handlers.borrow_mut().remove(name).is_some(),
-            "CEF WebView handler `{name}` is not registered"
-        );
+        // Removing a name that was never registered is a no-op, matching every other
+        // backend.
+        self.handlers.borrow_mut().remove(name);
     }
 
     fn stop(&self) {
@@ -307,6 +263,66 @@ impl CustomWebViewController for CefController {
     fn open(&self) -> impl WebViewHandle {
         CefWebViewHandle::new(self.open_page(CefPageConfiguration::default(), CefPageMode::Visible))
     }
+}
+
+/// One `waterui.invoke(...)` request produced by `webview_bridge.js`.
+///
+/// The binding this arrives on is reachable from ordinary page script, so every
+/// field is validated and a malformed request is rejected instead of aborting the
+/// host process.
+#[derive(Debug, serde::Deserialize)]
+struct BridgeCall {
+    id: u64,
+    name: String,
+    data: Vec<u8>,
+}
+
+fn dispatch_bridge_call(
+    session: &CefCdpSession,
+    handlers: &RefCell<HashMap<String, Rc<MessageHandler>>>,
+    params: &Value,
+) {
+    let Some(payload) = params.get("payload").and_then(Value::as_str) else {
+        tracing::warn!("CEF bridge binding fired without a string payload; ignoring");
+        return;
+    };
+    let call: BridgeCall = match serde_json::from_str(payload) {
+        Ok(call) => call,
+        Err(error) => {
+            tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+            return;
+        }
+    };
+    // Resolve the handler and release the borrow before invoking it: a handler is
+    // free to register or remove handlers on the same web view.
+    let handler = handlers.borrow().get(&call.name).map(Rc::clone);
+    let Some(handler) = handler else {
+        tracing::warn!(
+            handler = %call.name,
+            "page script called a WaterUI handler that is not registered"
+        );
+        reply_to_bridge_call(
+            session,
+            call.id,
+            false,
+            &Value::from(format!("no WaterUI handler named `{}`", call.name)),
+        );
+        return;
+    };
+    let response = handler(&call.data);
+    reply_to_bridge_call(session, call.id, true, &Value::from(response));
+}
+
+fn reply_to_bridge_call(session: &CefCdpSession, id: u64, ok: bool, payload: &Value) {
+    let expression = format!(
+        "globalThis.__wateruiResolve({id},{ok},{})",
+        serde_json::to_string(payload).expect("WaterUI bridge reply must serialize")
+    );
+    execute_without_result(
+        session,
+        "Runtime.evaluate",
+        &json!({ "expression": expression }),
+    );
 }
 
 fn install_bridge(session: &CefCdpSession) {

@@ -37,6 +37,20 @@ pub use runner::{
 };
 pub use view_renderer::HydrolysisViewRenderer;
 
+// Cargo features are additive, so two crates in one build can each select a different
+// WebView engine and silently produce a configuration that defines the engine-specific
+// items twice. Fail with an explanation instead of a duplicate-definition error. The
+// checks are written against the build-script aliases so they cannot drift from the
+// conditions the engine code itself uses.
+#[cfg(all(hydrolysis_macos_system_webview, hydrolysis_cef_webview))]
+compile_error!(
+    "Hydrolysis selects exactly one WebView engine: `webview-system` (or `webview-default`) and `webview-cef` are both enabled on macOS"
+);
+#[cfg(all(hydrolysis_linux_wpe_webview, hydrolysis_cef_webview))]
+compile_error!(
+    "Hydrolysis selects exactly one WebView engine: `webview-wpe` (or `webview-default`) and `webview-cef` are both enabled on Linux"
+);
+
 /// Executes the process as a packaged CEF subprocess helper.
 ///
 /// # Panics
