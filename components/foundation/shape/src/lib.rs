@@ -181,6 +181,17 @@ pub trait Shape {
 
     /// Returns the path commands that define this shape.
     fn path(&self) -> Self::Iter;
+
+    /// Returns what this shape *is*, for backends that can render it directly.
+    ///
+    /// Prefer this over [`Self::path`] wherever a backend can act on it. Path
+    /// commands are normalized per axis, so resolving them against a non-square
+    /// rect makes circular corners elliptical; the kind lets a backend resolve a
+    /// normalized radius against the shorter side instead. Defaults to
+    /// [`ShapeKind::CustomPath`], which means "only the path describes me".
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::CustomPath
+    }
 }
 
 // ============================================================================
@@ -204,6 +215,10 @@ impl Shape for Circle {
             sweep: TAU,
         }]
     }
+
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Circle
+    }
 }
 
 /// An ellipse that fills the view bounds.
@@ -223,6 +238,10 @@ impl Shape for Ellipse {
             sweep: TAU,
         }]
     }
+
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Ellipse
+    }
 }
 
 /// A capsule (pill) shape.
@@ -232,6 +251,12 @@ pub struct Capsule;
 impl Shape for Capsule {
     type Iter = [PathCommand; 4];
 
+    /// Unit-space approximation only — an ellipse inscribed in the box.
+    ///
+    /// A pill's caps are half its *shorter* side, which normalized per-axis
+    /// coordinates cannot express without knowing the aspect ratio. Backends
+    /// must render a capsule from [`ShapeKind::Capsule`], not from these
+    /// commands.
     fn path(&self) -> Self::Iter {
         [
             PathCommand::MoveTo { x: 0.5, y: 0.0 },
@@ -254,6 +279,10 @@ impl Shape for Capsule {
             PathCommand::Close,
         ]
     }
+
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Capsule
+    }
 }
 
 /// A rectangle with uniform corner radius.
@@ -265,6 +294,15 @@ pub struct RoundedRectangle {
 
 impl RoundedRectangle {
     /// Creates a new rounded rectangle with the given corner radius.
+    ///
+    /// The radius is **normalized**, not a length: it is a fraction of the
+    /// shape's shorter side, so `0.5` is fully rounded and anything above that
+    /// saturates there. Passing a point value (`28.0` for a 56pt-tall row)
+    /// therefore lands on `0.5` rather than failing, which is only what was
+    /// intended when the shape happens to be that tall.
+    ///
+    /// Reach for [`Capsule`] when the intent is "fully rounded at whatever size
+    /// this ends up": it says so directly and cannot drift as the shape resizes.
     #[must_use]
     pub const fn new(corner_radius: f32) -> Self {
         Self { corner_radius }
@@ -323,6 +361,18 @@ impl Shape for RoundedRectangle {
             },
             PathCommand::Close,
         ]
+    }
+
+    fn shape_kind(&self) -> ShapeKind {
+        let r = CornerRadii {
+            top_left: self.corner_radius,
+            top_right: self.corner_radius,
+            bottom_right: self.corner_radius,
+            bottom_left: self.corner_radius,
+        }
+        .sanitized()
+        .top_left;
+        ShapeKind::RoundedRect { corner_radius: r }
     }
 }
 
@@ -419,6 +469,22 @@ impl Shape for UnevenRoundedRectangle {
             PathCommand::Close,
         ]
     }
+
+    fn shape_kind(&self) -> ShapeKind {
+        let corners = CornerRadii {
+            top_left: self.top_leading,
+            top_right: self.top_trailing,
+            bottom_right: self.bottom_trailing,
+            bottom_left: self.bottom_leading,
+        }
+        .sanitized();
+        ShapeKind::UnevenRoundedRect {
+            top_left: corners.top_left,
+            top_right: corners.top_right,
+            bottom_left: corners.bottom_left,
+            bottom_right: corners.bottom_right,
+        }
+    }
 }
 
 /// A simple rectangle with sharp corners.
@@ -436,6 +502,10 @@ impl Shape for Rectangle {
             PathCommand::LineTo { x: 0.0, y: 1.0 },
             PathCommand::Close,
         ]
+    }
+
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Rect
     }
 }
 
@@ -519,6 +589,10 @@ impl Shape for Path {
     fn path(&self) -> Self::Iter {
         self.commands.clone().into_iter()
     }
+
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::CustomPath
+    }
 }
 
 // ============================================================================
@@ -526,8 +600,17 @@ impl Shape for Path {
 // ============================================================================
 
 /// Metadata for clipping a view to a shape.
+///
+/// Carries both the structured [`ShapeKind`] and the unit-space path. Backends
+/// should prefer the kind: [`PathCommand`] coordinates are normalized per axis,
+/// so resolving them against a non-square rect turns a circular corner into an
+/// elliptical one — a fully-rounded clip comes out as an ellipse instead of a
+/// pill. The kind says what the shape *is*, letting a backend resolve a
+/// normalized radius against the shorter side the way [`FilledShape`] already
+/// does. The commands remain the fallback for [`ShapeKind::CustomPath`].
 #[derive(Debug)]
 pub struct ClipShape {
+    kind: ShapeKind,
     commands: Vec<PathCommand>,
 }
 
@@ -536,11 +619,19 @@ impl ClipShape {
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(shape: impl Shape) -> Self {
         Self {
+            kind: shape.shape_kind(),
             commands: shape.path().into_iter().collect(),
         }
     }
 
-    /// Returns the path commands.
+    /// Returns the structured shape kind. Prefer this over [`Self::commands`];
+    /// see the type documentation.
+    #[must_use]
+    pub const fn kind(&self) -> ShapeKind {
+        self.kind
+    }
+
+    /// Returns the unit-space path commands.
     #[must_use]
     pub fn commands(&self) -> &[PathCommand] {
         &self.commands
@@ -1165,11 +1256,6 @@ fn u32_to_f32(value: u32) -> f32 {
 
 /// Extension trait for filling shapes with color.
 pub trait ShapeExt: Shape + Sized {
-    /// Returns the shape kind for GPU rendering optimization.
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::CustomPath
-    }
-
     /// Fills the shape with the specified color.
     fn fill(self, color: impl Into<Color>) -> FilledShape {
         FilledShape::with_kind(self.shape_kind(), self, color)
@@ -1184,67 +1270,19 @@ pub trait ShapeExt: Shape + Sized {
     }
 }
 
-impl ShapeExt for Circle {
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::Circle
-    }
-}
+impl ShapeExt for Circle {}
 
-impl ShapeExt for Ellipse {
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::Ellipse
-    }
-}
+impl ShapeExt for Ellipse {}
 
-impl ShapeExt for Capsule {
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::Capsule
-    }
-}
+impl ShapeExt for Capsule {}
 
-impl ShapeExt for Rectangle {
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::Rect
-    }
-}
+impl ShapeExt for Rectangle {}
 
-impl ShapeExt for RoundedRectangle {
-    fn shape_kind(&self) -> ShapeKind {
-        let r = CornerRadii {
-            top_left: self.corner_radius,
-            top_right: self.corner_radius,
-            bottom_right: self.corner_radius,
-            bottom_left: self.corner_radius,
-        }
-        .sanitized()
-        .top_left;
-        ShapeKind::RoundedRect { corner_radius: r }
-    }
-}
+impl ShapeExt for RoundedRectangle {}
 
-impl ShapeExt for UnevenRoundedRectangle {
-    fn shape_kind(&self) -> ShapeKind {
-        let corners = CornerRadii {
-            top_left: self.top_leading,
-            top_right: self.top_trailing,
-            bottom_right: self.bottom_trailing,
-            bottom_left: self.bottom_leading,
-        }
-        .sanitized();
-        ShapeKind::UnevenRoundedRect {
-            top_left: corners.top_left,
-            top_right: corners.top_right,
-            bottom_left: corners.bottom_left,
-            bottom_right: corners.bottom_right,
-        }
-    }
-}
+impl ShapeExt for UnevenRoundedRectangle {}
 
-impl ShapeExt for Path {
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::CustomPath
-    }
-}
+impl ShapeExt for Path {}
 
 #[cfg(test)]
 mod tests {
