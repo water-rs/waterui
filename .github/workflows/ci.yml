@@ -152,7 +152,11 @@ jobs:
 
   ffi-header:
     name: FFI Header
-    runs-on: ubuntu-latest
+    # The header is platform-dependent: the Apple exports (Metal, CEF) only
+    # appear when cbindgen expands on an Apple target, and the committed header
+    # contains them. Regenerating anywhere else would delete them and break the
+    # Apple backend, so macOS is the canonical generation host.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -161,10 +165,9 @@ jobs:
       # `cargo rustc -- -Zunpretty=expanded`, and the exported functions are
       # macro-generated, so the expansion cannot be skipped.
       - uses: dtolnay/rust-toolchain@nightly
-      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-ubuntu-nightly
+          shared-key: ffi-header-macos
           cache-on-failure: true
       - name: Regenerate the header
         run: cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
@@ -174,7 +177,7 @@ jobs:
           status=0
           check() {
             if ! git -C "$1" diff --exit-code -- "$2"; then
-              echo "::error file=$2::$2 is stale; run 'cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml' and commit the result"
+              echo "::error file=$2::$2 is stale; on macOS run 'cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml' and commit the result"
               status=1
             fi
           }
