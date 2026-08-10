@@ -390,7 +390,7 @@ fn render_tree_live_path_processes_watch_switch() {
     use waterui_core::handler::AnyViewBuilder;
 
     // A `watch`-driven content switch (the chart example's `chart_layers` shape):
-    // on the legacy patch path this could silently fail to switch (Bug 1). The
+    // a scene bound to a frame-ordered effect slot could silently fail to switch. The
     // render-tree path patches only the Dynamic node, so the switch always takes.
     let mode = binding(false);
     let builder = {
@@ -552,7 +552,7 @@ fn render_tree_chart_switch_snapshot() {
 }
 
 /// The exact chart case: a `watch`-driven swap between two `Canvas` (`SceneView`)
-/// charts — the effect-slot path where Bug 1 lived. On the render-tree path the
+/// charts — the effect-slot path where a swap could render the previous scene. On the render-tree path the
 /// switch must visibly take effect (red -> blue scene), proving the SceneView
 /// switch is fixed (the patched node is re-dispatched in isolation).
 #[test]
@@ -982,7 +982,7 @@ fn render_tree_grid_snapshot() {
 /// Lifecycle hooks are node-owned on the retained tree: `.on_appear` fires once
 /// after the child's first flush, and `.on_disappear` fires from the node's `Drop`
 /// when the retained tree is torn down. Structural presence/removal drives the
-/// hooks — there is no frame-diff slot cursor (the same fix class as Bug 1), and
+/// hooks — there is no frame-diff slot cursor to drift out of step with the tree, and
 /// the disappear hook must not fire while the node is still retained.
 #[test]
 fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {

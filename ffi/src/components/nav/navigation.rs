@@ -734,11 +734,12 @@ pub struct WuiNavigationTransaction {
     pub inserted: WuiArray<WuiNavigationView>,
 }
 
-// SAFETY: ForeignNavigationController is only accessed from the UI thread.
 #[expect(
     clippy::non_send_fields_in_send_ty,
     reason = "the foreign callback context is created, invoked, and dropped on the platform main thread; `Send` is asserted only to satisfy the controller trait bound"
 )]
+// SAFETY: the foreign callback context is created, invoked, and dropped on the
+// platform main thread, so it never crosses a thread boundary.
 unsafe impl Send for ForeignNavigationController {}
 
 impl CustomNavigationController for ForeignNavigationController {
