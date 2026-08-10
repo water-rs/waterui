@@ -74,12 +74,29 @@ ensure_apfs() {
   print -- "$info" | rg -q '^ *Type \(Bundle\): +apfs$' || die "filesystem for $target is not APFS"
 }
 
+# `git clone --local` hardlinks the source object store into the clone, which
+# cannot span volumes. A cross-volume workspace root copies the objects instead;
+# same-volume roots keep the cheap hardlinks. `reference` must be a path that
+# already exists on the destination volume.
+local_clone_options() {
+  local source="$1"
+  local reference="$2"
+
+  if [[ "$(device_id "$source")" == "$(device_id "$reference")" ]]; then
+    print -- "--local"
+  else
+    print -- "--local --no-hardlinks"
+  fi
+}
+
 clone_superproject_locally() {
   local source_root="$1"
   local destination="$2"
   local source_branch="$3"
+  local clone_options
 
-  git clone --local --branch "$source_branch" --single-branch "$source_root" "$destination" >/dev/null 2>&1 || die "failed to clone canonical repository into $destination"
+  clone_options="$(local_clone_options "$source_root" "${destination:h}")"
+  git clone ${=clone_options} --branch "$source_branch" --single-branch "$source_root" "$destination" >/dev/null 2>&1 || die "failed to clone canonical repository into $destination"
 }
 
 submodule_gitlink_commit() {
@@ -100,7 +117,9 @@ clone_submodules_locally() {
   local source_submodule
   local destination_submodule
   local desired_commit
+  local clone_options
 
+  clone_options="$(local_clone_options "$source_root" "$destination_root")"
   while IFS=$'\t' read -r name submodule_relpath; do
     [[ -n "${name:-}" ]] || continue
     source_submodule="${source_root}/${submodule_relpath}"
@@ -108,7 +127,7 @@ clone_submodules_locally() {
     desired_commit="$(submodule_gitlink_commit "$destination_root" "$submodule_relpath")"
 
     git -C "$destination_root" submodule init -- "$submodule_relpath" >/dev/null 2>&1 || die "failed to initialize submodule config for ${submodule_relpath}"
-    git clone --local --no-checkout "$source_submodule" "$destination_submodule" >/dev/null 2>&1 || die "failed to clone submodule ${submodule_relpath}"
+    git clone ${=clone_options} --no-checkout "$source_submodule" "$destination_submodule" >/dev/null 2>&1 || die "failed to clone submodule ${submodule_relpath}"
     git -C "$destination_submodule" checkout "$desired_commit" >/dev/null 2>&1 || die "failed to checkout ${desired_commit} in submodule ${submodule_relpath}"
     git -C "$destination_root" submodule absorbgitdirs -- "$submodule_relpath" >/dev/null 2>&1 || die "failed to absorb gitdir for submodule ${submodule_relpath}"
   done < <(submodule_records "$source_root")
