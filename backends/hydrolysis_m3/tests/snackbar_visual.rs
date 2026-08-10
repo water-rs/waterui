@@ -27,10 +27,10 @@ fn snackbar_fades_and_slides_into_place() {
             .closeable(),
     );
     save(&mut app, "enter-0ms");
-    std::thread::sleep(Duration::from_millis(50));
+    app.pump_for(Duration::from_millis(50));
     save(&mut app, "enter-50ms");
-    std::thread::sleep(Duration::from_millis(70));
+    app.pump_for(Duration::from_millis(70));
     save(&mut app, "enter-120ms");
-    std::thread::sleep(Duration::from_millis(180));
+    app.pump_for(Duration::from_millis(180));
     save(&mut app, "settled-300ms");
 }
