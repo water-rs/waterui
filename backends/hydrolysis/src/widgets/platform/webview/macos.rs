@@ -504,9 +504,9 @@ impl WebViewHandle for MacSystemWebViewHandle {
         }
     }
 
-    fn go_to(&self, url: &str) {
-        let url = NSURL::URLWithString(&NSString::from_str(url))
-            .unwrap_or_else(|| panic!("Hydrolysis WKWebView received an invalid URL: {url}"));
+    fn go_to(&self, url: &Url) {
+        let url = NSURL::URLWithString(&NSString::from_str(url.as_str()))
+            .unwrap_or_else(|| panic!("WKWebView rejected the URL: {url}"));
         let request = NSURLRequest::requestWithURL(&url);
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.

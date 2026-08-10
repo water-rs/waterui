@@ -101,9 +101,17 @@ pub struct WuiWebViewEvent {
     pub can_go_forward: bool,
 }
 
+/// Converts a URL that a backend reported alongside an event.
+///
+/// Backends report whatever the engine actually navigated to, which routinely
+/// includes `about:blank`, `data:` documents, `blob:` URLs and `file://` paths.
+/// This conversion is therefore total: it must not reject any of them, and it
+/// must never abort the process — which it previously did, because `Url::parse`
+/// accepts only web URLs and this unwrapped its `None`.
 fn parse_url(s: &Str) -> Url {
-    Url::parse(s.as_str())
-        .unwrap_or_else(|| panic!("WebView backend emitted invalid URL: {}", s.as_str()))
+    s.as_str().parse().unwrap_or_else(|error| {
+        panic!("WebView backend emitted an unparseable URL {:?}: {error}", s.as_str())
+    })
 }
 
 /// Takes ownership of a string field out of a `WuiWebViewEvent`.
@@ -343,8 +351,8 @@ impl WebViewHandle for FfiWebViewHandle {
         unsafe { (self.ffi.go_forward)(self.ffi.data) }
     }
 
-    fn go_to(&self, url: &str) {
-        let owned_url = Str::from(url.to_string());
+    fn go_to(&self, url: &Url) {
+        let owned_url = Str::from(url.as_str().to_string());
         // SAFETY: `ffi.data` and this function pointer were registered together by
         // the backend for this controller, which is alive for as long as
         // `self` is.

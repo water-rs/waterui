@@ -1147,7 +1147,7 @@ impl WebViewHandle for GtkWebViewHandle {
         panic!("{WEBKIT_FEATURE_MSG}");
     }
 
-    fn go_to(&self, url: &str) {
+    fn go_to(&self, url: &Url) {
         #[cfg(all(
             feature = "webkitgtk",
             gtk_webkitgtk_link_available,
