@@ -1748,3 +1748,44 @@ pub(crate) fn render_navigation_stack_parts(
         },
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_split_column_width;
+    use waterui::navigation::{ColumnWidth, NativeNavigationSplitStyle};
+
+    /// The sidebar's width is a policy of the split style, not of the column
+    /// constraints alone: a detail-first layout squeezes the sidebar to its
+    /// minimum so the detail column gets the remaining space, while the
+    /// balanced styles honour the author's ideal.
+    #[test]
+    fn prominent_detail_squeezes_the_sidebar_to_its_minimum() {
+        let width = ColumnWidth::new(180.0, 260.0, 400.0);
+
+        assert_eq!(
+            resolved_split_column_width(width, NativeNavigationSplitStyle::ProminentDetail),
+            180.0
+        );
+        for balanced in [
+            NativeNavigationSplitStyle::Automatic,
+            NativeNavigationSplitStyle::Balanced,
+        ] {
+            assert_eq!(resolved_split_column_width(width, balanced), 260.0);
+        }
+    }
+
+    /// Column constraints that leave no room to choose must resolve the same way
+    /// under every style, so a fixed-width sidebar cannot drift between them.
+    #[test]
+    fn a_fixed_width_sidebar_resolves_identically_under_every_style() {
+        let fixed = ColumnWidth::new(240.0, 240.0, 240.0);
+
+        for style in [
+            NativeNavigationSplitStyle::Automatic,
+            NativeNavigationSplitStyle::Balanced,
+            NativeNavigationSplitStyle::ProminentDetail,
+        ] {
+            assert_eq!(resolved_split_column_width(fixed, style), 240.0);
+        }
+    }
+}
