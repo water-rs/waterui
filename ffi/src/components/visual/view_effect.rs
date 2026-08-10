@@ -401,6 +401,11 @@ pub unsafe extern "C" fn waterui_view_effect_set_redraw_callback(
         .set_waker(Some(Arc::new(move || target.wake())));
 }
 
+/// Validates and applies new input dimensions, resizing owned textures.
+///
+/// Only reachable from the Apple Metal input-import entry point; every other
+/// platform feeds `ViewEffect` through the Rust-side filter pipeline.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn ensure_dimensions(state: &mut WuiViewEffectState, width: u32, height: u32) {
     assert!(
         width > 0 && height > 0,
@@ -586,6 +591,11 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
     needs_redraw
 }
 
+/// Kicks off asynchronous effect setup for the given input format.
+///
+/// Only reachable from the Apple Metal input-import entry point; every other
+/// platform feeds `ViewEffect` through the Rust-side filter pipeline.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::TextureFormat) {
     let output_format = state
         .output_config
