@@ -11,8 +11,9 @@ use hydrolysis_m3::install as install_m3;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::{button, vstack};
-use waterui::{Computed, Environment, Signal, SignalExt, View};
-use waterui_core::binding;
+use waterui::text;
+use waterui::{Computed, Environment, Signal, SignalExt, Str, View};
+use waterui_core::{Binding, binding};
 use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
 use waterui_webview::{
     CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
@@ -253,7 +254,32 @@ fn webview_test_view(webview: WebView) -> impl View {
     let webview_for_forward = webview.clone();
     let webview_for_navigate = webview.clone();
 
+    // The assertions below read these two labels, so the view has to publish the
+    // state they describe. Both are driven by the web view's own signals rather
+    // than by the test, which is the point: this checks that a `WebView` reports
+    // load and history state into the accessibility tree.
+    let status: Binding<Str> = binding("Idle");
+    let status_guard = webview.events().watch({
+        let status = status.clone();
+        move |context| {
+            let label = match context.into_value() {
+                WebViewEvent::WillNavigate { .. } => "Navigating",
+                WebViewEvent::Loading { .. } => "Loading",
+                WebViewEvent::Loaded => "Loaded",
+                WebViewEvent::Error(_) => "Error",
+                WebViewEvent::Redirect { .. } => "Redirect",
+                WebViewEvent::None | WebViewEvent::StateChanged { .. } => return,
+            };
+            status.set(Str::from_static(label));
+        }
+    });
+
+    let can_go_back = webview.can_go_back();
+    let can_go_forward = webview.can_go_forward();
+
     vstack((
+        text!("Status: {status}"),
+        text!("Navigation: back={can_go_back} forward={can_go_forward}"),
         button("Back")
             .action(move || webview_for_back.go_back())
             .disabled(webview.can_go_back().not()),
@@ -266,13 +292,13 @@ fn webview_test_view(webview: WebView) -> impl View {
             .a11y_label("Docs WebView")
             .size(320.0, 260.0),
     ))
+    .retain(status_guard)
 }
 
 #[test]
 fn webview_exposes_accessibility_surface_and_navigation_state() {
     let controller = WebViewController::new(FakeWebViewController::default());
     let webview = controller.open();
-    webview.go_to(DOCS_URL);
 
     let mut env = Environment::new();
     install_m3(&mut env);
@@ -280,7 +306,15 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
     let mut app = ui()
         .environment(env)
         .viewport(420, 420)
-        .mount(move || webview_test_view(webview.clone()));
+        .mount({
+            let webview = webview.clone();
+            move || webview_test_view(webview.clone())
+        });
+
+    // Navigate only once the view is mounted: the handle emits its events
+    // synchronously, so a navigation started before mounting would complete
+    // before anything is subscribed.
+    webview.go_to(DOCS_URL);
 
     assert!(
         app.wait_for(

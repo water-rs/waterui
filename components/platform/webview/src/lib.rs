@@ -40,12 +40,13 @@ mod watcher;
 pub use watcher::{WatcherGuard, WatcherSet};
 
 use waterui_core::{
-    Binding, Computed, Environment, Signal, View, binding,
+    Binding, Computed, Environment, Native, Signal, View, binding,
     env::use_env,
     layout::StretchAxis,
-    raw_view,
     reactive::{signal::IntoComputed, watcher::BoxWatcherGuard},
 };
+use waterui_layout::spacer;
+use waterui_layout::stack::vstack;
 use waterui_str::Str;
 
 /// Events emitted by the `WebView` component.
@@ -259,7 +260,7 @@ impl WebView {
         F: FnOnce() -> V + 'static,
     {
         use waterui_core::env::with;
-        use waterui_layout::stack::vstack;
+        use waterui_layout::spacer;
         let proxy = WebViewProxy::new(self.handle.clone());
         let body = content();
         // Children render above the WebView body and have the proxy injected
@@ -269,8 +270,12 @@ impl WebView {
     }
 
     /// Returns a signal that emits `WebView` events.
+    ///
+    /// Named `events` rather than `event` because `ViewExt::event` shadows an
+    /// inherent method of that name, forcing callers to spell out
+    /// `WebView::event(&view)`.
     #[must_use]
-    pub fn event(&self) -> impl Signal<Output = WebViewEvent> {
+    pub fn events(&self) -> impl Signal<Output = WebViewEvent> {
         self.event.clone()
     }
 
@@ -465,8 +470,28 @@ impl View for WebViewOpen {
     }
 }
 
-// WebView is a raw view - native backends render it directly
-raw_view!(WebView, StretchAxis::Both);
+// `WebView` is a raw view: a backend with a web engine intercepts it before
+// `View::body` ever runs. `raw_view!` is not used because reaching `body` must not
+// abort — see the fallback below.
+impl waterui_core::NativeView for WebView {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+impl View for WebView {
+    fn body(self, _env: &Environment) -> impl View {
+        // Reaching `body` means the running backend has no web engine compiled in.
+        // Render an empty, still-accessible leaf rather than panicking: every
+        // component owes the accessibility tree a node, and a backend without an
+        // engine is a missing feature, not a crash.
+        Native::new(self).with_fallback(spacer())
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
 
 #[cfg(test)]
 mod tests {
