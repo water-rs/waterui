@@ -73,7 +73,7 @@ Keep the change set strictly scoped to the task.
 - The repo-local `.claude/skills/waterui/SKILL.md` is for WaterUI users. Update it only when a user-facing public authoring pattern, API usage rule, or app-level CLI usage changes.
 - "Visual test" in this repository means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden, including changed-pixel counts, opaque-pixel thresholds, bbox approximations, dominant-color checks, brightness checks, non-uniform checks, and similar proxy code.
 - Before writing any new image/gallery/snapshot export code, search for and reuse the existing `waterui-testing`, preview, showcase, GPU snapshot, or filter gallery infrastructure. Do not add ad-hoc gallery examples, scripts, or binaries unless the user explicitly asks to create or extend that infrastructure.
-- For filter visual review images, the canonical reusable infrastructure is `cargo test -p filtrate --lib runtime::tests::gpu_export_filter_gallery_images -- --nocapture`, which exports PNG files to `/tmp/waterui_filter_gallery/`. Use this path to show filter outputs instead of creating a new gallery generator.
+- For filter visual review images, the canonical reusable infrastructure is `cargo nextest run -p filtrate --lib -E 'test(gpu_export_filter_gallery_images)' --no-capture`, which exports PNG files to `/tmp/waterui_filter_gallery/`. Use this path to show filter outputs instead of creating a new gallery generator.
 - AI-agent meta belongs only in this file. Do not leak it into anything a human will read.
 - Keep `.claude/skills/waterui/SKILL.md` strictly user-facing. If information is primarily for agents or maintainers rather than app authors using WaterUI, it belongs in `AGENTS.md` or implementation docs, not in the user-facing skill.
 - `waterui-testing` is based on the Hydrolysis accessibility tree, not native platform accessibility. Prefer `waterui-testing` for UI component coverage, and treat it as both an interaction test and an accessibility-correctness test.
@@ -143,12 +143,15 @@ cargo build -p waterui-cli
 # Build entire workspace
 cargo build
 
-# Run tests
-cargo test
+# Run tests (nextest is the default runner; see "Testing Patterns")
+cargo nextest run
 
 # Run tests for specific crate
-cargo test -p waterui-core
-cargo test -p waterui-cli
+cargo nextest run -p waterui-core
+cargo nextest run -p waterui-cli
+
+# Doctests are the one thing nextest cannot run
+cargo test --doc
 
 # Generate FFI C header (after modifying ffi/ APIs), never write C header by hand
 cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
@@ -334,8 +337,25 @@ waterui_ffi::export!();  // Generates FFI entry points
 ### Testing Patterns
 
 - Most tests use `#[cfg(test)] mod tests` pattern
-- Run workspace tests: `cargo test`
-- Run specific crate tests: `cargo test -p <crate-name>`
+- **Use `cargo nextest run`, not `cargo test`.** This workspace is large and
+  `cargo test`'s single-process-per-binary harness is painfully slow on it.
+  Install once with `cargo install cargo-nextest --locked`.
+  - Run workspace tests: `cargo nextest run`
+  - Run a specific crate: `cargo nextest run -p <crate-name>`
+  - Run one test: `cargo nextest run -p <crate-name> -E 'test(<name>)'`
+  - Show output from passing tests: `--no-capture` (nextest's spelling of
+    `-- --nocapture`; it forces serial execution, so scope it with `-E`)
+- **`cargo test` remains correct in exactly two cases**, because nextest cannot
+  run them:
+  - **Doctests** — nextest has no doctest support at all. Run `cargo test --doc`.
+  - Anything that depends on several `#[test]` functions sharing one process.
+    nextest runs **each test in its own process**, so process-global state
+    (`OnceLock`, `static`s, a registered "main thread", an installed global
+    executor) is no longer shared between tests. That isolation is usually a
+    feature — it turns order-dependent tests into deterministic ones — but a
+    test written to rely on a sibling's initialization will start failing under
+    nextest. Fix the shared-state assumption rather than reaching back for
+    `cargo test`.
 - No explicit CLI unit tests found; likely relies on integration testing
 - Use `tracing::debug!` and `water run --logs debug` for debugging runtime issues
 
