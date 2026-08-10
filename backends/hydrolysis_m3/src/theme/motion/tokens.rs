@@ -51,6 +51,10 @@ pub mod duration {
     /// `extra-long3` — 900ms.
     pub const EXTRA_LONG_3: Duration = Duration::from_millis(900);
     /// `extra-long4` — 1000ms.
+    #[allow(
+        clippy::duration_suboptimal_units,
+        reason = "the M3 duration scale is specified in milliseconds; from_secs(1) would break the table"
+    )]
     pub const EXTRA_LONG_4: Duration = Duration::from_millis(1000);
 }
 
