@@ -1,4 +1,4 @@
-//! GTK4 SystemIcon component implementation.
+//! GTK4 `SystemIcon` component implementation.
 
 use gtk4::Widget;
 use waterui_core::{Environment, Native};

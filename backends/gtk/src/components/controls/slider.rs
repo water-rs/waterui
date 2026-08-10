@@ -50,7 +50,7 @@ impl GtkComponent for Native<SliderConfig> {
 
         // Watch for binding changes -> update scale
         // Clone before .computed() since it consumes self
-        let guard = binding.clone().computed().watch({
+        let guard = binding.computed().watch({
             let scale = scale.clone();
             move |ctx| {
                 let value = ctx.into_value();

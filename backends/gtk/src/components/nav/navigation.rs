@@ -256,14 +256,14 @@ impl GtkComponent for NavigationStack<(), ()> {
         let mut child_env = env.clone();
         let controller = GtkNavigationController::new(
             gtk_stack.clone(),
-            bar_container.clone(),
-            header_bar.clone(),
-            leading_slot.clone(),
-            trailing_slot.clone(),
-            search_holder.clone(),
-            bottom_holder.clone(),
+            bar_container,
+            header_bar,
+            leading_slot,
+            trailing_slot,
+            search_holder,
+            bottom_holder,
             back_button.clone(),
-            scoped_css.clone(),
+            scoped_css,
             &child_env,
         );
         let navigation_controller = NavigationController::new(controller.clone());
@@ -271,7 +271,7 @@ impl GtkComponent for NavigationStack<(), ()> {
         controller.set_env(child_env.clone());
 
         back_button.connect_clicked({
-            let navigation_controller = navigation_controller.clone();
+            let navigation_controller = navigation_controller;
             move |_| {
                 navigation_controller.request_pop(1);
             }
@@ -635,7 +635,7 @@ impl GtkComponent for NavigationSplitLayout {
                 move |selected| AnyView::new(content.build(selected)),
             );
             switch_content(primary_selection.get());
-            guards.push(primary_selection.clone().computed().watch({
+            guards.push(primary_selection.computed().watch({
                 let switch_content = Rc::clone(&switch_content);
                 move |ctx: nami::watcher::Context<Option<Id>>| {
                     switch_content(ctx.into_value());
@@ -644,14 +644,12 @@ impl GtkComponent for NavigationSplitLayout {
         }
 
         let detail_selection = secondary_selection.unwrap_or_else(|| primary_selection.clone());
-        let switch_detail = cached_split_host_switcher(
-            detail_host.clone(),
-            env.clone(),
-            placeholder,
-            move |selected| AnyView::new(detail.build(selected)),
-        );
+        let switch_detail =
+            cached_split_host_switcher(detail_host.clone(), env, placeholder, move |selected| {
+                AnyView::new(detail.build(selected))
+            });
         switch_detail(detail_selection.get());
-        guards.push(detail_selection.clone().computed().watch({
+        guards.push(detail_selection.computed().watch({
             let switch_detail = Rc::clone(&switch_detail);
             move |ctx: nami::watcher::Context<Option<Id>>| {
                 switch_detail(ctx.into_value());
@@ -659,9 +657,9 @@ impl GtkComponent for NavigationSplitLayout {
         }));
 
         let apply_visibility = {
-            let primary = primary_widget.clone();
-            let content = content_host.clone();
-            let detail = detail_host.clone();
+            let primary = primary_widget;
+            let content = content_host;
+            let detail = detail_host;
             move |value: waterui_navigation::NavigationSplitColumnVisibility| {
                 let (show_primary, show_content) = match value {
                     waterui_navigation::NavigationSplitColumnVisibility::Automatic

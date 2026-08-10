@@ -8,7 +8,7 @@ struct Entry {
     object: glib::BoxedAnyObject,
 }
 
-/// A GTK list model reconciled by WaterUI's semantic collection IDs.
+/// A GTK list model reconciled by `WaterUI`'s semantic collection IDs.
 ///
 /// Existing model objects survive insertions, removals, and moves, so GTK only
 /// rebinds rows whose position or identity actually changed.

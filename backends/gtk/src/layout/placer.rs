@@ -34,6 +34,10 @@ fn resolve_size_request(widget: &Widget, axis: StretchAxis, req_w: i32, req_h: i
 /// # Panics
 ///
 /// Panics if `rects` and `children` have different lengths.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, StretchAxis)]) {
     assert_eq!(
         rects.len(),
@@ -91,6 +95,10 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
 ///
 /// This is more efficient than `place_children` when children are already
 /// in the container and only positions have changed.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 pub fn update_positions(container: &Fixed, rects: &[Rect], children: &[(Widget, StretchAxis)]) {
     assert_eq!(
         rects.len(),

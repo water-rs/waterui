@@ -42,7 +42,7 @@ impl GtkComponent for Native<ButtonConfig> {
         let env_clone = env.clone();
         button.connect_clicked(move |_| {
             let mut action = action.borrow_mut();
-            (&mut **action)(&env_clone);
+            (**action)(&env_clone);
         });
 
         for class_name in button_style_css_classes(config.style) {

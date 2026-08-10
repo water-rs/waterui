@@ -19,7 +19,7 @@ pub fn create_window(app: &Application, title: &str, width: i32, height: i32) ->
         .build()
 }
 
-/// Applies WaterUI window background styling to a GTK window.
+/// Applies `WaterUI` window background styling to a GTK window.
 pub fn apply_window_background(
     window: &ApplicationWindow,
     background: &WindowBackground,
@@ -41,7 +41,7 @@ pub fn apply_window_background(
 
             // Reactive updates
             let guard = signal.watch({
-                let css = css.clone();
+                let css = css;
                 move |ctx| {
                     let resolved = ctx.into_value();
                     let css = css.clone();

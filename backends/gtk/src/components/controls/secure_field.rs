@@ -1,4 +1,4 @@
-//! GTK4 SecureField (Password Entry) component implementation.
+//! GTK4 `SecureField` (Password Entry) component implementation.
 
 use gtk4::Widget;
 use gtk4::prelude::*;
@@ -11,7 +11,7 @@ use crate::renderer::{GtkRenderer, mark_focus_anchor};
 use crate::util::store_watcher_guard;
 
 impl GtkComponent for Native<SecureFieldConfig> {
-    /// Renders a `WaterUI` `SecureField` as a GTK4 PasswordEntry.
+    /// Renders a `WaterUI` `SecureField` as a GTK4 `PasswordEntry`.
     ///
     /// This creates a two-way binding:
     /// - Entry text changes update the `Binding<Secure>`
@@ -38,7 +38,7 @@ impl GtkComponent for Native<SecureFieldConfig> {
         entry.set_text(binding.get().expose());
 
         // Watch for binding changes -> update entry
-        let guard = binding.clone().computed().watch({
+        let guard = binding.computed().watch({
             let entry = entry.clone();
             move |ctx| {
                 let value = ctx.into_value();
