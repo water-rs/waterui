@@ -22,6 +22,10 @@ impl GtkComponent for Native<ListConfig> {
     ///
     /// Uses GTK `ListView` recycling so rows are created lazily for visible items.
     /// Each `ListItem` is rendered as a row with optional delete functionality.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
+    )]
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let config = self.into_inner();
         let contents = config.contents;

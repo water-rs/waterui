@@ -55,6 +55,10 @@ impl PixelSize {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent GL surface capability reported by the driver"
+)]
 struct GpuState {
     gpu_surface: Option<GpuSurface>,
     msaa_max_samples: NonZeroU32,
@@ -304,9 +308,8 @@ impl GlProcResolver {
         let mut glx_get_proc = None;
 
         for path in candidates {
-            let lib = match unsafe { libloading::Library::new(*path) } {
-                Ok(lib) => lib,
-                Err(_) => continue,
+            let Ok(lib) = (unsafe { libloading::Library::new(*path) }) else {
+                continue;
             };
             if egl_get_proc.is_none() {
                 // SAFETY: symbol lookup only; pointer is copied and used while process is alive.
@@ -334,9 +337,8 @@ impl GlProcResolver {
     }
 
     fn load(&self, name: &str) -> *const c_void {
-        let cname = match CString::new(name) {
-            Ok(cname) => cname,
-            Err(_) => return std::ptr::null(),
+        let Ok(cname) = CString::new(name) else {
+            return std::ptr::null();
         };
         let bytes = cname.as_bytes_with_nul();
 
@@ -382,6 +384,10 @@ fn make_gl_loader(gl_ctx: &gdk4::GLContext) -> impl FnMut(&str) -> *const c_void
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
+)]
 fn init_wgpu_if_needed(
     area: &gtk4::GLArea,
     state: &Rc<RefCell<GpuState>>,
@@ -587,6 +593,10 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     false
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
+)]
 fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     let (
         device,
@@ -717,14 +727,14 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     // `double_tap` is a one-frame pulse.
     st.gesture.double_tap = false;
     // Decay pinch state when updates stop coming.
-    if let Some(last) = st.last_pinch_update {
-        if last.elapsed() > Duration::from_millis(140) {
-            st.last_pinch_update = None;
-            st.gesture.pinch_scale = 1.0;
-            st.gesture.pinch_center = None;
-            if !st.pan_active {
-                st.gesture.active = false;
-            }
+    if let Some(last) = st.last_pinch_update
+        && last.elapsed() > Duration::from_millis(140)
+    {
+        st.last_pinch_update = None;
+        st.gesture.pinch_scale = 1.0;
+        st.gesture.pinch_center = None;
+        if !st.pan_active {
+            st.gesture.active = false;
         }
     }
     st.last_size = Some(size);
@@ -739,6 +749,10 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
 )]
 fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     let motion = gtk4::EventControllerMotion::new();

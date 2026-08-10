@@ -18,11 +18,11 @@ impl GtkComponent for Divider {
         // In a VStack, divider is horizontal; in HStack, divider is vertical
         let axis = env.get::<waterui_layout::stack::Axis>();
 
+        // A vertical stack is separated by a horizontal rule, and vice versa;
+        // with no axis in the environment we default to a horizontal rule.
         let orientation = match axis {
-            Some(waterui_layout::stack::Axis::Vertical) => gtk4::Orientation::Horizontal,
-            // Horizontal stacks, and any future axis, get a vertical rule.
+            Some(waterui_layout::stack::Axis::Vertical) | None => gtk4::Orientation::Horizontal,
             Some(_) => gtk4::Orientation::Vertical,
-            None => gtk4::Orientation::Horizontal, // Default to horizontal
         };
 
         let separator = gtk4::Separator::new(orientation);

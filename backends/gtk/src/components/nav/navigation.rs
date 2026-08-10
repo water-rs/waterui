@@ -38,16 +38,14 @@ fn clear_box_children(container: &gtk4::Box) {
 fn render_search_widget(
     renderer: &mut GtkRenderer,
     env: &Environment,
-    search: Option<&waterui_navigation::NavigationSearch>,
-) -> Option<gtk4::Widget> {
-    search.map(|search| {
-        renderer
-            .render(
-                TextField::new(&search.text).prompt(search.prompt.clone()),
-                env,
-            )
-            .upcast()
-    })
+    search: &waterui_navigation::NavigationSearch,
+) -> gtk4::Widget {
+    renderer
+        .render(
+            TextField::new(&search.text).prompt(search.prompt.clone()),
+            env,
+        )
+        .upcast()
 }
 
 struct RenderedNavigationBar {
@@ -105,7 +103,10 @@ fn render_navigation_bar(
         leading: optional_box_widget(leading),
         trailing: optional_box_widget(trailing),
         bottom: optional_box_widget(bottom),
-        search: render_search_widget(renderer, env, bar.search.as_ref()),
+        search: bar
+            .search
+            .as_ref()
+            .map(|search| render_search_widget(renderer, env, search)),
         color: bar.color,
         hidden: bar.hidden,
     }
@@ -448,10 +449,10 @@ impl GtkNavigationControllerInner {
             return;
         }
 
-        if let Some(current) = self.view_stack.pop() {
-            if let Some(child) = self.stack.child_by_name(&current.id) {
-                self.stack.remove(&child);
-            }
+        if let Some(current) = self.view_stack.pop()
+            && let Some(child) = self.stack.child_by_name(&current.id)
+        {
+            self.stack.remove(&child);
         }
 
         if let Some(previous) = self.view_stack.last() {
@@ -561,9 +562,10 @@ fn cached_split_host_switcher(
         let destination = Rc::clone(&destination);
         let widgets = Rc::clone(&widgets);
         glib::idle_add_local_once(move || {
-            let widget = if let Some(widget) = widgets.borrow().get(&selected) {
-                widget.clone()
-            } else {
+            // Resolve the cached widget before building, so the shared borrow is
+            // released before the miss path takes a mutable one.
+            let existing = widgets.borrow().get(&selected).cloned();
+            let widget = existing.unwrap_or_else(|| {
                 let view =
                     selected.map_or_else(|| placeholder.build(), |selected| destination(selected));
                 let mut renderer = GtkRenderer::new();
@@ -572,7 +574,7 @@ fn cached_split_host_switcher(
                 widget.set_vexpand(true);
                 widgets.borrow_mut().insert(selected, widget.clone());
                 widget
-            };
+            });
             clear_box_children(&host);
             host.append(&widget);
         });
@@ -583,6 +585,10 @@ impl GtkComponent for NavigationSplitLayout {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "validated logical column widths are converted to GTK coordinates"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
     )]
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let (

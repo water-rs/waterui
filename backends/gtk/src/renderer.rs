@@ -112,7 +112,7 @@ pub(crate) fn mark_focus_anchor(widget: &impl IsA<Widget>) {
     unsafe {
         widget
             .as_ref()
-            .set_data(FOCUS_ANCHOR_DATA_KEY, FocusAnchorMarker)
+            .set_data(FOCUS_ANCHOR_DATA_KEY, FocusAnchorMarker);
     }
 }
 
@@ -199,7 +199,7 @@ fn request_focus(anchor: &Widget) {
             anchor.set_data(
                 FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY,
                 FocusMapHandlerInstalled,
-            )
+            );
         };
         anchor.connect_map(|widget| {
             if unsafe { widget.steal_data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) }
@@ -255,7 +255,7 @@ impl Default for RenderContext {
 
 impl RenderContext {
     /// Creates a context with a renderer reference.
-    fn with_renderer(renderer: &mut GtkRenderer) -> Self {
+    const fn with_renderer(renderer: &mut GtkRenderer) -> Self {
         Self {
             renderer_ptr: std::ptr::from_mut::<GtkRenderer>(renderer),
         }
@@ -266,6 +266,11 @@ impl RenderContext {
     /// # Safety
     ///
     /// The caller must ensure the renderer pointer is valid.
+    #[allow(
+        clippy::mut_from_ref,
+        reason = "RenderContext is a raw-pointer handle threaded through GTK callbacks; \
+                  the caller upholds exclusivity, which the signature cannot express"
+    )]
     pub(crate) unsafe fn renderer(&self) -> &mut GtkRenderer {
         // SAFETY: Caller guarantees the renderer pointer is initialized and valid.
         unsafe { &mut *self.renderer_ptr }
@@ -399,6 +404,10 @@ fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() <= 1e-3
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
+)]
 fn clip_shape_css(shape: &ClipShape) -> ClipShapeCss {
     let commands = shape.commands();
     match commands {
@@ -550,6 +559,10 @@ fn call_boxed_action(action: &Rc<RefCell<BoxedAction<()>>>, env: &Environment) {
     clippy::cast_sign_loss,
     reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
+)]
 fn install_gesture_observer(
     widget: &Widget,
     gesture: waterui::gesture::Gesture,
@@ -585,7 +598,7 @@ fn install_gesture_observer(
         }
         Gesture::LongPress(long_press) => {
             let press = gtk4::GestureLongPress::new();
-            press.set_delay_factor(long_press.duration as f64 / 500.0);
+            press.set_delay_factor(f64::from(long_press.duration) / 500.0);
             press.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let env_for_handler = env;
             let action_for_handler = action.clone();
@@ -653,7 +666,6 @@ fn install_gesture_observer(
             {
                 let env_for_handler = env;
                 let action_for_handler = action.clone();
-                let drag_started = drag_started;
                 drag_gesture.connect_drag_end(move |gesture, offset_x, offset_y| {
                     if !*drag_started.borrow() {
                         return;
@@ -680,10 +692,10 @@ fn install_gesture_observer(
             let env_for_handler = env;
             let action_for_handler = action.clone();
             zoom.connect_scale_changed(move |gesture, scale| {
-                let center = gesture
-                    .bounding_box()
-                    .map(|bbox| GesturePoint::new(bbox.x() as f32, bbox.y() as f32))
-                    .unwrap_or(GesturePoint::new(0.0, 0.0));
+                let center = gesture.bounding_box().map_or_else(
+                    || GesturePoint::new(0.0, 0.0),
+                    |bbox| GesturePoint::new(bbox.x() as f32, bbox.y() as f32),
+                );
                 let event = MagnificationEvent {
                     phase: GesturePhase::Updated,
                     center,
@@ -717,7 +729,6 @@ fn install_gesture_observer(
                 }
             })));
             let second_action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(Box::new({
-                let armed = armed;
                 let chained_action = action.clone();
                 move |env: &Environment| {
                     if !*armed.borrow() {
@@ -754,7 +765,6 @@ fn install_gesture_observer(
                 }
             })));
             let second_action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(Box::new({
-                let consumed = consumed;
                 let shared_action = action.clone();
                 move |env: &Environment| {
                     if *consumed.borrow() {
@@ -885,6 +895,10 @@ impl GtkRenderer {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
     )]
     fn register_metadata_handlers(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
         use waterui::component::focus::Focused;
@@ -1023,7 +1037,6 @@ impl GtkRenderer {
             let motion = gtk4::EventControllerMotion::new();
             {
                 let hovered = hovered.clone();
-                let style_state = style_state;
                 let widget = widget.clone();
                 motion.connect_enter(move |_, _, _| {
                     hovered.set(true);
@@ -1034,7 +1047,6 @@ impl GtkRenderer {
                 });
             }
             {
-                let hovered = hovered;
                 let widget = widget.clone();
                 motion.connect_leave(move |_| {
                     hovered.set(false);
@@ -1350,10 +1362,10 @@ impl GtkRenderer {
                 let env = env.clone();
                 let enter = enter.clone();
                 move |_, _, _| {
-                    if let Some(handler) = &enter {
-                        if let Ok(mut handler) = handler.try_borrow_mut() {
-                            (&mut **handler)(&env);
-                        }
+                    if let Some(handler) = &enter
+                        && let Ok(mut handler) = handler.try_borrow_mut()
+                    {
+                        (**handler)(&env);
                     }
                     gdk4::DragAction::COPY
                 }
@@ -1362,10 +1374,10 @@ impl GtkRenderer {
                 let env = env.clone();
                 let exit = exit.clone();
                 move |_| {
-                    if let Some(handler) = &exit {
-                        if let Ok(mut handler) = handler.try_borrow_mut() {
-                            (&mut **handler)(&env);
-                        }
+                    if let Some(handler) = &exit
+                        && let Ok(mut handler) = handler.try_borrow_mut()
+                    {
+                        (**handler)(&env);
                     }
                 }
             });

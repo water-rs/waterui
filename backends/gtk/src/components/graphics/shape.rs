@@ -60,6 +60,11 @@ impl GtkComponent for Native<ResolvedShape> {
     }
 }
 
+/// Appends one resolved path command to the cairo context.
+///
+/// # Panics
+///
+/// Panics if a quadratic command is emitted with no current point.
 #[allow(
     clippy::cast_precision_loss,
     reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"

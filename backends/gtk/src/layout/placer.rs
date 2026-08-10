@@ -70,13 +70,13 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
         let mut already_in_container = false;
 
         // Remove from current parent if necessary
-        if let Some(parent) = widget.parent() {
-            if let Some(fixed) = parent.downcast_ref::<Fixed>() {
-                if fixed.as_ptr() != container.as_ptr() {
-                    fixed.remove(widget);
-                } else {
-                    already_in_container = true;
-                }
+        if let Some(parent) = widget.parent()
+            && let Some(fixed) = parent.downcast_ref::<Fixed>()
+        {
+            if fixed.as_ptr() == container.as_ptr() {
+                already_in_container = true;
+            } else {
+                fixed.remove(widget);
             }
         }
 
@@ -84,9 +84,9 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
         widget.set_size_request(width_request, height_request);
 
         if already_in_container {
-            container.move_(widget, rect.x() as f64, rect.y() as f64);
+            container.move_(widget, f64::from(rect.x()), f64::from(rect.y()));
         } else {
-            container.put(widget, rect.x() as f64, rect.y() as f64);
+            container.put(widget, f64::from(rect.x()), f64::from(rect.y()));
         }
     }
 }
@@ -95,6 +95,10 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
 ///
 /// This is more efficient than `place_children` when children are already
 /// in the container and only positions have changed.
+///
+/// # Panics
+///
+/// Panics if `rects` and `children` have different lengths.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
@@ -133,7 +137,7 @@ pub fn update_positions(container: &Fixed, rects: &[Rect], children: &[(Widget, 
         widget.set_size_request(width_request, height_request);
 
         // Move to new position
-        container.move_(widget, rect.x() as f64, rect.y() as f64);
+        container.move_(widget, f64::from(rect.x()), f64::from(rect.y()));
     }
 }
 
