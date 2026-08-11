@@ -44,7 +44,7 @@ use waterui_core::{
     Binding, Computed, Environment, Native, Signal, View, binding,
     env::use_env,
     layout::StretchAxis,
-    reactive::{signal::IntoComputed, watcher::BoxWatcherGuard},
+    reactive::signal::IntoComputed,
 };
 use waterui_layout::spacer;
 use waterui_layout::stack::vstack;
@@ -120,7 +120,10 @@ pub struct WebView {
     handle: AnyWebViewHandle,
     can_go_back: Binding<bool>,
     can_go_forward: Binding<bool>,
-    navigation: Option<Rc<(Computed<Url>, BoxWatcherGuard)>>,
+    /// Signal subscriptions that must outlive this view: the URL and user-agent
+    /// bindings. Erased because their value types differ; only their lifetime
+    /// matters here.
+    retained: Vec<Rc<dyn core::any::Any>>,
     /// Keeps the internal watcher that drives `can_go_back` / `can_go_forward`
     /// and the public event signal subscribed for as long as any clone lives.
     state_watcher: Rc<WatcherGuard>,
@@ -133,7 +136,7 @@ impl Clone for WebView {
             handle: self.handle.clone(),
             can_go_back: self.can_go_back.clone(),
             can_go_forward: self.can_go_forward.clone(),
-            navigation: self.navigation.clone(),
+            retained: self.retained.clone(),
             state_watcher: Rc::clone(&self.state_watcher),
         }
     }
@@ -146,7 +149,7 @@ impl fmt::Debug for WebView {
             .field("handle", &self.handle)
             .field("can_go_back", &self.can_go_back)
             .field("can_go_forward", &self.can_go_forward)
-            .field("has_reactive_navigation", &self.navigation.is_some())
+            .field("retained_subscriptions", &self.retained.len())
             .finish_non_exhaustive()
     }
 }
@@ -185,7 +188,7 @@ impl WebView {
             event,
             can_go_back,
             can_go_forward,
-            navigation: None,
+            retained: Vec::new(),
             state_watcher: Rc::new(state_watcher),
         }
     }
@@ -228,18 +231,23 @@ impl WebView {
         WebViewOpen {
             url: url.into_url_signal(),
             redirects_enabled: None,
+            user_agent: None,
+            scripts: Vec::new(),
+            handlers: Vec::new(),
+            event_watchers: Vec::new(),
         }
     }
 
-    /// Wraps the [`WebView`] together with `content` and injects a
-    /// [`WebViewProxy`] into `content`'s rendering environment so any
-    /// child handler can extract it directly.
+    /// Injects this web view's [`WebViewProxy`] into `content`'s environment.
     ///
-    /// The proxy carries the same imperative surface the [`WebView`]
-    /// already exposes (`refresh`, `go_back`, `run_javascript`, etc.), but
-    /// scoped to whatever handler asks for it via the same
-    /// `Extractor`-style parameter pattern that powers
+    /// Any handler inside `content` can then take a `WebViewProxy` parameter and
+    /// drive the web view, through the same `Extractor` machinery that powers
     /// `Button::action`.
+    ///
+    /// This returns `content` with the proxy attached and nothing else: it does
+    /// not place the web view, so the layout is yours. An earlier version wrapped
+    /// both in a `vstack`, which silently decided that controls go above the page
+    /// and made an overlay or a side panel impossible to express.
     ///
     /// # Example
     ///
@@ -247,26 +255,23 @@ impl WebView {
     /// use waterui::prelude::*;
     /// use waterui_webview::{WebView, WebViewProxy};
     ///
-    /// WebView::open("https://waterui.dev").with_proxy(|| {
+    /// let webview = controller.open();
+    /// let toolbar = webview.proxy_scope(|| {
     ///     hstack((
     ///         button("←").action(|p: WebViewProxy| p.go_back()),
     ///         button("→").action(|p: WebViewProxy| p.go_forward()),
     ///         button("⟳").action(|p: WebViewProxy| p.refresh()),
     ///     ))
-    /// })
+    /// });
+    /// vstack((toolbar, webview))   // or hstack, or zstack — your choice
     /// ```
-    pub fn with_proxy<V, F>(self, content: F) -> impl View
+    pub fn proxy_scope<V, F>(&self, content: F) -> impl View
     where
         V: View,
         F: FnOnce() -> V + 'static,
     {
         use waterui_core::env::with;
-        let proxy = WebViewProxy::new(self.handle.clone());
-        let body = content();
-        // Children render above the WebView body and have the proxy injected
-        // into their environment via `with(...)`. The WebView itself follows
-        // unchanged.
-        vstack((with(body, proxy), self))
+        with(content(), WebViewProxy::new(self.handle.clone()))
     }
 
     /// Returns a signal that emits `WebView` events.
@@ -289,10 +294,21 @@ impl WebView {
         self.handle.go_to(&url.into_url());
     }
 
+    /// Applies `user_agent` now and on every later change.
+    fn bind_user_agent(mut self, user_agent: Computed<Str>) -> Self {
+        let handle = self.handle.clone();
+        let guard = user_agent.watch(move |context| {
+            handle.set_user_agent(context.into_value().as_str());
+        });
+        self.handle.set_user_agent(user_agent.get().as_str());
+        self.retained.push(Rc::new((user_agent, guard)));
+        self
+    }
+
     fn bind_navigation(mut self, url: Computed<Url>) -> Self {
         let handle = self.handle.clone();
         let guard = subscribe_navigation(&url, move |url| handle.go_to(&url));
-        self.navigation = Some(Rc::new((url, guard)));
+        self.retained.push(Rc::new((url, guard)));
         self
     }
 
@@ -406,17 +422,23 @@ where
     guard
 }
 
+/// A handler the page can call, boxed for storage before the web view exists.
+type BoxedMessageHandler = Box<dyn Fn(&[u8]) -> Vec<u8>>;
+
 /// A deferred web view created by [`WebView::open`].
 ///
-/// The native handle is created when this view is rendered, after its
-/// [`WebViewController`] can be extracted from the live environment. Keeping
-/// the builder concrete makes configuration and [`WebViewOpen::with_proxy`]
-/// chainable without creating a web view ahead of rendering. Its URL signal is
-/// retained for the native view's lifetime and drives navigation precisely.
+/// The native handle is created when this view is rendered, once its
+/// [`WebViewController`] can be extracted from the live environment. Everything
+/// configured here is applied to that handle the moment it exists, so a web view
+/// can be fully described before a backend is anywhere in sight.
 #[must_use = "a WebViewOpen must be rendered to create its native web view"]
 pub struct WebViewOpen {
     url: Computed<Url>,
     redirects_enabled: Option<Computed<bool>>,
+    user_agent: Option<Computed<Str>>,
+    scripts: Vec<(Str, ScriptInjectionTime)>,
+    handlers: Vec<(Str, BoxedMessageHandler)>,
+    event_watchers: Vec<Box<dyn Fn(WebViewEvent)>>,
 }
 
 impl fmt::Debug for WebViewOpen {
@@ -424,6 +446,10 @@ impl fmt::Debug for WebViewOpen {
         f.debug_struct("WebViewOpen")
             .field("url", &self.url)
             .field("redirects_enabled", &self.redirects_enabled)
+            .field("user_agent", &self.user_agent)
+            .field("scripts", &self.scripts.len())
+            .field("handlers", &self.handlers.len())
+            .field("event_watchers", &self.event_watchers.len())
             .finish()
     }
 }
@@ -435,28 +461,90 @@ impl WebViewOpen {
         self
     }
 
+    /// Sets the user agent, reactively.
+    pub fn user_agent(mut self, user_agent: impl IntoComputed<Str>) -> Self {
+        self.user_agent = Some(user_agent.into_computed());
+        self
+    }
+
+    /// Injects a script that runs on every page load.
+    pub fn inject(mut self, script: impl Into<Str>, time: ScriptInjectionTime) -> Self {
+        self.scripts.push((script.into(), time));
+        self
+    }
+
+    /// Registers a handler the page can call as `waterui.invoke(name, payload)`.
+    pub fn handler(
+        mut self,
+        name: impl Into<Str>,
+        handler: impl Fn(&[u8]) -> Vec<u8> + 'static,
+    ) -> Self {
+        self.handlers.push((name.into(), Box::new(handler)));
+        self
+    }
+
+    /// Observes web view events.
+    ///
+    /// The subscription lives as long as the web view, so there is no guard to
+    /// hold. Watching the [`WebView::events`] signal by hand means retaining a
+    /// guard, and forgetting to made the events silently stop arriving.
+    pub fn on_event(mut self, watcher: impl Fn(WebViewEvent) + 'static) -> Self {
+        self.event_watchers.push(Box::new(watcher));
+        self
+    }
+
     /// Injects a proxy for the same deferred web view into `content`.
     ///
     /// The content and web view are created together at render time, so every
     /// extracted [`WebViewProxy`] targets the handle displayed by this view.
+    ///
+    /// The web view is placed below `content`. When you need any other
+    /// arrangement, open the web view yourself and use
+    /// [`WebView::proxy_scope`], which attaches the proxy without placing
+    /// anything.
     pub fn with_proxy<V, F>(self, content: F) -> impl View
     where
         V: View,
         F: FnOnce() -> V + 'static,
     {
-        use_env(move |controller: WebViewController| self.create(&controller).with_proxy(content))
+        use waterui_core::env::with;
+        use_env(move |controller: WebViewController| {
+            let webview = self.create(&controller);
+            let scoped = with(content(), WebViewProxy::new(webview.handle().clone()));
+            vstack((scoped, webview))
+        })
     }
 
     fn create(self, controller: &WebViewController) -> WebView {
         let Self {
             url,
             redirects_enabled,
+            user_agent,
+            scripts,
+            handlers,
+            event_watchers,
         } = self;
         let webview = controller.open();
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
         }
-        webview.bind_navigation(url)
+        for (script, time) in scripts {
+            webview.inject_script(script.as_str(), time);
+        }
+        for (name, handler) in handlers {
+            webview.handle().add_handler(name.as_str(), handler);
+        }
+        for watcher in event_watchers {
+            // The web view owns these for its whole life, which is exactly the
+            // case `WatcherGuard::forget` documents.
+            webview.handle().watch(watcher).forget();
+        }
+        let webview = webview.bind_navigation(url);
+        if let Some(user_agent) = user_agent {
+            webview.bind_user_agent(user_agent)
+        } else {
+            webview
+        }
     }
 }
 
