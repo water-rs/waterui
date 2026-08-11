@@ -41,12 +41,13 @@ pub use watcher::{WatcherGuard, WatcherSet};
 pub mod bridge;
 mod script;
 pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
+mod message;
+pub use message::{Bytes, HandlerName, IntoJsReply, Json};
 mod state;
 pub use state::{FieldEntry, JsField, StateWriteError};
 
 use waterui_core::{
     Binding, Computed, Environment, Native, Signal, View, binding,
-    env::use_env,
     layout::StretchAxis,
     reactive::signal::IntoComputed,
 };
@@ -490,7 +491,9 @@ where
 }
 
 /// A handler the page can call, boxed for storage before the web view exists.
-type BoxedMessageHandler = Box<dyn Fn(&[u8]) -> Vec<u8>>;
+/// A handler recorded before the web view exists. Built once the rendering
+/// environment is known, so its extractors resolve against the right scope.
+type BoxedMessageHandler = Box<dyn FnOnce(Environment) -> Box<ScriptMessageHandler>>;
 
 /// A deferred web view created by [`WebView::open`].
 ///
@@ -543,12 +546,32 @@ impl WebViewOpen {
     }
 
     /// Registers a handler the page can call as `waterui.invoke(name, payload)`.
-    pub fn handler(
-        mut self,
-        name: impl Into<Str>,
-        handler: impl Fn(&[u8]) -> Vec<u8> + 'static,
-    ) -> Self {
-        self.handlers.push((name.into(), Box::new(handler)));
+    ///
+    /// # Panics
+    ///
+    /// Panics when rendered without a [`WebViewController`] in the environment.
+    ///
+    /// The closure is written the way `Button::action` is: take the extractors you
+    /// need — [`Json<T>`], [`Bytes`], [`HandlerName`], `State<T>`,
+    /// [`WebViewProxy`] — and return anything that is [`IntoJsReply`]. It may be
+    /// `async`, and returning `Err` rejects the page's promise instead of
+    /// resolving it with a failure encoded as success.
+    ///
+    /// ```ignore
+    /// .handler("greet", |Json(req): Json<Greet>| async move {
+    ///     Json(Greeting { text: format!("Hi {}", req.name) })
+    /// })
+    /// ```
+    pub fn handler<F, Args, Fut, Reply>(mut self, name: impl Into<Str>, handler: F) -> Self
+    where
+        F: waterui_core::handler::Handler<Args, Fut> + 'static,
+        Fut: core::future::Future<Output = Reply> + 'static,
+        Reply: message::IntoJsReply + 'static,
+    {
+        let name = name.into();
+        self.handlers.push((name.clone(), Box::new(move |env| {
+            message::boxed_handler(env, name, handler)
+        })));
         self
     }
 
@@ -587,20 +610,28 @@ impl WebViewOpen {
     /// arrangement, open the web view yourself and use
     /// [`WebView::proxy_scope`], which attaches the proxy without placing
     /// anything.
+    ///
+    /// # Panics
+    ///
+    /// Panics when rendered without a [`WebViewController`] in the environment.
     pub fn with_proxy<V, F>(self, content: F) -> impl View
     where
         V: View,
         F: FnOnce() -> V + 'static,
     {
         use waterui_core::env::with;
-        use_env(move |controller: WebViewController| {
-            let webview = self.create(&controller);
+        waterui_core::env::UseEnv::new(move |env: &Environment| {
+            let controller = env
+                .get::<WebViewController>()
+                .cloned()
+                .expect("a WebView needs a WebViewController in its environment");
+            let webview = self.create(&controller, env);
             let scoped = with(content(), WebViewProxy::new(webview.handle().clone()));
             vstack((scoped, webview))
         })
     }
 
-    fn create(self, controller: &WebViewController) -> WebView {
+    fn create(self, controller: &WebViewController, environment: &Environment) -> WebView {
         let Self {
             url,
             redirects_enabled,
@@ -617,8 +648,10 @@ impl WebViewOpen {
         for (script, time) in scripts {
             webview.inject_script(script.as_str(), time);
         }
-        for (name, handler) in handlers {
-            webview.handle().add_handler(name.as_str(), handler);
+        for (name, build) in handlers {
+            webview
+                .handle()
+                .add_handler(name.as_str(), build(environment.clone()));
         }
         for watcher in event_watchers {
             // The web view owns these for its whole life, which is exactly the
@@ -639,7 +672,13 @@ impl WebViewOpen {
 
 impl View for WebViewOpen {
     fn body(self, _env: &Environment) -> impl View {
-        use_env(move |controller: WebViewController| self.create(&controller))
+        waterui_core::env::UseEnv::new(move |env: &Environment| {
+            let controller = env
+                .get::<WebViewController>()
+                .cloned()
+                .expect("a WebView needs a WebViewController in its environment");
+            self.create(&controller, env)
+        })
     }
 
     fn stretch_axis(&self) -> StretchAxis {

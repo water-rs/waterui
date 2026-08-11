@@ -348,7 +348,7 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>) {
                         tracing::warn!(%error, "page wrote a WaterUI state value that was refused");
                     }
                 }
-                Vec::new()
+                Box::pin(core::future::ready(Ok(Vec::new())))
             }
         }),
     );

@@ -53,7 +53,7 @@ const TRANSPORT_SCRIPT: &str = concat!(
     "};"
 );
 
-type JavaScriptHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
+type JavaScriptHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
 #[derive(Clone)]
 struct InjectedScript {
@@ -291,28 +291,48 @@ define_class!(
                 .borrow()
                 .get(&request.name)
                 .map(Rc::clone);
-            let reply = if let Some(handler) = handler {
-                bridge::Reply::Bytes(handler(&request.payload))
-            } else {
+            let Some(handler) = handler else {
                 tracing::warn!(
                     handler = %request.name,
                     "page script called a WaterUI handler that is not registered"
                 );
-                bridge::Reply::failure(&format!(
+                let reply = bridge::Reply::failure(&format!(
                     "no WaterUI handler named `{}`",
                     request.name
-                ))
+                ));
+                // SAFETY: WebKit sets the source web view on every script
+                // message it delivers.
+                let web_view = unsafe { message.webView() }
+                    .expect("a bridge message must have a source web view");
+                let script = NSString::from_str(&reply.resolve_script(request.id));
+                // SAFETY: main-thread message send to a retained object; see the
+                // module safety note.
+                unsafe {
+                    web_view.evaluateJavaScript_completionHandler(&script, None);
+                }
+                return;
             };
-            let script = NSString::from_str(&reply.resolve_script(request.id));
+
+            // Handlers are asynchronous, so the promise settles when the future
+            // completes rather than when this callback returns.
+            let future = handler(&request.payload);
             // SAFETY: WebKit sets the source web view on every script message it
-            // delivers.
+            // delivers, and it is retained for the spawned task.
             let web_view = unsafe { message.webView() }
-                .expect("Hydrolysis WKWebView bridge message must have a source web view");
-            // SAFETY: main-thread message send to an object this wrapper retains;
-            // see the module safety note.
-            unsafe {
-                web_view.evaluateJavaScript_completionHandler(&script, None);
-            }
+                .expect("a bridge message must have a source web view");
+            executor_core::spawn_local(async move {
+                let reply = match future.await {
+                    Ok(bytes) => bridge::Reply::Bytes(bytes),
+                    Err(message) => bridge::Reply::Failure(message),
+                };
+                let script = NSString::from_str(&reply.resolve_script(request.id));
+                // SAFETY: main-thread message send to a retained object; see the
+                // module safety note.
+                unsafe {
+                    web_view.evaluateJavaScript_completionHandler(&script, None);
+                }
+            })
+            .detach();
         }
     }
 );
@@ -548,7 +568,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         self.rebuild_user_scripts();
     }
 
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         assert!(
             !name.is_empty(),
             "Hydrolysis WKWebView handler name must not be empty"

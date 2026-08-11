@@ -11,6 +11,7 @@
 //! runtime's `GMainContext`, so these calls carry no thread affinity of their own.
 
 use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr::NonNull;
@@ -34,7 +35,7 @@ const EVENT_LOAD_FAILED: u32 = 5;
 const EVENT_TLS_FAILED: u32 = 6;
 const EVENT_HISTORY_CHANGED: u32 = 7;
 
-type MessageHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
+type MessageHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
 struct PageState {
     api: std::sync::Arc<RuntimeApi>,
@@ -53,6 +54,9 @@ impl PageState {
 
 struct ClientContext {
     state: Weak<PageState>,
+    /// The page this context belongs to, so an asynchronous handler can settle
+    /// the page's promise after the transport has already returned.
+    page: Cell<Option<NonNull<WaterWpePage>>>,
 }
 
 struct PageInner {
@@ -112,9 +116,12 @@ impl WpePage {
             frame_waker: RefCell::new(None),
             size: Cell::new((1, 1, 1.0)),
         });
+        // The page pointer is filled in below, once `page_new` has returned it.
         let context = Box::new(ClientContext {
             state: Rc::downgrade(&state),
+            page: Cell::new(None),
         });
+        let context_ptr = Box::into_raw(context);
         let mut error = std::ptr::null_mut::<c_char>();
         // SAFETY: bridge ABI call on the page this type owns; see the module safety
         // note.
@@ -124,7 +131,7 @@ impl WpePage {
                 event_callback,
                 frame_callback,
                 message_callback,
-                Box::into_raw(context).cast(),
+                context_ptr.cast(),
                 destroy_client_context,
                 &raw mut error,
             )
@@ -137,6 +144,13 @@ impl WpePage {
             error.is_null(),
             "WPE page creation succeeded while also returning an error"
         );
+        // The client context now knows its page, so an asynchronous handler can
+        // settle the page's promise after the transport has returned.
+        // SAFETY: `page_new` kept the context pointer and has not freed it; this
+        // is the only write, before any callback can run.
+        unsafe {
+            (*context_ptr).page.set(Some(raw));
+        }
         Self {
             inner: Rc::new(PageInner {
                 runtime,
@@ -403,7 +417,7 @@ impl WpePage {
     ///
     /// Panics when `name` is empty, contains an interior NUL byte, or is
     /// already registered.
-    pub fn add_handler(&self, name: &str, handler: impl Fn(&[u8]) -> Vec<u8> + 'static) {
+    pub fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         assert!(!name.is_empty(), "WPE handler name must not be empty");
         // One transport serves every handler name, so registration is bookkeeping
         // only. Re-registering replaces, matching every other backend.
@@ -411,7 +425,7 @@ impl WpePage {
             .state
             .handlers
             .borrow_mut()
-            .insert(name.to_owned(), Rc::new(handler));
+            .insert(name.to_owned(), Rc::from(handler));
     }
 
     /// Removes a JavaScript message handler.
@@ -615,16 +629,39 @@ unsafe extern "C" fn message_callback(
             // Release the borrow before invoking: a handler may register or remove
             // handlers on the same page.
             let handler = state.handlers.borrow().get(&request.name).map(Rc::clone);
-            let reply = if let Some(handler) = handler {
-                bridge::Reply::Bytes(handler(&request.payload))
-            } else {
+            let Some(handler) = handler else {
                 tracing::warn!(
                     handler = %request.name,
                     "page script called a WaterUI handler that is not registered"
                 );
-                bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                let reply =
+                    bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
+                return respond(reply.resolve_script(request.id));
             };
-            reply.resolve_script(request.id)
+
+            // Handlers are asynchronous, so nothing is returned now; the promise
+            // settles when the future completes.
+            let future = handler(&request.payload);
+            let api = Arc::clone(&state.api);
+            let page = context.page.get();
+            executor_core::spawn_local(async move {
+                let reply = match future.await {
+                    Ok(bytes) => bridge::Reply::Bytes(bytes),
+                    Err(message) => bridge::Reply::Failure(message),
+                };
+                let Some(page) = page else {
+                    return;
+                };
+                let script = CString::new(reply.resolve_script(request.id))
+                    .expect("a reply script never contains NUL");
+                // SAFETY: the page outlives its client context, which owns this
+                // pointer; see the module safety note.
+                unsafe {
+                    (api.api.page_evaluate)(page.as_ptr(), script.as_ptr());
+                }
+            })
+            .detach();
+            String::new()
         }
         Err(error) => {
             tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
@@ -633,6 +670,11 @@ unsafe extern "C" fn message_callback(
         }
     };
 
+    respond(script)
+}
+
+/// Hands one script back across the C ABI, transferring ownership of its buffer.
+fn respond(script: String) -> WaterWpeBytes {
     let mut response = Box::new(ResponseBytes {
         bytes: script.into_bytes(),
     });
