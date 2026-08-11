@@ -20,7 +20,8 @@ fn main() {
         .expand
         .crates
         .retain(|crate_name| crate_name == "waterui-ffi");
-    config.parse.expand.features = Some(vec![String::from("cef-header")]);
+    // `header` aggregates every optional C surface; see `ffi/Cargo.toml`.
+    config.parse.expand.features = Some(vec![String::from("header")]);
     let bindings = Builder::new()
         .with_crate(&crate_dir)
         .with_config(config)

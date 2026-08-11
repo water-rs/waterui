@@ -24,7 +24,9 @@ pub mod typography;
 mod visual;
 
 pub use controls::{button, form, progress};
+#[cfg(feature = "map")]
 pub use data::map;
+#[cfg(feature = "map")]
 pub use data::map::{WuiAnnotation, WuiCoordinate, WuiRegion};
 #[cfg(feature = "c-api")]
 pub use layouting::table;
