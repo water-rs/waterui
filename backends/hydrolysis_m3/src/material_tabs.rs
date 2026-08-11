@@ -2,21 +2,20 @@
 
 use core::fmt::{self, Debug};
 
-use waterui::id::Id;
 use waterui::navigation::NavigationView;
 use waterui::navigation::tab::{Tab as WaterTab, TabsLayout as WaterTabsLayout, tab_style};
 use waterui::{Binding, Environment, View};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 
-/// A Material Design 3 tab item.
-pub struct MaterialTab {
-    id: Id,
+/// A Material Design 3 tab item, named by the application's own tab type.
+pub struct MaterialTab<T> {
+    id: T,
     label: Label,
     content: AnyViewBuilder<NavigationView>,
 }
 
-impl Debug for MaterialTab {
+impl<T: Debug> Debug for MaterialTab<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MaterialTab")
             .field("id", &self.id)
@@ -25,11 +24,11 @@ impl Debug for MaterialTab {
     }
 }
 
-impl MaterialTab {
+impl<T> MaterialTab<T> {
     /// Creates a Material tab with a stable id, semantic label, and content.
     #[must_use]
     pub fn new(
-        id: Id,
+        id: T,
         label: impl IntoLabel,
         content: impl ViewBuilder<Output = NavigationView>,
     ) -> Self {
@@ -42,12 +41,12 @@ impl MaterialTab {
 }
 
 /// A Material Design 3 primary tabs container.
-pub struct MaterialTabs {
-    selection: Binding<Id>,
-    tabs: Vec<MaterialTab>,
+pub struct MaterialTabs<T: 'static> {
+    selection: Binding<T>,
+    tabs: Vec<MaterialTab<T>>,
 }
 
-impl Debug for MaterialTabs {
+impl<T: Debug + 'static> Debug for MaterialTabs<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MaterialTabs")
             .field("tabs", &self.tabs)
@@ -55,10 +54,10 @@ impl Debug for MaterialTabs {
     }
 }
 
-impl MaterialTabs {
+impl<T: Ord + Clone + 'static> MaterialTabs<T> {
     /// Creates an adaptive Material tabs container.
     #[must_use]
-    pub fn new(selection: &Binding<Id>, tabs: Vec<MaterialTab>) -> Self {
+    pub fn new(selection: &Binding<T>, tabs: Vec<MaterialTab<T>>) -> Self {
         Self {
             selection: selection.clone(),
             tabs,
@@ -66,7 +65,7 @@ impl MaterialTabs {
     }
 }
 
-impl View for MaterialTabs {
+impl<T: Ord + Clone + 'static> View for MaterialTabs<T> {
     fn body(self, _env: &Environment) -> impl View {
         let selection = self.selection;
         let tabs = self
@@ -83,17 +82,20 @@ impl View for MaterialTabs {
 
 /// Creates a Material Design 3 primary tabs container.
 #[must_use]
-pub fn material_tabs(selection: &Binding<Id>, tabs: Vec<MaterialTab>) -> MaterialTabs {
+pub fn material_tabs<T: Ord + Clone + 'static>(
+    selection: &Binding<T>,
+    tabs: Vec<MaterialTab<T>>,
+) -> MaterialTabs<T> {
     MaterialTabs::new(selection, tabs)
 }
 
 /// Creates a Material Design 3 tab.
 #[must_use]
-pub fn material_tab(
-    id: Id,
+pub fn material_tab<T>(
+    id: T,
     label: impl IntoLabel,
     content: impl ViewBuilder<Output = NavigationView>,
-) -> MaterialTab {
+) -> MaterialTab<T> {
     MaterialTab::new(id, label, content)
 }
 
