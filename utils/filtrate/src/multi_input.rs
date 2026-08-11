@@ -280,7 +280,89 @@ struct MultiInputRuntime {
     uploaded_aux_images: [Option<UploadedAuxImage>; MAX_AUX_IMAGES],
     fallback_aux: Option<UploadedAuxImage>,
     cached_bind_group: Option<CachedBindGroup>,
-    setup_error: Option<&'static str>,
+    setup_error: Option<crate::EffectSetupError>,
+}
+
+impl MultiInputRuntime {
+    /// Uploads the uniform if it changed and (re)creates the cached bind
+    /// group when the input view rotated. Fails fast when any resource that
+    /// setup should have produced is missing.
+    fn ensure_bind_group(
+        &mut self,
+        input: &EffectInput,
+        uniform: MultiInputUniform,
+    ) -> Result<(), crate::EffectRenderError> {
+        let Some(bind_group_layout) = self.bind_group_layout.as_ref() else {
+            return Err(crate::EffectRenderError::MissingResource(
+                "multi-input filter bind group layout missing after setup",
+            ));
+        };
+        let Some(sampler) = self.sampler.as_ref() else {
+            return Err(crate::EffectRenderError::MissingResource(
+                "multi-input filter sampler missing after setup",
+            ));
+        };
+        let Some(uniform_buffer) = self.uniform_buffer.as_ref() else {
+            return Err(crate::EffectRenderError::MissingResource(
+                "multi-input filter uniform buffer missing after setup",
+            ));
+        };
+        let Some(fallback_aux) = self.fallback_aux.as_ref() else {
+            return Err(crate::EffectRenderError::MissingResource(
+                "multi-input filter fallback auxiliary texture missing after setup",
+            ));
+        };
+
+        if self.last_uniform != Some(uniform) {
+            input
+                .queue
+                .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+            self.last_uniform = Some(uniform);
+        }
+
+        if self
+            .cached_bind_group
+            .as_ref()
+            .is_none_or(|cached| cached.input_view != input.view)
+        {
+            let aux_views: [&wgpu::TextureView; MAX_AUX_IMAGES] = core::array::from_fn(|slot| {
+                self.uploaded_aux_images[slot]
+                    .as_ref()
+                    .map_or(&fallback_aux.view, |value| &value.view)
+            });
+            let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("multi-input filter bind group"),
+                layout: bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&input.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(aux_views[0]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(aux_views[1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            self.cached_bind_group = Some(CachedBindGroup {
+                input_view: input.view.clone(),
+                bind_group,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Generic GPU filter wrapper for operations that need multiple input textures.
@@ -305,9 +387,9 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
         }
     }
 
-    fn set_setup_error(&mut self, err: &'static str) {
+    fn set_setup_error(&mut self, err: &crate::EffectSetupError) {
         if self.runtime.setup_error.is_none() {
-            self.runtime.setup_error = Some(err);
+            self.runtime.setup_error = Some(err.clone());
             tracing::error!("[Filter] multi-input setup failed fast: {err}");
         }
     }
@@ -505,8 +587,10 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
 impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
     fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = crate::EffectSetupResult> {
         if O::AUX_IMAGE_COUNT > MAX_AUX_IMAGES {
-            let err = "multi-input filter declared too many auxiliary images";
-            self.set_setup_error(err);
+            let err = crate::EffectSetupError::Other(
+                "multi-input filter declared too many auxiliary images",
+            );
+            self.set_setup_error(&err);
             return core::future::ready(Err(err));
         }
 
@@ -547,81 +631,23 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
         output: &EffectOutput,
         encoder: &mut wgpu::CommandEncoder,
     ) -> crate::EffectRenderResult {
-        if let Some(err) = self.runtime.setup_error {
-            return Err(err);
+        if let Some(err) = &self.runtime.setup_error {
+            return Err(crate::EffectRenderError::SetupFailed(err.clone()));
         }
-
-        let Some(pipeline) = self.runtime.pipeline.as_ref() else {
-            return Err("multi-input filter pipeline missing after setup");
-        };
-        let Some(bind_group_layout) = self.runtime.bind_group_layout.as_ref() else {
-            return Err("multi-input filter bind group layout missing after setup");
-        };
-        let Some(sampler) = self.runtime.sampler.as_ref() else {
-            return Err("multi-input filter sampler missing after setup");
-        };
-        let Some(uniform_buffer) = self.runtime.uniform_buffer.as_ref() else {
-            return Err("multi-input filter uniform buffer missing after setup");
-        };
-        let Some(fallback_aux) = self.runtime.fallback_aux.as_ref() else {
-            return Err("multi-input filter fallback auxiliary texture missing after setup");
-        };
 
         let mut params = [0.0f32; MAX_PARAMS];
         self.operation.write_params(&mut params);
         let uniform = Self::encode_uniform(O::MODE_ID, output.width, output.height, params);
-        if self.runtime.last_uniform != Some(uniform) {
-            input
-                .queue
-                .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
-            self.runtime.last_uniform = Some(uniform);
-        }
-
-        let aux_views: [&wgpu::TextureView; MAX_AUX_IMAGES] = core::array::from_fn(|slot| {
-            self.runtime.uploaded_aux_images[slot]
-                .as_ref()
-                .map_or(&fallback_aux.view, |value| &value.view)
-        });
-
-        if self
-            .runtime
-            .cached_bind_group
-            .as_ref()
-            .is_none_or(|cached| cached.input_view != input.view)
-        {
-            let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("multi-input filter bind group"),
-                layout: bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&input.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(aux_views[0]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(aux_views[1]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                ],
-            });
-            self.runtime.cached_bind_group = Some(CachedBindGroup {
-                input_view: input.view.clone(),
-                bind_group,
-            });
-        }
+        self.runtime.ensure_bind_group(input, uniform)?;
+        let Some(pipeline) = self.runtime.pipeline.as_ref() else {
+            return Err(crate::EffectRenderError::MissingResource(
+                "multi-input filter pipeline missing after setup",
+            ));
+        };
         let Some(cached) = self.runtime.cached_bind_group.as_ref() else {
-            return Err("multi-input filter bind group missing after creation");
+            return Err(crate::EffectRenderError::MissingResource(
+                "multi-input filter bind group missing after creation",
+            ));
         };
         let bind_group = &cached.bind_group;
 

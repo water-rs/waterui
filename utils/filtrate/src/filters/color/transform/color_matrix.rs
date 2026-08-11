@@ -4,7 +4,7 @@ use crate::Filter;
 
 /// Applies a 3x4 color matrix to RGB channels.
 #[derive(Debug, Clone, Filter)]
-#[filter(color_only, fragment = "color/transform/color_matrix.wgsl")]
+#[filter(color_only, shader = "color/transform/color_matrix.wgsl")]
 pub struct ColorMatrix<T>(pub [T; 12]);
 
 #[cfg(test)]

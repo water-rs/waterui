@@ -1,25 +1,12 @@
-// Bloom vertical accumulator and apply pass.
-
-struct Uniforms {
-    output_dimensions: vec2<f32>,
-    input_dimensions: vec2<f32>,
-    params: array<vec4<f32>, 16>,
-}
-
-@group(0) @binding(0) var input_texture: texture_2d<f32>;
-@group(0) @binding(1) var output_texture: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;
-@group(0) @binding(2) var<uniform> uniforms: Uniforms;
-@group(0) @binding(3) var original_texture: texture_2d<f32>;
-
-fn param(index: u32) -> f32 {
-    let v = uniforms.params[index / 4u];
-    switch index % 4u {
-        case 0u: { return v.x; }
-        case 1u: { return v.y; }
-        case 2u: { return v.z; }
-        default: { return v.w; }
-    }
-}
+// Bloom, second (vertical) pass: finishes the separable box blur of the
+// highlight energy and composites it additively onto the original.
+//
+// The original texture is the input of this filter's FIRST stage (bound by
+// the runtime), read through map_to_original so mismatched sizes stay
+// correct. Additive glow with unchanged alpha is valid premultiplied
+// compositing.
+//
+// Parameters: radius (param 0), intensity (param 1).
 
 @compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -27,26 +14,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= dims.x || gid.y >= dims.y {
         return;
     }
-
-    let input_dims = vec2<i32>(vec2<u32>(uniforms.input_dimensions));
     let coord = vec2<i32>(gid.xy);
     let radius = max(i32(round(param(0u))), 1);
     let intensity = max(param(1u), 0.0);
 
-    var sum = vec4<f32>(0.0);
-    var count = 0.0;
+    var sum = vec3<f32>(0.0);
     for (var y = -radius; y <= radius; y++) {
-        let sample_coord = clamp(
-            coord + vec2<i32>(0, y),
-            vec2<i32>(0),
-            input_dims - vec2<i32>(1),
-        );
-        sum += textureLoad(input_texture, sample_coord, 0);
-        count += 1.0;
+        sum += load_input(coord + vec2<i32>(0, y)).rgb;
     }
+    let bloom = sum / f32(2 * radius + 1);
 
-    let weighted = sum / count;
-    let bloom = weighted.rgb / max(weighted.a, 0.0001);
-    let base = textureLoad(original_texture, coord, 0);
+    let base = load_original(map_to_original(gid.xy));
     textureStore(output_texture, coord, vec4<f32>(base.rgb + bloom * intensity, base.a));
 }

@@ -8,16 +8,22 @@
 //!
 //! # Attributes
 //!
-//! `#[filter(...)]` accepts one of two top-level shapes:
+//! `#[filter(...)]` takes exactly one kind marker and one shader path:
 //!
-//! - `color_only, fragment = "<path>"` — emits a single color-only fragment
+//! - `color_only, shader = "<path>"` — emits a single color-only fragment
 //!   pass. The path is resolved relative to the consumer crate's
 //!   `src/shaders/` directory.
 //! - `spatial, shader = "<path>"` — emits a single spatial compute pass.
 //!
-//! Field shapes supported: tuple structs with each field typed `T` or
-//! `[T; N]`, where `T` is the generic parameter that must satisfy
-//! `FilterParam`. Multiple tuple fields are flattened in declared order.
+//! Repeating a marker, combining `color_only` with `spatial`, or repeating
+//! `shader` is a compile error.
+//!
+//! # Field shapes
+//!
+//! Tuple structs and named-field structs are both supported. Each field is
+//! typed `T` or `[T; N]`, where `T` is a generic parameter bound to
+//! `FilterParam` (or a concrete type implementing it). Fields flatten into
+//! the parameter array in declaration order.
 //!
 //! # Example
 //!
@@ -26,8 +32,17 @@
 //! use filtrate_derive::Filter;
 //!
 //! #[derive(Filter)]
-//! #[filter(color_only, fragment = "color/brightness.wgsl")]
+//! #[filter(color_only, shader = "color/brightness.wgsl")]
 //! pub struct Brightness<T>(pub T);
+//!
+//! #[derive(Filter)]
+//! #[filter(spatial, shader = "distortion/twirl_distortion.wgsl")]
+//! pub struct TwirlDistortion<T> {
+//!     pub center_x: T,
+//!     pub center_y: T,
+//!     pub radius: T,
+//!     pub angle: T,
+//! }
 //! ```
 
 extern crate proc_macro;
@@ -36,8 +51,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    Attribute, Data, DataStruct, DeriveInput, Expr, ExprLit, Fields, FieldsUnnamed, Ident, Lit,
-    Token, Type, TypeArray, TypePath, parse_macro_input, parse_quote, punctuated::Punctuated,
+    Attribute, Data, DataStruct, DeriveInput, Expr, ExprLit, GenericParam, Ident, Lit, Member,
+    Type, TypeArray, TypePath, parse_macro_input, parse_quote,
 };
 
 /// Generate a `filtrate_core::Filter` implementation for the annotated
@@ -51,7 +66,7 @@ pub fn derive_filter(input: TokenStream) -> TokenStream {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FilterKind {
     ColorOnly,
     Spatial,
@@ -64,31 +79,33 @@ struct FilterAttrs {
 }
 
 fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    let attrs = parse_filter_attr(&input.attrs)?;
-    let fields = match &input.data {
-        Data::Struct(DataStruct {
-            fields: Fields::Unnamed(FieldsUnnamed { unnamed, .. }),
-            ..
-        }) => unnamed,
-        Data::Struct(DataStruct {
-            fields: Fields::Unit,
-            ..
-        }) => &Punctuated::new(),
+    let attrs = parse_filter_attr(input)?;
+    let fields: Vec<&syn::Field> = match &input.data {
+        Data::Struct(DataStruct { fields, .. }) => fields.iter().collect(),
         _ => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
-                "Filter derive requires a tuple struct (named-field structs and enums are not supported)",
+                "Filter derive requires a struct (enums and unions are not supported)",
             ));
         }
     };
 
-    let layout = analyze_fields(fields)?;
+    let generic_type_params: Vec<Ident> = input
+        .generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            GenericParam::Type(ty) => Some(ty.ident.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let layout = analyze_fields(&fields, &generic_type_params)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    // Collect generic params used as field elements that need a FilterParam bound.
-    let extra_bounds = layout.element_idents.iter().collect::<Vec<_>>();
-    let extra_where: Vec<TokenStream2> = extra_bounds
+    let extra_where: Vec<TokenStream2> = layout
+        .bound_idents
         .iter()
         .map(|ident| quote! { #ident: ::filtrate_core::FilterParam })
         .collect();
@@ -107,13 +124,6 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let params_array = layout.build_params_array_tokens();
     let visit_calls = layout.build_visit_signals_tokens();
 
-    let color_only = matches!(attrs.kind, FilterKind::ColorOnly);
-    let stage_call = if color_only {
-        quote! { collector.color_fragment(self.fragments(), #total_params); }
-    } else {
-        quote! { collector.spatial_shader(self.fragments(), #total_params); }
-    };
-
     let shader_path = attrs.shader_path;
     let shader_include = quote! {
         ::core::include_str!(::core::concat!(
@@ -123,20 +133,21 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         ))
     };
 
+    let color_only = attrs.kind == FilterKind::ColorOnly;
+    let stage_call = if color_only {
+        quote! { collector.color_fragment(#shader_include, #total_params); }
+    } else {
+        quote! { collector.spatial_shader(#shader_include, #total_params); }
+    };
+
     Ok(quote! {
         impl #impl_generics ::filtrate_core::Filter for #ident #ty_generics #where_clause {
             const COLOR_ONLY: bool = #color_only;
             type Params = [f32; #total_params];
-            type Fragments = &'static str;
 
             #[inline]
             fn params(&self) -> [f32; #total_params] {
                 #params_array
-            }
-
-            #[inline]
-            fn fragments(&self) -> &'static str {
-                #shader_include
             }
 
             fn collect_stages<__C: ::filtrate_core::StageCollector>(&self, collector: &mut __C) {
@@ -150,28 +161,44 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-fn parse_filter_attr(attrs: &[Attribute]) -> syn::Result<FilterAttrs> {
-    let attr = attrs
-        .iter()
-        .find(|a| a.path().is_ident("filter"))
-        .ok_or_else(|| {
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Filter derive requires a `#[filter(...)]` attribute",
-            )
-        })?;
+fn parse_filter_attr(input: &DeriveInput) -> syn::Result<FilterAttrs> {
+    let mut filter_attrs = input.attrs.iter().filter(|a| a.path().is_ident("filter"));
+    let attr: &Attribute = filter_attrs.next().ok_or_else(|| {
+        syn::Error::new_spanned(
+            &input.ident,
+            "Filter derive requires a `#[filter(...)]` attribute",
+        )
+    })?;
+    if let Some(duplicate) = filter_attrs.next() {
+        return Err(syn::Error::new_spanned(
+            duplicate,
+            "duplicate #[filter(...)] attribute; declare kind and shader in one attribute",
+        ));
+    }
 
     let mut kind: Option<FilterKind> = None;
     let mut shader_path: Option<String> = None;
 
     attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("color_only") {
-            kind = Some(FilterKind::ColorOnly);
+        if meta.path.is_ident("color_only") || meta.path.is_ident("spatial") {
+            let parsed = if meta.path.is_ident("color_only") {
+                FilterKind::ColorOnly
+            } else {
+                FilterKind::Spatial
+            };
+            if let Some(existing) = kind {
+                return Err(meta.error(if existing == parsed {
+                    "duplicate filter kind marker"
+                } else {
+                    "conflicting filter kind markers; declare exactly one of `color_only` or `spatial`"
+                }));
+            }
+            kind = Some(parsed);
             Ok(())
-        } else if meta.path.is_ident("spatial") {
-            kind = Some(FilterKind::Spatial);
-            Ok(())
-        } else if meta.path.is_ident("fragment") || meta.path.is_ident("shader") {
+        } else if meta.path.is_ident("shader") {
+            if shader_path.is_some() {
+                return Err(meta.error("duplicate `shader` argument"));
+            }
             let value: Expr = meta.value()?.parse()?;
             let lit = match value {
                 Expr::Lit(ExprLit {
@@ -185,7 +212,7 @@ fn parse_filter_attr(attrs: &[Attribute]) -> syn::Result<FilterAttrs> {
             Ok(())
         } else {
             Err(meta.error(
-                "unknown #[filter(...)] argument; expected `color_only`, `spatial`, `fragment`, or `shader`",
+                "unknown #[filter(...)] argument; expected `color_only`, `spatial`, or `shader`",
             ))
         }
     })?;
@@ -196,73 +223,76 @@ fn parse_filter_attr(attrs: &[Attribute]) -> syn::Result<FilterAttrs> {
             "missing #[filter(color_only)] or #[filter(spatial)] marker",
         )
     })?;
-    let shader_path = shader_path.ok_or_else(|| {
-        syn::Error::new_spanned(
-            attr,
-            "missing #[filter(fragment = \"...\")] or #[filter(shader = \"...\")] path",
-        )
-    })?;
+    let shader_path = shader_path
+        .ok_or_else(|| syn::Error::new_spanned(attr, "missing #[filter(shader = \"...\")] path"))?;
 
     Ok(FilterAttrs { kind, shader_path })
 }
 
 struct FieldLayout {
-    /// `Scalar(idx)` => `self.<idx>` is a single value of generic type `T`.
-    /// `Array(idx, n)` => `self.<idx>` is a `[T; n]` array.
     fields: Vec<FieldEntry>,
     total_params: usize,
-    element_idents: Vec<Ident>,
+    /// Generic type parameters that need a `FilterParam` where-bound.
+    bound_idents: Vec<Ident>,
 }
 
 enum FieldEntry {
-    Scalar { tuple_idx: usize },
-    Array { tuple_idx: usize, len: usize },
+    Scalar { member: Member },
+    Array { member: Member, len: usize },
 }
 
-fn analyze_fields(fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<FieldLayout> {
+fn analyze_fields(
+    fields: &[&syn::Field],
+    generic_type_params: &[Ident],
+) -> syn::Result<FieldLayout> {
     let mut layout = FieldLayout {
         fields: Vec::new(),
         total_params: 0,
-        element_idents: Vec::new(),
+        bound_idents: Vec::new(),
     };
 
-    for (tuple_idx, field) in fields.iter().enumerate() {
+    let record_element = |layout: &mut FieldLayout, ident: &Ident| {
+        // Only generic parameters need an explicit where-bound; concrete
+        // element types (e.g. `f32`) resolve `FilterParam` directly and
+        // fail with a normal trait error if they don't implement it.
+        if generic_type_params.contains(ident) && !layout.bound_idents.contains(ident) {
+            layout.bound_idents.push(ident.clone());
+        }
+    };
+
+    for (field_idx, field) in fields.iter().enumerate() {
+        let member = field.ident.clone().map_or_else(
+            || Member::Unnamed(syn::Index::from(field_idx)),
+            Member::Named,
+        );
         match &field.ty {
             Type::Path(TypePath {
                 qself: None, path, ..
             }) => {
-                let ident = path
-                    .get_ident()
-                    .cloned()
-                    .ok_or_else(|| {
-                        syn::Error::new_spanned(
-                            &field.ty,
-                            "Filter derive expects each scalar field to be a single generic ident (e.g. `T`)",
-                        )
-                    })?;
-                if !layout.element_idents.contains(&ident) {
-                    layout.element_idents.push(ident);
-                }
-                layout.fields.push(FieldEntry::Scalar { tuple_idx });
+                let ident = path.get_ident().cloned().ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        &field.ty,
+                        "Filter derive expects each scalar field to be a single type ident (e.g. `T`)",
+                    )
+                })?;
+                record_element(&mut layout, &ident);
+                layout.fields.push(FieldEntry::Scalar { member });
                 layout.total_params += 1;
             }
             Type::Array(TypeArray { elem, len, .. }) => {
                 let ident = match &**elem {
                     Type::Path(TypePath {
                         qself: None, path, ..
-                    }) => path
-                        .get_ident()
-                        .cloned()
-                        .ok_or_else(|| {
-                            syn::Error::new_spanned(
-                                elem,
-                                "Filter derive expects each array element type to be a single generic ident",
-                            )
-                        })?,
+                    }) => path.get_ident().cloned().ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            elem,
+                            "Filter derive expects each array element type to be a single type ident",
+                        )
+                    })?,
                     _ => {
                         return Err(syn::Error::new_spanned(
                             elem,
-                            "Filter derive expects each array element type to be a single generic ident",
+                            "Filter derive expects each array element type to be a single type ident",
                         ));
                     }
                 };
@@ -277,11 +307,9 @@ fn analyze_fields(fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<Fie
                         ));
                     }
                 };
-                if !layout.element_idents.contains(&ident) {
-                    layout.element_idents.push(ident);
-                }
+                record_element(&mut layout, &ident);
                 layout.fields.push(FieldEntry::Array {
-                    tuple_idx,
+                    member,
                     len: len_value,
                 });
                 layout.total_params += len_value;
@@ -289,7 +317,7 @@ fn analyze_fields(fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<Fie
             other => {
                 return Err(syn::Error::new_spanned(
                     other,
-                    "Filter derive supports only fields of type `T` or `[T; N]` where `T` is a single generic ident",
+                    "Filter derive supports only fields of type `T` or `[T; N]`",
                 ));
             }
         }
@@ -301,19 +329,15 @@ fn analyze_fields(fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<Fie
 impl FieldLayout {
     fn build_params_array_tokens(&self) -> TokenStream2 {
         let snapshots = self.fields.iter().flat_map(|entry| match entry {
-            FieldEntry::Scalar { tuple_idx } => {
-                let idx = syn::Index::from(*tuple_idx);
-                vec![quote! { ::filtrate_core::FilterParam::snapshot(&self.#idx) }]
+            FieldEntry::Scalar { member } => {
+                vec![quote! { ::filtrate_core::FilterParam::snapshot(&self.#member) }]
             }
-            FieldEntry::Array { tuple_idx, len } => {
-                let idx = syn::Index::from(*tuple_idx);
-                (0..*len)
-                    .map(|i| {
-                        let element = syn::Index::from(i);
-                        quote! { ::filtrate_core::FilterParam::snapshot(&self.#idx[#element]) }
-                    })
-                    .collect()
-            }
+            FieldEntry::Array { member, len } => (0..*len)
+                .map(|i| {
+                    let element = syn::Index::from(i);
+                    quote! { ::filtrate_core::FilterParam::snapshot(&self.#member[#element]) }
+                })
+                .collect(),
         });
         quote! { [ #( #snapshots ),* ] }
     }
@@ -321,19 +345,17 @@ impl FieldLayout {
     fn build_visit_signals_tokens(&self) -> TokenStream2 {
         let mut current = 0usize;
         let calls = self.fields.iter().map(|entry| match entry {
-            FieldEntry::Scalar { tuple_idx } => {
-                let idx = syn::Index::from(*tuple_idx);
+            FieldEntry::Scalar { member } => {
                 let param_idx = current;
                 current += 1;
-                quote! { visitor.visit(#param_idx, &self.#idx); }
+                quote! { visitor.visit(#param_idx, &self.#member); }
             }
-            FieldEntry::Array { tuple_idx, len } => {
-                let idx = syn::Index::from(*tuple_idx);
+            FieldEntry::Array { member, len } => {
                 let base = current;
                 current += *len;
                 quote! {
                     for __i in 0..#len {
-                        visitor.visit(#base + __i, &self.#idx[__i]);
+                        visitor.visit(#base + __i, &self.#member[__i]);
                     }
                 }
             }

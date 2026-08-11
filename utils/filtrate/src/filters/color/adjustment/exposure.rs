@@ -10,7 +10,7 @@ use crate::Filter;
 ///
 /// - `ev`: Exposure value in stops (0.0 = unchanged, 1.0 = +1 stop, -1.0 = -1 stop)
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/adjustment/exposure.wgsl")]
+#[filter(color_only, shader = "color/adjustment/exposure.wgsl")]
 pub struct Exposure<T>(pub T);
 
 #[cfg(test)]

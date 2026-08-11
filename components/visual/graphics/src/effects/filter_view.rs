@@ -956,11 +956,11 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, Bloom> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate::filters::Bloom([
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(intensity.into_signal_f32().computed()),
-                Reactive(threshold.into_signal_f32().computed()),
-            ])),
+            FilterAdapter::new(filtrate::filters::Bloom {
+                radius: Reactive(radius.into_signal_f32().computed()),
+                intensity: Reactive(intensity.into_signal_f32().computed()),
+                threshold: Reactive(threshold.into_signal_f32().computed()),
+            }),
         )
     }
 
@@ -973,11 +973,11 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, Gloom> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate::filters::Gloom([
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(intensity.into_signal_f32().computed()),
-                Reactive(threshold.into_signal_f32().computed()),
-            ])),
+            FilterAdapter::new(filtrate::filters::Gloom {
+                radius: Reactive(radius.into_signal_f32().computed()),
+                intensity: Reactive(intensity.into_signal_f32().computed()),
+                threshold: Reactive(threshold.into_signal_f32().computed()),
+            }),
         )
     }
 
@@ -989,10 +989,10 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, UnsharpMask> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate::filters::UnsharpMask([
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(amount.into_signal_f32().computed()),
-            ])),
+            FilterAdapter::new(filtrate::filters::UnsharpMask {
+                radius: Reactive(radius.into_signal_f32().computed()),
+                intensity: Reactive(amount.into_signal_f32().computed()),
+            }),
         )
     }
 

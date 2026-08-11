@@ -1,13 +1,25 @@
 // Fragment shader preamble for fused color-only filter shaders.
 // This enables rendering to any texture format including HDR (Rgba16Float).
+//
+// Token contract (substituted by the runtime, never valid WGSL as-is):
+// - `PARAM_VEC4S`: number of `vec4<f32>` rows in the parameter array,
+//   derived from `filtrate_core::MAX_FILTER_PARAM_VEC4S`.
+// - `CLAMP_MAX_BOUND`: value of the `COLOR_CLAMP_MAX` constant below —
+//   1.0 when the pass targets an LDR format, the f16 maximum when it
+//   targets an HDR format, so LDR-styled presets never crush an HDR
+//   chain's highlights.
+//
+// Alpha contract: input and output textures are premultiplied alpha. The
+// preamble unpremultiplies once so every fragment operates on straight-alpha
+// color, and the postamble re-premultiplies the final result.
 
-// Uniform buffer with proper alignment for WGSL
-// Note: array<f32, N> is NOT valid in uniform buffers due to 16-byte stride requirements
-// We use array<vec4<f32>, 16> to store 64 floats with proper alignment
+// Uniform buffer with proper alignment for WGSL.
+// Note: array<f32, N> is NOT valid in uniform buffers due to 16-byte stride
+// requirements, so parameters pack into vec4 rows.
 struct Uniforms {
     dimensions: vec2<f32>,
     _padding: vec2<f32>,  // Pad to 16-byte alignment before array
-    params: array<vec4<f32>, 16>,  // 16 * 4 = 64 floats
+    params: array<vec4<f32>, PARAM_VEC4S>,
 }
 
 struct VertexOutput {
@@ -59,6 +71,31 @@ fn param(index: u32) -> f32 {
         case 2u: { return v.z; }
         default: { return v.w; }
     }
+}
+
+// Rec. 709 luma coefficients — the single luminance definition shared by all
+// filtrate shaders. Do not introduce per-shader alternatives.
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+fn luminance(rgb: vec3<f32>) -> f32 {
+    return dot(rgb, LUMA);
+}
+
+// Display-range clamp bound for LDR-styled fragments (photo-effect
+// presets). Substituted per target format: 1.0 for LDR, f16 max for HDR.
+const COLOR_CLAMP_MAX: f32 = CLAMP_MAX_BOUND;
+
+// Isotropic space: per-axis normalized uv is anisotropic on non-square
+// targets. Radial fragments (vignette) convert distances into this space,
+// where one unit equals the shorter output edge, so circles stay circular
+// at any aspect ratio.
+fn isotropic_scale() -> vec2<f32> {
+    let dims = uniforms.dimensions;
+    return dims / min(dims.x, dims.y);
+}
+
+fn to_isotropic(uv: vec2<f32>) -> vec2<f32> {
+    return uv * isotropic_scale();
 }
 
 // Helper: Convert RGB to HSL
@@ -119,6 +156,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
     // Use an explicit mip level to support unfilterable float textures (e.g. HDR formats).
     var color = textureSampleLevel(input_texture, input_sampler, uv, 0.0);
+
+    // Unpremultiply once: fragments below operate on straight-alpha color.
+    // Fully transparent premultiplied texels have rgb == 0, so the max()
+    // guard cannot manufacture color there.
+    color = vec4<f32>(color.rgb / max(color.a, 1e-6), color.a);
 
     // Parameter index tracker (incremented by each filter fragment)
     var param_idx: u32 = 0u;
