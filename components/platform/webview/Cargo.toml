@@ -30,3 +30,7 @@ waterui-testing.workspace = true
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "bridge"
+harness = false
