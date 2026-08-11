@@ -80,15 +80,23 @@ The create script fails immediately if any of the following are true:
 - It is not run from the canonical source repository.
 - The canonical repository or any canonical submodule has uncommitted tracked changes, staged changes, or untracked non-ignored files.
 - Cargo resolves any `build.target-dir`.
-- The workspace root is not on the same filesystem as the source repository.
 - The source or workspace filesystem is not APFS.
+
+A workspace root on a different volume than the source repository is allowed
+(the usual answer when the boot disk is out of space) but only warns: APFS
+clonefile cannot span volumes, so the `target/` copy degrades from
+copy-on-write to a full byte copy — creation is slower and the copy occupies
+real disk space instead of sharing blocks.
 - Any configured submodule is missing, is not a Git worktree, or does not keep its gitdir under the source repository metadata.
 - The destination path already exists.
 - The task slug is not lowercase hyphenated text.
 
 The finish script fails immediately if any of the following are true:
 
-- It is not run from an agent workspace under `WATERUI_AGENT_WORKSPACE_ROOT`.
+- It is not run from inside an agent workspace. A workspace is recognised by
+  what the checkout is — a clone whose `origin` is a local path to another
+  checkout, sitting on an `agent/` branch — never by where it sits, so
+  moving `WATERUI_AGENT_WORKSPACE_ROOT` does not strand existing workspaces.
 - Another agent is already merging back into the canonical repository.
 - The workspace superproject or any workspace submodule has uncommitted changes.
 - The canonical repository superproject or any canonical submodule has uncommitted changes.
@@ -101,13 +109,36 @@ For WaterUI's backend submodules, "configured integration branch" means `dev`. I
 
 The sync script fails immediately if any of the following are true:
 
-- It is not run from an agent workspace under `WATERUI_AGENT_WORKSPACE_ROOT`.
+- It is not run from inside an agent workspace (same recognition rule as the
+  finish script: local-path `origin` plus an `agent/` branch).
 - Another agent is currently running `finish_workspace.sh` against the canonical repository.
 - The workspace superproject or any workspace submodule has uncommitted changes.
 - The canonical repository superproject or any canonical submodule has uncommitted changes.
 - The workspace branch does not start with `agent/`.
 - Any workspace submodule is on a different branch from the workspace superproject.
 - A submodule rebase or superproject rebase stops for conflicts.
+
+## Moving The Workspace Root
+
+`WATERUI_AGENT_WORKSPACE_ROOT` may change between sessions — typically to an
+external volume when the boot disk fills up. What to know when it does:
+
+- Existing workspaces stay where they were created and remain fully usable:
+  sync and finish recognise a workspace by its own evidence (local-path
+  `origin`, `agent/` branch), not by its location, so no environment override
+  is needed for them.
+- Exception: a workspace **cloned before that recognition rule landed**
+  carries a pre-fix script copy that still path-matches against the current
+  root, and running its own `sync_workspace.sh`/`finish_workspace.sh` dies
+  with "run this script from an agent workspace, not the canonical
+  repository". The scripts decide context from the working directory, not
+  from their own path — so run the **canonical checkout's** script by
+  absolute path while `cd`'d inside the workspace, and it works without any
+  override. (Prefixing `WATERUI_AGENT_WORKSPACE_ROOT=<old root>` onto the
+  stale copy also works, but fixes nothing going forward.)
+- A root on another volume must still be APFS, and every `create` there pays
+  a full `target/` copy instead of a COW clone (see above). If the boot disk
+  has room again, prefer a root on the source repository's own volume.
 
 ## After Creation
 
