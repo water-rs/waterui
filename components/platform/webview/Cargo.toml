@@ -25,7 +25,9 @@ serde_json = "1.0"
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true
-waterui.workspace = true
+# `#[js_api]` expands to `::waterui::webview::…` paths, so testing it means
+# reaching this crate back through the facade the way an application does.
+waterui = { workspace = true, features = ["webview"] }
 waterui-testing.workspace = true
 
 [lints]
