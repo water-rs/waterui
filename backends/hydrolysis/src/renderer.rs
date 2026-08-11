@@ -161,7 +161,6 @@ use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, S
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
-#[cfg(hydrolysis_webview)]
 use waterui_webview::WebView;
 
 use crate::animation::{AnimatedScalarHandle, AnimationController, AnimationKey};

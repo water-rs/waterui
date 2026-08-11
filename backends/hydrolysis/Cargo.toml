@@ -26,7 +26,7 @@ waterui-shape.workspace = true
 waterui-video-gpu.workspace = true
 waterui-map.workspace = true
 waterui-map-gpu.workspace = true
-waterui-webview = { workspace = true, optional = true }
+waterui-webview.workspace = true
 waterui-chromium = { workspace = true, optional = true }
 waterui-browser-cef = { workspace = true, optional = true }
 waterui-layout = { workspace = true, features = ["parallel"] }
@@ -154,7 +154,6 @@ default = []
 accessibility = ["dep:accesskit"]
 testing = []
 webview-default = [
-    "dep:waterui-webview",
     "dep:waterui-browser-wpe",
     "waterui-browser-wpe/webview",
     "dep:base64",
@@ -165,7 +164,6 @@ webview-default = [
     "dep:serde_json",
 ]
 webview-system = [
-    "dep:waterui-webview",
     "dep:base64",
     "dep:block2",
     "dep:cookie",
@@ -174,12 +172,10 @@ webview-system = [
     "dep:serde_json",
 ]
 webview-wpe = [
-    "dep:waterui-webview",
     "dep:waterui-browser-wpe",
     "waterui-browser-wpe/webview",
 ]
 webview-cef = [
-    "dep:waterui-webview",
     "dep:waterui-browser-cef",
     "waterui-browser-cef/cef-runtime",
     "waterui-browser-cef/webview",

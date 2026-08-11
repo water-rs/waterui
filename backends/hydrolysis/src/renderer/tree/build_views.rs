@@ -57,7 +57,6 @@ impl_widget_behavior!(
     crate::widgets::visual::map::render_map_node,
     crate::widgets::visual::map::measure_map_node
 );
-#[cfg(hydrolysis_webview)]
 impl_widget_behavior!(
     crate::widgets::platform::webview::WebViewRenderState,
     crate::widgets::platform::webview::render_webview_node,
@@ -254,7 +253,6 @@ impl RenderNode {
     /// `Text` nodes, which become live `Dynamic`/`Text` nodes, so a navigation or load
     /// event updates without rebuilding the node. A11y is render-driven (the inner
     /// content's own dispatch emits it). Stretches to fill the proposal.
-    #[cfg(hydrolysis_webview)]
     pub(super) fn build_webview(
         webview: WebView,
         env: &Environment,
