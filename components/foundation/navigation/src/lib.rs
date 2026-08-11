@@ -50,7 +50,7 @@ pub use transition::{
     AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
     NavigationTransitionDestination, NavigationTransitionDirection, NavigationTransitionFrame,
     NavigationTransitionLayer, NavigationTransitionSource, NavigationTransitionViewExt,
-    navigation_transition,
+    RetainedNavigationTransition, navigation_transition,
 };
 
 /// A view that combines a navigation bar with content.
