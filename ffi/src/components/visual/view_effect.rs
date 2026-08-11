@@ -607,8 +607,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
     let effect_wrapper = effect_wrapper
         .as_mut()
         .expect("ViewEffect ready state is missing its semantic renderer");
-    effect_wrapper.erased.render(&input, &effect_output);
-    let needs_redraw = effect_wrapper.erased.needs_redraw();
+    let needs_redraw = effect_wrapper.erased.render(&input, &effect_output);
 
     // Present
     output.present();

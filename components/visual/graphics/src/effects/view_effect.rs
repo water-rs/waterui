@@ -428,15 +428,18 @@ impl ViewEffectErased {
         self.effect.setup(ctx)
     }
 
-    /// Calls `render` on the effect.
-    pub fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
+    /// Calls `render` on the effect and returns whether it requests another
+    /// immediate frame.
+    ///
+    /// The frame being rendered consumes any invalidation that woke it, so the
+    /// returned flag reflects only the effect's own animation state and redraw
+    /// requests raised during this render. The flag rides on `render` instead
+    /// of a separate query so consuming the dirty bit stays tied to the one
+    /// frame that answers it.
+    #[must_use = "schedule another frame when the effect requests one"]
+    pub fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) -> bool {
         let _ = self.redraw_handle.take_dirty();
         self.effect.render(input, output);
-    }
-
-    /// Returns whether the effect requests another immediate frame.
-    #[must_use]
-    pub fn needs_redraw(&self) -> bool {
         let callback_requested_redraw = self.redraw_handle.take_dirty();
         self.effect.needs_redraw() || callback_requested_redraw
     }

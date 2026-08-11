@@ -41,7 +41,6 @@ use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
 use core::num::NonZeroU64;
-use std::time::Instant;
 
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use shaderloom::{CompiledShader, CompiledShaderModule};
@@ -164,37 +163,33 @@ struct ShaderRenderer {
     compiled_shader: Option<&'static CompiledShader>,
     fragment_source: Cow<'static, str>,
     resources: Option<ShaderResources>,
-    start_time: Instant,
 }
 
 impl ShaderRenderer {
-    fn new(fragment_source: Cow<'static, str>) -> Self {
+    const fn new(fragment_source: Cow<'static, str>) -> Self {
         Self {
             label: None,
             compiled_shader: None,
             fragment_source,
             resources: None,
-            start_time: Instant::now(),
         }
     }
 
-    fn new_labeled(label: &'static str, fragment_source: Cow<'static, str>) -> Self {
+    const fn new_labeled(label: &'static str, fragment_source: Cow<'static, str>) -> Self {
         Self {
             label: Some(label),
             compiled_shader: None,
             fragment_source,
             resources: None,
-            start_time: Instant::now(),
         }
     }
 
-    fn new_compiled(shader: &'static CompiledShader) -> Self {
+    const fn new_compiled(shader: &'static CompiledShader) -> Self {
         Self {
             label: None,
             compiled_shader: Some(shader),
             fragment_source: Cow::Borrowed(""),
             resources: None,
-            start_time: Instant::now(),
         }
     }
 
@@ -364,7 +359,6 @@ impl GpuView for ShaderRenderer {
             uniform_buffer,
             bind_group,
         });
-        self.start_time = Instant::now();
         core::future::ready(())
     }
 
@@ -380,7 +374,10 @@ impl GpuView for ShaderRenderer {
 
         // Update uniforms with correct WGSL alignment:
         // [time: f32, _pad: f32, resolution.x: f32, resolution.y: f32, _padding: f32, _pad: f32]
-        let elapsed = self.start_time.elapsed().as_secs_f32();
+        // The time uniform advances with the host's animation clock, so
+        // offscreen hosts that pump frames deterministically get a
+        // deterministic shader clock instead of wall time.
+        let elapsed = frame.elapsed().as_secs_f32();
         #[expect(
             clippy::cast_precision_loss,
             reason = "GPU viewport dimensions are represented as f32 shader uniforms"
@@ -430,6 +427,9 @@ impl GpuView for ShaderRenderer {
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));
+        // A ShaderSurface is a time-driven surface by contract (the time
+        // uniform is part of its shader ABI), so it always asks for the next
+        // frame; hosts with idle-aware pumps coalesce these requests.
         frame.request_redraw();
     }
 }
