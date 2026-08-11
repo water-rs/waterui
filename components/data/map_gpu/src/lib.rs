@@ -16,9 +16,10 @@ use std::{
     time::Duration,
 };
 
-use nami::{Binding, Computed, Signal as _, binding, watcher::BoxWatcherGuard};
+use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use waterui_core::{
-    AnyView, Environment, Metadata,
+    AnyView, Environment, Metadata, Str,
+    accessibility::{AccessibilityLabel, AccessibilityRole},
     animation::Animation,
     gesture::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent,
@@ -272,8 +273,11 @@ pub fn install(env: &mut Environment) {
             .get::<MapGpuOptions>()
             .expect("GPU Map requires MapGpuOptions in the application environment")
             .clone();
+        let semantics = map_semantics(env, &config);
         if !config.interactivity.is_interactive() {
-            return AnyView::new(render::map_surface(MapScene::new(config, options)));
+            return semantics.apply(AnyView::new(render::map_surface(MapScene::new(
+                config, options,
+            ))));
         }
 
         let controller = Rc::new(MapGestureController::new(&config.region));
@@ -302,7 +306,7 @@ pub fn install(env: &mut Environment) {
                 },
             ),
         );
-        AnyView::new(Metadata::new(
+        semantics.apply(AnyView::new(Metadata::new(
             scene,
             GestureObserver::new(MagnificationGesture::new(1.0), move |env: Environment| {
                 magnification_controller.handle_magnification(
@@ -310,8 +314,77 @@ pub fn install(env: &mut Environment) {
                         .expect("MagnificationGesture observer must receive a MagnificationEvent"),
                 );
             }),
-        ))
+        )))
     });
+}
+
+/// The accessibility identity the GPU map surface publishes.
+///
+/// The surface draws its whole world into one GPU texture, so assistive
+/// technology sees nothing unless the view itself carries semantics. The label
+/// is reactive, so panning and adding pins update the announcement without
+/// rebuilding the map.
+struct MapSemantics {
+    label: Option<AccessibilityLabel>,
+    role: Option<AccessibilityRole>,
+}
+
+impl MapSemantics {
+    fn apply(self, view: AnyView) -> AnyView {
+        let view = match self.role {
+            Some(role) => AnyView::new(Metadata::new(view, role)),
+            None => view,
+        };
+        match self.label {
+            Some(label) => AnyView::new(Metadata::new(view, label)),
+            None => view,
+        }
+    }
+}
+
+/// Builds the map's semantics, deferring to anything the application already
+/// set with `.a11y_label(...)` / `.a11y_role(...)` rather than overriding it.
+fn map_semantics(env: &Environment, config: &MapConfig) -> MapSemantics {
+    let role = env
+        .get::<AccessibilityRole>()
+        .is_none()
+        .then_some(AccessibilityRole::Image);
+    let label = env.get::<AccessibilityLabel>().is_none().then(|| {
+        AccessibilityLabel::new(
+            config
+                .region
+                .zip(&config.annotations)
+                .map(|(region, annotations)| describe_map(region, &annotations))
+                .computed(),
+        )
+    });
+    MapSemantics { label, role }
+}
+
+/// Describes what the map currently shows, for assistive technology.
+fn describe_map(region: Region, annotations: &[waterui_map::Annotation]) -> Str {
+    let center = format!(
+        "Map centered at {:.4}, {:.4}",
+        region.center.latitude.get(),
+        region.center.longitude.get()
+    );
+    if annotations.is_empty() {
+        return Str::from(center);
+    }
+    let titles = annotations
+        .iter()
+        .map(|annotation| annotation.title.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Str::from(format!(
+        "{center}, {} {}: {titles}",
+        annotations.len(),
+        if annotations.len() == 1 {
+            "pin"
+        } else {
+            "pins"
+        }
+    ))
 }
 
 const MAX_MERCATOR_LATITUDE: f64 = 85.051_128_779_806_6;
@@ -579,6 +652,66 @@ impl MapLoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The surface draws into one GPU texture, so this label is the only thing
+    /// assistive technology can read off the map.
+    #[test]
+    fn the_map_describes_its_centre_and_pins() {
+        let region = Region::new(
+            Coordinate::from_degrees(40.7580, -73.9855).expect("valid coordinate"),
+            0.03,
+            0.05,
+        );
+
+        assert_eq!(
+            describe_map(region, &[]).as_str(),
+            "Map centered at 40.7580, -73.9855"
+        );
+        assert_eq!(
+            describe_map(
+                region,
+                &[waterui_map::Annotation::new(region.center, "Times Square")]
+            )
+            .as_str(),
+            "Map centered at 40.7580, -73.9855, 1 pin: Times Square"
+        );
+        assert_eq!(
+            describe_map(
+                region,
+                &[
+                    waterui_map::Annotation::new(region.center, "Times Square"),
+                    waterui_map::Annotation::new(region.center, "Bryant Park"),
+                ]
+            )
+            .as_str(),
+            "Map centered at 40.7580, -73.9855, 2 pins: Times Square, Bryant Park"
+        );
+    }
+
+    /// An application that already described the map keeps its own wording.
+    #[test]
+    fn application_supplied_semantics_win() {
+        let mut env = Environment::new();
+        env.insert(AccessibilityLabel::new("City map"));
+        env.insert(AccessibilityRole::Image);
+        let config = MapConfig {
+            region: Computed::constant(manhattan_region()),
+            annotations: Computed::constant(Vec::new()),
+            style: MapStyle::Standard,
+            user_location_visibility: waterui_map::MapVisibility::Hidden,
+            user_location: Computed::constant(None),
+            interactivity: waterui_map::MapInteractivity::ReadOnly,
+            compass_visibility: waterui_map::MapVisibility::Hidden,
+            scale_visibility: waterui_map::MapVisibility::Hidden,
+            status: None,
+        };
+
+        let semantics = map_semantics(&env, &config);
+
+        assert!(semantics.label.is_none());
+        assert!(semantics.role.is_none());
+    }
+
     use waterui_core::gesture::GesturePoint;
 
     fn manhattan_region() -> Region {
