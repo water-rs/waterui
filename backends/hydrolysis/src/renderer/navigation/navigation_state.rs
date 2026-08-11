@@ -346,7 +346,12 @@ fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
 
 impl CustomNavigationController for HydroNavigationController {
     fn apply(&mut self, transaction: NavigationTransaction) {
-        let (transaction_id, retained_prefix, removed, inserted) = transaction.into_parts();
+        let NavigationTransaction {
+            id: transaction_id,
+            retained_prefix,
+            removed,
+            inserted,
+        } = transaction;
         let mut entries = self.entries.borrow_mut();
         assert_eq!(
             retained_prefix + removed,

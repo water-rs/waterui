@@ -835,7 +835,12 @@ unsafe impl Send for ForeignNavigationController {}
 
 impl CustomNavigationController for ForeignNavigationController {
     fn apply(&mut self, transaction: NavigationTransaction) {
-        let (id, retained_prefix, removed, inserted) = transaction.into_parts();
+        let NavigationTransaction {
+            id,
+            retained_prefix,
+            removed,
+            inserted,
+        } = transaction;
         let inserted = inserted
             .into_iter()
             .map(|builder| builder.build())

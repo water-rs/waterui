@@ -400,7 +400,12 @@ impl GtkNavigationController {
 
 impl CustomNavigationController for GtkNavigationController {
     fn apply(&mut self, transaction: NavigationTransaction) {
-        let (_, retained_prefix, removed, inserted) = transaction.into_parts();
+        let NavigationTransaction {
+            retained_prefix,
+            removed,
+            inserted,
+            ..
+        } = transaction;
         let mut inner = self.inner.borrow_mut();
         assert_eq!(
             retained_prefix + removed + 1,
