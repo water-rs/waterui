@@ -41,23 +41,77 @@ fn encode_vello_layers_parallel(
     pool: &std::sync::Mutex<Vec<vello::Renderer>>,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    scenes: &[(usize, &vello::Scene)],
+    scenes: Vec<(usize, &vello::Scene, PooledLayerTexture)>,
     width: u32,
     height: u32,
-) -> Vec<(usize, wgpu::Texture, wgpu::TextureView)> {
+) -> Vec<(usize, PooledLayerTexture)> {
     use rayon::prelude::*;
 
     scenes
-        .par_iter()
-        .map(|&(index, scene)| {
+        .into_par_iter()
+        .map(|(index, scene, leased)| {
             let mut renderer = pool
                 .lock()
                 .expect("hydrolysis renderer: vello renderer pool poisoned")
                 .pop()
                 .unwrap_or_else(|| build_pooled_vello_renderer(device));
 
+            let params = vello::RenderParams {
+                base_color: vello::peniko::Color::TRANSPARENT,
+                width,
+                height,
+                antialiasing_method: vello::AaConfig::Area,
+            };
+            renderer
+                .render_to_texture(device, queue, scene, &leased.view, &params)
+                .expect("hydrolysis renderer: failed to render vello layer scene");
+
+            pool.lock()
+                .expect("hydrolysis renderer: vello renderer pool poisoned")
+                .push(renderer);
+
+            (index, leased)
+        })
+        .collect()
+}
+
+#[derive(Default)]
+pub(crate) struct Compositor {
+    /// Pool of target-sized intermediate textures reused across frames for
+    /// per-layer Vello encodes and active-layer masks. Allocating one per
+    /// layer per frame is exactly the churn the pool exists to avoid; entries
+    /// whose size no longer matches the target are dropped on acquire.
+    pub(crate) layer_texture_pool: Vec<PooledLayerTexture>,
+    /// Pool of `vello::Renderer` instances reused across frames for C2's parallel
+    /// per-layer encoding. `vello::Renderer` is `!Sync` (it holds a `RefCell`), so each
+    /// worker checks out its own instance; the `Mutex` only guards the free-list, not the
+    /// (parallel) encode itself.
+    pub(crate) vello_renderer_pool: std::sync::Mutex<Vec<vello::Renderer>>,
+    pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
+    pub(crate) render_layers: Vec<RenderLayer>,
+    pub(crate) active_scene_layers: Vec<ActiveSceneLayer>,
+    pub(crate) active_filter_images: Vec<vello::peniko::ImageData>,
+}
+
+pub(crate) struct PooledLayerTexture {
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
+}
+
+impl Compositor {
+    fn acquire_layer_texture(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> PooledLayerTexture {
+        // All intermediate layer textures are target-sized, so a resize makes
+        // every pooled entry stale at once; drop them instead of hoarding.
+        self.layer_texture_pool
+            .retain(|entry| entry.texture.width() == width && entry.texture.height() == height);
+        self.layer_texture_pool.pop().unwrap_or_else(|| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("hydrolysis_vello_layer_parallel"),
+                label: Some("hydrolysis_layer_texture"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -73,48 +127,21 @@ fn encode_vello_layers_parallel(
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let params = vello::RenderParams {
-                base_color: vello::peniko::Color::TRANSPARENT,
-                width,
-                height,
-                antialiasing_method: vello::AaConfig::Area,
-            };
-            renderer
-                .render_to_texture(device, queue, scene, &view, &params)
-                .expect("hydrolysis renderer: failed to render vello layer scene");
-
-            pool.lock()
-                .expect("hydrolysis renderer: vello renderer pool poisoned")
-                .push(renderer);
-
-            (index, texture, view)
+            PooledLayerTexture { texture, view }
         })
-        .collect()
-}
+    }
 
-#[derive(Default)]
-pub(crate) struct Compositor {
-    pub(crate) vello_layer_surface: Option<VelloLayerSurfaceState>,
-    /// Pool of `vello::Renderer` instances reused across frames for C2's parallel
-    /// per-layer encoding. `vello::Renderer` is `!Sync` (it holds a `RefCell`), so each
-    /// worker checks out its own instance; the `Mutex` only guards the free-list, not the
-    /// (parallel) encode itself.
-    pub(crate) vello_renderer_pool: std::sync::Mutex<Vec<vello::Renderer>>,
-    pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
-    pub(crate) render_layers: Vec<RenderLayer>,
-    pub(crate) active_scene_layers: Vec<ActiveSceneLayer>,
-    pub(crate) active_filter_images: Vec<vello::peniko::ImageData>,
-}
-
-pub(crate) struct VelloLayerSurfaceState {
-    pub(crate) size: (u32, u32),
-    pub(crate) _texture: wgpu::Texture,
-    pub(crate) view: wgpu::TextureView,
+    fn release_layer_texture(&mut self, texture: PooledLayerTexture) {
+        self.layer_texture_pool.push(texture);
+    }
 }
 
 pub(crate) struct GpuSurfaceCompositorState {
     pub(crate) target_format: wgpu::TextureFormat,
     pub(crate) uniform_buffer: wgpu::Buffer,
+    /// Number of 256-byte uniform slots `uniform_buffer` holds (one per
+    /// composited layer); the buffer is recreated when a frame needs more.
+    pub(crate) uniform_slot_capacity: usize,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) pipeline: wgpu::RenderPipeline,
@@ -135,8 +162,11 @@ pub(crate) struct EmbeddedGpuSurfaceRuntime {
     gesture: GestureState,
     trackpad_pan_ending: bool,
     redraw_handle: RedrawHandle,
-    start_time: Instant,
-    last_frame_time: Instant,
+    /// First frame instant, fixed when the surface first renders; the frame
+    /// clock's origin for `GpuFrame::elapsed`.
+    start_time: Option<Instant>,
+    /// Frame instant of the previous render, for `GpuFrame::delta`.
+    last_frame_time: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -202,6 +232,9 @@ pub(crate) struct GpuSurfaceLayer {
     pub(crate) source: GpuSurfaceSource,
     pub(crate) transform: vello::kurbo::Affine,
     pub(crate) bounds: vello::kurbo::Rect,
+    /// The surface's rect in window hit-test space, used to project the
+    /// window pointer into surface-local coordinates at composite time.
+    pub(crate) hit_rect: vello::kurbo::Rect,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
     pub(crate) direct_to_target: bool,
 }
@@ -268,6 +301,8 @@ pub(crate) struct DirectGpuSurfaceTarget<'a> {
     pub(crate) format: wgpu::TextureFormat,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) pointer: PointerState,
+    pub(crate) now: Instant,
 }
 
 pub(crate) struct EmbeddedLayerTarget {
@@ -275,13 +310,56 @@ pub(crate) struct EmbeddedLayerTarget {
     pub(crate) height: u32,
     pub(crate) transform: vello::kurbo::Affine,
     pub(crate) bounds: vello::kurbo::Rect,
+    /// The surface's rect in window hit-test space; the pointer is projected
+    /// into surface-local pixels inside `prepare_layer`, which is where the
+    /// layer's output pixel size is decided.
+    pub(crate) hit_rect: vello::kurbo::Rect,
+    pub(crate) pointer_position: Option<vello::kurbo::Point>,
+    pub(crate) pointer_press_origin: Option<vello::kurbo::Point>,
+    pub(crate) now: Instant,
 }
 
-struct TextureLayerComposite<'a> {
-    layer_view: &'a wgpu::TextureView,
-    mask_view: &'a wgpu::TextureView,
-    uniform_bytes: &'a [u8; 80],
-    load_op: wgpu::LoadOp<wgpu::Color>,
+/// Projects the window pointer into an embedded surface's local pixel space.
+///
+/// `hit_rect` is the surface's rect in window hit-test coordinates and
+/// `(width, height)` its output texture size. The hover position maps only
+/// while inside the rect; the press origin maps only when the press started on
+/// this surface, so a drag that leaves the bounds keeps reporting its origin.
+pub(crate) fn project_pointer_into_surface(
+    pointer_position: Option<vello::kurbo::Point>,
+    pointer_press_origin: Option<vello::kurbo::Point>,
+    hit_rect: vello::kurbo::Rect,
+    width: u32,
+    height: u32,
+) -> PointerState {
+    if hit_rect.width() <= 0.0 || hit_rect.height() <= 0.0 {
+        return PointerState::default();
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let map = |point: vello::kurbo::Point| {
+        waterui_core::layout::Point::new(
+            ((point.x - hit_rect.x0) / hit_rect.width() * f64::from(width)) as f32,
+            ((point.y - hit_rect.y0) / hit_rect.height() * f64::from(height)) as f32,
+        )
+    };
+    let position = pointer_position
+        .filter(|point| hit_rect.contains(*point))
+        .map(map);
+    let hit = pointer_press_origin
+        .filter(|origin| hit_rect.contains(*origin))
+        .map(map);
+    PointerState { position, hit }
+}
+
+/// One layer fully prepared for the final composite pass: its content and mask
+/// views (pooled textures ride along so they return to the pool afterwards)
+/// plus the 80-byte compositor uniform.
+struct ReadyLayerComposite {
+    layer_view: wgpu::TextureView,
+    layer_texture: Option<PooledLayerTexture>,
+    mask_view: wgpu::TextureView,
+    mask_texture: Option<PooledLayerTexture>,
+    uniform_bytes: [u8; 80],
 }
 
 impl ActiveSceneLayer {
@@ -310,17 +388,37 @@ impl ActiveSceneLayer {
 }
 
 impl GpuSurfaceCompositorState {
+    /// Size of one compositor uniform in bytes (the shader-visible struct).
+    const UNIFORM_SIZE: u64 = 80;
+    /// Stride between per-layer uniform slots: WebGPU's guaranteed
+    /// `min_uniform_buffer_offset_alignment`.
+    const UNIFORM_SLOT_STRIDE: u64 = 256;
+    const INITIAL_UNIFORM_SLOTS: usize = 8;
+
+    fn create_uniform_buffer(device: &wgpu::Device, slots: usize) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_uniform"),
+            size: (slots as u64) * Self::UNIFORM_SLOT_STRIDE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn ensure_uniform_capacity(&mut self, device: &wgpu::Device, slots: usize) {
+        if slots <= self.uniform_slot_capacity {
+            return;
+        }
+        let slots = slots.next_power_of_two();
+        self.uniform_buffer = Self::create_uniform_buffer(device, slots);
+        self.uniform_slot_capacity = slots;
+    }
+
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
     ) -> Self {
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_uniform"),
-            size: 80,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let uniform_buffer = Self::create_uniform_buffer(device, Self::INITIAL_UNIFORM_SLOTS);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("hydrolysis_gpu_surface_compositor_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -340,9 +438,13 @@ impl GpuSurfaceCompositorState {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        // Every composited layer reads its own 256-byte-aligned
+                        // slot of one shared buffer, selected per draw with a
+                        // dynamic offset, so the whole composite is a single
+                        // render pass and a single submit.
+                        has_dynamic_offset: true,
                         min_binding_size: Some(
-                            core::num::NonZeroU64::new(80)
+                            core::num::NonZeroU64::new(Self::UNIFORM_SIZE)
                                 .expect("static compositor uniform size must be non-zero"),
                         ),
                     },
@@ -452,6 +554,7 @@ impl GpuSurfaceCompositorState {
         Self {
             target_format,
             uniform_buffer,
+            uniform_slot_capacity: Self::INITIAL_UNIFORM_SLOTS,
             sampler,
             bind_group_layout,
             pipeline,
@@ -475,7 +578,6 @@ impl GpuSurfaceCompositorState {
 
 impl EmbeddedGpuSurfaceRuntime {
     pub(crate) fn new(surface: GpuSurface, env: &Environment) -> Self {
-        let now = Instant::now();
         let msaa_samples = surface.msaa_sample_limit();
         let prefers_hdr = surface.resolved_hdr_preference();
         Self {
@@ -491,9 +593,27 @@ impl EmbeddedGpuSurfaceRuntime {
             gesture: GestureState::new(),
             trackpad_pan_ending: false,
             redraw_handle: RedrawHandle::new(),
-            start_time: now,
-            last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
+            start_time: None,
+            last_frame_time: None,
         }
+    }
+
+    /// Advances the surface's animation clock to the renderer's frame instant
+    /// and returns `(elapsed, delta)` for this frame. Driving the clock from
+    /// the frame instant (not wall time) keeps offscreen hosts that pump the
+    /// clock deterministic.
+    fn frame_timing(&mut self, now: Instant) -> (Duration, Duration) {
+        let start = *self.start_time.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(start);
+        let delta = self.last_frame_time.map_or_else(
+            || Duration::from_secs_f32(1.0 / 60.0),
+            |last| {
+                now.saturating_duration_since(last)
+                    .min(Duration::from_millis(100))
+            },
+        );
+        self.last_frame_time = Some(now);
+        (elapsed, delta)
     }
 
     pub(crate) fn take_external_redraw_request(&self) -> bool {
@@ -563,6 +683,7 @@ impl EmbeddedGpuSurfaceRuntime {
         let output_format = self.output_format;
         self.ensure_output_target(device, layer_width, layer_height, output_format);
 
+        let (elapsed, delta) = self.frame_timing(target.now);
         let texture = self
             .output_texture
             .as_ref()
@@ -572,12 +693,13 @@ impl EmbeddedGpuSurfaceRuntime {
             .as_ref()
             .expect("hydrolysis embedded GpuSurface missing output view")
             .clone();
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.start_time);
-        let delta = now
-            .duration_since(self.last_frame_time)
-            .min(Duration::from_millis(100));
-        self.last_frame_time = now;
+        let pointer = project_pointer_into_surface(
+            target.pointer_position,
+            target.pointer_press_origin,
+            target.hit_rect,
+            layer_width,
+            layer_height,
+        );
         let mut frame = GpuFrame::new(
             device,
             queue,
@@ -586,7 +708,7 @@ impl EmbeddedGpuSurfaceRuntime {
             output_format,
             layer_width,
             layer_height,
-            PointerState::default(),
+            pointer,
             self.gesture,
             elapsed,
             delta,
@@ -619,12 +741,7 @@ impl EmbeddedGpuSurfaceRuntime {
     }
 
     pub(crate) fn render_direct_to_target(&mut self, target: DirectGpuSurfaceTarget<'_>) -> bool {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.start_time);
-        let delta = now
-            .duration_since(self.last_frame_time)
-            .min(Duration::from_millis(100));
-        self.last_frame_time = now;
+        let (elapsed, delta) = self.frame_timing(target.now);
         let mut frame = GpuFrame::new(
             target.device,
             target.queue,
@@ -633,7 +750,7 @@ impl EmbeddedGpuSurfaceRuntime {
             target.format,
             target.width,
             target.height,
-            PointerState::default(),
+            target.pointer,
             self.gesture,
             elapsed,
             delta,
@@ -689,15 +806,19 @@ impl EmbeddedGpuSurfaceRuntime {
         let mut surface = surface;
         let mut env = env;
         {
-            let context = GpuContext {
-                adapter: &resources.adapter,
-                device: &resources.device,
-                queue: &resources.queue,
-                shader_cache: resources.shader_cache.as_ref(),
+            // `GpuContext::new` resolves the surface's declared MSAA limit
+            // against what the adapter actually supports for this format, so
+            // the renderer sees a sample count it can really use rather than
+            // the authoring-side cap.
+            let context = GpuContext::new(
+                &resources.adapter,
+                &resources.device,
+                &resources.queue,
                 surface_format,
-                msaa_samples: msaa_samples.get(),
+                resources.shader_cache.as_ref(),
+                msaa_samples.get(),
                 redraw_handle,
-            };
+            );
             surface.setup(&context, &mut env).await;
         }
         let mut runtime = runtime.borrow_mut();
@@ -989,41 +1110,8 @@ impl HydrolysisRenderer {
             .ensure_target_format(device, queue, target_format);
     }
 
-    fn ensure_vello_layer_surface(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let size = (width, height);
-        let needs_recreate = self
-            .compositor
-            .vello_layer_surface
-            .as_ref()
-            .is_none_or(|state| state.size != size);
-        if !needs_recreate {
-            return;
-        }
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_vello_layer_surface"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.compositor.vello_layer_surface = Some(VelloLayerSurfaceState {
-            size,
-            _texture: texture,
-            view,
-        });
-    }
-
+    /// Renders a scene into a pooled target-sized texture, which the caller
+    /// must hand back to the pool once the composite pass has sampled it.
     fn render_vello_layer_to_texture(
         &mut self,
         device: &wgpu::Device,
@@ -1031,15 +1119,8 @@ impl HydrolysisRenderer {
         scene: &vello::Scene,
         width: u32,
         height: u32,
-    ) -> wgpu::TextureView {
-        self.ensure_vello_layer_surface(device, width, height);
-        let view = self
-            .compositor
-            .vello_layer_surface
-            .as_ref()
-            .expect("hydrolysis renderer: missing vello layer surface state")
-            .view
-            .clone();
+    ) -> PooledLayerTexture {
+        let leased = self.compositor.acquire_layer_texture(device, width, height);
         let params = vello::RenderParams {
             base_color: vello::peniko::Color::TRANSPARENT,
             width,
@@ -1047,9 +1128,9 @@ impl HydrolysisRenderer {
             antialiasing_method: vello::AaConfig::Area,
         };
         self.vello_renderer
-            .render_to_texture(device, queue, scene, &view, &params)
+            .render_to_texture(device, queue, scene, &leased.view, &params)
             .expect("hydrolysis renderer: failed to render vello layer scene");
-        view
+        leased
     }
 
     fn render_active_layers_mask_to_texture(
@@ -1059,7 +1140,7 @@ impl HydrolysisRenderer {
         width: u32,
         height: u32,
         active_layers: &[ActiveSceneLayer],
-    ) -> wgpu::TextureView {
+    ) -> PooledLayerTexture {
         assert!(
             !active_layers.is_empty(),
             "hydrolysis renderer: active layer mask requires at least one layer"
@@ -1126,43 +1207,67 @@ impl HydrolysisRenderer {
         queue.submit(std::iter::once(encoder.finish()));
     }
 
-    fn composite_texture_layer(
+    /// Composites every prepared layer into the target in painter's order with
+    /// one render pass and one submit. Each layer's uniform lives in its own
+    /// dynamic-offset slot of the shared buffer, so nothing forces a
+    /// submit-per-layer round trip.
+    fn composite_ready_layers(
         &mut self,
         target: &HydrolysisRenderTarget<'_>,
-        layer: TextureLayerComposite<'_>,
+        layers: &[ReadyLayerComposite],
     ) {
         self.ensure_gpu_surface_compositor_state(target.device, target.queue, target.format);
         let compositor = self
             .compositor
             .gpu_surface_compositor
-            .as_ref()
+            .as_mut()
             .expect("hydrolysis renderer: missing gpu surface compositor state");
+        compositor.ensure_uniform_capacity(target.device, layers.len());
 
+        let stride = GpuSurfaceCompositorState::UNIFORM_SLOT_STRIDE as usize;
+        let mut uniform_bytes = vec![0u8; layers.len() * stride];
+        for (index, layer) in layers.iter().enumerate() {
+            let start = index * stride;
+            uniform_bytes[start..start + layer.uniform_bytes.len()]
+                .copy_from_slice(&layer.uniform_bytes);
+        }
         target
             .queue
-            .write_buffer(&compositor.uniform_buffer, 0, layer.uniform_bytes);
-        let bind_group = target.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_bind_group"),
-            layout: &compositor.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: compositor.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&compositor.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(layer.layer_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(layer.mask_view),
-                },
-            ],
-        });
+            .write_buffer(&compositor.uniform_buffer, 0, &uniform_bytes);
+
+        let bind_groups: Vec<wgpu::BindGroup> = layers
+            .iter()
+            .map(|layer| {
+                target.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("hydrolysis_gpu_surface_compositor_bind_group"),
+                    layout: &compositor.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &compositor.uniform_buffer,
+                                offset: 0,
+                                size: core::num::NonZeroU64::new(
+                                    GpuSurfaceCompositorState::UNIFORM_SIZE,
+                                ),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&compositor.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&layer.layer_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(&layer.mask_view),
+                        },
+                    ],
+                })
+            })
+            .collect();
 
         let mut encoder = target
             .device
@@ -1176,7 +1281,7 @@ impl HydrolysisRenderer {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: layer.load_op,
+                    load: wgpu::LoadOp::Clear(color_to_wgpu(target.base_color)),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1186,8 +1291,12 @@ impl HydrolysisRenderer {
             multiview_mask: None,
         });
         pass.set_pipeline(&compositor.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..6, 0..1);
+        for (index, bind_group) in bind_groups.iter().enumerate() {
+            let offset = (index as u64) * GpuSurfaceCompositorState::UNIFORM_SLOT_STRIDE;
+            #[allow(clippy::cast_possible_truncation)]
+            pass.set_bind_group(0, bind_group, &[offset as u32]);
+            pass.draw(0..6, 0..1);
+        }
         drop(pass);
         target.queue.submit(std::iter::once(encoder.finish()));
     }
@@ -1234,6 +1343,14 @@ impl HydrolysisRenderer {
                 format: target.format,
                 width: target.width,
                 height: target.height,
+                pointer: project_pointer_into_surface(
+                    self.hit_test.pointer_position,
+                    self.hit_test.pointer_press_origin,
+                    layer.hit_rect,
+                    target.width,
+                    target.height,
+                ),
+                now: self.frame_instant(),
             };
             let GpuSurfaceSource::Owned(runtime) = &layer.source;
             if !EmbeddedGpuSurfaceRuntime::ensure_setup(
@@ -1259,22 +1376,25 @@ impl HydrolysisRenderer {
             return;
         }
         let mut needs_redraw = false;
-        let mut is_first_layer = true;
 
-        // C2: when there are 2+ independent Vello layers, encode them to per-layer
-        // textures across CPU cores up front; the composite loop below consumes the
-        // results in painter's order. A single Vello layer keeps the sequential
-        // shared-surface path (nothing to parallelize), and GpuSurface layers are
-        // unaffected.
-        let mut encoded_vello: Vec<Option<wgpu::TextureView>> =
+        // Phase 1 — prepare every layer's content and mask textures. All the
+        // per-layer content work (parallel Vello encodes, embedded GpuSurface
+        // renders, mask rasterization) lands here, before any composite state
+        // is touched.
+        //
+        // C2: when there are 2+ independent Vello layers, encode them to
+        // per-layer pooled textures across CPU cores up front; the loop below
+        // consumes the results in painter's order. A single Vello layer keeps
+        // the sequential path (nothing to parallelize), and GpuSurface layers
+        // are unaffected.
+        let mut encoded_vello: Vec<Option<PooledLayerTexture>> =
             (0..render_layers.len()).map(|_| None).collect();
-        let mut _encoded_layer_textures: Vec<wgpu::Texture> = Vec::new();
         {
-            let vello_scenes: Vec<(usize, &vello::Scene)> = render_layers
+            let vello_indices: Vec<usize> = render_layers
                 .iter()
                 .enumerate()
                 .filter_map(|(index, layer)| match layer {
-                    RenderLayer::Vello(scene) => Some((index, scene)),
+                    RenderLayer::Vello(_) => Some(index),
                     RenderLayer::GpuSurface(_) => None,
                     #[cfg(hydrolysis_macos_system_webview)]
                     RenderLayer::NativeView(_) => {
@@ -1282,27 +1402,36 @@ impl HydrolysisRenderer {
                     }
                 })
                 .collect();
-            if vello_scenes.len() > 1 {
-                for (index, texture, view) in encode_vello_layers_parallel(
+            if vello_indices.len() > 1 {
+                let vello_scenes: Vec<(usize, &vello::Scene, PooledLayerTexture)> = vello_indices
+                    .iter()
+                    .map(|&index| {
+                        let leased = self.compositor.acquire_layer_texture(
+                            target.device,
+                            target.width,
+                            target.height,
+                        );
+                        let RenderLayer::Vello(scene) = &render_layers[index] else {
+                            panic!("hydrolysis renderer: vello layer index changed type");
+                        };
+                        (index, scene, leased)
+                    })
+                    .collect();
+                for (index, leased) in encode_vello_layers_parallel(
                     &self.compositor.vello_renderer_pool,
                     target.device,
                     target.queue,
-                    &vello_scenes,
+                    vello_scenes,
                     target.width,
                     target.height,
                 ) {
-                    encoded_vello[index] = Some(view);
-                    _encoded_layer_textures.push(texture);
+                    encoded_vello[index] = Some(leased);
                 }
             }
         }
 
+        let mut ready: Vec<ReadyLayerComposite> = Vec::with_capacity(render_layers.len());
         for (layer_index, layer) in render_layers.iter().enumerate() {
-            let load_op = if is_first_layer {
-                wgpu::LoadOp::Clear(color_to_wgpu(target.base_color))
-            } else {
-                wgpu::LoadOp::Load
-            };
             match layer {
                 RenderLayer::Vello(scene) => {
                     tracing::trace!(
@@ -1311,8 +1440,8 @@ impl HydrolysisRenderer {
                         segments = scene.encoding().n_path_segments,
                         "compositing Hydrolysis Vello layer"
                     );
-                    let view = match encoded_vello[layer_index].take() {
-                        Some(view) => view,
+                    let leased = match encoded_vello[layer_index].take() {
+                        Some(leased) => leased,
                         None => self.render_vello_layer_to_texture(
                             target.device,
                             target.queue,
@@ -1326,16 +1455,13 @@ impl HydrolysisRenderer {
                         target.queue,
                         target.format,
                     );
-                    self.composite_texture_layer(
-                        &target,
-                        TextureLayerComposite {
-                            layer_view: &view,
-                            mask_view: &mask_view,
-                            uniform_bytes: &fullscreen_uniform,
-                            load_op,
-                        },
-                    );
-                    is_first_layer = false;
+                    ready.push(ReadyLayerComposite {
+                        layer_view: leased.view.clone(),
+                        layer_texture: Some(leased),
+                        mask_view,
+                        mask_texture: None,
+                        uniform_bytes: fullscreen_uniform,
+                    });
                 }
                 // Embedded GPU surfaces render serially by design: `GpuView` is a
                 // user-facing, main-thread contract (`!Send` setup/render futures,
@@ -1354,6 +1480,10 @@ impl HydrolysisRenderer {
                         height: target.height,
                         transform: layer.transform,
                         bounds: layer.bounds,
+                        hit_rect: layer.hit_rect,
+                        pointer_position: self.hit_test.pointer_position,
+                        pointer_press_origin: self.hit_test.pointer_press_origin,
+                        now: self.frame_instant(),
                     };
                     let GpuSurfaceSource::Owned(runtime) = &layer.source;
                     let output_format = runtime.borrow().output_format_for(target.format);
@@ -1378,31 +1508,32 @@ impl HydrolysisRenderer {
                     if prepared.needs_redraw {
                         needs_redraw = true;
                     }
-                    let mask_view = if layer.active_layers.is_empty() {
-                        self.default_compositor_mask_view(
-                            target.device,
-                            target.queue,
-                            target.format,
+                    let (mask_view, mask_texture) = if layer.active_layers.is_empty() {
+                        (
+                            self.default_compositor_mask_view(
+                                target.device,
+                                target.queue,
+                                target.format,
+                            ),
+                            None,
                         )
                     } else {
-                        self.render_active_layers_mask_to_texture(
+                        let leased = self.render_active_layers_mask_to_texture(
                             target.device,
                             target.queue,
                             target.width,
                             target.height,
                             &layer.active_layers,
-                        )
+                        );
+                        (leased.view.clone(), Some(leased))
                     };
-                    self.composite_texture_layer(
-                        &target,
-                        TextureLayerComposite {
-                            layer_view: &prepared.view,
-                            mask_view: &mask_view,
-                            uniform_bytes: &prepared.uniform_bytes,
-                            load_op,
-                        },
-                    );
-                    is_first_layer = false;
+                    ready.push(ReadyLayerComposite {
+                        layer_view: prepared.view,
+                        layer_texture: None,
+                        mask_view,
+                        mask_texture,
+                        uniform_bytes: prepared.uniform_bytes,
+                    });
                 }
                 #[cfg(hydrolysis_macos_system_webview)]
                 RenderLayer::NativeView(_) => {
@@ -1410,8 +1541,20 @@ impl HydrolysisRenderer {
                 }
             }
         }
-        if is_first_layer {
+
+        // Phase 2 — one render pass, one submit, painter's order.
+        if ready.is_empty() {
             self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
+        } else {
+            self.composite_ready_layers(&target, &ready);
+        }
+        for layer in ready {
+            if let Some(leased) = layer.layer_texture {
+                self.compositor.release_layer_texture(leased);
+            }
+            if let Some(leased) = layer.mask_texture {
+                self.compositor.release_layer_texture(leased);
+            }
         }
         for _ in 0..transient_layer_count {
             render_layers.pop();

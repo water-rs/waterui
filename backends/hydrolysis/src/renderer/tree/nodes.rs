@@ -598,16 +598,17 @@ impl GpuSurfaceNode {
     /// [`HydrolysisRenderer::render_gpu_surface`] exactly, but with an `Owned`
     /// layer source so a per-frame re-flush re-binds the same runtime.
     pub(crate) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
+        let hit_rect = transformed_rect(ctx.hit_transform, ctx.bounds);
         renderer.push_gpu_surface_layer(
             GpuSurfaceSource::Owned(Rc::clone(&self.runtime)),
             ctx.transform,
             ctx.bounds,
+            hit_rect,
         );
         let runtime = Rc::clone(&self.runtime);
-        renderer.register_trackpad_pan_target(
-            transformed_rect(ctx.hit_transform, ctx.bounds),
-            move |dx, dy, phase| runtime.borrow_mut().handle_trackpad_pan(dx, dy, phase),
-        );
+        renderer.register_trackpad_pan_target(hit_rect, move |dx, dy, phase| {
+            runtime.borrow_mut().handle_trackpad_pan(dx, dy, phase)
+        });
     }
 }
 
@@ -640,24 +641,10 @@ impl ViewEffectNode {
             "hydrolysis ViewEffect requires non-zero output dimensions"
         );
 
-        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_view_effect_input"),
-            size: wgpu::Extent3d {
-                width: input_width,
-                height: input_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let (input_texture, input_view) = {
+            let (texture, view) = runtime.input_texture(&device, input_width, input_height);
+            (texture.clone(), view.clone())
+        };
         renderer.render_child_node_to_texture(
             &self.child.borrow(),
             ctx,
@@ -671,29 +658,16 @@ impl ViewEffectNode {
             },
         );
 
-        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_view_effect_output"),
-            size: wgpu::Extent3d {
-                width: output_width,
-                height: output_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let (output_texture, output_view) = {
+            let (texture, view) = runtime.output_texture(&device, output_width, output_height);
+            (texture.clone(), view.clone())
+        };
 
         let input = ViewEffectInput {
             device: &device,
             queue: &queue,
             texture: &input_texture,
-            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            view: input_view,
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: input_width,
             height: input_height,
@@ -702,18 +676,23 @@ impl ViewEffectNode {
             device: &device,
             queue: &queue,
             texture: &output_texture,
-            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            view: output_view,
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: output_width,
             height: output_height,
         };
         let needs_redraw = runtime.effect_mut().render(&input, &output);
-        drop(runtime);
         if needs_redraw {
             renderer.signals.request_refresh();
         }
 
-        let image = renderer.vello_renderer.register_texture(output_texture);
+        let image = runtime.register_output_image(
+            &mut renderer.vello_renderer,
+            output_texture,
+            output_width,
+            output_height,
+        );
+        drop(runtime);
         renderer.compositor.active_filter_images.push(image.clone());
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(
@@ -749,31 +728,30 @@ impl AppliedFilterNode {
 
         let width = (ctx.bounds.width().max(1.0).round()) as u32;
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let should_capture_input = {
-            let runtime = self.runtime.borrow();
-            !renderer.reuse_applied_filter_inputs || !runtime.has_input_texture(width, height)
-        };
+        // A tree flush always recaptures the child: whole-scene redraw is the
+        // renderer's contract, and skipping the capture is exactly how a
+        // filtered subtree freezes at stale pixels. The redraw-only refresh
+        // path (which never re-flushes the tree) is the one place the cached
+        // input is legitimately reused.
         let (input_texture, input_view) = {
             let mut runtime = self.runtime.borrow_mut();
             let (texture, view) = runtime.input_texture(&device, width, height);
             (texture.clone(), view.clone())
         };
-        if should_capture_input {
-            let capture_started_at = Instant::now();
-            renderer.render_child_node_to_texture(
-                &self.child,
-                ctx,
-                &self.env,
-                ChildTextureTarget {
-                    texture: &input_texture,
-                    view: &input_view,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    width,
-                    height,
-                },
-            );
-            renderer.frame_applied_filter_capture += capture_started_at.elapsed();
-        }
+        let capture_started_at = Instant::now();
+        renderer.render_child_node_to_texture(
+            &self.child,
+            ctx,
+            &self.env,
+            ChildTextureTarget {
+                texture: &input_texture,
+                view: &input_view,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                width,
+                height,
+            },
+        );
+        renderer.frame_applied_filter_capture += capture_started_at.elapsed();
 
         let effect_started_at = Instant::now();
         let (image, needs_redraw) = self.runtime.borrow_mut().render_output(

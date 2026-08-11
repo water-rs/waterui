@@ -434,14 +434,10 @@ fn build_window_scene<P: PlatformWindow>(
     env: &Environment,
     bounds: vello::kurbo::Rect,
     root_transform: vello::kurbo::Affine,
-    reuse_filter_inputs: bool,
     drain_local_tasks: &mut dyn FnMut() -> bool,
     phases: &mut FramePhases,
 ) {
     runtime.renderer.reset_scene();
-    runtime
-        .renderer
-        .set_applied_filter_input_cache_reuse(reuse_filter_inputs);
     runtime.renderer.begin_rebuild_frame();
     runtime.renderer.set_window_bounds(bounds);
     let build_content_started_at = Instant::now();
@@ -478,7 +474,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
     drain_local_tasks: &mut dyn FnMut() -> bool,
-) -> (bool, u32, FramePhases) {
+) -> ScenePumpOutcome {
     let scale_factor = runtime.platform.scale_factor();
     let surface = runtime.platform.surface();
     let (width, height) = surface.size();
@@ -499,6 +495,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
     }
 
     let mut built = false;
+    let mut flushed = false;
     match runtime.mode {
         FrameMode::Idle => {}
         FrameMode::Reencode | FrameMode::Refresh if !runtime.renderer.has_render_tree() => {
@@ -507,11 +504,11 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
                 env,
                 bounds,
                 root_transform,
-                !renderer_requested_rebuild,
                 drain_local_tasks,
                 &mut phases,
             );
             built = true;
+            flushed = true;
             runtime.clear_frame_mode();
             // Anything the build itself flagged as needing another pass — a hover
             // change under the pointer, a renderer-side structural request raised
@@ -537,10 +534,12 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
         FrameMode::Reencode => {
             reencode_window_scene(runtime, env, &mut phases);
             runtime.clear_frame_mode();
+            flushed = true;
         }
         FrameMode::Refresh => {
             refresh_window_scene(runtime, env, &mut phases);
             runtime.clear_frame_mode();
+            flushed = true;
         }
     }
     if runtime.renderer.take_next_frame_rebuild_request() {
@@ -552,7 +551,20 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
     phases.rebuild = pump_started_at.elapsed();
-    (built, u32::from(built), phases)
+    ScenePumpOutcome {
+        built,
+        flushed,
+        phases,
+    }
+}
+
+/// What one scene pump did: whether the retained tree was built for the first
+/// time, and whether any flush (build, re-encode, or refresh) ran at all this
+/// frame. An idle pump leaves both false.
+pub(super) struct ScenePumpOutcome {
+    pub(super) built: bool,
+    pub(super) flushed: bool,
+    pub(super) phases: FramePhases,
 }
 
 pub(super) fn pump_window_semantics<P: PlatformWindow>(
@@ -608,7 +620,7 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
         return true;
     }
 
-    let (rebuilt, _, _) = pump_window_scene(runtime, env, &mut || false);
+    let rebuilt = pump_window_scene(runtime, env, &mut || false).built;
     apply_window_size_limits(runtime, env);
     runtime.renderer.clear_frame_resources();
     runtime
@@ -703,16 +715,20 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
-        let (scene_rebuilt, rebuild_iterations, rebuild_phases) =
-            pump_window_scene(runtime, env, drain_local_tasks);
-        rebuilt |= scene_rebuilt;
+        let pump_outcome = pump_window_scene(runtime, env, drain_local_tasks);
+        let rebuild_phases = pump_outcome.phases;
+        rebuilt |= pump_outcome.built;
         apply_window_size_limits(runtime, env);
         let clear_color = window_clear_color(&runtime.window, env);
 
         let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());
         #[cfg(hydrolysis_macos_system_webview)]
         let (width, height) = runtime.platform.surface().size();
-        if !rebuilt {
+        // The redraw-only filter refresh exists for frames that present without
+        // re-flushing the tree (an animated filter while the scene is idle). Any
+        // flush already ran every filter through its node, so refreshing again
+        // here would execute animated filters twice per frame.
+        if !pump_outcome.flushed {
             runtime.renderer.begin_redraw_frame();
             let surface = runtime.platform.surface();
             runtime
@@ -839,7 +855,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                             ..FramePhases::default()
                         },
                         counters: FrameCounters {
-                            rebuild_iterations,
+                            rebuild_iterations: u32::from(pump_outcome.built),
                             measurement_cache_hits,
                             measurement_cache_misses,
                             scene_layers,
@@ -885,7 +901,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                 ..FramePhases::default()
             },
             counters: FrameCounters {
-                rebuild_iterations,
+                rebuild_iterations: u32::from(pump_outcome.built),
                 measurement_cache_hits,
                 measurement_cache_misses,
                 scene_layers,
@@ -915,11 +931,11 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                     render: render_duration,
                     present: present_duration,
                     total: elapsed_or_zero(frame_started_at),
-                    rebuild_iterations,
+                    rebuild_iterations: u32::from(pump_outcome.built),
                     applied_filter_count,
                     applied_filter_capture_us,
                     applied_filter_effect_us,
-                    rebuilt: rebuild_iterations > 0,
+                    rebuilt: pump_outcome.built,
                 },
             );
         }
@@ -1315,17 +1331,6 @@ where
     should_close
 }
 
-/// Whether the game-engine renderer's window is currently visible.
-///
-/// Hydrolysis renders every display refresh by design. Minimized and closed
-/// windows are excluded so background windows do not keep driving the GPU.
-fn window_is_visible(window: &Window) -> bool {
-    !matches!(
-        window.state.get(),
-        waterui::window::WindowState::Minimized | waterui::window::WindowState::Closed
-    )
-}
-
 pub(super) fn advance_runtime<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -1369,13 +1374,6 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     }
     if runtime.renderer.advance_text_caret_animation(now) {
         runtime.renderer.request_redraw();
-        runtime.platform.request_redraw();
-    }
-    if window_is_visible(&runtime.window) {
-        // Keep presenting every display refresh while the window is visible. The
-        // redraw is delivered through the AutoVsync-gated present, so this paces
-        // to the monitor refresh rather than spinning the CPU.
-        runtime.request_reencode();
         runtime.platform.request_redraw();
     }
     if runtime.renderer.take_rebuild_request() {
