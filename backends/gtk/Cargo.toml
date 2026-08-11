@@ -32,6 +32,7 @@ waterui-browser-cef = { workspace = true, optional = true }
 waterui-browser-wpe = { workspace = true, optional = true }
 nami.workspace = true
 tracing.workspace = true
+pin-project-lite.workspace = true
 executor-core.workspace = true
 native-executor.workspace = true
 
