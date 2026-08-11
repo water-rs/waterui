@@ -173,45 +173,37 @@ mod tests {
             .expect("cli crate should live under workspace root");
         let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
 
-        assert_eq!(
-            manifest_backend_field(&cli_manifest, "apple-backend-url"),
-            git_output(
-                workspace_root,
-                &[
-                    "config",
-                    "-f",
-                    ".gitmodules",
-                    "--get",
-                    "submodule.backends/apple.url",
-                ],
-            ),
-        );
-        assert_eq!(
-            manifest_backend_field(&cli_manifest, "apple-backend-commit"),
-            git_output(
-                &workspace_root.join("backends/apple"),
-                &["rev-parse", "HEAD"]
-            ),
-        );
-        assert_eq!(
-            manifest_backend_field(&cli_manifest, "android-backend-url"),
-            git_output(
-                workspace_root,
-                &[
-                    "config",
-                    "-f",
-                    ".gitmodules",
-                    "--get",
-                    "submodule.backends/android.url",
-                ],
-            ),
-        );
-        assert_eq!(
-            manifest_backend_field(&cli_manifest, "android-backend-commit"),
-            git_output(
-                &workspace_root.join("backends/android"),
-                &["rev-parse", "HEAD"]
-            ),
-        );
+        // A workspace build reads the submodules directly, so these literals only ever
+        // reach a *published* CLI, which has no submodules and must carry the value. They
+        // cannot be derived away — only kept honest. When one goes stale, a released CLI
+        // scaffolds projects against a backend behind the one this repository builds
+        // against, so say plainly what to write rather than printing two bare hashes.
+        for (backend, submodule) in [("apple", "backends/apple"), ("android", "backends/android")] {
+            let commit_field = format!("{backend}-backend-commit");
+            let pinned = manifest_backend_field(&cli_manifest, &commit_field);
+            let actual = git_output(&workspace_root.join(submodule), &["rev-parse", "HEAD"]);
+            assert_eq!(
+                pinned, actual,
+                "cli/Cargo.toml `{commit_field}` is stale. \
+                 Set `{commit_field} = \"{actual}\"` under [package.metadata.waterui-scaffold]; \
+                 a released CLI scaffolds against the pinned commit, not the submodule."
+            );
+
+            let url_field = format!("{backend}-backend-url");
+            assert_eq!(
+                manifest_backend_field(&cli_manifest, &url_field),
+                git_output(
+                    workspace_root,
+                    &[
+                        "config",
+                        "-f",
+                        ".gitmodules",
+                        "--get",
+                        &format!("submodule.{submodule}.url"),
+                    ],
+                ),
+                "cli/Cargo.toml `{url_field}` disagrees with .gitmodules",
+            );
+        }
     }
 }
