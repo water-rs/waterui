@@ -51,8 +51,28 @@ use waterkit_audio as _;
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
 pub use waterui_video;
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(all(not(target_vendor = "apple"), feature = "gpu"))]
 pub use waterui_video_gpu;
+
+/// Installs the GPU video pipeline where it is the platform's video backend.
+///
+/// Called from the `export!`-generated `waterui_init`. This lives in a
+/// function (not in the macro body) so the `gpu` feature is resolved against
+/// this crate's features rather than the app crate's.
+#[doc(hidden)]
+#[cfg_attr(
+    any(target_vendor = "apple", not(feature = "gpu")),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the body is platform/feature-dependent; the non-Apple GPU arm installs at runtime"
+    )
+)]
+pub fn __install_gpu_video(env: &mut waterui::Environment) {
+    #[cfg(all(not(target_vendor = "apple"), feature = "gpu"))]
+    waterui_video_gpu::install(env);
+    #[cfg(any(target_vendor = "apple", not(feature = "gpu")))]
+    let _ = env;
+}
 
 use waterui_core::metadata::MetadataKey;
 
@@ -104,8 +124,7 @@ macro_rules! export {
                 let inspector = unsafe { $crate::__init() };
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 waterui::inspector::install(&mut env, inspector);
-                #[cfg(not(target_vendor = "apple"))]
-                $crate::waterui_video_gpu::install(&mut env);
+                $crate::__install_gpu_video(&mut env);
                 $crate::__configure_browser_environment(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
