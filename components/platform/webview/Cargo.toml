@@ -16,6 +16,8 @@ waterui-layout.workspace = true
 waterui-url.workspace = true
 waterui-str.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+executor-core.workspace = true
 cookie = "0.18.1"
 base64 = "0.22"
 serde = { workspace = true, features = ["derive"] }

@@ -41,6 +41,8 @@ pub use watcher::{WatcherGuard, WatcherSet};
 pub mod bridge;
 mod script;
 pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
+mod state;
+pub use state::{FieldEntry, JsField, StateWriteError};
 
 use waterui_core::{
     Binding, Computed, Environment, Native, Signal, View, binding,
@@ -237,6 +239,7 @@ impl WebView {
             scripts: Vec::new(),
             handlers: Vec::new(),
             event_watchers: Vec::new(),
+            state: Vec::new(),
         }
     }
 
@@ -382,7 +385,7 @@ impl WebView {
     )]
     pub fn eval<T: serde::de::DeserializeOwned>(
         &self,
-        expr: JsExpr,
+        expr: &JsExpr,
     ) -> impl core::future::Future<Output = Result<T, JsError>> + '_ {
         let call = expr.wrapped_call();
         async move { self.run_wrapped(&call).await?.decode() }
@@ -401,13 +404,17 @@ impl WebView {
     )]
     pub fn exec(
         &self,
-        program: JsProgram,
+        program: &JsProgram,
     ) -> impl core::future::Future<Output = Result<(), JsError>> + '_ {
         let call = program.wrapped_call();
         async move { self.run_wrapped(&call).await?.decode() }
     }
 
     /// Runs a wrapped call and parses the envelope it returns.
+    #[expect(
+        clippy::future_not_send,
+        reason = "native web views and JavaScript execution are main-thread-affine"
+    )]
     async fn run_wrapped(&self, call: &str) -> Result<JsOutcome, JsError> {
         let raw = self
             .handle
@@ -499,6 +506,7 @@ pub struct WebViewOpen {
     scripts: Vec<(Str, ScriptInjectionTime)>,
     handlers: Vec<(Str, BoxedMessageHandler)>,
     event_watchers: Vec<Box<dyn Fn(WebViewEvent)>>,
+    state: Vec<state::PendingField>,
 }
 
 impl fmt::Debug for WebViewOpen {
@@ -510,6 +518,7 @@ impl fmt::Debug for WebViewOpen {
             .field("scripts", &self.scripts.len())
             .field("handlers", &self.handlers.len())
             .field("event_watchers", &self.event_watchers.len())
+            .field("state_fields", &self.state.len())
             .finish()
     }
 }
@@ -540,6 +549,22 @@ impl WebViewOpen {
         handler: impl Fn(&[u8]) -> Vec<u8> + 'static,
     ) -> Self {
         self.handlers.push((name.into(), Box::new(handler)));
+        self
+    }
+
+    /// Mirrors a reactive value into the page.
+    ///
+    /// The page reads it as `waterui.state.<name>` — a local property, so reading
+    /// never crosses the boundary — and subscribes with `waterui.watch(name, cb)`.
+    /// A [`Binding`] is writable from JavaScript and the write flows back into it;
+    /// anything else is read-only, and assigning to it throws.
+    ///
+    /// Granularity follows the signal: exposing a `Binding<BigStruct>` and
+    /// changing one field re-sends the whole struct. Expose finer bindings when
+    /// that matters.
+    pub fn expose<F: state::JsField + 'static>(mut self, name: impl Into<Str>, field: F) -> Self {
+        self.state
+            .push(state::pending_field(name.into(), field));
         self
     }
 
@@ -583,6 +608,7 @@ impl WebViewOpen {
             scripts,
             handlers,
             event_watchers,
+            state,
         } = self;
         let webview = controller.open();
         if let Some(enabled) = redirects_enabled {
@@ -598,6 +624,9 @@ impl WebViewOpen {
             // The web view owns these for its whole life, which is exactly the
             // case `WatcherGuard::forget` documents.
             webview.handle().watch(watcher).forget();
+        }
+        if !state.is_empty() {
+            state::install(&webview, state);
         }
         let webview = webview.bind_navigation(url);
         if let Some(user_agent) = user_agent {
