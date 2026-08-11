@@ -1,3 +1,5 @@
+pub mod protocol;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
@@ -217,7 +219,7 @@ impl CefCdpSession {
         // CEF attaches the DevTools agent in response to the first protocol
         // message. Probe it immediately so page readiness never depends on a
         // later user command.
-        drop(session.execute_raw("Browser.getVersion", &json!({})));
+        drop(session.execute(&protocol::GetVersion {}));
 
         session
     }
@@ -255,6 +257,29 @@ impl CefCdpSession {
                 .attachment_watchers
                 .borrow_mut()
                 .push(Box::new(watcher));
+        }
+    }
+
+    /// Runs one typed command and decodes its response.
+    ///
+    /// # Errors
+    ///
+    /// Returns the protocol error Chromium reported, or a decode error when the
+    /// response is not the shape the command declares.
+    pub(crate) fn execute<C: protocol::CdpCommand>(
+        &self,
+        command: &C,
+    ) -> impl Future<Output = Result<C::Response, CefCdpError>> + 'static + use<C> {
+        let params = serde_json::to_value(command)
+            .expect("a CDP command's parameters must serialize");
+        let future = self.execute_raw(C::METHOD, &params);
+        async move {
+            let response = future.await?;
+            serde_json::from_value(response).map_err(|error| CefCdpError::Protocol {
+                method: C::METHOD.to_string(),
+                code: 0,
+                message: format!("response did not match the expected shape: {error}"),
+            })
         }
     }
 
