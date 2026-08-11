@@ -169,6 +169,13 @@ impl Annotation {
 }
 
 /// Map display style.
+///
+/// Native realizations resolve these against the platform map's own imagery.
+/// The portable GPU realization has no imagery of its own, so an application
+/// asking for [`Self::Satellite`] or [`Self::Hybrid`] must also supply the
+/// matching provider style (`MapGpuOptions::satellite_style_url` and
+/// `hybrid_style_url`). The map reports a load failure when it did not, rather
+/// than silently drawing the standard style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MapStyle {
     /// Standard road map.

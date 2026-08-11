@@ -25,7 +25,7 @@ use waterui_core::{
         MagnificationGesture,
     },
 };
-use waterui_map::{Coordinate, MapConfig, Region};
+use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
 use waterui_url::Url;
 
 pub use render::{MapScene, map_surface};
@@ -103,6 +103,8 @@ impl Default for MapNetworkRetryPolicy {
 #[derive(Debug, Clone)]
 pub struct MapGpuOptions {
     style_url: Url,
+    satellite_style_url: Option<Url>,
+    hybrid_style_url: Option<Url>,
     maximum_style_bytes: NonZeroUsize,
     maximum_tilejson_bytes: NonZeroUsize,
     maximum_tile_bytes: NonZeroUsize,
@@ -114,7 +116,10 @@ pub struct MapGpuOptions {
 }
 
 impl MapGpuOptions {
-    /// Creates options for a `MapLibre` style URL.
+    /// Creates options for the `MapLibre` style used by [`MapStyle::Standard`].
+    ///
+    /// Supply [`Self::satellite_style_url`] and [`Self::hybrid_style_url`] as
+    /// well if the application uses those semantic styles.
     ///
     /// # Panics
     ///
@@ -123,6 +128,8 @@ impl MapGpuOptions {
     pub const fn new(style_url: Url) -> Self {
         Self {
             style_url,
+            satellite_style_url: None,
+            hybrid_style_url: None,
             maximum_style_bytes: NonZeroUsize::new(8 * 1024 * 1024)
                 .expect("static style limit must be non-zero"),
             maximum_tilejson_bytes: NonZeroUsize::new(2 * 1024 * 1024)
@@ -137,6 +144,20 @@ impl MapGpuOptions {
             network_retry_policy: MapNetworkRetryPolicy::DEFAULT,
             camera_animation: Animation::ease_in_out(core::time::Duration::from_millis(240)),
         }
+    }
+
+    /// Sets the style served for [`MapStyle::Satellite`].
+    #[must_use]
+    pub fn satellite_style_url(mut self, value: Url) -> Self {
+        self.satellite_style_url = Some(value);
+        self
+    }
+
+    /// Sets the style served for [`MapStyle::Hybrid`].
+    #[must_use]
+    pub fn hybrid_style_url(mut self, value: Url) -> Self {
+        self.hybrid_style_url = Some(value);
+        self
     }
 
     /// Sets the maximum accepted `MapLibre` style response size.
@@ -200,8 +221,26 @@ impl MapGpuOptions {
         self
     }
 
-    pub(crate) const fn style_url(&self) -> &Url {
-        &self.style_url
+    /// Returns the style URL configured for one semantic map style.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapLoadError::Unsupported`] when the application asked for a
+    /// style it never supplied a provider URL for.
+    pub(crate) fn style_url(&self, style: MapStyle) -> Result<&Url, MapLoadError> {
+        match style {
+            MapStyle::Standard => Ok(&self.style_url),
+            MapStyle::Satellite => self.satellite_style_url.as_ref().ok_or_else(|| {
+                MapLoadError::Unsupported(String::from(
+                    "MapStyle::Satellite needs MapGpuOptions::satellite_style_url",
+                ))
+            }),
+            MapStyle::Hybrid => self.hybrid_style_url.as_ref().ok_or_else(|| {
+                MapLoadError::Unsupported(String::from(
+                    "MapStyle::Hybrid needs MapGpuOptions::hybrid_style_url",
+                ))
+            }),
+        }
     }
 
     pub(crate) const fn in_flight_tile_request_limit(&self) -> NonZeroUsize {

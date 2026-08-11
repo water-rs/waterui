@@ -169,13 +169,16 @@ impl MapStyle {
         clippy::future_not_send,
         reason = "map style loading runs on WaterUI's main-thread local executor"
     )]
-    pub async fn load(options: &MapGpuOptions) -> Result<Self, MapLoadError> {
-        let style_url = Url::parse(options.style_url().as_ref()).map_err(|source| {
-            MapLoadError::InvalidUrl {
-                url: options.style_url().to_string(),
+    pub async fn load(
+        options: &MapGpuOptions,
+        style: waterui_map::MapStyle,
+    ) -> Result<Self, MapLoadError> {
+        let configured = options.style_url(style)?;
+        let style_url =
+            Url::parse(configured.as_ref()).map_err(|source| MapLoadError::InvalidUrl {
+                url: configured.to_string(),
                 source,
-            }
-        })?;
+            })?;
         let bytes = network::fetch(
             style_url.as_str(),
             options.maximum_style_bytes.get(),
