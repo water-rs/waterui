@@ -257,6 +257,22 @@ impl Text {
         })
     }
 
+    /// Creates localized text that falls back to a built-in string rather than
+    /// to the lookup key.
+    ///
+    /// Framework chrome such as a back affordance must stay readable in an
+    /// application that ships no catalog at all, so the fallback is a real word
+    /// instead of a dotted key.
+    pub fn localized_or(key: &'static str, fallback: &'static str) -> Self {
+        Self::localized_with(move |env, locale| {
+            let translated = env
+                .get::<TranslationCatalog>()
+                .and_then(|catalog| catalog.lookup_text(locale, key))
+                .unwrap_or_else(|| Str::from_static(fallback));
+            TextConfig::new(StyledStr::plain(translated))
+        })
+    }
+
     /// Creates text from a locale-aware config resolver.
     pub fn localized_with(
         resolver: impl Fn(&Environment, &Locale) -> TextConfig + 'static,

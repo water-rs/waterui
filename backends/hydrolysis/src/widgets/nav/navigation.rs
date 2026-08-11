@@ -21,8 +21,8 @@ use waterui::navigation::split::NavigationSplitDetailBuilder;
 use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState,
     NavigationSearch, NavigationSplitLayout, NavigationStack, NavigationTitleDisplayMode,
-    NavigationToolbar, NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
-    RetainedNavigationTransition, resolve_navigation_root,
+    NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
+    RetainedNavigationTransition, navigation_back_label, resolve_navigation_root,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::text_field::TextField;
@@ -182,18 +182,18 @@ impl HydroNativeView for Native<NavigationView> {
 pub(crate) fn navigation_view_accessibility(
     renderer: &mut HydrolysisRenderer,
     ctx: RenderContext,
-    bar: &Bar,
+    hidden: &Computed<bool>,
+    display_mode: NavigationTitleDisplayMode,
     default_title_label: Option<String>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let bar_hidden = renderer.read_signal(&bar.hidden);
-        if bar_hidden {
+        if renderer.read_signal(hidden) {
             return;
         }
         let metrics = widget_theme(env).navigation_metrics();
-        let bar_height = navigation_base_bar_height_for_display_mode(bar.display_mode, env);
+        let bar_height = navigation_base_bar_height_for_display_mode(display_mode, env);
         let bar_rect = vello::kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
@@ -207,12 +207,12 @@ pub(crate) fn navigation_view_accessibility(
         if let Some(label) = bar_label {
             bar_node.set_label(label);
         }
-        let title_height = if matches!(bar.display_mode, NavigationTitleDisplayMode::Large) {
+        let title_height = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
             metrics.large_title_height
         } else {
             metrics.inline_title_height
         };
-        let title_y0 = if matches!(bar.display_mode, NavigationTitleDisplayMode::Large) {
+        let title_y0 = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
             bar_rect.y1 - metrics.large_title_bottom_inset - title_height
         } else {
             bar_rect.y0 + (bar_height - title_height) * 0.5
@@ -254,7 +254,7 @@ pub(crate) fn navigation_view_accessibility(
     }
     #[cfg(not(feature = "accessibility"))]
     {
-        let _ = (renderer, ctx, bar, default_title_label, env);
+        let _ = (renderer, ctx, hidden, display_mode, default_title_label, env);
     }
 }
 
@@ -303,17 +303,12 @@ pub(crate) fn measure_navigation_view_node(
     let leading_size = measure_retained_toolbar_group(&state.leading, hydro, env);
     let trailing_size = measure_retained_toolbar_group(&state.trailing, hydro, env);
     let bottom_size = measure_retained_toolbar_group(&state.bottom, hydro, env);
-    let search_size = if let Some(search) = state.search.as_ref() {
-        let body_env = env.clone();
-        let search_field = TextField::new(&search.text).prompt(search.prompt.clone());
-        let search_body = normalize_layout_view(
-            AnyView::new(waterui_core::View::body(search_field, &body_env)),
-            &body_env,
-        );
-        measure_view_intrinsic(&search_body, hydro, &body_env)
-    } else {
-        LayoutSize::zero()
-    };
+    // Measure the retained field itself: a throwaway TextField would allocate on
+    // every measure and shape its text in a cache the rendered field never sees.
+    let search_size = state
+        .search_field
+        .as_ref()
+        .map_or_else(LayoutSize::zero, |field| field.measure_built(hydro, env));
     let content_size = state.content.measure_built(hydro, env);
     let width = f64::from(content_size.width)
         .max(
@@ -373,20 +368,11 @@ pub(crate) fn render_navigation_view_node(
                 state.title.default_a11y_label(),
             )
         };
-        let bar = Bar {
-            title: AnyView::default(),
-            subtitle: AnyView::default(),
-            toolbar: NavigationToolbar::default(),
-            search: None,
-            color: None,
-            resolved_color: None,
-            hidden: hidden_signal,
-            display_mode,
-        };
         navigation_view_accessibility(
             ctx.renderer_mut(),
             render_ctx,
-            &bar,
+            &hidden_signal,
+            display_mode,
             default_title_label,
             env,
         );
