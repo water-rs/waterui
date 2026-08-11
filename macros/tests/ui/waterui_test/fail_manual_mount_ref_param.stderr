@@ -1,0 +1,5 @@
+error: the manual-mount form of `#[waterui::test(...)]` takes the `UiBuilder` by value; mount it in the test body
+ --> tests/ui/waterui_test/fail_manual_mount_ref_param.rs:2:26
+  |
+2 | fn manual_with_ref(_app: &mut waterui_testing::SemanticApp) {}
+  |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
