@@ -4,7 +4,7 @@
 //! Two things separate this from handing a backend a string:
 //!
 //! * An expression and a program are different types, because backends disagree
-//!   about which one they evaluate. WebKit's `callAsyncJavaScript` takes a
+//!   about which one they evaluate. `WebKit`'s `callAsyncJavaScript` takes a
 //!   function body and needs an explicit `return`; CDP's `Runtime.evaluate`
 //!   takes an expression. Deciding once, in the type, keeps that disagreement out
 //!   of user code.
@@ -15,17 +15,20 @@
 
 use waterui_str::Str;
 
-/// Everything WaterUI injects at document start: the bridge and the evaluation
+/// Everything `WaterUI` injects at document start: the bridge and the evaluation
 /// wrapper.
 ///
 /// Backends inject this one constant rather than assembling the pieces, so a
 /// backend cannot end up with a bridge but no wrapper.
-pub const DOCUMENT_START_SCRIPT: &str =
-    concat!(include_str!("js/bridge.js"), include_str!("js/eval.js"));
+pub const DOCUMENT_START_SCRIPT: &str = concat!(
+    include_str!("js/bridge.js"),
+    include_str!("js/eval.js"),
+    include_str!("js/state.js"),
+);
 
 /// A JavaScript expression that evaluates to a value.
 ///
-/// Build one with [`eval!`](crate::eval) for a checked literal, or
+/// Build one with [`eval!`](waterui_macros::eval) for a checked literal, or
 /// [`JsExpr::raw`] for source that only exists at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsExpr {
@@ -61,7 +64,7 @@ macro_rules! script_body {
             /// Used by the macros; not part of the stable surface.
             #[doc(hidden)]
             #[must_use]
-            pub fn __from_parts(source: &'static str, args: Vec<serde_json::Value>) -> Self {
+            pub const fn __from_parts(source: &'static str, args: Vec<serde_json::Value>) -> Self {
                 Self {
                     source: Str::from_static(source),
                     args,
@@ -70,7 +73,7 @@ macro_rules! script_body {
 
             #[doc = concat!("The ", $what, " source.")]
             #[must_use]
-            pub fn source(&self) -> &str {
+            pub const fn source(&self) -> &str {
                 self.source.as_str()
             }
 
