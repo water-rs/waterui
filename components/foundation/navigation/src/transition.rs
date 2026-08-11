@@ -419,13 +419,13 @@ mod tests {
 
         assert_eq!(transition.native(), NativeNavigationTransition::Automatic);
         assert_eq!(transition.retained(), RetainedNavigationTransition::Frames);
-        assert_eq!(
-            transition
-                .frame(1.0, NavigationTransitionDirection::Push)
-                .outgoing
-                .scale,
-            0.0,
-            "the retained renderer must sample this transition's own curve"
+        let scale = transition
+            .frame(1.0, NavigationTransitionDirection::Push)
+            .outgoing
+            .scale;
+        assert!(
+            scale.abs() <= f32::EPSILON,
+            "the retained renderer must sample this transition's own curve, got {scale}"
         );
     }
 
