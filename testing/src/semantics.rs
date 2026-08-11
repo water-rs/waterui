@@ -146,6 +146,7 @@ pub struct NodeSnapshot {
     pub(crate) id: NodeId,
     pub(crate) role: Role,
     pub(crate) label: Option<String>,
+    pub(crate) identifier: Option<String>,
     pub(crate) value: Option<String>,
     pub(crate) bounds: Option<NodeBounds>,
     pub(crate) enabled: bool,
@@ -173,6 +174,12 @@ impl NodeSnapshot {
     #[must_use]
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
+    }
+
+    /// Returns the stable automation identifier (`a11y_id`), if any.
+    #[must_use]
+    pub fn identifier(&self) -> Option<&str> {
+        self.identifier.as_deref()
     }
 
     /// Returns the accessibility value, if any.
@@ -240,6 +247,7 @@ impl NodeSnapshot {
             id: NodeId::from(id),
             role: Role(node.role()),
             label: node.label().map(ToOwned::to_owned),
+            identifier: node.author_id().map(ToOwned::to_owned),
             value,
             bounds: node.bounds().map(accesskit_rect_to_node_bounds),
             enabled: !node.is_disabled(),

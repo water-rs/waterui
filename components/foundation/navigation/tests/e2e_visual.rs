@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
-use waterui_testing::{Role, ui};
+use waterui_testing::{Role, UiBuilder};
 
 const VIEWPORT_WIDTH: u16 = 390;
 const VIEWPORT_HEIGHT: u16 = 844;
@@ -26,14 +26,12 @@ fn visual_stack(destination_appeared: Rc<Cell<bool>>) -> impl waterui::View {
     ))
 }
 
-#[test]
-fn navigation_stack_exports_root_destination_and_interactive_pop_stages() {
+#[waterui::test(theme = install_m3)]
+fn navigation_stack_exports_root_destination_and_interactive_pop_stages(ui: UiBuilder) {
     let destination_appeared = Rc::new(Cell::new(false));
     let destination_appeared_for_view = Rc::clone(&destination_appeared);
-    let mut app = ui()
-        .viewport(VIEWPORT_WIDTH.into(), VIEWPORT_HEIGHT.into())
-        .theme(install_m3)
-        .mount_offscreen(move || visual_stack(Rc::clone(&destination_appeared_for_view)));
+    let mut app =
+        ui.mount_offscreen(move || visual_stack(Rc::clone(&destination_appeared_for_view)));
 
     app.query().label("Library").assert_exists();
     let _root = app.capture_snapshot("navigation", "stack", "root");

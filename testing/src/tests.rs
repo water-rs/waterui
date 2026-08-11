@@ -125,6 +125,7 @@ fn node(
         id: node_id(id),
         role,
         label: label.map(ToOwned::to_owned),
+        identifier: None,
         value: value.map(ToOwned::to_owned),
         bounds: None,
         enabled,
@@ -262,6 +263,27 @@ fn semantic_builder_does_not_require_theme_package() {
         .role(Role::LABEL)
         .label("Semantic only")
         .single();
+}
+
+#[test]
+fn a11y_identifier_flows_from_modifier_to_selector() {
+    let mut app = ui().theme(install_m3).mount(|| {
+        vstack((
+            waterui::component::button("Submit").a11y_id("login.submit"),
+            waterui::component::button("Submit"),
+        ))
+    });
+    let element = app.query().identifier("login.submit").single();
+    assert_eq!(element.node().identifier(), Some("login.submit"));
+    assert_eq!(element.node().label(), Some("Submit"));
+    // The identifier is nearest-consumer metadata: the second, unadorned
+    // button must not inherit it.
+    assert_eq!(
+        app.query().role(Role::BUTTON).all().len(),
+        2,
+        "both buttons stay queryable by role"
+    );
+    app.query().identifier("login.submit").tap();
 }
 
 #[test]

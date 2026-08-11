@@ -10,7 +10,7 @@ use waterui::accessibility::AccessibilityRole;
 use waterui_media::{
     LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
 };
-use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
+use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 
 fn sample_image_path() -> String {
     let unique = std::time::SystemTime::now()
@@ -79,14 +79,14 @@ fn assert_image_eventually_exists(app: &mut UiTestApp, label: &str) {
 
 type UiTestApp = waterui_testing::SemanticApp;
 
-#[test]
-fn photo_exposes_accessibility_image_after_load() {
+#[waterui::test(theme = install_m3)]
+fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let sample_path = sample_image_path();
     let loaded = Binding::bool(false);
     let last_event = Binding::container(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
-    let mut app = ui().theme(install_m3).mount(move || {
+    let mut app = ui.mount(move || {
         let loaded_for_event = loaded_for_view.clone();
         let last_event_for_event = last_event_for_view.clone();
         Photo::from_path(sample_path.clone())
@@ -115,10 +115,10 @@ fn photo_exposes_accessibility_image_after_load() {
     );
 }
 
-#[test]
-fn media_image_exposes_accessibility_image_after_load() {
+#[waterui::test(theme = install_m3)]
+fn media_image_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let sample_path = sample_image_path();
-    let mut app = ui().theme(install_m3).mount(move || {
+    let mut app = ui.mount(move || {
         Media::Image(Url::from_file_path_str(sample_path.clone()))
             .a11y_role(AccessibilityRole::Image)
             .a11y_label("Media image")
@@ -126,13 +126,8 @@ fn media_image_exposes_accessibility_image_after_load() {
     assert_image_eventually_exists(&mut app, "Media image");
 }
 
-#[test]
-fn media_video_uses_video_player_accessibility_controls() {
-    let mut app = ui()
-        .theme(install_m3)
-        .viewport(480, 320)
-        .mount(media_video_view);
-
+#[waterui::test(media_video_view, theme = install_m3, viewport = (480, 320))]
+fn media_video_uses_video_player_accessibility_controls(app: &mut UiTestApp) {
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();
     app.query()
@@ -154,29 +149,24 @@ fn media_video_uses_video_player_accessibility_controls() {
     );
 }
 
-#[test]
-fn live_photo_exposes_still_image_accessibility_before_activation() {
+#[waterui::test(theme = install_m3)]
+fn live_photo_exposes_still_image_accessibility_before_activation(ui: UiBuilder) {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
-    let mut app = ui()
-        .theme(install_m3)
-        .mount(move || live_photo_view(source.clone()));
+    let mut app = ui.mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");
 }
 
-#[test]
-fn live_photo_long_press_plays_motion_once_and_recovers() {
+#[waterui::test(theme = install_m3, viewport = (180, 140))]
+fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
-    let mut app = ui()
-        .theme(install_m3)
-        .viewport(180, 140)
-        .mount_offscreen(move || {
-            LivePhoto::new(source.clone())
-                .activation_duration_ms(40)
-                .size(120.0, 80.0)
-        });
+    let mut app = ui.mount_offscreen(move || {
+        LivePhoto::new(source.clone())
+            .activation_duration_ms(40)
+            .size(120.0, 80.0)
+    });
 
     let initial_still = app.expect_exists(Selector::default().role(Role::IMAGE));
     assert_eq!(

@@ -8,10 +8,10 @@ use waterui::component::{text, vstack};
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, SignalExt as _, View, ViewExt as _};
 use waterui_chart::{DepthChart, DepthSide, LineChart};
-use waterui_testing::Role;
+use waterui_testing::{Role, UiBuilder};
 
 use support::{
-    assert_chart_accessibility_ready, chart_surface, depth_data, depth_hit_location, mount_view,
+    assert_chart_accessibility_ready, chart_surface, depth_data, depth_hit_location,
     point_hit_location, point_series,
 };
 
@@ -103,8 +103,8 @@ fn y_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View
     .padding_with(6.0)
 }
 
-#[test]
-fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_x_selection_updates_continuous_domain_value_on_tap(ui: UiBuilder) {
     let data = point_series();
     let selection = Binding::container(None::<f32>);
     let data_for_view = data.clone();
@@ -114,7 +114,7 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
     let expected_label = format!("x:{expected_x:.2}");
     let location = point_hit_location(&data, index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_x_selection(&selection_for_view);
         selection_shell(
@@ -131,9 +131,9 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
         .assert_exists();
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
 
     let actual_x = selection
         .get()
@@ -149,8 +149,8 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
         .assert_exists();
 }
 
-#[test]
-fn line_chart_x_selection_range_tracks_drag_span() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_x_selection_range_tracks_drag_span(ui: UiBuilder) {
     let data = point_series();
     let selection = Binding::container(None::<RangeInclusive<f32>>);
     let data_for_view = data.clone();
@@ -163,7 +163,7 @@ fn line_chart_x_selection_range_tracks_drag_span() {
     let from = point_hit_location(&data, from_index);
     let to = point_hit_location(&data, to_index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_x_selection_range(&selection_for_view);
         selection_shell(
@@ -180,9 +180,9 @@ fn line_chart_x_selection_range_tracks_drag_span() {
         .assert_exists();
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .drag_between(from.0, from.1, to.0, to.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .drag_between(from.0, from.1, to.0, to.1);
 
     let actual = selection
         .get()
@@ -199,8 +199,8 @@ fn line_chart_x_selection_range_tracks_drag_span() {
         .assert_exists();
 }
 
-#[test]
-fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_y_selection_updates_continuous_domain_value_on_tap(ui: UiBuilder) {
     let data = point_series();
     let selection = Binding::container(None::<f32>);
     let data_for_view = data.clone();
@@ -210,7 +210,7 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
     let expected_label = format!("y:{expected_y:.2}");
     let location = point_hit_location(&data, index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_y_selection(&selection_for_view);
         selection_shell(
@@ -227,9 +227,9 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
         .assert_exists();
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
 
     let actual_y = selection
         .get()
@@ -245,8 +245,8 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
         .assert_exists();
 }
 
-#[test]
-fn line_chart_y_selection_range_tracks_drag_span() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_y_selection_range_tracks_drag_span(ui: UiBuilder) {
     let data = point_series();
     let selection = Binding::container(None::<RangeInclusive<f32>>);
     let data_for_view = data.clone();
@@ -259,7 +259,7 @@ fn line_chart_y_selection_range_tracks_drag_span() {
     let from = point_hit_location(&data, from_index);
     let to = point_hit_location(&data, to_index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_y_selection_range(&selection_for_view);
         selection_shell(
@@ -276,9 +276,9 @@ fn line_chart_y_selection_range_tracks_drag_span() {
         .assert_exists();
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .drag_between(from.0, from.1, to.0, to.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .drag_between(from.0, from.1, to.0, to.1);
 
     let actual = selection
         .get()
@@ -295,8 +295,8 @@ fn line_chart_y_selection_range_tracks_drag_span() {
         .assert_exists();
 }
 
-#[test]
-fn line_chart_updates_x_and_y_selection_together_on_tap() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_updates_x_and_y_selection_together_on_tap(ui: UiBuilder) {
     let data = point_series();
     let x_selection = Binding::container(None::<f32>);
     let y_selection = Binding::container(None::<f32>);
@@ -308,7 +308,7 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
     let expected_y = data[index].y;
     let location = point_hit_location(&data, index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_x_selection(&x_for_view)
             .chart_y_selection(&y_for_view);
@@ -334,9 +334,9 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
         .assert_exists();
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
 
     assert_close(
         x_selection
@@ -364,8 +364,8 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
         .assert_exists();
 }
 
-#[test]
-fn depth_chart_x_selection_tracks_price_domain_on_tap() {
+#[waterui::test(viewport = (320, 320))]
+fn depth_chart_x_selection_tracks_price_domain_on_tap(ui: UiBuilder) {
     let data = depth_data();
     let selection = Binding::container(None::<f32>);
     let data_for_view = data.clone();
@@ -376,7 +376,7 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
     let expected_label = format!("x:{expected_x:.2}");
     let location = depth_hit_location(&data, side, index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = DepthChart::new(Binding::container(data_for_view.clone()))
             .chart_x_selection(&selection_for_view);
         selection_shell(
@@ -393,9 +393,9 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
         .assert_exists();
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
 
     let actual_x = selection
         .get()
@@ -411,11 +411,11 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
         .assert_exists();
 }
 
-#[test]
+#[waterui::test(viewport = (320, 320))]
 #[should_panic(
     expected = "chart_x_selection and chart_x_selection_range cannot be active on the same chart"
 )]
-fn line_chart_rejects_simultaneous_x_value_and_range_selection() {
+fn line_chart_rejects_simultaneous_x_value_and_range_selection(ui: UiBuilder) {
     let data = point_series();
     let x_value = Binding::container(None::<f32>);
     let x_range = Binding::container(None::<RangeInclusive<f32>>);
@@ -423,7 +423,7 @@ fn line_chart_rejects_simultaneous_x_value_and_range_selection() {
     let x_value_for_view = x_value;
     let x_range_for_view = x_range;
 
-    let _app = mount_view(move || {
+    let _app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_x_selection(&x_value_for_view)
             .chart_x_selection_range(&x_range_for_view);
@@ -431,11 +431,11 @@ fn line_chart_rejects_simultaneous_x_value_and_range_selection() {
     });
 }
 
-#[test]
+#[waterui::test(viewport = (320, 320))]
 #[should_panic(
     expected = "chart_y_selection and chart_y_selection_range cannot be active on the same chart"
 )]
-fn line_chart_rejects_simultaneous_y_value_and_range_selection() {
+fn line_chart_rejects_simultaneous_y_value_and_range_selection(ui: UiBuilder) {
     let data = point_series();
     let y_value = Binding::container(None::<f32>);
     let y_range = Binding::container(None::<RangeInclusive<f32>>);
@@ -443,7 +443,7 @@ fn line_chart_rejects_simultaneous_y_value_and_range_selection() {
     let y_value_for_view = y_value;
     let y_range_for_view = y_range;
 
-    let _app = mount_view(move || {
+    let _app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_y_selection(&y_value_for_view)
             .chart_y_selection_range(&y_range_for_view);

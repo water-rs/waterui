@@ -11,13 +11,13 @@ use waterui_chart::{
     ChartExt, DataBounds, DataPoint, DepthChart, DepthDatum, DepthSide, HitResult, LineChart,
     PieChart, ScatterChart, SliceDatum,
 };
-use waterui_testing::{Role, Selector, WaitOptions, WaitResult};
+use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 
 use support::{
     area_data, area_hit_location, assert_chart_accessibility_ready, bar_hit_location,
     bubble_hit_location, bubble_series, candle_series, candlestick_hit_location, depth_data,
-    depth_hit_location, mount_view, pie_data, pie_hit_location, pie_slice_datum,
-    point_hit_location, point_series, readout_view, semantic_chart_shell,
+    depth_hit_location, pie_data, pie_hit_location, pie_slice_datum, point_hit_location,
+    point_series, readout_view, semantic_chart_shell,
 };
 
 fn axis_tick_labels(bounds: DataBounds) -> BTreeSet<String> {
@@ -29,6 +29,7 @@ fn axis_tick_labels(bounds: DataBounds) -> BTreeSet<String> {
 }
 
 fn assert_chart_semantic_flow<T, V, F>(
+    ui: UiBuilder,
     name: &'static str,
     hover_at: (f32, f32),
     expected_series: usize,
@@ -46,7 +47,7 @@ fn assert_chart_semantic_flow<T, V, F>(
     let focused_for_view = focused.clone();
     let selected_for_view = selected.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = build_chart(focused_for_view.clone(), selected_for_view.clone());
         let focused_readout = readout_view("focused", focused_for_view.clone(), formatter);
         let selected_readout = readout_view("selected", selected_for_view.clone(), formatter);
@@ -64,9 +65,9 @@ fn assert_chart_semantic_flow<T, V, F>(
         .assert_exists();
 
     app.query()
-            .role(waterui_testing::Role::IMAGE)
-            .label(chart_label.clone())
-            .hover_at(hover_at.0, hover_at.1);
+        .role(waterui_testing::Role::IMAGE)
+        .label(chart_label.clone())
+        .hover_at(hover_at.0, hover_at.1);
     let focused_hit = focused
         .get()
         .expect("focused binding should hold a hit result after hover");
@@ -91,9 +92,9 @@ fn assert_chart_semantic_flow<T, V, F>(
         .label_contains("focused:")
         .assert_exists();
     app.query()
-            .role(waterui_testing::Role::IMAGE)
-            .label(chart_label)
-            .tap_at(hover_at.0, hover_at.1);
+        .role(waterui_testing::Role::IMAGE)
+        .label(chart_label)
+        .tap_at(hover_at.0, hover_at.1);
     let selected_hit = selected
         .get()
         .expect("selected binding should hold a hit result after tap");
@@ -119,12 +120,13 @@ fn assert_chart_semantic_flow<T, V, F>(
         .assert_exists();
 }
 
-#[test]
-fn line_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = point_series();
     let index = 10;
     let expected = data[index];
     assert_chart_semantic_flow(
+        ui,
         "line",
         point_hit_location(&data, index),
         0,
@@ -144,8 +146,8 @@ fn line_chart_xctest_like_focus_and_selection_flow() {
     );
 }
 
-#[test]
-fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change(ui: UiBuilder) {
     let initial_data = vec![
         DataPoint::new(0.0, 0.0),
         DataPoint::new(1.0, 1.0),
@@ -177,7 +179,7 @@ fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change() {
     let bounds = Binding::container(DataBounds::from_points(&initial_data));
     let bounds_for_view = bounds.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         semantic_chart_shell(
             "line-axes-reactive",
             LineChart::new(chart_data_for_view.clone()).axes_reactive(bounds_for_view.clone()),
@@ -214,12 +216,13 @@ fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change() {
         .assert_not_exists();
 }
 
-#[test]
-fn bar_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn bar_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = point_series();
     let index = 8;
     let expected = data[index];
     assert_chart_semantic_flow(
+        ui,
         "bar",
         bar_hit_location(&data, index),
         0,
@@ -239,12 +242,13 @@ fn bar_chart_xctest_like_focus_and_selection_flow() {
     );
 }
 
-#[test]
-fn scatter_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn scatter_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = point_series();
     let index = 14;
     let expected = data[index];
     assert_chart_semantic_flow(
+        ui,
         "scatter",
         point_hit_location(&data, index),
         0,
@@ -265,12 +269,13 @@ fn scatter_chart_xctest_like_focus_and_selection_flow() {
     );
 }
 
-#[test]
-fn bubble_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn bubble_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = bubble_series();
     let index = 11;
     let expected = data[index];
     assert_chart_semantic_flow(
+        ui,
         "bubble",
         bubble_hit_location(&data, index),
         0,
@@ -292,12 +297,13 @@ fn bubble_chart_xctest_like_focus_and_selection_flow() {
     );
 }
 
-#[test]
-fn candlestick_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn candlestick_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = candle_series();
     let index = 12;
     let expected = data[index];
     assert_chart_semantic_flow(
+        ui,
         "candlestick",
         candlestick_hit_location(&data, index),
         0,
@@ -323,14 +329,15 @@ fn candlestick_chart_xctest_like_focus_and_selection_flow() {
     );
 }
 
-#[test]
-fn depth_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn depth_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = depth_data();
     let side = DepthSide::Bid;
     let index = 7;
     let level = data.bids[index];
     let value = DepthDatum::new(DepthSide::Bid, level.price, level.cumulative_volume);
     assert_chart_semantic_flow(
+        ui,
         "depth",
         depth_hit_location(&data, side, index),
         0,
@@ -354,8 +361,8 @@ fn depth_chart_xctest_like_focus_and_selection_flow() {
     );
 }
 
-#[test]
-fn area_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn area_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = area_data();
     let series = 0;
     let index = 4;
@@ -365,6 +372,7 @@ fn area_chart_xctest_like_focus_and_selection_flow() {
         data.series[series].values[index],
     );
     assert_chart_semantic_flow(
+        ui,
         "area",
         area_hit_location(&data, series, index),
         series,
@@ -384,12 +392,13 @@ fn area_chart_xctest_like_focus_and_selection_flow() {
     );
 }
 
-#[test]
-fn pie_chart_xctest_like_focus_and_selection_flow() {
+#[waterui::test(viewport = (320, 320))]
+fn pie_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
     let data = pie_data();
     let index = 1;
     let value = pie_slice_datum(&data, index);
     assert_chart_semantic_flow(
+        ui,
         "pie",
         pie_hit_location(&data, index, 0.0),
         0,

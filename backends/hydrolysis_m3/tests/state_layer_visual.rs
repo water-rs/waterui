@@ -11,8 +11,9 @@ use waterui::AnyView;
 use waterui::component::{text, vstack};
 use waterui::reactive::binding;
 use waterui_controls::button;
+use waterui_core::View;
 use waterui_core::dynamic::watch;
-use waterui_testing::{OffscreenApp, ui};
+use waterui_testing::OffscreenApp;
 
 fn press_center(app: &mut OffscreenApp, label: &str) -> (f32, f32) {
     assert!(
@@ -32,39 +33,39 @@ fn save(app: &mut OffscreenApp, stage: &str) {
     let _ = app.capture_snapshot("material3-preview", "state-layers", stage);
 }
 
-#[test]
+fn press_me_button() -> impl View {
+    button("Press Me")
+}
+
 #[ignore = "writes visual acceptance PNG files for direct image review"]
-fn plain_button_press_shows_growing_ripple() {
-    let mut app = ui()
-        .viewport(360, 200)
-        .theme(install)
-        .mount_offscreen(|| button("Press Me"));
-    let (cx, cy) = press_center(&mut app, "Press Me");
-    save(&mut app, "press-before");
+#[waterui::test(press_me_button, theme = install, viewport = (360, 200), offscreen)]
+fn plain_button_press_shows_growing_ripple(app: &mut OffscreenApp) {
+    let (cx, cy) = press_center(app, "Press Me");
+    save(app, "press-before");
     // Queue the press without the semantic settle so the captures land inside
     // the 225ms ripple growth instead of pumping straight past it.
     app.queue_pointer_down(cx - 40.0, cy + 10.0);
-    save(&mut app, "press-0ms");
+    save(app, "press-0ms");
     app.pump_for(Duration::from_millis(60));
-    save(&mut app, "press-60ms");
+    save(app, "press-60ms");
     app.pump_for(Duration::from_millis(80));
-    save(&mut app, "press-140ms");
+    save(app, "press-140ms");
     app.pump_for(Duration::from_millis(120));
-    save(&mut app, "press-260ms");
+    save(app, "press-260ms");
 }
 
-#[test]
+fn release_me_button() -> impl View {
+    button("Release Me")
+}
+
 #[ignore = "writes visual acceptance PNG files for direct image review"]
-fn released_ripple_fades_at_full_size_without_shrinking() {
+#[waterui::test(release_me_button, theme = install, viewport = (360, 200), offscreen)]
+fn released_ripple_fades_at_full_size_without_shrinking(app: &mut OffscreenApp) {
     // Regression stage for the reverse-playback bug: after release the wave
     // must hold its expanded, centered shape and only lose opacity — the
     // captures after pointer-up must never show a smaller circle drifting
     // back toward the press point.
-    let mut app = ui()
-        .viewport(360, 200)
-        .theme(install)
-        .mount_offscreen(|| button("Release Me"));
-    let (cx, cy) = press_center(&mut app, "Release Me");
+    let (cx, cy) = press_center(app, "Release Me");
     // Press off-center so a shrinking ripple would visibly drift.
     let (px, py) = (cx - 40.0, cy + 10.0);
     app.queue_pointer_down(px, py);
@@ -72,28 +73,28 @@ fn released_ripple_fades_at_full_size_without_shrinking() {
     // Hold until the growth (225ms) has completed, then release: the fade-out
     // applies immediately (the minimum press duration equals the grow time).
     app.pump_for(Duration::from_millis(250));
-    save(&mut app, "hold-250ms-full-size");
+    save(app, "hold-250ms-full-size");
     app.queue_pointer_up(px, py);
     let _ = app.snapshot();
     app.pump_for(Duration::from_millis(50));
-    save(&mut app, "release-50ms-fading");
+    save(app, "release-50ms-fading");
     app.pump_for(Duration::from_millis(60));
-    save(&mut app, "release-110ms-fainter");
+    save(app, "release-110ms-fainter");
     app.pump_for(Duration::from_millis(120));
-    save(&mut app, "release-230ms-gone");
+    save(app, "release-230ms-gone");
 }
 
-#[test]
+fn tap_tap_button() -> impl View {
+    button("Tap Tap")
+}
+
 #[ignore = "writes visual acceptance PNG files for direct image review"]
-fn rapid_represses_overlap_independent_waves() {
+#[waterui::test(tap_tap_button, theme = install, viewport = (360, 200), offscreen)]
+fn rapid_represses_overlap_independent_waves(app: &mut OffscreenApp) {
     // mdui multi-wave behavior: a quick tap's wave keeps fading at full size
     // while a second press spawns a fresh wave growing from its own point —
     // the overlap capture must show both at once.
-    let mut app = ui()
-        .viewport(360, 200)
-        .theme(install)
-        .mount_offscreen(|| button("Tap Tap"));
-    let (cx, cy) = press_center(&mut app, "Tap Tap");
+    let (cx, cy) = press_center(app, "Tap Tap");
     // Stay inside the button bounds; opposite corners make the two waves'
     // distinct origins obvious.
     let (p1x, p1y) = (cx - 25.0, cy + 8.0);
@@ -107,55 +108,56 @@ fn rapid_represses_overlap_independent_waves() {
     app.queue_pointer_down(p2x, p2y);
     let _ = app.snapshot();
     app.pump_for(Duration::from_millis(60));
-    save(&mut app, "repress-overlap-60ms");
+    save(app, "repress-overlap-60ms");
     app.pump_for(Duration::from_millis(80));
-    save(&mut app, "repress-140ms-second-wave");
+    save(app, "repress-140ms-second-wave");
 }
 
-#[test]
+fn hover_me_button() -> impl View {
+    button("Hover Me")
+}
+
 #[ignore = "writes visual acceptance PNG files for direct image review"]
-fn plain_button_hover_shows_state_layer() {
-    let mut app = ui()
-        .viewport(360, 200)
-        .theme(install)
-        .mount_offscreen(|| button("Hover Me"));
-    let _ = press_center(&mut app, "Hover Me");
-    save(&mut app, "hover-before");
+#[waterui::test(hover_me_button, theme = install, viewport = (360, 200), offscreen)]
+fn plain_button_hover_shows_state_layer(app: &mut OffscreenApp) {
+    let _ = press_center(app, "Hover Me");
+    save(app, "hover-before");
     let _ = app.query().label("Hover Me").hover();
     app.pump_for(Duration::from_millis(120));
-    save(&mut app, "hover-120ms");
+    save(app, "hover-120ms");
 }
 
-#[test]
+fn structural_patch_view() -> impl View {
+    let mode_for_view = binding(false);
+    let mode_for_action = mode_for_view.clone();
+    let swapped = watch(mode_for_view.clone(), |mode| {
+        if mode {
+            AnyView::new(text("Swapped content"))
+        } else {
+            AnyView::new(text("Initial content"))
+        }
+    });
+    vstack((
+        button("Swap").action(move || {
+            let next = !mode_for_action.get();
+            mode_for_action.set(next);
+        }),
+        swapped,
+    ))
+}
+
 #[ignore = "writes visual acceptance PNG files for direct image review"]
-fn ripple_survives_same_frame_structural_patch() {
+#[waterui::test(structural_patch_view, theme = install, viewport = (360, 240), offscreen)]
+fn ripple_survives_same_frame_structural_patch(app: &mut OffscreenApp) {
     // The chart-demo scenario: the button's release action flips a signal that
     // a `watch` subtree rebuilds from in the same refresh frame. The quick
     // tap's ripple must keep growing through the structural patch.
-    let mode_for_view = binding(false);
-    let mut app = ui().viewport(360, 240).theme(install).mount_offscreen(move || {
-        let mode_for_action = mode_for_view.clone();
-        let swapped = watch(mode_for_view.clone(), |mode| {
-            if mode {
-                AnyView::new(text("Swapped content"))
-            } else {
-                AnyView::new(text("Initial content"))
-            }
-        });
-        vstack((
-            button("Swap").action(move || {
-                let next = !mode_for_action.get();
-                mode_for_action.set(next);
-            }),
-            swapped,
-        ))
-    });
-    let (cx, cy) = press_center(&mut app, "Swap");
+    let (cx, cy) = press_center(app, "Swap");
     app.semantic_mut().pointer_down_at(cx, cy);
     app.semantic_mut().pointer_up_at(cx, cy);
     app.query().label("Swapped content").assert_exists();
     app.pump_for(Duration::from_millis(80));
-    save(&mut app, "patch-press-80ms");
+    save(app, "patch-press-80ms");
     app.pump_for(Duration::from_millis(140));
-    save(&mut app, "patch-press-220ms");
+    save(app, "patch-press-220ms");
 }

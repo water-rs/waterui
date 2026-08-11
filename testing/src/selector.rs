@@ -11,6 +11,7 @@ use crate::semantics::{NodeBounds, NodeId, NodeSnapshot, Role};
 #[derive(Debug, Clone)]
 pub struct Selector {
     role: Option<Role>,
+    identifier: Option<String>,
     label_exact: Option<String>,
     label_contains: Option<String>,
     enabled: Option<bool>,
@@ -27,6 +28,7 @@ impl Default for Selector {
     fn default() -> Self {
         Self {
             role: None,
+            identifier: None,
             label_exact: None,
             label_contains: None,
             enabled: None,
@@ -46,6 +48,13 @@ impl Selector {
     #[must_use]
     pub const fn role(mut self, role: Role) -> Self {
         self.role = Some(role);
+        self
+    }
+
+    /// Restricts matches to a stable automation identifier (`a11y_id`).
+    #[must_use]
+    pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
+        self.identifier = Some(identifier.into());
         self
     }
 
@@ -135,6 +144,9 @@ impl Selector {
         if let Some(role) = self.role {
             parts.push(format!("role={role:?}"));
         }
+        if let Some(identifier) = self.identifier.as_deref() {
+            parts.push(format!("identifier={identifier:?}"));
+        }
         if let Some(label) = self.label_exact.as_deref() {
             parts.push(format!("label={label:?}"));
         }
@@ -171,6 +183,12 @@ impl Selector {
     pub(crate) fn matches(&self, node: &NodeSnapshot) -> bool {
         if let Some(role) = self.role
             && node.role().as_accesskit() != role.as_accesskit()
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.identifier.as_deref()
+            && node.identifier() != Some(expected)
         {
             return false;
         }
