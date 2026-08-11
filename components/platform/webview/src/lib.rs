@@ -43,6 +43,74 @@ mod script;
 pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
 mod origins;
 pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy};
+
+/// An object whose methods and state are exposed to the page.
+///
+/// Implemented by `#[js_api]`; there is no reason to write one by hand, and
+/// nothing stops you calling [`WebViewOpen::handler`] and
+/// [`WebViewOpen::expose`] directly instead — the macro emits exactly those
+/// calls, so the two paths stay interchangeable.
+///
+/// How a method is exposed follows from its shape:
+///
+/// | Shape | Exposed as | Page writes it back? |
+/// | --- | --- | --- |
+/// | `async fn(&self, ..) -> R` | a handler the page awaits | — |
+/// | `fn(&self) -> Binding<T>` | mirrored state | yes |
+/// | `fn(&self) -> Computed<T>` | mirrored state | no |
+/// | `#[js(skip)]` anything | not exposed | — |
+///
+/// ```
+/// use waterui::webview::WebView;
+/// use waterui::{Binding, js_api};
+///
+/// struct Counter {
+///     count: Binding<u32>,
+/// }
+///
+/// #[js_api(namespace = "counter")]
+/// impl Counter {
+///     /// The page reads and assigns `counter.count`.
+///     fn count(&self) -> Binding<u32> {
+///         self.count.clone()
+///     }
+///
+///     /// The page calls `await counter.add({ by: 2 })`.
+///     async fn add(&self, by: u32) {
+///         self.count.set(self.count.get() + by);
+///     }
+/// }
+///
+/// let view = WebView::open("https://app.waterui.dev").serve(Counter {
+///     count: Binding::container(0),
+/// });
+/// ```
+///
+/// A synchronous method that takes arguments is neither of those things — it
+/// cannot be state, and a handler must be able to await a reply — so it is
+/// rejected rather than silently ignored:
+///
+/// ```compile_fail
+/// use waterui::js_api;
+///
+/// struct Api;
+///
+/// #[js_api]
+/// impl Api {
+///     fn add(&self, by: u32) -> u32 {
+///         by + 1
+///     }
+/// }
+/// ```
+pub trait JsApi: Sized + 'static {
+    /// Registers everything this object exposes.
+    fn register(api: std::rc::Rc<Self>, builder: WebViewOpen) -> WebViewOpen;
+}
+
+/// Re-exported so `#[js_api]` can derive `Deserialize` for its argument structs
+/// without the calling crate having to depend on `serde` itself.
+#[doc(hidden)]
+pub use serde;
 mod message;
 pub use message::{Bytes, HandlerName, IntoJsReply, Json};
 mod state;
@@ -610,6 +678,15 @@ impl WebViewOpen {
     pub fn expose<F: state::JsField + 'static>(mut self, name: impl Into<Str>, field: F) -> Self {
         self.state.push(state::pending_field(name.into(), field));
         self
+    }
+
+    /// Exposes an object's methods and state to the page in one step.
+    ///
+    /// Written by hand this is a `.handler(...)` per method and an `.expose(...)`
+    /// per field; `#[js_api]` generates exactly that, so the two are equivalent
+    /// and the macro adds nothing the manual path cannot express.
+    pub fn serve<A: JsApi>(self, api: A) -> Self {
+        A::register(std::rc::Rc::new(api), self)
     }
 
     /// Chooses which documents may reach the bridge.
