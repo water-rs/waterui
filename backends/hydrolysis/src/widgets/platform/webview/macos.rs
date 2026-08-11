@@ -22,8 +22,6 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use block2::RcBlock;
 use cookie::time::OffsetDateTime;
 use futures::channel::oneshot;
@@ -42,11 +40,18 @@ use objc2_web_kit::{
 use waterui_core::{Computed, Environment, Str};
 use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
 };
 
-const BRIDGE_SCRIPT: &str = include_str!("bridge.js");
-const HANDLER_SCRIPT: &str = include_str!("handler.js");
+/// Bridges `waterui.invoke` to WebKit's message-handler transport.
+///
+/// The shared script calls one function; WebKit delivers messages through a named
+/// handler object, so this adapts between the two.
+const TRANSPORT_SCRIPT: &str = concat!(
+    "globalThis.__wateruiSend = function (envelope) {",
+    "window.webkit.messageHandlers.__wateruiSend.postMessage(envelope);",
+    "};"
+);
 
 type JavaScriptHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
 
@@ -62,6 +67,7 @@ struct SharedState {
     handlers: RefCell<HashMap<String, JavaScriptHandler>>,
     scripts: RefCell<Vec<InjectedScript>>,
     last_navigation_url: RefCell<Option<String>>,
+    transport_registered: std::cell::Cell<bool>,
 }
 
 impl Default for SharedState {
@@ -72,6 +78,7 @@ impl Default for SharedState {
             handlers: RefCell::new(HashMap::new()),
             scripts: RefCell::new(Vec::new()),
             last_navigation_url: RefCell::new(None),
+            transport_registered: std::cell::Cell::new(false),
         }
     }
 }
@@ -262,35 +269,41 @@ define_class!(
         ) {
             // SAFETY: main-thread message send to an object this wrapper retains;
             // see the module safety note.
-            let name = unsafe { message.name() }.to_string();
-            // SAFETY: main-thread message send to an object this wrapper retains;
-            // see the module safety note.
             let body = unsafe { message.body() };
-            let body = body.downcast_ref::<NSString>().unwrap_or_else(|| {
-                panic!("Hydrolysis WKWebView handler `{name}` received a non-string bridge body")
-            });
-            let body = body.to_string();
-            let (request_id, encoded) = body.split_once(':').unwrap_or_else(|| {
-                panic!("Hydrolysis WKWebView handler `{name}` received a malformed bridge body")
-            });
-            let payload = STANDARD.decode(encoded).unwrap_or_else(|error| {
-                panic!("Hydrolysis WKWebView handler `{name}` received invalid base64: {error}")
-            });
-            let reply = {
-                let handlers = self.ivars().shared.handlers.borrow();
-                let handler = handlers.get(&name).unwrap_or_else(|| {
-                    panic!("Hydrolysis WKWebView handler `{name}` is not registered")
-                });
-                handler(&payload)
+            // Page script reaches this transport directly, so nothing here is fatal.
+            let Some(body) = body.downcast_ref::<NSString>() else {
+                tracing::warn!("WaterUI bridge received a non-string message body; ignoring");
+                return;
             };
-            let reply = STANDARD.encode(reply);
-            let request_id = serde_json::to_string(request_id)
-                .expect("Hydrolysis WKWebView request id must serialize");
-            let reply =
-                serde_json::to_string(&reply).expect("Hydrolysis WKWebView reply must serialize");
-            let script = NSString::from_str(&format!(
-                "window.__wateruiResolve({request_id},true,{reply});"
-            ));
+            let request = match bridge::Request::parse(&body.to_string()) {
+                Ok(request) => request,
+                Err(error) => {
+                    tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+                    return;
+                }
+            };
+            // Release the borrow before invoking: a handler may register or remove
+            // handlers on the same web view.
+            let handler = self
+                .ivars()
+                .shared
+                .handlers
+                .borrow()
+                .get(&request.name)
+                .map(Rc::clone);
+            let reply = if let Some(handler) = handler {
+                bridge::Reply::Bytes(handler(&request.payload))
+            } else {
+                tracing::warn!(
+                    handler = %request.name,
+                    "page script called a WaterUI handler that is not registered"
+                );
+                bridge::Reply::failure(&format!(
+                    "no WaterUI handler named `{}`",
+                    request.name
+                ))
+            };
+            let script = NSString::from_str(&reply.resolve_script(request.id));
             // SAFETY: WebKit sets the source web view on every script message it
             // delivers.
             let web_view = unsafe { message.webView() }
@@ -407,10 +420,25 @@ impl MacSystemWebViewHandle {
         }
     }
 
-    fn handler_script(name: &str) -> String {
-        let name =
-            serde_json::to_string(name).expect("Hydrolysis WKWebView handler name must serialize");
-        HANDLER_SCRIPT.replace("__WATERUI_HANDLER__", &name)
+    /// Registers the single WebKit message handler the bridge transports over.
+    ///
+    /// One handler serves every WaterUI handler name, so this runs once rather
+    /// than per registration.
+    fn ensure_transport_registered(&self) {
+        if self.inner.shared.transport_registered.replace(true) {
+            return;
+        }
+        let controller = self.user_content_controller();
+        let name = NSString::from_str(bridge::SEND_FUNCTION);
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note.
+        unsafe {
+            controller.addScriptMessageHandler_name(
+                ProtocolObject::from_ref(&*self.inner.delegate),
+                &name,
+            );
+        }
+        self.rebuild_user_scripts();
     }
 
     fn rebuild_user_scripts(&self) {
@@ -420,20 +448,21 @@ impl MacSystemWebViewHandle {
         unsafe {
             controller.removeAllUserScripts();
         }
+        // Transport first: the shared script calls `__wateruiSend`, so the adapter
+        // has to be defined before it. Handlers no longer need a script each --
+        // the page reaches all of them through `waterui.invoke`.
         Self::add_user_script(
             &controller,
-            BRIDGE_SCRIPT,
+            TRANSPORT_SCRIPT,
+            ScriptInjectionTime::DocumentStart,
+        );
+        Self::add_user_script(
+            &controller,
+            bridge::SCRIPT,
             ScriptInjectionTime::DocumentStart,
         );
         for script in self.inner.shared.scripts.borrow().iter() {
             Self::add_user_script(&controller, &script.source, script.time);
-        }
-        for name in self.inner.shared.handlers.borrow().keys() {
-            Self::add_user_script(
-                &controller,
-                &Self::handler_script(name),
-                ScriptInjectionTime::DocumentStart,
-            );
         }
     }
 
@@ -524,43 +553,22 @@ impl WebViewHandle for MacSystemWebViewHandle {
             !name.is_empty(),
             "Hydrolysis WKWebView handler name must not be empty"
         );
-        let previous = self
-            .inner
+        // Registering the same name twice replaces the handler, matching every
+        // other backend.
+        self.inner
             .shared
             .handlers
             .borrow_mut()
             .insert(name.to_owned(), Rc::from(handler));
-        assert!(
-            previous.is_none(),
-            "Hydrolysis WKWebView handler `{name}` is already registered"
-        );
-        let controller = self.user_content_controller();
-        let name = NSString::from_str(name);
-        // SAFETY: main-thread message send to an object this wrapper retains; see
-        // the module safety note.
-        unsafe {
-            controller.addScriptMessageHandler_name(
-                ProtocolObject::from_ref(&*self.inner.delegate),
-                &name,
-            );
-        }
-        self.rebuild_user_scripts();
+        self.ensure_transport_registered();
     }
 
     fn remove_handler(&self, name: &str) {
-        let removed = self.inner.shared.handlers.borrow_mut().remove(name);
-        assert!(
-            removed.is_some(),
-            "Hydrolysis WKWebView handler `{name}` is not registered"
-        );
-        // SAFETY: main-thread message send to an object this wrapper retains; see
-        // the module safety note.
-        unsafe {
-            self.user_content_controller()
-                .removeScriptMessageHandlerForName(&NSString::from_str(name));
-        }
-        self.rebuild_user_scripts();
+        // Removing a name that was never registered is a no-op, matching every
+        // other backend.
+        self.inner.shared.handlers.borrow_mut().remove(name);
     }
+
 
     fn stop(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
