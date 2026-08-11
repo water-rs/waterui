@@ -109,10 +109,6 @@ impl HydrolysisRenderer {
         self.accessibility.begin_rebuild_frame();
     }
 
-    pub(crate) fn set_applied_filter_input_cache_reuse(&mut self, reuse: bool) {
-        self.reuse_applied_filter_inputs = reuse;
-    }
-
     /// Drop cached `Dynamic` measurements whose node has left the retained tree.
     ///
     /// Shared by the two frames that can remove nodes: the one-time build and any

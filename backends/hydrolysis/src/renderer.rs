@@ -81,6 +81,7 @@ use accesskit::{
 };
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
+use std::sync::Arc;
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
@@ -140,7 +141,6 @@ use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor, Srgb};
-use std::sync::Arc;
 
 use shaderloom::WgslModuleCache;
 use waterui_graphics::filter_view::{EffectContext, EffectInput, EffectOutput};
@@ -235,7 +235,6 @@ pub struct HydrolysisRenderer {
     frame_applied_filter_count: u32,
     frame_applied_filter_capture: Duration,
     frame_applied_filter_effect: Duration,
-    reuse_applied_filter_inputs: bool,
     /// Retained render-tree GPU surfaces (`GpuSurfaceNode`-owned runtimes),
     /// registered at node build time. Polled by
     /// [`HydrolysisRenderer::poll_gpu_surface_redraw_handles`] for off-thread
@@ -349,7 +348,6 @@ impl HydrolysisRenderer {
             frame_applied_filter_count: 0,
             frame_applied_filter_capture: Duration::ZERO,
             frame_applied_filter_effect: Duration::ZERO,
-            reuse_applied_filter_inputs: false,
             node_gpu_surfaces: Vec::new(),
             node_view_effects: Vec::new(),
             node_applied_filters: Vec::new(),

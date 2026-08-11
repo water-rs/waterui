@@ -152,6 +152,14 @@ pub(crate) struct HitTestState {
     pub(crate) interaction: InteractionEngine,
     pub(crate) active_press_bounds: Option<vello::kurbo::Rect>,
     pub(crate) active_press_origin: Option<vello::kurbo::Point>,
+    /// Last observed pointer position in window hit-test space, kept across
+    /// frames so embedded GPU surfaces can derive their surface-local
+    /// [`PointerState`](waterui_graphics::PointerState) at composite time.
+    pub(crate) pointer_position: Option<vello::kurbo::Point>,
+    /// Where the current press started, tracked independently of widget press
+    /// slots: a bare `GpuSurface` has no interaction slot, but its renderer
+    /// still receives hit state through `GpuFrame::pointer`.
+    pub(crate) pointer_press_origin: Option<vello::kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
     pub(crate) trackpad_pan_targets: Vec<TrackpadPanTarget>,
     pub(crate) hit_test_opacity: f32,
@@ -452,6 +460,8 @@ impl HydrolysisRenderer {
         }
         self.hit_test.active_pointer = Some((pointer_id, pointer_kind));
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test.pointer_position = Some(point);
+        self.hit_test.pointer_press_origin = Some(point);
         let at = self.frame_instant();
         let mut refresh_requested = false;
         let mut visual_changed = false;
@@ -461,6 +471,7 @@ impl HydrolysisRenderer {
         self.hit_test.pending_pointer_press = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
+        self.hit_test.pointer_press_origin = None;
         refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         visual_changed |= press_clear.visual_changed;
@@ -793,6 +804,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
+        self.hit_test.pointer_press_origin = None;
         self.hit_test.active_pointer = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
@@ -851,6 +863,7 @@ impl HydrolysisRenderer {
         pointer_kind: PointerKind,
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test.pointer_position = Some(point);
         if self.handle_browser_pointer_move(point) {
             return true;
         }
@@ -1183,6 +1196,7 @@ impl HydrolysisRenderer {
         self.hit_test.pending_pointer_press = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
+        self.hit_test.pointer_press_origin = None;
         refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
