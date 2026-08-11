@@ -19,10 +19,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::navigation::split::NavigationSplitDetailBuilder;
 use waterui::navigation::{
-    AnyNavigationTransition, Bar, NativeNavigationTransition, NavigationDestinationState,
+    AnyNavigationTransition, Bar, NavigationDestinationState,
     NavigationSearch, NavigationSplitLayout, NavigationStack, NavigationTitleDisplayMode,
     NavigationToolbar, NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
-    resolve_navigation_root,
+    RetainedNavigationTransition, resolve_navigation_root,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::text_field::TextField;
@@ -1508,7 +1508,7 @@ pub(crate) fn render_navigation_stack_parts(
         if let Some((previous_identity, previous_depth)) = navigation_change {
             let skip_transition = slot.skip_next_pop_transition && depth < previous_depth;
             slot.skip_next_pop_transition = false;
-            if transition_style.native() == NativeNavigationTransition::None || skip_transition {
+            if transition_style.retained() == RetainedNavigationTransition::None || skip_transition {
                 slot.transition = None;
             } else {
                 let direction = if depth >= previous_depth {

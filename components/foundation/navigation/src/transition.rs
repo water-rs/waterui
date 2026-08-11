@@ -101,26 +101,59 @@ impl NavigationTransitionFrame {
     };
 }
 
+/// How a retained renderer executes one transition.
+///
+/// This is deliberately independent of [`NavigationTransition::native`]: a
+/// custom transition is free to report a platform-native projection for Apple
+/// and Android while still resolving its own frames on a retained renderer.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetainedNavigationTransition {
+    /// Let the renderer apply its own themed platform-default motion.
+    PlatformDefault,
+    /// Animate geometry matched by this identity across the two pages.
+    MatchedGeometry(Id),
+    /// Sample [`NavigationTransition::frame`] for every step.
+    Frames,
+    /// Apply the transaction with no animation at all.
+    None,
+}
+
 /// A navigation transition executable by retained renderers.
 ///
 /// Apple and Android negotiate [`Self::native`] first. A transition that does
 /// not expose a native representation is reported as custom; native backends
-/// log a warning and apply the transaction without animation. Retained
-/// renderers such as Hydrolysis execute [`Self::frame`] directly.
+/// log a warning and apply the transaction without animation.
+///
+/// Retained renderers such as Hydrolysis dispatch on [`Self::retained`], which
+/// defaults to [`RetainedNavigationTransition::Frames`] — so a custom
+/// transition's [`Self::frame`] is always what runs unless it explicitly asks
+/// to be rendered some other way.
 pub trait NavigationTransition: Debug + 'static {
     /// Resolves a normalized transition frame.
     ///
-    /// `progress` is in the inclusive range `0.0..=1.0`.
+    /// `progress` is in the inclusive range `0.0..=1.0`. The default is the
+    /// identity frame, which is only ever sampled by transitions that opt out
+    /// of [`RetainedNavigationTransition::Frames`].
     fn frame(
         &self,
         progress: f32,
         direction: NavigationTransitionDirection,
-    ) -> NavigationTransitionFrame;
+    ) -> NavigationTransitionFrame {
+        let _ = (progress, direction);
+        NavigationTransitionFrame::IDENTITY
+    }
 
     /// Returns a platform-native representation when one exists.
     #[doc(hidden)]
     fn native(&self) -> Option<NativeNavigationTransition> {
         None
+    }
+
+    /// Returns how a retained renderer should execute this transition.
+    #[doc(hidden)]
+    fn retained(&self) -> RetainedNavigationTransition {
+        RetainedNavigationTransition::Frames
     }
 }
 
@@ -167,6 +200,13 @@ impl AnyNavigationTransition {
             .native()
             .unwrap_or(NativeNavigationTransition::Custom)
     }
+
+    /// Resolves how a retained renderer should execute this transition.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn retained(&self) -> RetainedNavigationTransition {
+        self.0.retained()
+    }
 }
 
 impl NavigationTransition for AnyNavigationTransition {
@@ -180,6 +220,10 @@ impl NavigationTransition for AnyNavigationTransition {
 
     fn native(&self) -> Option<NativeNavigationTransition> {
         self.0.native()
+    }
+
+    fn retained(&self) -> RetainedNavigationTransition {
+        self.0.retained()
     }
 }
 
@@ -203,7 +247,7 @@ pub enum NativeNavigationTransition {
 pub mod navigation_transition {
     use super::{
         NativeNavigationTransition, NavigationTransition, NavigationTransitionDirection,
-        NavigationTransitionFrame, NavigationTransitionLayer,
+        NavigationTransitionFrame, NavigationTransitionLayer, RetainedNavigationTransition,
     };
     use waterui_core::id::Id;
 
@@ -249,35 +293,16 @@ pub mod navigation_transition {
         None
     }
 
+    // `Automatic` deliberately resolves no frames of its own: every backend
+    // supplies the motion its platform expects, which for a retained renderer
+    // means the themed navigation motion rather than a curve hardcoded here.
     impl NavigationTransition for Automatic {
-        fn frame(
-            &self,
-            progress: f32,
-            direction: NavigationTransitionDirection,
-        ) -> NavigationTransitionFrame {
-            let incoming_start = match direction {
-                NavigationTransitionDirection::Push => 1.0,
-                NavigationTransitionDirection::Pop => -0.25,
-            };
-            let outgoing_end = match direction {
-                NavigationTransitionDirection::Push => -0.25,
-                NavigationTransitionDirection::Pop => 1.0,
-            };
-            NavigationTransitionFrame {
-                outgoing: NavigationTransitionLayer {
-                    offset_x: outgoing_end * progress,
-                    opacity: 1.0 - 0.1 * progress,
-                    ..NavigationTransitionLayer::IDENTITY
-                },
-                incoming: NavigationTransitionLayer {
-                    offset_x: incoming_start * (1.0 - progress),
-                    ..NavigationTransitionLayer::IDENTITY
-                },
-            }
-        }
-
         fn native(&self) -> Option<NativeNavigationTransition> {
             Some(NativeNavigationTransition::Automatic)
+        }
+
+        fn retained(&self) -> RetainedNavigationTransition {
+            RetainedNavigationTransition::PlatformDefault
         }
     }
 
@@ -327,6 +352,10 @@ pub mod navigation_transition {
         fn native(&self) -> Option<NativeNavigationTransition> {
             Some(NativeNavigationTransition::Zoom(self.source))
         }
+
+        fn retained(&self) -> RetainedNavigationTransition {
+            RetainedNavigationTransition::MatchedGeometry(self.source)
+        }
     }
 
     impl NavigationTransition for None {
@@ -341,5 +370,85 @@ pub mod navigation_transition {
         fn native(&self) -> Option<NativeNavigationTransition> {
             Some(NativeNavigationTransition::None)
         }
+
+        fn retained(&self) -> RetainedNavigationTransition {
+            RetainedNavigationTransition::None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
+        NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
+        RetainedNavigationTransition, navigation_transition,
+    };
+
+    /// A transition that wants the platform's own motion on Apple and Android
+    /// but draws its own curve everywhere else — the combination that used to
+    /// lose its frames on a retained renderer.
+    #[derive(Debug)]
+    struct NativelyAutomaticButCustomFrames;
+
+    impl NavigationTransition for NativelyAutomaticButCustomFrames {
+        fn frame(
+            &self,
+            progress: f32,
+            _direction: NavigationTransitionDirection,
+        ) -> NavigationTransitionFrame {
+            NavigationTransitionFrame {
+                outgoing: NavigationTransitionLayer {
+                    scale: 1.0 - progress,
+                    ..NavigationTransitionLayer::IDENTITY
+                },
+                incoming: NavigationTransitionLayer::IDENTITY,
+            }
+        }
+
+        fn native(&self) -> Option<NativeNavigationTransition> {
+            Some(NativeNavigationTransition::Automatic)
+        }
+    }
+
+    /// Requesting a platform-native projection must not cost a transition its
+    /// own frames: the two capabilities are negotiated independently.
+    #[test]
+    fn a_native_projection_does_not_suppress_custom_frames() {
+        let transition = AnyNavigationTransition::new(NativelyAutomaticButCustomFrames);
+
+        assert_eq!(transition.native(), NativeNavigationTransition::Automatic);
+        assert_eq!(transition.retained(), RetainedNavigationTransition::Frames);
+        assert_eq!(
+            transition
+                .frame(1.0, NavigationTransitionDirection::Push)
+                .outgoing
+                .scale,
+            0.0,
+            "the retained renderer must sample this transition's own curve"
+        );
+    }
+
+    /// The built-in styles each declare how a retained renderer runs them, so
+    /// none of them depend on being recognised by native identity.
+    #[test]
+    fn built_in_styles_declare_their_retained_execution() {
+        assert_eq!(
+            AnyNavigationTransition::new(navigation_transition::automatic()).retained(),
+            RetainedNavigationTransition::PlatformDefault
+        );
+        assert_eq!(
+            AnyNavigationTransition::new(navigation_transition::fade()).retained(),
+            RetainedNavigationTransition::Frames
+        );
+        assert_eq!(
+            AnyNavigationTransition::new(navigation_transition::none()).retained(),
+            RetainedNavigationTransition::None
+        );
+        let id = waterui_core::id::Id::try_from(3).expect("test id must be non-zero");
+        assert_eq!(
+            AnyNavigationTransition::new(navigation_transition::zoom(id)).retained(),
+            RetainedNavigationTransition::MatchedGeometry(id)
+        );
     }
 }

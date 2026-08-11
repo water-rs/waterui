@@ -1,6 +1,7 @@
 use waterui::navigation::{
-    AnyNavigationTransition, NativeNavigationTransition, NavigationTransitionDirection,
+    AnyNavigationTransition, NavigationTransitionDirection,
     NavigationTransitionFrame as ResolvedNavigationTransitionFrame, NavigationTransitionLayer,
+    RetainedNavigationTransition,
 };
 use waterui_backend_core::widget::NavigationMotion;
 
@@ -19,22 +20,29 @@ pub(crate) struct NavigationTransitionFrame<'a> {
 }
 
 pub(crate) fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
-    let native = frame.style.native();
-    if let NativeNavigationTransition::Zoom(id) = native {
+    // Dispatch on the retained capability, never on the native projection: a
+    // custom transition may report a platform-native projection for Apple and
+    // Android while still resolving its own frames here.
+    let retained = frame.style.retained();
+    if let RetainedNavigationTransition::MatchedGeometry(id) = retained {
         draw_matched_navigation_transition(frame, id);
         return;
     }
     #[allow(clippy::cast_possible_truncation)]
     let progress = frame.progress as f32;
-    let resolved = match native {
-        NativeNavigationTransition::Automatic => material_shared_axis_x_frame(
+    let resolved = match retained {
+        RetainedNavigationTransition::PlatformDefault => material_shared_axis_x_frame(
             progress,
             frame.direction,
             frame.motion.shared_axis_slide_distance,
             frame.bounds.width(),
             frame.motion.fade_through_threshold,
         ),
-        _ => frame.style.frame(progress, frame.direction),
+        RetainedNavigationTransition::None => ResolvedNavigationTransitionFrame::IDENTITY,
+        RetainedNavigationTransition::Frames
+        | RetainedNavigationTransition::MatchedGeometry(_) => {
+            frame.style.frame(progress, frame.direction)
+        }
     };
     let from_scene = frame.from_scene.composed();
     let to_scene = frame.to_scene.composed();
