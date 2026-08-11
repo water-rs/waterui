@@ -11,7 +11,7 @@
 
 use divan::Bencher;
 use filtrate::multi_input::{BlendMode, FilterImage, blend_with_image_filter};
-use filtrate::{Effect, EffectContext, EffectInput, EffectOutput};
+use filtrate::{Effect, EffectContext, EffectInput, EffectOutput, WgslModuleCache};
 
 fn main() {
     divan::main();
@@ -98,9 +98,11 @@ impl GpuBench {
     }
 
     fn setup_filter<F: Effect>(&self, filter: &mut F) {
+        let shader_cache = WgslModuleCache::new();
         let ctx = EffectContext {
             device: &self.device,
             queue: &self.queue,
+            shader_cache: &shader_cache,
             input_format: self.format,
             output_format: self.format,
         };

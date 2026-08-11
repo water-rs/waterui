@@ -15,6 +15,7 @@ use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use futures::channel::oneshot;
 use num_traits::ToPrimitive;
+pub use shaderloom::WgslModuleCache;
 use parking_lot::RwLock;
 use std::error::Error;
 use std::path::Path;
@@ -100,16 +101,38 @@ pub struct GpuContext<'a> {
     pub queue: &'a wgpu::Queue,
     /// The texture format of the surface.
     pub surface_format: wgpu::TextureFormat,
+    /// Module cache for shaders this surface assembles at runtime.
+    ///
+    /// Owned by the host alongside the device, so two surfaces producing
+    /// byte-identical WGSL compile it once.
+    pub shader_cache: &'a WgslModuleCache,
     /// Preferred MSAA sample count for `surface_format`.
     ///
-    /// Backends should set this based on `adapter.get_texture_format_features(surface_format)`.
-    /// Renderers that want MSAA should use this value for pipeline and attachments.
+    /// Prefer [`GpuContext::new`], which derives this from the adapter's
+    /// reported format features instead of leaving each backend to repeat
+    /// the same query.
     pub msaa_samples: u32,
     /// Handle to request redraws from outside `render()`.
     ///
     /// Clone this during `setup()` and call `request_redraw()` when external
     /// data arrives (e.g., nami signal change, timer, network response).
     pub redraw_handle: RedrawHandle,
+}
+
+/// Largest MSAA sample count the adapter supports for `format`, capped at
+/// `max_samples` and never below 1.
+#[must_use]
+fn supported_msaa_samples(
+    adapter: &wgpu::Adapter,
+    format: wgpu::TextureFormat,
+    max_samples: u32,
+) -> u32 {
+    let flags = adapter.get_texture_format_features(format).flags;
+    [16, 8, 4, 2]
+        .into_iter()
+        .filter(|count| *count <= max_samples)
+        .find(|count| flags.sample_count_supported(*count))
+        .unwrap_or(1)
 }
 
 impl fmt::Debug for GpuContext<'_> {
@@ -121,7 +144,34 @@ impl fmt::Debug for GpuContext<'_> {
     }
 }
 
-impl GpuContext<'_> {
+impl<'a> GpuContext<'a> {
+    /// Creates a context, deriving the MSAA sample count from what the
+    /// adapter actually supports for `surface_format`.
+    ///
+    /// `max_samples` caps the search: pass the highest count the renderer is
+    /// willing to allocate attachments for. The result is the largest
+    /// supported count at or below that cap, and always at least 1.
+    #[must_use]
+    pub fn new(
+        adapter: &'a wgpu::Adapter,
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+        shader_cache: &'a WgslModuleCache,
+        max_samples: u32,
+        redraw_handle: RedrawHandle,
+    ) -> Self {
+        Self {
+            adapter,
+            device,
+            queue,
+            surface_format,
+            shader_cache,
+            msaa_samples: supported_msaa_samples(adapter, surface_format, max_samples),
+            redraw_handle,
+        }
+    }
+
     /// Returns `true` if the surface format is HDR-capable (floating-point).
     #[must_use]
     pub const fn is_hdr(&self) -> bool {
@@ -1060,6 +1110,7 @@ impl GpuSurface {
             device,
             queue,
             surface_format: config.format,
+            shader_cache: shared.shader_cache.as_ref(),
             msaa_samples,
             redraw_handle: RedrawHandle::new(),
         };
@@ -1152,6 +1203,7 @@ impl GpuSurface {
             device,
             queue,
             surface_format: config.format,
+            shader_cache: shared.shader_cache.as_ref(),
             msaa_samples,
             redraw_handle: RedrawHandle::new(),
         };

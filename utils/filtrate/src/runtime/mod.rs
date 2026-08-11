@@ -1228,11 +1228,9 @@ impl<F: Filter> FilterAdapter<F> {
         target_format: wgpu::TextureFormat,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let shader_source = specialize_color_shader(fragments, target_format);
-        let shader = shaderloom::create_dynamic_wgsl_module(
-            ctx.device,
-            Some("filter color shader"),
-            &shader_source,
-        );
+        let shader = ctx
+            .shader_cache
+            .module(ctx.device, Some("filter color shader"), &shader_source);
 
         let filterable = is_filterable_texture_format(ctx.input_format);
         let sampler_binding = if filterable {
@@ -1323,11 +1321,9 @@ impl<F: Filter> FilterAdapter<F> {
         original_input: bool,
     ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
         let shader_source = specialize_spatial_shader(shader_source, storage_format)?;
-        let shader = shaderloom::create_dynamic_wgsl_module(
-            ctx.device,
-            Some("filter spatial shader"),
-            &shader_source,
-        );
+        let shader = ctx
+            .shader_cache
+            .module(ctx.device, Some("filter spatial shader"), &shader_source);
 
         let original_entry = wgpu::BindGroupLayoutEntry {
             binding: 3,

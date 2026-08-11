@@ -4,6 +4,7 @@ use super::shader::{
 };
 use super::uniform::FILTER_UNIFORM_WORDS;
 use super::*;
+use shaderloom::WgslModuleCache;
 use filtrate_core::{MAX_FILTER_PARAM_VEC4S, ParamArray, StageCollector};
 use image::RgbaImage;
 use std::fs;
@@ -297,9 +298,11 @@ fn run_filter_and_readback<G: Effect>(
         view_formats: &[],
     });
 
+    let shader_cache = WgslModuleCache::new();
     let ctx = EffectContext {
         device,
         queue,
+        shader_cache: &shader_cache,
         input_format: format,
         output_format: format,
     };
@@ -524,9 +527,11 @@ fn fast_fail_when_param_count_exceeds_uniform_limit() {
 
     let gpu = create_test_device();
     let mut adapter = FilterAdapter::new(HugeFilter);
+    let shader_cache = WgslModuleCache::new();
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        shader_cache: &shader_cache,
         input_format: wgpu::TextureFormat::Rgba8Unorm,
         output_format: wgpu::TextureFormat::Rgba8Unorm,
     };
@@ -773,9 +778,11 @@ fn gpu_color_filter_executes_and_writes_output() {
     });
 
     let mut adapter = FilterAdapter::new(crate::filters::Brightness(0.25f32));
+    let shader_cache = WgslModuleCache::new();
     let ctx = EffectContext {
         device,
         queue,
+        shader_cache: &shader_cache,
         input_format: format,
         output_format: format,
     };
@@ -877,9 +884,11 @@ fn gpu_spatial_filter_supports_mismatched_input_output_sizes() {
     });
 
     let mut adapter = FilterAdapter::new(crate::filters::Blur(1.0f32));
+    let shader_cache = WgslModuleCache::new();
     let ctx = EffectContext {
         device,
         queue,
+        shader_cache: &shader_cache,
         input_format: format,
         output_format: format,
     };
@@ -995,9 +1004,11 @@ fn gpu_spatial_filter_uses_direct_output_when_storage_binding_is_available() {
     });
 
     let mut adapter = FilterAdapter::new(crate::filters::Blur(1.0f32));
+    let shader_cache = WgslModuleCache::new();
     let ctx = EffectContext {
         device,
         queue,
+        shader_cache: &shader_cache,
         input_format: format,
         output_format: format,
     };
@@ -1118,9 +1129,11 @@ fn gpu_spatial_filter_falls_back_when_output_lacks_storage_binding_usage() {
     });
 
     let mut adapter = FilterAdapter::new(crate::filters::Blur(1.0f32));
+    let shader_cache = WgslModuleCache::new();
     let ctx = EffectContext {
         device,
         queue,
+        shader_cache: &shader_cache,
         input_format: format,
         output_format: format,
     };
