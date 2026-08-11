@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D01867752E6C818300802E96 /* libwaterui_app.a */; };
 		D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */ = {isa = PBXBuildFile; productRef = D01867792E6C82CA00802E96 /* WaterUI */; settings = {ATTRIBUTES = (Required, ); }; };
 {% if ctx.cef_runtime_enabled() %}
 		D018677B2E6C82CA00802E96 /* WaterUICEF in Frameworks */ = {isa = PBXBuildFile; productRef = D018677E2E6C82CA00802E96 /* WaterUICEF */; settings = {ATTRIBUTES = (Required, ); }; };
@@ -22,7 +21,6 @@
 
 /* Begin PBXFileReference section */
 		D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = {{ ctx.app_name }}.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D01867752E6C818300802E96 /* libwaterui_app.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libwaterui_app.a; path = "$(BUILT_PRODUCTS_DIR)/libwaterui_app.a"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -48,7 +46,6 @@
 {% if ctx.cef_webview_enabled() %}
 				D018677D2E6C82CA00802E96 /* WaterUICefWebView in Frameworks */,
 {% endif %}
-				D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -75,7 +72,6 @@
 		D01867742E6C818200802E96 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				D01867752E6C818300802E96 /* libwaterui_app.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -181,7 +177,6 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/libwaterui_app.a",
 				"$(PROJECT_DIR)/rust_build_info.xcconfig",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
