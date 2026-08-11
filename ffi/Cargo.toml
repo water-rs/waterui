@@ -38,7 +38,7 @@ waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
 waterui-webview.workspace = true
 cookie = "0.18.1"
-waterui-map.workspace = true
+waterui-map = { workspace = true, optional = true }
 waterui-str.workspace = true
 waterui-locale.workspace = true
 wgpu = { workspace = true, optional = true }
@@ -56,6 +56,7 @@ waterui-chromium = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 waterui-video-gpu = { workspace = true, optional = true }
+waterui-map-gpu = { workspace = true, optional = true }
 tracing-android = "0.2"
 ndk-context = "0.1.1"
 jni = "0.22.4"
@@ -71,6 +72,7 @@ waterkit-audio = { workspace = true, default-features = false, features = ["appl
 
 [target.'cfg(all(not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
 waterui-video-gpu = { workspace = true, optional = true }
+waterui-map-gpu = { workspace = true, optional = true }
 
 
 [[bin]]
@@ -104,6 +106,18 @@ c-api = ["std"]
 # JNI for Android backend - mutually exclusive with c-api
 # Note: android-jni requires std because jni crate uses std
 android-jni = ["dep:jni", "dep:bytemuck", "std"]
+# Map support is off by default: the portable realization pulls in the vector
+# tile, styling, and image-decoding stack, which no app that never shows a map
+# should pay for. Apple bridges MapKit instead and only needs the marshalling.
+map = ["dep:waterui-map", "dep:waterui-map-gpu"]
+# The checked-in `waterui.h` is a superset of every optional surface, so header
+# generation turns them all on. Native backends compile the matching component
+# only when the app enabled that feature.
+cbindgen = ["dep:cbindgen", "header"]
+# Every optional C surface the checked-in `waterui.h` must declare. Header
+# generation and the header's macro expansion both read this one list, so a new
+# optional surface is added in exactly one place.
+header = ["cef-header", "map"]
 cef-runtime = [
     "gpu",
     "dep:async-io",

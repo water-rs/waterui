@@ -53,6 +53,8 @@ use waterui_core::Metadata;
 pub use waterui_video;
 #[cfg(all(not(target_vendor = "apple"), feature = "gpu"))]
 pub use waterui_video_gpu;
+#[cfg(all(not(target_vendor = "apple"), feature = "map"))]
+pub use waterui_map_gpu;
 
 /// Installs the GPU video pipeline where it is the platform's video backend.
 ///
@@ -125,6 +127,10 @@ macro_rules! export {
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 waterui::inspector::install(&mut env, inspector);
                 $crate::__install_gpu_video(&mut env);
+                // Apple bridges MapKit; every other platform draws the map
+                // itself, and only when the app opted into the `map` feature.
+                #[cfg(all(not(target_vendor = "apple"), feature = "map"))]
+                $crate::waterui_map_gpu::install(&mut env);
                 $crate::__configure_browser_environment(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
@@ -184,9 +190,13 @@ macro_rules! export {
 }
 
 /// Installs optional packaged browser runtimes selected by the generated FFI crate.
+///
+/// Not `const`: the CEF arm installs a runtime. It compiled as `const` only
+/// because the CEF features were previously reached through cbindgen's macro
+/// expansion, which never type-checks the body.
 #[doc(hidden)]
 #[inline]
-pub const fn __configure_browser_environment(env: &mut waterui::Environment) {
+pub fn __configure_browser_environment(env: &mut waterui::Environment) {
     #[cfg(any(feature = "cef-runtime", feature = "cef-header"))]
     components::platform::browser_cef::configure_environment(env);
     #[cfg(not(any(feature = "cef-runtime", feature = "cef-header")))]
