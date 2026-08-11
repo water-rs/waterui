@@ -576,44 +576,24 @@ pub fn app(env: Environment) -> App {
 
 #[cfg(test)]
 mod tests {
-    use super::{Row, catalog, new_state};
+    use super::{catalog, new_state};
     use core::time::Duration;
-    use waterui::Binding;
-    
-    use waterui::reactive::collection::List as ReactiveList;
-    use waterui_testing::{SemanticApp, ui};
-
-    use super::DemoState;
-
-    /// Mounts the catalog with caller-owned state (as a real app window owns its
-    /// root state) so interaction survives the test driver's full-tree rebuilds.
-    fn mount(
-        selected: Binding<Option<usize>>,
-        groups_open: Vec<Binding<bool>>,
-        rows: ReactiveList<Row>,
-        state: DemoState,
-        width: u32,
-        height: u32,
-    ) -> SemanticApp {
-                ui().theme(hydrolysis_m3::install)
-            .viewport(width, height)
-            .mount(move || {
-                catalog(
-                    selected.clone(),
-                    groups_open.clone(),
-                    rows.clone(),
-                    state.clone(),
-                )
-            })
-    }
+    use waterui_testing::UiBuilder;
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
     /// done out-of-band with GPU snapshots).
-    #[test]
-    fn every_control_renders_its_demo() {
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn every_control_renders_its_demo(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
-        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
         let controls = [
             ("Text Field", "Name"),
             ("Slider", "Volume"),
@@ -637,10 +617,17 @@ mod tests {
 
     /// The drawer lists every group header and control, and the detail pane shows
     /// the selected control's live demo.
-    #[test]
-    fn catalog_lists_controls() {
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn catalog_lists_controls(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
-        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
         for section in ["Actions", "Inputs", "Selection", "Display"] {
             app.query().label(section).assert_exists();
         }
@@ -653,10 +640,17 @@ mod tests {
     }
 
     /// Selecting a control shows its live demo in the detail pane.
-    #[test]
-    fn selecting_control_shows_demo() {
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn selecting_control_shows_demo(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
-        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
         app.query().label("Toggle").tap();
         assert!(
             app.query()
@@ -668,10 +662,17 @@ mod tests {
 
     /// Collapsing a group removes its items (and releases their space), while the
     /// rest of the catalog stays intact.
-    #[test]
-    fn collapsing_group_removes_items() {
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn collapsing_group_removes_items(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
-        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
         app.query().label("Slider").assert_exists();
         // Tap the Inputs group header to collapse it.
         app.query().label("Inputs").tap();
@@ -689,10 +690,17 @@ mod tests {
 
     /// Re-expanding a collapsed group restores its items: the transition's enter
     /// path brings the rows back (and they settle into the accessibility tree).
-    #[test]
-    fn expanding_group_restores_items() {
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn expanding_group_restores_items(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
-        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
         // Collapse Inputs, then expand it again.
         app.query().label("Inputs").tap();
         assert!(
@@ -712,10 +720,17 @@ mod tests {
 
     /// A demo control is actually interactive: tapping a button increments the
     /// shared counter (state is owned externally, so it persists across rebuilds).
-    #[test]
-    fn button_demo_is_interactive() {
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn button_demo_is_interactive(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
-        let mut app = mount(selected, groups_open, rows, state, 1100, 760);
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
         app.query().label_contains("Taps: 0").assert_exists();
         app.query().label("Bordered Prominent").tap();
         assert!(

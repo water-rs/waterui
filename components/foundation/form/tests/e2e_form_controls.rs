@@ -10,20 +10,7 @@ use waterui_form::Calendar;
 use waterui_form::picker::color::ColorPicker;
 use waterui_form::picker::date::{DatePicker, DatePickerType};
 use waterui_form::picker::{Picker, PickerItem, PickerStyle};
-use waterui_testing::{Role, SemanticApp, ui};
-
-const VIEWPORT_WIDTH: u32 = 320;
-const VIEWPORT_HEIGHT: u32 = 240;
-
-fn mount_view<V, F>(build: F) -> SemanticApp
-where
-    V: View + 'static,
-    F: Fn() -> V + 'static,
-{
-        ui().theme(hydrolysis_m3::install)
-        .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
-        .mount(build)
-}
+use waterui_testing::{Role, UiBuilder};
 
 fn form_shell<V: View>(content: V) -> impl View {
     vstack((content,))
@@ -40,12 +27,12 @@ fn picker_items() -> Vec<PickerItem<&'static str>> {
     ]
 }
 
-#[test]
-fn picker_selection_flow() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn picker_selection_flow(ui: UiBuilder) {
     let selection = Binding::container("Alpha");
     let selection_for_view = selection.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         form_shell(vstack((
             Picker::new(picker_items(), &selection_for_view).style(PickerStyle::Menu),
             waterui::text!("selected:{selection_for_view}").foreground(Srgb::WHITE),
@@ -87,12 +74,12 @@ fn picker_selection_flow() {
         .assert_exists();
 }
 
-#[test]
-fn picker_initial_non_first_selection_uses_matching_item_id() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
     let selection = Binding::container("Beta");
     let selection_for_view = selection.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         form_shell(Picker::new(picker_items(), &selection_for_view).style(PickerStyle::Menu))
     });
 
@@ -107,12 +94,12 @@ fn picker_initial_non_first_selection_uses_matching_item_id() {
         .assert_exists();
 }
 
-#[test]
-fn date_picker_accessibility() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn date_picker_accessibility(ui: UiBuilder) {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let selected_date_for_view = selected_date.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         form_shell(vstack((
             DatePicker::new(waterui::text!("Event Date"), &selected_date_for_view),
             waterui::text!("selected:{selected_date_for_view}").foreground(Srgb::WHITE),
@@ -128,9 +115,9 @@ fn date_picker_accessibility() {
     let updated_date = Date::new(2025, 2, 14).unwrap();
     let updated_value = DatePickerType::Date.format_value(updated_date.at(0, 0, 0, 0));
     app.query()
-            .role(Role::COMBOBOX)
-            .value(initial_value)
-            .set_text(updated_value.clone());
+        .role(Role::COMBOBOX)
+        .value(initial_value)
+        .set_text(updated_value.clone());
     assert_eq!(
         selected_date.get(),
         updated_date,
@@ -146,12 +133,12 @@ fn date_picker_accessibility() {
         .assert_exists();
 }
 
-#[test]
-fn color_picker_accessibility_tap_is_handled() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
     let selected_color = Binding::container(Color::srgb(0, 0, 0));
     let selected_color_for_view = selected_color;
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         form_shell(ColorPicker::new(
             waterui::text!("Accent Color"),
             &selected_color_for_view,
@@ -161,14 +148,14 @@ fn color_picker_accessibility_tap_is_handled() {
     app.query().role(Role::BUTTON).label("Accent Color").tap();
 }
 
-#[test]
-fn calendar_navigation_and_selection_update_binding() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn calendar_navigation_and_selection_update_binding(ui: UiBuilder) {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let visible_month = Binding::container(Date::new(2025, 1, 1).unwrap());
     let selected_date_for_view = selected_date.clone();
     let visible_month_for_view = visible_month;
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         form_shell(
             Calendar::new(
                 "Event Calendar",

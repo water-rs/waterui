@@ -5,7 +5,7 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::{Binding, View};
 use waterui_map::{Annotation, Coordinate, Latitude, Longitude, Map, Region};
-use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
+use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 
 const fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
     Coordinate::new(
@@ -36,16 +36,15 @@ fn updated_annotations() -> Vec<Annotation> {
     ]
 }
 
-#[test]
-fn map_exposes_accessibility_surface_and_reactive_annotations() {
+#[waterui::test(viewport = (420, 320))]
+fn map_exposes_accessibility_surface_and_reactive_annotations(ui: UiBuilder) {
     let region = Binding::container(initial_region());
     let annotations = Binding::container(initial_annotations());
     let region_for_view = region.clone();
     let annotations_for_view = annotations.clone();
 
-    let mut app = ui()
-        .viewport(420, 320)
-        .mount(move || map_view(region_for_view.clone(), annotations_for_view.clone()));
+    let mut app =
+        ui.mount(move || map_view(region_for_view.clone(), annotations_for_view.clone()));
 
     app.query()
         .role(Role::IMAGE)

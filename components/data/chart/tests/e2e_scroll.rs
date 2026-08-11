@@ -6,11 +6,11 @@ use waterui::component::{text, vstack};
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, SignalExt as _, View, ViewExt as _};
 use waterui_chart::{ChartScrollableAxes, DataBounds, LineChart};
-use waterui_testing::{Role, Selector, WaitOptions, WaitResult};
+use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 
 use support::{
-    assert_chart_accessibility_ready, chart_surface, horizontal_drag_domain_delta, mount_view,
-    point_series, vertical_drag_domain_delta,
+    assert_chart_accessibility_ready, chart_surface, horizontal_drag_domain_delta, point_series,
+    vertical_drag_domain_delta,
 };
 
 fn assert_close(actual: f32, expected: f32, epsilon: f32, context: &str) {
@@ -43,8 +43,8 @@ fn scalar_readout(prefix: &'static str, binding: Binding<f32>) -> impl View {
     .padding_with(6.0)
 }
 
-#[test]
-fn line_chart_horizontal_drag_updates_scroll_position_binding() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_horizontal_drag_updates_scroll_position_binding(ui: UiBuilder) {
     let data = point_series();
     let bounds = DataBounds::from_points(&data).with_padding(0.1);
     let visible_length = 8.0_f32;
@@ -57,7 +57,7 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
     let data_for_view = data;
     let scroll_for_view = scroll_position.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_x_visible_domain(visible_length)
             .chart_x_scroll_position(&scroll_for_view)
@@ -73,9 +73,9 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
     assert_close(scroll_position.get(), start, 0.05, "line-scroll-x initial");
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .drag_between(from.0, from.1, to.0, to.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .drag_between(from.0, from.1, to.0, to.1);
     assert_close(scroll_position.get(), expected, 0.08, "line-scroll-x drag");
     app.query()
         .role(Role::LABEL)
@@ -83,8 +83,8 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
         .assert_exists();
 }
 
-#[test]
-fn line_chart_vertical_drag_updates_scroll_position_binding() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_vertical_drag_updates_scroll_position_binding(ui: UiBuilder) {
     let data = point_series();
     let bounds = DataBounds::from_points(&data).with_padding(0.1);
     let visible_length = 10.0_f32;
@@ -96,7 +96,7 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
     let data_for_view = data;
     let scroll_for_view = scroll_position.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .chart_y_visible_domain(visible_length)
             .chart_y_scroll_position(&scroll_for_view)
@@ -117,9 +117,9 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
     );
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .drag_between(from.0, from.1, to.0, to.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .drag_between(from.0, from.1, to.0, to.1);
     assert_close(scroll_position.get(), expected, 0.08, "line-scroll-y drag");
     app.query()
         .role(Role::LABEL)
@@ -127,12 +127,12 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
         .assert_exists();
 }
 
-#[test]
+#[waterui::test(viewport = (320, 320))]
 #[should_panic(expected = "chart_x_visible_domain requires chart_x_scroll_position")]
-fn line_chart_visible_domain_requires_scroll_position() {
+fn line_chart_visible_domain_requires_scroll_position(ui: UiBuilder) {
     let data = point_series();
     let data_for_view = data;
-    let _app = mount_view(move || {
+    let _app = ui.mount(move || {
         chart_surface(
             "line-visible-domain-invalid",
             LineChart::new(Binding::container(data_for_view.clone())).chart_x_visible_domain(8.0),
@@ -140,8 +140,8 @@ fn line_chart_visible_domain_requires_scroll_position() {
     });
 }
 
-#[test]
-fn line_chart_reactive_visible_domain_length_triggers_redraw() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_reactive_visible_domain_length_triggers_redraw(ui: UiBuilder) {
     let data = point_series();
     let visible_length = Binding::f32(8.0);
     let x_position = Binding::f32(0.0);
@@ -149,7 +149,7 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
     let visible_length_for_view = visible_length.clone();
     let x_position_for_view = x_position.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         scroll_shell(
             "line-visible-domain-reactive",
             LineChart::new(Binding::container(data_for_view.clone()))
@@ -176,12 +176,12 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
     );
 }
 
-#[test]
+#[waterui::test(viewport = (320, 320))]
 #[should_panic(expected = "chart_scrollable_axes(horizontal) requires chart_x_scroll_position")]
-fn line_chart_scrollable_axes_require_visible_domain() {
+fn line_chart_scrollable_axes_require_visible_domain(ui: UiBuilder) {
     let data = point_series();
     let data_for_view = data;
-    let _app = mount_view(move || {
+    let _app = ui.mount(move || {
         chart_surface(
             "line-scroll-invalid",
             LineChart::new(Binding::container(data_for_view.clone()))

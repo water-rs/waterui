@@ -4,11 +4,11 @@ mod support;
 
 use waterui::Binding;
 use waterui_chart::{HitResult, LineChart, PieChart};
+use waterui_testing::UiBuilder;
 
 use support::{
-    assert_chart_accessibility_ready, assert_label_exists, chart_label, mount_view, pie_data,
-    pie_hit_location, pie_slice_datum, point_hit_location, point_series, readout_view,
-    semantic_chart_shell,
+    assert_chart_accessibility_ready, assert_label_exists, chart_label, pie_data, pie_hit_location,
+    pie_slice_datum, point_hit_location, point_series, readout_view, semantic_chart_shell,
 };
 
 #[test]
@@ -17,8 +17,8 @@ fn chart_labels_are_stable() {
     assert_eq!(chart_label("pie"), "chart-pie");
 }
 
-#[test]
-fn line_chart_drag_between_updates_selection_smoke() {
+#[waterui::test(viewport = (320, 320))]
+fn line_chart_drag_between_updates_selection_smoke(ui: UiBuilder) {
     let data = point_series();
     let focused = Binding::container(None::<HitResult<waterui_chart::DataPoint>>);
     let selected = Binding::container(None::<HitResult<waterui_chart::DataPoint>>);
@@ -30,7 +30,7 @@ fn line_chart_drag_between_updates_selection_smoke() {
     let from = point_hit_location(&data, from_index);
     let to = point_hit_location(&data, to_index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .focused(&focused_for_view)
             .selected(&selected_for_view);
@@ -59,9 +59,9 @@ fn line_chart_drag_between_updates_selection_smoke() {
 
     let label = assert_chart_accessibility_ready(&mut app, "line");
     app.query()
-            .role(waterui_testing::Role::IMAGE)
-            .label(label)
-            .drag_between(from.0, from.1, to.0, to.1);
+        .role(waterui_testing::Role::IMAGE)
+        .label(label)
+        .drag_between(from.0, from.1, to.0, to.1);
     assert!(focused.get().is_none(), "line: drag end should clear focus");
     let selected_hit = selected
         .get()
@@ -78,8 +78,8 @@ fn line_chart_drag_between_updates_selection_smoke() {
         .assert_exists();
 }
 
-#[test]
-fn pie_chart_hover_and_tap_coordinate_smoke() {
+#[waterui::test(viewport = (320, 320))]
+fn pie_chart_hover_and_tap_coordinate_smoke(ui: UiBuilder) {
     let data = pie_data();
     let focused = Binding::container(None::<HitResult<waterui_chart::SliceDatum>>);
     let selected = Binding::container(None::<HitResult<waterui_chart::SliceDatum>>);
@@ -90,7 +90,7 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
     let location = pie_hit_location(&data, index, 0.0);
     let expected = pie_slice_datum(&data, index);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let chart = PieChart::new(Binding::container(data_for_view.clone()))
             .focused(&focused_for_view)
             .selected(&selected_for_view);
@@ -119,9 +119,9 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
 
     let label = assert_chart_accessibility_ready(&mut app, "pie");
     app.query()
-            .role(waterui_testing::Role::IMAGE)
-            .label(label.clone())
-            .hover_at(location.0, location.1);
+        .role(waterui_testing::Role::IMAGE)
+        .label(label.clone())
+        .hover_at(location.0, location.1);
     let focused_hit = focused
         .get()
         .expect("pie: hover should produce a focused hit");
@@ -131,9 +131,9 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
     assert_label_exists(&mut app, "selected:none");
 
     app.query()
-            .role(waterui_testing::Role::IMAGE)
-            .label(label)
-            .tap_at(location.0, location.1);
+        .role(waterui_testing::Role::IMAGE)
+        .label(label)
+        .tap_at(location.0, location.1);
     let selected_hit = selected
         .get()
         .expect("pie: tap should produce a selected hit");

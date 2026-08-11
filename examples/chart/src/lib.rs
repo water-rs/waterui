@@ -496,14 +496,12 @@ mod tests {
     use super::demo;
     use core::time::Duration;
     use hydrolysis_m3::install;
-    use waterui_testing::ui;
-
+    
     /// The chart demo renders through the Hydrolysis M3 GPU pipeline without
     /// panicking (regression guard for the >64 rebuild-loop crash) and the active
     /// chart's controls are present.
-    #[test]
-    fn chart_demo_renders_without_crashing() {
-        let mut app = ui().viewport(440, 920).theme(install).mount(demo);
+    #[waterui::test(demo, theme = install, viewport = (440, 920), offscreen)]
+    fn chart_demo_renders_without_crashing(app: &mut waterui_testing::OffscreenApp) {
         assert!(
             app.query()
                 .label("Bar")
@@ -521,9 +519,8 @@ mod tests {
     /// - **Bug 2** (layout flickered): switching to a different-size chart must
     ///   reflow the surrounding spacers cleanly via incremental relayout, with no
     ///   whole-window rebuild flash, and still render the new chart.
-    #[test]
-    fn chart_mode_buttons_switch_and_reflow() {
-        let mut app = ui().viewport(440, 920).theme(install).mount(demo);
+    #[waterui::test(demo, theme = install, viewport = (440, 920), offscreen)]
+    fn chart_mode_buttons_switch_and_reflow(app: &mut waterui_testing::OffscreenApp) {
         assert!(
             app.query()
                 .label("Bar")
@@ -534,7 +531,7 @@ mod tests {
         bar.save_png("/tmp/waterui_chart_bar.png")
             .expect("save bar snapshot");
 
-        assert!(app.query().label("Pie").tap(), "Pie mode button must tap");
+        app.query().label("Pie").tap();
         let pie = app.snapshot();
         pie.save_png("/tmp/waterui_chart_pie.png")
             .expect("save pie snapshot");
@@ -545,10 +542,7 @@ mod tests {
         );
 
         // A different-size chart: the surrounding spacers must reflow without a flash.
-        assert!(
-            app.query().label("Gauge").tap(),
-            "Gauge mode button must tap"
-        );
+        app.query().label("Gauge").tap();
         let gauge = app.snapshot();
         gauge
             .save_png("/tmp/waterui_chart_gauge.png")

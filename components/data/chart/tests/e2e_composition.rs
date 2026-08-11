@@ -8,11 +8,11 @@ use waterui::graphics::color::Srgb;
 use waterui::layout::{PositionExt, UnitPoint, absolute};
 use waterui::{Binding, SignalExt as _, View, ViewExt as _};
 use waterui_chart::LineChart;
-use waterui_testing::{Role, SemanticApp};
+use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 use support::{
     CHART_HEIGHT, CHART_WIDTH, assert_chart_accessibility_ready, assert_label_exists,
-    chart_surface, mount_view, point_hit_location, point_series,
+    chart_surface, point_hit_location, point_series,
 };
 
 fn overlay_badge(label: &'static str) -> impl View {
@@ -59,10 +59,10 @@ fn hidden_accessibility_state(
         .computed()
 }
 
-#[test]
-fn chart_background_uses_plot_area_proxy_in_accessibility_tree() {
+#[waterui::test(viewport = (320, 320))]
+fn chart_background_uses_plot_area_proxy_in_accessibility_tree(ui: UiBuilder) {
     let data = point_series();
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         chart_surface(
             "composition-background",
             LineChart::new(Binding::container(data.clone()))
@@ -85,10 +85,10 @@ fn chart_background_uses_plot_area_proxy_in_accessibility_tree() {
     assert_label_bounds(&mut app, "Plot area marker");
 }
 
-#[test]
-fn chart_overlay_static_layer_exposes_accessibility_node() {
+#[waterui::test(viewport = (320, 320))]
+fn chart_overlay_static_layer_exposes_accessibility_node(ui: UiBuilder) {
     let data = point_series();
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         chart_surface(
             "composition-overlay",
             LineChart::new(Binding::container(data.clone())).chart_overlay(|_proxy| {
@@ -109,8 +109,8 @@ fn chart_overlay_static_layer_exposes_accessibility_node() {
     assert_label_bounds(&mut app, "Static overlay");
 }
 
-#[test]
-fn chart_overlay_reacts_to_proxy_selection_without_external_bindings() {
+#[waterui::test(viewport = (320, 320))]
+fn chart_overlay_reacts_to_proxy_selection_without_external_bindings(ui: UiBuilder) {
     let data = point_series();
     let index = 10;
     let location = point_hit_location(&data, index);
@@ -118,7 +118,7 @@ fn chart_overlay_reacts_to_proxy_selection_without_external_bindings() {
         Binding::container(None::<waterui_chart::HitResult<waterui_chart::DataPoint>>);
     let proxy_selected_for_view = proxy_selected.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         let proxy_selected_binding = proxy_selected_for_view.clone();
         chart_surface(
             "composition-line",
@@ -143,9 +143,9 @@ fn chart_overlay_reacts_to_proxy_selection_without_external_bindings() {
         .assert_not_exists();
 
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
     assert!(
         proxy_selected.get().is_some(),
         "chart_overlay proxy selection should update without external chart bindings"
@@ -157,15 +157,15 @@ fn chart_overlay_reacts_to_proxy_selection_without_external_bindings() {
     assert_label_bounds(&mut app, "Proxy selection overlay");
 }
 
-#[test]
-fn chart_overlay_reacts_to_proxy_selection_with_external_binding() {
+#[waterui::test(viewport = (320, 320))]
+fn chart_overlay_reacts_to_proxy_selection_with_external_binding(ui: UiBuilder) {
     let data = point_series();
     let index = 10;
     let location = point_hit_location(&data, index);
     let selected = Binding::container(None::<waterui_chart::HitResult<waterui_chart::DataPoint>>);
     let selected_for_view = selected.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         chart_surface(
             "composition-line-external",
             LineChart::new(Binding::container(data.clone()))
@@ -186,9 +186,9 @@ fn chart_overlay_reacts_to_proxy_selection_with_external_binding() {
         .label("External selection overlay")
         .assert_not_exists();
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
     assert!(
         selected.get().is_some(),
         "external selected binding should update"
@@ -200,10 +200,10 @@ fn chart_overlay_reacts_to_proxy_selection_with_external_binding() {
     assert_label_bounds(&mut app, "External selection overlay");
 }
 
-#[test]
-fn chart_overlay_reactive_layer_is_initially_hidden_without_selection() {
+#[waterui::test(viewport = (320, 320))]
+fn chart_overlay_reactive_layer_is_initially_hidden_without_selection(ui: UiBuilder) {
     let data = point_series();
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         chart_surface(
             "composition-hidden",
             LineChart::new(Binding::container(data.clone())).chart_overlay(|proxy| {
@@ -222,15 +222,15 @@ fn chart_overlay_reactive_layer_is_initially_hidden_without_selection() {
         .assert_not_exists();
 }
 
-#[test]
-fn selected_overlay_exposes_accessibility_labels() {
+#[waterui::test(viewport = (320, 320))]
+fn selected_overlay_exposes_accessibility_labels(ui: UiBuilder) {
     let data = point_series();
     let index = 10;
     let location = point_hit_location(&data, index);
     let selected = Binding::container(None::<waterui_chart::HitResult<waterui_chart::DataPoint>>);
     let selected_for_view = selected.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         chart_surface(
             "composition-line-tooltip",
             LineChart::new(Binding::container(data.clone()))
@@ -265,9 +265,9 @@ fn selected_overlay_exposes_accessibility_labels() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "composition-line-tooltip");
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
     assert!(
         selected.get().is_some(),
         "composition-line-tooltip: tap should update the selected binding"
@@ -278,15 +278,15 @@ fn selected_overlay_exposes_accessibility_labels() {
         .assert_exists();
 }
 
-#[test]
-fn selected_tooltip_exposes_accessibility_labels() {
+#[waterui::test(viewport = (320, 320))]
+fn selected_tooltip_exposes_accessibility_labels(ui: UiBuilder) {
     let data = point_series();
     let index = 10;
     let location = point_hit_location(&data, index);
     let selected = Binding::container(None::<waterui_chart::HitResult<waterui_chart::DataPoint>>);
     let selected_for_view = selected.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         chart_surface(
             "composition-line-selected-tooltip",
             LineChart::new(Binding::container(data.clone()))
@@ -311,9 +311,9 @@ fn selected_tooltip_exposes_accessibility_labels() {
         .label("Selected")
         .assert_not_exists();
     app.query()
-            .role(Role::IMAGE)
-            .label(chart_label)
-            .tap_at(location.0, location.1);
+        .role(Role::IMAGE)
+        .label(chart_label)
+        .tap_at(location.0, location.1);
     assert!(
         selected.get().is_some(),
         "composition-line-selected-tooltip: tap should update selected binding"
@@ -329,9 +329,9 @@ fn selected_tooltip_exposes_accessibility_labels() {
         .assert_exists();
 }
 
-#[test]
-fn tooltip_component_exposes_accessible_labels() {
-    let mut app = mount_view(|| {
+#[waterui::test(viewport = (320, 320))]
+fn tooltip_component_exposes_accessible_labels(ui: UiBuilder) {
+    let mut app = ui.mount(|| {
         waterui_chart::Tooltip::new(
             waterui_chart::TooltipContent::new()
                 .title("Selected")

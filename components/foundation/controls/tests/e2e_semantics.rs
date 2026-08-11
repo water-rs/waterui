@@ -12,9 +12,9 @@ use waterui::{Binding, Str};
 use waterui_controls::{
     Menu, TextField, Toggle, button, label, slider::slider, stepper::stepper, toggle,
 };
-use waterui_testing::{Role, Selector};
+use waterui_testing::{Role, SemanticApp, Selector, UiBuilder};
 
-use support::{control_shell, mount_view};
+use support::control_shell;
 
 /// Asserts that an interaction panics because the runtime rejected it —
 /// the contract for actions on disabled or clamped controls.
@@ -34,12 +34,12 @@ fn assert_close(actual: f64, expected: f64, epsilon: f64, context: &str) {
     );
 }
 
-#[test]
-fn button_tap_triggers_action() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn button_tap_triggers_action(ui: UiBuilder) {
     let count = Binding::i32(0);
     let count_for_view = count.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(vstack((
             button("Increment")
                 .action(|waterui::State(count): waterui::State<Binding<i32>>| {
@@ -58,8 +58,8 @@ fn button_tap_triggers_action() {
         .assert_exists();
 }
 
-#[test]
-fn disabled_scope_reaches_every_control_in_the_subtree() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn disabled_scope_reaches_every_control_in_the_subtree(ui: UiBuilder) {
     // No control carries a `disabled` field: `.disabled(...)` installs a scoped
     // environment attribute and each control reads the state in force at its
     // own position. A scope on the container must therefore reach a stepper and
@@ -69,7 +69,7 @@ fn disabled_scope_reaches_every_control_in_the_subtree() {
     let flag = Binding::bool(false);
     let amount = Binding::f64(0.5);
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(
             vstack((
                 button("Act").action(|| {}),
@@ -104,14 +104,14 @@ fn disabled_scope_reaches_every_control_in_the_subtree() {
     }
 }
 
-#[test]
-fn repeated_state_calls_bind_in_argument_order() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn repeated_state_calls_bind_in_argument_order(ui: UiBuilder) {
     let first = Binding::i32(0);
     let second = Binding::i32(0);
     let first_for_view = first.clone();
     let second_for_view = second.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(
             button("Bind")
                 .action(
@@ -140,10 +140,12 @@ fn repeated_state_calls_bind_in_argument_order() {
     );
 }
 
-#[test]
-fn button_disabled_state_is_accessible() {
-    let mut app = mount_view(|| control_shell(button("Disabled").disabled(true)));
+fn disabled_button_view() -> impl waterui::View {
+    control_shell(button("Disabled").disabled(true))
+}
 
+#[waterui::test(disabled_button_view, theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn button_disabled_state_is_accessible(app: &mut SemanticApp) {
     let element = app.query().role(Role::BUTTON).label("Disabled").single();
     assert!(
         !element.node().enabled(),
@@ -151,22 +153,24 @@ fn button_disabled_state_is_accessible() {
     );
 }
 
-#[test]
-fn button_label_is_accessible() {
-    let mut app = mount_view(|| control_shell(button("Submit")));
+fn submit_button_view() -> impl waterui::View {
+    control_shell(button("Submit"))
+}
 
+#[waterui::test(submit_button_view, theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn button_label_is_accessible(app: &mut SemanticApp) {
     app.query()
         .role(Role::BUTTON)
         .label("Submit")
         .assert_exists();
 }
 
-#[test]
-fn toggle_tap_toggles_binding() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn toggle_tap_toggles_binding(ui: UiBuilder) {
     let enabled = Binding::bool(false);
     let enabled_for_view = enabled.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(vstack((
             toggle("Airplane Mode", &enabled_for_view),
             waterui::text!("enabled:{enabled_for_view}").foreground(Srgb::WHITE),
@@ -191,12 +195,12 @@ fn toggle_tap_toggles_binding() {
         .assert_exists();
 }
 
-#[test]
-fn toggle_accessibility_role_is_switch() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn toggle_accessibility_role_is_switch(ui: UiBuilder) {
     let enabled = Binding::bool(false);
     let enabled_for_view = enabled;
 
-    let mut app = mount_view(move || control_shell(Toggle::new(&enabled_for_view).label("Wi-Fi")));
+    let mut app = ui.mount(move || control_shell(Toggle::new(&enabled_for_view).label("Wi-Fi")));
 
     app.query()
         .role(Role::SWITCH)
@@ -205,12 +209,12 @@ fn toggle_accessibility_role_is_switch() {
         .assert_exists();
 }
 
-#[test]
-fn slider_increment_decrement_updates_value() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn slider_increment_decrement_updates_value(ui: UiBuilder) {
     let value = Binding::f64(0.50);
     let value_for_view = value.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(vstack((
             slider("Volume", &value_for_view),
             waterui::text!("value:{value_for_view:.2}").foreground(Srgb::WHITE),
@@ -242,12 +246,12 @@ fn slider_increment_decrement_updates_value() {
         .assert_exists();
 }
 
-#[test]
-fn slider_accessibility_role_is_slider() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn slider_accessibility_role_is_slider(ui: UiBuilder) {
     let value = Binding::f64(0.25);
     let value_for_view = value;
 
-    let mut app = mount_view(move || control_shell(slider("Exposure", &value_for_view)));
+    let mut app = ui.mount(move || control_shell(slider("Exposure", &value_for_view)));
 
     let element = app.query().role(Role::SLIDER).label("Exposure").single();
     let numeric = element
@@ -264,12 +268,12 @@ fn slider_accessibility_role_is_slider() {
     );
 }
 
-#[test]
-fn stepper_increment_decrement_updates_binding() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn stepper_increment_decrement_updates_binding(ui: UiBuilder) {
     let value = Binding::i32(2);
     let value_for_view = value.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(vstack((
             stepper("Quantity", &value_for_view),
             waterui::text!("count:{value_for_view}").foreground(Srgb::WHITE),
@@ -291,13 +295,13 @@ fn stepper_increment_decrement_updates_binding() {
         .assert_exists();
 }
 
-#[test]
-fn stepper_respects_range_bounds() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn stepper_respects_range_bounds(ui: UiBuilder) {
     let value = Binding::i32(2);
     let value_for_view = value.clone();
 
     let mut app =
-        mount_view(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
+        ui.mount(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
 
     assert_rejected("stepper increment at max should report no change", || {
         app.query().label("Limited").value("2").increment();
@@ -305,12 +309,12 @@ fn stepper_respects_range_bounds() {
     assert_eq!(value.get(), 2, "stepper value should remain clamped at max");
 }
 
-#[test]
-fn text_field_set_text_updates_binding() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn text_field_set_text_updates_binding(ui: UiBuilder) {
     let value = Binding::container(Str::from(""));
     let value_for_view = value.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(vstack((
             TextField::new(&value_for_view).label("Name"),
             waterui::text!("value:{value_for_view}").foreground(Srgb::WHITE),
@@ -332,21 +336,21 @@ fn text_field_set_text_updates_binding() {
         .assert_exists();
 }
 
-#[test]
-fn text_field_focus_updates_ui_focus() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn text_field_focus_updates_ui_focus(ui: UiBuilder) {
     let value = Binding::container(Str::from(""));
     let value_for_view = value;
 
     let mut app =
-        mount_view(move || control_shell(TextField::new(&value_for_view).label("Search")));
+        ui.mount(move || control_shell(TextField::new(&value_for_view).label("Search")));
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
     app.query().role(Role::TEXT_INPUT).label("Search").focus();
     app.assert_ui_focus(&selector);
 }
 
-#[test]
-fn multi_line_text_field_accepts_newlines_up_to_its_limit() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
     // A multi-line field must be reachable through the public API: `line_limit`
     // takes any `NonZeroUsize`, and a field with a limit above one both reports
     // the multi-line accessibility role and accepts newline input, refusing only
@@ -354,7 +358,7 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit() {
     let value = Binding::container(Str::from(""));
     let observed = value.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(
             TextField::new(&value)
                 .label("Notes")
@@ -387,15 +391,15 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit() {
     );
 }
 
-#[test]
-fn accessibility_label_follows_a_signal_without_rebuilding() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
     // An accessibility label derived from app state must stay current the way
     // accessibility *state* already does, instead of freezing at the value it
     // had when the subtree was built.
     let unread = Binding::i32(3);
     let label = unread.clone().map(|count| Str::from(format!("{count} unread messages")));
 
-    let mut app = mount_view(move || control_shell(button("Inbox").a11y_label(label.clone())));
+    let mut app = ui.mount(move || control_shell(button("Inbox").a11y_label(label.clone())));
 
     app.query()
         .role(Role::BUTTON)
@@ -413,28 +417,30 @@ fn accessibility_label_follows_a_signal_without_rebuilding() {
     );
 }
 
-#[test]
-fn icon_only_label_preserves_button_accessible_name() {
-    let mut app = mount_view(|| control_shell(button(label("Search").icon(()).icon_only())));
+fn icon_only_search_button_view() -> impl waterui::View {
+    control_shell(button(label("Search").icon(()).icon_only()))
+}
 
+#[waterui::test(icon_only_search_button_view, theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn icon_only_label_preserves_button_accessible_name(app: &mut SemanticApp) {
     app.query()
         .role(Role::BUTTON)
         .label("Search")
         .assert_exists();
 }
 
-#[test]
-fn menu_button_exposes_accessible_name() {
-    let mut app = mount_view(|| {
-        control_shell(Menu::new(
-            label("Actions").icon(()),
-            (
-                button("Refresh").action(|| {}),
-                Menu::new("Advanced", (button("Archive").action(|| {}),)),
-            ),
-        ))
-    });
+fn actions_menu_view() -> impl waterui::View {
+    control_shell(Menu::new(
+        label("Actions").icon(()),
+        (
+            button("Refresh").action(|| {}),
+            Menu::new("Advanced", (button("Archive").action(|| {}),)),
+        ),
+    ))
+}
 
+#[waterui::test(actions_menu_view, theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn menu_button_exposes_accessible_name(app: &mut SemanticApp) {
     let menu = app.query().role(Role::BUTTON).label("Actions").single();
     let bounds = menu.bounds();
     assert!(
@@ -443,13 +449,13 @@ fn menu_button_exposes_accessible_name() {
     );
 }
 
-#[test]
-fn disabled_toggle_ignores_input_and_reports_disabled() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
     let enabled = Binding::bool(false);
     let enabled_for_view = enabled.clone();
 
     let mut app =
-        mount_view(move || control_shell(toggle("Wi-Fi", &enabled_for_view).disabled(true)));
+        ui.mount(move || control_shell(toggle("Wi-Fi", &enabled_for_view).disabled(true)));
 
     let element = app.query().role(Role::SWITCH).label("Wi-Fi").single();
     assert!(
@@ -472,14 +478,14 @@ fn disabled_toggle_ignores_input_and_reports_disabled() {
     );
 }
 
-#[test]
-fn disabled_scope_cascades_and_reenables_reactively() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
     let enabled = Binding::bool(false);
     let enabled_for_view = enabled.clone();
     let form_locked = Binding::bool(true);
     let form_locked_for_view = form_locked.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(
             vstack((toggle("Notifications", &enabled_for_view),))
                 .disabled(form_locked_for_view.clone()),
@@ -522,13 +528,13 @@ fn disabled_scope_cascades_and_reenables_reactively() {
     );
 }
 
-#[test]
-fn disabled_slider_ignores_value_actions() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn disabled_slider_ignores_value_actions(ui: UiBuilder) {
     let value = Binding::f64(0.5);
     let value_for_view = value.clone();
 
     let mut app =
-        mount_view(move || control_shell(slider("Volume", &value_for_view).disabled(true)));
+        ui.mount(move || control_shell(slider("Volume", &value_for_view).disabled(true)));
 
     let element = app.query().role(Role::SLIDER).label("Volume").single();
     assert!(
@@ -553,12 +559,12 @@ fn disabled_slider_ignores_value_actions() {
     );
 }
 
-#[test]
-fn disabled_button_ignores_action() {
+#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+fn disabled_button_ignores_action(ui: UiBuilder) {
     let count = Binding::i32(0);
     let count_for_view = count.clone();
 
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         control_shell(
             button("Submit")
                 .action(|waterui::State(count): waterui::State<Binding<i32>>| {

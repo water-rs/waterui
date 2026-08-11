@@ -14,7 +14,7 @@ use waterui::component::{button, vstack};
 use waterui::text;
 use waterui::{Computed, Environment, Signal, SignalExt, Str, View};
 use waterui_core::{Binding, binding};
-use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
+use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 use waterui_webview::{
     BackendEvent, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
     WebView, WebViewController, WebViewEvent, WebViewHandle,
@@ -220,8 +220,8 @@ fn redirect_policy_retains_the_reactive_signal() {
     drop(webview);
 }
 
-#[test]
-fn open_tracks_url_binding_without_recreating_the_webview() {
+#[waterui::test(viewport = (420, 420))]
+fn open_tracks_url_binding_without_recreating_the_webview(ui: UiBuilder) {
     let backend = FakeWebViewController::default();
     let controller = WebViewController::new(backend.clone());
     let url = binding(Url::new(DOCS_URL));
@@ -229,10 +229,9 @@ fn open_tracks_url_binding_without_recreating_the_webview() {
 
     let mut env = Environment::new();
     env.insert(controller);
-    let _app = ui()
+    let _app = ui
         .theme(install_m3)
         .environment(env)
-        .viewport(420, 420)
         .mount(move || WebView::open(url_for_view.clone()).size(320.0, 260.0));
 
     {
@@ -300,14 +299,14 @@ fn webview_test_view(webview: WebView) -> impl View {
     .retain(status_guard)
 }
 
-#[test]
-fn webview_exposes_accessibility_surface_and_navigation_state() {
+#[waterui::test(viewport = (420, 420))]
+fn webview_exposes_accessibility_surface_and_navigation_state(ui: UiBuilder) {
     let controller = WebViewController::new(FakeWebViewController::default());
     let webview = controller.open();
 
     let mut env = Environment::new();
     env.insert(controller);
-    let mut app = ui().environment(env).viewport(420, 420).mount({
+    let mut app = ui.environment(env).mount({
         let webview = webview.clone();
         move || webview_test_view(webview.clone())
     });

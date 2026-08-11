@@ -12,7 +12,7 @@ use waterui::component::vstack;
 use waterui::reactive::binding;
 use waterui_controls::{button, slider::slider, toggle};
 use waterui_core::View;
-use waterui_testing::{OffscreenApp, Role, ui};
+use waterui_testing::{OffscreenApp, Role};
 
 fn save(app: &mut OffscreenApp, stage: &str) {
     let _ = app.capture_snapshot("material3-preview", "disabled-controls", stage);
@@ -37,13 +37,18 @@ fn controls(checked: bool) -> impl View {
     .padding()
 }
 
-#[test]
+fn disabled_controls_view() -> impl View {
+    controls(true)
+}
+
 #[ignore = "writes visual acceptance PNG files for direct image review"]
-fn disabled_controls_render_md3_disabled_palette() {
-    let mut app = ui()
-        .viewport(360, 420)
-        .theme(install)
-        .mount_offscreen(move || controls(true));
+#[waterui::test(
+    disabled_controls_view,
+    theme = install,
+    viewport = (360, 420),
+    offscreen
+)]
+fn disabled_controls_render_md3_disabled_palette(app: &mut OffscreenApp) {
     assert!(
         app.query()
             .role(Role::SWITCH)
@@ -51,7 +56,7 @@ fn disabled_controls_render_md3_disabled_palette() {
             .wait_for_existence(Duration::from_secs(3)),
         "controls must mount"
     );
-    save(&mut app, "idle");
+    save(app, "idle");
 
     // Hover and press the disabled switch: no hover halo, no ripple, no
     // thumb growth may appear.
@@ -70,7 +75,7 @@ fn disabled_controls_render_md3_disabled_palette() {
     app.queue_pointer_down(cx, cy);
     let _ = app.snapshot();
     app.pump_for(Duration::from_millis(60));
-    save(&mut app, "pressed-on-disabled-switch");
+    save(app, "pressed-on-disabled-switch");
     app.queue_pointer_up(cx, cy);
     let _ = app.snapshot();
 }
