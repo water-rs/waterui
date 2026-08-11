@@ -165,6 +165,15 @@ impl ScrollHandle {
         state.tick_smooth_scroll(now)
     }
 
+    /// Whether a smoothed wheel scroll is still gliding toward its target,
+    /// without advancing it. Stale handles are inert.
+    #[must_use]
+    pub fn is_smooth_scrolling(&self) -> bool {
+        let state = self.state.borrow();
+        state.generation == self.generation
+            && (state.wheel_target_x.is_some() || state.wheel_target_y.is_some())
+    }
+
     /// Jumps immediately to an absolute content offset, clamped to the current
     /// scrollable extents. Any in-flight wheel animation is cancelled.
     #[must_use]

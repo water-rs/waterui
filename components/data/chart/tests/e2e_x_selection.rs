@@ -130,13 +130,10 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
         .label("x:none")
         .assert_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "line-x-value: tap_at should update x selection"
-    );
+            .tap_at(location.0, location.1);
 
     let actual_x = selection
         .get()
@@ -182,13 +179,10 @@ fn line_chart_x_selection_range_tracks_drag_span() {
         .label("x-range:none")
         .assert_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .drag_between(from.0, from.1, to.0, to.1),
-        "line-x-range: drag_between should update x selection range"
-    );
+            .drag_between(from.0, from.1, to.0, to.1);
 
     let actual = selection
         .get()
@@ -232,13 +226,10 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
         .label("y:none")
         .assert_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "line-y-value: tap_at should update y selection"
-    );
+            .tap_at(location.0, location.1);
 
     let actual_y = selection
         .get()
@@ -284,13 +275,10 @@ fn line_chart_y_selection_range_tracks_drag_span() {
         .label("y-range:none")
         .assert_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .drag_between(from.0, from.1, to.0, to.1),
-        "line-y-range: drag_between should update y selection range"
-    );
+            .drag_between(from.0, from.1, to.0, to.1);
 
     let actual = selection
         .get()
@@ -345,13 +333,10 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
         .label("y:none")
         .assert_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "line-xy-value: tap_at should update x and y selections"
-    );
+            .tap_at(location.0, location.1);
 
     assert_close(
         x_selection
@@ -407,13 +392,10 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
         .label("x:none")
         .assert_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "depth-x-value: tap_at should update x selection"
-    );
+            .tap_at(location.0, location.1);
 
     let actual_x = selection
         .get()

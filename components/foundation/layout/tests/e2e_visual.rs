@@ -3,7 +3,6 @@
 use hydrolysis_m3::install as install_m3;
 use waterui::View;
 use waterui::ViewExt as _;
-use waterui::env::Environment;
 use waterui::graphics::color::Srgb;
 use waterui::text::text;
 use waterui_layout::scroll;
@@ -18,9 +17,7 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    let mut env = Environment::new();
-    install_m3(&mut env);
-    ui().environment(env)
+        ui().theme(install_m3)
         .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
         .mount(build)
 }
@@ -135,10 +132,7 @@ fn scroll_view_scroll_down_changes_content() {
         .label("Second item")
         .single()
         .bounds();
-    assert!(
-        app.query().label("scroll-layout").scroll_down(),
-        "scroll view scroll_down should succeed"
-    );
+    app.query().label("scroll-layout").scroll_down();
 
     let second_after = app
         .query()

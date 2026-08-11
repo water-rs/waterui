@@ -33,15 +33,12 @@ fn navigation_stack_exports_root_destination_and_interactive_pop_stages() {
     let mut app = ui()
         .viewport(VIEWPORT_WIDTH.into(), VIEWPORT_HEIGHT.into())
         .theme(install_m3)
-        .mount(move || visual_stack(Rc::clone(&destination_appeared_for_view)));
+        .mount_offscreen(move || visual_stack(Rc::clone(&destination_appeared_for_view)));
 
     app.query().label("Library").assert_exists();
     let _root = app.capture_snapshot("navigation", "stack", "root");
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Open Atlas").tap(),
-        "navigation link should open the visual destination"
-    );
+    app.query().role(Role::BUTTON).label("Open Atlas").tap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while !destination_appeared.get() {
         assert!(
