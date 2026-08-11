@@ -384,9 +384,20 @@ impl ElementRef {
 
     /// Drags from the element center by the provided delta.
     pub fn drag_by(&self, app: &mut SemanticApp, dx: f32, dy: f32) {
+        self.drag_by_with(app, dx, dy, crate::app::DragOptions::default());
+    }
+
+    /// Drags from the element center by a delta with step/timing control.
+    pub fn drag_by_with(
+        &self,
+        app: &mut SemanticApp,
+        dx: f32,
+        dy: f32,
+        options: crate::app::DragOptions,
+    ) {
         app.assert_current_element(self, "drag_by");
         let (x, y) = self.center();
-        app.drag_from_to(x, y, x + dx, y + dy);
+        app.drag_from_to_with(x, y, x + dx, y + dy, options);
     }
 
     /// Drags between two normalized coordinates within the element.
