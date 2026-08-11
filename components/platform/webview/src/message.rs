@@ -92,6 +92,20 @@ impl Extractor for HandlerName {
     }
 }
 
+/// A handler's answer, and which of the bridge's two channels carries it.
+///
+/// The distinction has to survive the trip out. When every reply collapsed to
+/// `Vec<u8>`, the bridge could no longer tell a serialized object from a PNG,
+/// so it sent both as base64 and `await waterui.invoke(...)` resolved to a
+/// base64 string instead of to the value the handler returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsReply {
+    /// A serialized JSON value. The page receives the value itself.
+    Json(Vec<u8>),
+    /// Opaque bytes. The page receives a `Uint8Array`.
+    Bytes(Vec<u8>),
+}
+
 /// What a handler may return.
 ///
 /// Users depend on this but never implement it, the same way they depend on
@@ -99,52 +113,58 @@ impl Extractor for HandlerName {
 /// use `?` and the failure reaches JavaScript as a rejection instead of being
 /// encoded into a successful reply.
 pub trait IntoJsReply {
-    /// Converts into the bytes to send, or the message to reject with.
+    /// Converts into the reply to send, or the message to reject with.
     ///
     /// # Errors
     ///
     /// Returns the message the page's promise rejects with.
-    fn into_js_reply(self) -> Result<Vec<u8>, String>;
+    fn into_js_reply(self) -> Result<JsReply, String>;
 }
 
+/// Nothing to say. The page's promise resolves with `null` rather than with an
+/// empty string, which is what a zero-length byte reply used to produce.
 impl IntoJsReply for () {
-    fn into_js_reply(self) -> Result<Vec<u8>, String> {
-        Ok(Vec::new())
+    fn into_js_reply(self) -> Result<JsReply, String> {
+        Ok(JsReply::Json(b"null".to_vec()))
     }
 }
 
 impl IntoJsReply for Vec<u8> {
-    fn into_js_reply(self) -> Result<Vec<u8>, String> {
-        Ok(self)
+    fn into_js_reply(self) -> Result<JsReply, String> {
+        Ok(JsReply::Bytes(self))
     }
 }
 
 impl IntoJsReply for Bytes {
-    fn into_js_reply(self) -> Result<Vec<u8>, String> {
-        Ok(self.0)
+    fn into_js_reply(self) -> Result<JsReply, String> {
+        Ok(JsReply::Bytes(self.0))
     }
 }
 
+/// Text arrives as a JavaScript string, so returning `"ok"` gives the page
+/// `"ok"` and not its base64.
 impl IntoJsReply for String {
-    fn into_js_reply(self) -> Result<Vec<u8>, String> {
-        Ok(self.into_bytes())
+    fn into_js_reply(self) -> Result<JsReply, String> {
+        Json(self).into_js_reply()
     }
 }
 
 impl IntoJsReply for Str {
-    fn into_js_reply(self) -> Result<Vec<u8>, String> {
-        Ok(self.as_str().as_bytes().to_vec())
+    fn into_js_reply(self) -> Result<JsReply, String> {
+        Json(self.as_str()).into_js_reply()
     }
 }
 
 impl<T: Serialize> IntoJsReply for Json<T> {
-    fn into_js_reply(self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(&self.0).map_err(|error| error.to_string())
+    fn into_js_reply(self) -> Result<JsReply, String> {
+        serde_json::to_vec(&self.0)
+            .map(JsReply::Json)
+            .map_err(|error| error.to_string())
     }
 }
 
 impl<T: IntoJsReply, E: core::fmt::Display> IntoJsReply for Result<T, E> {
-    fn into_js_reply(self) -> Result<Vec<u8>, String> {
+    fn into_js_reply(self) -> Result<JsReply, String> {
         match self {
             Ok(value) => value.into_js_reply(),
             Err(error) => Err(error.to_string()),
@@ -184,7 +204,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Bytes, HandlerName, IntoJsReply, JsRequest, Json};
+    use super::{Bytes, HandlerName, IntoJsReply, JsReply, JsRequest, Json};
     use std::rc::Rc;
     use waterui_core::Environment;
     use waterui_core::extract::Extractor;
@@ -244,8 +264,47 @@ mod tests {
         assert!(message.contains("disk full"));
     }
 
+    /// A handler that answers with nothing still answers on the value channel,
+    /// so the page's promise resolves with `null` rather than with `""`.
     #[test]
-    fn unit_replies_with_nothing() {
-        assert_eq!(().into_js_reply().expect("ok"), Vec::<u8>::new());
+    fn unit_replies_with_null() {
+        assert_eq!(
+            ().into_js_reply().expect("ok"),
+            JsReply::Json(b"null".to_vec())
+        );
+    }
+
+    /// Which channel a reply takes follows from what the handler returned, and
+    /// nothing else. This is the distinction the bridge lost when every reply
+    /// was a `Vec<u8>`.
+    #[test]
+    fn the_return_type_chooses_the_channel() {
+        assert_eq!(
+            Json(Greet {
+                name: String::from("Lexo")
+            })
+            .into_js_reply()
+            .expect("ok"),
+            JsReply::Json(br#"{"name":"Lexo"}"#.to_vec())
+        );
+
+        // Text is a value, not a blob: the page gets a string, not its base64.
+        assert_eq!(
+            String::from("ok").into_js_reply().expect("ok"),
+            JsReply::Json(br#""ok""#.to_vec())
+        );
+        assert_eq!(
+            Str::from("ok").into_js_reply().expect("ok"),
+            JsReply::Json(br#""ok""#.to_vec())
+        );
+
+        assert_eq!(
+            vec![1_u8, 2, 3].into_js_reply().expect("ok"),
+            JsReply::Bytes(vec![1, 2, 3])
+        );
+        assert_eq!(
+            Bytes(vec![1, 2, 3]).into_js_reply().expect("ok"),
+            JsReply::Bytes(vec![1, 2, 3])
+        );
     }
 }

@@ -1076,6 +1076,24 @@ typedef enum WuiCefEditCommand {
 } WuiCefEditCommand;
 
 /**
+ * Which of the bridge's two channels a handler's reply crosses on.
+ *
+ * The page sees the difference — a value it can use, or a `Uint8Array` — so the
+ * answer has to survive the trip out. It used to be dropped here, and every
+ * reply reached the page as base64 text.
+ */
+typedef enum WuiJsReplyKind {
+  /**
+   * The bytes are a serialized JSON value; the page receives the value.
+   */
+  WuiJsReplyKind_Json = 0,
+  /**
+   * The bytes are opaque; the page receives a `Uint8Array`.
+   */
+  WuiJsReplyKind_Bytes = 1,
+} WuiJsReplyKind;
+
+/**
  * FFI representation of script injection timing.
  */
 typedef enum WuiScriptInjectionTime {
@@ -5872,19 +5890,24 @@ typedef struct WuiFn_WuiWebViewEvent {
 } WuiFn_WuiWebViewEvent;
 
 /**
- * Callback for JavaScript execution results.
+ * One-shot reply to one bridge call.
+ *
+ * Distinct from [`WuiJsCallback`], which completes a `run_javascript` call and
+ * has no channel to choose.
  */
-typedef struct WuiJsCallback {
+typedef struct WuiWebViewReply {
   /**
    * Opaque callback state consumed by `call`.
    */
   void *data;
   /**
-   * One-shot completion. `success=true` means `result` is the value;
-   * `false` means it is the error. Native must invoke it exactly once.
+   * One-shot completion. `success=true` means `result` is base64 of the
+   * handler's output and `kind` says how to read it; `false` means `result`
+   * is the error message and `kind` is ignored. Native must invoke it
+   * exactly once.
    */
-  void (*call)(void *data, bool success, struct WuiStr result);
-} WuiJsCallback;
+  void (*call)(void *data, bool success, enum WuiJsReplyKind kind, struct WuiStr result);
+} WuiWebViewReply;
 
 /**
  * Message payload emitted from JavaScript to a native-registered handler.
@@ -5900,7 +5923,7 @@ typedef struct WuiWebViewMessage {
   /**
    * One-shot callback used to send a base64-encoded reply back to JavaScript.
    */
-  struct WuiJsCallback reply;
+  struct WuiWebViewReply reply;
 } WuiWebViewMessage;
 
 /**
@@ -5928,6 +5951,21 @@ typedef struct WuiStringCallback {
    */
   void (*call)(void *data, struct WuiStr result);
 } WuiStringCallback;
+
+/**
+ * Callback for JavaScript execution results.
+ */
+typedef struct WuiJsCallback {
+  /**
+   * Opaque callback state consumed by `call`.
+   */
+  void *data;
+  /**
+   * One-shot completion. `success=true` means `result` is the value;
+   * `false` means it is the error. Native must invoke it exactly once.
+   */
+  void (*call)(void *data, bool success, struct WuiStr result);
+} WuiJsCallback;
 
 /**
  * FFI representation of a `WebView` handle with function pointers.
@@ -9571,10 +9609,12 @@ struct WuiBridgeRequest waterui_webview_parse_bridge_request(struct WuiStr envel
  * # Safety
  *
  * `payload_base64` must be an owning `WuiStr`; it is consumed. On success it is
- * base64 handler output, otherwise an error message.
+ * base64 handler output and `kind` says whether those bytes are a JSON value or
+ * opaque; otherwise it is an error message and `kind` is ignored.
  */
 struct WuiStr waterui_webview_bridge_reply_script(uint64_t id,
                                                   bool success,
+                                                  enum WuiJsReplyKind kind,
                                                   struct WuiStr payload_base64);
 
 /**

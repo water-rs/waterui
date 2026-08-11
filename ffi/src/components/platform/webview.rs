@@ -16,8 +16,8 @@ use cookie::Cookie;
 use nami::{Signal, SignalExt};
 use waterui_str::Str;
 use waterui_webview::{
-    BackendEvent, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    BackendEvent, CustomWebViewController, JsReply, ScriptInjectionTime, Url, WatcherGuard,
+    WatcherSet, WebView, WebViewController, WebViewError, WebViewEvent, WebViewHandle,
 };
 
 // =============================================================================
@@ -107,7 +107,10 @@ pub struct WuiWebViewEvent {
 /// accepts only web URLs and this unwrapped its `None`.
 fn parse_url(s: &Str) -> Url {
     s.as_str().parse().unwrap_or_else(|error| {
-        panic!("WebView backend emitted an unparseable URL {:?}: {error}", s.as_str())
+        panic!(
+            "WebView backend emitted an unparseable URL {:?}: {error}",
+            s.as_str()
+        )
     })
 }
 
@@ -152,22 +155,26 @@ impl IntoRust for WuiWebViewEvent {
                 // own fields, exactly once.
                 to: parse_url(&unsafe { take_event_string(self.url2) }),
             }),
-            WuiWebViewEventType::SslError => BackendEvent::Event(WebViewEvent::Error(WebViewError::Ssl {
-                // SAFETY: the backend fills the string fields its event type defines
-                // with owning `WuiStr` handles, and each arm reads only its
-                // own fields, exactly once.
-                url: parse_url(&unsafe { take_event_string(self.url) }),
-                // SAFETY: the backend fills the string fields its event type defines
-                // with owning `WuiStr` handles, and each arm reads only its
-                // own fields, exactly once.
-                message: unsafe { take_event_string(self.message) },
-            })),
-            WuiWebViewEventType::Error => BackendEvent::Event(WebViewEvent::Error(WebViewError::LoadFailed(unsafe {
-                // SAFETY: the backend fills the string fields its event type defines
-                // with owning `WuiStr` handles, and each arm reads only its
-                // own fields, exactly once.
-                take_event_string(self.message)
-            }))),
+            WuiWebViewEventType::SslError => {
+                BackendEvent::Event(WebViewEvent::Error(WebViewError::Ssl {
+                    // SAFETY: the backend fills the string fields its event type defines
+                    // with owning `WuiStr` handles, and each arm reads only its
+                    // own fields, exactly once.
+                    url: parse_url(&unsafe { take_event_string(self.url) }),
+                    // SAFETY: the backend fills the string fields its event type defines
+                    // with owning `WuiStr` handles, and each arm reads only its
+                    // own fields, exactly once.
+                    message: unsafe { take_event_string(self.message) },
+                }))
+            }
+            WuiWebViewEventType::Error => {
+                BackendEvent::Event(WebViewEvent::Error(WebViewError::LoadFailed(unsafe {
+                    // SAFETY: the backend fills the string fields its event type defines
+                    // with owning `WuiStr` handles, and each arm reads only its
+                    // own fields, exactly once.
+                    take_event_string(self.message)
+                })))
+            }
             WuiWebViewEventType::StateChanged => BackendEvent::NavigationState {
                 can_go_back: self.can_go_back,
                 can_go_forward: self.can_go_forward,
@@ -201,6 +208,37 @@ pub struct WuiStringCallback {
     pub call: unsafe extern "C" fn(data: *mut (), result: WuiStr),
 }
 
+/// Which of the bridge's two channels a handler's reply crosses on.
+///
+/// The page sees the difference — a value it can use, or a `Uint8Array` — so the
+/// answer has to survive the trip out. It used to be dropped here, and every
+/// reply reached the page as base64 text.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiJsReplyKind {
+    /// The bytes are a serialized JSON value; the page receives the value.
+    Json = 0,
+    /// The bytes are opaque; the page receives a `Uint8Array`.
+    Bytes = 1,
+}
+
+/// One-shot reply to one bridge call.
+///
+/// Distinct from [`WuiJsCallback`], which completes a `run_javascript` call and
+/// has no channel to choose.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiWebViewReply {
+    /// Opaque callback state consumed by `call`.
+    pub data: *mut (),
+    /// One-shot completion. `success=true` means `result` is base64 of the
+    /// handler's output and `kind` says how to read it; `false` means `result`
+    /// is the error message and `kind` is ignored. Native must invoke it
+    /// exactly once.
+    pub call:
+        unsafe extern "C" fn(data: *mut (), success: bool, kind: WuiJsReplyKind, result: WuiStr),
+}
+
 /// Message payload emitted from JavaScript to a native-registered handler.
 ///
 /// `payload_base64` is base64-encoded bytes from JavaScript.
@@ -211,7 +249,7 @@ pub struct WuiWebViewMessage {
     /// Base64-encoded message bytes sent from JavaScript.
     pub payload_base64: WuiStr,
     /// One-shot callback used to send a base64-encoded reply back to JavaScript.
-    pub reply: WuiJsCallback,
+    pub reply: WuiWebViewReply,
 }
 
 /// FFI representation of a `WebView` handle with function pointers.
@@ -455,7 +493,14 @@ impl WebViewHandle for FfiWebViewHandle {
                     // SAFETY: the backend registered `reply.call` with `reply.data`
                     // for this message; the early return below makes this the only
                     // reply sent.
-                    unsafe { (msg.reply.call)(msg.reply.data, false, message.into_ffi()) };
+                    unsafe {
+                        (msg.reply.call)(
+                            msg.reply.data,
+                            false,
+                            WuiJsReplyKind::Json,
+                            message.into_ffi(),
+                        );
+                    };
                     return;
                 }
             };
@@ -466,16 +511,17 @@ impl WebViewHandle for FfiWebViewHandle {
             let reply_call = msg.reply.call;
             let reply_data = msg.reply.data;
             executor_core::spawn_local(async move {
-                let (success, payload) = match future.await {
-                    Ok(bytes) => (
-                        true,
-                        base64::engine::general_purpose::STANDARD.encode(bytes),
-                    ),
-                    Err(message) => (false, message),
+                let engine = base64::engine::general_purpose::STANDARD;
+                let (success, kind, payload) = match future.await {
+                    Ok(JsReply::Json(json)) => (true, WuiJsReplyKind::Json, engine.encode(json)),
+                    Ok(JsReply::Bytes(bytes)) => {
+                        (true, WuiJsReplyKind::Bytes, engine.encode(bytes))
+                    }
+                    Err(message) => (false, WuiJsReplyKind::Json, message),
                 };
                 // SAFETY: as above — the failure path returned early, so this is
                 // the single reply for this message.
-                unsafe { (reply_call)(reply_data, success, Str::from(payload).into_ffi()) };
+                unsafe { (reply_call)(reply_data, success, kind, Str::from(payload).into_ffi()) };
             })
             .detach();
         });
@@ -699,11 +745,13 @@ pub unsafe extern "C" fn waterui_webview_parse_bridge_request(
 /// # Safety
 ///
 /// `payload_base64` must be an owning `WuiStr`; it is consumed. On success it is
-/// base64 handler output, otherwise an error message.
+/// base64 handler output and `kind` says whether those bytes are a JSON value or
+/// opaque; otherwise it is an error message and `kind` is ignored.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_webview_bridge_reply_script(
     id: u64,
     success: bool,
+    kind: WuiJsReplyKind,
     payload_base64: WuiStr,
 ) -> WuiStr {
     // SAFETY: the caller contract makes `payload_base64` an owning handle from the
@@ -711,7 +759,10 @@ pub unsafe extern "C" fn waterui_webview_bridge_reply_script(
     let payload: Str = unsafe { payload_base64.into_rust() };
     let reply = if success {
         match base64::engine::general_purpose::STANDARD.decode(payload.as_str()) {
-            Ok(bytes) => waterui_webview::bridge::Reply::Bytes(bytes),
+            Ok(bytes) => match kind {
+                WuiJsReplyKind::Json => waterui_webview::bridge::Reply::Json(bytes),
+                WuiJsReplyKind::Bytes => waterui_webview::bridge::Reply::Bytes(bytes),
+            },
             Err(error) => waterui_webview::bridge::Reply::failure(&error),
         }
     } else {

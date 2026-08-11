@@ -13,6 +13,9 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
+
+use crate::message::JsReply;
 
 /// The bridge script, injected at document start by every backend.
 pub const SCRIPT: &str = include_str!("js/bridge.js");
@@ -87,17 +90,38 @@ impl Request {
 /// The result of a handler, ready to be delivered back to the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
+    /// A serialized JSON value, delivered as JSON so the page's promise
+    /// resolves with the value the handler returned.
+    Json(Vec<u8>),
     /// Bytes the handler produced, delivered as base64.
     Bytes(Vec<u8>),
     /// The call failed; the page's promise rejects with this message.
     Failure(String),
 }
 
+impl From<JsReply> for Reply {
+    fn from(reply: JsReply) -> Self {
+        match reply {
+            JsReply::Json(json) => Self::Json(json),
+            JsReply::Bytes(bytes) => Self::Bytes(bytes),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(untagged)]
 enum ReplyPayload<'a> {
-    Bytes { b64: String },
-    Failure { message: &'a str },
+    /// Held as a `RawValue` so the handler's own bytes go into the envelope
+    /// unchanged, rather than being parsed into a `Value` and printed again.
+    Json {
+        json: &'a RawValue,
+    },
+    Bytes {
+        b64: String,
+    },
+    Failure {
+        message: &'a str,
+    },
 }
 
 impl Reply {
@@ -114,10 +138,18 @@ impl Reply {
     /// # Panics
     ///
     /// Panics if the reply cannot be serialized, which would mean a bug in this
-    /// module rather than anything the page did.
+    /// module rather than anything the page did. A [`Json`](Self::Json) reply
+    /// that is not valid JSON is such a bug: it can only come from a
+    /// `Serialize` implementation, never from the page.
     #[must_use]
     pub fn resolve_script(&self, id: u64) -> String {
+        let json;
         let (ok, payload) = match self {
+            Self::Json(bytes) => {
+                let text = str::from_utf8(bytes).expect("a JSON reply must be UTF-8");
+                json = RawValue::from_string(text.to_owned()).expect("a JSON reply must be JSON");
+                (true, ReplyPayload::Json { json: &json })
+            }
             Self::Bytes(bytes) => (
                 true,
                 ReplyPayload::Bytes {
@@ -169,6 +201,17 @@ mod tests {
         assert!(Request::parse(r#"{"id":"not a number","name":"x"}"#).is_err());
         assert!(Request::parse(r#"{"name":"missing id"}"#).is_err());
         assert!(Request::parse(r#"{"id":1,"name":"x","b64":"not base64!"}"#).is_err());
+    }
+
+    /// A JSON reply travels as JSON. Sending it as base64 like any other bytes
+    /// is what made `await waterui.invoke(...)` resolve to base64 text.
+    #[test]
+    fn a_json_reply_is_not_base64() {
+        let script = Reply::Json(br#"{"text":"Hi Lexo"}"#.to_vec()).resolve_script(3);
+        assert_eq!(
+            script,
+            r#"globalThis.__wateruiResolve(3,true,{"json":{"text":"Hi Lexo"}});"#
+        );
     }
 
     #[test]

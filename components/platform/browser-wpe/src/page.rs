@@ -11,11 +11,11 @@
 //! runtime's `GMainContext`, so these calls carry no thread affinity of their own.
 
 use std::cell::{Cell, RefCell};
-use std::sync::Arc;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
@@ -382,10 +382,7 @@ impl WpePage {
     }
 
     /// Watches semantic `WebView` events.
-    pub fn watch(
-        &self,
-        watcher: impl Fn(BackendEvent) + 'static,
-    ) -> waterui_webview::WatcherGuard {
+    pub fn watch(&self, watcher: impl Fn(BackendEvent) + 'static) -> waterui_webview::WatcherGuard {
         self.inner.state.watchers.insert(watcher)
     }
 
@@ -654,7 +651,7 @@ unsafe extern "C" fn message_callback(
             let page = context.page.get();
             executor_core::spawn_local(async move {
                 let reply = match future.await {
-                    Ok(bytes) => bridge::Reply::Bytes(bytes),
+                    Ok(reply) => bridge::Reply::from(reply),
                     Err(message) => bridge::Reply::Failure(message),
                 };
                 let Some(page) = page else {

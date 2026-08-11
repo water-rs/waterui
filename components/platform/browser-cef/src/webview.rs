@@ -329,7 +329,7 @@ fn dispatch_bridge_call(
     let session = session.clone();
     executor_core::spawn_local(async move {
         let reply = match future.await {
-            Ok(bytes) => bridge::Reply::Bytes(bytes),
+            Ok(reply) => bridge::Reply::from(reply),
             Err(message) => bridge::Reply::Failure(message),
         };
         execute_without_result(
@@ -381,7 +381,10 @@ fn cookie_from_cdp(cookie: &protocol::Cookie) -> Cookie<'static> {
             "Strict" => builder = builder.same_site(SameSite::Strict),
             "Lax" => builder = builder.same_site(SameSite::Lax),
             "None" => builder = builder.same_site(SameSite::None),
-            other => tracing::warn!(same_site = other, "ignoring an unknown cookie SameSite value"),
+            other => tracing::warn!(
+                same_site = other,
+                "ignoring an unknown cookie SameSite value"
+            ),
         }
     }
     if cookie.expires.abs() > f64::EPSILON

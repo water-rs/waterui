@@ -1731,7 +1731,7 @@ unsafe extern "C" fn on_script_message_received(
     let webview = data.webview;
     executor_core::spawn_local(async move {
         let reply = match future.await {
-            Ok(bytes) => bridge::Reply::Bytes(bytes),
+            Ok(reply) => bridge::Reply::from(reply),
             Err(message) => bridge::Reply::Failure(message),
         };
         let script = reply.resolve_script(request.id);

@@ -8,9 +8,9 @@ use waterui_str::Str;
 use crate::{BackendEvent, WatcherGuard};
 use waterui_url::Url;
 
-/// What a handler returns: bytes to resolve the page's promise with, or a
+/// What a handler returns: the answer to resolve the page's promise with, or a
 /// message to reject it.
-pub type HandlerResult = Result<Vec<u8>, String>;
+pub type HandlerResult = Result<crate::message::JsReply, String>;
 
 /// The future a handler produces.
 ///

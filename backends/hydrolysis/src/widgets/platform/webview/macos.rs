@@ -351,7 +351,7 @@ define_class!(
                 unsafe { message.webView() }.expect("a bridge message must have a source web view");
             executor_core::spawn_local(async move {
                 let reply = match future.await {
-                    Ok(bytes) => bridge::Reply::Bytes(bytes),
+                    Ok(reply) => bridge::Reply::from(reply),
                     Err(message) => bridge::Reply::Failure(message),
                 };
                 let script = NSString::from_str(&reply.resolve_script(request.id));
