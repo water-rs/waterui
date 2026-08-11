@@ -160,11 +160,21 @@ pub type NavigationTransactionId = u64;
 type PathPopHandler = Rc<dyn Fn(usize)>;
 
 /// One atomic change projected from navigation state into a backend stack.
+///
+/// A transaction always replaces a suffix: the first [`Self::retained_prefix`]
+/// entries stay untouched, the [`Self::removed`] entries above them are
+/// discarded, and [`Self::inserted`] is appended in their place.
 pub struct NavigationTransaction {
-    id: NavigationTransactionId,
-    retained_prefix: usize,
-    removed: usize,
-    inserted: Vec<AnyViewBuilder<NavigationView>>,
+    /// Stack-scoped identifier acknowledged by
+    /// [`NavigationController::transition_completed`] or
+    /// [`NavigationController::transition_cancelled`].
+    pub id: NavigationTransactionId,
+    /// Number of destination entries retained from the root.
+    pub retained_prefix: usize,
+    /// Number of entries removed after the retained prefix.
+    pub removed: usize,
+    /// Destination builders inserted after the retained prefix.
+    pub inserted: Vec<AnyViewBuilder<NavigationView>>,
 }
 
 impl Debug for NavigationTransaction {
@@ -178,46 +188,6 @@ impl Debug for NavigationTransaction {
     }
 }
 
-impl NavigationTransaction {
-    /// Returns the stack-scoped transaction identifier.
-    #[must_use]
-    pub const fn id(&self) -> NavigationTransactionId {
-        self.id
-    }
-
-    /// Returns the number of destination entries retained from the root.
-    #[must_use]
-    pub const fn retained_prefix(&self) -> usize {
-        self.retained_prefix
-    }
-
-    /// Returns the number of entries removed after the retained prefix.
-    #[must_use]
-    pub const fn removed(&self) -> usize {
-        self.removed
-    }
-
-    /// Returns the destination builders inserted after the retained prefix.
-    #[must_use]
-    pub fn inserted(&self) -> &[AnyViewBuilder<NavigationView>] {
-        &self.inserted
-    }
-
-    /// Consumes the transaction into its backend-facing parts.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        NavigationTransactionId,
-        usize,
-        usize,
-        Vec<AnyViewBuilder<NavigationView>>,
-    ) {
-        (self.id, self.retained_prefix, self.removed, self.inserted)
-    }
-}
-
 /// A trait for handling custom navigation actions.
 /// For renderers to implement navigation handling.
 pub trait CustomNavigationController: 'static {
@@ -225,67 +195,30 @@ pub trait CustomNavigationController: 'static {
     fn apply(&mut self, transaction: NavigationTransaction);
 }
 
-trait NavigationControllerState {
-    fn apply_transaction(&self, transaction: NavigationTransaction);
-    fn retained(&self) -> &RefCell<Option<Retain>>;
-    fn retained_environment(&self) -> &RefCell<Option<Environment>>;
-    fn depth(&self) -> &Cell<usize>;
-    fn next_transaction_id(&self) -> &Cell<NavigationTransactionId>;
-    fn pending_transaction_id(&self) -> &Cell<Option<NavigationTransactionId>>;
-    fn path_pop_handler(&self) -> &RefCell<Option<PathPopHandler>>;
-    fn native_applied_pops(&self) -> &Cell<usize>;
-}
-
-struct NavigationControllerStateImpl<R> {
-    receiver: RefCell<R>,
+/// Shared interior state of one [`NavigationController`].
+///
+/// The projected stack is split at [`Self::path_depth`]: entries below it are
+/// owned by an explicit [`NavigationPath`] and may only be removed by mutating
+/// that path, while entries above it were pushed by a destination-building
+/// [`NavigationLink`] and are owned by the controller alone. Keeping the split
+/// explicit is what lets both link kinds coexist in one stack.
+struct NavigationControllerState {
+    receiver: RefCell<alloc::boxed::Box<dyn CustomNavigationController>>,
     retained: RefCell<Option<Retain>>,
     retained_environment: RefCell<Option<Environment>>,
     depth: Cell<usize>,
+    path_depth: Cell<usize>,
     next_transaction_id: Cell<NavigationTransactionId>,
     pending_transaction_id: Cell<Option<NavigationTransactionId>>,
     path_pop_handler: RefCell<Option<PathPopHandler>>,
     native_applied_pops: Cell<usize>,
 }
 
-impl<R: CustomNavigationController> NavigationControllerState for NavigationControllerStateImpl<R> {
-    fn apply_transaction(&self, transaction: NavigationTransaction) {
-        self.receiver.borrow_mut().apply(transaction);
-    }
-
-    fn retained(&self) -> &RefCell<Option<Retain>> {
-        &self.retained
-    }
-
-    fn retained_environment(&self) -> &RefCell<Option<Environment>> {
-        &self.retained_environment
-    }
-
-    fn depth(&self) -> &Cell<usize> {
-        &self.depth
-    }
-
-    fn next_transaction_id(&self) -> &Cell<NavigationTransactionId> {
-        &self.next_transaction_id
-    }
-
-    fn pending_transaction_id(&self) -> &Cell<Option<NavigationTransactionId>> {
-        &self.pending_transaction_id
-    }
-
-    fn path_pop_handler(&self) -> &RefCell<Option<PathPopHandler>> {
-        &self.path_pop_handler
-    }
-
-    fn native_applied_pops(&self) -> &Cell<usize> {
-        &self.native_applied_pops
-    }
-}
-
 /// A receiver that handles navigation actions.
 /// For renderers to implement navigation handling.
 #[derive(Clone)]
 pub struct NavigationController {
-    state: Rc<dyn NavigationControllerState>,
+    state: Rc<NavigationControllerState>,
 }
 
 impl_extractor!(NavigationController);
@@ -304,11 +237,12 @@ impl NavigationController {
     /// * `receiver` - An implementation of `CustomNavigationController`
     pub fn new(receiver: impl CustomNavigationController) -> Self {
         Self {
-            state: Rc::new(NavigationControllerStateImpl {
-                receiver: RefCell::new(receiver),
+            state: Rc::new(NavigationControllerState {
+                receiver: RefCell::new(alloc::boxed::Box::new(receiver)),
                 retained: RefCell::new(None),
                 retained_environment: RefCell::new(None),
                 depth: Cell::new(0),
+                path_depth: Cell::new(0),
                 next_transaction_id: Cell::new(1),
                 pending_transaction_id: Cell::new(None),
                 path_pop_handler: RefCell::new(None),
@@ -317,67 +251,96 @@ impl NavigationController {
         }
     }
 
+    /// Number of entries above the explicit path, pushed by destination links.
+    fn detached_depth(&self) -> usize {
+        self.state
+            .depth
+            .get()
+            .checked_sub(self.state.path_depth.get())
+            .expect("navigation path depth cannot exceed the projected stack depth")
+    }
+
     /// Pushes a destination builder onto the stack.
+    ///
+    /// The entry is owned by the controller rather than by any explicit path, so
+    /// it pops without disturbing route state and is discarded when the path
+    /// underneath it changes.
     pub fn push_builder(&self, content: AnyViewBuilder<NavigationView>) {
         let content = self.with_retained_environment_builder(content);
-        let depth = self.state.depth().get();
-        self.apply(depth, 0, vec![content]);
+        let depth = self.state.depth.get();
+        self.state.depth.set(depth + 1);
+        self.commit(depth, 0, vec![content]);
     }
 
     /// Pops the top navigation view off the stack.
     pub fn pop(&self) {
-        let depth = self.state.depth().get();
-        if depth != 0 {
-            self.apply(depth - 1, 1, Vec::new());
+        if self.state.depth.get() != 0 {
+            self.request_pop(1);
         }
     }
 
-    /// Applies an already-diffed path mutation as one backend transaction.
+    /// Projects a diffed explicit-path mutation as one backend transaction.
+    ///
+    /// Every entry above `retained_prefix` is removed, including link-pushed
+    /// entries stacked on top of the path: a route change invalidates whatever
+    /// was opened from the routes it replaced.
     ///
     /// # Panics
     ///
-    /// Panics unless `retained_prefix` and `removed` describe a suffix of the
-    /// current projected stack, or if the transaction identifier overflows.
-    pub fn apply(
+    /// Panics if `retained_prefix` exceeds the current path depth, or if the
+    /// transaction identifier overflows.
+    fn apply_path(&self, retained_prefix: usize, inserted: Vec<AnyViewBuilder<NavigationView>>) {
+        let path_depth = self.state.path_depth.get();
+        assert!(
+            retained_prefix <= path_depth,
+            "navigation path transaction retains {retained_prefix} routes but the path holds {path_depth}"
+        );
+        let removed = self
+            .state
+            .depth
+            .get()
+            .checked_sub(retained_prefix)
+            .expect("navigation path prefix cannot exceed the projected stack depth");
+        let next_depth = retained_prefix + inserted.len();
+        self.state.path_depth.set(next_depth);
+        self.state.depth.set(next_depth);
+        self.commit(retained_prefix, removed, inserted);
+    }
+
+    /// Emits one suffix-replacing transaction, skipping work the native
+    /// container already performed for an interactive pop.
+    fn commit(
         &self,
         retained_prefix: usize,
         removed: usize,
         inserted: Vec<AnyViewBuilder<NavigationView>>,
     ) {
-        let current_depth = self.state.depth().get();
-        assert_eq!(
-            retained_prefix + removed,
-            current_depth,
-            "navigation transaction must replace a suffix of the current stack"
-        );
-
-        let next_depth = retained_prefix + inserted.len();
-        self.state.depth().set(next_depth);
+        // An interactive native pop already removed entries from the platform
+        // stack; this transaction only has to cover what is left.
+        let native_applied = self.state.native_applied_pops.get();
+        let settled = native_applied.min(removed);
+        self.state.native_applied_pops.set(native_applied - settled);
+        let removed = removed - settled;
 
         if removed == 0 && inserted.is_empty() {
             return;
         }
 
-        let native_applied = self.state.native_applied_pops().get();
-        if inserted.is_empty() && removed != 0 && native_applied >= removed {
-            self.state
-                .native_applied_pops()
-                .set(native_applied - removed);
-            return;
-        }
-
-        let id = self.state.next_transaction_id().get();
-        self.state.next_transaction_id().set(
+        let id = self.state.next_transaction_id.get();
+        self.state.next_transaction_id.set(
             id.checked_add(1)
                 .expect("navigation transaction identifier overflowed"),
         );
-        self.state.pending_transaction_id().set(Some(id));
-        self.state.apply_transaction(NavigationTransaction {
-            id,
-            retained_prefix,
-            removed,
-            inserted,
-        });
+        self.state.pending_transaction_id.set(Some(id));
+        self.state
+            .receiver
+            .borrow_mut()
+            .apply(NavigationTransaction {
+                id,
+                retained_prefix,
+                removed,
+                inserted,
+            });
     }
 
     /// Records successful completion of the current backend transaction.
@@ -385,10 +348,10 @@ impl NavigationController {
     /// Returns `false` for a stale completion superseded by a newer transaction.
     #[must_use]
     pub fn transition_completed(&self, id: NavigationTransactionId) -> bool {
-        if self.state.pending_transaction_id().get() != Some(id) {
+        if self.state.pending_transaction_id.get() != Some(id) {
             return false;
         }
-        self.state.pending_transaction_id().set(None);
+        self.state.pending_transaction_id.set(None);
         true
     }
 
@@ -397,10 +360,10 @@ impl NavigationController {
     /// Returns `false` for a stale cancellation superseded by a newer transaction.
     #[must_use]
     pub fn transition_cancelled(&self, id: NavigationTransactionId) -> bool {
-        if self.state.pending_transaction_id().get() != Some(id) {
+        if self.state.pending_transaction_id.get() != Some(id) {
             return false;
         }
-        self.state.pending_transaction_id().set(None);
+        self.state.pending_transaction_id.set(None);
         true
     }
 
@@ -410,17 +373,15 @@ impl NavigationController {
     ///
     /// Panics if a path-pop handler is already installed on this controller.
     pub fn install_path_pop_handler(&self, handler: impl Fn(usize) + 'static) {
-        let previous = self
-            .state
-            .path_pop_handler()
-            .replace(Some(Rc::new(handler)));
+        let previous = self.state.path_pop_handler.replace(Some(Rc::new(handler)));
         assert!(
             previous.is_none(),
             "a navigation controller cannot drive more than one explicit path"
         );
     }
 
-    /// Requests a user-initiated pop before a native transition begins.
+    /// Splits `count` pops into the link-pushed entries the controller owns and
+    /// the remainder that belongs to the explicit path.
     ///
     /// A request, not an instruction: asking to pop more than the path holds
     /// pops what there is. A backend's idea of the depth can lag the path's —
@@ -432,18 +393,41 @@ impl NavigationController {
     /// # Panics
     ///
     /// Panics when `count` is zero.
-    pub fn request_pop(&self, count: usize) {
+    fn split_pop(&self, count: usize) -> (usize, usize) {
         assert!(count != 0, "navigation pop count must be non-zero");
-        let count = count.min(self.state.depth().get());
-        if count == 0 {
-            return;
+        let count = count.min(self.state.depth.get());
+        let detached = self.detached_depth().min(count);
+        (detached, count - detached)
+    }
+
+    /// Returns the installed path-pop handler, which must exist whenever the
+    /// projected stack still holds path-owned entries.
+    fn path_pop_handler(&self) -> PathPopHandler {
+        self.state
+            .path_pop_handler
+            .borrow()
+            .clone()
+            .expect("path-owned navigation entries require an installed path handler")
+    }
+
+    /// Requests a user-initiated pop before a native transition begins.
+    ///
+    /// Link-pushed entries pop directly; the rest is delegated to the explicit
+    /// path so route state stays authoritative. Asking to pop more than the
+    /// projected stack holds pops what there is.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `count` is zero.
+    pub fn request_pop(&self, count: usize) {
+        let (detached, from_path) = self.split_pop(count);
+        if detached != 0 {
+            let retained = self.state.depth.get() - detached;
+            self.state.depth.set(retained);
+            self.commit(retained, detached, Vec::new());
         }
-        if let Some(handler) = self.state.path_pop_handler().borrow().as_ref().cloned() {
-            handler(count);
-        } else {
-            for _ in 0..count {
-                self.pop();
-            }
+        if from_path != 0 {
+            self.path_pop_handler()(from_path);
         }
     }
 
@@ -451,25 +435,25 @@ impl NavigationController {
     ///
     /// # Panics
     ///
-    /// Panics when `count` is zero, exceeds the current depth, or overflows the
-    /// count of native-applied pops awaiting explicit-path reconciliation.
+    /// Panics when `count` is zero, exceeds the projected stack depth, or when
+    /// the explicit path fails to absorb the pop in the same update.
     pub fn complete_native_pop(&self, count: usize) {
-        assert!(count != 0, "navigation pop count must be non-zero");
-        assert!(
-            count <= self.state.depth().get(),
-            "native navigation pop exceeds the current path depth"
-        );
-        if let Some(handler) = self.state.path_pop_handler().borrow().as_ref().cloned() {
-            self.state.native_applied_pops().set(
-                self.state
-                    .native_applied_pops()
-                    .get()
-                    .checked_add(count)
-                    .expect("native navigation pop counter overflowed"),
+        let (detached, from_path) = self.split_pop(count);
+        if detached != 0 {
+            // The native container already removed these; only the projection
+            // has to catch up, with no transaction sent back.
+            self.state.depth.set(self.state.depth.get() - detached);
+        }
+        if from_path != 0 {
+            let handler = self.path_pop_handler();
+            self.state.native_applied_pops.set(from_path);
+            handler(from_path);
+            assert_eq!(
+                self.state.native_applied_pops.get(),
+                0,
+                "a native navigation pop must be absorbed by the explicit path in the same update, \
+                 but the path did not shrink by {from_path}"
             );
-            handler(count);
-        } else {
-            self.state.depth().set(self.state.depth().get() - count);
         }
     }
 
@@ -478,18 +462,18 @@ impl NavigationController {
     /// Path-backed navigation stacks use this to keep their path watcher alive
     /// while destinations are active and the root view is no longer rendered.
     pub fn retain(&self, retained: Retain) {
-        *self.state.retained().borrow_mut() = Some(retained);
+        *self.state.retained.borrow_mut() = Some(retained);
     }
 
     /// Replaces the controller-scoped environment.
     pub fn retain_environment(&self, env: Environment) {
-        *self.state.retained_environment().borrow_mut() = Some(env);
+        *self.state.retained_environment.borrow_mut() = Some(env);
     }
 
     /// Returns the controller-scoped environment.
     #[must_use]
     pub fn retained_environment(&self) -> Option<Environment> {
-        self.state.retained_environment().borrow().clone()
+        self.state.retained_environment.borrow().clone()
     }
 
     fn with_retained_environment_builder(
@@ -573,8 +557,8 @@ impl<T: 'static + Clone + PartialEq> Navigator<T> {
         self.0.push(value);
     }
 
-    /// Pops the top route value.
-    #[must_use]
+    /// Pops the top route value and returns it, if the path was not already at
+    /// its root.
     pub fn pop(&self) -> Option<T> {
         self.0.pop()
     }
@@ -615,8 +599,7 @@ impl Navigator<ErasedNavigationRoute> {
         self.0.push(route);
     }
 
-    /// Pops the top heterogeneous route.
-    #[must_use]
+    /// Pops the top heterogeneous route, reporting whether one was present.
     pub fn pop(&self) -> bool {
         self.0.pop()
     }
@@ -1116,51 +1099,72 @@ impl NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestina
 
 raw_view!(NavigationStack<(),()>, StretchAxis::Both);
 
-fn reconcile_navigation_path<T, F>(
+/// Projects a new path snapshot onto the backend stack as one transaction.
+///
+/// `same` decides route identity — plain equality for a typed path, type-and-value
+/// equality for a heterogeneous one — and `build` turns a surviving route into its
+/// destination builder.
+fn reconcile_navigation_path<R: Clone + 'static>(
     receiver: &NavigationController,
-    destination: &Rc<F>,
-    current_path: &mut Vec<T>,
-    next_path: Vec<T>,
-) where
-    T: 'static + Clone + PartialEq,
-    F: 'static + Fn(T) -> NavigationView,
-{
-    let shared_prefix = shared_prefix_len(current_path, &next_path);
-
-    let removed = current_path.len() - shared_prefix;
-    let inserted = next_path
-        .iter()
-        .skip(shared_prefix)
-        .map(|item| path_destination_builder(Rc::clone(destination), item.clone()))
-        .collect();
-    receiver.apply(shared_prefix, removed, inserted);
+    current_path: &mut Vec<R>,
+    next_path: Vec<R>,
+    same: &impl Fn(&R, &R) -> bool,
+    build: &impl Fn(&R) -> AnyViewBuilder<NavigationView>,
+) {
+    let shared_prefix = shared_prefix_len(current_path, &next_path, same);
+    let inserted = next_path.iter().skip(shared_prefix).map(build).collect();
+    receiver.apply_path(shared_prefix, inserted);
 
     *current_path = next_path;
 }
 
-fn subscribe_navigation_path<T, F>(
-    path: &NavigationPath<T>,
+/// Subscribes a controller to a path, reconciling every snapshot into one
+/// transaction.
+fn subscribe_navigation_path<R: Clone + 'static>(
+    path: &NavigationPath<R>,
     receiver: &NavigationController,
-    destination: &Rc<F>,
-) -> impl nami::watcher::WatcherGuard
-where
-    T: 'static + Clone + PartialEq,
-    F: 'static + Fn(T) -> NavigationView,
-{
+    same: impl Fn(&R, &R) -> bool + 'static,
+    build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
+) -> impl nami::watcher::WatcherGuard {
     let current_path = Rc::new(RefCell::new(Vec::new()));
-    path.watch({
-        let current_path = Rc::clone(&current_path);
-        let receiver = receiver.clone();
-        let destination = Rc::clone(destination);
-        move |next_path| {
-            reconcile_navigation_path(
-                &receiver,
-                &destination,
-                &mut current_path.borrow_mut(),
-                next_path,
-            );
-        }
+    let receiver = receiver.clone();
+    path.watch(move |next_path| {
+        reconcile_navigation_path(
+            &receiver,
+            &mut current_path.borrow_mut(),
+            next_path,
+            &same,
+            &build,
+        );
     })
+}
+
+/// Shared body of every path-backed stack: publish the `Navigator`, install the
+/// pop handler, and keep the path subscription alive on the controller so it
+/// outlives the root view.
+fn path_stack_body<R: Clone + 'static>(
+    path: NavigationPath<R>,
+    root: AnyView,
+    transition: AnyNavigationTransition,
+    same: impl Fn(&R, &R) -> bool + 'static,
+    build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
+) -> NavigationStack<(), ()> {
+    let navigator = Navigator(path.clone());
+    NavigationStack::new_deferred(use_env(
+        move |(receiver, mut local_env): (NavigationController, Environment)| {
+            local_env.insert(navigator.clone());
+            receiver.retain_environment(local_env.clone());
+            receiver.install_path_pop_handler({
+                let path = path.clone();
+                move |count| path.pop_n(count)
+            });
+            let guard = subscribe_navigation_path(&path, &receiver, same, build);
+
+            receiver.retain(Retain::new(guard));
+            Metadata::new(root, local_env)
+        },
+    ))
+    .transition(transition)
 }
 
 impl<T, F> View for NavigationStack<NavigationPath<T>, F>
@@ -1169,109 +1173,36 @@ where
     F: 'static + Fn(T) -> NavigationView,
 {
     fn body(self, _env: &Environment) -> impl View {
-        let path: NavigationPath<T> = self.path;
-        let navigator = Navigator(path.clone());
         let destination = Rc::new(self.destination);
-        let root = self.root;
-        let transition = self.transition;
-        NavigationStack::new_deferred(use_env(
-            move |(receiver, mut local_env): (NavigationController, Environment)| {
-                local_env.insert(navigator.clone());
-                receiver.retain_environment(local_env.clone());
-                receiver.install_path_pop_handler({
-                    let path = path.clone();
-                    move |count| path.pop_n(count)
-                });
-                let guard = subscribe_navigation_path(&path, &receiver, &destination);
-
-                receiver.retain(Retain::new(guard));
-                Metadata::new(root, local_env)
+        path_stack_body(
+            self.path,
+            self.root,
+            self.transition,
+            |left, right| left == right,
+            move |route| {
+                let destination = Rc::clone(&destination);
+                let route = route.clone();
+                AnyViewBuilder::new(move || destination(route.clone()))
             },
-        ))
-        .transition(transition)
+        )
     }
-}
-
-fn shared_erased_prefix_len(
-    left: &[ErasedNavigationRoute],
-    right: &[ErasedNavigationRoute],
-) -> usize {
-    left.iter()
-        .zip(right)
-        .take_while(|(left, right)| left.same_route(right))
-        .count()
-}
-
-fn reconcile_heterogeneous_navigation_path(
-    receiver: &NavigationController,
-    destinations: &Rc<HeterogeneousDestinations>,
-    current_path: &mut Vec<ErasedNavigationRoute>,
-    next_path: Vec<ErasedNavigationRoute>,
-) {
-    let shared_prefix = shared_erased_prefix_len(current_path, &next_path);
-
-    let removed = current_path.len() - shared_prefix;
-    let inserted = next_path
-        .iter()
-        .skip(shared_prefix)
-        .map(|route| {
-            let route = route.clone();
-            let destinations = Rc::clone(destinations);
-            AnyViewBuilder::new(move || destinations.build(&route))
-        })
-        .collect();
-    receiver.apply(shared_prefix, removed, inserted);
-
-    *current_path = next_path;
 }
 
 impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations> {
     fn body(self, _env: &Environment) -> impl View {
-        let path = self.path;
-        let navigator = Navigator(path.clone());
         let destinations = Rc::new(self.destination);
-        let root = self.root;
-        let transition = self.transition;
-        NavigationStack::new_deferred(use_env(
-            move |(receiver, mut local_env): (NavigationController, Environment)| {
-                local_env.insert(navigator.clone());
-                receiver.retain_environment(local_env.clone());
-                receiver.install_path_pop_handler({
-                    let path = path.clone();
-                    move |count| path.pop_n(count)
-                });
-                let current_path = Rc::new(RefCell::new(Vec::new()));
-                let guard = path.watch({
-                    let current_path = Rc::clone(&current_path);
-                    let receiver = receiver.clone();
-                    let destinations = Rc::clone(&destinations);
-                    move |next_path| {
-                        reconcile_heterogeneous_navigation_path(
-                            &receiver,
-                            &destinations,
-                            &mut current_path.borrow_mut(),
-                            next_path,
-                        );
-                    }
-                });
-
-                receiver.retain(Retain::new(guard));
-                Metadata::new(root, local_env)
+        path_stack_body(
+            self.path,
+            self.root,
+            self.transition,
+            ErasedNavigationRoute::same_route,
+            move |route| {
+                let destinations = Rc::clone(&destinations);
+                let route = route.clone();
+                AnyViewBuilder::new(move || destinations.build(&route))
             },
-        ))
-        .transition(transition)
+        )
     }
-}
-
-fn path_destination_builder<T, F>(
-    destination: Rc<F>,
-    component: T,
-) -> AnyViewBuilder<NavigationView>
-where
-    T: 'static + Clone + PartialEq,
-    F: 'static + Fn(T) -> NavigationView,
-{
-    AnyViewBuilder::new(move || destination(component.clone()))
 }
 
 impl<Label, Content> View for NavigationLink<Label, Content>
@@ -1477,10 +1408,10 @@ pub fn navigation(title: impl IntoText, view: impl View) -> NavigationView {
     NavigationView::new(title, view)
 }
 
-fn shared_prefix_len<T: PartialEq>(left: &[T], right: &[T]) -> usize {
+fn shared_prefix_len<R>(left: &[R], right: &[R], same: &impl Fn(&R, &R) -> bool) -> usize {
     left.iter()
         .zip(right.iter())
-        .take_while(|(left, right)| left == right)
+        .take_while(|(left, right)| same(left, right))
         .count()
 }
 
@@ -1497,25 +1428,33 @@ mod tests {
     };
     use waterui_core::{Environment, Metadata, handler::AnyViewBuilder};
 
+    fn route_destination(_route: &u8) -> AnyViewBuilder<NavigationView> {
+        AnyViewBuilder::new(|| NavigationView::new("Route", ()))
+    }
+
+    fn equal<T: PartialEq>(left: &T, right: &T) -> bool {
+        left == right
+    }
+
     #[test]
     fn shared_prefix_is_entire_prefix() {
         let left = vec![1, 2, 3];
         let right = vec![1, 2, 4];
-        assert_eq!(shared_prefix_len(&left, &right), 2);
+        assert_eq!(shared_prefix_len(&left, &right, &equal), 2);
     }
 
     #[test]
     fn shared_prefix_is_zero_when_root_changes() {
         let left = vec![1, 2];
         let right = vec![3, 4];
-        assert_eq!(shared_prefix_len(&left, &right), 0);
+        assert_eq!(shared_prefix_len(&left, &right, &equal), 0);
     }
 
     #[test]
     fn shared_prefix_matches_complete_path() {
         let left = vec![1, 2, 3];
         let right = vec![1, 2, 3];
-        assert_eq!(shared_prefix_len(&left, &right), 3);
+        assert_eq!(shared_prefix_len(&left, &right, &equal), 3);
     }
 
     struct CountingNavigationController {
@@ -1526,27 +1465,108 @@ mod tests {
     impl CustomNavigationController for CountingNavigationController {
         fn apply(&mut self, transaction: NavigationTransaction) {
             self.pushes
-                .set(self.pushes.get() + transaction.inserted().len());
-            self.pops.set(self.pops.get() + transaction.removed());
+                .set(self.pushes.get() + transaction.inserted.len());
+            self.pops.set(self.pops.get() + transaction.removed);
         }
     }
 
     #[test]
     fn path_subscription_reconciles_initial_and_replaced_routes() {
-        let path = NavigationPath::from(vec![1, 2]);
+        let path = NavigationPath::from(vec![1_u8, 2]);
         let pushes = Rc::new(Cell::new(0));
         let pops = Rc::new(Cell::new(0));
         let controller = NavigationController::new(CountingNavigationController {
             pushes: Rc::clone(&pushes),
             pops: Rc::clone(&pops),
         });
-        let destination = Rc::new(|_: u8| NavigationView::new("Route", ()));
 
-        let _guard = subscribe_navigation_path(&path, &controller, &destination);
+        let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
         path.replace([1, 3, 4]);
 
         assert_eq!(pushes.get(), 4);
         assert_eq!(pops.get(), 1);
+    }
+
+    /// A destination-building link and a route-driven link can share one stack.
+    /// The link-pushed entry sits above the path, so popping it must leave the
+    /// routes untouched, and only the pop past it may reach the path.
+    #[test]
+    fn link_pushed_entries_pop_before_the_explicit_path_does() {
+        let path = NavigationPath::from(vec![1_u8]);
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::new(Cell::new(0)),
+            pops: Rc::new(Cell::new(0)),
+        });
+        controller.install_path_pop_handler({
+            let path = path.clone();
+            move |count| path.pop_n(count)
+        });
+        let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
+
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Link", ())));
+        controller.request_pop(1);
+        assert_eq!(
+            path.snapshot(),
+            vec![1],
+            "popping a link-pushed entry must not consume a route"
+        );
+
+        controller.request_pop(1);
+        assert!(
+            path.snapshot().is_empty(),
+            "popping past the link entries must reach the explicit path"
+        );
+    }
+
+    /// A route change invalidates whatever was opened from the routes it
+    /// replaced, so link-pushed entries above the path are dropped with it.
+    #[test]
+    fn a_route_change_discards_link_pushed_entries_above_it() {
+        let path = NavigationPath::from(vec![1_u8]);
+        let pops = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::new(Cell::new(0)),
+            pops: Rc::clone(&pops),
+        });
+        let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
+
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Link", ())));
+        pops.set(0);
+        path.replace([2_u8]);
+
+        assert_eq!(
+            pops.get(),
+            2,
+            "replacing the route must remove both the route entry and the link entry above it"
+        );
+    }
+
+    /// A native interactive pop is reported after the platform already removed
+    /// the page, so the explicit path must absorb it without sending a second
+    /// removal back to the backend.
+    #[test]
+    fn a_native_pop_is_absorbed_by_the_path_without_a_second_transaction() {
+        let path = NavigationPath::from(vec![1_u8, 2]);
+        let pops = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::new(Cell::new(0)),
+            pops: Rc::clone(&pops),
+        });
+        controller.install_path_pop_handler({
+            let path = path.clone();
+            move |count| path.pop_n(count)
+        });
+        let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
+
+        pops.set(0);
+        controller.complete_native_pop(1);
+
+        assert_eq!(path.snapshot(), vec![1]);
+        assert_eq!(
+            pops.get(),
+            0,
+            "the backend already removed the page, so no removal may be sent back"
+        );
     }
 
     #[test]
@@ -1577,7 +1597,7 @@ mod tests {
 
     impl CustomNavigationController for RecordingNavigationController {
         fn apply(&mut self, transaction: NavigationTransaction) {
-            let (_, _, _, mut inserted) = transaction.into_parts();
+            let mut inserted = transaction.inserted;
             if let Some(content) = inserted.pop() {
                 *self.pushed.borrow_mut() = Some(content.build());
             }

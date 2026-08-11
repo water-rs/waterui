@@ -72,6 +72,36 @@ fn path_stack_nested_value_link_view_with_path(path: NavigationPath<TestRoute>) 
     })
 }
 
+/// A path-backed stack whose root and first destination both also offer a
+/// destination-building link, so both link kinds share one stack.
+fn mixed_link_view_with_path(path: NavigationPath<TestRoute>) -> impl View {
+    NavigationStack::with_path(
+        path,
+        NavigationView::new(
+            "Root",
+            vstack((
+                NavigationLink::value("Open Value", TestRoute::First),
+                NavigationLink::new("Open Builder", || {
+                    NavigationView::new("Builder", Text::new("builder content"))
+                }),
+            )),
+        ),
+    )
+    .destination(|route| match route {
+        TestRoute::First => NavigationView::new(
+            "First",
+            vstack((
+                Text::new("first content"),
+                NavigationLink::new("Open Nested Builder", || {
+                    NavigationView::new("Nested Builder", Text::new("nested builder content"))
+                }),
+            )),
+        ),
+        TestRoute::Second => NavigationView::new("Second", Text::new("second content")),
+    })
+    .transition(waterui_navigation::navigation_transition::none())
+}
+
 fn path_root_lifecycle_view(appeared: Rc<Cell<u32>>, disappeared: Rc<Cell<u32>>) -> impl View {
     NavigationStack::with_path(
         NavigationPath::<TestRoute>::new(),
@@ -329,6 +359,90 @@ fn native_back_updates_the_explicit_navigation_path(ui: UiBuilder) {
         .role(Role::BUTTON)
         .label("Open Second")
         .assert_exists();
+}
+
+/// A destination-building link inside a path-backed stack owns its own entry:
+/// it must push and pop without ever consuming a route.
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) {
+    let path = NavigationPath::<TestRoute>::new();
+    let mounted_path = path.clone();
+    let mut app = ui.mount(move || mixed_link_view_with_path(mounted_path.clone()));
+
+    assert!(app.query().role(Role::BUTTON).label("Open Builder").tap());
+    app.query()
+        .role(Role::LABEL)
+        .label("builder content")
+        .assert_exists();
+    assert!(
+        path.snapshot().is_empty(),
+        "a builder link must not write a route"
+    );
+
+    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    assert!(
+        app.wait_for(
+            &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Builder"))],
+            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
+        ) == waterui_testing::WaitResult::Completed,
+        "the root must return after popping the builder entry"
+    );
+    assert!(path.snapshot().is_empty());
+}
+
+/// With a builder entry stacked on top of a route, Back must unwind them in
+/// order: the builder entry first, then the route underneath it.
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
+    let path = NavigationPath::<TestRoute>::new();
+    let mounted_path = path.clone();
+    let mut app = ui.mount(move || mixed_link_view_with_path(mounted_path.clone()));
+
+    assert!(app.query().role(Role::BUTTON).label("Open Value").tap());
+    assert_eq!(path.snapshot(), vec![TestRoute::First]);
+    assert!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Open Nested Builder")
+            .tap()
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("nested builder content")
+        .assert_exists();
+    assert_eq!(
+        path.snapshot(),
+        vec![TestRoute::First],
+        "the builder entry sits above the route without changing it"
+    );
+
+    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    assert!(
+        app.wait_for(
+            &[app.expect_exists(
+                Selector::default()
+                    .role(Role::BUTTON)
+                    .label("Open Nested Builder")
+            )],
+            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
+        ) == waterui_testing::WaitResult::Completed,
+        "the first pop must land back on the route destination"
+    );
+    assert_eq!(
+        path.snapshot(),
+        vec![TestRoute::First],
+        "popping the builder entry must not consume the route"
+    );
+
+    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    assert!(
+        app.wait_for(
+            &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Value"))],
+            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
+        ) == waterui_testing::WaitResult::Completed,
+        "the second pop must reach the explicit path"
+    );
+    assert!(path.snapshot().is_empty());
 }
 
 #[waterui::test(theme = hydrolysis_m3::install)]
