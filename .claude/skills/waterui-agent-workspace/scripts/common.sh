@@ -14,19 +14,27 @@ typeset -gr BRANCH_PREFIX="${WATERUI_AGENT_BRANCH_PREFIX:-agent}"
 #   is that clone's `origin`, which create_workspace.sh points back here.
 # Outside any git repository it resolves empty, leaving the per-script context
 # checks to report the problem clearly.
+#
+# Which of the two we are in is decided by what the checkout *is*, not by where
+# it sits. A workspace was cloned from a checkout on this machine, so its origin
+# is a local path to another working tree; the canonical checkout's origin is
+# the remote it is published to. Asking WORKSPACE_ROOT instead — as this did —
+# means the answer changes when WATERUI_AGENT_WORKSPACE_ROOT changes, and every
+# workspace created under the old value is then read as the canonical
+# repository, so sync and finish refuse to run and the work inside them is
+# stranded with no way to merge it back.
 _waterui_resolve_source_repo() {
-  local top
+  local top origin
   if ! top="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     return 0
   fi
-  case "$top" in
-    "${WORKSPACE_ROOT%/}"/*)
-      git -C "$top" remote get-url origin 2>/dev/null || true
-      ;;
-    *)
-      print -- "$top"
-      ;;
-  esac
+  origin="$(git -C "$top" remote get-url origin 2>/dev/null)" || origin=""
+  if [[ -n "$origin" && -d "$origin" ]] &&
+    git -C "$origin" rev-parse --show-toplevel >/dev/null 2>&1; then
+    print -- "$origin"
+  else
+    print -- "$top"
+  fi
 }
 typeset -gr SOURCE_REPO="${WATERUI_AGENT_SOURCE_REPO:-$(_waterui_resolve_source_repo)}"
 
@@ -328,15 +336,24 @@ workspace_contains_source_layout() {
 ensure_workspace_context() {
   local current_root
   local expected_source
-  local workspace_root
+  local current_branch
 
   current_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "run this script from an agent workspace"
   current_root="$(canonical_dir "$current_root")"
   expected_source="$(canonical_dir "$SOURCE_REPO")"
-  workspace_root="$(canonical_dir "$WORKSPACE_ROOT")"
 
   [[ "$current_root" != "$expected_source" ]] || die "run this script from an agent workspace, not the canonical repository"
-  [[ "$current_root" == "${workspace_root}/"* ]] || die "workspace must live under $WORKSPACE_ROOT"
+
+  # Being a clone of a local checkout is not on its own enough to earn the
+  # things finish_workspace does — fast-forwarding the canonical repository from
+  # here, then deleting this directory. Someone's own second clone would qualify
+  # on origin alone. The branch create_workspace.sh puts a workspace on is the
+  # other half of the evidence, and unlike a location it travels with the
+  # checkout.
+  current_branch="$(git -C "$current_root" rev-parse --abbrev-ref HEAD 2>/dev/null)" ||
+    die "workspace has no checked-out branch"
+  [[ "$current_branch" == "${BRANCH_PREFIX}/"* ]] ||
+    die "not an agent workspace: expected a ${BRANCH_PREFIX}/ branch, found ${current_branch}"
 
   print -- "$current_root"
 }
