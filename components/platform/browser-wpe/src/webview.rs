@@ -44,6 +44,13 @@ impl CustomWebViewController for WpeController {
     }
 }
 
+/// Adapts the shared bridge's one-function transport onto WPE's message handler.
+const TRANSPORT_SCRIPT: &str = concat!(
+    "globalThis.__wateruiSend = function (envelope) {",
+    "globalThis.webkit.messageHandlers.__waterui.postMessage(envelope);",
+    "};"
+);
+
 type RedirectSubscription = Option<(Computed<bool>, BoxWatcherGuard)>;
 
 /// Standard `WaterUI` `WebView` handle backed by one WPE page.
@@ -65,7 +72,10 @@ impl WpeWebViewHandle {
     /// Creates a standard handle around `page`.
     #[must_use]
     pub fn new(page: WpePage) -> Self {
-        page.add_script(include_str!("bridge.js"), false);
+        // Transport first: the shared script calls `__wateruiSend`, so the adapter
+        // onto WPE's single WebKit message handler has to exist before it runs.
+        page.add_script(TRANSPORT_SCRIPT, false);
+        page.add_script(waterui_webview::bridge::SCRIPT, false);
         Self {
             page,
             redirects: Rc::new(RefCell::new(None)),

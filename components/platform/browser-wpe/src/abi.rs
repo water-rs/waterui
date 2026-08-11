@@ -47,8 +47,8 @@ pub type DestroyNotify = unsafe extern "C" fn(*mut c_void);
 pub type EventCallback =
     unsafe extern "C" fn(*mut c_void, c_uint, *const c_char, *const c_char, c_double);
 pub type FrameCallback = unsafe extern "C" fn(*mut c_void, *const WaterWpeFrame);
-pub type MessageCallback =
-    unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, usize) -> WaterWpeBytes;
+/// Receives one bridge envelope verbatim and returns the reply script.
+pub type MessageCallback = unsafe extern "C" fn(*mut c_void, *const c_char) -> WaterWpeBytes;
 pub type ResultCallback = unsafe extern "C" fn(*mut c_void, bool, *const c_char, usize);
 
 pub struct WpeApi {
@@ -102,8 +102,6 @@ pub struct WpeApi {
     ),
     pub page_key: unsafe extern "C" fn(*mut WaterWpePage, bool, c_uint, c_uint, c_uint, c_uint),
     pub page_add_script: unsafe extern "C" fn(*mut WaterWpePage, *const c_char, c_uint),
-    pub page_add_handler: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
-    pub page_remove_handler: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
     pub page_set_cookie: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
     pub page_get_cookies: unsafe extern "C" fn(*mut WaterWpePage, ResultCallback, *mut c_void),
     pub page_run_javascript:
@@ -154,8 +152,6 @@ impl WpeApi {
                 page_scroll: symbol(library, b"water_wpe_page_scroll\0"),
                 page_key: symbol(library, b"water_wpe_page_key\0"),
                 page_add_script: symbol(library, b"water_wpe_page_add_script\0"),
-                page_add_handler: symbol(library, b"water_wpe_page_add_handler\0"),
-                page_remove_handler: symbol(library, b"water_wpe_page_remove_handler\0"),
                 page_set_cookie: symbol(library, b"water_wpe_page_set_cookie\0"),
                 page_get_cookies: symbol(library, b"water_wpe_page_get_cookies\0"),
                 page_run_javascript: symbol(library, b"water_wpe_page_run_javascript\0"),

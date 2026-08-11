@@ -43,11 +43,12 @@ typedef void (*WaterWpeEventCallback)(
     const char *second,
     double number);
 typedef void (*WaterWpeFrameCallback)(void *user_data, const WaterWpeFrame *frame);
+/* Receives one `waterui.invoke(...)` envelope exactly as the page sent it, and
+ * returns the JavaScript that completes the call. The envelope format belongs to
+ * `waterui_webview::bridge`; this layer only transports it. */
 typedef WaterWpeBytes (*WaterWpeMessageCallback)(
     void *user_data,
-    const char *name,
-    const uint8_t *data,
-    size_t len);
+    const char *envelope);
 typedef void (*WaterWpeResultCallback)(
     void *user_data,
     bool success,
@@ -121,8 +122,6 @@ void water_wpe_page_add_script(
     WaterWpePage *page,
     const char *script,
     uint32_t injection_time);
-void water_wpe_page_add_handler(WaterWpePage *page, const char *name);
-void water_wpe_page_remove_handler(WaterWpePage *page, const char *name);
 void water_wpe_page_set_cookie(WaterWpePage *page, const char *cookie);
 void water_wpe_page_get_cookies(
     WaterWpePage *page,
