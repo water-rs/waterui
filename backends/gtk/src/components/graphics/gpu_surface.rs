@@ -7,17 +7,30 @@
 //!
 //! This avoids any window-system-specific surface creation (Wayland/X11) and keeps GL details
 //! fully internal to the GTK backend.
+//!
+//! Each widget owns its own wgpu instance/adapter/device on purpose: the
+//! device is created *from* the widget's GL context via wgpu-hal's external
+//! adapter, so its validity is tied to that specific `GdkGLContext` being
+//! current. Sharing one external-GL device across `GLArea`s would require
+//! guaranteeing share-group compatibility and context currency across widgets,
+//! which GDK does not promise; `SharedGpuContext` (waterui-graphics) is for
+//! hosts that own a real windowing surface, not for externally-adopted GL.
 
 use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_void};
+use std::future::Future;
 use std::num::NonZeroU32;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use gdk4::prelude::*;
 use glow::HasContext;
 use gtk4::Widget;
 use gtk4::prelude::*;
+use waterui_core::layout::ProposalSize;
 use waterui_core::{Environment, Native};
 use waterui_graphics::gpu_surface::WgslModuleCache;
 use waterui_graphics::gpu_surface::{
@@ -75,6 +88,15 @@ struct GpuState {
     last_size: Option<PixelSize>,
     setup_done: bool,
     setup_in_progress: bool,
+    /// Bumped every unrealize. In-flight async work (device request, renderer
+    /// setup) captures the generation it started under and discards its result
+    /// when the GL context it was created against is gone.
+    context_generation: u64,
+    /// The external framebuffer texture wrapped for wgpu, keyed by the pixel
+    /// size and GL attachment it was created for. Re-wrapping (and the
+    /// format-introspection assert) only happens when either changes, not per
+    /// frame.
+    cached_target: Option<CachedExternalTarget>,
 
     pointer: PointerState,
     gesture: GestureState,
@@ -109,6 +131,8 @@ impl GpuState {
             last_size: None,
             setup_done: false,
             setup_in_progress: false,
+            context_generation: 0,
+            cached_target: None,
             pointer: PointerState::default(),
             gesture: GestureState::default(),
             pan_active: false,
@@ -118,6 +142,64 @@ impl GpuState {
             glow: None,
         }
     }
+}
+
+#[derive(Debug)]
+struct CachedExternalTarget {
+    size: PixelSize,
+    attachment: glow::NativeFramebuffer,
+    texture: wgpu::Texture,
+}
+
+pin_project_lite::pin_project! {
+    /// Makes the `GtkGLArea`'s GL context current before every poll of the
+    /// wrapped future. wgpu's external-GL adapter requires the owning context
+    /// to be current whenever a wgpu entry point runs, and an async device
+    /// request or renderer setup resumes on the main loop with no context
+    /// current at all - other GL widgets may even have made theirs current in
+    /// between polls.
+    struct WithAreaContextCurrent<F> {
+        area: gtk4::GLArea,
+        #[pin]
+        future: F,
+    }
+}
+
+impl<F: Future> Future for WithAreaContextCurrent<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let this = self.project();
+        // An unrealized area has no context to make current; the wrapped task
+        // observes the bumped context generation and bails on its own.
+        if this.area.context().is_some() {
+            this.area.make_current();
+        }
+        this.future.poll(cx)
+    }
+}
+
+/// Installs a thread-safe waker on the surface's `RedrawHandle` so
+/// `request_redraw()` from outside `render()` (worker threads, CEF/WPE paint
+/// callbacks, timers) schedules a GTK frame instead of being discovered only
+/// if some other event happens to redraw the widget.
+fn install_redraw_waker(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
+    // `WeakRef<GLArea>` is not `Send`, so it crosses threads inside a
+    // `ThreadGuard` and is only dereferenced back on the main context's
+    // thread, where `invoke` runs the closure.
+    let area_guard = Arc::new(gtk4::glib::thread_guard::ThreadGuard::new(
+        gtk4::prelude::ObjectExt::downgrade(area),
+    ));
+    let main_context = gtk4::glib::MainContext::default();
+    let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        let area_guard = Arc::clone(&area_guard);
+        main_context.invoke(move || {
+            if let Some(area) = area_guard.get_ref().upgrade() {
+                area.queue_render();
+            }
+        });
+    });
+    state.borrow().redraw_handle.set_waker(Some(waker));
 }
 
 #[allow(
@@ -455,9 +537,10 @@ fn init_wgpu_if_needed(
     let instance = wgpu::Instance::new(instance_descriptor);
     let adapter = unsafe { instance.create_adapter_from_hal::<wgpu::hal::api::Gles>(exposed) };
 
-    let adapter_limits = adapter.limits();
-    let required_limits =
-        wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter_limits);
+    // Request what the adapter actually supports: capping a native GL driver
+    // to WebGL2 downlevel limits starved desktop renderers of texture size,
+    // bind groups, and uniform space they really have.
+    let required_limits = adapter.limits();
     let descriptor = wgpu::DeviceDescriptor {
         label: Some("WaterUI GTK(GLES) Device"),
         required_features: wgpu::Features::empty(),
@@ -482,28 +565,40 @@ fn init_wgpu_if_needed(
     let area_clone = area.clone();
     let descriptor = descriptor.clone();
     let adapter_for_task = adapter;
-    gtk4::glib::MainContext::default().spawn_local(async move {
-        let result = adapter_for_task.request_device(&descriptor).await;
-        {
-            let mut st = state_clone.borrow_mut();
-            st.device_init_in_progress = false;
-            match result {
-                Ok((device, queue)) => {
-                    device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
-                        tracing::error!("[wgpu] Uncaptured error: {error}");
-                    }));
-                    st.wgpu_device = Some(device);
-                    st.wgpu_queue = Some(queue);
-                    let format = st.surface_format.unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
-                    let msaa = st.msaa_samples;
+    let generation = state.borrow().context_generation;
+    gtk4::glib::MainContext::default().spawn_local(WithAreaContextCurrent {
+        area: area.clone(),
+        future: async move {
+            let result = adapter_for_task.request_device(&descriptor).await;
+            {
+                let mut st = state_clone.borrow_mut();
+                if st.context_generation != generation {
+                    // The GL context this device was created against was torn
+                    // down while the request was in flight; the device is dead.
                     tracing::debug!(
-                        "[gtk-gpu] init_wgpu_if_needed: device ready format={format:?} msaa={msaa}"
+                        "[gtk-gpu] init_wgpu_if_needed: discarding device for unrealized context"
                     );
+                    return;
                 }
-                Err(e) => panic!("GpuSurface(GL): failed to request device: {e}"),
+                st.device_init_in_progress = false;
+                match result {
+                    Ok((device, queue)) => {
+                        device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
+                            tracing::error!("[wgpu] Uncaptured error: {error}");
+                        }));
+                        st.wgpu_device = Some(device);
+                        st.wgpu_queue = Some(queue);
+                        let format = st.surface_format.unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
+                        let msaa = st.msaa_samples;
+                        tracing::debug!(
+                            "[gtk-gpu] init_wgpu_if_needed: device ready format={format:?} msaa={msaa}"
+                        );
+                    }
+                    Err(e) => panic!("GpuSurface(GL): failed to request device: {e}"),
+                }
             }
-        }
-        area_clone.queue_render();
+            area_clone.queue_render();
+        },
     });
 }
 
@@ -542,9 +637,13 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             tracing::debug!("[gtk-gpu] setup_if_needed: missing surface format");
             return false;
         };
-        let gpu_surface = st.gpu_surface.take().unwrap_or_else(|| {
-            panic!("GpuSurface(GL): setup requested but surface state is unavailable")
-        });
+        let Some(gpu_surface) = st.gpu_surface.take() else {
+            // A setup task from a torn-down context still owns the surface; it
+            // hands it back (with setup_done unset) when it finishes, and the
+            // next frame restarts setup on this context.
+            tracing::debug!("[gtk-gpu] setup_if_needed: surface still owned by in-flight setup");
+            return false;
+        };
         st.setup_in_progress = true;
         (
             gpu_surface,
@@ -565,33 +664,46 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     let device = device;
     let queue = queue;
     let adapter = adapter;
-    gtk4::glib::MainContext::default().spawn_local(async move {
-        let mut gpu_surface = gpu_surface;
-        let mut env = env;
-        let shader_cache = WgslModuleCache::new();
-        let ctx = GpuContext {
-            adapter: &adapter,
-            device: &device,
-            queue: &queue,
-            surface_format: format,
-            shader_cache: &shader_cache,
-            msaa_samples,
-            redraw_handle: redraw_handle.clone(),
-        };
-        gpu_surface.setup(&ctx, &mut env).await;
-        {
-            let mut st = state_clone.borrow_mut();
-            assert!(
-                st.gpu_surface.is_none(),
-                "GpuSurface(GL): setup completed but state still had a live surface"
-            );
-            st.gpu_surface = Some(gpu_surface);
-            st.env = env;
-            st.setup_done = true;
-            st.setup_in_progress = false;
-            tracing::debug!("[gtk-gpu] setup complete");
-        }
-        area_clone.queue_render();
+    let generation = state.borrow().context_generation;
+    gtk4::glib::MainContext::default().spawn_local(WithAreaContextCurrent {
+        area: area.clone(),
+        future: async move {
+            let mut gpu_surface = gpu_surface;
+            let mut env = env;
+            let shader_cache = WgslModuleCache::new();
+            let ctx = GpuContext {
+                adapter: &adapter,
+                device: &device,
+                queue: &queue,
+                surface_format: format,
+                shader_cache: &shader_cache,
+                msaa_samples,
+                redraw_handle: redraw_handle.clone(),
+            };
+            gpu_surface.setup(&ctx, &mut env).await;
+            {
+                let mut st = state_clone.borrow_mut();
+                assert!(
+                    st.gpu_surface.is_none(),
+                    "GpuSurface(GL): setup completed but state still had a live surface"
+                );
+                st.gpu_surface = Some(gpu_surface);
+                st.env = env;
+                st.setup_in_progress = false;
+                if st.context_generation == generation {
+                    st.setup_done = true;
+                    tracing::debug!("[gtk-gpu] setup complete");
+                } else {
+                    // The context died mid-setup: the renderer's GPU resources
+                    // are gone with it. Leave setup_done unset so the next
+                    // realized context runs setup again on its own device.
+                    tracing::debug!(
+                        "[gtk-gpu] setup finished for a torn-down context; will re-run"
+                    );
+                }
+            }
+            area_clone.queue_render();
+        },
     });
     false
 }
@@ -662,47 +774,66 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     let size = PixelSize::from_widget(area);
     tracing::debug!("[gtk-gpu] render frame size={}x{}", size.width, size.height);
 
-    // Confirm format hasn't changed (it shouldn't). If it does, crash early.
-    let observed_format = query_framebuffer_format(&glow);
-    assert!(
-        !(observed_format != format),
-        "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
-    );
-
     let attachment = current_color_attachment(&glow);
-
-    let hal_texture = wgpu::hal::gles::Texture {
-        inner: wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer { inner: attachment },
-        drop_guard: None,
-        mip_level_count: 1,
-        array_layer_count: 1,
-        format,
-        format_desc: texture_format_desc(format),
-        copy_size: wgpu::hal::CopyExtent {
-            width: size.width,
-            height: size.height,
-            depth: 1,
-        },
+    let cached = {
+        let st = state.borrow();
+        st.cached_target.as_ref().and_then(|cached| {
+            (cached.size == size && cached.attachment == attachment).then(|| cached.texture.clone())
+        })
     };
+    let texture = if let Some(texture) = cached {
+        texture
+    } else {
+        // The framebuffer changed (resize or FBO swap): re-run the format
+        // introspection - the one point a driver could legally hand us a
+        // different attachment - and re-wrap it for wgpu. Doing this per frame
+        // was a chain of glGet round trips for an answer that cannot change
+        // between resizes.
+        let observed_format = query_framebuffer_format(&glow);
+        assert!(
+            observed_format == format,
+            "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
+        );
 
-    let texture = unsafe {
-        device.create_texture_from_hal::<wgpu::hal::api::Gles>(
-            hal_texture,
-            &wgpu::TextureDescriptor {
-                label: Some("WaterUI GTK External FBO Texture"),
-                size: wgpu::Extent3d {
-                    width: size.width,
-                    height: size.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
+        let hal_texture = wgpu::hal::gles::Texture {
+            inner: wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer { inner: attachment },
+            drop_guard: None,
+            mip_level_count: 1,
+            array_layer_count: 1,
+            format,
+            format_desc: texture_format_desc(format),
+            copy_size: wgpu::hal::CopyExtent {
+                width: size.width,
+                height: size.height,
+                depth: 1,
             },
-        )
+        };
+
+        let texture = unsafe {
+            device.create_texture_from_hal::<wgpu::hal::api::Gles>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some("WaterUI GTK External FBO Texture"),
+                    size: wgpu::Extent3d {
+                        width: size.width,
+                        height: size.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                },
+            )
+        };
+        state.borrow_mut().cached_target = Some(CachedExternalTarget {
+            size,
+            attachment,
+            texture: texture.clone(),
+        });
+        texture
     };
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -893,8 +1024,31 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
 pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
     tracing::debug!("[gtk-gpu] create GLArea widget");
     let area = gtk4::GLArea::new();
-    area.set_hexpand(true);
-    area.set_vexpand(true);
+    // Honor the surface's layout contract instead of assuming it is greedy on
+    // both axes: a non-stretch axis takes its extent from the view's own
+    // measurement (an aspect-ratio renderer, a fixed-size gauge).
+    let stretch = gpu_surface.stretch_axis();
+    area.set_hexpand(stretch.stretches_horizontal());
+    area.set_vexpand(stretch.stretches_vertical());
+    if !(stretch.stretches_horizontal() && stretch.stretches_vertical()) {
+        let measured = gpu_surface.measure(ProposalSize::UNSPECIFIED).size;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "GTK size requests are integer logical pixels"
+        )]
+        area.set_size_request(
+            if stretch.stretches_horizontal() {
+                -1
+            } else {
+                measured.width.ceil() as i32
+            },
+            if stretch.stretches_vertical() {
+                -1
+            } else {
+                measured.height.ceil() as i32
+            },
+        );
+    }
     area.set_visible(true);
     area.set_can_target(true);
     area.set_auto_render(false);
@@ -905,6 +1059,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
     install_input_controllers(&area, &state);
 
     area.connect_realize({
+        let state = Rc::clone(&state);
         move |area| {
             tracing::debug!("[gtk-gpu] GLArea realize");
             area.make_current();
@@ -913,6 +1068,9 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
                 err.is_none(),
                 "GpuSurface(GL): GtkGLArea realize failed: {err:?}"
             );
+            // The redraw handle is replaced on unrealize, so the waker is
+            // (re-)installed per realized context.
+            install_redraw_waker(area, &state);
         }
     });
 
@@ -937,6 +1095,11 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             );
 
             let mut st = state.borrow_mut();
+            // Anything still in flight against this context (a pending device
+            // request, an unfinished renderer setup) must not resurrect state
+            // for a context that no longer exists.
+            st.context_generation += 1;
+            st.cached_target = None;
             st.wgpu_queue = None;
             st.wgpu_device = None;
             st.device_init_in_progress = false;
@@ -945,6 +1108,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             st.glow = None;
             st.setup_done = false;
             st.setup_in_progress = false;
+            st.redraw_handle.set_waker(None);
             st.redraw_handle = RedrawHandle::new();
             st.last_size = None;
         }
