@@ -42,6 +42,22 @@ jobs:
         run: |
           git submodule update --remote --init ${{ steps.get_submodule.outputs.paths }}
 
+      # `cli/Cargo.toml` pins the backend commits a published CLI fetches when it has no
+      # submodules to read from. A workspace build ignores those literals, so nothing here
+      # notices when they go stale — but a released CLI would then scaffold projects
+      # against a backend behind the one this repository builds against. Repinning in the
+      # same step that moves the submodule keeps the two from ever diverging; leaving it to
+      # a follow-up meant every automated bump shipped a stale pin.
+      - name: Repin backend commits for release builds
+        run: |
+          for path in ${{ steps.get_submodule.outputs.paths }}; do
+            backend="${path#backends/}"
+            commit="$(git -C "$path" rev-parse HEAD)"
+            sed -i "s|^${backend}-backend-commit = .*|${backend}-backend-commit = \"${commit}\"|" cli/Cargo.toml
+            grep -q "^${backend}-backend-commit = \"${commit}\"$" cli/Cargo.toml \
+              || { echo "failed to repin ${backend}-backend-commit in cli/Cargo.toml"; exit 1; }
+          done
+
       - name: Commit and push if changed
         run: |
           git config --global user.name 'github-actions[bot]'
