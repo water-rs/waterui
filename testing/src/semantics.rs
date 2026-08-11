@@ -44,9 +44,69 @@ impl Role {
     pub const COMBOBOX: Self = Self(AccessibilityRole::ComboBox);
     /// Selectable option role.
     pub const OPTION: Self = Self(AccessibilityRole::ListBoxOption);
+    /// Multiline text input role.
+    pub const MULTILINE_TEXT_INPUT: Self = Self(AccessibilityRole::MultilineTextInput);
+    /// Link role.
+    pub const LINK: Self = Self(AccessibilityRole::Link);
+    /// Section heading role.
+    pub const HEADER: Self = Self(AccessibilityRole::Header);
+    /// Section footer role.
+    pub const FOOTER: Self = Self(AccessibilityRole::Footer);
+    /// Progress indicator role.
+    pub const PROGRESS_INDICATOR: Self = Self(AccessibilityRole::ProgressIndicator);
+    /// Stepper / spin button role.
+    pub const SPIN_BUTTON: Self = Self(AccessibilityRole::SpinButton);
+    /// Radio button role.
+    pub const RADIO_BUTTON: Self = Self(AccessibilityRole::RadioButton);
+    /// Menu role.
+    pub const MENU: Self = Self(AccessibilityRole::Menu);
+    /// Menu bar role.
+    pub const MENU_BAR: Self = Self(AccessibilityRole::MenuBar);
+    /// Menu item role.
+    pub const MENU_ITEM: Self = Self(AccessibilityRole::MenuItem);
+    /// Checkbox-style menu item role.
+    pub const MENU_ITEM_CHECKBOX: Self = Self(AccessibilityRole::MenuItemCheckBox);
+    /// Radio-style menu item role.
+    pub const MENU_ITEM_RADIO: Self = Self(AccessibilityRole::MenuItemRadio);
+    /// Tab panel role.
+    pub const TAB_PANEL: Self = Self(AccessibilityRole::TabPanel);
+    /// Table role.
+    pub const TABLE: Self = Self(AccessibilityRole::Table);
+    /// Table cell role.
+    pub const CELL: Self = Self(AccessibilityRole::Cell);
+    /// Column header role.
+    pub const COLUMN_HEADER: Self = Self(AccessibilityRole::ColumnHeader);
+    /// Logical grouping role.
+    pub const GROUP: Self = Self(AccessibilityRole::Group);
+    /// Window root role.
+    pub const WINDOW: Self = Self(AccessibilityRole::Window);
+    /// Main landmark role.
+    pub const MAIN: Self = Self(AccessibilityRole::Main);
+    /// Navigation landmark role.
+    pub const NAVIGATION: Self = Self(AccessibilityRole::Navigation);
+    /// Search landmark role.
+    pub const SEARCH: Self = Self(AccessibilityRole::Search);
+    /// Article role.
+    pub const ARTICLE: Self = Self(AccessibilityRole::Article);
+    /// Section role.
+    pub const SECTION: Self = Self(AccessibilityRole::Section);
 
-    pub(crate) const fn as_accesskit(self) -> AccessibilityRole {
+    /// Wraps any AccessKit role, covering roles without a named constant.
+    #[must_use]
+    pub const fn new(role: AccessibilityRole) -> Self {
+        Self(role)
+    }
+
+    /// The underlying AccessKit role.
+    #[must_use]
+    pub const fn as_accesskit(self) -> AccessibilityRole {
         self.0
+    }
+}
+
+impl From<AccessibilityRole> for Role {
+    fn from(role: AccessibilityRole) -> Self {
+        Self(role)
     }
 }
 
