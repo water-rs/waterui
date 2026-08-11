@@ -46,7 +46,7 @@ fn cargo_version_req(version: &str) -> cargo_toml::VersionReq {
 /// a runtime source edit. Without this, upgrading the CLI leaves previously
 /// generated crates in place, and they fail to compile against the API they
 /// were meant to be regenerated for.
-pub(crate) fn scaffold_template_digest() -> String {
+pub fn scaffold_template_digest() -> String {
     use sha2::Digest as _;
 
     fn hash_dir(hasher: &mut sha2::Sha256, dir: &Dir<'_>) {
