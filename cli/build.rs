@@ -49,6 +49,11 @@ fn main() {
         RELEASE_BUILD_KIND
     };
     let scaffold_metadata = resolve_scaffold_metadata(&cli_manifest_dir, workspace_root.as_deref());
+    warn_on_stale_backend_pins(
+        &cli_manifest_dir,
+        workspace_root.as_deref(),
+        &scaffold_metadata,
+    );
 
     emit_scaffold_metadata(&cli_commit, build_kind, &scaffold_metadata);
     register_rerun_inputs(workspace_root.as_deref());
@@ -105,6 +110,47 @@ fn emit_scaffold_metadata(
         "cargo:rustc-env=WATERUI_CLI_ANDROID_BACKEND_COMMIT={}",
         scaffold_metadata.android_backend.commit
     );
+}
+
+/// Warn when a backend pin in `cli/Cargo.toml` has drifted from its submodule.
+///
+/// A workspace build reads the real submodule commit, so the literals in the manifest
+/// only ever reach a *published* CLI — which has no submodule to read and therefore has
+/// to carry the value. They cannot be derived away, only kept honest, and when they go
+/// stale a released CLI scaffolds projects against a backend several commits behind the
+/// one this repository builds and tests against.
+///
+/// A test asserts the pins match, but that only fires when someone runs the CLI's tests.
+/// Surfacing it as a build warning puts it in front of whoever bumped the submodule, in
+/// the same command they were already running.
+fn warn_on_stale_backend_pins(
+    cli_manifest_dir: &Path,
+    workspace_root: Option<&Path>,
+    resolved: &ScaffoldMetadata,
+) {
+    let Some(_) = workspace_root else {
+        return;
+    };
+    let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
+    let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
+
+    for (field, resolved_commit) in [
+        (
+            "apple-backend-commit",
+            resolved.apple_backend.commit.as_str(),
+        ),
+        (
+            "android-backend-commit",
+            resolved.android_backend.commit.as_str(),
+        ),
+    ] {
+        let pinned = manifest_scaffold_string(scaffold_metadata, field);
+        if pinned != resolved_commit {
+            println!(
+                "cargo::warning=cli/Cargo.toml `{field}` is stale: pinned {pinned}, submodule is at {resolved_commit}. A released CLI would scaffold against the pinned commit. Set `{field} = \"{resolved_commit}\"`."
+            );
+        }
+    }
 }
 
 fn register_rerun_inputs(workspace_root: Option<&Path>) {
