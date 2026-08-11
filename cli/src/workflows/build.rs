@@ -204,6 +204,25 @@ fn fingerprint_resolved_runtime_graph(
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Configure a Cargo invocation that compiles one of `WaterUI`'s generated crates.
+///
+/// Incremental compilation is off for every one of these builds, unconditionally.
+/// `-C incremental` is part of a unit's profile, the profile feeds Cargo's `-C metadata`,
+/// and `-C metadata` is mangled into every symbol name. Two builds in the same flow that
+/// disagree about incremental therefore produce runtimes whose symbols cannot resolve
+/// against each other: a preview support app built one way and a preview module built the
+/// other share a `libwaterui_dylib.dylib` filename and roughly 33,000 mismatched symbols,
+/// and the module fails to `dlopen` on a missing generic instantiation.
+///
+/// The choice is unconditional precisely so it cannot depend on an environmental accident
+/// such as whether a machine has `sccache` installed. Little is given up: these crates
+/// build into runtime-fingerprinted target directories that rotate whenever the dependency
+/// graph moves, so incremental state rarely survives to be reused — while an `sccache`
+/// entry, which requires incremental to be off, does.
+pub fn configure_generated_crate_compilation(command: &mut Command) {
+    command.env("CARGO_INCREMENTAL", "0");
+}
+
 /// Configure a Cargo command for the selected Rust linkage model.
 pub fn configure_cargo_linkage(
     command: &mut Command,
@@ -823,6 +842,8 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             rustflags.push(self.rustc_flags.join(" "));
             cmd = cmd.env("RUSTFLAGS", rustflags);
         }
+
+        configure_generated_crate_compilation(cmd);
 
         // Use sccache as rustc wrapper if configured
         if let Some(sccache_path) = &self.sccache_path {
