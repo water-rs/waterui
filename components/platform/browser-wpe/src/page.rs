@@ -20,7 +20,7 @@ use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
 use waterui_str::Str;
 use waterui_url::Url;
-use waterui_webview::{WatcherSet, WebViewError, WebViewEvent};
+use waterui_webview::{WatcherSet, WebViewError, WebViewEvent, bridge};
 
 use crate::abi::{WaterWpeBytes, WaterWpeFrame, WaterWpePage};
 use crate::frame::DmaBufFrame;
@@ -405,22 +405,13 @@ impl WpePage {
     /// already registered.
     pub fn add_handler(&self, name: &str, handler: impl Fn(&[u8]) -> Vec<u8> + 'static) {
         assert!(!name.is_empty(), "WPE handler name must not be empty");
-        let previous = self
-            .inner
+        // One transport serves every handler name, so registration is bookkeeping
+        // only. Re-registering replaces, matching every other backend.
+        self.inner
             .state
             .handlers
             .borrow_mut()
             .insert(name.to_owned(), Rc::new(handler));
-        assert!(
-            previous.is_none(),
-            "WPE handler `{name}` is already registered"
-        );
-        let name = Self::string(name, "WPE handler name");
-        // SAFETY: bridge ABI call on the page this type owns; see the module safety
-        // note.
-        unsafe {
-            (self.inner.state.api.api.page_add_handler)(self.inner.raw.as_ptr(), name.as_ptr());
-        };
     }
 
     /// Removes a JavaScript message handler.
@@ -429,21 +420,9 @@ impl WpePage {
     ///
     /// Panics when `name` is not registered or contains an interior NUL byte.
     pub fn remove_handler(&self, name: &str) {
-        assert!(
-            self.inner
-                .state
-                .handlers
-                .borrow_mut()
-                .remove(name)
-                .is_some(),
-            "WPE handler `{name}` is not registered"
-        );
-        let name = Self::string(name, "WPE handler name");
-        // SAFETY: bridge ABI call on the page this type owns; see the module safety
-        // note.
-        unsafe {
-            (self.inner.state.api.api.page_remove_handler)(self.inner.raw.as_ptr(), name.as_ptr());
-        };
+        // Removing a name that was never registered is a no-op, matching every
+        // other backend.
+        self.inner.state.handlers.borrow_mut().remove(name);
     }
 
     /// Adds a serialized Set-Cookie header for the current origin.
@@ -612,9 +591,7 @@ unsafe extern "C" fn destroy_response(context: *mut c_void) {
 
 unsafe extern "C" fn message_callback(
     context: *mut c_void,
-    name: *const c_char,
-    data: *const u8,
-    len: usize,
+    envelope: *const c_char,
 ) -> WaterWpeBytes {
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
     // note.
@@ -625,19 +602,40 @@ unsafe extern "C" fn message_callback(
         .expect("WPE invoked a message after page destruction");
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
     // note.
-    let name = unsafe { CStr::from_ptr(name) }
+    let envelope = unsafe { CStr::from_ptr(envelope) };
+
+    // Page script reaches this transport directly, so a malformed envelope or an
+    // unknown handler name is rejected back to JavaScript rather than being fatal.
+    let script = match envelope
         .to_str()
-        .expect("WPE handler name is not UTF-8");
-    // SAFETY: bridge ABI call on the page this type owns; see the module safety
-    // note.
-    let data = unsafe { std::slice::from_raw_parts(data, len) };
-    let response =
-        state
-            .handlers
-            .borrow()
-            .get(name)
-            .unwrap_or_else(|| panic!("WPE handler `{name}` is not registered"))(data);
-    let mut response = Box::new(ResponseBytes { bytes: response });
+        .map_err(|_| String::from("envelope is not UTF-8"))
+        .and_then(|envelope| bridge::Request::parse(envelope).map_err(|error| error.to_string()))
+    {
+        Ok(request) => {
+            // Release the borrow before invoking: a handler may register or remove
+            // handlers on the same page.
+            let handler = state.handlers.borrow().get(&request.name).map(Rc::clone);
+            let reply = if let Some(handler) = handler {
+                bridge::Reply::Bytes(handler(&request.payload))
+            } else {
+                tracing::warn!(
+                    handler = %request.name,
+                    "page script called a WaterUI handler that is not registered"
+                );
+                bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+            };
+            reply.resolve_script(request.id)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+            // Without a usable id there is no pending promise to settle.
+            String::new()
+        }
+    };
+
+    let mut response = Box::new(ResponseBytes {
+        bytes: script.into_bytes(),
+    });
     let payload = WaterWpeBytes {
         data: response.bytes.as_ptr(),
         len: response.bytes.len(),
