@@ -375,6 +375,48 @@ m.show(
 Different placements are independent stacks (a top snackbar never evicts a bottom
 one). Multiple at the same placement stack and reflow automatically.
 
+## Testing (`#[waterui::test]` + waterui-testing)
+
+Accessibility-first UI tests run under plain `cargo test`. Add
+`waterui-testing` and `hydrolysis-m3` as dev-dependencies.
+
+```rust
+use waterui_testing::{Role, SemanticApp, UiBuilder};
+
+// Mounting form: the macro mounts a no-arg view function.
+#[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+fn login_flow(app: &mut SemanticApp) {
+    app.query().role(Role::BUTTON).label("Login").tap();
+    app.query().label("Welcome").assert_exists();
+}
+
+// Manual-mount form: the test owns Bindings the view closes over.
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn stepper_updates(ui: UiBuilder) {
+    let value = Binding::i32(2);
+    let value_for_view = value.clone();
+    let mut app = ui.mount(move || stepper("Limited", &value_for_view));
+    app.query().label("Limited").increment();
+    assert_eq!(value.get(), 3);
+}
+```
+
+- Interactions (`tap`, `set_text`, `increment`, `focus`, drags, keys) return `()`
+  and panic when the runtime rejects the action — the call itself is the assertion.
+  After each interaction the session settles to quiescence automatically.
+- Query by semantics: `app.query().role(Role::SWITCH).label("Wi-Fi")`, then
+  `.assert_exists()` / `.single()` / `.all()`. Tag hard-to-label views with
+  `.a11y_id("settings.wifi")` and query `.identifier("settings.wifi")` — the same
+  identifier reaches XCUITest (`accessibilityIdentifier`) and Android automation.
+- Waits mirror XCTest: `app.wait_for_existence(&selector, timeout)`,
+  `app.wait_for(&[expectation], WaitOptions::new(timeout))`.
+- Visual tests: add the `offscreen` flag (parameter becomes `&mut OffscreenApp`)
+  or call `ui.mount_offscreen(...)`; `app.pump_for(duration)` advances the
+  virtual animation clock exactly, and `app.capture_snapshot(suite, case, stage)`
+  writes PNGs under `WATERUI_TEST_ARTIFACTS_DIR`.
+- Keyboard with modifiers: `app.press_named_key_with("Tab", modifiers)`.
+  Gesture pacing: `query.drag_by_with(dx, dy, DragOptions { steps: 12, frame_per_step: true })`.
+
 ## CLI Commands
 
 ```bash
