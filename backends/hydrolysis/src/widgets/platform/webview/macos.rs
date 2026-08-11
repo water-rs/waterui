@@ -67,6 +67,8 @@ struct SharedState {
     handlers: RefCell<HashMap<String, JavaScriptHandler>>,
     scripts: RefCell<Vec<InjectedScript>>,
     last_navigation_url: RefCell<Option<String>>,
+    /// Which documents may reach the bridge; checked on every message.
+    bridge_origins: RefCell<Option<waterui_webview::OriginPolicy>>,
     transport_registered: std::cell::Cell<bool>,
 }
 
@@ -78,6 +80,7 @@ impl Default for SharedState {
             handlers: RefCell::new(HashMap::new()),
             scripts: RefCell::new(Vec::new()),
             last_navigation_url: RefCell::new(None),
+            bridge_origins: RefCell::new(None),
             transport_registered: std::cell::Cell::new(false),
         }
     }
@@ -275,6 +278,34 @@ define_class!(
                 tracing::warn!("WaterUI bridge received a non-string message body; ignoring");
                 return;
             };
+            // WebKit reports the frame each message came from, so the origin is
+            // authenticated by the engine rather than claimed by the page.
+            let allowed = {
+                let policy = self.ivars().shared.bridge_origins.borrow().clone();
+                // SAFETY: main-thread message send to an object WebKit retains for
+                // this call; see the module safety note.
+                let frame = unsafe { message.frameInfo() };
+                let is_main_frame = unsafe { frame.isMainFrame() };
+                let origin = unsafe { frame.securityOrigin() };
+                let origin = unsafe {
+                    format!(
+                        "{}://{}",
+                        origin.protocol().to_string(),
+                        origin.host().to_string()
+                    )
+                };
+                is_main_frame
+                    && policy.is_some_and(|policy| {
+                        origin.parse().is_ok_and(|origin| policy.allows(&origin))
+                    })
+            };
+            if !allowed {
+                tracing::warn!(
+                    "a document outside the bridge origin policy tried to call a WaterUI handler"
+                );
+                return;
+            }
+
             let request = match bridge::Request::parse(&body.to_string()) {
                 Ok(request) => request,
                 Err(error) => {
@@ -581,6 +612,10 @@ impl WebViewHandle for MacSystemWebViewHandle {
             .borrow_mut()
             .insert(name.to_owned(), Rc::from(handler));
         self.ensure_transport_registered();
+    }
+
+    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        self.inner.shared.bridge_origins.replace(Some(policy));
     }
 
     fn remove_handler(&self, name: &str) {

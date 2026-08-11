@@ -53,6 +53,7 @@ struct FakeWebViewState {
     cookies: Vec<Cookie<'static>>,
     watchers: WatcherSet<WebViewEvent>,
     handlers: MessageHandlers,
+    bridge_origins: Option<waterui_webview::OriginPolicy>,
 }
 
 impl FakeWebViewHandle {
@@ -136,6 +137,10 @@ impl WebViewHandle for FakeWebViewHandle {
             .borrow_mut()
             .handlers
             .insert(name.to_owned(), handler);
+    }
+
+    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        self.state.borrow_mut().bridge_origins = Some(policy);
     }
 
     fn remove_handler(&self, name: &str) {

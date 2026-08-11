@@ -93,6 +93,7 @@ impl AndroidWebViewFactory {
                 watch: webview_watch,
                 add_handler: Some(webview_add_handler),
                 remove_handler: Some(webview_remove_handler),
+                set_bridge_origins: Some(webview_set_bridge_origins),
                 set_cookie: Some(webview_set_cookie),
                 get_cookies: Some(webview_get_cookies),
                 run_javascript: webview_run_javascript,
@@ -305,6 +306,21 @@ unsafe extern "C" fn webview_remove_handler(data: *mut (), name: WuiStr) {
     });
 
     handle.handlers.remove(&name);
+}
+
+unsafe extern "C" fn webview_set_bridge_origins(data: *mut (), patterns: WuiStr) {
+    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    let patterns = wui_str_to_string(patterns);
+    handle.with_env(|env| {
+        let jpatterns = java_string(env, &patterns);
+        env.call_method(
+            &handle.wrapper,
+            jni_str!("setBridgeOrigins"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&jpatterns)],
+        )
+        .expect("webview_set_bridge_origins: failed to call WebViewWrapper.setBridgeOrigins");
+    });
 }
 
 unsafe extern "C" fn webview_set_cookie(data: *mut (), cookie: WuiStr) {

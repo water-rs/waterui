@@ -41,6 +41,8 @@ pub use watcher::{WatcherGuard, WatcherSet};
 pub mod bridge;
 mod script;
 pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
+mod origins;
+pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy};
 mod message;
 pub use message::{Bytes, HandlerName, IntoJsReply, Json};
 mod state;
@@ -241,6 +243,7 @@ impl WebView {
             handlers: Vec::new(),
             event_watchers: Vec::new(),
             state: Vec::new(),
+            bridge_origins: BridgeOrigins::default(),
         }
     }
 
@@ -510,6 +513,7 @@ pub struct WebViewOpen {
     handlers: Vec<(Str, BoxedMessageHandler)>,
     event_watchers: Vec<Box<dyn Fn(WebViewEvent)>>,
     state: Vec<state::PendingField>,
+    bridge_origins: BridgeOrigins,
 }
 
 impl fmt::Debug for WebViewOpen {
@@ -522,6 +526,7 @@ impl fmt::Debug for WebViewOpen {
             .field("handlers", &self.handlers.len())
             .field("event_watchers", &self.event_watchers.len())
             .field("state_fields", &self.state.len())
+            .field("bridge_origins", &self.bridge_origins)
             .finish()
     }
 }
@@ -591,6 +596,17 @@ impl WebViewOpen {
         self
     }
 
+    /// Chooses which documents may reach the bridge.
+    ///
+    /// Defaults to [`BridgeOrigins::Initial`] — the origin the view is opened at,
+    /// main frame only. Handlers are capabilities, and a web view that can
+    /// navigate can end up somewhere you did not choose, so the default is the
+    /// narrowest one that still works.
+    pub fn bridge_origins(mut self, origins: impl IntoBridgeOrigins) -> Self {
+        self.bridge_origins = origins.into_bridge_origins();
+        self
+    }
+
     /// Observes web view events.
     ///
     /// The subscription lives as long as the web view, so there is no guard to
@@ -640,6 +656,7 @@ impl WebViewOpen {
             handlers,
             event_watchers,
             state,
+            bridge_origins,
         } = self;
         let webview = controller.open();
         if let Some(enabled) = redirects_enabled {
@@ -658,6 +675,11 @@ impl WebViewOpen {
             // case `WatcherGuard::forget` documents.
             webview.handle().watch(watcher).forget();
         }
+        // The policy is resolved against the URL the view opens at, and installed
+        // before any handler, so no handler is ever reachable unguarded.
+        webview
+            .handle()
+            .set_bridge_origins(OriginPolicy::new(bridge_origins, &url.get()));
         if !state.is_empty() {
             state::install(&webview, state);
         }
