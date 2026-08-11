@@ -286,7 +286,7 @@ pub struct MapConfig {
     /// Native realizations may use the platform location service when this is
     /// absent. Supplying it keeps camera following, the location marker, and
     /// horizontal-accuracy visualization driven by one reactive source.
-    pub user_location: Computed<Option<Location>>,
+    pub user_location: Option<Computed<Option<Location>>>,
     /// Whether the map is interactive (pan/zoom enabled).
     pub interactivity: MapInteractivity,
     /// Whether to show the compass.
@@ -321,7 +321,7 @@ impl Map {
             annotations: empty_annotations.into_computed(),
             style: MapStyle::default(),
             user_location_visibility: MapVisibility::Hidden,
-            user_location: Computed::constant(None),
+            user_location: None,
             interactivity: MapInteractivity::Interactive,
             compass_visibility: MapVisibility::Visible,
             scale_visibility: MapVisibility::Visible,
@@ -369,7 +369,7 @@ impl Map {
     /// Displays reactive `WaterKit` location values and their horizontal accuracy.
     #[must_use]
     pub fn user_location(mut self, location: impl IntoComputed<Location>) -> Self {
-        self.0.user_location = location.into_computed().map(Some).computed();
+        self.0.user_location = Some(location.into_computed().map(Some).computed());
         self.0.user_location_visibility = MapVisibility::Visible;
         self
     }
@@ -381,7 +381,7 @@ impl Map {
     /// updates the existing map without replacing its view identity.
     #[must_use]
     pub fn optional_user_location(mut self, location: impl IntoComputed<Option<Location>>) -> Self {
-        self.0.user_location = location.into_computed();
+        self.0.user_location = Some(location.into_computed());
         self.0.user_location_visibility = MapVisibility::Visible;
         self
     }
@@ -393,7 +393,7 @@ impl Map {
         self.0.region = location_signal
             .map(|location| Region::from_coordinate(Coordinate::from(location)))
             .into_computed();
-        self.0.user_location = location_signal.map(Some).computed();
+        self.0.user_location = Some(location_signal.map(Some).computed());
         self.0.user_location_visibility = MapVisibility::Visible;
         self
     }
