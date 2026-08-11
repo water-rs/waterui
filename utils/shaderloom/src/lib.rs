@@ -383,6 +383,84 @@ pub fn create_dynamic_wgsl_module(
     })
 }
 
+/// Memoizes runtime-compiled WGSL modules for one device.
+///
+/// Runtime-assembled shaders (fused filter chains, specialized spatial
+/// passes, user fragment surfaces) are compiled from a fully substituted
+/// source string, so that string *is* the specialization key: two callers
+/// that produce byte-identical WGSL must share one [`wgpu::ShaderModule`].
+///
+/// One cache belongs to one device. Sharing a cache across devices would hand
+/// out modules the other device cannot use, so hosts own a cache next to the
+/// device they created it for.
+///
+/// The map is behind a `Mutex` because this is pure memoization with no
+/// cross-thread protocol to model as a channel: lookups happen during
+/// pipeline setup, and a hit costs one hash of the source.
+#[derive(Default)]
+pub struct WgslModuleCache {
+    modules: std::sync::Mutex<std::collections::HashMap<String, wgpu::ShaderModule>>,
+}
+
+impl core::fmt::Debug for WgslModuleCache {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("WgslModuleCache")
+            .finish_non_exhaustive()
+    }
+}
+
+impl WgslModuleCache {
+    /// Creates an empty cache for one device.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the module compiled from `source`, compiling it on first use.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a previous caller panicked while holding the cache lock.
+    #[must_use]
+    pub fn module(
+        &self,
+        device: &wgpu::Device,
+        label: Option<&str>,
+        source: &str,
+    ) -> wgpu::ShaderModule {
+        let mut modules = self
+            .modules
+            .lock()
+            .expect("WGSL module cache poisoned by a panicking compile");
+        if let Some(module) = modules.get(source) {
+            return module.clone();
+        }
+        let module = create_dynamic_wgsl_module(device, label, source);
+        modules.insert(source.to_owned(), module.clone());
+        module
+    }
+
+    /// Number of distinct sources compiled through this cache.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a previous caller panicked while holding the cache lock.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.modules
+            .lock()
+            .expect("WGSL module cache poisoned by a panicking compile")
+            .len()
+    }
+
+    /// Whether this cache has compiled anything yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 #[cfg(any(target_arch = "wasm32", not(target_vendor = "apple")))]
 fn create_wgsl_module(
     device: &wgpu::Device,

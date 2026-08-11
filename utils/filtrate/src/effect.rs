@@ -216,6 +216,12 @@ pub struct EffectContext<'a> {
     pub device: &'a wgpu::Device,
     /// The wgpu queue for submitting commands.
     pub queue: &'a wgpu::Queue,
+    /// Module cache for the shaders an effect assembles at runtime.
+    ///
+    /// The cache belongs to `device`: hosts create one per device and hand
+    /// the same reference to every effect they set up on it, so two effects
+    /// producing byte-identical WGSL compile it once.
+    pub shader_cache: &'a shaderloom::WgslModuleCache,
     /// The texture format of the input (captured view).
     pub input_format: wgpu::TextureFormat,
     /// The texture format of the output.

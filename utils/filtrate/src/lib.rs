@@ -48,6 +48,7 @@ pub use filtrate_core::{
     StageCollector, WatchGuard,
 };
 pub use runtime::{FilterAdapter, HdrPolicy};
+pub use shaderloom::WgslModuleCache;
 
 /// Procedural derive that generates a [`Filter`] implementation for a tuple
 /// struct. See `filtrate-derive` for the supported `#[filter(...)]` shapes.

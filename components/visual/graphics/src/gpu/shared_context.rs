@@ -8,6 +8,8 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use shaderloom::WgslModuleCache;
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
 
@@ -43,6 +45,11 @@ pub struct SharedGpuContext {
     pub device: Arc<wgpu::Device>,
     /// The shared GPU queue.
     pub queue: Arc<wgpu::Queue>,
+    /// Module cache for shaders assembled at runtime on this device.
+    ///
+    /// Every GPU-backed view on this runtime shares it, so two views that
+    /// produce byte-identical WGSL compile it once.
+    pub shader_cache: Arc<WgslModuleCache>,
     submission_completion_driver: GpuSubmissionCompletionDriver,
 }
 
@@ -91,6 +98,7 @@ impl SharedGpuContext {
             adapter,
             device,
             queue,
+            shader_cache: Arc::new(WgslModuleCache::new()),
             submission_completion_driver,
         })
     }
