@@ -1143,8 +1143,12 @@ mod tests {
             rendered
                 .contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]\" = audio;")
         );
-        assert!(rendered.contains("libwaterui_app.a in Frameworks"));
-        assert!(!rendered.contains("-lwaterui_app"));
+        // The project must not name the Rust library: its shape depends on the linkage
+        // the running command selected (archive when packaging, shared library for a
+        // development build), so the CLI injects `-lwaterui_app` into OTHER_LDFLAGS at
+        // build time and leaves exactly one matching file in BUILT_PRODUCTS_DIR.
+        assert!(!rendered.contains("libwaterui_app"));
+        assert!(rendered.contains("LIBRARY_SEARCH_PATHS = \"$(BUILT_PRODUCTS_DIR)\";"));
         assert!(rendered.contains(APPLE_BACKEND.repository_url));
         assert!(rendered.contains(APPLE_BACKEND.commit));
         assert!(rendered.contains("kind = revision;"));
@@ -1709,8 +1713,9 @@ mod tests {
             rendered
                 .contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]\" = audio;")
         );
-        assert!(rendered.contains("libwaterui_app.a in Frameworks"));
-        assert!(!rendered.contains("-lwaterui_app"));
+        // See the app-mode test: the project never names the Rust library, because its
+        // shape is chosen per build and injected as a linker flag.
+        assert!(!rendered.contains("libwaterui_app"));
     }
 
     #[test]

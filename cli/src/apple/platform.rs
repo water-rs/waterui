@@ -43,6 +43,88 @@ struct AppleNativeLinkInputs {
 // Build Utilities
 // ============================================================================
 
+/// The library shape an Apple build hands to Xcode.
+///
+/// A packaged app links the runtime into itself and needs a self-contained archive. A
+/// development build resolves the runtime from `libwaterui_dylib.dylib` at load time, so
+/// the archive's contents are redundant there: `ld` satisfies the symbols from the dylib
+/// and pulls almost nothing out of the archive, which is why the shipped executable comes
+/// out around 19 MB from a 428 MB input. Emitting a `cdylib` instead expresses the same
+/// final link without materializing the archive at all — 9.8 MB instead of 428 MB, and
+/// proportionally less I/O on machines whose storage is slower than the one this was
+/// measured on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppleHostLibrary {
+    /// Self-contained archive linked into a packaged application.
+    Archive,
+    /// Shared library that resolves the `WaterUI` runtime at load time.
+    Dynamic,
+}
+
+impl AppleHostLibrary {
+    const fn for_linkage(linkage: RustLinkage) -> Self {
+        match linkage {
+            RustLinkage::Static => Self::Archive,
+            RustLinkage::SharedRuntime => Self::Dynamic,
+        }
+    }
+
+    const fn crate_type(self) -> &'static str {
+        match self {
+            Self::Archive => "staticlib",
+            Self::Dynamic => "cdylib",
+        }
+    }
+
+    /// Extension Cargo gives the built artifact.
+    const fn built_extension(self) -> &'static str {
+        match self {
+            Self::Archive => "a",
+            Self::Dynamic => "dylib",
+        }
+    }
+
+    /// Name Xcode links against, via `-lwaterui_app` in `OTHER_LDFLAGS`.
+    const fn linked_file_name(self) -> &'static str {
+        match self {
+            Self::Archive => "libwaterui_app.a",
+            Self::Dynamic => "libwaterui_app.dylib",
+        }
+    }
+
+    /// The shape this build must delete, so `-lwaterui_app` cannot resolve to a stale
+    /// artifact left by a build of the other kind.
+    const fn superseded(self) -> Self {
+        match self {
+            Self::Archive => Self::Dynamic,
+            Self::Dynamic => Self::Archive,
+        }
+    }
+}
+
+/// Remove the host library shape this build did not produce.
+///
+/// `-lwaterui_app` resolves against whatever sits in the products directory, and `ld`
+/// prefers a `.dylib` over a `.a` when both are present. Leaving the previous build's
+/// artifact behind would let a packaging build silently link the development shared
+/// library, or leave a stale archive shadowing nothing at all.
+async fn remove_superseded_host_library(
+    directory: &Path,
+    produced: AppleHostLibrary,
+) -> eyre::Result<()> {
+    let stale = directory.join(produced.superseded().linked_file_name());
+    match fs::remove_file(&stale).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).wrap_err_with(|| {
+            format!(
+                "Failed to remove superseded host library {}",
+                stale.display()
+            )
+        }),
+    }
+}
+
 /// Cargo features an Apple shared-runtime build resolves its runtime graph with.
 fn apple_shared_runtime_build_features() -> Vec<String> {
     vec!["waterui-ffi/c-api".to_string(), "dev".to_string()]
@@ -96,10 +178,10 @@ pub async fn build_rust_lib(
         .unwrap_or_else(|| platform.triple());
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
-    // Apple links the static archive and nothing else, so build only that crate type.
+    let host_library = AppleHostLibrary::for_linkage(options.linkage());
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
         .with_feature("waterui-ffi/c-api")
-        .with_crate_type_override("staticlib");
+        .with_crate_type_override(host_library.crate_type());
     if browser_runtime_plan.chromium {
         build = build.with_feature("waterui-ffi/chromium");
     }
@@ -135,18 +217,20 @@ pub async fn build_rust_lib(
     // If output_dir is specified, copy the library there
     if let Some(output_dir) = options.output_dir() {
         let lib_name = project.ffi_crate_name().replace('-', "_");
-        let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
+        let source_lib = lib_dir.join(format!("lib{lib_name}.{}", host_library.built_extension()));
 
         if !source_lib.exists() {
             bail!(
-                "Built library not found at {} (expected staticlib for Apple target {})",
+                "Built library not found at {} (expected {} for Apple target {})",
                 source_lib.display(),
+                host_library.crate_type(),
                 triple
             );
         }
         fs::create_dir_all(output_dir).await?;
-        let dest_lib = output_dir.join("libwaterui_app.a");
+        let dest_lib = output_dir.join(host_library.linked_file_name());
         copy_file(&source_lib, &dest_lib).await?;
+        remove_superseded_host_library(output_dir, host_library).await?;
         if options.linkage() == RustLinkage::SharedRuntime {
             let libraries = RustDynamicLibraries::resolve(&lib_dir, &triple).await?;
             dynamic_runtime::prepare_host_runtime(libraries.waterui()).await?;
@@ -530,8 +614,9 @@ pub async fn package_apple(
         .lib_output_dir(!options.is_debug())
         .await
         .wrap_err("Failed to resolve native FFI crate target directory")?;
+    let host_library = AppleHostLibrary::for_linkage(linkage);
     let lib_name = project.ffi_crate_name().replace('-', "_");
-    let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
+    let source_lib = lib_dir.join(format!("lib{lib_name}.{}", host_library.built_extension()));
 
     // Get SDK name - must be an Apple platform
     let sdk_name = platform
@@ -554,8 +639,12 @@ pub async fn package_apple(
         remove_cef_helper_apps(&app_path, &backend.scheme).await?;
     }
 
-    let dest_lib = products_dir.join("libwaterui_app.a");
+    let dest_lib = products_dir.join(host_library.linked_file_name());
     copy_file(&source_lib, &dest_lib).await?;
+    remove_superseded_host_library(&products_dir, host_library).await?;
+    if host_library == AppleHostLibrary::Dynamic {
+        dynamic_runtime::set_rpath_install_name(&dest_lib, host_library.linked_file_name()).await?;
+    }
 
     let shared_runtime = if options.uses_shared_rust_runtime() {
         let libraries = RustDynamicLibraries::resolve(&lib_dir, &triple).await?;
@@ -578,7 +667,14 @@ pub async fn package_apple(
         copy_file(archive, &products_dir.join(file_name)).await?;
     }
 
-    let mut required_link_flags = vec!["-framework VideoToolbox".to_string()];
+    let mut required_link_flags = vec![
+        "-framework VideoToolbox".to_string(),
+        // The Xcode project no longer names the Rust library, because its shape depends
+        // on the linkage this build selected. `-lwaterui_app` resolves to whichever of
+        // `libwaterui_app.a` / `libwaterui_app.dylib` this build left in
+        // `BUILT_PRODUCTS_DIR`; the other is removed so the choice is unambiguous.
+        "-lwaterui_app".to_string(),
+    ];
     if shared_runtime.is_some() {
         required_link_flags.push("-lwaterui_dylib".to_string());
     }
@@ -643,6 +739,13 @@ pub async fn package_apple(
     if let Some(libraries) = shared_runtime {
         fs::create_dir_all(&frameworks_dir).await?;
         libraries.stage(&frameworks_dir).await?;
+        // The executable resolves `@rpath/libwaterui_app.dylib` through the bundle's
+        // Frameworks directory, the same way it resolves the shared runtime.
+        copy_file(
+            &dest_lib,
+            &frameworks_dir.join(host_library.linked_file_name()),
+        )
+        .await?;
     } else {
         RustDynamicLibraries::remove_staged(&frameworks_dir, &triple).await?;
     }
