@@ -5807,6 +5807,29 @@ typedef struct WuiCefInputModifiers {
 } WuiCefInputModifiers;
 
 /**
+ * One parsed `waterui.invoke(...)` request.
+ */
+typedef struct WuiBridgeRequest {
+  /**
+   * Whether the envelope parsed. When false every other field is empty and the
+   * call must be ignored.
+   */
+  bool ok;
+  /**
+   * Correlates the reply with the page's pending promise.
+   */
+  uint64_t id;
+  /**
+   * The handler name the page asked for.
+   */
+  struct WuiStr name;
+  /**
+   * The payload, base64-encoded to match `WuiWebViewMessage`.
+   */
+  struct WuiStr payload_base64;
+} WuiBridgeRequest;
+
+/**
  * FFI representation of a `WebView` event.
  */
 typedef struct WuiWebViewEvent {
@@ -9519,6 +9542,38 @@ struct WuiSystemIcon waterui_force_as_system_icon(struct WuiAnyView *view);
  * Returns the stable `TypeId` identifying this view type across the FFI.
  */
 struct WuiTypeId waterui_system_icon_id(void);
+
+/**
+ * Returns the bridge script every backend injects at document start.
+ *
+ * Backends that route messages themselves — the Apple backend keeps its handler
+ * table in Swift — use this together with
+ * [`waterui_webview_parse_bridge_request`] and
+ * [`waterui_webview_bridge_reply_script`], so the envelope format stays defined
+ * only in `waterui_webview::bridge`.
+ */
+struct WuiStr waterui_webview_bridge_script(void);
+
+/**
+ * Parses one envelope produced by the bridge script.
+ *
+ * # Safety
+ *
+ * `envelope` must be an owning `WuiStr`; it is consumed.
+ */
+struct WuiBridgeRequest waterui_webview_parse_bridge_request(struct WuiStr envelope);
+
+/**
+ * Renders the JavaScript that settles one bridge call.
+ *
+ * # Safety
+ *
+ * `payload_base64` must be an owning `WuiStr`; it is consumed. On success it is
+ * base64 handler output, otherwise an error message.
+ */
+struct WuiStr waterui_webview_bridge_reply_script(uint64_t id,
+                                                  bool success,
+                                                  struct WuiStr payload_base64);
 
 /**
  * # Safety
