@@ -8,6 +8,7 @@ use waterui_chart::LineChart;
 use waterui_testing::Role;
 
 use support::{VIEWPORT_HEIGHT, point_series, semantic_chart_shell};
+use waterui_testing::UiBuilder;
 
 fn viewport_height() -> f32 {
     num_traits::cast(VIEWPORT_HEIGHT).expect("viewport height must fit f32")
@@ -18,10 +19,10 @@ const FOCUSED_READOUT: &str =
 const SELECTED_READOUT: &str =
     "selected:series=0 index=12 t=720.00 open=120.00 high=124.00 low=119.00 close=123.00";
 
-#[test]
-fn semantic_chart_shell_keeps_long_readouts_inside_viewport() {
+#[waterui::test(viewport = (320, 320))]
+fn semantic_chart_shell_keeps_long_readouts_inside_viewport(ui: UiBuilder) {
     let data = point_series();
-    let mut app = support::mount_view(move || {
+    let mut app = ui.mount(move || {
         semantic_chart_shell(
             "line",
             LineChart::new(Binding::container(data.clone())),
