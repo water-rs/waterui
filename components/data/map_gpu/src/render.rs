@@ -113,7 +113,7 @@ impl TileCache {
 /// This is an internal loading product: it is produced by the tile loader and
 /// consumed by the painter, and there is no way (nor reason) to build one from
 /// outside the crate.
-pub(crate) struct PreparedMap {
+pub struct PreparedMap {
     style: MapStyle,
     camera: Camera,
     tiles: SourceTiles,
@@ -1662,7 +1662,7 @@ pub fn map_surface(map: MapScene) -> GpuSurface {
     map_surface_with_interaction(map, None)
 }
 
-pub(crate) fn map_surface_with_interaction(
+pub fn map_surface_with_interaction(
     map: MapScene,
     interaction: Option<Rc<MapGestureController>>,
 ) -> GpuSurface {
