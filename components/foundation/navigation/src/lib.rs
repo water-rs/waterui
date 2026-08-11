@@ -559,6 +559,10 @@ impl<T: 'static + Clone + PartialEq> Navigator<T> {
 
     /// Pops the top route value and returns it, if the path was not already at
     /// its root.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "pop is called for its effect; the popped route is a convenience, and requiring `let _ =` at every back action is the wart this signature exists to avoid"
+    )]
     pub fn pop(&self) -> Option<T> {
         self.0.pop()
     }
@@ -600,6 +604,10 @@ impl Navigator<ErasedNavigationRoute> {
     }
 
     /// Pops the top heterogeneous route, reporting whether one was present.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "pop is called for its effect; the popped route is a convenience, and requiring `let _ =` at every back action is the wart this signature exists to avoid"
+    )]
     pub fn pop(&self) -> bool {
         self.0.pop()
     }
@@ -823,11 +831,9 @@ pub struct Bar {
     pub toolbar: NavigationToolbar,
     /// Optional search field configuration displayed in navigation chrome.
     pub search: Option<NavigationSearch>,
-    /// The background color of the navigation bar
-    pub color: Option<Computed<Color>>,
-    /// Bar color resolved against the effective environment for native backends.
-    #[doc(hidden)]
-    pub resolved_color: Option<Computed<ResolvedColor>>,
+    /// Background color of the navigation bar, or `None` for the surrounding
+    /// `Surface` theme token.
+    pub color: Option<BarColor>,
     /// Whether the navigation bar is hidden
     pub hidden: Computed<bool>,
     /// The display mode for the title (automatic, inline, or large)
@@ -842,7 +848,6 @@ impl Default for Bar {
             toolbar: NavigationToolbar::default(),
             search: None,
             color: None,
-            resolved_color: None,
             hidden: Computed::constant(false),
             display_mode: NavigationTitleDisplayMode::Automatic,
         }
@@ -861,6 +866,45 @@ impl Default for Bar {
 pub struct NavigationLinkHint;
 
 impl MetadataKey for NavigationLinkHint {}
+
+/// An explicit navigation bar color, before or after environment resolution.
+///
+/// Authoring produces [`Self::Unresolved`]; [`NavigationView::resolve_native_fields`]
+/// turns it into [`Self::Resolved`] once an effective environment exists. Carrying
+/// both states in one value is what keeps "colored but unresolved" from being
+/// representable, which is the state backends used to have to panic on.
+#[derive(Debug, Clone)]
+pub enum BarColor {
+    /// An author-specified color that has not been resolved yet.
+    Unresolved(Computed<Color>),
+    /// A color resolved against the effective environment.
+    Resolved(Computed<ResolvedColor>),
+}
+
+impl BarColor {
+    /// Returns the resolved color, or `None` while still unresolved.
+    #[must_use]
+    pub const fn resolved(&self) -> Option<&Computed<ResolvedColor>> {
+        match self {
+            Self::Unresolved(_) => None,
+            Self::Resolved(color) => Some(color),
+        }
+    }
+
+    /// Returns the resolved color, panicking if resolution never ran.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the bar reached a native backend without passing through
+    /// [`NavigationView::resolve_native_fields`].
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn expect_resolved(&self) -> &Computed<ResolvedColor> {
+        self.resolved().expect(
+            "NavigationView bar color reached a native backend before it was resolved against an environment",
+        )
+    }
+}
 
 /// A link that navigates to another view when activated.
 ///
@@ -1281,10 +1325,14 @@ impl NavigationView {
             }
         }
 
-        self.bar.resolved_color = self.bar.color.as_ref().map(|color| {
-            let env = env.clone();
-            flatten_signal(color.clone().map(move |color| color.resolve(&env)))
-        });
+        if let Some(BarColor::Unresolved(color)) = &self.bar.color {
+            let resolved_env = env.clone();
+            self.bar.color = Some(BarColor::Resolved(flatten_signal(
+                color
+                    .clone()
+                    .map(move |color| color.resolve(&resolved_env)),
+            )));
+        }
     }
 
     /// Creates a new navigation view.
@@ -1363,7 +1411,7 @@ impl NavigationView {
     /// Without this modifier, each backend uses the surrounding `Surface`
     /// theme token and its native material treatment.
     pub fn navigation_bar_color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
-        self.bar.color = Some(color.into_signal().computed());
+        self.bar.color = Some(BarColor::Unresolved(color.into_signal().computed()));
         self
     }
 
@@ -1440,6 +1488,10 @@ mod tests {
     };
     use waterui_core::{Environment, Metadata, handler::AnyViewBuilder};
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the signature is fixed by the destination-builder closure the reconciler takes"
+    )]
     fn route_destination(_route: &u8) -> AnyViewBuilder<NavigationView> {
         AnyViewBuilder::new(|| NavigationView::new("Route", ()))
     }

@@ -81,16 +81,12 @@ impl NavigationViewRenderState {
             toolbar,
             search,
             color,
-            resolved_color,
             hidden,
             display_mode,
         } = bar;
-        let color = color.map_or_else(
+        let color = color.as_ref().map_or_else(
             || Color::new(Surface).resolve(env),
-            |_| {
-                resolved_color
-                    .expect("NavigationView explicit bar color was not resolved before rendering")
-            },
+            |color| color.expect_resolved().clone(),
         );
         let subtitle_present = !subtitle.is::<()>();
         let mut principal = Vec::new();
