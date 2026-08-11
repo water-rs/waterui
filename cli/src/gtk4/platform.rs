@@ -14,7 +14,7 @@ use crate::{
     assets, browser_runtime,
     build::{
         BuildOptions, RustDynamicLibraries, RustLinkage, configure_cargo_linkage,
-        shared_rust_runtime_fingerprint,
+        configure_generated_crate_compilation, shared_rust_runtime_fingerprint,
     },
     device::Artifact,
     gtk4::backend::Gtk4Backend,
@@ -90,6 +90,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
     let mut cargo = smol::process::Command::new("cargo");
     let cargo = command(&mut cargo);
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
+    configure_generated_crate_compilation(cargo);
     cargo.arg("--target-dir").arg(&backend_target_dir);
     configure_cargo_linkage(
         cargo,

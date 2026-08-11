@@ -20,7 +20,7 @@ use crate::{
     assets, browser_runtime,
     build::{
         BuildOptions, RustDynamicLibraries, RustLinkage, configure_cargo_linkage,
-        shared_rust_runtime_fingerprint,
+        configure_generated_crate_compilation, shared_rust_runtime_fingerprint,
     },
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
@@ -155,6 +155,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     let mut cargo = smol::process::Command::new("cargo");
     let cargo = command(&mut cargo);
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
+    configure_generated_crate_compilation(cargo);
     cargo.arg("--target-dir").arg(&backend_target_dir);
     for feature in extra_features {
         cargo.args(["--features", feature]);

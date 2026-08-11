@@ -15,19 +15,15 @@ use crate::{
 
 /// Route a Cargo invocation's compiles through `sccache`.
 ///
-/// Incremental compilation has to be off for this to cache anything worth caching.
-/// Cargo does not pass `-C incremental` to registry dependencies, but it does pass
-/// it to every *path* dependency — which for a `WaterUI` build is the entire
-/// framework — and `sccache` refuses to cache an incremental compile. Leaving
-/// incremental on therefore excludes exactly the crates that matter, while every
-/// one of them still pays the wrapper's process and IPC overhead for nothing.
-///
-/// The trade is deliberate: these builds compile into runtime-fingerprinted target
-/// directories that rotate whenever the dependency graph moves, so a cache that
-/// survives that rotation is worth more than incremental state that does not.
+/// Caching only bites because generated-crate builds also disable incremental
+/// compilation — Cargo does not pass `-C incremental` to registry dependencies but does
+/// pass it to every *path* dependency, which for a `WaterUI` build is the entire
+/// framework, and `sccache` refuses to cache an incremental compile. That setting lives
+/// in [`crate::build::configure_generated_crate_compilation`] rather than here, because
+/// it must not depend on whether a machine happens to have `sccache` installed: it
+/// changes the compiled ABI, and two builds in one flow have to agree on it.
 pub fn configure_compilation_cache(command: &mut Command, sccache_path: &Path) {
     command.env("RUSTC_WRAPPER", sccache_path);
-    command.env("CARGO_INCREMENTAL", "0");
 }
 
 /// Toolchain for `sccache` - a shared compilation cache for Rust.
