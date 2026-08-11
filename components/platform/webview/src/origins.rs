@@ -147,11 +147,23 @@ mod tests {
     fn the_default_admits_only_the_origin_the_view_was_opened_at() {
         let policy = policy(BridgeOrigins::Initial, "https://app.waterui.dev/start");
 
-        assert!(policy.allows(&"https://app.waterui.dev/other".parse::<Url>().expect("parses")));
+        assert!(
+            policy.allows(
+                &"https://app.waterui.dev/other"
+                    .parse::<Url>()
+                    .expect("parses")
+            )
+        );
         // A different host, scheme or port is a different origin.
         assert!(!policy.allows(&"https://evil.example/".parse::<Url>().expect("parses")));
         assert!(!policy.allows(&"http://app.waterui.dev/".parse::<Url>().expect("parses")));
-        assert!(!policy.allows(&"https://app.waterui.dev:8443/".parse::<Url>().expect("parses")));
+        assert!(
+            !policy.allows(
+                &"https://app.waterui.dev:8443/"
+                    .parse::<Url>()
+                    .expect("parses")
+            )
+        );
     }
 
     /// The case that motivates the whole policy: a view that navigates away must
@@ -159,13 +171,23 @@ mod tests {
     #[test]
     fn navigating_away_loses_the_bridge() {
         let policy = policy(BridgeOrigins::Initial, "https://app.waterui.dev");
-        assert!(!policy.allows(&"https://news.example/article".parse::<Url>().expect("parses")));
+        assert!(
+            !policy.allows(
+                &"https://news.example/article"
+                    .parse::<Url>()
+                    .expect("parses")
+            )
+        );
     }
 
     #[test]
     fn opaque_origins_never_match() {
         let policy = policy(BridgeOrigins::Initial, "https://app.waterui.dev");
-        for url in ["data:text/html,hi", "blob:https://app.waterui.dev/1", "about:blank"] {
+        for url in [
+            "data:text/html,hi",
+            "blob:https://app.waterui.dev/1",
+            "about:blank",
+        ] {
             let url: Url = url.parse().expect("parses");
             assert!(!policy.allows(&url), "{url} must not reach the bridge");
         }
@@ -174,11 +196,20 @@ mod tests {
     #[test]
     fn an_allow_list_admits_exactly_its_entries() {
         let policy = policy(
-            BridgeOrigins::Allowed(vec!["https://app.waterui.dev".into(), "https://docs.waterui.dev".into()]),
+            BridgeOrigins::Allowed(vec![
+                "https://app.waterui.dev".into(),
+                "https://docs.waterui.dev".into(),
+            ]),
             "https://app.waterui.dev",
         );
 
-        assert!(policy.allows(&"https://docs.waterui.dev/guide".parse::<Url>().expect("parses")));
+        assert!(
+            policy.allows(
+                &"https://docs.waterui.dev/guide"
+                    .parse::<Url>()
+                    .expect("parses")
+            )
+        );
         assert!(!policy.allows(&"https://other.waterui.dev/".parse::<Url>().expect("parses")));
     }
 
@@ -203,6 +234,9 @@ mod tests {
             policy(BridgeOrigins::Initial, "https://app.waterui.dev").uri_patterns(),
             Some(vec!["https://app.waterui.dev/*".into()])
         );
-        assert_eq!(policy(BridgeOrigins::Any, "https://a.dev").uri_patterns(), None);
+        assert_eq!(
+            policy(BridgeOrigins::Any, "https://a.dev").uri_patterns(),
+            None
+        );
     }
 }

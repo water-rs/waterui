@@ -126,8 +126,7 @@ impl Reply {
             ),
             Self::Failure(message) => (false, ReplyPayload::Failure { message }),
         };
-        let payload =
-            serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
+        let payload = serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
         format!("globalThis.__wateruiResolve({id},{ok},{payload});")
     }
 }

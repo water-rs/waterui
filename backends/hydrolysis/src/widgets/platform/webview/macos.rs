@@ -39,8 +39,8 @@ use objc2_web_kit::{
 };
 use waterui_core::{Computed, Environment, Str};
 use waterui_webview::{
-    Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
+    BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard,
+    WatcherSet, WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
 };
 
 /// Bridges `waterui.invoke` to WebKit's message-handler transport.
@@ -62,7 +62,7 @@ struct InjectedScript {
 }
 
 struct SharedState {
-    watchers: WatcherSet<WebViewEvent>,
+    watchers: WatcherSet<BackendEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handlers: RefCell<HashMap<String, JavaScriptHandler>>,
     scripts: RefCell<Vec<InjectedScript>>,
@@ -87,12 +87,12 @@ impl Default for SharedState {
 }
 
 impl SharedState {
-    fn emit(&self, event: WebViewEvent) {
-        self.watchers.emit(&event);
+    fn emit(&self, event: impl Into<BackendEvent>) {
+        self.watchers.emit(&event.into());
     }
 
     fn emit_navigation_state(&self, web_view: &WKWebView) {
-        self.emit(WebViewEvent::StateChanged {
+        self.emit(BackendEvent::NavigationState {
             // SAFETY: main-thread message send to an object this wrapper retains;
             // see the module safety note.
             can_go_back: unsafe { web_view.canGoBack() },
@@ -327,10 +327,8 @@ define_class!(
                     handler = %request.name,
                     "page script called a WaterUI handler that is not registered"
                 );
-                let reply = bridge::Reply::failure(&format!(
-                    "no WaterUI handler named `{}`",
-                    request.name
-                ));
+                let reply =
+                    bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
                 // SAFETY: WebKit sets the source web view on every script
                 // message it delivers.
                 let web_view = unsafe { message.webView() }
@@ -349,8 +347,8 @@ define_class!(
             let future = handler(&request.payload);
             // SAFETY: WebKit sets the source web view on every script message it
             // delivers, and it is retained for the spawned task.
-            let web_view = unsafe { message.webView() }
-                .expect("a bridge message must have a source web view");
+            let web_view =
+                unsafe { message.webView() }.expect("a bridge message must have a source web view");
             executor_core::spawn_local(async move {
                 let reply = match future.await {
                     Ok(bytes) => bridge::Reply::Bytes(bytes),
@@ -624,7 +622,6 @@ impl WebViewHandle for MacSystemWebViewHandle {
         self.inner.shared.handlers.borrow_mut().remove(name);
     }
 
-
     fn stop(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
@@ -659,7 +656,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
             .replace(Computed::new(enabled));
     }
 
-    fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+    fn watch(&self, watcher: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
         self.inner.shared.watchers.insert(watcher)
     }
 

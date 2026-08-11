@@ -49,19 +49,23 @@ mod state;
 pub use state::{FieldEntry, JsField, StateWriteError};
 
 use waterui_core::{
-    Binding, Computed, Environment, Native, Signal, View, binding,
-    layout::StretchAxis,
+    Binding, Computed, Environment, Native, Signal, View, binding, layout::StretchAxis,
     reactive::signal::IntoComputed,
 };
 use waterui_layout::spacer;
 use waterui_layout::stack::vstack;
 use waterui_str::Str;
 
-/// Events emitted by the `WebView` component.
-#[derive(Debug, Clone)]
+/// Something that happened in a `WebView`.
+///
+/// There is no "nothing happened" variant: the absence of an event is expressed
+/// by [`WebView::events`] yielding `None`, which is the same fact stated in the
+/// type rather than smuggled into the enum. Nor is there a variant for
+/// navigation state — that is [`WebView::can_go_back`] and
+/// [`WebView::can_go_forward`], and it used to appear here as a `#[doc(hidden)]`
+/// variant every `match` still had to spell out.
+#[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
-    /// No event (initial state).
-    None,
     /// The web view is about to navigate to a new URL.
     WillNavigate {
         /// The URL being navigated to.
@@ -83,12 +87,25 @@ pub enum WebViewEvent {
     },
     /// An error occurred during navigation or loading.
     Error(WebViewError),
-    /// Navigation state changed (can_go_back/can_go_forward updated).
-    ///
-    /// This is an internal event used to update reactive state.
-    /// It is filtered out from the public `event()` signal.
-    #[doc(hidden)]
-    StateChanged {
+}
+
+impl From<WebViewEvent> for BackendEvent {
+    fn from(event: WebViewEvent) -> Self {
+        Self::Event(event)
+    }
+}
+
+/// What a backend reports to its `WebView`.
+///
+/// Navigation state is not a user-facing event — it is what
+/// [`WebView::can_go_back`] and [`WebView::can_go_forward`] read — so it travels
+/// here rather than in [`WebViewEvent`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendEvent {
+    /// Something worth telling the application about.
+    Event(WebViewEvent),
+    /// The history changed.
+    NavigationState {
         /// Whether the web view can navigate back.
         can_go_back: bool,
         /// Whether the web view can navigate forward.
@@ -97,7 +114,7 @@ pub enum WebViewEvent {
 }
 
 /// Errors that can occur in the `WebView` component.
-#[derive(Debug, thiserror::Error, Clone)]
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum WebViewError {
     /// A network error occurred.
     #[error("Network error: {0}")]
@@ -123,7 +140,7 @@ pub enum WebViewError {
 ///
 /// `WebView` implements [`View`] so it can be used directly in the view hierarchy.
 pub struct WebView {
-    event: Binding<WebViewEvent>,
+    event: Binding<Option<WebViewEvent>>,
     handle: AnyWebViewHandle,
     can_go_back: Binding<bool>,
     can_go_forward: Binding<bool>,
@@ -165,7 +182,7 @@ impl WebView {
     /// Creates a new `WebView` component with the given handle.
     #[must_use]
     pub(crate) fn from_handle(handle: AnyWebViewHandle) -> Self {
-        let event = binding(WebViewEvent::None);
+        let event: Binding<Option<WebViewEvent>> = binding(None);
         let can_go_back = binding(handle.can_go_back());
         let can_go_forward = binding(handle.can_go_forward());
 
@@ -174,19 +191,15 @@ impl WebView {
             let event = event.clone();
             let can_go_back = can_go_back.clone();
             let can_go_forward = can_go_forward.clone();
-            move |e| {
-                // Handle StateChanged internally without exposing to users
-                if let WebViewEvent::StateChanged {
+            move |backend_event| match backend_event {
+                BackendEvent::NavigationState {
                     can_go_back: back,
                     can_go_forward: forward,
-                } = &e
-                {
-                    can_go_back.set(*back);
-                    can_go_forward.set(*forward);
-                    // Don't propagate StateChanged to the public event signal
-                    return;
+                } => {
+                    can_go_back.set(back);
+                    can_go_forward.set(forward);
                 }
-                event.set(e);
+                BackendEvent::Event(e) => event.set(Some(e)),
             }
         });
 
@@ -283,13 +296,16 @@ impl WebView {
         with(content(), WebViewProxy::new(self.handle.clone()))
     }
 
-    /// Returns a signal that emits `WebView` events.
+    /// The most recent event, or `None` before anything has happened.
     ///
     /// Named `events` rather than `event` because `ViewExt::event` shadows an
     /// inherent method of that name, forcing callers to spell out
     /// `WebView::event(&view)`.
+    ///
+    /// For reacting to every event, prefer
+    /// [`WebViewOpen::on_event`], which needs no guard.
     #[must_use]
-    pub fn events(&self) -> impl Signal<Output = WebViewEvent> {
+    pub fn events(&self) -> impl Signal<Output = Option<WebViewEvent>> {
         self.event.clone()
     }
 
@@ -574,9 +590,10 @@ impl WebViewOpen {
         Reply: message::IntoJsReply + 'static,
     {
         let name = name.into();
-        self.handlers.push((name.clone(), Box::new(move |env| {
-            message::boxed_handler(env, name, handler)
-        })));
+        self.handlers.push((
+            name.clone(),
+            Box::new(move |env| message::boxed_handler(env, name, handler)),
+        ));
         self
     }
 
@@ -591,8 +608,7 @@ impl WebViewOpen {
     /// changing one field re-sends the whole struct. Expose finer bindings when
     /// that matters.
     pub fn expose<F: state::JsField + 'static>(mut self, name: impl Into<Str>, field: F) -> Self {
-        self.state
-            .push(state::pending_field(name.into(), field));
+        self.state.push(state::pending_field(name.into(), field));
         self
     }
 
@@ -671,9 +687,18 @@ impl WebViewOpen {
                 .add_handler(name.as_str(), build(environment.clone()));
         }
         for watcher in event_watchers {
+            // `on_event` observers see user-facing events only; navigation state
+            // is `can_go_back`/`can_go_forward`, not something to match on.
             // The web view owns these for its whole life, which is exactly the
             // case `WatcherGuard::forget` documents.
-            webview.handle().watch(watcher).forget();
+            webview
+                .handle()
+                .watch(move |backend_event| {
+                    if let BackendEvent::Event(event) = backend_event {
+                        watcher(event);
+                    }
+                })
+                .forget();
         }
         // The policy is resolved against the URL the view opens at, and installed
         // before any handler, so no handler is ever reachable unguarded.
