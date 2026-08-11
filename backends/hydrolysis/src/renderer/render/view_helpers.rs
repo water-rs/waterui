@@ -135,6 +135,7 @@ pub(crate) fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
+        AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityRole,
         AccessibilityHidden,
@@ -264,6 +265,7 @@ fn normalize_layout_view_with_budget(
     // then relabel every descendant leaf).
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
+        AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityRole,
         AccessibilityChildren
