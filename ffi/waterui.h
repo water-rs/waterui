@@ -1094,10 +1094,6 @@ typedef enum WuiScriptInjectionTime {
  */
 typedef enum WuiWebViewEventType {
   /**
-   * No event (initial state).
-   */
-  WuiWebViewEventType_None = 0,
-  /**
    * The web view is about to navigate to a new URL.
    */
   WuiWebViewEventType_WillNavigate = 1,

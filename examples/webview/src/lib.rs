@@ -32,10 +32,6 @@ fn handle_webview_event(
     allow_redirects: &Binding<bool>,
 ) {
     match event {
-        WebViewEvent::None => {
-            status.set(Str::from_static("Idle"));
-            progress_value.set(0.0);
-        }
         WebViewEvent::WillNavigate { url } => {
             address.set(Str::from(url.to_string()));
             status.set(Str::from(format!("Navigating to {url}")));
@@ -61,7 +57,6 @@ fn handle_webview_event(
         WebViewEvent::Error(err) => {
             status.set(Str::from(format!("Error: {err}")));
         }
-        WebViewEvent::StateChanged { .. } => {}
     }
 }
 

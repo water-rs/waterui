@@ -36,7 +36,7 @@ use waterui_chromium::{
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
 #[cfg(feature = "webview")]
-use waterui_webview::{WatcherSet, WebViewError, WebViewEvent};
+use waterui_webview::{BackendEvent, WatcherSet, WebViewError, WebViewEvent};
 
 #[cfg(feature = "chromium")]
 use crate::cdp::CefCdpError;
@@ -255,7 +255,7 @@ struct PageState {
     #[cfg(feature = "chromium")]
     watchers: RefCell<Vec<PageWatcher>>,
     #[cfg(feature = "webview")]
-    webview_watchers: WatcherSet<WebViewEvent>,
+    webview_watchers: WatcherSet<BackendEvent>,
     #[cfg(feature = "webview")]
     redirects_enabled: RefCell<Computed<bool>>,
     #[cfg(feature = "webview")]
@@ -332,8 +332,8 @@ impl PageState {
     }
 
     #[cfg(feature = "webview")]
-    fn emit_webview(&self, event: &WebViewEvent) {
-        self.webview_watchers.emit(event);
+    fn emit_webview(&self, event: impl Into<BackendEvent>) {
+        self.webview_watchers.emit(&event.into());
     }
 }
 
@@ -452,7 +452,7 @@ fn new_load_handler(state: Rc<PageState>) -> LoadHandler {
                 #[cfg(feature = "webview")]
                 let browser = _browser.expect("CEF loading state must identify the browser");
                 #[cfg(feature = "webview")]
-                self.state.emit_webview(&WebViewEvent::StateChanged {
+                self.state.emit_webview(BackendEvent::NavigationState {
                     can_go_back: browser.can_go_back() == 1,
                     can_go_forward: browser.can_go_forward() == 1,
                 });
@@ -478,7 +478,7 @@ fn new_load_handler(state: Rc<PageState>) -> LoadHandler {
                     self.state.emit(&CefPageEvent::NavigationStarted(url));
                     #[cfg(feature = "webview")]
                     self.state
-                        .emit_webview(&WebViewEvent::WillNavigate { url });
+                        .emit_webview(WebViewEvent::WillNavigate { url });
                     }
                 }
             }
@@ -494,7 +494,7 @@ fn new_load_handler(state: Rc<PageState>) -> LoadHandler {
                     #[cfg(feature = "chromium")]
                     self.state.emit(&CefPageEvent::Loaded(frame_url(frame)));
                     #[cfg(feature = "webview")]
-                    self.state.emit_webview(&WebViewEvent::Loaded);
+                    self.state.emit_webview(WebViewEvent::Loaded);
                 }
             }
 
@@ -510,7 +510,7 @@ fn new_load_handler(state: Rc<PageState>) -> LoadHandler {
                 {
                     let frame = _frame.expect("CEF load error must identify a frame");
                     if frame.is_main() == 1 {
-                        self.state.emit_webview(&WebViewEvent::Error(
+                        self.state.emit_webview(WebViewEvent::Error(
                             WebViewError::LoadFailed(
                                 _error_text
                                     .map_or_else(String::new, ToString::to_string)
@@ -629,7 +629,7 @@ fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
                     .expect("CEF navigation URL must be a valid WaterUI URL");
                 if is_redirect == 1 {
                     if let Some(source) = self.state.current_url.borrow().clone() {
-                        self.state.emit_webview(&WebViewEvent::Redirect {
+                        self.state.emit_webview(WebViewEvent::Redirect {
                             from: source,
                             to: destination.clone(),
                         });
@@ -657,7 +657,7 @@ fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
                         .map(ToString::to_string)
                         .and_then(|url| url.parse().ok());
                     if let Some(url) = url {
-                        self.state.emit_webview(&WebViewEvent::Error(WebViewError::Ssl {
+                        self.state.emit_webview(WebViewEvent::Error(WebViewError::Ssl {
                             url,
                             message: alloc_error_text(_cert_error),
                         }));
@@ -712,7 +712,7 @@ fn new_display_handler(state: Rc<PageState>) -> DisplayHandler {
                 #[cfg(feature = "chromium")]
                 self.state.emit(&CefPageEvent::Loading(progress));
                 #[cfg(feature = "webview")]
-                self.state.emit_webview(&WebViewEvent::Loading { progress });
+                self.state.emit_webview(WebViewEvent::Loading { progress });
             }
         }
     }
@@ -1158,7 +1158,7 @@ impl CefPageHandle {
     #[cfg(feature = "webview")]
     pub(crate) fn watch_webview(
         &self,
-        watcher: impl Fn(WebViewEvent) + 'static,
+        watcher: impl Fn(BackendEvent) + 'static,
     ) -> waterui_webview::WatcherGuard {
         self.state.webview_watchers.insert(watcher)
     }

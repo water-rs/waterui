@@ -681,7 +681,6 @@ pub extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCal
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
             ),
-            WuiWebViewEventType::None => panic!("Android WebView cannot emit the None event type"),
         };
 
         let event = WuiWebViewEvent {
