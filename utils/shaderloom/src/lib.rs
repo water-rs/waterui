@@ -519,16 +519,19 @@ fn backend(device: &wgpu::Device) -> Backend {
     }
 
     #[cfg(target_os = "windows")]
+    // SAFETY: as above — a backend probe whose handle never escapes.
     if unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }.is_some() {
         return Backend::Dx12;
     }
 
     #[cfg(not(target_vendor = "apple"))]
+    // SAFETY: as above — a backend probe whose handle never escapes.
     if unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some() {
         return Backend::Vulkan;
     }
 
     #[cfg(not(target_vendor = "apple"))]
+    // SAFETY: as above — a backend probe whose handle never escapes.
     if unsafe { device.as_hal::<wgpu::hal::api::Gles>() }.is_some() {
         return Backend::Gles;
     }

@@ -20,18 +20,18 @@ use waterui_video::{
         VideoTrackSelection,
     },
 };
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 use waterui_video_gpu::{AndroidVideoSurfaceBridge, AndroidVideoSurfaceHost};
 
 /// JNI projection of the self-drawn player's Android secure-surface wrapper.
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[repr(C)]
 pub struct WuiAndroidVideoSurfaceHost {
     pub content: *mut crate::WuiAnyView,
     pub bridge: *mut AndroidVideoSurfaceBridge,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 impl IntoFFI for AndroidVideoSurfaceHost {
     type FFI = WuiAndroidVideoSurfaceHost;
 
@@ -44,7 +44,7 @@ impl IntoFFI for AndroidVideoSurfaceHost {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 ffi_view!(
     AndroidVideoSurfaceHost,
     WuiAndroidVideoSurfaceHost,

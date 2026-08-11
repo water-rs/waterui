@@ -1612,6 +1612,7 @@ impl ToJavaStruct for crate::components::progress::WuiProgress {
 }
 
 /// WuiGpuSurface -> GpuSurfaceStruct(rendererPtr, HDR preference, PiP host)
+#[cfg(feature = "gpu")]
 impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let preference =
