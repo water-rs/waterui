@@ -10,6 +10,7 @@ use waterui_graphics::gpu_surface::GpuSurface;
 use crate::platform::{KeyCode, Modifiers, NativeKey, PointerButton};
 use crate::renderer::{
     BrowserInputHandler, EmbeddedGpuSurfaceRuntime, GpuSurfaceSource, HydrolysisRenderer,
+    transformed_rect,
 };
 
 const CEF_WHEEL_DELTA: f64 = 120.0;
@@ -342,6 +343,7 @@ impl CefSurfaceRenderState {
             GpuSurfaceSource::Owned(Rc::clone(&self.gpu)),
             transform,
             bounds,
+            transformed_rect(hit_transform, bounds),
         );
     }
 }

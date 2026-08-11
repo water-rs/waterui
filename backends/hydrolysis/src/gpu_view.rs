@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use waterui::View;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment};
@@ -16,6 +18,12 @@ where
     renderer: Option<HydrolysisRenderer>,
     env: Option<Environment>,
     needs_rebuild: bool,
+    /// Arbitrary epoch the host's animation clock is projected onto.
+    ///
+    /// The embedded renderer samples animations at `Instant`s, but the host
+    /// hands this view a monotonically advancing `GpuFrame::elapsed()`; only
+    /// the differences matter, so any fixed epoch makes the projection exact.
+    animation_epoch: Instant,
 }
 
 impl<V> HydrolysisGpuView<V>
@@ -30,6 +38,7 @@ where
             renderer: None,
             env: None,
             needs_rebuild: true,
+            animation_epoch: Instant::now(),
         }
     }
 }
@@ -68,6 +77,12 @@ where
 
         renderer.set_frame_resources(adapter, frame.device, frame.queue);
         renderer.poll_gpu_surface_redraw_handles();
+
+        // Advance the embedded frame clock from the host's animation clock.
+        // Without this the renderer samples every animation at its build
+        // instant: progress never completes, `animation_dirty` latches, and
+        // the surface rebuilds itself every frame forever.
+        renderer.set_frame_instant(self.animation_epoch + frame.elapsed());
 
         let animation_dirty = renderer.advance_animations();
         let rebuild_requested = renderer.take_rebuild_request();

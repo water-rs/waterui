@@ -36,8 +36,8 @@ impl EffectSetupResources {
 pub(crate) struct AppliedFilterRuntime {
     filter: Option<AppliedFilter>,
     setup_complete: bool,
-    input_texture: Option<AppliedFilterInputTexture>,
-    output_texture: Option<AppliedFilterOutputTexture>,
+    input_texture: Option<CachedEffectTexture>,
+    output_texture: Option<CachedEffectTexture>,
     output_image: Option<vello::peniko::ImageData>,
     frame_clock: EffectFrameClock,
 }
@@ -127,46 +127,16 @@ impl AppliedFilterRuntime {
         width: u32,
         height: u32,
     ) -> (&wgpu::Texture, &wgpu::TextureView) {
-        if self
-            .input_texture
-            .as_ref()
-            .is_none_or(|texture| texture.width != width || texture.height != height)
-        {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("hydrolysis_applied_filter_input"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.input_texture = Some(AppliedFilterInputTexture {
-                width,
-                height,
-                texture,
-                view,
-            });
-        }
-
-        let Some(texture) = self.input_texture.as_ref() else {
-            panic!("hydrolysis AppliedFilter input texture cache missing after allocation");
-        };
-        (&texture.texture, &texture.view)
-    }
-
-    pub(super) fn has_input_texture(&self, width: u32, height: u32) -> bool {
-        self.input_texture
-            .as_ref()
-            .is_some_and(|texture| texture.width == width && texture.height == height)
+        CachedEffectTexture::get_or_create(
+            &mut self.input_texture,
+            device,
+            "hydrolysis_applied_filter_input",
+            width,
+            height,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING,
+        )
     }
 
     pub(super) fn output_texture(
@@ -175,41 +145,17 @@ impl AppliedFilterRuntime {
         width: u32,
         height: u32,
     ) -> (&wgpu::Texture, &wgpu::TextureView) {
-        if self
-            .output_texture
-            .as_ref()
-            .is_none_or(|texture| texture.width != width || texture.height != height)
-        {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("hydrolysis_applied_filter_output"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.output_texture = Some(AppliedFilterOutputTexture {
-                width,
-                height,
-                texture,
-                view,
-            });
-        }
-
-        let Some(texture) = self.output_texture.as_ref() else {
-            panic!("hydrolysis AppliedFilter output texture cache missing after allocation");
-        };
-        (&texture.texture, &texture.view)
+        CachedEffectTexture::get_or_create(
+            &mut self.output_texture,
+            device,
+            "hydrolysis_applied_filter_output",
+            width,
+            height,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::STORAGE_BINDING,
+        )
     }
 
     pub(super) fn needs_redraw_refresh(&mut self) -> bool {
@@ -292,45 +238,105 @@ impl AppliedFilterRuntime {
             }
         };
 
-        let image = if let Some(image) = self
-            .output_image
-            .as_ref()
-            .filter(|image| image.width == output_width && image.height == output_height)
-        {
-            let texture_base = wgpu::TexelCopyTextureInfoBase {
-                texture: output_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            };
-            let _ = vello_renderer.override_image(image, Some(texture_base));
-            image.clone()
-        } else {
-            let image = vello_renderer.register_texture(output_texture);
-            self.output_image = Some(image.clone());
-            image
-        };
+        let image = register_or_override_output_image(
+            &mut self.output_image,
+            vello_renderer,
+            output_texture,
+            output_width,
+            output_height,
+        );
         (image, needs_redraw)
     }
 }
 
-pub(crate) struct AppliedFilterInputTexture {
+/// One cached GPU texture an effect runtime renders through every frame,
+/// reallocated only when the required dimensions change.
+pub(crate) struct CachedEffectTexture {
     width: u32,
     height: u32,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
 
-pub(crate) struct AppliedFilterOutputTexture {
-    width: u32,
-    height: u32,
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
+impl CachedEffectTexture {
+    fn get_or_create<'a>(
+        slot: &'a mut Option<Self>,
+        device: &wgpu::Device,
+        label: &'static str,
+        width: u32,
+        height: u32,
+        usage: wgpu::TextureUsages,
+    ) -> (&'a wgpu::Texture, &'a wgpu::TextureView) {
+        if slot
+            .as_ref()
+            .is_none_or(|texture| texture.width != width || texture.height != height)
+        {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            *slot = Some(Self {
+                width,
+                height,
+                texture,
+                view,
+            });
+        }
+
+        let Some(texture) = slot.as_ref() else {
+            panic!("hydrolysis effect texture cache missing after allocation");
+        };
+        (&texture.texture, &texture.view)
+    }
+}
+
+/// Points vello's retained image handle at `output_texture`, registering a new
+/// handle only when the output dimensions changed. Re-registering every frame
+/// would grow vello's image table and re-upload state for a texture whose
+/// identity is stable.
+fn register_or_override_output_image(
+    output_image: &mut Option<vello::peniko::ImageData>,
+    vello_renderer: &mut vello::Renderer,
+    output_texture: wgpu::Texture,
+    output_width: u32,
+    output_height: u32,
+) -> vello::peniko::ImageData {
+    if let Some(image) = output_image
+        .as_ref()
+        .filter(|image| image.width == output_width && image.height == output_height)
+    {
+        let texture_base = wgpu::TexelCopyTextureInfoBase {
+            texture: output_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        };
+        let _ = vello_renderer.override_image(image, Some(texture_base));
+        image.clone()
+    } else {
+        let image = vello_renderer.register_texture(output_texture);
+        *output_image = Some(image.clone());
+        image
+    }
 }
 
 pub(crate) struct ViewEffectRuntime {
     effect: Option<ViewEffectErased>,
     setup_complete: bool,
+    input_texture: Option<CachedEffectTexture>,
+    output_texture: Option<CachedEffectTexture>,
+    output_image: Option<vello::peniko::ImageData>,
 }
 
 impl ViewEffectRuntime {
@@ -338,7 +344,64 @@ impl ViewEffectRuntime {
         Self {
             effect: Some(effect),
             setup_complete: false,
+            input_texture: None,
+            output_texture: None,
+            output_image: None,
         }
+    }
+
+    pub(super) fn input_texture(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (&wgpu::Texture, &wgpu::TextureView) {
+        CachedEffectTexture::get_or_create(
+            &mut self.input_texture,
+            device,
+            "hydrolysis_view_effect_input",
+            width,
+            height,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        )
+    }
+
+    pub(super) fn output_texture(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (&wgpu::Texture, &wgpu::TextureView) {
+        CachedEffectTexture::get_or_create(
+            &mut self.output_texture,
+            device,
+            "hydrolysis_view_effect_output",
+            width,
+            height,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+        )
+    }
+
+    pub(super) fn register_output_image(
+        &mut self,
+        vello_renderer: &mut vello::Renderer,
+        output_texture: wgpu::Texture,
+        output_width: u32,
+        output_height: u32,
+    ) -> vello::peniko::ImageData {
+        register_or_override_output_image(
+            &mut self.output_image,
+            vello_renderer,
+            output_texture,
+            output_width,
+            output_height,
+        )
     }
 
     pub(super) fn ensure_setup(
@@ -503,6 +566,7 @@ impl HydrolysisRenderer {
         source: GpuSurfaceSource,
         transform: vello::kurbo::Affine,
         bounds: vello::kurbo::Rect,
+        hit_rect: vello::kurbo::Rect,
     ) {
         if self
             .compositor
@@ -524,6 +588,7 @@ impl HydrolysisRenderer {
                 source,
                 transform,
                 bounds,
+                hit_rect,
                 active_layers: self.compositor.active_scene_layers.clone(),
                 direct_to_target,
             }));

@@ -381,6 +381,8 @@ pub(crate) fn render_webview_node(
     #[cfg(hydrolysis_linux_wpe_webview)]
     {
         let _ = env;
+        use crate::renderer::transformed_rect;
+
         let bounds = ctx.bounds;
         let transform = ctx.render_context().transform;
         let hit_transform = ctx.hit_transform;
@@ -393,7 +395,12 @@ pub(crate) fn render_webview_node(
         drop(state);
         let renderer = ctx.renderer_mut();
         renderer.register_browser_input_target(bounds, hit_transform, input);
-        renderer.push_gpu_surface_layer(GpuSurfaceSource::Owned(gpu), transform, bounds);
+        renderer.push_gpu_surface_layer(
+            GpuSurfaceSource::Owned(gpu),
+            transform,
+            bounds,
+            transformed_rect(hit_transform, bounds),
+        );
     }
     #[cfg(hydrolysis_cef_webview)]
     {

@@ -149,12 +149,10 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
 
     assert!(advance_runtime(&mut runtime, &env, deadline).is_some());
     assert!(
-        runtime.mode.is_pending(),
-        "a visible Hydrolysis window must schedule the next continuous frame"
-    );
-    assert!(
-        !runtime.mode.needs_layout(),
-        "a caret tick must not upgrade continuous redraw into a layout refresh"
+        !runtime.mode.is_pending(),
+        "the caret repaints through the transient text-input overlay on present; \
+         a tick must not schedule retained-scene work, or an idle window could \
+         never stay idle"
     );
     assert!(runtime.renderer.take_redraw_request());
     assert!(runtime.platform.take_redraw_request());
