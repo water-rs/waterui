@@ -6,11 +6,13 @@
 //! - [`protocol`]: Message definitions for preview support app communication
 //! - [`inputs`]: Content fingerprinting for preview build caching
 //! - [`launcher`]: Preview support app lifecycle management
+//! - [`perf_report`]: Perf-run parsing, budget enforcement and report rendering
 
 mod app_client;
 mod hydrolysis;
 mod inputs;
 mod launcher;
+pub mod perf_report;
 pub mod protocol;
 
 pub use app_client::PreviewAppClient;

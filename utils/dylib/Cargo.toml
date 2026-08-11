@@ -11,11 +11,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [lib]
-# Dynamic linking only works if downstream crates resolve this anchor as a dylib.
-# Also emitting an rlib gives rustc a static candidate it may prefer instead,
-# silently relinking the whole runtime into each consumer and undoing the shared
-# runtime, on top of codegenning this crate twice.
-crate-type = ["dylib"]
+# The rlib is load-bearing, not redundant: Apple's host crate is built as a
+# `staticlib`, and rustc requires every Rust dependency of a staticlib to be
+# available in rlib form ("crate `waterui_dylib` required to be available in rlib
+# format"). Dropping it breaks `water preview` and `water run` on Apple targets.
+crate-type = ["dylib", "rlib"]
 
 [dependencies]
 waterui-internal = { path = "../../src", default-features = false }
