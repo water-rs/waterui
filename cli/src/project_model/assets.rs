@@ -847,6 +847,77 @@ async fn write_hydrolysis_web_font_manifest(
     Ok(())
 }
 
+/// Returns whether `feature` is enabled on `package` in the project's resolved
+/// dependency graph.
+///
+/// Optional `WaterUI` capabilities are cargo features on the FFI crate, and the
+/// native backends must compile the matching component only when the app turned
+/// that capability on. The resolved graph is the single source of truth for
+/// that, so backends never guess from the manifest text.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` cannot be read.
+pub async fn package_feature_enabled(
+    project: &Project,
+    package: &str,
+    feature: &str,
+) -> eyre::Result<bool> {
+    let manifest_path = project.root().join("Cargo.toml");
+    let metadata = smol::unblock({
+        let manifest_path = manifest_path.clone();
+        move || {
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(&manifest_path)
+                .exec()
+        }
+    })
+    .await
+    .wrap_err("Failed to run cargo metadata")?;
+
+    let Some(resolve) = metadata.resolve.as_ref() else {
+        return Ok(false);
+    };
+    let enabled = metadata
+        .packages
+        .iter()
+        .filter(|candidate| candidate.name.as_str() == package)
+        .any(|candidate| {
+            resolve
+                .nodes
+                .iter()
+                .filter(|node| node.id == candidate.id)
+                .any(|node| node.features.iter().any(|enabled| enabled.as_str() == feature))
+        });
+    debug!("resolved feature {package}/{feature}: {enabled}");
+    Ok(enabled)
+}
+
+/// Optional `WaterUI` capabilities that are cargo features on both the facade and
+/// the FFI crate, paired so a build can forward the app's choice to the FFI
+/// crate that actually exports the C surface.
+const OPTIONAL_CAPABILITIES: &[&str] = &["map"];
+
+/// Returns the `waterui-ffi` features to enable for this app's capabilities.
+///
+/// An app opts into a capability on the facade (`waterui = { features =
+/// ["map"] }`). The generated FFI crate is what exports that capability's C
+/// surface, so the same choice has to reach its build; reading it back out of
+/// the resolved graph keeps one declaration in the app's manifest.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` cannot be read.
+pub async fn capability_ffi_features(project: &Project) -> eyre::Result<Vec<String>> {
+    let mut features = Vec::new();
+    for capability in OPTIONAL_CAPABILITIES {
+        if package_feature_enabled(project, "waterui", capability).await? {
+            features.push(format!("waterui-ffi/{capability}"));
+        }
+    }
+    Ok(features)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -181,6 +181,7 @@ pub async fn build_rust_lib(
     let host_library = AppleHostLibrary::for_linkage(options.linkage());
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
         .with_feature("waterui-ffi/c-api")
+        .with_features(crate::project_model::assets::capability_ffi_features(project).await?)
         .with_crate_type_override(host_library.crate_type());
     if browser_runtime_plan.chromium {
         build = build.with_feature("waterui-ffi/chromium");
@@ -718,6 +719,13 @@ pub async fn package_apple(
         ]);
     }
 
+    // Optional capabilities are compiled out of the backend unless the app
+    // enabled the matching FFI feature, which is what exports their symbols.
+    let swift_conditions = apple_swift_conditions(project).await?;
+    if !swift_conditions.is_empty() {
+        args.push(format!("OTHER_SWIFT_FLAGS={}", swift_conditions.join(" ")).into());
+    }
+
     run_command_os("xcodebuild", args).await?;
 
     // Reset the environment variable
@@ -880,6 +888,22 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
             | TargetPlatform::VisionOS
             | TargetPlatform::VisionOSSimulator
     )
+}
+
+/// Swift compilation conditions matching the optional FFI features this app
+/// enabled, so the backend compiles exactly the components whose symbols exist.
+async fn apple_swift_conditions(project: &Project) -> eyre::Result<Vec<String>> {
+    const OPTIONAL_COMPONENTS: &[(&str, &str)] = &[("map", "WATERUI_MAP")];
+
+    let mut conditions = Vec::new();
+    for (feature, condition) in OPTIONAL_COMPONENTS {
+        if crate::project_model::assets::package_feature_enabled(project, "waterui-ffi", feature)
+            .await?
+        {
+            conditions.push(format!("-D{condition}"));
+        }
+    }
+    Ok(conditions)
 }
 
 #[cfg(test)]

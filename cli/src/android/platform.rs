@@ -394,7 +394,7 @@ impl AndroidPlatform {
         let abi = self.abi();
         let triple = self.triple();
         let build_context = resolve_android_build_context(abi, &triple).await?;
-        let mut build = configure_android_rust_build(project, &triple, &build_context, &options)?;
+        let mut build = configure_android_rust_build(project, &triple, &build_context, &options).await?;
         let runtime_fingerprint = if options.linkage() == RustLinkage::SharedRuntime {
             let build_features = vec!["waterui-ffi/android-jni".to_string(), "dev".to_string()];
             Some(
@@ -640,7 +640,7 @@ async fn resolve_android_sdk_paths() -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((sdk_path, android_jar))
 }
 
-fn configure_android_rust_build(
+async fn configure_android_rust_build(
     project: &Project,
     triple: &Triple,
     context: &AndroidBuildContext,
@@ -650,6 +650,7 @@ fn configure_android_rust_build(
     // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
         .with_feature("waterui-ffi/android-jni")
+        .with_features(crate::project_model::assets::capability_ffi_features(project).await?)
         .with_crate_type_override("cdylib");
     if options.linkage() == RustLinkage::SharedRuntime {
         build = build.with_feature("dev").with_preferred_dynamic_linking();
