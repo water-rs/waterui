@@ -14,8 +14,14 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::webview::{
-    ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent, WebViewProxy,
+    Json, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent, WebViewProxy,
 };
+
+/// The payload the page exchanges with the `greet` handler.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Greeting {
+    name: String,
+}
 
 /// Applies one web view event to the UI state.
 fn handle_webview_event(
@@ -166,8 +172,15 @@ impl View for WebViewDemo {
                 "document.documentElement.dataset.waterui = 'ready';",
                 ScriptInjectionTime::DocumentEnd,
             )
-            // The page can call this as `await waterui.invoke("echo", "hello")`.
-            .handler("echo", |payload: &[u8]| payload.to_vec())
+            // `await waterui.invoke("greet", { name: "Lexo" })` in the page.
+            // The closure reads exactly like a `Button::action`: take the
+            // extractors you need, return anything `IntoJsReply`, and it may be
+            // async.
+            .handler("greet", |Json(request): Json<Greeting>| async move {
+                Json(Greeting {
+                    name: format!("Hi {}", request.name),
+                })
+            })
             .on_event({
                 let status = status.clone();
                 let progress_value = progress_value.clone();

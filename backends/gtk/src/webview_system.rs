@@ -22,7 +22,7 @@ use waterui_webview::{
     WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
 };
 
-type JsHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
+type JsHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
 const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
 
@@ -1133,7 +1133,7 @@ impl WebViewHandle for GtkWebViewHandle {
         }
     }
 
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         #[cfg(all(
             feature = "webkitgtk",
             gtk_webkitgtk_link_available,
@@ -1141,7 +1141,7 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         ))]
         {
-            let handler: Rc<dyn Fn(&[u8]) -> Vec<u8>> = Rc::from(handler);
+            let handler: JsHandler = Rc::from(handler);
             // Registering the same name twice replaces the handler, matching every
             // other backend.
             self.shared
@@ -1707,18 +1707,30 @@ unsafe extern "C" fn on_script_message_received(
         .borrow()
         .get(&request.name)
         .cloned();
-    let reply = if let Some(handler) = handler {
-        bridge::Reply::Bytes(handler(&request.payload))
-    } else {
+    let Some(handler) = handler else {
         tracing::warn!(
             handler = %request.name,
             "page script called a WaterUI handler that is not registered"
         );
-        bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+        let reply = bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
+        let script = reply.resolve_script(request.id);
+        let _ = webkitgtk::evaluate_javascript(data.webview, &script, None, std::ptr::null_mut());
+        return;
     };
 
-    let script = reply.resolve_script(request.id);
-    let _ = webkitgtk::evaluate_javascript(data.webview, &script, None, std::ptr::null_mut());
+    // Handlers are asynchronous, so the promise settles when the future
+    // completes rather than when this callback returns.
+    let future = handler(&request.payload);
+    let webview = data.webview;
+    executor_core::spawn_local(async move {
+        let reply = match future.await {
+            Ok(bytes) => bridge::Reply::Bytes(bytes),
+            Err(message) => bridge::Reply::Failure(message),
+        };
+        let script = reply.resolve_script(request.id);
+        let _ = webkitgtk::evaluate_javascript(webview, &script, None, std::ptr::null_mut());
+    })
+    .detach();
 }
 
 #[cfg(all(

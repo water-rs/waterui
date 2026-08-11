@@ -12,6 +12,7 @@ categories = ["gui", "web-programming"]
 
 [dependencies]
 tracing.workspace = true
+executor-core.workspace = true
 cookie = { version = "0.18.1", optional = true }
 futures = { workspace = true, optional = true }
 libc = "0.2"

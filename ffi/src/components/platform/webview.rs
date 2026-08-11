@@ -434,7 +434,7 @@ impl WebViewHandle for FfiWebViewHandle {
         guard
     }
 
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         let add_handler = self
             .ffi
             .add_handler
@@ -459,12 +459,24 @@ impl WebViewHandle for FfiWebViewHandle {
                 }
             };
 
-            let reply_bytes = handler(&payload);
-            let reply_b64 = engine.encode(reply_bytes);
-            let reply = Str::from(reply_b64);
-            // SAFETY: as above — the failure path returned early, so this is the
-            // single reply for this message.
-            unsafe { (msg.reply.call)(msg.reply.data, true, reply.into_ffi()) };
+            // The reply callback is one-shot and may be invoked later, which is
+            // what lets a handler be asynchronous without the backend changing.
+            let future = handler(&payload);
+            let reply_call = msg.reply.call;
+            let reply_data = msg.reply.data;
+            executor_core::spawn_local(async move {
+                let (success, payload) = match future.await {
+                    Ok(bytes) => (
+                        true,
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                    ),
+                    Err(message) => (false, message),
+                };
+                // SAFETY: as above — the failure path returned early, so this is
+                // the single reply for this message.
+                unsafe { (reply_call)(reply_data, success, Str::from(payload).into_ffi()) };
+            })
+            .detach();
         });
 
         // SAFETY: `add_handler` and `ffi.data` were registered together for this

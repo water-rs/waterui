@@ -41,7 +41,7 @@ struct FakeWebViewHandle {
     state: Rc<RefCell<FakeWebViewState>>,
 }
 
-type MessageHandlers = BTreeMap<String, Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>>;
+type MessageHandlers = BTreeMap<String, Box<waterui_webview::ScriptMessageHandler>>;
 
 #[derive(Default)]
 struct FakeWebViewState {
@@ -131,7 +131,7 @@ impl WebViewHandle for FakeWebViewHandle {
 
     fn inject_script(&self, _script: &str, _time: ScriptInjectionTime) {}
 
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         self.state
             .borrow_mut()
             .handlers

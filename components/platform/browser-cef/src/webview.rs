@@ -17,7 +17,7 @@ use waterui_webview::{
 use crate::cdp::CefCdpSession;
 use crate::page::{CefController, CefPageConfiguration, CefPageHandle, CefPageMode};
 
-type MessageHandler = dyn Fn(&[u8]) -> Vec<u8> + 'static;
+type MessageHandler = waterui_webview::ScriptMessageHandler;
 
 #[derive(Clone)]
 /// Standard `WaterUI` `WebView` handle backed by a CEF page.
@@ -99,7 +99,7 @@ impl WebViewHandle for CefWebViewHandle {
         );
     }
 
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         assert!(
             !name.is_empty(),
             "CEF WebView handler name must not be empty"
@@ -283,20 +283,36 @@ fn dispatch_bridge_call(
     // Resolve the handler and release the borrow before invoking it: a handler is
     // free to register or remove handlers on the same web view.
     let handler = handlers.borrow().get(&request.name).map(Rc::clone);
-    let reply = if let Some(handler) = handler {
-        bridge::Reply::Bytes(handler(&request.payload))
-    } else {
+    let Some(handler) = handler else {
         tracing::warn!(
             handler = %request.name,
             "page script called a WaterUI handler that is not registered"
         );
-        bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+        let reply = bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
+        execute_without_result(
+            session,
+            "Runtime.evaluate",
+            &json!({ "expression": reply.resolve_script(request.id) }),
+        );
+        return;
     };
-    execute_without_result(
-        session,
-        "Runtime.evaluate",
-        &json!({ "expression": reply.resolve_script(request.id) }),
-    );
+
+    // Handlers are asynchronous, so the promise settles when the future
+    // completes rather than when the transport returns.
+    let future = handler(&request.payload);
+    let session = session.clone();
+    executor_core::spawn_local(async move {
+        let reply = match future.await {
+            Ok(bytes) => bridge::Reply::Bytes(bytes),
+            Err(message) => bridge::Reply::Failure(message),
+        };
+        execute_without_result(
+            &session,
+            "Runtime.evaluate",
+            &json!({ "expression": reply.resolve_script(request.id) }),
+        );
+    })
+    .detach();
 }
 
 fn install_bridge(session: &CefCdpSession) {

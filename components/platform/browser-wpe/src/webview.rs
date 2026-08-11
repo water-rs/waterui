@@ -107,7 +107,7 @@ impl WebViewHandle for WpeWebViewHandle {
             .add_script(script, time == ScriptInjectionTime::DocumentEnd);
     }
 
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         self.page.add_handler(name, handler);
     }
 

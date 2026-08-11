@@ -8,7 +8,22 @@ use waterui_str::Str;
 use crate::{WatcherGuard, WebViewEvent};
 use waterui_url::Url;
 
-type ScriptMessageHandler = dyn Fn(&[u8]) -> Vec<u8> + 'static;
+/// What a handler returns: bytes to resolve the page's promise with, or a
+/// message to reject it.
+pub type HandlerResult = Result<Vec<u8>, String>;
+
+/// The future a handler produces.
+///
+/// Boxed and thread-local: handlers run on the UI thread with the web view, and
+/// the payload types are `!Send` by design.
+pub type HandlerFuture = core::pin::Pin<Box<dyn core::future::Future<Output = HandlerResult>>>;
+
+/// A handler the page can call.
+///
+/// Asynchronous so a handler can read a file or query a database before
+/// answering. Every backend already settles the page's promise through a
+/// deferred channel, so this costs them nothing.
+pub type ScriptMessageHandler = dyn Fn(&[u8]) -> HandlerFuture + 'static;
 
 /// When to inject a user script into the web view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,20 +75,19 @@ pub trait WebViewHandle: 'static {
     ///
     /// // Register the native handler
     /// handle.add_handler("myHandler", Box::new(|data| {
-    ///     // Handle the call from JavaScript
-    ///     vec![]
+    ///     Box::pin(async move { Ok(Vec::new()) })
     /// }));
     /// ```
     fn inject_script(&self, script: &str, time: ScriptInjectionTime);
 
     /// Adds a handler that can be called from JavaScript.
     ///
-    /// JavaScript can call the handler using platform-specific APIs:
-    /// - **iOS/macOS**: `window.webkit.messageHandlers.<name>.postMessage(data)`
-    /// - **Android**: `window.<name>.postMessage(data)`
+    /// The page calls it as `waterui.invoke(name, payload)`, the same way on
+    /// every backend.
     ///
-    /// The handler receives data as bytes and returns a response as bytes.
-    /// Use [`inject_script`](Self::inject_script) to set up a convenient JavaScript API.
+    /// The handler receives the payload as bytes and answers with a future, so it
+    /// may await before replying. An `Err` rejects the page's promise rather than
+    /// resolving it with an error encoded into the success channel.
     fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>);
 
     /// Removes a previously added handler.
