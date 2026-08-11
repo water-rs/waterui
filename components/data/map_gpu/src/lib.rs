@@ -505,6 +505,18 @@ pub enum MapLoadError {
         /// Decoder failure.
         message: String,
     },
+    /// A raster or raster-dem tile image could not be decoded.
+    #[error("invalid image tile {z}/{x}/{y}: {message}")]
+    ImageTile {
+        /// Tile zoom.
+        z: u8,
+        /// Tile column.
+        x: u32,
+        /// Tile row.
+        y: u32,
+        /// Decoder failure.
+        message: String,
+    },
 }
 
 impl MapLoadError {
@@ -519,7 +531,8 @@ impl MapLoadError {
             | Self::Json { .. }
             | Self::Expression { .. }
             | Self::Unsupported(_)
-            | Self::VectorTile { .. } => false,
+            | Self::VectorTile { .. }
+            | Self::ImageTile { .. } => false,
         }
     }
 }

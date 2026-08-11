@@ -19,6 +19,13 @@ futures.workspace = true
 futures-lite.workspace = true
 geo.workspace = true
 geo-types.workspace = true
+# Raster and raster-dem tiles ship as PNG/JPEG/WebP; no other codec is reachable
+# from a MapLibre tile source, so the decoder stays feature-scoped to those.
+image = { version = "0.25.10", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+] }
 kurbo.workspace = true
 lru.workspace = true
 maplibre-expr.workspace = true
