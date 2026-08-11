@@ -378,6 +378,138 @@ async fn remove_legacy_local_water_dir(project_root: &Path) -> eyre::Result<()> 
     Ok(())
 }
 
+/// On-disk usage of one managed build-cache entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildCacheEntryUsage {
+    /// Project the cache entry belongs to.
+    pub project_root: PathBuf,
+    /// Managed cache directory holding the entry.
+    pub cache_dir: PathBuf,
+    /// Disk space the entry occupies, in bytes.
+    pub bytes: u64,
+    /// Whether the entry is currently eligible for removal.
+    pub stale: bool,
+    /// Whether the entry belongs to the project the survey was run from.
+    pub active: bool,
+}
+
+/// What the managed build cache is currently spending disk on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildCacheUsageReport {
+    /// Entries, largest first.
+    pub entries: Vec<BuildCacheEntryUsage>,
+    /// Total disk space across every entry, in bytes.
+    pub total_bytes: u64,
+    /// Disk space held by entries eligible for removal, in bytes.
+    pub reclaimable_bytes: u64,
+}
+
+/// Survey the managed build cache without removing anything.
+///
+/// Sizes are measured in allocated blocks and each inode is counted once, so
+/// copy-on-write clones and hard links are reported at what they actually cost
+/// rather than at the sum of their apparent lengths.
+///
+/// # Errors
+/// Returns an error if the cache root cannot be read or the Water config cannot be loaded.
+pub async fn survey_build_cache_usage(
+    current_project_root: &Path,
+) -> eyre::Result<BuildCacheUsageReport> {
+    let water_home = water_home_dir()?;
+    let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+    let current_cache_dir = project_build_cache_dir_in(current_project_root, &cache_root);
+    let max_unused_seconds = config
+        .build_cache
+        .cleanup_after_unused_days
+        .saturating_mul(24 * 60 * 60);
+    let now = now_unix_seconds()?;
+
+    let mut entries = Vec::new();
+    for cache_dir in discover_managed_build_cache_dirs(&cache_root).await? {
+        let metadata = read_metadata(&cache_dir).await.ok();
+        let project_root = metadata.as_ref().map_or_else(
+            || cache_dir.clone(),
+            |metadata| PathBuf::from(&metadata.project_root),
+        );
+        let active = cache_dir == current_cache_dir;
+        let stale = !active
+            && metadata.as_ref().is_none_or(|metadata| {
+                !PathBuf::from(&metadata.project_root).exists()
+                    || now.saturating_sub(metadata.last_used_unix_seconds) > max_unused_seconds
+            });
+        let bytes = directory_disk_usage(cache_dir.clone()).await?;
+        entries.push(BuildCacheEntryUsage {
+            project_root,
+            cache_dir,
+            bytes,
+            stale,
+            active,
+        });
+    }
+
+    entries.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.cache_dir.cmp(&right.cache_dir))
+    });
+    let total_bytes = entries.iter().map(|entry| entry.bytes).sum();
+    let reclaimable_bytes = entries
+        .iter()
+        .filter(|entry| entry.stale)
+        .map(|entry| entry.bytes)
+        .sum();
+
+    Ok(BuildCacheUsageReport {
+        entries,
+        total_bytes,
+        reclaimable_bytes,
+    })
+}
+
+/// Measure how much disk a directory tree actually occupies.
+async fn directory_disk_usage(root: PathBuf) -> eyre::Result<u64> {
+    smol::unblock(move || {
+        let mut seen_inodes = std::collections::HashSet::new();
+        let mut total = 0u64;
+        for entry in WalkDir::new(&root).follow_links(false) {
+            let Ok(entry) = entry else { continue };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            total = total.saturating_add(file_disk_usage(&metadata, &mut seen_inodes));
+        }
+        Ok(total)
+    })
+    .await
+}
+
+#[cfg(unix)]
+fn file_disk_usage(
+    metadata: &std::fs::Metadata,
+    seen_inodes: &mut std::collections::HashSet<(u64, u64)>,
+) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if !seen_inodes.insert((metadata.dev(), metadata.ino())) {
+        return 0;
+    }
+    // `blocks` is always in 512-byte units, independent of the filesystem's own
+    // block size, and already excludes extents shared with a clone source.
+    metadata.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn file_disk_usage(
+    metadata: &std::fs::Metadata,
+    _seen_inodes: &mut std::collections::HashSet<(u64, u64)>,
+) -> u64 {
+    metadata.len()
+}
+
 async fn cleanup_stale_caches(
     cache_root: &Path,
     current_project_root: &Path,

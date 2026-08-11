@@ -236,8 +236,18 @@ async fn build_preview_dylib(
 
     ensure_project_dev_feature_for_preview(&project).await?;
 
-    let mut rust_build =
-        link_mode.configure_build(RustBuild::new(&preview_crate_path, target.triple()));
+    // The preview wrapper crate lives in the managed build cache, whose generated
+    // sources are regenerated whenever the CLI's scaffold templates move. Building
+    // into Cargo's default directory would put the compiled dependency graph inside
+    // that regenerated tree, so point it at the runtime-keyed target directory every
+    // project with the same runtime graph shares.
+    let mut rust_build = link_mode
+        .configure_build(RustBuild::new(&preview_crate_path, target.triple()))
+        .with_target_dir(
+            project
+                .backend_build_target_dir("preview", Some(runtime_fingerprint))
+                .await?,
+        );
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -265,7 +275,6 @@ async fn build_preview_dylib(
         if let Some(sccache) = sccache_path {
             rust_build = rust_build.with_sccache(sccache.clone());
         }
-        rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
         if link_mode.prefer_dynamic {
             rust_build = rust_build.with_preferred_dynamic_linking();
         }
@@ -711,37 +720,15 @@ async fn build_preview_session_from_launch(
     match wait_for_connection_or_crash(&mut running, platform, tcp_config, &expected_fingerprint)
         .await
     {
-        ConnectionWaitResult::Ready(client) => {
-            let client = match client {
-                Some(client) => client,
-                None => match platform {
-                    PreviewPlatform::Macos => PreviewAppClient::connect_registered(
-                        &expected_fingerprint,
-                        PreviewRuntimePlatform::Macos,
-                    )
-                    .await
-                    .wrap_err("Preview app became ready but registry connection still failed")?,
-                    PreviewPlatform::IosSimulator
-                    | PreviewPlatform::Ios
-                    | PreviewPlatform::Android => PreviewAppClient::connect(
-                        tcp_config,
-                        &expected_fingerprint,
-                        preview_runtime_platform(platform),
-                    )
-                    .await
-                    .wrap_err("Preview app became ready but TCP connection still failed")?,
-                },
-            };
-            Ok(PreviewSession {
-                client,
-                platform,
-                dylib_path: None,
-                running: Some(running),
-                owns_app: true,
-                sccache_path,
-                runtime_fingerprint: expected_fingerprint,
-            })
-        }
+        ConnectionWaitResult::Ready(client) => Ok(PreviewSession {
+            client,
+            platform,
+            dylib_path: None,
+            running: Some(running),
+            owns_app: true,
+            sccache_path,
+            runtime_fingerprint: expected_fingerprint,
+        }),
         ConnectionWaitResult::Crashed(message) => {
             bail!(
                 "Preview app crashed:
@@ -756,13 +743,14 @@ Check the app logs for more information."
         }
         ConnectionWaitResult::Timeout => {
             bail!(
-                "Preview app started but failed to connect via TCP after 10 seconds.
+                "Preview app is still running after {} seconds but never accepted a connection.
 Possible causes:
-- The app may have crashed during initialization
 - The TCP server failed to start
 - Port range {}..={} may be blocked
+- The app is stuck during initialization
 
 Try running with WATERUI_CRASH_DEBUG=1 for more details.",
+                STARTUP_DEADLINE.as_secs(),
                 tcp_config.port_start,
                 tcp_config.ports().end()
             );
@@ -772,15 +760,25 @@ Try running with WATERUI_CRASH_DEBUG=1 for more details.",
 
 /// Result of waiting for preview-app readiness.
 enum ConnectionWaitResult {
-    /// Preview app reported readiness and should now accept a connection.
-    Ready(Option<PreviewAppClient>),
+    /// Preview app accepted a connection and completed the protocol handshake.
+    Ready(PreviewAppClient),
     /// App crashed with error message.
     Crashed(String),
     /// App exited without crash.
     Exited,
-    /// Connection timed out.
+    /// The app stayed alive but never became reachable before the hang backstop.
     Timeout,
 }
+
+/// How long a launched preview app may stay alive without ever becoming reachable.
+///
+/// This is a backstop against a wedged process, not a judgement about how fast a
+/// preview app "should" start. Readiness is decided by real signals — the registry
+/// entry the app publishes, its listening-address log line, and its crash/exit
+/// events — so a slow but healthy launch is waited out rather than failed. An
+/// earlier 10s budget sat right on top of the ~10.2s cold start of a debug support
+/// app and lost the race by milliseconds, killing an app that was about to work.
+const STARTUP_DEADLINE: Duration = Duration::from_secs(180);
 
 /// Wait for TCP connection while monitoring for app crashes.
 ///
@@ -792,15 +790,19 @@ async fn wait_for_connection_or_crash(
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
 ) -> ConnectionWaitResult {
-    const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
     const NON_MACOS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
     let start = Instant::now();
 
     let ready = match platform {
         PreviewPlatform::Macos => {
-            wait_for_registered_preview_ready(running, expected_fingerprint, start, STARTUP_TIMEOUT)
-                .await
+            wait_for_registered_preview_ready(
+                running,
+                expected_fingerprint,
+                start,
+                STARTUP_DEADLINE,
+            )
+            .await
         }
         PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
             wait_for_polled_preview_ready(
@@ -809,7 +811,7 @@ async fn wait_for_connection_or_crash(
                 expected_fingerprint,
                 preview_runtime_platform(platform),
                 start,
-                STARTUP_TIMEOUT,
+                STARTUP_DEADLINE,
                 NON_MACOS_POLL_INTERVAL,
             )
             .await
@@ -830,10 +832,11 @@ async fn wait_for_registered_preview_ready(
 ) -> ConnectionWaitResult {
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-    if try_connect_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start)
-        .await
+    if let Some(client) =
+        try_connect_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start)
+            .await
     {
-        return ConnectionWaitResult::Ready(None);
+        return ConnectionWaitResult::Ready(client);
     }
 
     let registry_dir = preview_instance_registry_dir();
@@ -859,14 +862,14 @@ async fn wait_for_registered_preview_ready(
     }
 
     loop {
-        if try_connect_registered_preview(
+        if let Some(client) = try_connect_registered_preview(
             expected_fingerprint,
             PreviewRuntimePlatform::Macos,
             start,
         )
         .await
         {
-            return ConnectionWaitResult::Ready(None);
+            return ConnectionWaitResult::Ready(client);
         }
 
         let remaining = timeout.saturating_sub(start.elapsed());
@@ -918,10 +921,11 @@ async fn wait_for_polled_preview_ready(
     poll_interval: Duration,
 ) -> ConnectionWaitResult {
     loop {
-        if try_connect_polled_preview(tcp_config, expected_fingerprint, expected_platform, start)
-            .await
+        if let Some(client) =
+            try_connect_polled_preview(tcp_config, expected_fingerprint, expected_platform, start)
+                .await
         {
-            return ConnectionWaitResult::Ready(None);
+            return ConnectionWaitResult::Ready(client);
         }
 
         let remaining = timeout.saturating_sub(start.elapsed());
@@ -952,39 +956,41 @@ async fn wait_for_polled_preview_ready(
     }
 }
 
+/// Probe the registry for a ready preview app, keeping the connection it establishes.
+///
+/// The probe completes a full protocol handshake, so discarding the client and
+/// reconnecting afterwards would pay for that handshake twice and reopen the window
+/// for the app to go away in between.
 async fn try_connect_registered_preview(
     expected_fingerprint: &str,
     expected_platform: PreviewRuntimePlatform,
     start: Instant,
-) -> bool {
-    match PreviewAppClient::connect_registered(expected_fingerprint, expected_platform).await {
-        Ok(_) => {
-            info!(
-                "Connected to preview app after {}ms",
-                start.elapsed().as_millis()
-            );
-            true
-        }
-        Err(_) => false,
-    }
+) -> Option<PreviewAppClient> {
+    let client = PreviewAppClient::connect_registered(expected_fingerprint, expected_platform)
+        .await
+        .ok()?;
+    info!(
+        "Connected to preview app after {}ms",
+        start.elapsed().as_millis()
+    );
+    Some(client)
 }
 
+/// Probe the configured port range for a ready preview app, keeping the connection.
 async fn try_connect_polled_preview(
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
     expected_platform: PreviewRuntimePlatform,
     start: Instant,
-) -> bool {
-    match PreviewAppClient::connect(tcp_config, expected_fingerprint, expected_platform).await {
-        Ok(_) => {
-            info!(
-                "Connected to preview app after {}ms",
-                start.elapsed().as_millis()
-            );
-            true
-        }
-        Err(_) => false,
-    }
+) -> Option<PreviewAppClient> {
+    let client = PreviewAppClient::connect(tcp_config, expected_fingerprint, expected_platform)
+        .await
+        .ok()?;
+    info!(
+        "Connected to preview app after {}ms",
+        start.elapsed().as_millis()
+    );
+    Some(client)
 }
 
 async fn preview_connection_result_from_device_event(
@@ -1016,7 +1022,7 @@ async fn preview_connection_result_from_device_event(
                     "Connected to preview app after {}ms",
                     start.elapsed().as_millis()
                 );
-                return Some(ConnectionWaitResult::Ready(Some(client)));
+                return Some(ConnectionWaitResult::Ready(client));
             }
             None
         }

@@ -395,20 +395,24 @@ impl AndroidPlatform {
         let triple = self.triple();
         let build_context = resolve_android_build_context(abi, &triple).await?;
         let mut build = configure_android_rust_build(project, &triple, &build_context, &options)?;
-        if options.linkage() == RustLinkage::SharedRuntime {
+        let runtime_fingerprint = if options.linkage() == RustLinkage::SharedRuntime {
             let build_features = vec!["waterui-ffi/android-jni".to_string(), "dev".to_string()];
-            let fingerprint = shared_rust_runtime_fingerprint(
-                &project.ffi_crate_path().join("Cargo.toml"),
-                &build_features,
-                &triple,
+            Some(
+                shared_rust_runtime_fingerprint(
+                    &project.ffi_crate_path().join("Cargo.toml"),
+                    &build_features,
+                    &triple,
+                )
+                .await?,
             )
-            .await?;
-            build = build.with_target_dir(
-                project
-                    .shared_backend_target_dir("android", &fingerprint)
-                    .await?,
-            );
-        }
+        } else {
+            None
+        };
+        build = build.with_target_dir(
+            project
+                .backend_build_target_dir("android", runtime_fingerprint.as_deref())
+                .await?,
+        );
 
         let lib_dir = build.build_lib(options.is_release()).await?;
         copy_android_build_outputs(project, &options, abi, &build_context.ndk_path, &lib_dir)
@@ -642,13 +646,13 @@ fn configure_android_rust_build(
     context: &AndroidBuildContext,
     options: &BuildOptions,
 ) -> eyre::Result<RustBuild> {
+    // Android loads the JNI shared object and nothing else, so build only that crate
+    // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
-        .with_feature("waterui-ffi/android-jni");
+        .with_feature("waterui-ffi/android-jni")
+        .with_crate_type_override("cdylib");
     if options.linkage() == RustLinkage::SharedRuntime {
-        build = build
-            .with_feature("dev")
-            .with_rustc_flag("-Cdebuginfo=0")
-            .with_preferred_dynamic_linking();
+        build = build.with_feature("dev").with_preferred_dynamic_linking();
     }
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());

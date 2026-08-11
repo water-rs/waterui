@@ -12,7 +12,10 @@ use tracing::info;
 
 use crate::{
     assets, browser_runtime,
-    build::{BuildOptions, RustDynamicLibraries, configure_cargo_linkage},
+    build::{
+        BuildOptions, RustDynamicLibraries, RustLinkage, configure_cargo_linkage,
+        shared_rust_runtime_fingerprint,
+    },
     device::Artifact,
     gtk4::backend::Gtk4Backend,
     platform::{PackageOptions, TargetPlatform},
@@ -29,6 +32,35 @@ const GTK4_INIT_HINT: &str = "initialize GTK4 backend on Linux";
 // Build Utilities
 // ============================================================================
 
+/// Resolve the Cargo target directory the GTK4 backend crate builds into.
+///
+/// Build, clean and package must agree on this path, so all three go through here.
+/// A shared-runtime build resolves a directory keyed by its runtime graph, which
+/// projects with the same graph then share instead of each compiling their own copy.
+async fn gtk4_target_dir(
+    project: &Project,
+    cargo_toml: &Path,
+    linkage: RustLinkage,
+) -> eyre::Result<PathBuf> {
+    let runtime_fingerprint = match linkage {
+        RustLinkage::Static => None,
+        RustLinkage::SharedRuntime => {
+            let build_features = vec![format!("{}/dev", project.crate_name())];
+            Some(
+                shared_rust_runtime_fingerprint(
+                    cargo_toml,
+                    &build_features,
+                    &TargetPlatform::Linux.triple(),
+                )
+                .await?,
+            )
+        }
+    };
+    project
+        .backend_build_target_dir("gtk4", runtime_fingerprint.as_deref())
+        .await
+}
+
 /// Build GTK4 binary for the host platform.
 ///
 /// # Errors
@@ -38,7 +70,6 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("gtk4").await?;
 
     if !cargo_toml.exists() {
         bail!(
@@ -46,6 +77,8 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
             backend_path.display(),
         );
     }
+
+    let backend_target_dir = gtk4_target_dir(project, &cargo_toml, options.linkage()).await?;
 
     // Build the GTK4 binary crate.
     let profile = if options.is_release() {
@@ -103,21 +136,21 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
 
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("gtk4").await?;
-
     if !cargo_toml.exists() {
         return Ok(()); // Nothing to clean
     }
 
-    // Run cargo clean for the GTK4 crate
-    let args: Vec<OsString> = vec![
-        "clean".into(),
-        "--manifest-path".into(),
-        cargo_toml.as_os_str().to_owned(),
-        "--target-dir".into(),
-        backend_target_dir.as_os_str().to_owned(),
-    ];
-    run_command_os("cargo", args).await?;
+    for linkage in [RustLinkage::SharedRuntime, RustLinkage::Static] {
+        let backend_target_dir = gtk4_target_dir(project, &cargo_toml, linkage).await?;
+        let args: Vec<OsString> = vec![
+            "clean".into(),
+            "--manifest-path".into(),
+            cargo_toml.as_os_str().to_owned(),
+            "--target-dir".into(),
+            backend_target_dir.as_os_str().to_owned(),
+        ];
+        run_command_os("cargo", args).await?;
+    }
 
     Ok(())
 }
@@ -145,7 +178,14 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     // Copy project assets and dependency fonts
     copy_assets_and_fonts(project, &backend_path).await?;
 
-    let target_dir = project.backend_target_dir("gtk4").await?.join(profile);
+    let linkage = if options.uses_shared_rust_runtime() {
+        RustLinkage::SharedRuntime
+    } else {
+        RustLinkage::Static
+    };
+    let target_dir = gtk4_target_dir(project, &backend_path.join("Cargo.toml"), linkage)
+        .await?
+        .join(profile);
 
     // The binary name is the GTK4 crate name (project-gtk4)
     let binary_name = project.gtk_backend_crate_name();

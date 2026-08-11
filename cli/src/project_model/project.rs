@@ -195,6 +195,36 @@ impl Project {
             .join(format!("{backend_name}-runtime-{runtime_fingerprint}")))
     }
 
+    /// Resolve the Cargo target directory a generated backend crate must build into.
+    ///
+    /// Every generated backend needs an explicit target directory, because the
+    /// default one would land inside the managed build cache next to the generated
+    /// sources — and those sources are deleted and regenerated whenever the CLI's
+    /// scaffold templates change. Compiled artifacts do not become stale for that
+    /// reason, so keeping them there meant one CLI upgrade discarded the compiled
+    /// dependency graph of every project on the machine.
+    ///
+    /// A shared-runtime build passes its runtime fingerprint and shares one
+    /// directory with every project that resolves the same runtime graph; anything
+    /// else stays isolated per project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the project target directory.
+    pub async fn backend_build_target_dir(
+        &self,
+        backend_name: &str,
+        runtime_fingerprint: Option<&str>,
+    ) -> eyre::Result<PathBuf> {
+        match runtime_fingerprint {
+            Some(fingerprint) => {
+                self.shared_backend_target_dir(backend_name, fingerprint)
+                    .await
+            }
+            None => self.backend_target_dir(backend_name).await,
+        }
+    }
+
     /// Get the backends configured for the project.
     #[must_use]
     pub const fn backends(&self) -> &Backends {

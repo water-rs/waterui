@@ -31,14 +31,13 @@ struct BlockingDlopenTimings {
 }
 
 impl PreviewLibrary {
-    /// Load a library from an on-disk cache path, codesigning only if needed (macOS).
+    /// Load a library from an on-disk cache path.
     ///
     /// # Safety
     /// The library must be a valid `WaterUI` preview library with the expected ABI.
     ///
     /// # Errors
     /// Returns an error if the library cannot be loaded.
-    #[cfg(target_os = "macos")]
     pub async unsafe fn load_from_path(
         path: &Path,
     ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
@@ -51,23 +50,64 @@ impl PreviewLibrary {
         Ok((library, timings))
     }
 
-    /// Load a library from an on-disk cache path.
+    /// Load a library from bytes by writing it into the preview dylib cache.
     ///
     /// # Safety
     /// The library must be a valid `WaterUI` preview library with the expected ABI.
     ///
     /// # Errors
-    /// Returns an error if the library cannot be loaded.
-    #[cfg(not(target_os = "macos"))]
-    pub async unsafe fn load_from_path(
-        path: &Path,
+    /// Returns an error if the library cannot be cached or loaded.
+    pub async unsafe fn load_from_bytes(
+        id: DylibId,
+        data: &[u8],
     ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
-        let (library, timings) = Self::load_with_codesign_fallback(path).await?;
+        // SAFETY: preview dylib load or symbol resolution; see the module safety note.
+        unsafe { Self::load_cached(id, CachedDylibSource::Bytes(data)) }.await
+    }
+
+    /// Load a library from a local filesystem path by caching it first.
+    ///
+    /// This avoids sending large dylib payloads over TCP while still keeping
+    /// codesigning isolated from Cargo build artifacts.
+    ///
+    /// # Safety
+    /// The library at `source_path` must be a valid `WaterUI` preview library with
+    /// the expected ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the source path cannot be cached or the library cannot be loaded.
+    pub async unsafe fn load_from_local_path(
+        id: DylibId,
+        source_path: &Path,
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
+        // SAFETY: preview dylib load or symbol resolution; see the module safety note.
+        unsafe { Self::load_cached(id, CachedDylibSource::File(source_path)) }.await
+    }
+
+    /// Materialize a dylib in the preview cache and load it from there.
+    ///
+    /// # Safety
+    /// The source must be a valid `WaterUI` preview library with the expected ABI.
+    async unsafe fn load_cached(
+        id: DylibId,
+        source: CachedDylibSource<'_>,
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
+        let cache_path = preview_dylib_cache_path(id);
+        let cache_start = Instant::now();
+        let byte_len = source.byte_len();
+        ensure_cached_file(&cache_path, source).await?;
+        let cache_file_ms = elapsed_ms(cache_start);
         tracing::info!(
-            path = %path.display(),
-            elapsed_ms = timings.load_library_ms,
-            "Preview library loaded from cached path"
+            dylib_id = %id,
+            bytes = byte_len,
+            path = %cache_path.display(),
+            elapsed_ms = cache_file_ms,
+            "Preview library ensured dylib cache file"
         );
+
+        // SAFETY: preview dylib load or symbol resolution; see the module safety note.
+        let (library, mut timings) = unsafe { Self::load_from_path(&cache_path) }.await?;
+        timings.cache_file_ms = cache_file_ms;
         Ok((library, timings))
     }
 
@@ -167,131 +207,6 @@ impl PreviewLibrary {
                 ..Default::default()
             },
         ))
-    }
-
-    /// Load a library from bytes by writing to a temp file.
-    ///
-    /// # Safety
-    /// The library must be a valid `WaterUI` preview library with the expected ABI.
-    ///
-    /// # Errors
-    /// Returns an error if the library cannot be loaded.
-    #[cfg(target_os = "macos")]
-    pub async unsafe fn load_from_bytes(
-        id: DylibId,
-        data: &[u8],
-    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
-        let cache_path = preview_dylib_cache_path(id);
-        let cache_start = Instant::now();
-        ensure_cached_file(&cache_path, CachedDylibSource::Bytes(data)).await?;
-        let cache_file_ms = elapsed_ms(cache_start);
-        tracing::info!(
-            dylib_id = %id,
-            bytes = data.len(),
-            path = %cache_path.display(),
-            elapsed_ms = cache_file_ms,
-            "Preview library ensured dylib cache file"
-        );
-
-        // SAFETY: preview dylib load or symbol resolution; see the module safety
-        // note.
-        let (library, mut timings) = unsafe { Self::load_from_path(&cache_path) }.await?;
-        timings.cache_file_ms = cache_file_ms;
-        Ok((library, timings))
-    }
-
-    /// Load a library from bytes by writing to a temp file.
-    ///
-    /// # Safety
-    /// The library must be a valid `WaterUI` preview library with the expected ABI.
-    ///
-    /// # Errors
-    /// Returns an error if the library cannot be loaded.
-    #[cfg(not(target_os = "macos"))]
-    pub async unsafe fn load_from_bytes(
-        id: DylibId,
-        data: &[u8],
-    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
-        let cache_path = preview_dylib_cache_path(id);
-        let cache_start = Instant::now();
-        ensure_cached_file(&cache_path, CachedDylibSource::Bytes(data)).await?;
-        let cache_file_ms = elapsed_ms(cache_start);
-        tracing::info!(
-            dylib_id = %id,
-            bytes = data.len(),
-            path = %cache_path.display(),
-            elapsed_ms = cache_file_ms,
-            "Preview library ensured dylib cache file"
-        );
-
-        let (library, mut timings) = Self::load_with_codesign_fallback(&cache_path).await?;
-        timings.cache_file_ms = cache_file_ms;
-        Ok((library, timings))
-    }
-
-    /// Load a library from a local filesystem path by copying it into the preview cache first.
-    ///
-    /// This avoids sending large dylib payloads over TCP while still keeping codesigning isolated
-    /// from Cargo build artifacts.
-    ///
-    /// # Safety
-    /// The library at `source_path` must be a valid `WaterUI` preview library with the expected ABI.
-    ///
-    /// # Errors
-    /// Returns an error if the source path cannot be cached or the library cannot be loaded.
-    #[cfg(target_os = "macos")]
-    pub async unsafe fn load_from_local_path(
-        id: DylibId,
-        source_path: &Path,
-    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
-        let cache_path = preview_dylib_cache_path(id);
-        let cache_start = Instant::now();
-        ensure_cached_file(&cache_path, CachedDylibSource::File(source_path)).await?;
-        let cache_file_ms = elapsed_ms(cache_start);
-        tracing::info!(
-            dylib_id = %id,
-            source_path = %source_path.display(),
-            cache_path = %cache_path.display(),
-            elapsed_ms = cache_file_ms,
-            "Preview library cached dylib from local path"
-        );
-
-        // SAFETY: preview dylib load or symbol resolution; see the module safety
-        // note.
-        let (library, mut timings) = unsafe { Self::load_from_path(&cache_path) }.await?;
-        timings.cache_file_ms = cache_file_ms;
-        Ok((library, timings))
-    }
-
-    /// Load a library from a local filesystem path by copying it into the preview cache first.
-    ///
-    /// This avoids sending large dylib payloads over TCP.
-    ///
-    /// # Safety
-    /// The library at `source_path` must be a valid `WaterUI` preview library with the expected ABI.
-    ///
-    /// # Errors
-    /// Returns an error if the source path cannot be cached or the library cannot be loaded.
-    #[cfg(not(target_os = "macos"))]
-    pub async unsafe fn load_from_local_path(
-        id: DylibId,
-        source_path: &Path,
-    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
-        let cache_path = preview_dylib_cache_path(id);
-        let cache_start = Instant::now();
-        ensure_cached_file(&cache_path, CachedDylibSource::File(source_path)).await?;
-        let cache_file_ms = elapsed_ms(cache_start);
-        tracing::info!(
-            dylib_id = %id,
-            source_path = %source_path.display(),
-            cache_path = %cache_path.display(),
-            elapsed_ms = cache_file_ms,
-            "Preview library cached dylib from local path"
-        );
-
-        let (library, mut timings) = Self::load_with_codesign_fallback(&cache_path).await?;
-        timings.cache_file_ms = cache_file_ms;
-        Ok((library, timings))
     }
 
     /// Check if the library has a symbol.
