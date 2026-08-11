@@ -102,6 +102,7 @@ smallvec = "1.15"
 # Local vendored dependency overrides via git submodule.
 nami = { version = "0.10.1", path = "utils/nami" }
 nami-core = { version = "0.3.2", path = "utils/nami/core" }
+pin-project-lite = "0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.19"
