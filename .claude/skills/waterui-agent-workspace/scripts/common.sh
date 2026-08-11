@@ -144,9 +144,31 @@ clone_submodules_locally() {
 copy_target_cow() {
   local source_root="$1"
   local destination_root="$2"
+  local source_target="${source_root}/target"
+  local destination_target="${destination_root}/target"
+  local top
+  local child
 
-  [[ -d "${source_root}/target" ]] || return 0
-  cp -cR "${source_root}/target" "${destination_root}/target" || die "failed to copy target directory into ${destination_root}"
+  [[ -d "$source_target" ]] || return 0
+  mkdir -p "$destination_target"
+  # Copy entry-by-entry instead of one `cp -cR target` so the per-profile
+  # `incremental/` caches can be skipped: they are the largest and
+  # fastest-diverging piece of `target/` (tens of GB), every workspace build
+  # rewrites them immediately (turning shared COW blocks into real copies),
+  # and sccache already covers the cold recompiles they would have saved.
+  # With N concurrent workspaces this is the difference between sharing one
+  # dependency cache and carrying N diverging full copies.
+  for top in "$source_target"/*(DN); do
+    if [[ -d "$top" && ! -L "$top" ]]; then
+      mkdir -p "${destination_target}/${top:t}"
+      for child in "$top"/*(DN); do
+        [[ "${child:t}" == "incremental" ]] && continue
+        cp -cR "$child" "${destination_target}/${top:t}/${child:t}" || die "failed to copy ${child} into ${destination_target}"
+      done
+    else
+      cp -cR "$top" "${destination_target}/${top:t}" || die "failed to copy ${top} into ${destination_target}"
+    fi
+  done
 }
 
 submodule_records() {
