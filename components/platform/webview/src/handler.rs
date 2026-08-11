@@ -127,6 +127,25 @@ pub trait WebViewHandle: 'static {
     fn set_cookie(&self, cookie: Cookie<'static>);
 
     /// Retrieves all cookies for the current web view.
+    ///
+    /// # Attributes are not available everywhere
+    ///
+    /// Most backends return each cookie with its attributes — domain, path,
+    /// expiry, `Secure`, `HttpOnly`, `SameSite`. **Android does not.**
+    /// `android.webkit.CookieManager` exposes only
+    /// [`getCookie(url)`][getCookie], which returns the request-header form
+    /// (`name=value; name2=value2`), and the platform offers no other way to
+    /// enumerate the store. On Android every returned cookie therefore carries
+    /// a name and a value and nothing else, and code that reads `domain()`,
+    /// `expires()` or `same_site()` will see `None` there even when the cookie
+    /// does have those attributes.
+    ///
+    /// Remembering the attributes of cookies set through
+    /// [`set_cookie`](Self::set_cookie) would cover only our own cookies and
+    /// not the page's, so the two kinds would come back indistinguishable —
+    /// which is worse than the gap being visible.
+    ///
+    /// [getCookie]: https://developer.android.com/reference/android/webkit/CookieManager#getCookie(java.lang.String)
     fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>>;
 
     /// Runs JavaScript code in the context of the currently loaded page.
