@@ -405,6 +405,31 @@ impl ToJavaStruct for crate::WuiMetadataCursor {
     }
 }
 
+/// MetadataAccessibilityIdentifierStruct(contentPtr: Long, identifier: String)
+impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityIdentifier {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let identifier: waterui::Str =
+            unsafe { crate::IntoRust::into_rust(core::ptr::read(&self.identifier)) };
+        let identifier = env
+            .new_string(identifier.as_str())
+            .expect("Failed to create identifier string");
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataAccessibilityIdentifierStruct"
+            ))
+            .expect("MetadataAccessibilityIdentifierStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JLjava/lang/String;)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Object(&identifier),
+            ],
+        )
+        .expect("Failed to create MetadataAccessibilityIdentifierStruct")
+    }
+}
+
 /// MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float)
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {

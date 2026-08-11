@@ -85,7 +85,8 @@ use std::sync::Arc;
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
-    AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
+    AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
+    AccessibilityRole,
     AccessibilityState, AccessibilityStateSignal,
 };
 use waterui::animation::Animation;

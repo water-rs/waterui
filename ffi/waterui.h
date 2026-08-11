@@ -2327,6 +2327,20 @@ typedef struct WuiMetadata_WuiCursor {
 typedef struct WuiMetadata_WuiCursor WuiMetadataCursor;
 
 /**
+ * FFI-safe representation of `IgnorableMetadata`<`AccessibilityIdentifier`>
+ */
+typedef struct WuiIgnorableMetadataAccessibilityIdentifier {
+  /**
+   * The view content wrapped by this metadata
+   */
+  struct WuiAnyView *content;
+  /**
+   * The stable automation identifier
+   */
+  struct WuiStr identifier;
+} WuiIgnorableMetadataAccessibilityIdentifier;
+
+/**
  * FFI-safe representation of a shadow.
  */
 typedef struct WuiShadow {
@@ -6818,6 +6832,21 @@ struct WuiTypeId waterui_metadata_cursor_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataCursor waterui_force_as_metadata_cursor(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_ignorable_metadata_accessibility_identifier_id(void);
+
+/**
+ * Force-casts an `AnyView` to this ignorable metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains an `IgnorableMetadata<$ty>`.
+ */
+struct WuiIgnorableMetadataAccessibilityIdentifier waterui_force_as_ignorable_metadata_accessibility_identifier(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.

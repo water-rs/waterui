@@ -190,6 +190,13 @@ impl AccessibilityBuilder {
             return None;
         }
         self.apply_state(env, &mut node);
+        // Nearest-consumer automation identifier: a leaf that already carries
+        // an author id (an explicit backend decision) keeps it.
+        if node.author_id().is_none()
+            && let Some(identifier) = env.get::<AccessibilityIdentifier>()
+        {
+            node.set_author_id(identifier.as_str().to_string());
+        }
         let node_id = self.next_node_id();
         node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
         self.nodes.push((node_id, node));
@@ -247,6 +254,7 @@ pub(crate) fn accessibility_group_child_environment(env: &Environment) -> Option
     }
 
     let mut child_env = env.clone();
+    child_env.remove::<AccessibilityIdentifier>();
     child_env.remove::<AccessibilityLabel>();
     child_env.remove::<AccessibilityRole>();
     child_env.remove::<AccessibilityHidden>();

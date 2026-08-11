@@ -169,6 +169,10 @@ impl RenderNode {
             Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
             Err(view) => view,
         };
+        let view = match view.downcast::<IgnorableMetadata<AccessibilityIdentifier>>() {
+            Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
+            Err(view) => view,
+        };
         let view = match view.downcast::<IgnorableMetadata<AccessibilityRole>>() {
             Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
             Err(view) => view,

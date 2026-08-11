@@ -42,8 +42,8 @@ use waterui_str::Str;
 
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
-        AccessibilityState,
+        self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
+        AccessibilityLabel, AccessibilityRole, AccessibilityState,
     },
     background::IntoBackground,
     border::Border,
@@ -535,6 +535,15 @@ pub trait ViewExt: View + Sized {
         role: accessibility::AccessibilityRole,
     ) -> IgnorableMetadata<AccessibilityRole> {
         IgnorableMetadata::new(self, role)
+    }
+
+    /// Sets a stable automation identifier for locating this view in UI tests.
+    ///
+    /// Identifiers are invisible to end users and assistive technologies; they
+    /// exist for `waterui-testing` selectors and native automation frameworks
+    /// (XCUITest `accessibilityIdentifier`, Android UiAutomator).
+    fn a11y_id(self, identifier: impl Into<Str>) -> IgnorableMetadata<AccessibilityIdentifier> {
+        IgnorableMetadata::new(self, accessibility::AccessibilityIdentifier::new(identifier))
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
