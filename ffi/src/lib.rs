@@ -927,6 +927,41 @@ pub type WuiMetadataCursor = WuiMetadata<WuiCursor>;
 // Generate waterui_metadata_cursor_id() and waterui_force_as_metadata_cursor()
 ffi_metadata!(Cursor, WuiMetadataCursor, cursor);
 
+// ========== IgnorableMetadata<AccessibilityIdentifier> FFI ==========
+// A stable automation identifier: Apple maps it to `accessibilityIdentifier`,
+// Android exposes it as the node's view-id resource name for UiAutomator.
+
+use waterui::accessibility::AccessibilityIdentifier;
+
+/// FFI-safe representation of `IgnorableMetadata`<`AccessibilityIdentifier`>
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiIgnorableMetadataAccessibilityIdentifier {
+    /// The view content wrapped by this metadata
+    pub content: *mut WuiAnyView,
+    /// The stable automation identifier
+    pub identifier: WuiStr,
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityIdentifier> {
+    type FFI = WuiIgnorableMetadataAccessibilityIdentifier;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataAccessibilityIdentifier {
+            content: self.content.into_ffi(),
+            identifier: self.value.into_str().into_ffi(),
+        }
+    }
+}
+
+// Generate waterui_ignorable_metadata_accessibility_identifier_id() and
+// waterui_force_as_ignorable_metadata_accessibility_identifier()
+ffi_ignorable_metadata!(
+    AccessibilityIdentifier,
+    WuiIgnorableMetadataAccessibilityIdentifier,
+    accessibility_identifier
+);
+
 // ========== Common imports for metadata FFI ==========
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;

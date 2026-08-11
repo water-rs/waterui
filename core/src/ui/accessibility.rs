@@ -45,6 +45,42 @@ impl AccessibilityLabel {
     }
 }
 
+/// A stable, developer-facing identifier for locating this view in UI tests.
+///
+/// Identifiers are never exposed to end users or spoken by assistive
+/// technologies — they exist purely for automation (`waterui-testing`
+/// selectors, XCUITest `accessibilityIdentifier`, Android UiAutomator resource
+/// matching). Keep them constant: a query key that changes with app state
+/// defeats its purpose, so unlike [`AccessibilityLabel`] this is not a signal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibilityIdentifier(Str);
+
+impl MetadataKey for AccessibilityIdentifier {}
+
+impl AccessibilityIdentifier {
+    /// Creates a stable automation identifier.
+    ///
+    /// ```
+    /// # use waterui_core::accessibility::AccessibilityIdentifier;
+    /// let id = AccessibilityIdentifier::new("login.submit");
+    /// ```
+    pub fn new(identifier: impl Into<Str>) -> Self {
+        Self(identifier.into())
+    }
+
+    /// The identifier string.
+    #[must_use]
+    pub const fn as_str(&self) -> &Str {
+        &self.0
+    }
+
+    /// Consumes the metadata and returns the identifier string.
+    #[must_use]
+    pub fn into_str(self) -> Str {
+        self.0
+    }
+}
+
 /// Describes the semantic role of a component so assistive technology can
 /// expose the right behavior and shortcuts.
 #[derive(Debug, Clone, PartialEq, Eq)]
