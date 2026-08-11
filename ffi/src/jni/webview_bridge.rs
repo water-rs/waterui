@@ -520,7 +520,7 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
     _this: JObject<'local>,
 ) -> jobject {
     super::with_env(&mut env, |env| {
-        java_string(env, bridge::SCRIPT).into_raw()
+        java_string(env, waterui_webview::DOCUMENT_START_SCRIPT).into_raw()
     })
 }
 

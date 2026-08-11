@@ -458,7 +458,7 @@ impl MacSystemWebViewHandle {
         );
         Self::add_user_script(
             &controller,
-            bridge::SCRIPT,
+            waterui_webview::DOCUMENT_START_SCRIPT,
             ScriptInjectionTime::DocumentStart,
         );
         for script in self.inner.shared.scripts.borrow().iter() {
