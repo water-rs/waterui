@@ -266,7 +266,7 @@ impl PreparedMap {
         width: u32,
         height: u32,
     ) -> Result<Self, MapLoadError> {
-        let style = MapStyle::load(options).await?;
+        let style = MapStyle::load(options, waterui_map::MapStyle::Standard).await?;
         let cache = Rc::new(RefCell::new(TileCache::new(options.tile_cache_bytes.get())));
         Self::load_with_style(options, style, region, Viewport { width, height }, cache).await
     }
@@ -652,6 +652,7 @@ impl NetworkRetryState {
 
 struct MapRequestTask {
     generation: u64,
+    map_style: waterui_map::MapStyle,
     region: Region,
     viewport: Viewport,
     options: MapGpuOptions,
@@ -685,7 +686,7 @@ impl MapRequestTask {
     ) -> Option<Result<(MapStyle, PreparedMap), MapLoadError>> {
         let style = match cached_style.clone() {
             Some(style) => Ok(style),
-            None => MapStyle::load(&self.options).await,
+            None => MapStyle::load(&self.options, self.map_style).await,
         };
         if !self.is_current() {
             self.trace_cancellation("cancelled superseded GPU map style load");
@@ -899,6 +900,7 @@ pub struct MapScene {
     animate_camera_changes: Computed<bool>,
     annotations: Computed<Vec<Annotation>>,
     location: Computed<Option<Location>>,
+    map_style: waterui_map::MapStyle,
     invalidator: Rc<RefCell<Option<SceneInvalidator>>>,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
@@ -940,11 +942,6 @@ impl MapScene {
         request_region: Computed<Region>,
         animate_camera_changes: Computed<bool>,
     ) -> Self {
-        assert!(
-            matches!(config.style, waterui_map::MapStyle::Standard),
-            "GPU Map currently accepts MapStyle::Standard with a vector style; \
-             satellite and hybrid require an explicit raster realization"
-        );
         let location = if config.user_location_visibility.is_visible() {
             config.user_location
         } else {
@@ -973,6 +970,7 @@ impl MapScene {
             animate_camera_changes,
             annotations: config.annotations,
             location,
+            map_style: config.style,
             invalidator,
             state: Rc::new(RefCell::new(MapSceneState {
                 style: None,
@@ -1020,6 +1018,7 @@ impl MapScene {
         spawn_local(
             MapRequestTask {
                 generation,
+                map_style: self.map_style,
                 region,
                 viewport,
                 options: self.options.clone(),
