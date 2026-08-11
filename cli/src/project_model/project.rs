@@ -180,6 +180,12 @@ impl Project {
     /// fingerprint must represent the complete runtime dependency graph so
     /// incompatible feature or dependency variants remain isolated.
     ///
+    /// Callers describe their runtime graph in whatever form suits them — a hex
+    /// digest, or a readable `package@version:git:sha|features=…|graph=…` string —
+    /// so the fingerprint is condensed here rather than interpolated directly. A
+    /// descriptive fingerprint reached ~250 characters and the resulting directory
+    /// failed to create with `File name too long`.
+    ///
     /// # Errors
     ///
     /// Returns an error when Cargo metadata cannot resolve the project target directory.
@@ -188,11 +194,15 @@ impl Project {
         backend_name: &str,
         runtime_fingerprint: &str,
     ) -> eyre::Result<PathBuf> {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(runtime_fingerprint.as_bytes());
+        let digest = hex::encode(hasher.finalize());
+        let runtime_slug = &digest[..32];
         Ok(self
             .target_dir()
             .await?
             .join("water-backends")
-            .join(format!("{backend_name}-runtime-{runtime_fingerprint}")))
+            .join(format!("{backend_name}-runtime-{runtime_slug}")))
     }
 
     /// Resolve the Cargo target directory a generated backend crate must build into.
@@ -1692,6 +1702,41 @@ pub enum PackageType {
     /// A playground project for quick experimentation.
     /// Platform projects are created in a temporary directory.
     Playground,
+}
+
+#[cfg(test)]
+mod shared_target_dir_tests {
+    use sha2::Digest as _;
+
+    /// Mirrors the slug `Project::shared_backend_target_dir` builds.
+    fn runtime_slug(runtime_fingerprint: &str) -> String {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(runtime_fingerprint.as_bytes());
+        hex::encode(hasher.finalize())[..32].to_string()
+    }
+
+    #[test]
+    fn descriptive_fingerprints_produce_a_short_directory_name() {
+        // The preview launcher describes its runtime this way; interpolating it
+        // directly produced a ~250 character directory that would not create.
+        let descriptive = "waterui-core@0.2.0:git:6875cfd947e461a5d066aec67d46f9b648a236b5\
+            |features=assets,default,dynamic_linking,gpu,media,video\
+            |graph=ac1a8d5b7c7b12b71812fc33dff21008dc49ee687ddc208a52807d8065cabe3c\
+            |profile=WATERUI_PREVIEW_MODE=1";
+
+        let slug = runtime_slug(descriptive);
+
+        assert_eq!(slug.len(), 32);
+        assert!(slug.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn different_runtime_graphs_do_not_share_a_directory() {
+        assert_ne!(
+            runtime_slug("features=gpu"),
+            runtime_slug("features=gpu,media")
+        );
+    }
 }
 
 #[cfg(test)]
