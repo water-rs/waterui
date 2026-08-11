@@ -11,7 +11,7 @@ use waterui_str::Str;
 use waterui_url::Url;
 use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewEvent,
-    WebViewHandle,
+    WebViewHandle, bridge,
 };
 
 use crate::cdp::CefCdpSession;
@@ -264,29 +264,17 @@ impl CustomWebViewController for CefController {
     }
 }
 
-/// One `waterui.invoke(...)` request produced by `webview_bridge.js`.
-///
-/// The binding this arrives on is reachable from ordinary page script, so every
-/// field is validated and a malformed request is rejected instead of aborting the
-/// host process.
-#[derive(Debug, serde::Deserialize)]
-struct BridgeCall {
-    id: u64,
-    name: String,
-    data: Vec<u8>,
-}
-
 fn dispatch_bridge_call(
     session: &CefCdpSession,
     handlers: &RefCell<HashMap<String, Rc<MessageHandler>>>,
     params: &Value,
 ) {
-    let Some(payload) = params.get("payload").and_then(Value::as_str) else {
+    let Some(envelope) = params.get("payload").and_then(Value::as_str) else {
         tracing::warn!("CEF bridge binding fired without a string payload; ignoring");
         return;
     };
-    let call: BridgeCall = match serde_json::from_str(payload) {
-        Ok(call) => call,
+    let request = match bridge::Request::parse(envelope) {
+        Ok(request) => request,
         Err(error) => {
             tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
             return;
@@ -294,33 +282,20 @@ fn dispatch_bridge_call(
     };
     // Resolve the handler and release the borrow before invoking it: a handler is
     // free to register or remove handlers on the same web view.
-    let handler = handlers.borrow().get(&call.name).map(Rc::clone);
-    let Some(handler) = handler else {
+    let handler = handlers.borrow().get(&request.name).map(Rc::clone);
+    let reply = if let Some(handler) = handler {
+        bridge::Reply::Bytes(handler(&request.payload))
+    } else {
         tracing::warn!(
-            handler = %call.name,
+            handler = %request.name,
             "page script called a WaterUI handler that is not registered"
         );
-        reply_to_bridge_call(
-            session,
-            call.id,
-            false,
-            &Value::from(format!("no WaterUI handler named `{}`", call.name)),
-        );
-        return;
+        bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
     };
-    let response = handler(&call.data);
-    reply_to_bridge_call(session, call.id, true, &Value::from(response));
-}
-
-fn reply_to_bridge_call(session: &CefCdpSession, id: u64, ok: bool, payload: &Value) {
-    let expression = format!(
-        "globalThis.__wateruiResolve({id},{ok},{})",
-        serde_json::to_string(payload).expect("WaterUI bridge reply must serialize")
-    );
     execute_without_result(
         session,
         "Runtime.evaluate",
-        &json!({ "expression": expression }),
+        &json!({ "expression": reply.resolve_script(request.id) }),
     );
 }
 
@@ -329,12 +304,12 @@ fn install_bridge(session: &CefCdpSession) {
     execute_without_result(
         session,
         "Runtime.addBinding",
-        &json!({"name": "__wateruiInvoke"}),
+        &json!({ "name": bridge::SEND_FUNCTION }),
     );
     execute_without_result(
         session,
         "Page.addScriptToEvaluateOnNewDocument",
-        &json!({"source": include_str!("webview_bridge.js")}),
+        &json!({ "source": bridge::SCRIPT }),
     );
 }
 

@@ -38,6 +38,7 @@ mod url_signal;
 pub use url_signal::IntoUrlSignal;
 mod watcher;
 pub use watcher::{WatcherGuard, WatcherSet};
+pub mod bridge;
 
 use waterui_core::{
     Binding, Computed, Environment, Native, Signal, View, binding,
