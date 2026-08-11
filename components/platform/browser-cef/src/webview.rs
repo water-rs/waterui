@@ -309,7 +309,7 @@ fn install_bridge(session: &CefCdpSession) {
     execute_without_result(
         session,
         "Page.addScriptToEvaluateOnNewDocument",
-        &json!({ "source": bridge::SCRIPT }),
+        &json!({ "source": waterui_webview::DOCUMENT_START_SCRIPT }),
     );
 }
 

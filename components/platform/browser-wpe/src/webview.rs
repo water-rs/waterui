@@ -75,7 +75,7 @@ impl WpeWebViewHandle {
         // Transport first: the shared script calls `__wateruiSend`, so the adapter
         // onto WPE's single WebKit message handler has to exist before it runs.
         page.add_script(TRANSPORT_SCRIPT, false);
-        page.add_script(waterui_webview::bridge::SCRIPT, false);
+        page.add_script(waterui_webview::DOCUMENT_START_SCRIPT, false);
         Self {
             page,
             redirects: Rc::new(RefCell::new(None)),
