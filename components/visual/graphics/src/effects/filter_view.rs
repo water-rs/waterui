@@ -28,7 +28,7 @@ use core::time::Duration;
 pub use filtrate::effect::EffectRedrawCallback;
 pub use filtrate::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRenderResult, EffectSetupResult, FilterAdapter, HdrPolicy,
+    EffectRenderResult, EffectSetupResult, FilterAdapter, HdrPolicy, WgslModuleCache,
 };
 use filtrate_core::{
     AnimatedCallback, AnimatedTarget, Chain, Filter, FilterParam, Interpolator, WatchGuard,

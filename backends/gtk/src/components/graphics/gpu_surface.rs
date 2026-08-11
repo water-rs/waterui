@@ -19,6 +19,7 @@ use glow::HasContext;
 use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
+use waterui_graphics::gpu_surface::WgslModuleCache;
 use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
     preferred_msaa_samples,
@@ -567,11 +568,13 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     gtk4::glib::MainContext::default().spawn_local(async move {
         let mut gpu_surface = gpu_surface;
         let mut env = env;
+        let shader_cache = WgslModuleCache::new();
         let ctx = GpuContext {
             adapter: &adapter,
             device: &device,
             queue: &queue,
             surface_format: format,
+            shader_cache: &shader_cache,
             msaa_samples,
             redraw_handle: redraw_handle.clone(),
         };

@@ -140,6 +140,9 @@ use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor, Srgb};
+use std::sync::Arc;
+
+use shaderloom::WgslModuleCache;
 use waterui_graphics::filter_view::{EffectContext, EffectInput, EffectOutput};
 use waterui_graphics::gpu_surface::GestureState;
 use waterui_graphics::view_effect::{
@@ -221,6 +224,9 @@ pub struct HydrolysisRenderer {
     /// `GpuSurface`. Async setup and renderer-owned redraws from nested surfaces
     /// use it to wake the parent host without polling frames.
     host_redraw_handle: Option<RedrawHandle>,
+    /// Module cache for shaders that embedded GPU surfaces, view effects and
+    /// filters assemble at runtime. Shared so identical WGSL compiles once.
+    shader_cache: Arc<WgslModuleCache>,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
@@ -334,6 +340,7 @@ impl HydrolysisRenderer {
             window_bounds: vello::kurbo::Rect::ZERO,
             signals: FrameSignals::new(frame_instant),
             host_redraw_handle: None,
+            shader_cache: Arc::new(WgslModuleCache::new()),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,

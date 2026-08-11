@@ -6,7 +6,7 @@
 use divan::Bencher;
 use filtrate::filters;
 use waterui_graphics::filter_view::{
-    Effect, EffectContext, EffectInput, EffectOutput, FilterAdapter,
+    Effect, EffectContext, EffectInput, EffectOutput, FilterAdapter, WgslModuleCache,
 };
 
 const WIDTH: u32 = 3840;
@@ -91,9 +91,11 @@ impl GpuBench {
     }
 
     fn setup_filter<F: Effect>(&self, filter: &mut F) {
+        let shader_cache = WgslModuleCache::new();
         let ctx = EffectContext {
             device: &self.device,
             queue: &self.queue,
+            shader_cache: &shader_cache,
             input_format: FORMAT,
             output_format: FORMAT,
         };

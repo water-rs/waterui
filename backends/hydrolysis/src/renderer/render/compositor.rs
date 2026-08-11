@@ -9,6 +9,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use shaderloom::WgslModuleCache;
+
 const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/gpu_surface_compositor.rs"));
 
@@ -142,6 +144,7 @@ struct EmbeddedGpuSurfaceSetup {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    shader_cache: Arc<WgslModuleCache>,
     host_redraw_handle: Option<RedrawHandle>,
 }
 
@@ -690,6 +693,7 @@ impl EmbeddedGpuSurfaceRuntime {
                 adapter: &resources.adapter,
                 device: &resources.device,
                 queue: &resources.queue,
+                shader_cache: resources.shader_cache.as_ref(),
                 surface_format,
                 msaa_samples: msaa_samples.get(),
                 redraw_handle,
@@ -942,6 +946,7 @@ impl HydrolysisRenderer {
             adapter: adapter.clone(),
             device: device.clone(),
             queue: queue.clone(),
+            shader_cache: Arc::clone(&self.shader_cache),
             host_redraw_handle: self.host_redraw_handle.clone(),
         }
     }

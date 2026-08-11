@@ -350,6 +350,7 @@ fn start_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat)
             device: &gpu.device,
             queue: &gpu.queue,
             surface_format: format,
+            shader_cache: gpu.shader_cache.as_ref(),
             msaa_samples,
             redraw_handle: redraw_handle.clone(),
         };

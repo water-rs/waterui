@@ -19,6 +19,7 @@ filtrate-core.workspace = true
 filtrate-derive.workspace = true
 wgpu.workspace = true
 shaderloom.workspace = true
+askama = "0.16"
 bytemuck = { version = "1", features = ["derive"] }
 num-traits = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

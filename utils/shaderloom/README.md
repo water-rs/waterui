@@ -35,7 +35,8 @@ shaderloom = { version = "0.1", features = ["build"] }
 
 Compile a WGSL module from `build.rs`:
 
-```rust,no_run
+```rust,ignore
+// build.rs, with `features = ["build"]` on the build-dependency.
 shaderloom::build::compile_wgsl_shader("src/particles.wgsl", "particles");
 ```
 

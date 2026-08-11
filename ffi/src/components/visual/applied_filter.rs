@@ -28,7 +28,7 @@ use wgpu_hal::api::Metal as MetalApi;
 
 use waterui_graphics::RedrawHandle;
 use waterui_graphics::filter_view::{
-    AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput,
+    AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput, WgslModuleCache,
 };
 use waterui_graphics::shared_context::GpuRuntime;
 
@@ -710,9 +710,11 @@ fn start_applied_filter_setup(state: &WuiAppliedFilterState, input_format: wgpu:
     let redraw_handle = state.redraw_handle.clone();
     spawn_local(async move {
         let gpu = runtime.context();
+        let shader_cache = WgslModuleCache::new();
         let ctx = EffectContext {
             device: &gpu.device,
             queue: &gpu.queue,
+            shader_cache: &shader_cache,
             input_format,
             output_format,
         };

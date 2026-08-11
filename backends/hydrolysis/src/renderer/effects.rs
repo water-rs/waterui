@@ -3,12 +3,16 @@
 
 use super::*;
 use std::sync::Arc;
+
+use shaderloom::WgslModuleCache;
 use waterui_graphics::filter_view::EffectFrameClock;
 
 #[derive(Clone)]
 pub(crate) struct EffectSetupResources {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Module cache for the shaders effects assemble at runtime on `device`.
+    shader_cache: Arc<WgslModuleCache>,
     host_redraw_handle: Option<RedrawHandle>,
 }
 
@@ -90,6 +94,7 @@ impl AppliedFilterRuntime {
         let context = EffectContext {
             device: &resources.device,
             queue: &resources.queue,
+            shader_cache: resources.shader_cache.as_ref(),
             input_format: wgpu::TextureFormat::Rgba8Unorm,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
         };
@@ -415,6 +420,7 @@ impl HydrolysisRenderer {
         EffectSetupResources {
             device: device.clone(),
             queue: queue.clone(),
+            shader_cache: Arc::clone(&self.shader_cache),
             host_redraw_handle: self.host_redraw_handle.clone(),
         }
     }
