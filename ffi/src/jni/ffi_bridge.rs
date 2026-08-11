@@ -229,11 +229,13 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropAnyVie
 // Environment Install Functions
 // ============================================================================
 
+#[cfg(feature = "gpu")]
 struct AndroidGpuRuntimeCompletion {
     jvm: jni::JavaVM,
     callback: Global<JObject<'static>>,
 }
 
+#[cfg(feature = "gpu")]
 impl AndroidGpuRuntimeCompletion {
     fn complete(self, runtime: waterui_graphics::shared_context::GpuRuntime) {
         let runtime = crate::IntoFFI::into_ffi(runtime);
@@ -251,6 +253,7 @@ impl AndroidGpuRuntimeCompletion {
 }
 
 /// Creates the process GPU runtime without blocking the Android main thread.
+#[cfg(feature = "gpu")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuRuntimeCreate<'local>(
     mut env: EnvUnowned<'local>,
@@ -273,6 +276,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuRuntimeCreate<
 }
 
 /// Installs an asynchronously-created GPU runtime into the app environment.
+#[cfg(feature = "gpu")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallGpuRuntime<'local>(
     _env: EnvUnowned<'local>,

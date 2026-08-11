@@ -1,4 +1,10 @@
 // Generate by generate_header.rs, do not modify by hand.
+//
+// This header declares the full waterui-ffi API surface. Which symbols are
+// actually linked depends on the crate features the app was built with:
+// GpuSurface/ViewEffect/AppliedFilter/GPU-runtime symbols exist only when the
+// `gpu` feature (default-on) is enabled, and the C API as a whole requires
+// `c-api` (Android's `android-jni` builds export JNI symbols instead).
 
 #ifdef __cplusplus
 extern "C" {

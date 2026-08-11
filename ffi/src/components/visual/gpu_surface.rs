@@ -9,6 +9,16 @@
 //! 3. Attaching and detaching native presentation surfaces as their lifecycle changes
 //! 4. Calling `waterui_gpu_surface_render` when the redraw callback fires
 //! 5. Calling `waterui_gpu_surface_drop` when the semantic view is destroyed
+//!
+//! # Thread affinity
+//!
+//! `WuiGpuSurfaceState` is single-threaded `Rc`/`RefCell` state. Every entry
+//! point taking a `WuiGpuSurfaceState` pointer must run on the thread that
+//! created the state (the renderer's owning thread), whether or not an
+//! individual safety comment repeats it. The only cross-thread contracts are
+//! the installed redraw callback (safe to fire from any thread) and the
+//! capture-completion callback, which runs on the shared GPU completion
+//! thread.
 
 use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
@@ -485,11 +495,19 @@ pub(crate) fn measure_state(
     proposal: waterui_core::layout::ProposalSize,
 ) -> waterui_core::layout::ViewDimensions {
     let semantic = state.semantic.borrow();
-    semantic
-        .as_ref()
-        .expect("GpuSurface cannot be measured while asynchronous setup owns its renderer")
-        .gpu_surface
-        .measure(proposal)
+    semantic.as_ref().map_or_else(
+        || {
+            // Asynchronous setup owns the renderer right now, and hosts
+            // legitimately lay out while it runs. Answer with `GpuView`'s own
+            // default measurement (fill the proposal); setup completion wakes
+            // the host, which re-measures custom-sized views.
+            waterui_core::layout::ViewDimensions::new(waterui_core::layout::Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            ))
+        },
+        |semantic| semantic.gpu_surface.measure(proposal),
+    )
 }
 
 /// Returns the layout priority declared by the semantic GPU view.

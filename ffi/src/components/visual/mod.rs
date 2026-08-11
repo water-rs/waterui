@@ -1,11 +1,14 @@
-#[cfg(feature = "c-api")]
+#[cfg(all(feature = "c-api", feature = "gpu"))]
 pub mod applied_filter;
+#[cfg(feature = "gpu")]
 pub mod gpu_runtime;
+#[cfg(feature = "gpu")]
 pub mod gpu_surface;
-#[cfg(feature = "c-api")]
+#[cfg(all(feature = "c-api", feature = "gpu"))]
 pub mod view_effect;
 pub mod view_renderer;
 
+#[cfg(feature = "gpu")]
 fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
     device: &wgpu::Device,

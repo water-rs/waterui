@@ -1513,7 +1513,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView
 // Android video surface host
 // ============================================================================
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostAttach<
     'local,
@@ -1532,7 +1532,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfa
     });
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostDrop<
     'local,
@@ -1548,7 +1548,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfa
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostSurfaceDestroyed<
     'local,
@@ -1567,19 +1567,19 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfa
 // GpuSurface Functions
 // ============================================================================
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 struct JniGpuSurfaceState {
     state: *mut crate::components::gpu_surface::WuiGpuSurfaceState,
     window: Option<AndroidNativeWindow>,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 struct AndroidGpuSurfaceRedrawTarget {
     jvm: jni::JavaVM,
     owner: Global<JObject<'static>>,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 unsafe extern "C" fn wake_android_gpu_surface(context: *mut c_void) {
     let target = unsafe { &*(context as *const AndroidGpuSurfaceRedrawTarget) };
     super::with_attached_env(&target.jvm, |env| {
@@ -1594,12 +1594,12 @@ unsafe extern "C" fn wake_android_gpu_surface(context: *mut c_void) {
     .expect("GpuSurface redraw callback failed to attach to JVM");
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 unsafe extern "C" fn drop_android_gpu_surface_redraw_target(context: *mut c_void) {
     unsafe { drop(Box::from_raw(context as *mut AndroidGpuSurfaceRedrawTarget)) };
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<'local>(
     mut env: EnvUnowned<'local>,
@@ -1647,7 +1647,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<
     })
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceMeasure<'local>(
     mut env: EnvUnowned<'local>,
@@ -1669,7 +1669,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceMeasure
     })
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriority<'local>(
     _env: EnvUnowned<'local>,
@@ -1681,7 +1681,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriorit
     unsafe { crate::components::gpu_surface::priority_state(&*wrapper.state) }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady<'local>(
     _env: EnvUnowned<'local>,
@@ -1695,7 +1695,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady
     ready
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'local>(
     mut env: EnvUnowned<'local>,
@@ -1730,7 +1730,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<
     });
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<'local>(
     _env: EnvUnowned<'local>,
@@ -1749,7 +1749,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<
     drop(wrapper.window.take());
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'local>(
     _env: EnvUnowned<'local>,
@@ -1770,7 +1770,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
     needs_redraw
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'local>(
     _env: EnvUnowned<'local>,
@@ -1820,7 +1820,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInpu
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'local>(
     _env: EnvUnowned<'local>,
