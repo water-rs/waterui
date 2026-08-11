@@ -1237,84 +1237,124 @@ fn is_unit_output(output: &syn::ReturnType) -> bool {
 }
 
 struct WateruiTestArgs {
-    view: syn::Path,
+    /// `Some` mounts this no-arg view function; `None` is the manual-mount
+    /// form whose test function receives the configured `UiBuilder` by value.
+    view: Option<syn::Path>,
+    theme: Option<Expr>,
     viewport: Option<(Expr, Expr)>,
+    offscreen: bool,
 }
 
-impl Parse for WateruiTestArgs {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let view = input.parse()?;
-        let mut viewport = None;
-        while input.peek(Token![,]) {
-            input.parse::<Token![,]>()?;
-            if input.is_empty() {
-                break;
-            }
-            let name: syn::Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            if name != "viewport" {
-                return Err(syn::Error::new_spanned(
-                    name,
-                    "`#[waterui::test(...)]` only accepts `viewport = (width, height)` after the view function path",
-                ));
-            }
+impl WateruiTestArgs {
+    fn parse_named(&mut self, input: syn::parse::ParseStream) -> syn::Result<()> {
+        let name: syn::Ident = input.parse()?;
+        if name == "offscreen" {
+            self.offscreen = true;
+            return Ok(());
+        }
+        input.parse::<Token![=]>()?;
+        if name == "theme" {
+            self.theme = Some(input.parse()?);
+            return Ok(());
+        }
+        if name == "viewport" {
             let content;
             syn::parenthesized!(content in input);
             let width: Expr = content.parse()?;
             content.parse::<Token![,]>()?;
             let height: Expr = content.parse()?;
-            viewport = Some((width, height));
+            self.viewport = Some((width, height));
+            return Ok(());
         }
-        Ok(Self { view, viewport })
+        Err(syn::Error::new_spanned(
+            name,
+            "`#[waterui::test(...)]` accepts an optional view function path followed by `theme = <installer>`, `viewport = (width, height)`, and `offscreen`",
+        ))
+    }
+
+    /// Whether the next tokens are a named argument (`ident =` or the bare
+    /// `offscreen` flag) rather than the leading view function path.
+    fn peeks_named(input: syn::parse::ParseStream) -> bool {
+        let fork = input.fork();
+        let Ok(ident) = fork.parse::<syn::Ident>() else {
+            return false;
+        };
+        if ident == "offscreen" && (fork.is_empty() || fork.peek(Token![,])) {
+            return true;
+        }
+        fork.peek(Token![=])
+    }
+}
+
+impl Parse for WateruiTestArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut args = Self {
+            view: None,
+            theme: None,
+            viewport: None,
+            offscreen: false,
+        };
+        let mut first = true;
+        while !input.is_empty() {
+            if !first {
+                input.parse::<Token![,]>()?;
+                if input.is_empty() {
+                    break;
+                }
+            }
+            if first && !Self::peeks_named(input) {
+                args.view = Some(input.parse()?);
+            } else {
+                args.parse_named(input)?;
+            }
+            first = false;
+        }
+        if args.offscreen && args.view.is_none() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "`offscreen` only applies when the macro mounts a view function; the manual-mount form calls `mount_offscreen` itself",
+            ));
+        }
+        Ok(args)
     }
 }
 
 fn parse_test_view_arg(args: TokenStream) -> Result<WateruiTestArgs, TokenStream> {
-    if args.is_empty() {
-        return Err(syn::Error::new(
-            Span::call_site(),
-            "`#[waterui::test(...)]` requires exactly one argument: a no-arg view function path",
-        )
-        .to_compile_error()
-        .into());
-    }
     syn::parse::<WateruiTestArgs>(args).map_err(|err| err.to_compile_error().into())
 }
 
-fn validate_test_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
+fn single_typed_parameter<'a>(
+    input_fn: &'a ItemFn,
+    expected: &str,
+) -> Result<&'a syn::PatType, TokenStream> {
     if input_fn.sig.inputs.len() != 1 {
         return Err(syn::Error::new_spanned(
             &input_fn.sig.inputs,
-            "`#[waterui::test(...)]` test function must take exactly one `&mut` parameter",
+            format!("`#[waterui::test(...)]` test function must take exactly one parameter: {expected}"),
         )
         .to_compile_error()
         .into());
     }
 
-    let Some(first_arg) = input_fn.sig.inputs.first() else {
-        return Err(syn::Error::new_spanned(
+    match input_fn.sig.inputs.first() {
+        Some(syn::FnArg::Typed(arg)) => Ok(arg),
+        _ => Err(syn::Error::new_spanned(
             &input_fn.sig.inputs,
-            "`#[waterui::test(...)]` missing test function parameter",
+            format!("`#[waterui::test(...)]` test function must take one explicit parameter: {expected}"),
         )
         .to_compile_error()
-        .into());
-    };
-    let typed_arg = match first_arg {
-        syn::FnArg::Typed(arg) => arg,
-        syn::FnArg::Receiver(receiver) => {
-            return Err(syn::Error::new_spanned(
-                receiver,
-                "`#[waterui::test(...)]` test function must take one explicit `&mut` parameter",
-            )
-            .to_compile_error()
-            .into());
-        }
-    };
+        .into()),
+    }
+}
+
+/// The mounting form takes the app session by `&mut`.
+fn validate_mounted_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
+    let typed_arg = single_typed_parameter(input_fn, "a `&mut` app session")?;
 
     let syn::Type::Reference(reference) = typed_arg.ty.as_ref() else {
         return Err(syn::Error::new_spanned(
             &typed_arg.ty,
-            "`#[waterui::test(...)]` parameter must be a mutable reference",
+            "`#[waterui::test(...)]` parameter must be a mutable reference to the app session",
         )
         .to_compile_error()
         .into());
@@ -1331,7 +1371,23 @@ fn validate_test_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStre
     Ok(typed_arg)
 }
 
-fn validate_test_fn(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
+/// The manual-mount form takes the configured `UiBuilder` by value.
+fn validate_builder_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
+    let typed_arg = single_typed_parameter(input_fn, "the `UiBuilder` by value")?;
+
+    if matches!(typed_arg.ty.as_ref(), syn::Type::Reference(_)) {
+        return Err(syn::Error::new_spanned(
+            &typed_arg.ty,
+            "the manual-mount form of `#[waterui::test(...)]` takes the `UiBuilder` by value; mount it in the test body",
+        )
+        .to_compile_error()
+        .into());
+    }
+
+    Ok(typed_arg)
+}
+
+fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatType, TokenStream> {
     if input_fn.sig.constness.is_some() {
         return Err(syn::Error::new_spanned(
             input_fn.sig.constness,
@@ -1391,39 +1447,60 @@ fn validate_test_fn(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
         }
     }
 
-    validate_test_parameter(input_fn)
+    if mounts_view {
+        validate_mounted_parameter(input_fn)
+    } else {
+        validate_builder_parameter(input_fn)
+    }
 }
 
 /// Attribute macro for `WaterUI` accessibility-first unit tests.
 ///
-/// # Example
+/// # Mounting form
+///
+/// A no-arg view function path mounts before the test body runs; the test
+/// function receives the app session by `&mut`. `theme = <installer>` swaps
+/// the theme package, `viewport = (width, height)` sizes the window, and the
+/// bare `offscreen` flag mounts the GPU-backed offscreen runtime (the test
+/// then takes `&mut OffscreenApp`).
 ///
 /// ```ignore
 /// fn login_view() -> impl View {
 ///     // ...
 /// }
 ///
-/// #[waterui::test(login_view)]
+/// #[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
 /// fn login_flow(app: &mut waterui_testing::SemanticApp) {
 ///     app.query().role(waterui_testing::Role::BUTTON).label("Login").tap();
 /// }
 /// ```
 ///
+/// # Manual-mount form
+///
+/// Without a view path the test function receives the configured
+/// [`UiBuilder`](https://docs.rs/waterui-testing) by value and mounts in its
+/// own body — the form for tests that own `Binding`s the view closes over.
+///
+/// ```ignore
+/// #[waterui::test(theme = hydrolysis_m3::install)]
+/// fn stepper_updates_binding(ui: waterui_testing::UiBuilder) {
+///     let value = Binding::i32(2);
+///     let value_for_view = value.clone();
+///     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
+///     app.query().label("Limited").increment();
+///     assert_eq!(value.get(), 3);
+/// }
+/// ```
+///
 /// The macro always expands into a regular `#[test]` wrapper.
-///
-/// # Panics
-///
-/// Panics during macro expansion only if the validated single view-function argument is
-/// unexpectedly missing.
 #[proc_macro_attribute]
 pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     let test_args = match parse_test_view_arg(args) {
         Ok(test_args) => test_args,
         Err(err) => return err,
     };
-    let view_fn = test_args.view;
     let input_fn = parse_macro_input!(input as ItemFn);
-    let typed_arg = match validate_test_fn(&input_fn) {
+    let typed_arg = match validate_test_fn(&input_fn, test_args.view.is_some()) {
         Ok(typed_arg) => typed_arg,
         Err(err) => return err,
     };
@@ -1441,31 +1518,48 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg_type = &typed_arg.ty;
     let async_wrapper = input_fn.sig.asyncness.is_some();
 
+    let mut builder = quote! { #testing_path::ui() };
+    if let Some((width, height)) = &test_args.viewport {
+        builder = quote! { #builder.viewport(#width, #height) };
+    }
+    if let Some(theme) = &test_args.theme {
+        builder = quote! { #builder.theme(#theme) };
+    }
+
+    let bind_arg = if let Some(view_fn) = &test_args.view {
+        let mount = if test_args.offscreen {
+            quote! { mount_offscreen }
+        } else {
+            quote! { mount }
+        };
+        quote! {
+            let mut __waterui_test_mounted_app = #builder.#mount(#view_fn);
+            let #arg_pattern: #arg_type = &mut __waterui_test_mounted_app;
+        }
+    } else {
+        quote! {
+            let #arg_pattern: #arg_type = #builder;
+        }
+    };
+
     let run_body = if async_wrapper {
         quote! {
             #testing_path::block_on(async {
-                let #arg_pattern: #arg_type = &mut __waterui_test_mounted_app;
+                #bind_arg
                 #fn_body
             });
         }
     } else {
         quote! {
-            let #arg_pattern: #arg_type = &mut __waterui_test_mounted_app;
+            #bind_arg
             #fn_body
         }
-    };
-
-    let builder = if let Some((width, height)) = test_args.viewport {
-        quote! { #testing_path::ui().viewport(#width, #height) }
-    } else {
-        quote! { #testing_path::ui() }
     };
 
     let expanded = quote! {
         #(#attrs)*
         #[test]
         #visibility fn #fn_name() {
-            let mut __waterui_test_mounted_app = #builder.mount(#view_fn);
             #run_body
         }
     };
