@@ -5999,6 +5999,12 @@ typedef struct WuiWebViewHandle {
    */
   void (*remove_handler)(void*, struct WuiStr);
   /**
+   * Restricts which documents may reach the bridge.
+   *
+   * Receives newline-separated URI patterns, or `*` for every origin.
+   */
+  void (*set_bridge_origins)(void*, struct WuiStr);
+  /**
    * Sets a cookie for the web view. The string is a Set-Cookie header value.
    */
   void (*set_cookie)(void*, struct WuiStr);

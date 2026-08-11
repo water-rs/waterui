@@ -24,6 +24,9 @@ type MessageHandler = waterui_webview::ScriptMessageHandler;
 pub struct CefWebViewHandle {
     page: CefPageHandle,
     handlers: Rc<RefCell<HashMap<String, Rc<MessageHandler>>>>,
+    /// Which documents may reach the bridge. Checked on every call, because the
+    /// CDP binding is installed process-wide and any page can reach it.
+    origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>>,
 }
 
 impl core::fmt::Debug for CefWebViewHandle {
@@ -37,19 +40,31 @@ impl core::fmt::Debug for CefWebViewHandle {
 impl CefWebViewHandle {
     fn new(page: CefPageHandle) -> Self {
         let handlers = Rc::new(RefCell::new(HashMap::<String, Rc<MessageHandler>>::new()));
+        let origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>> =
+            Rc::new(RefCell::new(None));
         let session = page.cdp();
         install_bridge(&session);
         session.watch_events({
             let handlers = Rc::clone(&handlers);
+            let origins = Rc::clone(&origins);
             let session = session.clone();
+            let page = page.clone();
             move |event| {
                 if event.method != "Runtime.bindingCalled" {
+                    return;
+                }
+                if !document_may_use_bridge(&page, &origins) {
+                    tracing::warn!("a document outside the bridge origin policy tried to call a WaterUI handler");
                     return;
                 }
                 dispatch_bridge_call(&session, &handlers, &event.params);
             }
         });
-        Self { page, handlers }
+        Self {
+            page,
+            handlers,
+            origins,
+        }
     }
 
     /// Returns the underlying CEF page for renderer integration.
@@ -109,6 +124,10 @@ impl WebViewHandle for CefWebViewHandle {
         self.handlers
             .borrow_mut()
             .insert(name.to_string(), Rc::from(handler));
+    }
+
+    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        self.origins.replace(Some(policy));
     }
 
     fn remove_handler(&self, name: &str) {
@@ -262,6 +281,29 @@ impl CustomWebViewController for CefController {
     fn open(&self) -> impl WebViewHandle {
         CefWebViewHandle::new(self.open_page(CefPageConfiguration::default(), CefPageMode::Visible))
     }
+}
+
+/// Whether the document currently loaded may use the bridge.
+///
+/// CEF installs the binding for the whole browser, so this is the gate: a page
+/// the view navigated to is not automatically entitled to the handlers the
+/// application registered.
+fn document_may_use_bridge(
+    page: &CefPageHandle,
+    origins: &RefCell<Option<waterui_webview::OriginPolicy>>,
+) -> bool {
+    let Some(policy) = origins.borrow().clone() else {
+        // No policy installed yet means no handler has been registered either.
+        return false;
+    };
+    let Some(browser) = page.host().browser() else {
+        return false;
+    };
+    let Some(frame) = browser.main_frame() else {
+        return false;
+    };
+    let url = cef::CefString::from(&frame.url()).to_string();
+    url.parse().is_ok_and(|url| policy.allows(&url))
 }
 
 fn dispatch_bridge_call(

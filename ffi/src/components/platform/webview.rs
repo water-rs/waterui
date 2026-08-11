@@ -267,6 +267,10 @@ pub struct WuiWebViewHandle {
     pub add_handler: Option<unsafe extern "C" fn(*mut (), WuiStr, WuiFn<WuiWebViewMessage>)>,
     /// Removes a previously added handler.
     pub remove_handler: Option<unsafe extern "C" fn(*mut (), WuiStr)>,
+    /// Restricts which documents may reach the bridge.
+    ///
+    /// Receives newline-separated URI patterns, or `*` for every origin.
+    pub set_bridge_origins: Option<unsafe extern "C" fn(*mut (), WuiStr)>,
 
     // Cookies
     /// Sets a cookie for the web view. The string is a Set-Cookie header value.
@@ -483,6 +487,30 @@ impl WebViewHandle for FfiWebViewHandle {
         // controller, which outlives the call; the name and callback are passed by
         // value into backend ownership.
         unsafe { add_handler(self.ffi.data, name.into_ffi(), callback) }
+    }
+
+    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        // Enforced natively by the backend: it is the only side that can
+        // authenticate the frame a call arrived from. The policy is handed over
+        // as its URI patterns, which is what the platform filters accept.
+        let Some(set) = self.ffi.set_bridge_origins else {
+            return;
+        };
+        let patterns = policy.uri_patterns().map_or_else(
+            || Str::from_static("*"),
+            |patterns| {
+                Str::from(
+                    patterns
+                        .iter()
+                        .map(waterui_str::Str::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            },
+        );
+        // SAFETY: `set` and `ffi.data` come from the same registration.
+        // SAFETY: as for `add_handler` — same controller, same registration.
+        unsafe { set(self.ffi.data, patterns.into_ffi()) }
     }
 
     fn remove_handler(&self, name: &str) {

@@ -93,6 +93,13 @@ pub trait WebViewHandle: 'static {
     /// Removes a previously added handler.
     fn remove_handler(&self, name: &str);
 
+    /// Chooses which documents may reach the bridge.
+    ///
+    /// A backend enforces this as natively as it can — restricting where the
+    /// bridge script is injected, and checking the origin of the frame a call
+    /// arrives from — and refuses calls that do not match.
+    fn set_bridge_origins(&self, policy: crate::OriginPolicy);
+
     /// Stops the current loading operation.
     fn stop(&self);
     /// Refreshes the current page.
@@ -146,6 +153,7 @@ trait WebViewHandleImpl: Any {
     fn can_go_forward(&self) -> bool;
     fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>);
     fn remove_handler(&self, name: &str);
+    fn set_bridge_origins(&self, policy: crate::OriginPolicy);
     fn set_cookie(&self, cookie: Cookie<'static>);
     fn get_cookies<'a>(&'a self) -> Pin<Box<dyn 'a + Future<Output = Vec<Cookie<'static>>>>>;
     fn run_javascript<'a>(
@@ -211,6 +219,10 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
 
     fn remove_handler(&self, name: &str) {
         WebViewHandle::remove_handler(self, name);
+    }
+
+    fn set_bridge_origins(&self, policy: crate::OriginPolicy) {
+        WebViewHandle::set_bridge_origins(self, policy);
     }
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
@@ -307,6 +319,11 @@ impl AnyWebViewHandle {
     /// Removes a previously added custom handler.
     pub fn remove_handler(&self, name: &str) {
         self.inner.remove_handler(name);
+    }
+
+    /// Chooses which documents may reach the bridge.
+    pub fn set_bridge_origins(&self, policy: crate::OriginPolicy) {
+        self.inner.set_bridge_origins(policy);
     }
 
     /// Sets a cookie for the web view.
