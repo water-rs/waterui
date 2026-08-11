@@ -133,6 +133,13 @@ impl FrameSignals {
         self.inner.next_frame_rebuild_requested.replace(false)
     }
 
+    /// Returns whether a deferred rebuild is pending, without consuming the
+    /// request.
+    #[must_use]
+    pub fn has_next_frame_rebuild_request(&self) -> bool {
+        self.inner.next_frame_rebuild_requested.get()
+    }
+
     /// Returns whether at least one dirty `Dynamic` node awaits an isolated
     /// patch, without consuming the request.
     #[must_use]

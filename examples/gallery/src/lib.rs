@@ -579,7 +579,7 @@ mod tests {
     use super::{Row, catalog, new_state};
     use core::time::Duration;
     use waterui::Binding;
-    use waterui::env::Environment;
+    
     use waterui::reactive::collection::List as ReactiveList;
     use waterui_testing::{SemanticApp, ui};
 
@@ -595,9 +595,7 @@ mod tests {
         width: u32,
         height: u32,
     ) -> SemanticApp {
-        let mut env = Environment::new();
-        hydrolysis_m3::install(&mut env);
-        ui().environment(env)
+                ui().theme(hydrolysis_m3::install)
             .viewport(width, height)
             .mount(move || {
                 catalog(
@@ -627,7 +625,7 @@ mod tests {
             ("Buttons", "Bordered Prominent"),
         ];
         for (item, confirm) in controls {
-            assert!(app.query().label(item).tap(), "tap sidebar item {item}");
+            app.query().label(item).tap();
             assert!(
                 app.query()
                     .label_contains(confirm)
@@ -659,10 +657,7 @@ mod tests {
     fn selecting_control_shows_demo() {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = mount(selected, groups_open, rows, state, 1100, 760);
-        assert!(
-            app.query().label("Toggle").tap(),
-            "drawer item should be tappable"
-        );
+        app.query().label("Toggle").tap();
         assert!(
             app.query()
                 .label_contains("Bluetooth")
@@ -679,10 +674,7 @@ mod tests {
         let mut app = mount(selected, groups_open, rows, state, 1100, 760);
         app.query().label("Slider").assert_exists();
         // Tap the Inputs group header to collapse it.
-        assert!(
-            app.query().label("Inputs").tap(),
-            "group header should be tappable"
-        );
+        app.query().label("Inputs").tap();
         assert!(
             app.query()
                 .label("Slider")
@@ -702,14 +694,14 @@ mod tests {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = mount(selected, groups_open, rows, state, 1100, 760);
         // Collapse Inputs, then expand it again.
-        assert!(app.query().label("Inputs").tap());
+        app.query().label("Inputs").tap();
         assert!(
             app.query()
                 .label("Slider")
                 .wait_for_nonexistence(Duration::from_secs(3)),
             "collapsing should remove the group's items"
         );
-        assert!(app.query().label("Inputs").tap());
+        app.query().label("Inputs").tap();
         assert!(
             app.query()
                 .label("Slider")
@@ -725,10 +717,7 @@ mod tests {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = mount(selected, groups_open, rows, state, 1100, 760);
         app.query().label_contains("Taps: 0").assert_exists();
-        assert!(
-            app.query().label("Bordered Prominent").tap(),
-            "demo button should be tappable"
-        );
+        app.query().label("Bordered Prominent").tap();
         assert!(
             app.query()
                 .label_contains("Taps: 1")

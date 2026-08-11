@@ -38,7 +38,7 @@ fn plain_button_press_shows_growing_ripple() {
     let mut app = ui()
         .viewport(360, 200)
         .theme(install)
-        .mount(|| button("Press Me"));
+        .mount_offscreen(|| button("Press Me"));
     let (cx, cy) = press_center(&mut app, "Press Me");
     save(&mut app, "press-before");
     // Queue the press without the semantic settle so the captures land inside
@@ -63,7 +63,7 @@ fn released_ripple_fades_at_full_size_without_shrinking() {
     let mut app = ui()
         .viewport(360, 200)
         .theme(install)
-        .mount(|| button("Release Me"));
+        .mount_offscreen(|| button("Release Me"));
     let (cx, cy) = press_center(&mut app, "Release Me");
     // Press off-center so a shrinking ripple would visibly drift.
     let (px, py) = (cx - 40.0, cy + 10.0);
@@ -92,7 +92,7 @@ fn rapid_represses_overlap_independent_waves() {
     let mut app = ui()
         .viewport(360, 200)
         .theme(install)
-        .mount(|| button("Tap Tap"));
+        .mount_offscreen(|| button("Tap Tap"));
     let (cx, cy) = press_center(&mut app, "Tap Tap");
     // Stay inside the button bounds; opposite corners make the two waves'
     // distinct origins obvious.
@@ -118,7 +118,7 @@ fn plain_button_hover_shows_state_layer() {
     let mut app = ui()
         .viewport(360, 200)
         .theme(install)
-        .mount(|| button("Hover Me"));
+        .mount_offscreen(|| button("Hover Me"));
     let _ = press_center(&mut app, "Hover Me");
     save(&mut app, "hover-before");
     let _ = app.query().label("Hover Me").hover();
@@ -133,7 +133,7 @@ fn ripple_survives_same_frame_structural_patch() {
     // a `watch` subtree rebuilds from in the same refresh frame. The quick
     // tap's ripple must keep growing through the structural patch.
     let mode_for_view = binding(false);
-    let mut app = ui().viewport(360, 240).theme(install).mount(move || {
+    let mut app = ui().viewport(360, 240).theme(install).mount_offscreen(move || {
         let mode_for_action = mode_for_view.clone();
         let swapped = watch(mode_for_view.clone(), |mode| {
             if mode {
@@ -151,11 +151,8 @@ fn ripple_survives_same_frame_structural_patch() {
         ))
     });
     let (cx, cy) = press_center(&mut app, "Swap");
-    assert!(app.semantic_mut().pointer_down_at(cx, cy), "press must hit");
-    assert!(
-        app.semantic_mut().pointer_up_at(cx, cy),
-        "release must activate"
-    );
+    app.semantic_mut().pointer_down_at(cx, cy);
+    app.semantic_mut().pointer_up_at(cx, cy);
     app.query().label("Swapped content").assert_exists();
     app.pump_for(Duration::from_millis(80));
     save(&mut app, "patch-press-80ms");

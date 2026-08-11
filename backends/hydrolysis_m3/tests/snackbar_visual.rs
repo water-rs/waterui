@@ -18,7 +18,7 @@ fn snackbar_fades_and_slides_into_place() {
     let mut app = ui()
         .viewport(640, 360)
         .theme(install)
-        .mount(move || overlay.clone());
+        .mount_offscreen(move || overlay.clone());
 
     save(&mut app, "before");
     manager.show(

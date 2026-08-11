@@ -63,13 +63,10 @@ fn assert_chart_semantic_flow<T, V, F>(
         .label("selected:none")
         .assert_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(waterui_testing::Role::IMAGE)
             .label(chart_label.clone())
-            .hover_at(hover_at.0, hover_at.1),
-        "{name}: hover_at should update focused binding"
-    );
+            .hover_at(hover_at.0, hover_at.1);
     let focused_hit = focused
         .get()
         .expect("focused binding should hold a hit result after hover");
@@ -93,13 +90,10 @@ fn assert_chart_semantic_flow<T, V, F>(
         .role(waterui_testing::Role::LABEL)
         .label_contains("focused:")
         .assert_exists();
-    assert!(
-        app.query()
+    app.query()
             .role(waterui_testing::Role::IMAGE)
             .label(chart_label)
-            .tap_at(hover_at.0, hover_at.1),
-        "{name}: tap_at should update selected binding"
-    );
+            .tap_at(hover_at.0, hover_at.1);
     let selected_hit = selected
         .get()
         .expect("selected binding should hold a hit result after tap");

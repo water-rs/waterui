@@ -43,7 +43,7 @@ fn disabled_controls_render_md3_disabled_palette() {
     let mut app = ui()
         .viewport(360, 420)
         .theme(install)
-        .mount(move || controls(true));
+        .mount_offscreen(move || controls(true));
     assert!(
         app.query()
             .role(Role::SWITCH)

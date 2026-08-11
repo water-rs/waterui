@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
-use waterui::{Binding, Environment, SignalExt, View};
+use waterui::{Binding, SignalExt, View};
 use waterui_form::secure;
 use waterui_form::secure::Secure;
 use waterui_testing::{Role, Selector, SemanticApp, ui};
@@ -19,10 +19,7 @@ fn secure_view() -> impl View {
 }
 
 fn mount_secure_view() -> SemanticApp {
-    let mut env = Environment::new();
-    hydrolysis_m3::install(&mut env);
-
-    ui().environment(env).mount(secure_view)
+        ui().theme(hydrolysis_m3::install).mount(secure_view)
 }
 
 #[test]
@@ -32,13 +29,10 @@ fn secure_field_set_text_updates_value() {
         .role(Role::PASSWORD_INPUT)
         .label("Password");
     app.assert_exists(&selector);
-    assert!(
-        app.query()
+    app.query()
             .role(Role::PASSWORD_INPUT)
             .label("Password")
-            .set_text("hunter2"),
-        "secure field set_text should succeed"
-    );
+            .set_text("hunter2");
     assert!(
         app.wait_for(
             &[app.expect_exists(Selector::default().role(Role::LABEL).label("len:7"))],

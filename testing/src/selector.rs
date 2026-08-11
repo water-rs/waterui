@@ -332,43 +332,43 @@ impl ElementRef {
     }
 
     /// Performs a click/tap action.
-    pub fn tap(&self, app: &mut SemanticApp) -> bool {
+    pub fn tap(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "tap");
-        app.perform_action(self.node_id, AccessibilityAction::Click, None)
+        app.perform_action(self.node_id, AccessibilityAction::Click, None);
     }
 
     /// Performs a pointer tap at the provided normalized coordinates.
-    pub fn tap_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) -> bool {
+    pub fn tap_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
         app.assert_current_element(self, "tap_at");
         let (x, y) = self.normalized_point(normalized_x, normalized_y);
-        app.tap_at(x, y)
+        app.tap_at(x, y);
     }
 
     /// Requests accessibility focus on the element.
-    pub fn focus(&self, app: &mut SemanticApp) -> bool {
+    pub fn focus(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "focus");
-        app.perform_action(self.node_id, AccessibilityAction::Focus, None)
+        app.perform_action(self.node_id, AccessibilityAction::Focus, None);
     }
 
     /// Moves hover to the element center.
-    pub fn hover(&self, app: &mut SemanticApp) -> bool {
+    pub fn hover(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "hover");
         let (x, y) = self.center();
-        app.hover_at(x, y)
+        app.hover_at(x, y);
     }
 
     /// Moves hover to the provided normalized coordinates within the element.
-    pub fn hover_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) -> bool {
+    pub fn hover_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
         app.assert_current_element(self, "hover_at");
         let (x, y) = self.normalized_point(normalized_x, normalized_y);
-        app.hover_at(x, y)
+        app.hover_at(x, y);
     }
 
     /// Drags from the element center by the provided delta.
-    pub fn drag_by(&self, app: &mut SemanticApp, dx: f32, dy: f32) -> bool {
+    pub fn drag_by(&self, app: &mut SemanticApp, dx: f32, dy: f32) {
         app.assert_current_element(self, "drag_by");
         let (x, y) = self.center();
-        app.drag_from_to(x, y, x + dx, y + dy)
+        app.drag_from_to(x, y, x + dx, y + dy);
     }
 
     /// Drags between two normalized coordinates within the element.
@@ -379,22 +379,22 @@ impl ElementRef {
         from_y: f32,
         to_x: f32,
         to_y: f32,
-    ) -> bool {
+    ) {
         app.assert_current_element(self, "drag_between");
         let (start_x, start_y) = self.normalized_point(from_x, from_y);
         let (end_x, end_y) = self.normalized_point(to_x, to_y);
-        app.drag_from_to(start_x, start_y, end_x, end_y)
+        app.drag_from_to(start_x, start_y, end_x, end_y);
     }
 
     /// Applies a magnification gesture centered on the element.
-    pub fn magnify(&self, app: &mut SemanticApp, factor: f32) -> bool {
+    pub fn magnify(&self, app: &mut SemanticApp, factor: f32) {
         app.assert_current_element(self, "magnify");
         let (x, y) = self.center();
-        app.magnify_at(x, y, factor)
+        app.magnify_at(x, y, factor);
     }
 
     /// Sets textual value on editable controls.
-    pub fn set_text(&self, app: &mut SemanticApp, value: impl Into<String>) -> bool {
+    pub fn set_text(&self, app: &mut SemanticApp, value: impl Into<String>) {
         app.assert_current_element(self, "set_text");
         app.perform_action(
             self.node_id,
@@ -402,25 +402,25 @@ impl ElementRef {
             Some(AccessibilityActionData::Value(
                 value.into().into_boxed_str(),
             )),
-        )
+        );
     }
 
     /// Increments current value for slider/stepper-like controls.
-    pub fn increment(&self, app: &mut SemanticApp) -> bool {
+    pub fn increment(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "increment");
-        app.perform_action(self.node_id, AccessibilityAction::Increment, None)
+        app.perform_action(self.node_id, AccessibilityAction::Increment, None);
     }
 
     /// Decrements current value for slider/stepper-like controls.
-    pub fn decrement(&self, app: &mut SemanticApp) -> bool {
+    pub fn decrement(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "decrement");
-        app.perform_action(self.node_id, AccessibilityAction::Decrement, None)
+        app.perform_action(self.node_id, AccessibilityAction::Decrement, None);
     }
 
     /// Scrolls down when supported by the node.
-    pub fn scroll_down(&self, app: &mut SemanticApp) -> bool {
+    pub fn scroll_down(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "scroll_down");
-        app.perform_action(self.node_id, AccessibilityAction::ScrollDown, None)
+        app.perform_action(self.node_id, AccessibilityAction::ScrollDown, None);
     }
 }
 

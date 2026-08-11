@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use accesskit::{
@@ -18,14 +19,14 @@ use crate::snapshot::Snapshot;
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
 /// Installs a theme package into a test environment before mounting a view.
-pub trait ThemeInstaller: Clone + 'static {
+pub trait ThemeInstaller: 'static {
     /// Installs theme tokens, renderers, and package-specific hooks into the environment.
     fn install(&self, env: &mut Environment);
 }
 
 impl<F> ThemeInstaller for F
 where
-    F: Fn(&mut Environment) + Clone + 'static,
+    F: Fn(&mut Environment) + 'static,
 {
     fn install(&self, env: &mut Environment) {
         self(env);
@@ -34,63 +35,58 @@ where
 
 /// Creates a typed UI test builder.
 #[must_use]
-pub fn ui() -> UiBuilder<()> {
+pub fn ui() -> UiBuilder {
     UiBuilder::new()
 }
 
 /// Runtime test host and configuration.
-#[derive(Clone, Debug)]
-pub struct UiBuilder<T = ()> {
+///
+/// Theme and render mode are orthogonal: [`Self::theme`] swaps the installed
+/// theme package (defaulting to the plain Hydrolysis test theme), while
+/// [`Self::mount`] / [`Self::mount_offscreen`] pick between the fast semantic
+/// runtime and the GPU-backed offscreen runtime. Any theme works in either
+/// mode.
+#[derive(Clone)]
+pub struct UiBuilder {
     env: Environment,
     width: u32,
     height: u32,
-    theme: T,
+    theme: Rc<dyn Fn(&mut Environment)>,
     perf_config: PerfConfig,
 }
 
-impl Default for UiBuilder<()> {
+impl core::fmt::Debug for UiBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UiBuilder")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("perf_config", &self.perf_config)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for UiBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl UiBuilder<()> {
+impl UiBuilder {
     /// Creates a default semantic UI test runtime (390x844 viewport).
     #[must_use]
     pub fn new() -> Self {
-        let mut env = Environment::new();
-        hydrolysis::testing::install_theme(&mut env);
         Self {
-            env,
+            env: Environment::new(),
             width: 390,
             height: 844,
-            theme: (),
+            theme: Rc::new(hydrolysis::testing::install_theme),
             perf_config: PerfConfig::default(),
         }
     }
 
-    /// Mounts a no-arg view builder and returns a semantic testing session.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the initial Hydrolysis semantic pass does not produce an accessibility tree.
-    pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
-    where
-        V: View + 'static,
-        F: Fn() -> V + 'static,
-    {
-        mount_app(
-            self.env,
-            self.width,
-            self.height,
-            view_fn,
-            DriverMode::Semantic,
-        )
-    }
-}
-
-impl<T> UiBuilder<T> {
     /// Overrides the environment used by the mounted app.
+    ///
+    /// The configured theme is still installed on top at mount time.
     #[must_use]
     pub fn environment(mut self, env: Environment) -> Self {
         self.env = env;
@@ -105,16 +101,11 @@ impl<T> UiBuilder<T> {
         self
     }
 
-    /// Installs a theme package and enables offscreen rendering APIs.
+    /// Replaces the default Hydrolysis test theme with a theme package.
     #[must_use]
-    pub fn theme<U: ThemeInstaller>(self, theme: U) -> UiBuilder<U> {
-        UiBuilder {
-            env: self.env,
-            width: self.width,
-            height: self.height,
-            theme,
-            perf_config: self.perf_config,
-        }
+    pub fn theme<U: ThemeInstaller>(mut self, theme: U) -> Self {
+        self.theme = Rc::new(move |env| theme.install(env));
+        self
     }
 
     /// Configures repeated offscreen performance measurement defaults.
@@ -123,23 +114,50 @@ impl<T> UiBuilder<T> {
         self.perf_config = config;
         self
     }
-}
 
-impl<T: ThemeInstaller> UiBuilder<T> {
+    fn themed_env(&self) -> Environment {
+        let mut env = self.env.clone();
+        (self.theme)(&mut env);
+        env
+    }
+
+    /// Mounts a no-arg view builder and returns a semantic testing session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial Hydrolysis semantic pass does not produce an accessibility tree.
+    pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
+    where
+        V: View + 'static,
+        F: Fn() -> V + 'static,
+    {
+        mount_app(
+            self.themed_env(),
+            self.width,
+            self.height,
+            view_fn,
+            DriverMode::Semantic,
+        )
+    }
+
     /// Mounts a no-arg view builder and returns an offscreen GPU-backed testing session.
     ///
     /// # Panics
     ///
     /// Panics if the initial Hydrolysis offscreen frame does not produce an accessibility tree.
-    pub fn mount<V, F>(self, view_fn: F) -> OffscreenApp
+    pub fn mount_offscreen<V, F>(self, view_fn: F) -> OffscreenApp
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        let mut env = self.env;
-        self.theme.install(&mut env);
         OffscreenApp {
-            app: mount_app(env, self.width, self.height, view_fn, DriverMode::Offscreen),
+            app: mount_app(
+                self.themed_env(),
+                self.width,
+                self.height,
+                view_fn,
+                DriverMode::Offscreen,
+            ),
         }
     }
 
@@ -161,7 +179,7 @@ impl<T: ThemeInstaller> UiBuilder<T> {
     where
         V: View + 'static,
         F: Fn() -> V + Clone + 'static,
-        A: FnOnce(&mut PerfApp<T, F, V>),
+        A: FnOnce(&mut PerfApp<F, V>),
     {
         let config = self.perf_config;
         let mut app = PerfApp::new(self, view_fn, config);
@@ -201,6 +219,10 @@ where
         rebuilt,
         "waterui-testing initial mount did not produce a semantic tree"
     );
+    // Settle to quiescence so async-mounted content (spawned setup tasks,
+    // chrome that appears once a controller reports ready) is part of the
+    // initial tree, mirroring XCUITest's launch-waits-for-idle semantics.
+    app.settle();
     app
 }
 
@@ -223,23 +245,24 @@ impl OffscreenApp {
         &mut self.app
     }
 
-    /// Advances the animation clock by `duration`, pumping frames as it goes.
+    /// Advances the animation clock by exactly `duration`, pumping one frame
+    /// per virtual display interval.
     ///
-    /// The clock moves when frames are pumped, not when wall-clock time passes.
-    /// A bare `thread::sleep` therefore freezes it: the next snapshot applies
-    /// every deferred step at once, so a capture meant to show a transition
-    /// mid-flight shows its end state instead. Use this to sample a phase.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the offscreen driver does not produce a snapshot.
+    /// The clock is virtual: each pump advances it by a fixed frame step (with
+    /// an exact remainder step at the end), so `pump_for(60ms)` always lands
+    /// on the 60ms point of a transition regardless of host scheduling. No
+    /// wall-clock time is slept and no snapshot readback happens; call
+    /// [`Self::snapshot`] to capture the phase the clock landed on.
     pub fn pump_for(&mut self, duration: Duration) {
-        // One frame per display interval, matching what a real host would do.
-        const FRAME: Duration = Duration::from_millis(16);
-        let deadline = Instant::now() + duration;
-        while Instant::now() < deadline {
-            std::thread::sleep(FRAME.min(deadline.saturating_duration_since(Instant::now())));
-            let _ = self.snapshot();
+        let mut remaining = duration;
+        while !remaining.is_zero() {
+            let step = crate::driver::VIRTUAL_FRAME.min(remaining);
+            remaining -= step;
+            let outcome = self
+                .app
+                .driver
+                .pump_step(step, &self.app.content, &self.app.env);
+            let _ = self.app.apply_pump_result(outcome);
         }
     }
 
@@ -274,20 +297,20 @@ impl OffscreenApp {
     /// pump frames for its full timeout and skip past short transients such
     /// as the Material ripple growth.
     pub fn queue_pointer_down(&mut self, x: f32, y: f32) {
-        let _ = self.app.driver.pointer_down(x, y, &self.app.env);
+        self.app.driver.pointer_down(x, y, &self.app.env);
     }
 
     /// Queues a primary pointer-up without the semantic settle; see
     /// [`Self::queue_pointer_down`].
     pub fn queue_pointer_up(&mut self, x: f32, y: f32) {
-        let _ = self.app.driver.pointer_up(x, y, &self.app.env);
+        self.app.driver.pointer_up(x, y, &self.app.env);
     }
 
     /// Queues a pointer move without the semantic settle; see
     /// [`Self::queue_pointer_down`]. Visual stage tests use this to park the
     /// pointer away from a widget so idle captures are free of hover state.
     pub fn queue_pointer_move(&mut self, x: f32, y: f32) {
-        let _ = self.app.driver.pointer_move(x, y, &self.app.env);
+        self.app.driver.pointer_move(x, y, &self.app.env);
     }
 }
 
@@ -529,14 +552,17 @@ impl SemanticApp {
                 };
             }
 
-            let previous_revision = self.tree.revision();
-            let rebuilt = self.pump_once();
-            let progressed = rebuilt || self.tree.revision() != previous_revision;
-            if progressed {
+            let _ = self.pump_once();
+            if !self.driver.is_settled() {
+                // Scheduled work remains (animations, patches, queued input):
+                // keep pumping virtual frames without wall-clock sleeps.
                 idle_backoff = Duration::ZERO;
                 continue;
             }
 
+            // Quiescent but unfulfilled: the awaited change can only arrive
+            // from outside the runtime (a worker thread, wall-clock async), so
+            // yield real time with exponential backoff.
             let next_backoff = if idle_backoff.is_zero() {
                 MIN_IDLE_BACKOFF
             } else {
@@ -595,13 +621,8 @@ impl SemanticApp {
                 return false;
             }
 
-            let previous_revision = self.tree.revision();
-            let previous_ui_focus = self.ui_focus;
-            let rebuilt = self.pump_once();
-            let progressed = rebuilt
-                || self.tree.revision() != previous_revision
-                || self.ui_focus != previous_ui_focus;
-            if progressed {
+            let _ = self.pump_once();
+            if !self.driver.is_settled() {
                 idle_backoff = Duration::ZERO;
                 continue;
             }
@@ -672,138 +693,140 @@ impl SemanticApp {
         node_id: NodeId,
         action: AccessibilityAction,
         data: Option<AccessibilityActionData>,
-    ) -> bool {
+    ) {
         let request = AccessibilityActionRequest {
             target_tree: AccessibilityTreeId::ROOT,
             target_node: node_id.as_accesskit(),
             action,
             data,
         };
-        let changed = self.driver.perform_action(request, &self.env);
-        self.settle_after_change(changed)
+        let handled = self.driver.perform_action(request, &self.env);
+        assert!(
+            handled,
+            "waterui-testing: accessibility action {action:?} on {} was not handled by the runtime — the target does not support this action",
+            self.describe_node(node_id),
+        );
+        self.settle();
+    }
+
+    fn describe_node(&self, node_id: NodeId) -> String {
+        self.tree.node(node_id).map_or_else(
+            || format!("node id={} (no longer in tree)", node_id.as_u64()),
+            |node| {
+                ElementRef {
+                    node_id,
+                    node: node.clone(),
+                    revision: self.tree.revision(),
+                }
+                .debug_summary()
+            },
+        )
     }
 
     /// Clears the latest Hydrolysis-managed UI focus target.
-    pub fn clear_ui_focus(&mut self) -> bool {
-        let changed = self.driver.clear_ui_focus(&self.env);
-        self.settle_after_change(changed)
+    ///
+    /// A no-op when nothing holds UI focus.
+    pub fn clear_ui_focus(&mut self) {
+        if self.driver.clear_ui_focus(&self.env) {
+            self.settle();
+        }
     }
 
-    pub(crate) fn hover_at(&mut self, x: f32, y: f32) -> bool {
-        let changed = self.driver.hover_at(x, y, &self.env);
-        self.settle_after_change(changed)
+    pub(crate) fn hover_at(&mut self, x: f32, y: f32) {
+        self.driver.hover_at(x, y, &self.env);
+        self.settle();
     }
 
     /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
-    pub fn tap_at(&mut self, x: f32, y: f32) -> bool {
-        let mut changed = self.driver.pointer_down(x, y, &self.env);
-        changed |= self.driver.pointer_up(x, y, &self.env);
-        self.settle_after_change(changed)
+    pub fn tap_at(&mut self, x: f32, y: f32) {
+        self.driver.pointer_down(x, y, &self.env);
+        self.driver.pointer_up(x, y, &self.env);
+        self.settle();
     }
 
     /// Dispatches a primary pointer-down event at viewport coordinates.
-    pub fn pointer_down_at(&mut self, x: f32, y: f32) -> bool {
-        let changed = self.driver.pointer_down(x, y, &self.env);
-        self.settle_after_change(changed)
+    pub fn pointer_down_at(&mut self, x: f32, y: f32) {
+        self.driver.pointer_down(x, y, &self.env);
+        self.settle();
     }
 
     /// Dispatches a primary pointer-up event at viewport coordinates.
-    pub fn pointer_up_at(&mut self, x: f32, y: f32) -> bool {
-        let changed = self.driver.pointer_up(x, y, &self.env);
-        self.settle_after_change(changed)
+    pub fn pointer_up_at(&mut self, x: f32, y: f32) {
+        self.driver.pointer_up(x, y, &self.env);
+        self.settle();
     }
 
-    pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) -> bool {
+    pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
         const STEPS: u16 = 6;
 
-        let mut changed = self.driver.pointer_down(from_x, from_y, &self.env);
+        self.driver.pointer_down(from_x, from_y, &self.env);
         for step in 1..=STEPS {
             let t = f32::from(step) / f32::from(STEPS);
             let x = (to_x - from_x).mul_add(t, from_x);
             let y = (to_y - from_y).mul_add(t, from_y);
-            changed |= self.driver.pointer_move(x, y, &self.env);
+            self.driver.pointer_move(x, y, &self.env);
         }
-        changed |= self.driver.pointer_up(to_x, to_y, &self.env);
-        self.settle_after_change(changed)
+        self.driver.pointer_up(to_x, to_y, &self.env);
+        self.settle();
     }
 
     /// Dispatches a wheel/trackpad scroll at viewport coordinates and settles resulting updates.
-    pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
-        let changed = self
-            .driver
+    pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
+        self.driver
             .scroll_at(x, y, dx, dy, is_line_delta, &self.env);
-        self.settle_after_change(changed)
+        self.settle();
     }
 
     /// Dispatches committed text through the Hydrolysis text input path.
-    pub fn text_input(&mut self, text: impl Into<String>) -> bool {
-        let changed = self.driver.text_input(text.into(), &self.env);
-        self.settle_after_change(changed)
+    pub fn text_input(&mut self, text: impl Into<String>) {
+        self.driver.text_input(text.into(), &self.env);
+        self.settle();
     }
 
     /// Dispatches a named keyboard key such as `Backspace`, `Delete`, or `ArrowLeft`.
-    pub fn press_named_key(&mut self, key: impl Into<String>) -> bool {
-        let changed =
-            self.driver
-                .key_press(KeyCode::Named(key.into()), Modifiers::default(), &self.env);
-        self.settle_after_change(changed)
+    pub fn press_named_key(&mut self, key: impl Into<String>) {
+        self.driver
+            .key_press(KeyCode::Named(key.into()), Modifiers::default(), &self.env);
+        self.settle();
     }
 
     /// Dispatches a character keyboard key without text-input synthesis.
-    pub fn press_character_key(&mut self, key: impl Into<String>) -> bool {
-        let changed = self.driver.key_press(
+    pub fn press_character_key(&mut self, key: impl Into<String>) {
+        self.driver.key_press(
             KeyCode::Character(key.into()),
             Modifiers::default(),
             &self.env,
         );
-        self.settle_after_change(changed)
+        self.settle();
     }
 
-    pub(crate) fn magnify_at(&mut self, x: f32, y: f32, factor: f32) -> bool {
-        let changed = self.driver.magnify_at(x, y, factor, &self.env);
-        self.settle_after_change(changed)
+    pub(crate) fn magnify_at(&mut self, x: f32, y: f32, factor: f32) {
+        self.driver.magnify_at(x, y, factor, &self.env);
+        self.settle();
     }
 
-    fn settle_after_change(&mut self, changed: bool) -> bool {
-        if !changed {
-            return false;
-        }
-        self.settle(Duration::from_millis(200));
-        true
-    }
+    /// Pumps virtual frames until the runtime reports quiescence — no queued
+    /// input, no spawned work awaiting a drain, and no renderer-scheduled
+    /// semantic work — or until the virtual cap elapses.
+    ///
+    /// The cap exists solely for perpetual animations (an indeterminate
+    /// progress spinner keeps the animation controller active forever); every
+    /// finite transition ends well before it. Each pump advances the virtual
+    /// clock one frame, so the cap costs pump work, never wall-clock sleeps.
+    fn settle(&mut self) {
+        /// Virtual time budget for perpetual animations; ~62 pumps at 16ms.
+        const SETTLE_CAP: Duration = Duration::from_secs(1);
 
-    fn settle(&mut self, timeout: Duration) {
-        const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
-        const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
-
-        let deadline = Instant::now() + timeout;
-        let mut idle_backoff = Duration::ZERO;
+        let mut remaining = SETTLE_CAP;
         loop {
-            let previous_revision = self.tree.revision();
-            let previous_ui_focus = self.ui_focus;
-            let rebuilt = self.pump_once();
-            let progressed = rebuilt
-                || self.tree.revision() != previous_revision
-                || self.ui_focus != previous_ui_focus;
-            if progressed {
-                idle_backoff = Duration::ZERO;
-                if Instant::now() >= deadline {
-                    return;
-                }
-                continue;
-            }
-            if Instant::now() >= deadline {
+            let _ = self.pump_once();
+            if self.driver.is_settled() {
                 return;
             }
-            let next_backoff = if idle_backoff.is_zero() {
-                MIN_IDLE_BACKOFF
-            } else {
-                idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
-            };
-            idle_backoff = next_backoff;
-            std::thread::sleep(
-                next_backoff.min(deadline.saturating_duration_since(Instant::now())),
-            );
+            remaining = remaining.saturating_sub(crate::driver::VIRTUAL_FRAME);
+            if remaining.is_zero() {
+                return;
+            }
         }
     }
 
@@ -860,33 +883,33 @@ impl SemanticApp {
 }
 
 impl SemanticApp {
-    pub(crate) fn tap_node(&mut self, node_id: NodeId) -> bool {
-        self.perform_action(node_id, AccessibilityAction::Click, None)
+    pub(crate) fn tap_node(&mut self, node_id: NodeId) {
+        self.perform_action(node_id, AccessibilityAction::Click, None);
     }
 
-    pub(crate) fn focus_node(&mut self, node_id: NodeId) -> bool {
-        self.perform_action(node_id, AccessibilityAction::Focus, None)
+    pub(crate) fn focus_node(&mut self, node_id: NodeId) {
+        self.perform_action(node_id, AccessibilityAction::Focus, None);
     }
 
-    pub(crate) fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) -> bool {
+    pub(crate) fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) {
         self.perform_action(
             node_id,
             AccessibilityAction::SetValue,
             Some(AccessibilityActionData::Value(
                 value.into().into_boxed_str(),
             )),
-        )
+        );
     }
 
-    pub(crate) fn increment_node(&mut self, node_id: NodeId) -> bool {
-        self.perform_action(node_id, AccessibilityAction::Increment, None)
+    pub(crate) fn increment_node(&mut self, node_id: NodeId) {
+        self.perform_action(node_id, AccessibilityAction::Increment, None);
     }
 
-    pub(crate) fn decrement_node(&mut self, node_id: NodeId) -> bool {
-        self.perform_action(node_id, AccessibilityAction::Decrement, None)
+    pub(crate) fn decrement_node(&mut self, node_id: NodeId) {
+        self.perform_action(node_id, AccessibilityAction::Decrement, None);
     }
 
-    pub(crate) fn scroll_down_node(&mut self, node_id: NodeId) -> bool {
-        self.perform_action(node_id, AccessibilityAction::ScrollDown, None)
+    pub(crate) fn scroll_down_node(&mut self, node_id: NodeId) {
+        self.perform_action(node_id, AccessibilityAction::ScrollDown, None);
     }
 }

@@ -142,13 +142,10 @@ fn chart_overlay_reacts_to_proxy_selection_without_external_bindings() {
         .label("Proxy selection overlay")
         .assert_not_exists();
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "composition-line: tap should drive proxy selection state"
-    );
+            .tap_at(location.0, location.1);
     assert!(
         proxy_selected.get().is_some(),
         "chart_overlay proxy selection should update without external chart bindings"
@@ -188,13 +185,10 @@ fn chart_overlay_reacts_to_proxy_selection_with_external_binding() {
         .role(Role::LABEL)
         .label("External selection overlay")
         .assert_not_exists();
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "composition-line-external: tap should drive selected binding"
-    );
+            .tap_at(location.0, location.1);
     assert!(
         selected.get().is_some(),
         "external selected binding should update"
@@ -270,13 +264,10 @@ fn selected_overlay_exposes_accessibility_labels() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "composition-line-tooltip");
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "composition-line-tooltip: tap should drive selection-backed overlay"
-    );
+            .tap_at(location.0, location.1);
     assert!(
         selected.get().is_some(),
         "composition-line-tooltip: tap should update the selected binding"
@@ -319,13 +310,10 @@ fn selected_tooltip_exposes_accessibility_labels() {
         .role(Role::LABEL)
         .label("Selected")
         .assert_not_exists();
-    assert!(
-        app.query()
+    app.query()
             .role(Role::IMAGE)
             .label(chart_label)
-            .tap_at(location.0, location.1),
-        "composition-line-selected-tooltip: tap should drive selected_tooltip"
-    );
+            .tap_at(location.0, location.1);
     assert!(
         selected.get().is_some(),
         "composition-line-selected-tooltip: tap should update selected binding"

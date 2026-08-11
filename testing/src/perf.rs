@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use waterui_core::View;
 
-use crate::app::{OffscreenApp, ThemeInstaller, UiBuilder};
+use crate::app::{OffscreenApp, UiBuilder};
 use crate::driver::FrameTiming;
 
 const PERF_FRAME_RATE: u32 = 120;
@@ -347,22 +347,22 @@ impl PerfRun<'_> {
 
     /// Queues a pointer move for the next measured frame without settling the app.
     pub fn pointer_move(&mut self, x: f32, y: f32) {
-        let _ = self.app.app.driver.pointer_move(x, y, &self.app.app.env);
+        self.app.app.driver.pointer_move(x, y, &self.app.app.env);
     }
 
     /// Queues a primary pointer down for the next measured frame without settling the app.
     pub fn pointer_down(&mut self, x: f32, y: f32) {
-        let _ = self.app.app.driver.pointer_down(x, y, &self.app.app.env);
+        self.app.app.driver.pointer_down(x, y, &self.app.app.env);
     }
 
     /// Queues a primary pointer up for the next measured frame without settling the app.
     pub fn pointer_up(&mut self, x: f32, y: f32) {
-        let _ = self.app.app.driver.pointer_up(x, y, &self.app.app.env);
+        self.app.app.driver.pointer_up(x, y, &self.app.app.env);
     }
 
     /// Queues a wheel/trackpad scroll event for the next measured frame without settling the app.
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
-        let _ = self
+        self
             .app
             .app
             .driver
@@ -371,7 +371,7 @@ impl PerfRun<'_> {
 
     /// Requests a redraw for the next measured frame without changing semantic state.
     pub fn redraw(&mut self) {
-        let _ = self
+        self
             .app
             .app
             .driver
@@ -386,18 +386,15 @@ impl PerfRun<'_> {
 }
 
 /// Records performance scenarios for one view.
-pub struct PerfApp<T, F, V> {
-    builder: UiBuilder<T>,
+pub struct PerfApp<F, V> {
+    builder: UiBuilder,
     view_fn: F,
     config: PerfConfig,
     report: PerfReport,
     _view: core::marker::PhantomData<fn() -> V>,
 }
 
-impl<T, F, V> core::fmt::Debug for PerfApp<T, F, V>
-where
-    T: core::fmt::Debug,
-{
+impl<F, V> core::fmt::Debug for PerfApp<F, V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PerfApp")
             .field("builder", &self.builder)
@@ -407,13 +404,12 @@ where
     }
 }
 
-impl<T, F, V> PerfApp<T, F, V>
+impl<F, V> PerfApp<F, V>
 where
-    T: ThemeInstaller,
     F: Fn() -> V + Clone + 'static,
     V: View + 'static,
 {
-    pub(crate) const fn new(builder: UiBuilder<T>, view_fn: F, config: PerfConfig) -> Self {
+    pub(crate) const fn new(builder: UiBuilder, view_fn: F, config: PerfConfig) -> Self {
         Self {
             builder,
             view_fn,
@@ -446,8 +442,10 @@ where
                 .expect("perf sample count should fit usize"),
         );
         for _ in 0..self.config.repetitions {
-            let mut app = self.builder.clone().mount(self.view_fn.clone());
-            let mut frame_at = Instant::now();
+            let mut app = self.builder.clone().mount_offscreen(self.view_fn.clone());
+            // Seed from the driver's virtual clock (the mount already pumped)
+            // so perf frames and interleaved semantic pumps stay monotone.
+            let mut frame_at = app.app.driver.clock().unwrap_or_else(Instant::now);
             let frame_interval = Duration::from_secs(1) / PERF_FRAME_RATE;
             for _ in 0..self.config.warmups {
                 let mut run = PerfRun {

@@ -72,11 +72,9 @@ fn raw_video_view() -> impl View {
     video(missing_video_url()).size(240.0, 160.0)
 }
 
-fn themed_environment() -> Environment {
-    let mut env = Environment::new();
-    install_m3(&mut env);
-    install_video_gpu(&mut env);
-    env
+fn install_test_theme(env: &mut Environment) {
+    install_m3(env);
+    install_video_gpu(env);
 }
 
 fn assert_initial_player_semantics(app: &mut SemanticApp) {
@@ -145,10 +143,7 @@ fn assert_queue_navigation_reacts(app: &mut SemanticApp, controller: &PlayerCont
 }
 
 fn tap_and_assert_label(app: &mut SemanticApp, current: &str, updated: &str) {
-    assert!(
-        app.query().role(Role::BUTTON).label(current).tap(),
-        "video-player-controls-are-accessible-and-reactive: `{current}` action should succeed"
-    );
+    app.query().role(Role::BUTTON).label(current).tap();
     let expected = app.expect_exists(Selector::default().role(Role::BUTTON).label(updated));
     assert_eq!(
         app.wait_for(&[expected], WaitOptions::new(Duration::from_millis(200))),
@@ -166,10 +161,7 @@ fn assert_non_transport_controls_react(app: &mut SemanticApp) {
         "Disable pitch preservation",
         "Enable pitch preservation",
     );
-    assert!(
-        app.query().role(Role::SLIDER).label("Volume").increment(),
-        "video-player-controls-are-accessible-and-reactive: volume adjustment should succeed"
-    );
+    app.query().role(Role::SLIDER).label("Volume").increment();
 }
 
 #[waterui::test(raw_video_view)]
@@ -201,7 +193,7 @@ fn video_player_controls_are_accessible_and_reactive() {
     let controller_for_view = Rc::clone(&mounted_controller);
 
     let mut app = ui()
-        .environment(themed_environment())
+        .theme(install_test_theme)
         .viewport(480, 320)
         .mount(move || {
             let session = PlaybackSession::new(Playlist::single(missing_video_url()));
@@ -224,10 +216,9 @@ fn self_drawn_player_controls_render_without_retrying_a_failed_source() {
     let decoder_errors = Rc::new(RefCell::new(Vec::new()));
     let decoder_errors_for_view = Rc::clone(&decoder_errors);
     let mut app = ui()
-        .environment(themed_environment())
+        .theme(install_test_theme)
         .viewport(480, 320)
-        .theme(|_: &mut Environment| {})
-        .mount(move || {
+        .mount_offscreen(move || {
             let session = PlaybackSession::new(Playlist::single(missing_video_url()));
             VideoPlayer::new(session)
                 .on_event({

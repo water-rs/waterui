@@ -9,7 +9,7 @@ use waterui::ViewExt as _;
 use waterui::id::Id;
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
-use waterui::{Binding, Environment, View};
+use waterui::{Binding, View};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{
     NavigationLink, NavigationPath, NavigationSplitView, NavigationStack, NavigationView,
@@ -27,9 +27,7 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    let mut env = Environment::new();
-    hydrolysis_m3::install(&mut env);
-    ui().environment(env).mount(build)
+        ui().theme(hydrolysis_m3::install).mount(build)
 }
 
 fn home_tab_id() -> Id {
@@ -202,10 +200,7 @@ fn tabs_tap_switches_selection_and_content() {
         .role(Role::LABEL)
         .label("home content")
         .assert_exists();
-    assert!(
-        app.query().role(Role::TAB).label("Settings Tab").tap(),
-        "settings tab tap should succeed"
-    );
+    app.query().role(Role::TAB).label("Settings Tab").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(
@@ -231,19 +226,13 @@ fn navigation_link_push_and_back_pop_update_content() {
         .role(Role::BUTTON)
         .label("Open Detail")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Open Detail").tap(),
-        "navigation link tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Open Detail").tap();
     app.query().role(Role::BUTTON).label("Back").assert_exists();
     app.query()
         .role(Role::LABEL)
         .label("detail content")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Back").tap(),
-        "back button tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Detail"),)],
@@ -256,18 +245,12 @@ fn navigation_link_push_and_back_pop_update_content() {
 #[test]
 fn path_stack_keeps_value_links_active_inside_destination() {
     let mut app = mount_view(path_stack_nested_value_link_view);
-    assert!(
-        app.query().role(Role::BUTTON).label("Open First").tap(),
-        "root value link tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Open First").tap();
     app.query()
         .role(Role::BUTTON)
         .label("Open Second")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Open Second").tap(),
-        "destination value link tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Open Second").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(
@@ -288,11 +271,11 @@ fn native_back_updates_the_explicit_navigation_path() {
     let mut app =
         mount_view(move || path_stack_nested_value_link_view_with_path(mounted_path.clone()));
 
-    assert!(app.query().role(Role::BUTTON).label("Open First").tap());
-    assert!(app.query().role(Role::BUTTON).label("Open Second").tap());
+    app.query().role(Role::BUTTON).label("Open First").tap();
+    app.query().role(Role::BUTTON).label("Open Second").tap();
     assert_eq!(path.snapshot(), vec![TestRoute::First, TestRoute::Second]);
 
-    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert_eq!(path.snapshot(), vec![TestRoute::First]);
     app.query()
         .role(Role::BUTTON)
@@ -317,12 +300,10 @@ fn explicit_path_root_keeps_native_chrome_and_lifecycle() {
     assert_eq!(appeared.get(), 1);
     assert_eq!(disappeared.get(), 0);
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::BUTTON)
             .label("Open Path Detail")
-            .tap()
-    );
+            .tap();
     assert_eq!(appeared.get(), 1);
     assert_eq!(disappeared.get(), 1);
     app.query()
@@ -330,7 +311,7 @@ fn explicit_path_root_keeps_native_chrome_and_lifecycle() {
         .label("path detail content")
         .assert_exists();
 
-    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert_eq!(appeared.get(), 2);
     assert_eq!(disappeared.get(), 1);
     app.query().label("Path Root").assert_exists();
@@ -392,11 +373,8 @@ fn denied_pop_reports_attempt_and_keeps_destination_active() {
     let mounted_attempts = Rc::clone(&attempts);
     let mut app = mount_view(move || denied_pop_view(Rc::clone(&mounted_attempts)));
 
-    assert!(app.query().role(Role::BUTTON).label("Open Locked").tap());
-    assert!(
-        app.query().role(Role::BUTTON).label("Back").tap(),
-        "the native back control should consume a denied attempt"
-    );
+    app.query().role(Role::BUTTON).label("Open Locked").tap();
+    app.query().role(Role::BUTTON).label("Back").tap();
 
     assert_eq!(attempts.get(), 1);
     app.query()
@@ -421,21 +399,19 @@ fn destination_lifecycle_distinguishes_disappear_from_completed_pop() {
         )
     });
 
-    assert!(app.query().role(Role::BUTTON).label("Open Lifecycle").tap());
+    app.query().role(Role::BUTTON).label("Open Lifecycle").tap();
     assert_eq!(appeared.get(), 1);
     assert_eq!(disappeared.get(), 0);
     assert_eq!(popped.get(), 0);
 
-    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert_eq!(disappeared.get(), 1);
     assert_eq!(popped.get(), 1);
 }
 
 #[test]
 fn split_view_selection_switches_placeholder_to_detail() {
-    let mut env = Environment::new();
-    hydrolysis_m3::install(&mut env);
-    let mut app = ui().environment(env).viewport(1_000, 844).mount(split_view);
+        let mut app = ui().theme(hydrolysis_m3::install).viewport(1_000, 844).mount(split_view);
     app.query()
         .role(Role::BUTTON)
         .label("Select Detail")
@@ -444,10 +420,7 @@ fn split_view_selection_switches_placeholder_to_detail() {
         .role(Role::LABEL)
         .label("placeholder content")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Select Detail").tap(),
-        "split sidebar action should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Select Detail").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(Selector::default().role(Role::LABEL).label("detail:7"))],

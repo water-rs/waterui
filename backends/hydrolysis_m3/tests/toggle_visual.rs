@@ -21,7 +21,7 @@ fn switch_toggle_slides_and_reveals_checkmark() {
     let mut app = ui()
         .viewport(200, 120)
         .theme(install)
-        .mount(move || toggle("Wi-Fi", &value_for_view));
+        .mount_offscreen(move || toggle("Wi-Fi", &value_for_view));
     assert!(
         app.query()
             .role(Role::SWITCH)

@@ -14,7 +14,6 @@ use hydrolysis_m3::{
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
-use waterui::env::Environment;
 use waterui::graphics::color::Srgb;
 use waterui::id::Id;
 use waterui::navigation::NavigationView;
@@ -28,10 +27,7 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    let mut env = Environment::new();
-    install(&mut env);
-
-    ui().environment(env).viewport(360, 320).mount(move || {
+        ui().theme(install).viewport(360, 320).mount(move || {
         vstack((build(),))
             .spacing(12.0)
             .padding_with(16.0)
@@ -44,10 +40,7 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    let mut env = Environment::new();
-    install(&mut env);
-
-    ui().environment(env).viewport(360, 320).mount(build)
+        ui().theme(install).viewport(360, 320).mount(build)
 }
 
 fn mount_m3_offscreen<V, F>(build: F) -> OffscreenApp
@@ -55,7 +48,7 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    ui().viewport(360, 320).theme(install).mount(move || {
+    ui().viewport(360, 320).theme(install).mount_offscreen(move || {
         vstack((build(),))
             .spacing(12.0)
             .padding_with(16.0)
@@ -114,10 +107,7 @@ fn material_text_field_focus_is_routed_through_hydrolysis_accessibility_tree() {
     let mut app = mount_m3(move || TextField::new(&name_for_view).label("Search"));
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
-    assert!(
-        app.query().role(Role::TEXT_INPUT).label("Search").focus(),
-        "material text field focus should be routable through waterui-testing"
-    );
+    app.query().role(Role::TEXT_INPUT).label("Search").focus();
     app.assert_ui_focus(&selector);
 }
 
@@ -137,10 +127,7 @@ fn material_assist_chip_exposes_button_semantics_and_tap_action() {
         .role(Role::BUTTON)
         .label("Assist")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Assist").tap(),
-        "material assist chip should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Assist").tap();
     assert!(tapped_for_view.get(), "assist chip tap should update state");
 }
 
@@ -160,10 +147,7 @@ fn material_suggestion_chip_exposes_button_semantics_and_tap_action() {
         .role(Role::BUTTON)
         .label("Suggestion")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Suggestion").tap(),
-        "material suggestion chip should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Suggestion").tap();
     assert!(
         tapped_for_view.get(),
         "suggestion chip tap should update state"
@@ -188,10 +172,7 @@ fn material_filter_chip_toggles_selection_and_exposes_button_semantics() {
         .label("Filter")
         .selected(false)
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Filter").tap(),
-        "material filter chip should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Filter").tap();
     assert!(
         selected.get(),
         "filter chip tap should toggle selected state"
@@ -346,18 +327,12 @@ fn material_input_chip_exposes_primary_and_remove_button_semantics() {
         .label("Remove Person")
         .assert_exists();
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Person").tap(),
-        "material input chip primary action should be tappable"
-    );
+    app.query().role(Role::BUTTON).label("Person").tap();
     assert!(
         primary_tapped.get(),
         "input chip primary action should update state"
     );
-    assert!(
-        app.query().role(Role::BUTTON).label("Remove Person").tap(),
-        "material input chip remove action should be tappable"
-    );
+    app.query().role(Role::BUTTON).label("Remove Person").tap();
     assert!(
         remove_tapped.get(),
         "input chip remove action should update state"
@@ -379,10 +354,7 @@ fn material_fab_exposes_button_semantics_and_tap_action() {
         .role(Role::BUTTON)
         .label("Create")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Create").tap(),
-        "material FAB should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Create").tap();
     assert!(tapped.get(), "FAB tap should update state");
 }
 
@@ -401,10 +373,7 @@ fn material_extended_fab_exposes_button_semantics_and_tap_action() {
         .role(Role::BUTTON)
         .label("Create")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Create").tap(),
-        "material extended FAB should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Create").tap();
     assert!(tapped.get(), "extended FAB tap should update state");
 }
 
@@ -436,10 +405,7 @@ fn material_icon_buttons_expose_button_semantics_and_tap_actions() {
 
     for label in ["Favorite", "Create", "More"] {
         app.query().role(Role::BUTTON).label(label).assert_exists();
-        assert!(
-            app.query().role(Role::BUTTON).label(label).tap(),
-            "material icon button should route tap actions through Hydrolysis gestures"
-        );
+        app.query().role(Role::BUTTON).label(label).tap();
     }
     assert!(
         standard_tapped.get(),
@@ -477,10 +443,7 @@ fn material_tooltips_expose_accessibility_labels_and_action_semantics() {
         .role(Role::BUTTON)
         .label("Got it")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Got it").tap(),
-        "material rich tooltip action should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Got it").tap();
     assert!(
         action_tapped.get(),
         "rich tooltip action tap should update state"
@@ -497,11 +460,11 @@ fn anchored_material_tooltip_opens_on_keyboard_focus() {
     app.query()
         .label("Adds this item to your favorites")
         .assert_not_exists();
-    assert!(app.press_named_key("Tab"));
+    app.press_named_key("Tab");
     app.query()
         .label("Adds this item to your favorites")
         .assert_exists();
-    assert!(app.press_named_key("Escape"));
+    app.press_named_key("Escape");
     app.query()
         .label("Adds this item to your favorites")
         .assert_not_exists();
@@ -532,10 +495,7 @@ fn material_dialog_exposes_semantics_and_action_buttons() {
         .assert_exists();
     for label in ["Cancel", "Delete"] {
         app.query().role(Role::BUTTON).label(label).assert_exists();
-        assert!(
-            app.query().role(Role::BUTTON).label(label).tap(),
-            "material dialog action should route tap actions through Hydrolysis gestures"
-        );
+        app.query().role(Role::BUTTON).label(label).tap();
     }
     assert!(cancel_tapped.get(), "cancel action tap should update state");
     assert!(
@@ -572,10 +532,7 @@ fn material_navigation_bar_exposes_tab_semantics_and_selection() {
         .label("Search")
         .selected(true)
         .assert_exists();
-    assert!(
-        app.query().role(Role::TAB).label("Home").tap(),
-        "material navigation tab should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::TAB).label("Home").tap();
     assert!(home_tapped.get(), "navigation tab tap should update state");
 }
 
@@ -618,10 +575,7 @@ fn material_navigation_drawer_exposes_item_semantics_and_open_state() {
         .label("Archive")
         .selected(false)
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Archive").tap(),
-        "material navigation drawer item should route tap actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Archive").tap();
     assert!(
         archive_tapped.get(),
         "navigation drawer item tap should update state"
@@ -652,8 +606,8 @@ fn material_modal_navigation_drawer_closes_from_escape_and_scrim() {
         .label("Navigation drawer")
         .expanded(true)
         .assert_exists();
-    assert!(app.pointer_down_at(330.0, 160.0));
-    assert!(app.pointer_up_at(330.0, 160.0));
+    app.pointer_down_at(330.0, 160.0);
+    app.pointer_up_at(330.0, 160.0);
     assert!(overlay_tapped.get());
     assert!(!opened.get());
     assert!(app.wait_for_nonexistence(
@@ -666,7 +620,7 @@ fn material_modal_navigation_drawer_closes_from_escape_and_scrim() {
         &Selector::default().label("Navigation drawer"),
         Duration::from_millis(250),
     ));
-    assert!(app.press_named_key("Escape"));
+    app.press_named_key("Escape");
     assert!(!opened.get());
 }
 
@@ -701,10 +655,7 @@ fn material_segmented_buttons_toggle_selection_and_expose_semantics() {
         .label("Week")
         .selected(false)
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Week").tap(),
-        "segmented button tap should route through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Week").tap();
     assert!(
         second_selected.get(),
         "segmented button tap should toggle its binding"
@@ -735,10 +686,7 @@ fn material_list_exposes_list_item_semantics_and_actions() {
     app.query().role(Role::LIST).assert_exists();
     let items = app.query().role(Role::LIST_ITEM).all();
     assert_eq!(items.len(), 2);
-    assert!(
-        items[1].tap_at(&mut app, 0.5, 0.5),
-        "interactive material list item should route tap actions through Hydrolysis gestures"
-    );
+    items[1].tap_at(&mut app, 0.5, 0.5);
     assert!(
         reports_tapped.get(),
         "material list item tap should invoke its action"
@@ -780,10 +728,7 @@ fn material_tabs_expose_tab_semantics_and_switch_content() {
         .role(Role::LABEL)
         .label("photos content")
         .assert_exists();
-    assert!(
-        app.query().role(Role::TAB).label("Albums").tap(),
-        "material tabs should route tab selection through Hydrolysis accessibility"
-    );
+    app.query().role(Role::TAB).label("Albums").tap();
     assert_eq!(selection.get(), second);
     assert!(
         app.wait_for(
@@ -858,10 +803,7 @@ fn material_focused_text_field_snapshot() {
     let name_for_view = name;
     let mut app = mount_m3_offscreen(move || TextField::new(&name_for_view).label("Project"));
 
-    assert!(
-        app.query().role(Role::TEXT_INPUT).label("Project").focus(),
-        "material text field should accept focus before visual capture"
-    );
+    app.query().role(Role::TEXT_INPUT).label("Project").focus();
     let captured = app.capture_snapshot("material3-preview", "text-field-focused-caret", "focused");
 
     assert!(captured.path().is_file());
@@ -921,10 +863,7 @@ fn material_collection_items_expose_accessibility_and_survive_membership_change(
 
     // Removing one item reconciles the collection by id: only that row's
     // accessibility node leaves the tree; the survivors keep theirs.
-    assert!(
-        app.query().role(Role::BUTTON).label("Remove Bravo").tap(),
-        "remove button should route its tap through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Remove Bravo").tap();
     let bravo = Selector::default()
         .role(Role::LABEL)
         .label("Bravo".to_owned());

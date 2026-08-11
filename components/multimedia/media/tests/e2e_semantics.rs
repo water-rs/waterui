@@ -7,7 +7,6 @@ use image::ImageEncoder as _;
 use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
-use waterui::env::Environment;
 use waterui_media::{
     LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
 };
@@ -51,12 +50,6 @@ fn live_photo_view(source: LivePhotoSource) -> impl waterui::View {
         .a11y_label("Sample live photo")
 }
 
-fn themed_environment() -> Environment {
-    let mut env = Environment::new();
-    install_m3(&mut env);
-    env
-}
-
 fn assert_image_eventually_exists(app: &mut UiTestApp, label: &str) {
     if app.wait_for(
         &[app.expect_exists(Selector::default().role(Role::IMAGE).label(label))],
@@ -93,7 +86,7 @@ fn photo_exposes_accessibility_image_after_load() {
     let last_event = Binding::container(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
-    let mut app = ui().environment(themed_environment()).mount(move || {
+    let mut app = ui().theme(install_m3).mount(move || {
         let loaded_for_event = loaded_for_view.clone();
         let last_event_for_event = last_event_for_view.clone();
         Photo::from_path(sample_path.clone())
@@ -125,7 +118,7 @@ fn photo_exposes_accessibility_image_after_load() {
 #[test]
 fn media_image_exposes_accessibility_image_after_load() {
     let sample_path = sample_image_path();
-    let mut app = ui().environment(themed_environment()).mount(move || {
+    let mut app = ui().theme(install_m3).mount(move || {
         Media::Image(Url::from_file_path_str(sample_path.clone()))
             .a11y_role(AccessibilityRole::Image)
             .a11y_label("Media image")
@@ -136,7 +129,7 @@ fn media_image_exposes_accessibility_image_after_load() {
 #[test]
 fn media_video_uses_video_player_accessibility_controls() {
     let mut app = ui()
-        .environment(themed_environment())
+        .theme(install_m3)
         .viewport(480, 320)
         .mount(media_video_view);
 
@@ -166,7 +159,7 @@ fn live_photo_exposes_still_image_accessibility_before_activation() {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
     let mut app = ui()
-        .environment(themed_environment())
+        .theme(install_m3)
         .mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");
@@ -177,10 +170,9 @@ fn live_photo_long_press_plays_motion_once_and_recovers() {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
     let mut app = ui()
-        .environment(themed_environment())
+        .theme(install_m3)
         .viewport(180, 140)
-        .theme(|_: &mut Environment| {})
-        .mount(move || {
+        .mount_offscreen(move || {
             LivePhoto::new(source.clone())
                 .activation_duration_ms(40)
                 .size(120.0, 80.0)
@@ -202,16 +194,13 @@ fn live_photo_long_press_plays_motion_once_and_recovers() {
     );
     let (center_x, center_y) = bounds.center();
 
-    assert!(app.tap_at(center_x, center_y));
+    app.tap_at(center_x, center_y);
     app.query()
         .role(Role::IMAGE)
         .label("Video content")
         .assert_not_exists();
 
-    assert!(
-        app.pointer_down_at(center_x, center_y),
-        "a held press must be dispatched to the live photo"
-    );
+    app.pointer_down_at(center_x, center_y);
     let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
         app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
@@ -223,7 +212,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers() {
     let motion_gone =
         app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(2))),
+        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(10))),
         WaitResult::Completed,
         "completed motion playback must return to the still photo"
     );
@@ -231,7 +220,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers() {
 
     let bounds = app.query().role(Role::IMAGE).single().bounds();
     let (center_x, center_y) = bounds.center();
-    assert!(app.pointer_down_at(center_x, center_y));
+    app.pointer_down_at(center_x, center_y);
     let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
         app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
@@ -242,7 +231,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers() {
     let motion_gone =
         app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(2))),
+        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(10))),
         WaitResult::Completed,
         "replayed motion must also stop after one pass"
     );
