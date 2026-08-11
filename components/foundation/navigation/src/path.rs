@@ -205,37 +205,8 @@ impl<R: Clone + PartialEq + 'static> NavigationPath<R> {
     }
 
     /// Removes and returns the top route.
-    #[must_use]
     pub fn pop(&self) -> Option<R> {
         self.inner.pop()
-    }
-
-    /// Removes exactly `count` routes from the top.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `count` exceeds the current path length.
-    pub fn pop_n(&self, count: usize) {
-        let mut routes = self.inner.snapshot();
-        assert!(
-            count <= routes.len(),
-            "cannot pop {count} routes from a navigation path of length {}",
-            routes.len()
-        );
-        routes.truncate(routes.len() - count);
-        let _ = self.inner.replace(routes);
-    }
-
-    /// Truncates the path to at most `length` routes.
-    pub fn truncate(&self, length: usize) {
-        let mut routes = self.inner.snapshot();
-        routes.truncate(length);
-        let _ = self.inner.replace(routes);
-    }
-
-    /// Removes every route.
-    pub fn clear(&self) {
-        self.replace(core::iter::empty());
     }
 
     /// Atomically replaces the complete path.
@@ -276,38 +247,9 @@ impl NavigationPath<ErasedNavigationRoute> {
         ));
     }
 
-    /// Removes the top route.
-    #[must_use]
+    /// Removes the top route, reporting whether one was present.
     pub fn pop(&self) -> bool {
         self.inner.pop().is_some()
-    }
-
-    /// Removes exactly `count` routes from the top.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `count` exceeds the current path length.
-    pub fn pop_n(&self, count: usize) {
-        let mut routes = self.inner.snapshot();
-        assert!(
-            count <= routes.len(),
-            "cannot pop {count} routes from a navigation path of length {}",
-            routes.len()
-        );
-        routes.truncate(routes.len() - count);
-        let _ = self.inner.replace(routes);
-    }
-
-    /// Truncates the heterogeneous path to at most `length` routes.
-    pub fn truncate(&self, length: usize) {
-        let mut routes = self.inner.snapshot();
-        routes.truncate(length);
-        let _ = self.inner.replace(routes);
-    }
-
-    /// Removes every route.
-    pub fn clear(&self) {
-        let _ = self.inner.replace(Vec::new());
     }
 
     /// Atomically replaces the path with routes collected by `replacement`.
@@ -423,6 +365,33 @@ impl<R: Clone + 'static> NavigationPath<R> {
     #[must_use]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Removes exactly `count` routes from the top.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `count` exceeds the current path length.
+    pub fn pop_n(&self, count: usize) {
+        let routes = self.inner.snapshot();
+        let length = routes.len();
+        assert!(
+            count <= length,
+            "cannot pop {count} routes from a navigation path of length {length}"
+        );
+        self.truncate(length - count);
+    }
+
+    /// Truncates the path to at most `length` routes.
+    pub fn truncate(&self, length: usize) {
+        let mut routes = self.inner.snapshot();
+        routes.truncate(length);
+        let _ = self.inner.replace(routes);
+    }
+
+    /// Removes every route.
+    pub fn clear(&self) {
+        let _ = self.inner.replace(Vec::new());
     }
 
     /// Returns whether the path contains no routes.
