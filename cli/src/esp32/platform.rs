@@ -247,6 +247,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     cargo.current_dir(&backend_path);
     cargo.arg("build");
     cargo.arg("--target-dir").arg(&backend_target_dir);
+    crate::build::configure_generated_crate_compilation(cargo);
     if let Some(sccache_path) = options.sccache_path() {
         crate::toolchain::sccache::configure_compilation_cache(cargo, sccache_path);
     }

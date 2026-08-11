@@ -3,6 +3,18 @@
 use std::ffi::OsStr;
 use std::path::{Component, Path};
 
+/// Incremental-compilation setting every generated crate builds under.
+///
+/// This is part of Cargo's `-C metadata` and therefore of every mangled symbol, so a
+/// preview module and the support app it loads into must agree on it. Recording it in the
+/// runtime fingerprint means changing it invalidates the support-app scaffold rather than
+/// producing a module that cannot resolve against the runtime the app already loaded.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "preview, inspector, and fingerprint modules share this crate-private runtime contract"
+)]
+pub(crate) const GENERATED_CRATE_INCREMENTAL: &str = "0";
+
 /// Environment variables required for the preview support app runtime profile.
 #[expect(
     clippy::redundant_pub_crate,
@@ -48,6 +60,9 @@ pub(crate) fn runtime_profile_tag() -> String {
     PREVIEW_RUNTIME_ENV_VARS
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
+        .chain(std::iter::once(format!(
+            "incremental={GENERATED_CRATE_INCREMENTAL}"
+        )))
         .collect::<Vec<_>>()
         .join(";")
 }
