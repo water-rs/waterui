@@ -23,7 +23,7 @@ android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 apple-backend-commit = "67b4b6062a58e49c978885625cb4661ac6bc990b"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-commit = "f52b2bda74e0e8fd70cb68ab1ae9ffa57df9e878"
+android-backend-commit = "28aa27d3e7a234d9414c1ea35b311f485b4c09e2"
 
 [[bin]]
 name = "water"
