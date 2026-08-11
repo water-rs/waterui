@@ -707,8 +707,7 @@ impl ViewEffectNode {
             width: output_width,
             height: output_height,
         };
-        runtime.effect_mut().render(&input, &output);
-        let needs_redraw = runtime.effect().needs_redraw();
+        let needs_redraw = runtime.effect_mut().render(&input, &output);
         drop(runtime);
         if needs_redraw {
             renderer.signals.request_refresh();
