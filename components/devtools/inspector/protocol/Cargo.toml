@@ -13,8 +13,9 @@ categories.workspace = true
 build = "build.rs"
 
 [dependencies]
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "std"] }
 bincode = { version = "2.0.1", features = ["serde"] }
+bitflags = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 futures-lite = "2.6"
 

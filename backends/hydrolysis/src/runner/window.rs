@@ -696,6 +696,10 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
     let mut snapshot = None;
     let mut rebuilt = false;
     let profile;
+    // The scheduled mode is cleared while the scene is pumped, so record what
+    // this frame was asked to do before that happens.
+    let frame_mode = runtime.mode;
+    let frame_pump_started_at = Instant::now();
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
@@ -931,6 +935,17 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
     }
     if runtime.renderer.take_redraw_request() {
         runtime.platform.request_redraw();
+    }
+
+    super::inspector::publish_frame(
+        env,
+        frame_mode,
+        &profile,
+        frame_pump_started_at.elapsed(),
+    );
+    #[cfg(feature = "accessibility")]
+    if let Some(update) = runtime.renderer.peek_accessibility_tree_update() {
+        super::inspector::publish_tree(env, update);
     }
 
     RenderWindowResult {

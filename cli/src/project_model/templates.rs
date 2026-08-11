@@ -3313,7 +3313,7 @@ pub mod preview_ffi {
 /// Inspector app templates.
 pub mod inspector {
     use super::{
-        Path, TemplateContext, TemplateNamespace, dependency_path, dependency_version, embedded,
+        Path, TemplateContext, TemplateNamespace, dependency_path, embedded,
         io, scaffold_dir, write_support_cargo_toml,
     };
 
@@ -3352,6 +3352,13 @@ pub mod inspector {
         .await
     }
 
+    /// Path of the Inspector application crate inside a WaterUI checkout.
+    ///
+    /// The Inspector's user interface is a real crate rather than template
+    /// text, so it is compiled, linted, and tested with the rest of the
+    /// workspace. The scaffolded app is a shim that depends on it.
+    const INSPECTOR_APP_CRATE: &str = "components/devtools/inspector/app";
+
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         use std::collections::BTreeMap;
 
@@ -3362,12 +3369,12 @@ pub mod inspector {
             )
         })?;
 
-        let inspector_protocol_path = waterui_path.join("components/inspector-protocol");
-        if !inspector_protocol_path.exists() {
+        let inspector_app_path = waterui_path.join(INSPECTOR_APP_CRATE);
+        if !inspector_app_path.exists() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "Inspector support app requires {} (missing components/inspector-protocol)",
+                    "Inspector support app requires {} (missing {INSPECTOR_APP_CRATE})",
                     waterui_path.display()
                 ),
             ));
@@ -3380,11 +3387,9 @@ pub mod inspector {
             dependency_path(&waterui_path.join("ffi")),
         );
         dependencies.insert(
-            "waterui-inspector-protocol".to_string(),
-            dependency_path(&inspector_protocol_path),
+            "waterui-inspector-app".to_string(),
+            dependency_path(&inspector_app_path),
         );
-        dependencies.insert("smol".to_string(), dependency_version("2.0.2"));
-        dependencies.insert("futures-lite".to_string(), dependency_version("2.6"));
 
         write_support_cargo_toml(
             base_dir,
@@ -3393,6 +3398,25 @@ pub mod inspector {
             dependencies,
         )
         .await
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// The scaffolder resolves the Inspector crate by path, so a move that
+        /// nobody updates here breaks `water inspector` silently — which is
+        /// exactly what happened when the crate moved under `devtools/`.
+        #[test]
+        fn the_inspector_app_crate_path_exists() {
+            let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("the CLI crate lives inside the repository");
+            let crate_path = repository.join(super::INSPECTOR_APP_CRATE);
+            assert!(
+                crate_path.join("Cargo.toml").is_file(),
+                "inspector app crate is not at {}",
+                crate_path.display()
+            );
+        }
     }
 }
 

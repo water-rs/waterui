@@ -51,7 +51,8 @@ pub fn init_main_thread_executors() {
     // spawn/spawn_local paths used by reactive bindings are always available.
     let _ = try_init_global_executor(NativeExecutor::new());
     let inspector_probe = waterui::inspector::maybe_init_from_env()
-        .map(waterui::inspector::InspectorRuntime::into_runtime_probe);
+        .as_ref()
+        .map(waterui::inspector::InspectorRuntime::runtime_probe);
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
         GtkMainThreadExecutor,
         inspector_probe,
