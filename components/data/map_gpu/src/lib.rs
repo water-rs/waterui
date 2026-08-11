@@ -699,7 +699,7 @@ mod tests {
             annotations: Computed::constant(Vec::new()),
             style: MapStyle::Standard,
             user_location_visibility: waterui_map::MapVisibility::Hidden,
-            user_location: Computed::constant(None),
+            user_location: None,
             interactivity: waterui_map::MapInteractivity::ReadOnly,
             compass_visibility: waterui_map::MapVisibility::Hidden,
             scale_visibility: waterui_map::MapVisibility::Hidden,
