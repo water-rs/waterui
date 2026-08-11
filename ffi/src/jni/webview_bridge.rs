@@ -18,8 +18,8 @@ use jni::{Env, EnvUnowned, JavaVM, jni_sig, jni_str};
 
 use crate::closure::WuiFn;
 use crate::components::webview::{
-    FfiWebViewHandle, WuiJsCallback, WuiScriptInjectionTime, WuiStringCallback, WuiWebViewEvent,
-    WuiWebViewEventType, WuiWebViewHandle, WuiWebViewMessage,
+    FfiWebViewHandle, WuiJsCallback, WuiJsReplyKind, WuiScriptInjectionTime, WuiStringCallback,
+    WuiWebViewEvent, WuiWebViewEventType, WuiWebViewHandle, WuiWebViewMessage, WuiWebViewReply,
 };
 use crate::reactive::WuiComputed;
 use crate::{IntoFFI, IntoRust, WuiStr};
@@ -500,13 +500,21 @@ struct ReplyCtx {
 ///
 /// The reply script is rendered here rather than in Kotlin so the envelope format
 /// lives in exactly one place: `waterui_webview::bridge`.
-unsafe extern "C" fn reply_call(data: *mut (), success: bool, payload_b64: WuiStr) {
+unsafe extern "C" fn reply_call(
+    data: *mut (),
+    success: bool,
+    kind: WuiJsReplyKind,
+    payload_b64: WuiStr,
+) {
     let ctx = unsafe { Box::from_raw(data as *mut ReplyCtx) };
     let payload: waterui::Str = unsafe { payload_b64.into_rust() };
 
     let reply = if success {
         match base64::engine::general_purpose::STANDARD.decode(payload.as_str()) {
-            Ok(bytes) => bridge::Reply::Bytes(bytes),
+            Ok(bytes) => match kind {
+                WuiJsReplyKind::Json => bridge::Reply::Json(bytes),
+                WuiJsReplyKind::Bytes => bridge::Reply::Bytes(bytes),
+            },
             Err(error) => bridge::Reply::failure(&error),
         }
     } else {
@@ -604,7 +612,7 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
                 base64::engine::general_purpose::STANDARD.encode(&request.payload),
             )
             .into_ffi(),
-            reply: WuiJsCallback {
+            reply: WuiWebViewReply {
                 data: Box::into_raw(reply_ctx) as *mut (),
                 call: reply_call,
             },
