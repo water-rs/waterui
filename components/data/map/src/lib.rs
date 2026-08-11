@@ -26,7 +26,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use nami::{impl_constant, signal::IntoComputed};
+use nami::{Binding, impl_constant, signal::IntoComputed};
 use waterui_core::{Computed, SignalExt, configurable, layout::StretchAxis};
 use waterui_str::Str;
 
@@ -137,7 +137,7 @@ impl From<Coordinate> for Region {
     }
 }
 
-impl_constant!(Coordinate, Region, Annotation, MapStyle);
+impl_constant!(Coordinate, Region, Annotation, MapStyle, MapStatus);
 
 /// A map annotation (pin marker).
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +185,43 @@ pub enum MapStyle {
     Satellite,
     /// Hybrid of satellite and roads.
     Hybrid,
+}
+
+/// Lifecycle of the imagery backing a map.
+///
+/// A realization that fetches its own tiles reports progress here so the
+/// application can show a spinner or an error instead of an empty rectangle.
+/// Realizations that draw from a platform map report the platform's own
+/// load callbacks.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum MapStatus {
+    /// The map is fetching the data it needs to draw.
+    #[default]
+    Loading,
+    /// The map has everything it needs for the current camera.
+    Ready,
+    /// The map could not load, carrying a human-readable reason.
+    ///
+    /// The map keeps drawing whatever it last had, so a failure that arrives
+    /// after a successful load leaves the previous imagery on screen.
+    Failed(Str),
+}
+
+impl MapStatus {
+    /// Returns whether the map is still loading.
+    #[must_use]
+    pub const fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading)
+    }
+
+    /// Returns the failure reason, if the map failed to load.
+    #[must_use]
+    pub const fn failure(&self) -> Option<&Str> {
+        match self {
+            Self::Failed(reason) => Some(reason),
+            Self::Loading | Self::Ready => None,
+        }
+    }
 }
 
 /// Generic visibility toggle for optional map chrome.
@@ -256,6 +293,11 @@ pub struct MapConfig {
     pub compass_visibility: MapVisibility,
     /// Whether to show the scale.
     pub scale_visibility: MapVisibility,
+    /// Caller-owned sink the realization reports its load lifecycle into.
+    ///
+    /// `None` means the application is not observing status, and a realization
+    /// must not allocate one on its behalf.
+    pub status: Option<Binding<MapStatus>>,
 }
 
 // Use configurable! with StretchAxis::Both - this provides both NativeView and View impls
@@ -283,6 +325,7 @@ impl Map {
             interactivity: MapInteractivity::Interactive,
             compass_visibility: MapVisibility::Visible,
             scale_visibility: MapVisibility::Visible,
+            status: None,
         })
     }
 
@@ -375,6 +418,17 @@ impl Map {
         self.0.scale_visibility = MapVisibility::from_bool(show);
         self
     }
+
+    /// Observes the map's load lifecycle through a caller-owned binding.
+    ///
+    /// The map writes [`MapStatus`] into `status` as it loads, fails, or
+    /// becomes ready, so an application can show its own loading and error
+    /// affordances over the map.
+    #[must_use]
+    pub fn status(mut self, status: &Binding<MapStatus>) -> Self {
+        self.0.status = Some(status.clone());
+        self
+    }
 }
 
 /// Convenience function to create a Map view.
@@ -390,4 +444,35 @@ pub fn map_centered_on(coordinate: impl IntoComputed<Coordinate>) -> Map {
 /// Convenience constructor for [`Map::centered_on_location`].
 pub fn map_centered_on_location(location: impl IntoComputed<Location>) -> Map {
     Map::centered_on_location(location)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Coordinate, Map, MapStatus, Region};
+    use nami::Binding;
+
+    #[test]
+    fn a_map_reports_status_into_the_caller_owned_binding() {
+        let status = Binding::container(MapStatus::Loading);
+        let map = Map::new(Region::from_coordinate(
+            Coordinate::from_degrees(37.7749, -122.4194).expect("valid coordinate"),
+        ))
+        .status(&status);
+
+        let sink = map.0.status.expect("status sink must be retained");
+        sink.set(MapStatus::Failed("style unreachable".into()));
+
+        assert_eq!(
+            status.get().failure().map(ToString::to_string),
+            Some(String::from("style unreachable"))
+        );
+        assert!(!status.get().is_loading());
+    }
+
+    #[test]
+    fn a_map_without_an_observer_allocates_no_status_sink() {
+        let map = Map::new(Region::default());
+
+        assert!(map.0.status.is_none());
+    }
 }
