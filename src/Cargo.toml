@@ -33,6 +33,8 @@ executor-core.workspace = true
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
+tracing-subscriber.workspace = true
+async-channel.workspace = true
 minstant.workspace = true
 pulldown-cmark = "0.13"
 waterui-macros.workspace = true
@@ -99,6 +101,11 @@ web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
 default = ["gpu", "assets", "media"]
+# Reactive-graph tracing for the Inspector's `signals` channel. Development
+# only: it attributes every state-owning signal node and reports every
+# notification. Off by default so release builds pay nothing — see
+# `nami_core::observe`.
+inspector-signals = ["nami/observability"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disabling it lets a WaterUI app
 # cross-compile lean for embedded targets without the GPU stack.

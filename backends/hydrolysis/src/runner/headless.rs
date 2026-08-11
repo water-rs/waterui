@@ -235,8 +235,12 @@ impl HeadlessRuntime {
         height: u32,
         create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
     ) -> Self {
-        let inspector_probe = init_main_thread_executors();
+        let inspector = init_main_thread_executors();
+        let inspector_probe = inspector
+            .as_ref()
+            .map(waterui::inspector::InspectorRuntime::runtime_probe);
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
         install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));

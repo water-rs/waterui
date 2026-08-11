@@ -160,6 +160,7 @@ waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
 waterui-assets-planner = { version = "0.1.0", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.1.0", path = "components/devtools/inspector/protocol" }
+waterui-inspector-app = { version = "0.1.0", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.1.0", path = "components/devtools/preview/protocol" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui-testing = { path = "testing" }

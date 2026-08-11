@@ -11,7 +11,6 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 #[cfg(feature = "winit")]
@@ -59,6 +58,8 @@ use fonts::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 use window::*;
+mod inspector;
+
 pub use window::{FrameCounters, FramePhases, FrameProfile, HeadlessSnapshot};
 
 use crate::env::{parse_bool_env, parse_positive_u64_env};
@@ -71,10 +72,9 @@ use crate::renderer::{
 };
 use crate::time::Instant;
 
-fn init_main_thread_executors() -> Option<Arc<dyn waterui::task::RuntimeProbe>> {
+fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     waterui::inspector::maybe_init_from_env()
-        .map(waterui::inspector::InspectorRuntime::into_runtime_probe)
 }
 
 /// Physical pixels per logical pixel for offscreen rendering, from
@@ -140,7 +140,10 @@ fn install_headless_window_managers(
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 pub fn run(app: App) {
-    let inspector_probe = init_main_thread_executors();
+    let inspector = init_main_thread_executors();
+    let inspector_probe = inspector
+        .as_ref()
+        .map(waterui::inspector::InspectorRuntime::runtime_probe);
     // This path renders each window once offscreen and returns; it owns no event
     // loop, so it supplies the headless executor rather than a platform one.
     // Keep a handle on the executor: the render loop below has to drive it, or
@@ -153,6 +156,7 @@ pub fn run(app: App) {
     ));
     let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
@@ -182,8 +186,7 @@ pub fn run(app: App) {
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub fn run(app: App) {
-    let inspector_probe = init_main_thread_executors();
-    web_runner::run(app, inspector_probe);
+    web_runner::run(app, init_main_thread_executors());
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
@@ -191,8 +194,7 @@ pub fn run(app: App) {
     #[cfg(all(target_os = "macos", any(hydrolysis_cef_webview, feature = "chromium")))]
     waterui_browser_cef::initialize_macos_application();
     initialize_tracing_from_env();
-    let inspector_probe = init_main_thread_executors();
-    winit_runner::run(app, inspector_probe);
+    winit_runner::run(app, init_main_thread_executors());
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]

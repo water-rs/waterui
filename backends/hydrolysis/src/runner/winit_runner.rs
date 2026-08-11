@@ -118,7 +118,7 @@ impl LocalExecutor for WinitMainThreadExecutor {
     }
 }
 
-pub fn run(app: App, inspector_probe: Option<std::sync::Arc<dyn waterui::task::RuntimeProbe>>) {
+pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
     let mut event_loop_builder = EventLoop::<RunnerEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     event_loop_builder
@@ -135,11 +135,20 @@ pub fn run(app: App, inspector_probe: Option<std::sync::Arc<dyn waterui::task::R
     };
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
         local_executor,
-        inspector_probe,
+        inspector
+            .as_ref()
+            .map(waterui::inspector::InspectorRuntime::runtime_probe),
     ));
+    // The reactive graph is thread-confined, so its observer is installed here,
+    // on the thread that owns the event loop, and lives as long as the loop.
+    #[cfg(feature = "inspector-signals")]
+    let _signal_scope = inspector
+        .as_ref()
+        .map(waterui::inspector::InspectorRuntime::observe_signals);
 
     let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     super::install_native_component_hooks(&mut env);
