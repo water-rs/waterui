@@ -36,6 +36,22 @@ Dew shares frame signals and input types with other self-drawn backends through
 `waterui-backend-core`. `DewRuntime` routes retained pointer input to buttons,
 toggles, sliders, and steppers without rebuilding their view bodies.
 
+## Deliberately unsupported: the GPU stack
+
+Dew's dependency graph is wgpu-free by design. The GPU-backed primitives —
+`GpuSurface`, `ShaderSurface`, `ViewEffect`, and the `AppliedFilter` GPU
+filters — are **explicitly unsupported** on Dew, not emulated: they require a
+device the target class does not have, and a CPU re-implementation would be a
+fallback pretending to be the real thing. A WaterUI app built for Dew must
+not enable the `waterui/gpu` feature; a GPU view that reaches Dew's
+dispatcher fails fast through `Native::body` rather than rendering a blank.
+
+The same policy covers the styles Dew's widget handlers panic on
+(`ButtonStyle`/`ToggleStyle`/`ProgressStyle` variants, non-vertical scroll
+axes, indeterminate progress): each panic is an authored "not implemented
+here" marker for a feature that needs a real Dew implementation, never a
+silent degradation.
+
 ## Embedded-device simulator
 
 The complete embedded rendering flow runs natively in a window — no

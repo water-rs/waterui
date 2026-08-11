@@ -27,6 +27,18 @@
 //!   RGB565 LCD stream on embedded targets)
 //! - [`theme`]: the built-in widget palette — named colors every handler
 //!   draws with until environment-driven theming lands
+//!
+//! # Deliberately unsupported: the GPU stack
+//!
+//! Dew's dependency graph is wgpu-free by design, and the GPU-backed
+//! primitives (`GpuSurface`, `ShaderSurface`, `ViewEffect`, GPU
+//! `AppliedFilter`s) are explicitly unsupported rather than emulated —
+//! Dew targets devices without a GPU, and surfacing that asymmetry is the
+//! framework's documented policy. Build Dew apps without the `waterui/gpu`
+//! feature; a GPU view reaching the dispatcher fails fast through
+//! `Native::body`. The widget handlers' style panics
+//! (`dew does not implement …`) are the same kind of authored marker: a
+//! feature awaiting a real Dew implementation, never a silent degradation.
 
 pub mod board;
 pub mod compositor;
