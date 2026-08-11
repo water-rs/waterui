@@ -118,6 +118,9 @@ void water_wpe_page_key(
     uint32_t keyval,
     uint32_t modifiers,
     uint32_t time_ms);
+/* Evaluates `script` and discards its result. Used to settle a page promise
+ * after an asynchronous handler has finished. */
+void water_wpe_page_evaluate(WaterWpePage *page, const char *script);
 void water_wpe_page_add_script(
     WaterWpePage *page,
     const char *script,

@@ -912,6 +912,13 @@ void water_wpe_page_key(
     wpe_event_unref(event);
 }
 
+void water_wpe_page_evaluate(WaterWpePage *page, const char *script)
+{
+    g_assert(page != NULL);
+    g_assert(script != NULL);
+    water_wpe_evaluate_without_result(page, script);
+}
+
 void water_wpe_page_add_script(
     WaterWpePage *page,
     const char *script,
