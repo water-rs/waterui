@@ -257,6 +257,12 @@ impl Query<'_> {
         element.drag_by(self.app, dx, dy);
     }
 
+    /// Drags from the matching element center by a delta with step/timing control.
+    pub fn drag_by_with(self, dx: f32, dy: f32, options: crate::app::DragOptions) {
+        let element = self.app.resolve_single(&self.selector);
+        element.drag_by_with(self.app, dx, dy, options);
+    }
+
     /// Drags between normalized points inside the matching element.
     pub fn drag_between(self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
         let element = self.app.resolve_single(&self.selector);

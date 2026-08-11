@@ -188,6 +188,26 @@ impl UiBuilder {
     }
 }
 
+/// Options controlling synthetic drag gestures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragOptions {
+    /// Number of intermediate pointer-move samples (at least 1).
+    pub steps: u16,
+    /// Pump one virtual frame between samples so each move lands on its own
+    /// frame: gesture recognizers then observe a real motion timeline
+    /// (velocity, glide) instead of every sample arriving at once.
+    pub frame_per_step: bool,
+}
+
+impl Default for DragOptions {
+    fn default() -> Self {
+        Self {
+            steps: 6,
+            frame_per_step: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverMode {
     Semantic,
@@ -757,14 +777,32 @@ impl SemanticApp {
     }
 
     pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
-        const STEPS: u16 = 6;
+        self.drag_from_to_with(from_x, from_y, to_x, to_y, DragOptions::default());
+    }
 
+    /// Dispatches a drag between viewport coordinates with explicit step and
+    /// timing control, then settles resulting updates.
+    pub fn drag_from_to_with(
+        &mut self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        options: DragOptions,
+    ) {
+        let steps = options.steps.max(1);
         self.driver.pointer_down(from_x, from_y, &self.env);
-        for step in 1..=STEPS {
-            let t = f32::from(step) / f32::from(STEPS);
+        for step in 1..=steps {
+            let t = f32::from(step) / f32::from(steps);
             let x = (to_x - from_x).mul_add(t, from_x);
             let y = (to_y - from_y).mul_add(t, from_y);
             self.driver.pointer_move(x, y, &self.env);
+            if options.frame_per_step {
+                let outcome =
+                    self.driver
+                        .pump_step(crate::driver::VIRTUAL_FRAME, &self.content, &self.env);
+                let _ = self.apply_pump_result(outcome);
+            }
         }
         self.driver.pointer_up(to_x, to_y, &self.env);
         self.settle();
@@ -785,18 +823,25 @@ impl SemanticApp {
 
     /// Dispatches a named keyboard key such as `Backspace`, `Delete`, or `ArrowLeft`.
     pub fn press_named_key(&mut self, key: impl Into<String>) {
+        self.press_named_key_with(key, Modifiers::default());
+    }
+
+    /// Dispatches a named keyboard key with explicit modifiers held.
+    pub fn press_named_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
         self.driver
-            .key_press(KeyCode::Named(key.into()), Modifiers::default(), &self.env);
+            .key_press(KeyCode::Named(key.into()), modifiers, &self.env);
         self.settle();
     }
 
     /// Dispatches a character keyboard key without text-input synthesis.
     pub fn press_character_key(&mut self, key: impl Into<String>) {
-        self.driver.key_press(
-            KeyCode::Character(key.into()),
-            Modifiers::default(),
-            &self.env,
-        );
+        self.press_character_key_with(key, Modifiers::default());
+    }
+
+    /// Dispatches a character keyboard key with explicit modifiers held.
+    pub fn press_character_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
+        self.driver
+            .key_press(KeyCode::Character(key.into()), modifiers, &self.env);
         self.settle();
     }
 

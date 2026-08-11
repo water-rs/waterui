@@ -65,7 +65,9 @@ mod semantics;
 mod snapshot;
 pub(crate) mod wait;
 
-pub use app::{OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, ui};
+pub use accesskit::Role as AccessKitRole;
+pub use app::{DragOptions, OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, ui};
+pub use hydrolysis::{KeyCode, Modifiers};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::FrameTiming;
 pub use executor::{TestLocalExecutor, install_test_executor};
