@@ -39,6 +39,8 @@ pub use url_signal::IntoUrlSignal;
 mod watcher;
 pub use watcher::{WatcherGuard, WatcherSet};
 pub mod bridge;
+mod script;
+pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
 
 use waterui_core::{
     Binding, Computed, Environment, Native, Signal, View, binding,
@@ -361,6 +363,64 @@ impl WebView {
         script: &'a str,
     ) -> impl core::future::Future<Output = Result<Str, Str>> + 'a {
         self.handle.run_javascript(script)
+    }
+
+    /// Evaluates a JavaScript expression and decodes its result as `T`.
+    ///
+    /// Prefer the [`eval!`](waterui_macros::eval) macro, which checks the source
+    /// is a literal and passes interpolated values out of band.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JsError::Exception`] when the script throws,
+    /// [`JsError::Unserializable`] when its result cannot be represented, and
+    /// [`JsError::Decode`] when the result is not a `T`. Those three used to be
+    /// one opaque string.
+    #[expect(
+        clippy::future_not_send,
+        reason = "native web views and JavaScript execution are main-thread-affine"
+    )]
+    pub fn eval<T: serde::de::DeserializeOwned>(
+        &self,
+        expr: JsExpr,
+    ) -> impl core::future::Future<Output = Result<T, JsError>> + '_ {
+        let call = expr.wrapped_call();
+        async move { self.run_wrapped(&call).await?.decode() }
+    }
+
+    /// Runs a JavaScript program for its effects.
+    ///
+    /// Prefer the [`exec!`](waterui_macros::exec) macro.
+    ///
+    /// # Errors
+    ///
+    /// As for [`eval`](Self::eval), except that the program's value is discarded.
+    #[expect(
+        clippy::future_not_send,
+        reason = "native web views and JavaScript execution are main-thread-affine"
+    )]
+    pub fn exec(
+        &self,
+        program: JsProgram,
+    ) -> impl core::future::Future<Output = Result<(), JsError>> + '_ {
+        let call = program.wrapped_call();
+        async move { self.run_wrapped(&call).await?.decode() }
+    }
+
+    /// Runs a wrapped call and parses the envelope it returns.
+    async fn run_wrapped(&self, call: &str) -> Result<JsOutcome, JsError> {
+        let raw = self
+            .handle
+            .run_javascript(call)
+            .await
+            .map_err(|message| JsError::Exception {
+                message,
+                stack: None,
+            })?;
+        serde_json::from_str(raw.as_str()).map_err(|source| JsError::Decode {
+            expected: "JsOutcome",
+            source,
+        })
     }
 
     /// Sets a cookie in this web view's native cookie store.

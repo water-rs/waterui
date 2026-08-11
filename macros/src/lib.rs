@@ -34,6 +34,90 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
     }
 }
 
+mod javascript;
+
+/// Runs a JavaScript program for its effects.
+///
+/// ```ignore
+/// exec!(webview, "app.setTheme(@{theme})").await?;
+/// ```
+///
+/// `@{expr}` holes are passed to the engine as bound arguments rather than
+/// spliced into the source, so a value can never be read back as code. The sigil
+/// is `@{}` because `${}` belongs to JavaScript's own template literals; write
+/// `@@{` for a literal `@{`.
+#[proc_macro]
+pub fn exec(input: TokenStream) -> TokenStream {
+    let call = syn::parse_macro_input!(input as javascript::ScriptCall);
+    let interpolated = match javascript::interpolate(&call.source) {
+        Ok(interpolated) => interpolated,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let receiver = &call.receiver;
+    let program = javascript::build(
+        &quote::quote!(::waterui::webview::JsProgram),
+        &interpolated,
+    );
+    quote::quote!(#receiver.exec(#program)).into()
+}
+
+/// Evaluates a JavaScript expression and decodes its result.
+///
+/// ```ignore
+/// let title: String = eval!(webview, "document.title").await?;
+/// ```
+///
+/// Interpolation works exactly as in [`exec!`].
+#[proc_macro]
+pub fn eval(input: TokenStream) -> TokenStream {
+    let call = syn::parse_macro_input!(input as javascript::ScriptCall);
+    let interpolated = match javascript::interpolate(&call.source) {
+        Ok(interpolated) => interpolated,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let receiver = &call.receiver;
+    let expr = javascript::build(&quote::quote!(::waterui::webview::JsExpr), &interpolated);
+    quote::quote!(#receiver.eval(#expr)).into()
+}
+
+/// A JavaScript program read from a file at compile time.
+///
+/// ```ignore
+/// webview.inject(js_file!("scripts/setup.js"), ScriptInjectionTime::DocumentStart);
+/// exec_file!(webview, "scripts/setup.js").await?;
+/// ```
+///
+/// Multi-line JavaScript belongs in a file rather than a string literal, and this
+/// is how it gets there.
+#[proc_macro]
+pub fn js_file(input: TokenStream) -> TokenStream {
+    let file = syn::parse_macro_input!(input as javascript::ScriptFile);
+    let path = &file.path;
+    quote::quote!(::waterui::webview::JsProgram::raw(
+        ::std::include_str!(#path)
+    ))
+    .into()
+}
+
+/// Runs a JavaScript program from a file for its effects.
+///
+/// See [`js_file!`]; this is the fused form of `receiver.exec(js_file!(path))`.
+#[proc_macro]
+pub fn exec_file(input: TokenStream) -> TokenStream {
+    let file = syn::parse_macro_input!(input as javascript::ScriptFile);
+    let Some(receiver) = file.receiver else {
+        return syn::Error::new(
+            file.path.span(),
+            "exec_file! takes a web view and a path: exec_file!(webview, \"scripts/setup.js\")",
+        )
+        .to_compile_error()
+        .into();
+    };
+    let path = &file.path;
+    quote::quote!(#receiver.exec(::waterui::webview::JsProgram::raw(::std::include_str!(#path))))
+        .into()
+}
+
 #[proc_macro]
 /// Expands `text!(...)` into a localized `Text` view with compile-time catalog loading.
 ///

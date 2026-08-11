@@ -620,7 +620,7 @@ pub struct WuiBridgeRequest {
 /// only in `waterui_webview::bridge`.
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_webview_bridge_script() -> WuiStr {
-    Str::from_static(waterui_webview::bridge::SCRIPT).into_ffi()
+    Str::from_static(waterui_webview::DOCUMENT_START_SCRIPT).into_ffi()
 }
 
 /// Parses one envelope produced by the bridge script.

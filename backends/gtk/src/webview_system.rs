@@ -984,7 +984,7 @@ impl GtkWebViewHandle {
         );
         webkitgtk::add_user_script(
             self.native.manager,
-            bridge::SCRIPT,
+            waterui_webview::DOCUMENT_START_SCRIPT,
             ScriptInjectionTime::DocumentStart,
         );
         let custom = self.native.custom_scripts.borrow().clone();
