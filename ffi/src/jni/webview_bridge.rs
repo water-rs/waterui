@@ -23,7 +23,8 @@ use crate::components::webview::{
 };
 use crate::reactive::WuiComputed;
 use crate::{IntoFFI, IntoRust, WuiStr};
-use waterui_webview::{CustomWebViewController, WebViewController, WebViewHandle};
+use base64::Engine as _;
+use waterui_webview::{CustomWebViewController, WebViewController, WebViewHandle, bridge};
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -476,74 +477,119 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
 struct ReplyCtx {
     jvm: Arc<JavaVM>,
     wrapper: Global<JObject<'static>>,
-    request_id: String,
+    request_id: u64,
 }
 
+/// Completes one bridge call.
+///
+/// The reply script is rendered here rather than in Kotlin so the envelope format
+/// lives in exactly one place: `waterui_webview::bridge`.
 unsafe extern "C" fn reply_call(data: *mut (), success: bool, payload_b64: WuiStr) {
     let ctx = unsafe { Box::from_raw(data as *mut ReplyCtx) };
     let payload: waterui::Str = unsafe { payload_b64.into_rust() };
-    let payload = payload.as_str().to_string();
+
+    let reply = if success {
+        match base64::engine::general_purpose::STANDARD.decode(payload.as_str()) {
+            Ok(bytes) => bridge::Reply::Bytes(bytes),
+            Err(error) => bridge::Reply::failure(&error),
+        }
+    } else {
+        bridge::Reply::failure(&payload.as_str())
+    };
+    let script = reply.resolve_script(ctx.request_id);
 
     super::with_attached_env(&ctx.jvm, |env| {
-        let jreq = java_string(env, &ctx.request_id);
-        let jpayload = java_string(env, &payload);
+        let jscript = java_string(env, &script);
         env.call_method(
             &ctx.wrapper,
-            jni_str!("resolveMessage"),
-            jni_sig!("(Ljava/lang/String;ZLjava/lang/String;)V"),
-            &[
-                JValue::Object(&jreq),
-                JValue::Bool(success),
-                JValue::Object(&jpayload),
-            ],
+            jni_str!("evaluateBridgeScript"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&jscript)],
         )
-        .expect(
-            "reply_call: failed to call WebViewWrapper.resolveMessage(String, boolean, String)",
-        );
+        .expect("reply_call: failed to call WebViewWrapper.evaluateBridgeScript(String)");
     })
     .expect("WebView reply failed to attach its JVM thread");
 }
 
+/// Returns the shared bridge script for the Kotlin side to inject.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeOnMessage<
+pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeBridgeScript<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+) -> jobject {
+    super::with_env(&mut env, |env| {
+        java_string(env, bridge::SCRIPT).into_raw()
+    })
+}
+
+/// Receives one `waterui.invoke(...)` envelope from page script.
+///
+/// Page script reaches this transport directly, so a malformed envelope or an
+/// unknown handler name is rejected back to JavaScript rather than aborting the
+/// application.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeOnBridgeMessage<
     'local,
 >(
     mut env: EnvUnowned<'local>,
     _this: JObject<'local>,
     native_ptr: jlong,
-    name: JString<'local>,
-    request_id: JString<'local>,
-    payload_base64: JString<'local>,
+    envelope: JString<'local>,
 ) {
     super::with_env(&mut env, |env| {
-        let name = name
-            .try_to_string(env)
-            .expect("webview.native_on_message received an invalid name string");
-        let request_id = request_id
-            .try_to_string(env)
-            .expect("webview.native_on_message received an invalid requestId string");
-        let payload_base64 = payload_base64
-            .try_to_string(env)
-            .expect("webview.native_on_message received an invalid payload string");
+        let Ok(envelope) = envelope.try_to_string(env) else {
+            tracing::warn!("WaterUI bridge received a non-UTF-8 envelope; ignoring");
+            return;
+        };
         let handle = unsafe { &*(native_ptr as *const AndroidWebViewHandle) };
-        let handler = Rc::clone(
-            handle
-                .handlers
-                .get(&name)
-                .unwrap_or_else(|| panic!("webview.native_on_message missing handler '{name}'")),
-        );
+        let request = match bridge::Request::parse(&envelope) {
+            Ok(request) => request,
+            Err(error) => {
+                tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+                return;
+            }
+        };
+
+        let mut reply_to_page = |reply: &bridge::Reply| {
+            let script = reply.resolve_script(request.id);
+            let jscript = java_string(env, &script);
+            env.call_method(
+                &handle.wrapper,
+                jni_str!("evaluateBridgeScript"),
+                jni_sig!("(Ljava/lang/String;)V"),
+                &[JValue::Object(&jscript)],
+            )
+            .expect("failed to call WebViewWrapper.evaluateBridgeScript(String)");
+        };
+
+        let Some(handler) = handle.handlers.get(&request.name).map(Rc::clone) else {
+            tracing::warn!(
+                handler = %request.name,
+                "page script called a WaterUI handler that is not registered"
+            );
+            reply_to_page(&bridge::Reply::failure(&format!(
+                "no WaterUI handler named `{}`",
+                request.name
+            )));
+            return;
+        };
+
         let reply_ctx = Box::new(ReplyCtx {
             jvm: Arc::clone(&handle.jvm),
             wrapper: env
                 .new_global_ref(handle.wrapper.as_obj())
-                .expect("webview.native_on_message failed to clone wrapper ref"),
-            request_id,
+                .expect("failed to clone the WebViewWrapper reference"),
+            request_id: request.id,
         });
-        let reply_ctx_ptr = Box::into_raw(reply_ctx) as *mut ();
         let msg = WuiWebViewMessage {
-            payload_base64: waterui::Str::from(payload_base64).into_ffi(),
+            payload_base64: waterui::Str::from(
+                base64::engine::general_purpose::STANDARD.encode(&request.payload),
+            )
+            .into_ffi(),
             reply: WuiJsCallback {
-                data: reply_ctx_ptr,
+                data: Box::into_raw(reply_ctx) as *mut (),
                 call: reply_call,
             },
         };
