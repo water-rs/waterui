@@ -6,5 +6,5 @@
             min(cooled.g, 0.94),
             min(cooled.b, 0.96),
         );
-        color = vec4<f32>(clamp(crushed, vec3<f32>(0.0), vec3<f32>(1.0)), color.a);
+        color = vec4<f32>(clamp(crushed, vec3<f32>(0.0), vec3<f32>(COLOR_CLAMP_MAX)), color.a);
     }

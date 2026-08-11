@@ -8,7 +8,7 @@ use crate::Filter;
 ///
 /// - `amount`: Vibrance amount (-1.0 = muted, 0.0 = unchanged, 1.0 = strongly boosted)
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/transform/vibrance.wgsl")]
+#[filter(color_only, shader = "color/transform/vibrance.wgsl")]
 pub struct Vibrance<T>(pub T);
 
 #[cfg(test)]

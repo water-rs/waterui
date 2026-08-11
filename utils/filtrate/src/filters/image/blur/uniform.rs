@@ -5,7 +5,8 @@ use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 /// Applies a box blur effect to an image.
 ///
 /// This is a spatial filter that samples neighboring pixels, so it
-/// cannot be fused with other filters. It requires its own GPU pass.
+/// cannot be fused with other filters. It runs as two separable passes
+/// sharing one radius.
 ///
 /// # Parameters
 ///
@@ -28,7 +29,6 @@ impl<T: FilterParam> Filter for Blur<T> {
 
     // Separable two-pass blur uses the same radius in both passes.
     type Params = [f32; 2];
-    type Fragments = (&'static str, &'static str);
 
     #[inline]
     fn params(&self) -> [f32; 2] {
@@ -36,24 +36,21 @@ impl<T: FilterParam> Filter for Blur<T> {
         [radius, radius]
     }
 
-    #[inline]
-    fn fragments(&self) -> Self::Fragments {
-        (
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.spatial_shader(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/blur_horizontal.wgsl"
             )),
+            1,
+        );
+        c.spatial_shader(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/blur_vertical.wgsl"
             )),
-        )
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        let (horizontal, vertical) = self.fragments();
-        c.spatial_shader(horizontal, 1);
-        c.spatial_shader(vertical, 1);
+            1,
+        );
     }
 
     fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {

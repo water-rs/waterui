@@ -19,7 +19,7 @@ use crate::Filter;
 /// let partial = Grayscale(0.5);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/transform/grayscale.wgsl")]
+#[filter(color_only, shader = "color/transform/grayscale.wgsl")]
 pub struct Grayscale<T>(pub T);
 
 #[cfg(test)]

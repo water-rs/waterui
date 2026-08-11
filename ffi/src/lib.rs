@@ -563,6 +563,8 @@ pub unsafe extern "C" fn waterui_clone_env(env: *const WuiEnv) -> *mut WuiEnv {
 pub unsafe extern "C" fn waterui_env_disabled(
     env: *const WuiEnv,
 ) -> *mut crate::reactive::WuiComputed<bool> {
+    // SAFETY: the caller guarantees `env` is a valid, live environment pointer
+    // for the duration of this call (see the function-level safety contract).
     let env = unsafe { borrow_ffi(env) };
     env.0
         .get::<waterui_core::interaction::Disabled>()

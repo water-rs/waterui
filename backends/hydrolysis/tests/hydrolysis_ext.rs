@@ -448,7 +448,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 fn offscreen_window_scale_factor_scales_the_surface_only() {
     use hydrolysis::{PlatformWindow as _, SurfaceProvider as _};
 
-    let mut window = hydrolysis::OffscreenWindow::new_for_tests(
+    let window = hydrolysis::OffscreenWindow::new_for_tests(
         320,
         200,
         wgpu::TextureFormat::Rgba8Unorm,

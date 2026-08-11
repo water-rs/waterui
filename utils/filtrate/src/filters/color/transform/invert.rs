@@ -14,7 +14,7 @@ use crate::Filter;
 /// let inverted = Invert;
 /// ```
 #[derive(Debug, Clone, Copy, Default, Filter)]
-#[filter(color_only, fragment = "color/transform/invert.wgsl")]
+#[filter(color_only, shader = "color/transform/invert.wgsl")]
 pub struct Invert;
 
 #[cfg(test)]

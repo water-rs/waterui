@@ -19,7 +19,7 @@ use crate::Filter;
 /// let vibrant = Saturation(1.5);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/transform/saturation.wgsl")]
+#[filter(color_only, shader = "color/transform/saturation.wgsl")]
 pub struct Saturation<T>(pub T);
 
 #[cfg(test)]

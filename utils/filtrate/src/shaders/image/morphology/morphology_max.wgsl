@@ -1,14 +1,9 @@
 // 3x3 morphological dilation: per-channel maximum over the neighbourhood.
-
-struct Uniforms {
-    output_dimensions: vec2<f32>,
-    input_dimensions: vec2<f32>,
-    params: array<vec4<f32>, 16>,
-}
-
-@group(0) @binding(0) var input_texture: texture_2d<f32>;
-@group(0) @binding(1) var output_texture: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;
-@group(0) @binding(2) var<uniform> uniforms: Uniforms;
+//
+// The accumulator is seeded from the centre texel, so the operator is
+// range-agnostic — HDR values above 1.0 and negative scene-referred values
+// survive. All four channels dilate together (premultiplied-alpha
+// consistent).
 
 @compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -16,20 +11,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= dims.x || gid.y >= dims.y {
         return;
     }
-    let coord = vec2<i32>(gid.xy);
-    let max_xy = vec2<i32>(vec2<u32>(uniforms.input_dimensions)) - vec2<i32>(1);
+    let center = map_to_input(gid.xy);
 
-    var acc = vec3<f32>(0.0);
-    var alpha = 0.0;
+    var acc = load_input(center);
     for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
         for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
-            let p = clamp(coord + vec2<i32>(dx, dy), vec2<i32>(0), max_xy);
-            let texel = textureLoad(input_texture, p, 0);
-            acc = max(acc, texel.rgb);
-            if dx == 0 && dy == 0 {
-                alpha = texel.a;
-            }
+            acc = max(acc, load_input(center + vec2<i32>(dx, dy)));
         }
     }
-    textureStore(output_texture, coord, vec4<f32>(acc, alpha));
+    textureStore(output_texture, vec2<i32>(gid.xy), acc);
 }

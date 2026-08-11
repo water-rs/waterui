@@ -1,14 +1,15 @@
 [package]
 name = "filtrate"
 version = "0.2.0"
-edition = "2024"
-rust-version = "1.87"
-readme = "../../README.md"
-repository = "https://github.com/water-rs/waterui"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "README.md"
+repository.workspace = true
 description = "GPU texture filter library: built-in filters (blur, brightness, color matrix, ...) and runtime, built on filtrate-core."
 keywords = ["gpu", "filter", "wgpu", "image", "video"]
 categories = ["graphics", "multimedia::images", "rendering"]
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
 [lints]
 workspace = true
@@ -21,6 +22,7 @@ shaderloom.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 num-traits = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+thiserror.workspace = true
 tracing.workspace = true
 
 [build-dependencies]

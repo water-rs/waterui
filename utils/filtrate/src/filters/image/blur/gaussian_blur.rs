@@ -3,6 +3,11 @@
 use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Applies separable gaussian blur.
+///
+/// # Parameters
+///
+/// - `sigma`: Gaussian standard deviation in pixels; the kernel radius is
+///   `ceil(3 * sigma)`.
 #[derive(Debug, Clone, Copy)]
 pub struct GaussianBlur<T>(pub T);
 
@@ -10,7 +15,6 @@ impl<T: FilterParam> Filter for GaussianBlur<T> {
     const COLOR_ONLY: bool = false;
 
     type Params = [f32; 2];
-    type Fragments = (&'static str, &'static str);
 
     #[inline]
     fn params(&self) -> [f32; 2] {
@@ -18,24 +22,21 @@ impl<T: FilterParam> Filter for GaussianBlur<T> {
         [sigma, sigma]
     }
 
-    #[inline]
-    fn fragments(&self) -> Self::Fragments {
-        (
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.spatial_shader(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/gaussian_blur_horizontal.wgsl"
             )),
+            1,
+        );
+        c.spatial_shader(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/shaders/image/blur/gaussian_blur_vertical.wgsl"
             )),
-        )
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        let (horizontal, vertical) = self.fragments();
-        c.spatial_shader(horizontal, 1);
-        c.spatial_shader(vertical, 1);
+            1,
+        );
     }
 
     fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {

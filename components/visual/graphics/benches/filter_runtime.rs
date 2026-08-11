@@ -217,7 +217,10 @@ bench_filter!(sharpen, FilterAdapter::new(filters::Sharpen(1.5f32)));
 bench_filter!(sobel, FilterAdapter::new(filters::Sobel));
 bench_filter!(
     unsharp_mask,
-    FilterAdapter::new(filters::UnsharpMask([2.0f32, 0.6f32]))
+    FilterAdapter::new(filters::UnsharpMask {
+        radius: 2.0f32,
+        intensity: 0.6f32,
+    })
 );
 bench_filter!(morphology_min, FilterAdapter::new(filters::MorphologyMin));
 bench_filter!(morphology_max, FilterAdapter::new(filters::MorphologyMax));
@@ -266,11 +269,19 @@ bench_filter!(
 );
 bench_filter!(
     bloom,
-    FilterAdapter::new(filters::Bloom([8.0f32, 1.5f32, 0.7f32]))
+    FilterAdapter::new(filters::Bloom {
+        radius: 8.0f32,
+        intensity: 1.5f32,
+        threshold: 0.7f32,
+    })
 );
 bench_filter!(
     gloom,
-    FilterAdapter::new(filters::Gloom([8.0f32, 1.5f32, 0.7f32]))
+    FilterAdapter::new(filters::Gloom {
+        radius: 8.0f32,
+        intensity: 1.5f32,
+        threshold: 0.7f32,
+    })
 );
 bench_filter!(
     crystallize,

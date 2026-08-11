@@ -35,6 +35,10 @@ impl StageCollector for NoopStages {
         divan::black_box(source);
         divan::black_box(param_count);
     }
+    fn spatial_shader_with_original(&mut self, source: &'static str, param_count: usize) {
+        divan::black_box(source);
+        divan::black_box(param_count);
+    }
 }
 
 /// No-op signal visitor — measures pure dispatch cost.
@@ -205,7 +209,11 @@ fn convolution5x5_params(b: Bencher) {
 
 #[divan::bench]
 fn bloom_params(b: Bencher) {
-    let f = Bloom([8.0_f32, 1.5, 0.7]);
+    let f = Bloom {
+        radius: 8.0_f32,
+        intensity: 1.5,
+        threshold: 0.7,
+    };
     b.bench_local(|| divan::black_box(f.params()));
 }
 

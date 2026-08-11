@@ -1,3 +1,4 @@
+#![no_std]
 #![cfg_attr(
     test,
     allow(
@@ -25,7 +26,6 @@
 //! - [`FilterExt::then`]: ergonomic chain construction.
 //! - [`ParamArray`]: zero-allocation parameter layout for nested tuples and
 //!   fixed-size arrays.
-//! - [`FragmentList`]: zero-allocation shader fragment composition.
 //! - [`FilterParam`] / [`Interpolator`]: reactive-system-agnostic parameter
 //!   abstraction with mandatory change observation.
 //! - [`StageCollector`] / [`SignalVisitor`]: visitors used by the runtime
@@ -45,7 +45,6 @@
 
 mod animation;
 mod filter;
-mod fragments;
 mod param;
 mod params;
 mod stage;
@@ -53,7 +52,6 @@ mod visitor;
 
 pub use animation::AnimationTrack;
 pub use filter::{Chain, Filter, FilterExt};
-pub use fragments::FragmentList;
 pub use param::{AnimatedCallback, AnimatedTarget, FilterParam, Interpolator, WatchGuard};
 pub use params::ParamArray;
 pub use stage::StageCollector;

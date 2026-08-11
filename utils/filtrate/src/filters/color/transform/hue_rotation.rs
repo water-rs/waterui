@@ -19,7 +19,7 @@ use crate::Filter;
 /// let complement = HueRotation(180.0);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/transform/hue_rotation.wgsl")]
+#[filter(color_only, shader = "color/transform/hue_rotation.wgsl")]
 pub struct HueRotation<T>(pub T);
 
 #[cfg(test)]

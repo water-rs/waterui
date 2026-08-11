@@ -18,7 +18,7 @@ use crate::Filter;
 /// let high_contrast = Contrast(1.5);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/adjustment/contrast.wgsl")]
+#[filter(color_only, shader = "color/adjustment/contrast.wgsl")]
 pub struct Contrast<T>(pub T);
 
 #[cfg(test)]
