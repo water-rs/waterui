@@ -58,7 +58,7 @@ pub fn exec(input: TokenStream) -> TokenStream {
         &quote::quote!(::waterui::webview::JsProgram),
         &interpolated,
     );
-    quote::quote!(#receiver.exec(#program)).into()
+    quote::quote!(#receiver.exec(&#program)).into()
 }
 
 /// Evaluates a JavaScript expression and decodes its result.
@@ -77,7 +77,7 @@ pub fn eval(input: TokenStream) -> TokenStream {
     };
     let receiver = &call.receiver;
     let expr = javascript::build(&quote::quote!(::waterui::webview::JsExpr), &interpolated);
-    quote::quote!(#receiver.eval(#expr)).into()
+    quote::quote!(#receiver.eval(&#expr)).into()
 }
 
 /// A JavaScript program read from a file at compile time.
@@ -114,7 +114,7 @@ pub fn exec_file(input: TokenStream) -> TokenStream {
         .into();
     };
     let path = &file.path;
-    quote::quote!(#receiver.exec(::waterui::webview::JsProgram::raw(::std::include_str!(#path))))
+    quote::quote!(#receiver.exec(&::waterui::webview::JsProgram::raw(::std::include_str!(#path))))
         .into()
 }
 
