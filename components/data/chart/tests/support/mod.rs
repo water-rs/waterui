@@ -13,7 +13,7 @@ use waterui_chart::{
     AreaData, AreaDatum, AreaSeries, BubblePoint, Candle, ChartAnchor, DataBounds, DataPoint,
     DepthData, DepthDatum, DepthLevel, DepthSide, HitResult, SliceDatum,
 };
-use waterui_testing::{Role, Selector, SemanticApp, ui};
+use waterui_testing::{Role, Selector, SemanticApp};
 
 pub const VIEWPORT_WIDTH: u32 = 320;
 pub const VIEWPORT_HEIGHT: u32 = 320;
@@ -124,14 +124,6 @@ pub fn chart_label(name: &str) -> String {
 
 pub fn snapshot_suite(name: &str) -> String {
     format!("chart/{name}")
-}
-
-pub fn mount_view<V, F>(build: F) -> SemanticApp
-where
-    V: View + 'static,
-    F: Fn() -> V + 'static,
-{
-    ui().viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT).mount(build)
 }
 
 pub fn chart_surface<V: View>(name: &str, chart: V) -> impl View {
