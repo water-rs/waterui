@@ -44,6 +44,8 @@ struct PageState {
     frame: RefCell<Option<DmaBufFrame>>,
     frame_waker: RefCell<Option<Rc<dyn Fn()>>>,
     size: Cell<(u32, u32, f64)>,
+    /// Which documents may reach the bridge; checked on every message.
+    bridge_origins: RefCell<Option<waterui_webview::OriginPolicy>>,
 }
 
 impl PageState {
@@ -115,6 +117,7 @@ impl WpePage {
             frame: RefCell::new(None),
             frame_waker: RefCell::new(None),
             size: Cell::new((1, 1, 1.0)),
+            bridge_origins: RefCell::new(None),
         });
         // The page pointer is filled in below, once `page_new` has returned it.
         let context = Box::new(ClientContext {
@@ -409,6 +412,11 @@ impl WpePage {
                 u32::from(at_document_end),
             );
         };
+    }
+
+    /// Chooses which documents may reach the bridge.
+    pub fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        self.inner.state.bridge_origins.replace(Some(policy));
     }
 
     /// Registers a JavaScript message handler.

@@ -39,6 +39,8 @@ struct SharedState {
     handler_callbacks: RefCell<HashMap<String, JsHandler>>,
     cookie_cache: RefCell<String>,
     last_uri: RefCell<Option<String>>,
+    /// Which documents may reach the bridge; checked on every message.
+    bridge_origins: RefCell<Option<waterui_webview::OriginPolicy>>,
 }
 
 impl SharedState {
@@ -55,6 +57,7 @@ impl Default for SharedState {
             handler_callbacks: RefCell::new(HashMap::new()),
             cookie_cache: RefCell::new(String::new()),
             last_uri: RefCell::new(None),
+            bridge_origins: RefCell::new(None),
         }
     }
 }
@@ -1215,6 +1218,10 @@ impl WebViewHandle for GtkWebViewHandle {
             let _ = (name, handler);
             panic!("{WEBKIT_FEATURE_MSG}");
         }
+    }
+
+    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        self.shared.bridge_origins.replace(Some(policy));
     }
 
     fn remove_handler(&self, name: &str) {

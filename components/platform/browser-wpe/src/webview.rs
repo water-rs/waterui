@@ -111,6 +111,10 @@ impl WebViewHandle for WpeWebViewHandle {
         self.page.add_handler(name, handler);
     }
 
+    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        self.page.set_bridge_origins(policy);
+    }
+
     fn remove_handler(&self, name: &str) {
         self.page.remove_handler(name);
     }
