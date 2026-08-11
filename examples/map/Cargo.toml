@@ -15,7 +15,7 @@ publish = false
 dev = ["waterui/dynamic_linking"]
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["map"] }
 waterui-map.workspace = true
 waterui-map-gpu.workspace = true
 waterui-icons-lucide.workspace = true
