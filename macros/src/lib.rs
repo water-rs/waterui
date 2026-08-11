@@ -35,6 +35,36 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
 }
 
 mod javascript;
+mod js_api;
+
+/// Exposes an `impl` block to the page.
+///
+/// ```ignore
+/// #[js_api(namespace = "app")]
+/// impl App {
+///     fn theme(&self) -> Binding<Theme> { self.theme.clone() }
+///     async fn greet(&self, name: String) -> Result<Json<Greeting>, ApiError> { ... }
+/// }
+///
+/// WebView::open(url).serve(app)
+/// ```
+///
+/// An `async fn` becomes a handler the page calls as
+/// `await app.greet({ name: "Lexo" })`; a `fn(&self) -> impl JsField` becomes
+/// mirrored state at `app.state.theme`. The distinction is made from the
+/// method's shape rather than its return type, because a macro cannot see types
+/// and matching on how one is spelled would break on a type alias.
+///
+/// Control it with `#[js(skip)]` and `#[js(rename = "...")]`.
+#[proc_macro_attribute]
+pub fn js_api(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args = syn::parse_macro_input!(args as js_api::Args);
+    let block = syn::parse_macro_input!(input as syn::ItemImpl);
+    match js_api::expand(&args, block) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
 
 /// Runs a JavaScript program for its effects.
 ///
@@ -54,10 +84,7 @@ pub fn exec(input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
     let receiver = &call.receiver;
-    let program = javascript::build(
-        &quote::quote!(::waterui::webview::JsProgram),
-        &interpolated,
-    );
+    let program = javascript::build(&quote::quote!(::waterui::webview::JsProgram), &interpolated);
     quote::quote!(#receiver.exec(&#program)).into()
 }
 
