@@ -5,7 +5,7 @@ use std::rc::Rc;
 use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
 use cookie::{Expiration, SameSite, time::OffsetDateTime};
 use num_traits::ToPrimitive as _;
-use serde_json::{Value, json};
+use serde_json::Value;
 use waterui_core::{Computed, Signal};
 use waterui_str::Str;
 use waterui_url::Url;
@@ -13,7 +13,7 @@ use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle, bridge,
 };
 
-use crate::cdp::CefCdpSession;
+use crate::cdp::{CefCdpSession, protocol};
 use crate::page::{CefController, CefPageConfiguration, CefPageHandle, CefPageMode};
 
 type MessageHandler = waterui_webview::ScriptMessageHandler;
@@ -108,8 +108,7 @@ impl WebViewHandle for CefWebViewHandle {
         };
         execute_without_result(
             &self.session(),
-            "Page.addScriptToEvaluateOnNewDocument",
-            &json!({"source": source}),
+            &protocol::AddScriptToEvaluateOnNewDocument { source: &source },
         );
     }
 
@@ -146,8 +145,7 @@ impl WebViewHandle for CefWebViewHandle {
     fn set_user_agent(&self, user_agent: &str) {
         execute_without_result(
             &self.session(),
-            "Network.setUserAgentOverride",
-            &json!({"userAgent": user_agent}),
+            &protocol::SetUserAgentOverride { user_agent },
         );
     }
 
@@ -197,20 +195,23 @@ impl WebViewHandle for CefWebViewHandle {
             Some(Expiration::DateTime(time)) => Some(time.unix_timestamp()),
             Some(Expiration::Session) | None => None,
         };
+        // A cookie that names its own domain is stored against that domain; only
+        // one without falls back to the document's URL. Sending both let the URL
+        // win, which quietly stored cross-domain cookies on the wrong domain.
+        let domain = cookie.domain();
         execute_without_result(
             &self.session(),
-            "Network.setCookie",
-            &json!({
-                "name": cookie.name(),
-                "value": cookie.value(),
-                "url": current_url,
-                "domain": cookie.domain(),
-                "path": cookie.path(),
-                "secure": cookie.secure(),
-                "httpOnly": cookie.http_only(),
-                "sameSite": same_site,
-                "expires": expires,
-            }),
+            &protocol::SetCookie {
+                name: cookie.name(),
+                value: cookie.value(),
+                domain,
+                url: domain.is_none().then_some(current_url.as_str()),
+                path: cookie.path(),
+                secure: cookie.secure().unwrap_or(false),
+                http_only: cookie.http_only().unwrap_or(false),
+                same_site,
+                expires,
+            },
         );
     }
 
@@ -219,18 +220,15 @@ impl WebViewHandle for CefWebViewHandle {
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
     )]
     async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+        // The cookies of the current document, not every cookie in the profile:
+        // `Network.getAllCookies` returned the whole store, which is not what
+        // "the cookies for this web view" means on any other backend.
         let response = self
             .session()
-            .execute_raw("Network.getAllCookies", &json!({}))
+            .execute(&protocol::GetCookies { urls: Vec::new() })
             .await
             .unwrap_or_else(|error| panic!("CEF failed to retrieve WebView cookies: {error}"));
-        response
-            .get("cookies")
-            .and_then(Value::as_array)
-            .expect("CEF cookie response must contain a cookie array")
-            .iter()
-            .map(cookie_from_cdp)
-            .collect()
+        response.cookies.iter().map(cookie_from_cdp).collect()
     }
 
     #[expect(
@@ -240,39 +238,23 @@ impl WebViewHandle for CefWebViewHandle {
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         let response = self
             .session()
-            .execute_raw(
-                "Runtime.evaluate",
-                &json!({
-                    "expression": script,
-                    "awaitPromise": true,
-                    "returnByValue": true,
-                }),
-            )
+            .execute(&protocol::Evaluate {
+                expression: script,
+                await_promise: true,
+                return_by_value: true,
+            })
             .await
             .map_err(|error| Str::from(error.to_string()))?;
-        if let Some(exception) = response.get("exceptionDetails") {
-            return Err(Str::from(
-                exception
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("JavaScript evaluation failed")
-                    .to_string(),
-            ));
+        if let Some(exception) = response.exception_details {
+            return Err(Str::from(exception.text));
         }
-        let result = response.get("result").unwrap_or(&Value::Null);
-        if let Some(value) = result.get("value") {
+        if let Some(value) = response.result.value {
             return Ok(Str::from(match value {
-                Value::String(value) => value.clone(),
+                Value::String(value) => value,
                 value => value.to_string(),
             }));
         }
-        Ok(Str::from(
-            result
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        ))
+        Ok(Str::from(response.result.description.unwrap_or_default()))
     }
 }
 
@@ -332,8 +314,11 @@ fn dispatch_bridge_call(
         let reply = bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
         execute_without_result(
             session,
-            "Runtime.evaluate",
-            &json!({ "expression": reply.resolve_script(request.id) }),
+            &protocol::Evaluate {
+                expression: &reply.resolve_script(request.id),
+                await_promise: false,
+                return_by_value: false,
+            },
         );
         return;
     };
@@ -349,69 +334,61 @@ fn dispatch_bridge_call(
         };
         execute_without_result(
             &session,
-            "Runtime.evaluate",
-            &json!({ "expression": reply.resolve_script(request.id) }),
+            &protocol::Evaluate {
+                expression: &reply.resolve_script(request.id),
+                await_promise: false,
+                return_by_value: false,
+            },
         );
     })
     .detach();
 }
 
 fn install_bridge(session: &CefCdpSession) {
-    execute_without_result(session, "Runtime.enable", &json!({}));
+    execute_without_result(session, &protocol::RuntimeEnable {});
     execute_without_result(
         session,
-        "Runtime.addBinding",
-        &json!({ "name": bridge::SEND_FUNCTION }),
+        &protocol::AddBinding {
+            name: bridge::SEND_FUNCTION,
+        },
     );
     execute_without_result(
         session,
-        "Page.addScriptToEvaluateOnNewDocument",
-        &json!({ "source": waterui_webview::DOCUMENT_START_SCRIPT }),
+        &protocol::AddScriptToEvaluateOnNewDocument {
+            source: waterui_webview::DOCUMENT_START_SCRIPT,
+        },
     );
 }
 
-fn execute_without_result(session: &CefCdpSession, method: &str, params: &Value) {
-    let future = session.execute_raw(method, params);
-    drop(future);
+/// Issues a command whose result nobody waits for.
+///
+/// A failure is still reported: `CefCdpSession` logs any error whose receiver
+/// was dropped, so these do not vanish the way they used to.
+fn execute_without_result<C: protocol::CdpCommand>(session: &CefCdpSession, command: &C) {
+    drop(session.execute(command));
 }
 
-fn cookie_from_cdp(value: &Value) -> Cookie<'static> {
-    let string = |name| {
-        value
-            .get(name)
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("CEF cookie is missing string field `{name}`"))
-    };
-    let boolean = |name| {
-        value
-            .get(name)
-            .and_then(Value::as_bool)
-            .unwrap_or_else(|| panic!("CEF cookie is missing boolean field `{name}`"))
-    };
-    let mut builder = Cookie::build((string("name").to_string(), string("value").to_string()))
-        .domain(string("domain").to_string())
-        .path(string("path").to_string())
-        .secure(boolean("secure"))
-        .http_only(boolean("httpOnly"));
-    if let Some(same_site) = value.get("sameSite").and_then(Value::as_str) {
-        builder = builder.same_site(match same_site {
-            "Strict" => SameSite::Strict,
-            "Lax" => SameSite::Lax,
-            "None" => SameSite::None,
-            other => panic!("CEF returned unsupported cookie SameSite value `{other}`"),
-        });
+fn cookie_from_cdp(cookie: &protocol::Cookie) -> Cookie<'static> {
+    let mut builder = Cookie::build((cookie.name.clone(), cookie.value.clone()))
+        .domain(cookie.domain.clone())
+        .path(cookie.path.clone())
+        .secure(cookie.secure)
+        .http_only(cookie.http_only);
+    if let Some(same_site) = cookie.same_site.as_deref() {
+        // An unrecognised policy is Chromium's business, not a reason to abort:
+        // the cookie is still usable without it.
+        match same_site {
+            "Strict" => builder = builder.same_site(SameSite::Strict),
+            "Lax" => builder = builder.same_site(SameSite::Lax),
+            "None" => builder = builder.same_site(SameSite::None),
+            other => tracing::warn!(same_site = other, "ignoring an unknown cookie SameSite value"),
+        }
     }
-    if let Some(expires) = value
-        .get("expires")
-        .and_then(Value::as_f64)
-        .filter(|expires| *expires > 0.0)
+    if cookie.expires.abs() > f64::EPSILON
+        && cookie.expires.is_sign_positive()
+        && let Some(seconds) = cookie.expires.to_i64()
+        && let Ok(expires) = OffsetDateTime::from_unix_timestamp(seconds)
     {
-        let expires = OffsetDateTime::from_unix_timestamp(
-            expires
-                .to_i64()
-                .expect("CEF cookie expiration does not fit i64"),
-        )
-        .expect("CEF cookie expiration exceeds OffsetDateTime");
         builder = builder.expires(expires);
     }
     builder.build()
