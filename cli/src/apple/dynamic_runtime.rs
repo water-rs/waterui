@@ -38,6 +38,34 @@ pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Give a freshly built dynamic library an `@rpath` install name.
+///
+/// Cargo stamps a `cdylib` with a bare file name, so an executable linking it records
+/// that bare name and the loader looks for it in the system search paths rather than in
+/// the application bundle. Rewriting the install name to `@rpath/<name>` makes it resolve
+/// through the bundle's Frameworks directory, the same way the shared runtime does.
+///
+/// # Errors
+/// Returns an error if the library is missing or `install_name_tool` fails.
+pub async fn set_rpath_install_name(path: &Path, file_name: &str) -> Result<()> {
+    require_runtime(path)?;
+    let desired = format!("@rpath/{file_name}");
+    if install_name(path).await? == desired {
+        return Ok(());
+    }
+    run_command_os(
+        "install_name_tool",
+        [
+            OsStr::new("-id"),
+            OsStr::new(desired.as_str()),
+            path.as_os_str(),
+        ],
+    )
+    .await
+    .wrap_err_with(|| format!("Failed to set install name for {}", path.display()))?;
+    Ok(())
+}
+
 pub async fn retarget_module(module_path: &Path, build_lib_dir: &Path) -> Result<()> {
     let runtime_path = build_path(build_lib_dir);
     require_runtime(&runtime_path)?;
