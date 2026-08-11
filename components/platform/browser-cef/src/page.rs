@@ -13,14 +13,15 @@ use cef::ImplRequest as _;
 use cef::rc::Rc as _;
 use cef::{
     AcceleratedPaintInfo, Browser, BrowserHost, BrowserSettings, CefString, Client,
-    CompositionUnderline, Frame, ImplBrowser, ImplBrowserHost, ImplClient, ImplDictionaryValue,
-    ImplFrame, ImplLifeSpanHandler, ImplLoadHandler, ImplPreferenceManager, ImplRenderHandler,
-    ImplRequestHandler, ImplValue, KeyEvent, KeyEventType, LifeSpanHandler, LoadHandler,
-    MouseButtonType, MouseEvent, PaintElementType, Range, Rect, RenderHandler, Request,
-    RequestContext, RequestContextSettings, RequestHandler, ScreenInfo, TerminationStatus,
-    WindowInfo, WrapClient, WrapLifeSpanHandler, WrapLoadHandler, WrapRenderHandler,
-    WrapRequestHandler, browser_host_create_browser_sync, dictionary_value_create,
-    request_context_create_context, value_create,
+    CompositionUnderline, DisplayHandler, Frame, ImplBrowser, ImplBrowserHost, ImplClient,
+    ImplDictionaryValue, ImplDisplayHandler, ImplFrame, ImplLifeSpanHandler, ImplLoadHandler,
+    ImplPreferenceManager, ImplRenderHandler, ImplRequestHandler, ImplValue, KeyEvent,
+    KeyEventType, LifeSpanHandler, LoadHandler, MouseButtonType, MouseEvent, PaintElementType,
+    Range, Rect, RenderHandler, Request, RequestContext, RequestContextSettings, RequestHandler,
+    ScreenInfo, TerminationStatus, WindowInfo, WrapClient, WrapDisplayHandler,
+    WrapLifeSpanHandler, WrapLoadHandler, WrapRenderHandler, WrapRequestHandler,
+    browser_host_create_browser_sync, dictionary_value_create, request_context_create_context,
+    value_create,
 };
 #[cfg(feature = "chromium")]
 use futures::channel::oneshot;
@@ -445,18 +446,11 @@ fn new_load_handler(state: Rc<PageState>) -> LoadHandler {
                 _can_go_back: std::os::raw::c_int,
                 _can_go_forward: std::os::raw::c_int,
             ) {
-                #[cfg(feature = "chromium")]
-                self.state.emit(&CefPageEvent::Loading(if is_loading == 1 {
-                    0.0
-                } else {
-                    1.0
-                }));
+                // Progress itself comes from the display handler, which reports
+                // Chromium's real fraction rather than just "started"/"finished".
+                let _ = is_loading;
                 #[cfg(feature = "webview")]
                 let browser = _browser.expect("CEF loading state must identify the browser");
-                #[cfg(feature = "webview")]
-                self.state.emit_webview(&WebViewEvent::Loading {
-                    progress: if is_loading == 1 { 0.0 } else { 1.0 },
-                });
                 #[cfg(feature = "webview")]
                 self.state.emit_webview(&WebViewEvent::StateChanged {
                     can_go_back: browser.can_go_back() == 1,
@@ -649,6 +643,32 @@ fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
                 }
             }
 
+            fn on_certificate_error(
+                &self,
+                _browser: Option<&mut Browser>,
+                _cert_error: cef::Errorcode,
+                _request_url: Option<&CefString>,
+                _ssl_info: Option<&mut cef::Sslinfo>,
+                _callback: Option<&mut cef::Callback>,
+            ) -> std::os::raw::c_int {
+                #[cfg(feature = "webview")]
+                {
+                    let url = _request_url
+                        .map(ToString::to_string)
+                        .and_then(|url| url.parse().ok());
+                    if let Some(url) = url {
+                        self.state.emit_webview(&WebViewEvent::Error(WebViewError::Ssl {
+                            url,
+                            message: alloc_error_text(_cert_error),
+                        }));
+                    }
+                }
+                // Returning 0 rejects the certificate. WaterUI does not offer a
+                // "continue anyway" path: overriding a certificate error is a
+                // decision for the application, not a silent default.
+                0
+            }
+
             fn on_render_process_terminated(
                 &self,
                 _browser: Option<&mut Browser>,
@@ -669,6 +689,36 @@ fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
     WaterRequestHandler::new(state)
 }
 
+/// Reports Chromium's real load progress.
+///
+/// The load handler only knows "loading" and "not loading", which is why progress
+/// used to be reported as 0.0 or 1.0 and nothing in between. Chromium computes a
+/// fractional value and delivers it here.
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_display_handler(state: Rc<PageState>) -> DisplayHandler {
+    cef::wrap_display_handler! {
+        struct WaterDisplayHandler {
+            state: Rc<PageState>,
+        }
+
+        impl DisplayHandler {
+            fn on_loading_progress_change(&self, _browser: Option<&mut Browser>, progress: f64) {
+                #[allow(clippy::cast_possible_truncation, reason = "progress is a 0..1 fraction")]
+                let progress = progress as f32;
+                let _ = progress;
+                #[cfg(feature = "chromium")]
+                self.state.emit(&CefPageEvent::Loading(progress));
+                #[cfg(feature = "webview")]
+                self.state.emit_webview(&WebViewEvent::Loading { progress });
+            }
+        }
+    }
+    WaterDisplayHandler::new(state)
+}
+
 #[allow(
     clippy::transmute_ptr_to_ptr,
     reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
@@ -678,6 +728,7 @@ fn new_client(
     load: LoadHandler,
     life_span: LifeSpanHandler,
     request: RequestHandler,
+    display: DisplayHandler,
 ) -> Client {
     cef::wrap_client! {
         struct WaterClient {
@@ -685,9 +736,14 @@ fn new_client(
             load: LoadHandler,
             life_span: LifeSpanHandler,
             request: RequestHandler,
+            display: DisplayHandler,
         }
 
         impl Client {
+            fn display_handler(&self) -> Option<DisplayHandler> {
+                Some(self.display.clone())
+            }
+
             fn render_handler(&self) -> Option<RenderHandler> {
                 Some(self.render.clone())
             }
@@ -705,7 +761,7 @@ fn new_client(
             }
         }
     }
-    WaterClient::new(render, load, life_span, request)
+    WaterClient::new(render, load, life_span, request, display)
 }
 
 /// CEF implementation of one visible or headless Chromium page.
@@ -736,6 +792,7 @@ impl CefPageHandle {
             new_load_handler(Rc::clone(&state)),
             new_life_span_handler(Rc::clone(&state)),
             new_request_handler(Rc::clone(&state)),
+            new_display_handler(Rc::clone(&state)),
         );
         let mut request_context = create_request_context(&runtime, &configuration);
         let initial_url = configuration
@@ -1414,6 +1471,12 @@ fn create_request_context(
         );
     }
     context
+}
+
+/// Describes a Chromium certificate error code for the `WebViewError::Ssl` message.
+#[cfg(feature = "webview")]
+fn alloc_error_text(code: cef::Errorcode) -> waterui_str::Str {
+    waterui_str::Str::from(format!("certificate error {code:?}"))
 }
 
 fn frame_url(frame: &Frame) -> Url {
