@@ -127,10 +127,7 @@ macro_rules! export {
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 waterui::inspector::install(&mut env, inspector);
                 $crate::__install_gpu_video(&mut env);
-                // Apple bridges MapKit; every other platform draws the map
-                // itself, and only when the app opted into the `map` feature.
-                #[cfg(all(not(target_vendor = "apple"), feature = "map"))]
-                $crate::waterui_map_gpu::install(&mut env);
+                $crate::__install_optional_components(&mut env);
                 $crate::__configure_browser_environment(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
@@ -189,11 +186,34 @@ macro_rules! export {
     };
 }
 
+/// Installs the realizations for optional capabilities this crate was built with.
+///
+/// The feature test has to live here rather than in `export!`: a `cfg` inside a
+/// `macro_rules!` body is evaluated against the crate that *expands* it, which
+/// is the generated FFI crate, and that crate has no such features. Testing it
+/// at the expansion site silently compiled the hook out on every platform.
+#[allow(
+    clippy::missing_const_for_fn,
+    reason = "the body is empty only in the feature configuration being linted; enabling the capability makes it install a realization"
+)]
+#[doc(hidden)]
+#[inline]
+pub fn __install_optional_components(env: &mut waterui::Environment) {
+    // Apple bridges MapKit; every other platform draws the map itself.
+    #[cfg(all(not(target_vendor = "apple"), feature = "map"))]
+    waterui_map_gpu::install(env);
+    let _ = env;
+}
+
 /// Installs optional packaged browser runtimes selected by the generated FFI crate.
 ///
 /// Not `const`: the CEF arm installs a runtime. It compiled as `const` only
 /// because the CEF features were previously reached through cbindgen's macro
 /// expansion, which never type-checks the body.
+#[allow(
+    clippy::missing_const_for_fn,
+    reason = "the body is empty only in the feature configuration being linted; enabling the capability makes it install a realization"
+)]
 #[doc(hidden)]
 #[inline]
 pub fn __configure_browser_environment(env: &mut waterui::Environment) {

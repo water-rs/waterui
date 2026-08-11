@@ -18,7 +18,7 @@ use std::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use waterui_core::{
-    AnyView, Environment, Metadata, Str,
+    AnyView, Environment, IgnorableMetadata, Metadata, Str,
     accessibility::{AccessibilityLabel, AccessibilityRole},
     animation::Animation,
     gesture::{
@@ -330,13 +330,16 @@ struct MapSemantics {
 }
 
 impl MapSemantics {
+    /// Attaches the semantics as `IgnorableMetadata`, so a renderer that does
+    /// not consume accessibility metadata skips it instead of refusing the
+    /// whole view.
     fn apply(self, view: AnyView) -> AnyView {
         let view = match self.role {
-            Some(role) => AnyView::new(Metadata::new(view, role)),
+            Some(role) => AnyView::new(IgnorableMetadata::new(view, role)),
             None => view,
         };
         match self.label {
-            Some(label) => AnyView::new(Metadata::new(view, label)),
+            Some(label) => AnyView::new(IgnorableMetadata::new(view, label)),
             None => view,
         }
     }

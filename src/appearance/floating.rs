@@ -59,10 +59,14 @@ where
     Content: View,
 {
     fn body(self, env: &Environment) -> impl View {
+        // A theme that styles floating surfaces supplies these tokens. The
+        // framework default is itself expressed in theme tokens (`Surface`,
+        // `Accent`, a 44pt minimum target), so a backend that installs no
+        // floating tokens still gets a correct surface rather than a panic.
         let style = self
             .style
             .or_else(|| env.get::<FloatingStyle>().cloned())
-            .expect("WaterUI `.floating()` requires FloatingStyle theme tokens");
+            .unwrap_or_default();
         let shape = RoundedRectangle::new(style.clip_radius);
         let ambient_shadow = Shadow::new(
             style.ambient_shadow_color.clone(),

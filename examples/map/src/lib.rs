@@ -144,10 +144,9 @@ fn content(state: MapExampleState) -> impl View {
     );
 
     let controls = use_env(move |env: Environment| {
-        let style = env
-            .get::<FloatingStyle>()
-            .cloned()
-            .expect("map controls require FloatingStyle theme tokens");
+        // Ambient theme data: a theme that styles floating surfaces supplies
+        // these, and the framework default applies on backends that do not.
+        let style = env.get::<FloatingStyle>().cloned().unwrap_or_default();
         let control_width = style.minimum_width as f32;
         let zoom_controls = vstack((zoom_in, Divider, zoom_out))
             .width(control_width)
