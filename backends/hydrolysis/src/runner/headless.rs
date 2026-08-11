@@ -37,6 +37,10 @@ impl HeadlessPlatformWindow {
         self.pending_events.push_back(event);
     }
 
+    pub(super) fn has_pending_events(&self) -> bool {
+        !self.pending_events.is_empty()
+    }
+
     pub(super) fn take_redraw_request(&self) -> bool {
         self.redraw_requested.replace(false)
     }
@@ -103,6 +107,11 @@ impl HeadlessPlatformWindow {
 pub(crate) struct HeadlessMainThreadExecutor {
     runnable_tx: mpsc::Sender<Runnable>,
     runnable_rx: Rc<mpsc::Receiver<Runnable>>,
+    /// Queued-but-not-yet-run runnable count. Incremented before send and
+    /// decremented after each run, so `has_pending` over-reports around the
+    /// hand-off instant — the safe direction for a settledness probe. Atomic
+    /// because wakers clone the sender onto arbitrary threads.
+    pending: Arc<AtomicUsize>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -112,6 +121,7 @@ impl Default for HeadlessMainThreadExecutor {
         Self {
             runnable_tx,
             runnable_rx: Rc::new(runnable_rx),
+            pending: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -132,7 +142,13 @@ impl HeadlessMainThreadExecutor {
             };
             ran = true;
             runnable.run();
+            self.pending.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+
+    /// Whether any spawned work is queued and waiting for the next drain.
+    pub(super) fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) > 0
     }
 }
 
@@ -145,8 +161,11 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
         Fut: std::future::Future + 'static,
     {
         let runnable_tx = self.runnable_tx.clone();
+        let pending = Arc::clone(&self.pending);
         let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
+            pending.fetch_add(1, Ordering::SeqCst);
             if let Err(unsent) = runnable_tx.send(runnable) {
+                pending.fetch_sub(1, Ordering::SeqCst);
                 // Teardown race: a waker held by another thread (decoder,
                 // audio, dispatch callback) fired after the runtime dropped
                 // the receiver. The task can never run again, and dropping a
@@ -373,6 +392,32 @@ impl HeadlessRuntime {
     #[must_use]
     pub fn focused_ui_node(&self) -> Option<accesskit::NodeId> {
         self.runtime.renderer.focused_ui_node()
+    }
+
+    /// Whether the runtime is quiescent: no queued input, no spawned work
+    /// awaiting a drain, no pending popup mounts, and no renderer-scheduled
+    /// semantic work (patches, rebuilds, animations, gesture deadlines,
+    /// gliding scrolls) in this window or any popup.
+    ///
+    /// Visual-only repaint requests (caret blink, the visible-window present
+    /// cadence) do not count: they never move semantic state. Work scheduled
+    /// entirely outside the runtime — an app future sleeping on a wall-clock
+    /// timer, a worker thread that has not yet woken its task — is invisible
+    /// here until it wakes, so callers waiting on such work must keep polling
+    /// with their own timeout rather than trusting one settled probe.
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        !self.runtime.platform.has_pending_events()
+            && !self.local_executor.has_pending()
+            && self.pending_window_queue.borrow().is_empty()
+            && !self.runtime.renderer.has_scheduled_semantic_work()
+            && self
+                .popup_windows
+                .iter()
+                .all(|popup| {
+                    !popup.platform.has_pending_events()
+                        && !popup.renderer.has_scheduled_semantic_work()
+                })
     }
 
     pub fn pump(&mut self, capture_snapshot: bool) -> HeadlessPumpResult {

@@ -1720,6 +1720,15 @@ impl HydrolysisRenderer {
         }
         active
     }
+
+    /// Whether any scroll view's smoothed wheel scroll is still gliding,
+    /// without advancing it.
+    pub(crate) fn has_gliding_smooth_scrolls(&self) -> bool {
+        self.hit_test
+            .scroll_targets
+            .iter()
+            .any(|target| target.handle.is_smooth_scrolling())
+    }
 }
 
 #[cfg(test)]

@@ -228,9 +228,9 @@ fn open_tracks_url_binding_without_recreating_the_webview() {
     let url_for_view = url.clone();
 
     let mut env = Environment::new();
-    install_m3(&mut env);
     env.insert(controller);
     let _app = ui()
+        .theme(install_m3)
         .environment(env)
         .viewport(420, 420)
         .mount(move || WebView::open(url_for_view.clone()).size(320.0, 260.0));
@@ -306,7 +306,6 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
     let webview = controller.open();
 
     let mut env = Environment::new();
-    install_m3(&mut env);
     env.insert(controller);
     let mut app = ui().environment(env).viewport(420, 420).mount({
         let webview = webview.clone();
@@ -340,10 +339,7 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
         "webview-exposes-accessibility-surface-and-navigation-state: back should start disabled"
     );
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Go API").tap(),
-        "webview-exposes-accessibility-surface-and-navigation-state: go api tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Go API").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(
@@ -363,10 +359,7 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
         "webview-exposes-accessibility-surface-and-navigation-state: back should enable after second page"
     );
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Back").tap(),
-        "webview-exposes-accessibility-surface-and-navigation-state: back tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(

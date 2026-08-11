@@ -42,25 +42,35 @@ impl A11yDriver for NoopDriver {
         }
     }
 
+    fn pump_step(
+        &mut self,
+        _step: std::time::Duration,
+        _content: &AnyViewBuilder<AnyView>,
+        _env: &Environment,
+    ) -> DriverPumpResult {
+        DriverPumpResult {
+            rebuilt: false,
+            tree_update: None,
+            snapshot: None,
+            ui_focus: None,
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        true
+    }
+
     fn perform_action(&mut self, _request: AccessibilityActionRequest, _env: &Environment) -> bool {
         false
     }
 
-    fn hover_at(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
-    }
+    fn hover_at(&mut self, _x: f32, _y: f32, _env: &Environment) {}
 
-    fn pointer_down(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
-    }
+    fn pointer_down(&mut self, _x: f32, _y: f32, _env: &Environment) {}
 
-    fn pointer_move(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
-    }
+    fn pointer_move(&mut self, _x: f32, _y: f32, _env: &Environment) {}
 
-    fn pointer_up(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
-    }
+    fn pointer_up(&mut self, _x: f32, _y: f32, _env: &Environment) {}
 
     fn scroll_at(
         &mut self,
@@ -70,34 +80,26 @@ impl A11yDriver for NoopDriver {
         _dy: f32,
         _is_line_delta: bool,
         _env: &Environment,
-    ) -> bool {
-        false
+    ) {
     }
 
-    fn text_input(&mut self, _text: String, _env: &Environment) -> bool {
-        false
-    }
+    fn text_input(&mut self, _text: String, _env: &Environment) {}
 
     fn key_press(
         &mut self,
         _key: hydrolysis::KeyCode,
         _modifiers: hydrolysis::Modifiers,
         _env: &Environment,
-    ) -> bool {
-        false
+    ) {
     }
 
-    fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) -> bool {
-        false
-    }
+    fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) {}
 
     fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
         false
     }
 
-    fn request_redraw(&mut self, _content: &AnyViewBuilder<AnyView>, _env: &Environment) -> bool {
-        false
-    }
+    fn request_redraw(&mut self, _content: &AnyViewBuilder<AnyView>, _env: &Environment) {}
 
     fn pump_frame(
         &mut self,
@@ -206,12 +208,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     String::from("<non-string panic>")
 }
 
-fn themed_environment() -> Environment {
-    let mut env = Environment::new();
-    install_m3(&mut env);
-    env
-}
-
 #[test]
 fn smoke_snapshot_size_matches_target() {
     let host = TestHost::new(Environment::new(), 64, 48);
@@ -223,22 +219,22 @@ fn smoke_snapshot_size_matches_target() {
 
 #[test]
 fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
-    let mut env = themed_environment();
-    theme::install_color_signal::<theme::color::Foreground>(
-        &mut env,
-        Computed::constant(ResolvedColor {
-            red: 1.0,
-            green: 1.0,
-            blue: 1.0,
-            opacity: 1.0,
-            headroom: 1.0,
-        }),
-    );
     let mut app = ui()
-        .environment(env)
         .viewport(240, 120)
-        .theme(|_: &mut Environment| {})
-        .mount(|| {
+        .theme(|env: &mut Environment| {
+            install_m3(env);
+            theme::install_color_signal::<theme::color::Foreground>(
+                env,
+                Computed::constant(ResolvedColor {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 1.0,
+                    opacity: 1.0,
+                    headroom: 1.0,
+                }),
+            );
+        })
+        .mount_offscreen(|| {
             vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK)
         });
     assert_eq!(
@@ -325,22 +321,22 @@ fn themed_builder_default_perf_requests_redraw() {
 
 #[test]
 fn ui_test_environment_builder_preserves_custom_theme() {
-    let mut env = themed_environment();
-    theme::install_color_signal::<theme::color::Foreground>(
-        &mut env,
-        Computed::constant(ResolvedColor {
-            red: 1.0,
-            green: 1.0,
-            blue: 1.0,
-            opacity: 1.0,
-            headroom: 1.0,
-        }),
-    );
     let mut app = ui()
-        .environment(env)
         .viewport(240, 120)
-        .theme(|_: &mut Environment| {})
-        .mount(|| {
+        .theme(|env: &mut Environment| {
+            install_m3(env);
+            theme::install_color_signal::<theme::color::Foreground>(
+                env,
+                Computed::constant(ResolvedColor {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 1.0,
+                    opacity: 1.0,
+                    headroom: 1.0,
+                }),
+            );
+        })
+        .mount_offscreen(|| {
             vstack((text("Mounted theme").body(), text("Mounted theme").body()))
                 .background(Srgb::BLACK)
         });
@@ -361,7 +357,7 @@ fn ui_test_environment_builder_preserves_custom_theme() {
 
 #[test]
 fn smoke_text_color_snapshot_preserves_semantic_labels() {
-    let mut app = ui().viewport(240, 120).theme(install_m3).mount(|| {
+    let mut app = ui().viewport(240, 120).theme(install_m3).mount_offscreen(|| {
         vstack((
             text("Explicit color").body().color(Srgb::WHITE),
             text("Explicit color").body().color(Srgb::WHITE),
@@ -419,10 +415,7 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
         .role(Role::BUTTON)
         .label("Assist")
         .assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("Assist").tap(),
-        "tap gesture accessibility node should route click actions through Hydrolysis gestures"
-    );
+    app.query().role(Role::BUTTON).label("Assist").tap();
     assert!(
         tapped.get(),
         "accessibility click should trigger tap gesture"
@@ -435,7 +428,7 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
 
 #[test]
 fn ui_test_snapshot_renders_text_after_canvas() {
-    let mut app = ui().viewport(320, 320).theme(install_m3).mount(|| {
+    let mut app = ui().viewport(320, 320).theme(install_m3).mount_offscreen(|| {
         vstack((
             Canvas::new(|ctx| {
                 ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
@@ -469,7 +462,7 @@ fn ui_test_snapshot_renders_text_after_canvas() {
 
 #[test]
 fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
-    let mut app = ui().viewport(96, 72).theme(install_m3).mount(|| {
+    let mut app = ui().viewport(96, 72).theme(install_m3).mount_offscreen(|| {
         Canvas::new(|ctx| {
             ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
             ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
@@ -821,7 +814,7 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
     app.tree.revision = 99;
 
     let interaction = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = edit.tap(&mut app);
+        edit.tap(&mut app);
     }));
     let interaction_payload = interaction.expect_err("stale handle should panic");
     let interaction_message = panic_message(&*interaction_payload);
@@ -910,27 +903,24 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     let initial_bounds = app.query().label("interactive canvas").single().bounds();
     assert!(initial_bounds.width() > 0.0 && initial_bounds.height() > 0.0);
 
-    assert!(app.query().label("interactive canvas").hover());
+    app.query().label("interactive canvas").hover();
     assert!(hovered.get(), "hover should update the tracked binding");
 
     let center_before_drag = app.query().label("interactive canvas").single().center();
-    assert!(app.magnify_at(center_before_drag.0, center_before_drag.1, 1.2));
+    app.magnify_at(center_before_drag.0, center_before_drag.1, 1.2);
     assert!(
         (scale.get() - 1.2).abs() < 0.001,
         "magnify should update the tracked scale binding"
     );
 
-    assert!(app.query().label("interactive canvas").drag_by(24.0, 0.0));
+    app.query().label("interactive canvas").drag_by(24.0, 0.0);
     assert!(
         (offset.get() - 24.0).abs() < 0.001,
         "drag should update the tracked offset binding"
     );
 
     let center_after_drag = app.query().label("interactive canvas").single().center();
-    assert!(
-        app.magnify_at(center_after_drag.0, center_after_drag.1, 1.4),
-        "magnify after drag should still target stacked gesture observers"
-    );
+    app.magnify_at(center_after_drag.0, center_after_drag.1, 1.4);
     assert!(
         (scale.get() - 1.4).abs() < 0.001,
         "second magnify should update the tracked scale binding"
@@ -959,7 +949,7 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
     let status = Binding::container(String::from("idle"));
     let status_for_view = status.clone();
 
-    let mut app = ui().theme(install_m3).mount(move || {
+    let mut app = ui().theme(install_m3).mount_offscreen(move || {
         waterui::text!("{status_for_view}")
             .on_appear(|status: waterui::State<Binding<String>>| {
                 spawn_local(async move {
@@ -996,9 +986,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     let username = Binding::container(Str::from(""));
     let password = Binding::container(Secure::default());
     let focus_for_view = focus.clone();
-    let mut env = Environment::new();
-    hydrolysis_m3::install(&mut env);
-    let mut app = ui().environment(env).mount(move || {
+    let mut app = ui().theme(hydrolysis_m3::install).mount(move || {
         vstack((
             TextField::new(&username)
                 .label(text("Username"))
@@ -1028,13 +1016,10 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         .id();
     assert_eq!(app.ui_focus(), Some(username_id));
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::PASSWORD_INPUT)
             .label("Password")
-            .focus(),
-        "expected password field focus action to succeed"
-    );
+            .focus();
     let password_id = app
         .query()
         .role(Role::PASSWORD_INPUT)
@@ -1045,19 +1030,13 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     assert_eq!(app.ui_focus(), Some(password_id));
     assert_eq!(focus.get(), Some(Field::Password));
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Submit").focus(),
-        "expected button accessibility focus action to succeed"
-    );
+    app.query().role(Role::BUTTON).label("Submit").focus();
     let submit_id = app.query().role(Role::BUTTON).label("Submit").single().id();
     assert_eq!(submit_id, app.tree().focus());
     assert_eq!(app.ui_focus(), Some(password_id));
     assert_eq!(focus.get(), Some(Field::Password));
 
-    assert!(
-        app.clear_ui_focus(),
-        "expected clear_ui_focus to clear the active FocusState target"
-    );
+    app.clear_ui_focus();
     assert_eq!(app.ui_focus(), None);
     assert_eq!(focus.get(), None);
     assert_eq!(app.tree().focus(), submit_id);
@@ -1069,24 +1048,19 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
 
     let value = Binding::container(Str::from(""));
     let value_for_view = value.clone();
-    let mut env = Environment::new();
-    hydrolysis_m3::install(&mut env);
     let mut app = ui()
-        .environment(env)
+        .theme(hydrolysis_m3::install)
         .mount(move || TextField::new(&value_for_view).label(text("Full Name")));
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::TEXT_INPUT)
             .label("Full Name")
-            .focus(),
-        "expected the text field focus action to succeed"
-    );
+            .focus();
 
     let mut expected = String::new();
     for character in "Lexo Liu".chars() {
         expected.push(character);
-        assert!(app.text_input(character.to_string()));
+        app.text_input(character.to_string());
         assert_eq!(
             value.get().as_str(),
             expected,

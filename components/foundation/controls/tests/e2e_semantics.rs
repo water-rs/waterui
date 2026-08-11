@@ -16,6 +16,16 @@ use waterui_testing::{Role, Selector};
 
 use support::{control_shell, mount_view};
 
+/// Asserts that an interaction panics because the runtime rejected it —
+/// the contract for actions on disabled or clamped controls.
+fn assert_rejected(context: &str, action: impl FnOnce()) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
+    assert!(
+        outcome.is_err(),
+        "{context}: the runtime should reject this action"
+    );
+}
+
 fn assert_close(actual: f64, expected: f64, epsilon: f64, context: &str) {
     let delta = (actual - expected).abs();
     assert!(
@@ -40,10 +50,7 @@ fn button_tap_triggers_action() {
         )))
     });
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Increment").tap(),
-        "button tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Increment").tap();
     assert_eq!(count.get(), 1, "button tap should update binding");
     app.query()
         .role(Role::LABEL)
@@ -119,10 +126,7 @@ fn repeated_state_calls_bind_in_argument_order() {
         )
     });
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Bind").tap(),
-        "button tap should succeed"
-    );
+    app.query().role(Role::BUTTON).label("Bind").tap();
 
     assert_eq!(
         first.get(),
@@ -174,10 +178,7 @@ fn toggle_tap_toggles_binding() {
         .label("Airplane Mode")
         .checked(false)
         .assert_exists();
-    assert!(
-        app.query().role(Role::SWITCH).label("Airplane Mode").tap(),
-        "toggle tap should succeed"
-    );
+    app.query().role(Role::SWITCH).label("Airplane Mode").tap();
     assert!(enabled.get(), "toggle tap should flip binding");
     app.query()
         .role(Role::SWITCH)
@@ -216,10 +217,7 @@ fn slider_increment_decrement_updates_value() {
         )))
     });
 
-    assert!(
-        app.query().role(Role::SLIDER).label("Volume").increment(),
-        "slider increment should succeed"
-    );
+    app.query().role(Role::SLIDER).label("Volume").increment();
     assert_close(
         value.get(),
         0.51,
@@ -231,10 +229,7 @@ fn slider_increment_decrement_updates_value() {
         .label("value:0.51")
         .assert_exists();
 
-    assert!(
-        app.query().role(Role::SLIDER).label("Volume").decrement(),
-        "slider decrement should succeed"
-    );
+    app.query().role(Role::SLIDER).label("Volume").decrement();
     assert_close(
         value.get(),
         0.50,
@@ -281,20 +276,14 @@ fn stepper_increment_decrement_updates_binding() {
         )))
     });
 
-    assert!(
-        app.query().label("Quantity").value("2").increment(),
-        "stepper increment should succeed"
-    );
+    app.query().label("Quantity").value("2").increment();
     assert_eq!(value.get(), 3, "stepper increment should update binding");
     app.query()
         .role(Role::LABEL)
         .label("count:3")
         .assert_exists();
 
-    assert!(
-        app.query().label("Quantity").value("3").decrement(),
-        "stepper decrement should succeed"
-    );
+    app.query().label("Quantity").value("3").decrement();
     assert_eq!(value.get(), 2, "stepper decrement should update binding");
     app.query()
         .role(Role::LABEL)
@@ -310,10 +299,9 @@ fn stepper_respects_range_bounds() {
     let mut app =
         mount_view(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
 
-    assert!(
-        !app.query().label("Limited").value("2").increment(),
-        "stepper increment at max should report no change"
-    );
+    assert_rejected("stepper increment at max should report no change", || {
+        app.query().label("Limited").value("2").increment();
+    });
     assert_eq!(value.get(), 2, "stepper value should remain clamped at max");
 }
 
@@ -329,13 +317,10 @@ fn text_field_set_text_updates_binding() {
         )))
     });
 
-    assert!(
-        app.query()
+    app.query()
             .role(Role::TEXT_INPUT)
             .label("Name")
-            .set_text("Alice"),
-        "text field set_text should succeed"
-    );
+            .set_text("Alice");
     assert_eq!(
         value.get(),
         Str::from("Alice"),
@@ -356,10 +341,7 @@ fn text_field_focus_updates_ui_focus() {
         mount_view(move || control_shell(TextField::new(&value_for_view).label("Search")));
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
-    assert!(
-        app.query().role(Role::TEXT_INPUT).label("Search").focus(),
-        "text field focus should succeed"
-    );
+    app.query().role(Role::TEXT_INPUT).label("Search").focus();
     app.assert_ui_focus(&selector);
 }
 
@@ -383,10 +365,7 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit() {
     // A multi-line field reports accesskit's multi-line text-input role, which
     // the testing harness has no `Role` constant for yet, so it is matched by
     // label — the newline behaviour below is what actually pins the contract.
-    assert!(
-        app.query().label("Notes").focus(),
-        "multi-line field focus should succeed"
-    );
+    app.query().label("Notes").focus();
 
     app.press_character_key("a");
     app.press_named_key("Enter");
@@ -477,10 +456,9 @@ fn disabled_toggle_ignores_input_and_reports_disabled() {
         !element.node().enabled(),
         "disabled-toggle: switch should expose disabled accessibility state"
     );
-    assert!(
-        !app.query().role(Role::SWITCH).label("Wi-Fi").tap(),
-        "disabled-toggle: accessibility tap should be rejected"
-    );
+    assert_rejected("disabled-toggle: accessibility tap should be rejected", || {
+        app.query().role(Role::SWITCH).label("Wi-Fi").tap();
+    });
     // The pointer event dispatches into the window but must not hit the
     // disabled control: the binding stays unchanged.
     let _ = app
@@ -517,9 +495,11 @@ fn disabled_scope_cascades_and_reenables_reactively() {
         !element.node().enabled(),
         "disabled-scope: toggle inside a disabled container must report disabled"
     );
-    assert!(
-        !app.query().role(Role::SWITCH).label("Notifications").tap(),
-        "disabled-scope: tap inside a disabled container must be rejected"
+    assert_rejected(
+        "disabled-scope: tap inside a disabled container must be rejected",
+        || {
+            app.query().role(Role::SWITCH).label("Notifications").tap();
+        },
     );
     assert!(
         !enabled.get(),
@@ -535,10 +515,7 @@ fn disabled_scope_cascades_and_reenables_reactively() {
             .wait_for_existence(core::time::Duration::from_secs(2)),
         "disabled-scope: re-enabling the container must re-enable the toggle"
     );
-    assert!(
-        app.query().role(Role::SWITCH).label("Notifications").tap(),
-        "disabled-scope: tap must succeed after the container is re-enabled"
-    );
+    app.query().role(Role::SWITCH).label("Notifications").tap();
     assert!(
         enabled.get(),
         "disabled-scope: tap after re-enable must flip the binding"
@@ -558,10 +535,9 @@ fn disabled_slider_ignores_value_actions() {
         !element.node().enabled(),
         "disabled-slider: slider should expose disabled accessibility state"
     );
-    assert!(
-        !app.query().role(Role::SLIDER).label("Volume").increment(),
-        "disabled-slider: increment must be rejected"
-    );
+    assert_rejected("disabled-slider: increment must be rejected", || {
+        app.query().role(Role::SLIDER).label("Volume").increment();
+    });
     // The pointer drag dispatches into the window but must not hit the
     // disabled control: the value stays unchanged.
     let _ = app
@@ -593,10 +569,9 @@ fn disabled_button_ignores_action() {
         )
     });
 
-    assert!(
-        !app.query().role(Role::BUTTON).label("Submit").tap(),
-        "disabled-button: accessibility tap should be rejected"
-    );
+    assert_rejected("disabled-button: accessibility tap should be rejected", || {
+        app.query().role(Role::BUTTON).label("Submit").tap();
+    });
     // The pointer event dispatches into the window but must not hit the
     // disabled control: the action never runs.
     let _ = app

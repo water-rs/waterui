@@ -5,7 +5,7 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
-use waterui::{Binding, Color, Environment, View};
+use waterui::{Binding, Color, View};
 use waterui_form::Calendar;
 use waterui_form::picker::color::ColorPicker;
 use waterui_form::picker::date::{DatePicker, DatePickerType};
@@ -20,10 +20,7 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
-    let mut env = Environment::new();
-    hydrolysis_m3::install(&mut env);
-
-    ui().environment(env)
+        ui().theme(hydrolysis_m3::install)
         .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
         .mount(build)
 }
@@ -69,10 +66,7 @@ fn picker_selection_flow() {
         .label("Gamma")
         .assert_exists();
 
-    assert!(
-        app.query().role(Role::OPTION).label("Beta").tap(),
-        "picker option selection should succeed"
-    );
+    app.query().role(Role::OPTION).label("Beta").tap();
     assert_eq!(
         selection.get(),
         "Beta",
@@ -133,13 +127,10 @@ fn date_picker_accessibility() {
 
     let updated_date = Date::new(2025, 2, 14).unwrap();
     let updated_value = DatePickerType::Date.format_value(updated_date.at(0, 0, 0, 0));
-    assert!(
-        app.query()
+    app.query()
             .role(Role::COMBOBOX)
             .value(initial_value)
-            .set_text(updated_value.clone()),
-        "date picker set_text should succeed"
-    );
+            .set_text(updated_value.clone());
     assert_eq!(
         selected_date.get(),
         updated_date,
@@ -167,10 +158,7 @@ fn color_picker_accessibility_tap_is_handled() {
         ))
     });
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Accent Color").tap(),
-        "color picker should be tappable through accessibility"
-    );
+    app.query().role(Role::BUTTON).label("Accent Color").tap();
 }
 
 #[test]
@@ -196,20 +184,14 @@ fn calendar_navigation_and_selection_update_binding() {
         .label("Event Calendar")
         .assert_exists();
     app.query().role(Role::BUTTON).label("14").assert_exists();
-    assert!(
-        app.query().role(Role::BUTTON).label("14").tap(),
-        "calendar should allow selecting a visible in-range day"
-    );
+    app.query().role(Role::BUTTON).label("14").tap();
     assert_eq!(
         selected_date.get(),
         Date::new(2025, 1, 14).unwrap(),
         "calendar day tap should update the selected date"
     );
 
-    assert!(
-        app.query().role(Role::BUTTON).label(">").tap(),
-        "calendar next-month button should be tappable"
-    );
+    app.query().role(Role::BUTTON).label(">").tap();
     assert!(
         app.query()
             .role(Role::BUTTON)
@@ -217,10 +199,7 @@ fn calendar_navigation_and_selection_update_binding() {
             .wait_for_nonexistence(Duration::from_secs(1)),
         "calendar should rebuild to the next month before a new day selection"
     );
-    assert!(
-        app.query().role(Role::BUTTON).label("20").tap(),
-        "calendar should allow selecting a day after month navigation"
-    );
+    app.query().role(Role::BUTTON).label("20").tap();
     assert_eq!(
         selected_date.get(),
         Date::new(2025, 2, 20).unwrap(),

@@ -58,13 +58,10 @@ fn line_chart_drag_between_updates_selection_smoke() {
     });
 
     let label = assert_chart_accessibility_ready(&mut app, "line");
-    assert!(
-        app.query()
+    app.query()
             .role(waterui_testing::Role::IMAGE)
             .label(label)
-            .drag_between(from.0, from.1, to.0, to.1),
-        "line: drag_between should be handled"
-    );
+            .drag_between(from.0, from.1, to.0, to.1);
     assert!(focused.get().is_none(), "line: drag end should clear focus");
     let selected_hit = selected
         .get()
@@ -121,13 +118,10 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
     });
 
     let label = assert_chart_accessibility_ready(&mut app, "pie");
-    assert!(
-        app.query()
+    app.query()
             .role(waterui_testing::Role::IMAGE)
             .label(label.clone())
-            .hover_at(location.0, location.1),
-        "pie: hover_at should be handled"
-    );
+            .hover_at(location.0, location.1);
     let focused_hit = focused
         .get()
         .expect("pie: hover should produce a focused hit");
@@ -136,13 +130,10 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
     assert_eq!(focused_hit.value, expected);
     assert_label_exists(&mut app, "selected:none");
 
-    assert!(
-        app.query()
+    app.query()
             .role(waterui_testing::Role::IMAGE)
             .label(label)
-            .tap_at(location.0, location.1),
-        "pie: tap_at should be handled"
-    );
+            .tap_at(location.0, location.1);
     let selected_hit = selected
         .get()
         .expect("pie: tap should produce a selected hit");

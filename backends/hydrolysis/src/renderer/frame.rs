@@ -421,6 +421,25 @@ impl HydrolysisRenderer {
         self.signals.take_next_frame_rebuild_request()
     }
 
+    /// Whether the renderer has scheduled work that will still change layout,
+    /// semantics, or reactive state on a future frame: pending patches or
+    /// rebuilds, active animations, armed gesture deadlines, or gliding smooth
+    /// scrolls.
+    ///
+    /// Visual-only redraw requests (caret blink, the visible-window present
+    /// cadence) are deliberately excluded: they repaint pixels without moving
+    /// semantic state, and a focused text caret blinks forever — including it
+    /// would make an app with a focused field never count as settled.
+    #[must_use]
+    pub fn has_scheduled_semantic_work(&self) -> bool {
+        self.signals.has_patch_request()
+            || self.signals.has_rebuild_request()
+            || self.signals.has_next_frame_rebuild_request()
+            || self.animations_active()
+            || self.next_gesture_deadline().is_some()
+            || self.has_gliding_smooth_scrolls()
+    }
+
     pub(crate) fn measurement_cache_stats(&self) -> (u32, u32) {
         self.state.measurement.stats()
     }
