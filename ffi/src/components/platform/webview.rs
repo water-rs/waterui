@@ -592,6 +592,97 @@ impl WebViewHandle for FfiWebViewHandle {
 // WebView Raw View
 // =============================================================================
 
+// =============================================================================
+// Shared JavaScript bridge
+// =============================================================================
+
+/// One parsed `waterui.invoke(...)` request.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiBridgeRequest {
+    /// Whether the envelope parsed. When false every other field is empty and the
+    /// call must be ignored.
+    pub ok: bool,
+    /// Correlates the reply with the page's pending promise.
+    pub id: u64,
+    /// The handler name the page asked for.
+    pub name: WuiStr,
+    /// The payload, base64-encoded to match `WuiWebViewMessage`.
+    pub payload_base64: WuiStr,
+}
+
+/// Returns the bridge script every backend injects at document start.
+///
+/// Backends that route messages themselves — the Apple backend keeps its handler
+/// table in Swift — use this together with
+/// [`waterui_webview_parse_bridge_request`] and
+/// [`waterui_webview_bridge_reply_script`], so the envelope format stays defined
+/// only in `waterui_webview::bridge`.
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_webview_bridge_script() -> WuiStr {
+    Str::from_static(waterui_webview::bridge::SCRIPT).into_ffi()
+}
+
+/// Parses one envelope produced by the bridge script.
+///
+/// # Safety
+///
+/// `envelope` must be an owning `WuiStr`; it is consumed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_webview_parse_bridge_request(
+    envelope: WuiStr,
+) -> WuiBridgeRequest {
+    // SAFETY: the caller contract makes `envelope` an owning handle from the
+    // matching FFI constructor; it is consumed here and not observed again.
+    let envelope: Str = unsafe { envelope.into_rust() };
+    match waterui_webview::bridge::Request::parse(envelope.as_str()) {
+        Ok(request) => WuiBridgeRequest {
+            ok: true,
+            id: request.id,
+            name: Str::from(request.name).into_ffi(),
+            payload_base64: Str::from(
+                base64::engine::general_purpose::STANDARD.encode(&request.payload),
+            )
+            .into_ffi(),
+        },
+        Err(error) => {
+            tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+            WuiBridgeRequest {
+                ok: false,
+                id: 0,
+                name: Str::from_static("").into_ffi(),
+                payload_base64: Str::from_static("").into_ffi(),
+            }
+        }
+    }
+}
+
+/// Renders the JavaScript that settles one bridge call.
+///
+/// # Safety
+///
+/// `payload_base64` must be an owning `WuiStr`; it is consumed. On success it is
+/// base64 handler output, otherwise an error message.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_webview_bridge_reply_script(
+    id: u64,
+    success: bool,
+    payload_base64: WuiStr,
+) -> WuiStr {
+    // SAFETY: the caller contract makes `payload_base64` an owning handle from the
+    // matching FFI constructor; it is consumed here and not observed again.
+    let payload: Str = unsafe { payload_base64.into_rust() };
+    let reply = if success {
+        match base64::engine::general_purpose::STANDARD.decode(payload.as_str()) {
+            Ok(bytes) => waterui_webview::bridge::Reply::Bytes(bytes),
+            Err(error) => waterui_webview::bridge::Reply::failure(&error),
+        }
+    } else {
+        waterui_webview::bridge::Reply::failure(&payload.as_str())
+    };
+    Str::from(reply.resolve_script(id)).into_ffi()
+}
+
 opaque!(WuiWebView, WebView);
 ffi_view!(WebView, *mut WuiWebView, webview, any());
 
