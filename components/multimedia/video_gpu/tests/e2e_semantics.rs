@@ -6,7 +6,7 @@ use hydrolysis_m3::install as install_m3;
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::env::Environment;
-use waterui_testing::{Role, Selector, SemanticApp, WaitOptions, WaitResult, ui};
+use waterui_testing::{Role, Selector, SemanticApp, UiBuilder, WaitOptions, WaitResult};
 use waterui_video::{
     Event, MediaItem, PlaybackSession, PlayerController, Playlist, Url, VideoPlayer, video,
 };
@@ -187,19 +187,16 @@ fn raw_video_exposes_default_accessibility_image(app: &mut SemanticApp) {
     );
 }
 
-#[test]
-fn video_player_controls_are_accessible_and_reactive() {
+#[waterui::test(theme = install_test_theme, viewport = (480, 320))]
+fn video_player_controls_are_accessible_and_reactive(ui: UiBuilder) {
     let mounted_controller = Rc::new(RefCell::new(None));
     let controller_for_view = Rc::clone(&mounted_controller);
 
-    let mut app = ui()
-        .theme(install_test_theme)
-        .viewport(480, 320)
-        .mount(move || {
-            let session = PlaybackSession::new(Playlist::single(missing_video_url()));
-            controller_for_view.replace(Some(session.controller()));
-            VideoPlayer::new(session).size(420.0, 260.0)
-        });
+    let mut app = ui.mount(move || {
+        let session = PlaybackSession::new(Playlist::single(missing_video_url()));
+        controller_for_view.replace(Some(session.controller()));
+        VideoPlayer::new(session).size(420.0, 260.0)
+    });
     let controller = mounted_controller
         .borrow()
         .clone()
@@ -211,26 +208,23 @@ fn video_player_controls_are_accessible_and_reactive() {
     assert_non_transport_controls_react(&mut app);
 }
 
-#[test]
-fn self_drawn_player_controls_render_without_retrying_a_failed_source() {
+#[waterui::test(theme = install_test_theme, viewport = (480, 320))]
+fn self_drawn_player_controls_render_without_retrying_a_failed_source(ui: UiBuilder) {
     let decoder_errors = Rc::new(RefCell::new(Vec::new()));
     let decoder_errors_for_view = Rc::clone(&decoder_errors);
-    let mut app = ui()
-        .theme(install_test_theme)
-        .viewport(480, 320)
-        .mount_offscreen(move || {
-            let session = PlaybackSession::new(Playlist::single(missing_video_url()));
-            VideoPlayer::new(session)
-                .on_event({
-                    let decoder_errors = Rc::clone(&decoder_errors_for_view);
-                    move |event: Event| {
-                        if let Event::Error { message } = event {
-                            decoder_errors.borrow_mut().push(message);
-                        }
+    let mut app = ui.mount_offscreen(move || {
+        let session = PlaybackSession::new(Playlist::single(missing_video_url()));
+        VideoPlayer::new(session)
+            .on_event({
+                let decoder_errors = Rc::clone(&decoder_errors_for_view);
+                move |event: Event| {
+                    if let Event::Error { message } = event {
+                        decoder_errors.borrow_mut().push(message);
                     }
-                })
-                .size(420.0, 260.0)
-        });
+                }
+            })
+            .size(420.0, 260.0)
+    });
 
     assert_initial_player_semantics(&mut app);
     assert_non_transport_controls_react(&mut app);

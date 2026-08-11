@@ -14,20 +14,12 @@ use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{
     NavigationLink, NavigationPath, NavigationSplitView, NavigationStack, NavigationView,
 };
-use waterui_testing::{Role, Selector, SemanticApp, ui};
+use waterui_testing::{Role, Selector, SemanticApp, UiBuilder};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TestRoute {
     First,
     Second,
-}
-
-fn mount_view<V, F>(build: F) -> SemanticApp
-where
-    V: View + 'static,
-    F: Fn() -> V + 'static,
-{
-        ui().theme(hydrolysis_m3::install).mount(build)
 }
 
 fn home_tab_id() -> Id {
@@ -184,9 +176,8 @@ fn split_view() -> impl View {
     .placeholder(|| Text::new("placeholder content"))
 }
 
-#[test]
-fn tabs_tap_switches_selection_and_content() {
-    let mut app = mount_view(tabs_view);
+#[waterui::test(tabs_view, theme = hydrolysis_m3::install)]
+fn tabs_tap_switches_selection_and_content(app: &mut SemanticApp) {
     app.query().role(Role::TAB_LIST).assert_exists();
     app.query()
         .role(Role::TAB)
@@ -219,9 +210,8 @@ fn tabs_tap_switches_selection_and_content() {
         .assert_exists();
 }
 
-#[test]
-fn navigation_link_push_and_back_pop_update_content() {
-    let mut app = mount_view(stack_view);
+#[waterui::test(stack_view, theme = hydrolysis_m3::install)]
+fn navigation_link_push_and_back_pop_update_content(app: &mut SemanticApp) {
     app.query()
         .role(Role::BUTTON)
         .label("Open Detail")
@@ -242,9 +232,8 @@ fn navigation_link_push_and_back_pop_update_content() {
     );
 }
 
-#[test]
-fn path_stack_keeps_value_links_active_inside_destination() {
-    let mut app = mount_view(path_stack_nested_value_link_view);
+#[waterui::test(path_stack_nested_value_link_view, theme = hydrolysis_m3::install)]
+fn path_stack_keeps_value_links_active_inside_destination(app: &mut SemanticApp) {
     app.query().role(Role::BUTTON).label("Open First").tap();
     app.query()
         .role(Role::BUTTON)
@@ -264,12 +253,12 @@ fn path_stack_keeps_value_links_active_inside_destination() {
     );
 }
 
-#[test]
-fn native_back_updates_the_explicit_navigation_path() {
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn native_back_updates_the_explicit_navigation_path(ui: UiBuilder) {
     let path = NavigationPath::<TestRoute>::new();
     let mounted_path = path.clone();
     let mut app =
-        mount_view(move || path_stack_nested_value_link_view_with_path(mounted_path.clone()));
+        ui.mount(move || path_stack_nested_value_link_view_with_path(mounted_path.clone()));
 
     app.query().role(Role::BUTTON).label("Open First").tap();
     app.query().role(Role::BUTTON).label("Open Second").tap();
@@ -283,13 +272,13 @@ fn native_back_updates_the_explicit_navigation_path() {
         .assert_exists();
 }
 
-#[test]
-fn explicit_path_root_keeps_native_chrome_and_lifecycle() {
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn explicit_path_root_keeps_native_chrome_and_lifecycle(ui: UiBuilder) {
     let appeared = Rc::new(Cell::new(0));
     let disappeared = Rc::new(Cell::new(0));
     let mounted_appeared = Rc::clone(&appeared);
     let mounted_disappeared = Rc::clone(&disappeared);
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         path_root_lifecycle_view(
             Rc::clone(&mounted_appeared),
             Rc::clone(&mounted_disappeared),
@@ -301,9 +290,9 @@ fn explicit_path_root_keeps_native_chrome_and_lifecycle() {
     assert_eq!(disappeared.get(), 0);
 
     app.query()
-            .role(Role::BUTTON)
-            .label("Open Path Detail")
-            .tap();
+        .role(Role::BUTTON)
+        .label("Open Path Detail")
+        .tap();
     assert_eq!(appeared.get(), 1);
     assert_eq!(disappeared.get(), 1);
     app.query()
@@ -317,8 +306,8 @@ fn explicit_path_root_keeps_native_chrome_and_lifecycle() {
     app.query().label("Path Root").assert_exists();
 }
 
-#[test]
-fn restored_path_and_atomic_multi_pop_have_exact_lifecycle() {
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn restored_path_and_atomic_multi_pop_have_exact_lifecycle(ui: UiBuilder) {
     let path = NavigationPath::from_iter([TestRoute::First, TestRoute::Second]);
     let mounted_path = path.clone();
     let root_appeared = Rc::new(Cell::new(0));
@@ -329,7 +318,7 @@ fn restored_path_and_atomic_multi_pop_have_exact_lifecycle() {
     let mounted_destination_appeared = Rc::clone(&destination_appeared);
     let mounted_destination_disappeared = Rc::clone(&destination_disappeared);
     let mounted_destination_popped = Rc::clone(&destination_popped);
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         restored_path_lifecycle_view(
             mounted_path.clone(),
             Rc::clone(&mounted_root_appeared),
@@ -367,11 +356,11 @@ fn restored_path_and_atomic_multi_pop_have_exact_lifecycle() {
     assert_eq!(destination_popped.get(), 2);
 }
 
-#[test]
-fn denied_pop_reports_attempt_and_keeps_destination_active() {
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn denied_pop_reports_attempt_and_keeps_destination_active(ui: UiBuilder) {
     let attempts = Rc::new(Cell::new(0));
     let mounted_attempts = Rc::clone(&attempts);
-    let mut app = mount_view(move || denied_pop_view(Rc::clone(&mounted_attempts)));
+    let mut app = ui.mount(move || denied_pop_view(Rc::clone(&mounted_attempts)));
 
     app.query().role(Role::BUTTON).label("Open Locked").tap();
     app.query().role(Role::BUTTON).label("Back").tap();
@@ -383,15 +372,15 @@ fn denied_pop_reports_attempt_and_keeps_destination_active() {
         .assert_exists();
 }
 
-#[test]
-fn destination_lifecycle_distinguishes_disappear_from_completed_pop() {
+#[waterui::test(theme = hydrolysis_m3::install)]
+fn destination_lifecycle_distinguishes_disappear_from_completed_pop(ui: UiBuilder) {
     let appeared = Rc::new(Cell::new(0));
     let disappeared = Rc::new(Cell::new(0));
     let popped = Rc::new(Cell::new(0));
     let mounted_appeared = Rc::clone(&appeared);
     let mounted_disappeared = Rc::clone(&disappeared);
     let mounted_popped = Rc::clone(&popped);
-    let mut app = mount_view(move || {
+    let mut app = ui.mount(move || {
         lifecycle_view(
             Rc::clone(&mounted_appeared),
             Rc::clone(&mounted_disappeared),
@@ -409,9 +398,8 @@ fn destination_lifecycle_distinguishes_disappear_from_completed_pop() {
     assert_eq!(popped.get(), 1);
 }
 
-#[test]
-fn split_view_selection_switches_placeholder_to_detail() {
-        let mut app = ui().theme(hydrolysis_m3::install).viewport(1_000, 844).mount(split_view);
+#[waterui::test(split_view, theme = hydrolysis_m3::install, viewport = (1000, 844))]
+fn split_view_selection_switches_placeholder_to_detail(app: &mut SemanticApp) {
     app.query()
         .role(Role::BUTTON)
         .label("Select Detail")

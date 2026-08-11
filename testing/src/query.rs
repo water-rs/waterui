@@ -17,6 +17,13 @@ impl Query<'_> {
         self
     }
 
+    /// Restricts the query to nodes with the given automation identifier.
+    #[must_use]
+    pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
+        self.selector = self.selector.identifier(identifier);
+        self
+    }
+
     /// Restricts the query to nodes with exactly matching labels.
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {

@@ -5,20 +5,17 @@
 use core::time::Duration;
 use hydrolysis_m3::install;
 use waterui::snackbar::{Snackbar, SnackbarManager};
-use waterui_testing::{OffscreenApp, ui};
+use waterui_testing::{OffscreenApp, UiBuilder};
 
 fn save(app: &mut OffscreenApp, stage: &str) {
     let _ = app.capture_snapshot("material3-preview", "snackbar", stage);
 }
 
-#[test]
 #[ignore = "writes visual acceptance PNG files for direct image review"]
-fn snackbar_fades_and_slides_into_place() {
+#[waterui::test(theme = install, viewport = (640, 360))]
+fn snackbar_fades_and_slides_into_place(ui: UiBuilder) {
     let (manager, overlay) = SnackbarManager::new();
-    let mut app = ui()
-        .viewport(640, 360)
-        .theme(install)
-        .mount_offscreen(move || overlay.clone());
+    let mut app = ui.mount_offscreen(move || overlay.clone());
 
     save(&mut app, "before");
     manager.show(
