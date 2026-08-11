@@ -10,8 +10,7 @@ use waterui_core::{Computed, Signal};
 use waterui_str::Str;
 use waterui_url::Url;
 use waterui_webview::{
-    Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewEvent,
-    WebViewHandle, bridge,
+    Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle, bridge,
 };
 
 use crate::cdp::CefCdpSession;
@@ -156,7 +155,7 @@ impl WebViewHandle for CefWebViewHandle {
         self.page.set_redirects_enabled(Computed::new(enabled));
     }
 
-    fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+    fn watch(&self, watcher: impl Fn(waterui_webview::BackendEvent) + 'static) -> WatcherGuard {
         self.page.watch_webview(watcher)
     }
 

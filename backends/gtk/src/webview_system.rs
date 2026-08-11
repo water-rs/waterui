@@ -18,8 +18,8 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Computed, Environment, Signal, Str};
 use waterui_webview::{
-    Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
+    BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard,
+    WatcherSet, WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
 };
 
 type JsHandler = Rc<waterui_webview::ScriptMessageHandler>;
@@ -34,7 +34,7 @@ const TRANSPORT_SCRIPT: &str = concat!(
 );
 
 struct SharedState {
-    watchers: WatcherSet<WebViewEvent>,
+    watchers: WatcherSet<BackendEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handler_callbacks: RefCell<HashMap<String, JsHandler>>,
     cookie_cache: RefCell<String>,
@@ -44,8 +44,8 @@ struct SharedState {
 }
 
 impl SharedState {
-    fn emit(&self, event: WebViewEvent) {
-        self.watchers.emit(&event);
+    fn emit(&self, event: impl Into<BackendEvent>) {
+        self.watchers.emit(&event.into());
     }
 }
 
@@ -875,7 +875,7 @@ impl GtkWebViewHandle {
             .connect_notify_local(Some("can-go-back"), move |obj, _| {
                 let back = obj.property::<bool>("can-go-back");
                 let forward = obj.property::<bool>("can-go-forward");
-                shared.emit(WebViewEvent::StateChanged {
+                shared.emit(BackendEvent::NavigationState {
                     can_go_back: back,
                     can_go_forward: forward,
                 });
@@ -886,7 +886,7 @@ impl GtkWebViewHandle {
             .connect_notify_local(Some("can-go-forward"), move |obj, _| {
                 let back = obj.property::<bool>("can-go-back");
                 let forward = obj.property::<bool>("can-go-forward");
-                shared.emit(WebViewEvent::StateChanged {
+                shared.emit(BackendEvent::NavigationState {
                     can_go_back: back,
                     can_go_forward: forward,
                 });
@@ -1318,7 +1318,7 @@ impl WebViewHandle for GtkWebViewHandle {
             .replace(Computed::new(enabled));
     }
 
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+    fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
         self.shared.watchers.insert(f)
     }
 

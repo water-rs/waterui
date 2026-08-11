@@ -5,7 +5,7 @@ use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Computed, Signal, impl_debug};
 use waterui_str::Str;
 
-use crate::{WatcherGuard, WebViewEvent};
+use crate::{BackendEvent, WatcherGuard};
 use waterui_url::Url;
 
 /// What a handler returns: bytes to resolve the page's promise with, or a
@@ -115,7 +115,7 @@ pub trait WebViewHandle: 'static {
     /// registration order. Dropping the returned guard unregisters the watcher;
     /// backends get that bookkeeping from [`WatcherSet`](crate::WatcherSet)
     /// rather than implementing it each.
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard;
+    fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard;
 
     /// Returns whether the web view can navigate back in its history.
     fn can_go_back(&self) -> bool;
@@ -146,7 +146,7 @@ trait WebViewHandleImpl: Any {
     fn refresh(&self);
     fn go_to(&self, url: &Url);
     fn inject_script(&self, script: &str, time: ScriptInjectionTime);
-    fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>) -> WatcherGuard;
+    fn watch(&self, f: Box<dyn Fn(BackendEvent) + 'static>) -> WatcherGuard;
     fn set_user_agent(&self, user_agent: &str);
     fn set_redirects_enabled(&self, enabled: Computed<bool>);
     fn can_go_back(&self) -> bool;
@@ -193,7 +193,7 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
         WebViewHandle::inject_script(self, script, time);
     }
 
-    fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>) -> WatcherGuard {
+    fn watch(&self, f: Box<dyn Fn(BackendEvent) + 'static>) -> WatcherGuard {
         WebViewHandle::watch(self, f)
     }
 
@@ -268,7 +268,7 @@ impl AnyWebViewHandle {
     }
 
     /// Watches for web view events. Dropping the guard unregisters the watcher.
-    pub fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+    pub fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
         self.inner.watch(Box::new(f))
     }
 

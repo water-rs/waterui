@@ -16,7 +16,7 @@ use cookie::Cookie;
 use nami::{Signal, SignalExt};
 use waterui_str::Str;
 use waterui_webview::{
-    CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
+    BackendEvent, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
     WebViewController, WebViewError, WebViewEvent, WebViewHandle,
 };
 
@@ -62,8 +62,6 @@ impl IntoRust for WuiScriptInjectionTime {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WuiWebViewEventType {
-    /// No event (initial state).
-    None = 0,
     /// The web view is about to navigate to a new URL.
     WillNavigate = 1,
     /// The web view is loading content.
@@ -131,21 +129,20 @@ unsafe fn take_event_string(value: *mut WuiStr) -> Str {
 }
 
 impl IntoRust for WuiWebViewEvent {
-    type Rust = WebViewEvent;
+    type Rust = BackendEvent;
     unsafe fn into_rust(self) -> Self::Rust {
         match self.event_type {
-            WuiWebViewEventType::None => WebViewEvent::None,
-            WuiWebViewEventType::WillNavigate => WebViewEvent::WillNavigate {
+            WuiWebViewEventType::WillNavigate => BackendEvent::Event(WebViewEvent::WillNavigate {
                 // SAFETY: the backend fills the string fields its event type defines
                 // with owning `WuiStr` handles, and each arm reads only its
                 // own fields, exactly once.
                 url: parse_url(&unsafe { take_event_string(self.url) }),
-            },
-            WuiWebViewEventType::Loading => WebViewEvent::Loading {
+            }),
+            WuiWebViewEventType::Loading => BackendEvent::Event(WebViewEvent::Loading {
                 progress: self.progress,
-            },
-            WuiWebViewEventType::Loaded => WebViewEvent::Loaded,
-            WuiWebViewEventType::Redirect => WebViewEvent::Redirect {
+            }),
+            WuiWebViewEventType::Loaded => BackendEvent::Event(WebViewEvent::Loaded),
+            WuiWebViewEventType::Redirect => BackendEvent::Event(WebViewEvent::Redirect {
                 // SAFETY: the backend fills the string fields its event type defines
                 // with owning `WuiStr` handles, and each arm reads only its
                 // own fields, exactly once.
@@ -154,8 +151,8 @@ impl IntoRust for WuiWebViewEvent {
                 // with owning `WuiStr` handles, and each arm reads only its
                 // own fields, exactly once.
                 to: parse_url(&unsafe { take_event_string(self.url2) }),
-            },
-            WuiWebViewEventType::SslError => WebViewEvent::Error(WebViewError::Ssl {
+            }),
+            WuiWebViewEventType::SslError => BackendEvent::Event(WebViewEvent::Error(WebViewError::Ssl {
                 // SAFETY: the backend fills the string fields its event type defines
                 // with owning `WuiStr` handles, and each arm reads only its
                 // own fields, exactly once.
@@ -164,14 +161,14 @@ impl IntoRust for WuiWebViewEvent {
                 // with owning `WuiStr` handles, and each arm reads only its
                 // own fields, exactly once.
                 message: unsafe { take_event_string(self.message) },
-            }),
-            WuiWebViewEventType::Error => WebViewEvent::Error(WebViewError::LoadFailed(unsafe {
+            })),
+            WuiWebViewEventType::Error => BackendEvent::Event(WebViewEvent::Error(WebViewError::LoadFailed(unsafe {
                 // SAFETY: the backend fills the string fields its event type defines
                 // with owning `WuiStr` handles, and each arm reads only its
                 // own fields, exactly once.
                 take_event_string(self.message)
-            })),
-            WuiWebViewEventType::StateChanged => WebViewEvent::StateChanged {
+            }))),
+            WuiWebViewEventType::StateChanged => BackendEvent::NavigationState {
                 can_go_back: self.can_go_back,
                 can_go_forward: self.can_go_forward,
             },
@@ -295,7 +292,7 @@ pub struct FfiWebViewHandle {
     ffi: WuiWebViewHandle,
     /// Rust-side watchers, so the single `WuiFn` trampoline installed on the
     /// native handle can fan out to all of them and each can be removed.
-    watchers: WatcherSet<WebViewEvent>,
+    watchers: WatcherSet<BackendEvent>,
     watcher_installed: Cell<bool>,
 }
 
@@ -413,7 +410,7 @@ impl WebViewHandle for FfiWebViewHandle {
         unsafe { (self.ffi.inject_script)(self.ffi.data, owned_script.into_ffi(), time.into_ffi()) }
     }
 
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+    fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
         let guard = self.watchers.insert(f);
 
         if self.watcher_installed.replace(true) {

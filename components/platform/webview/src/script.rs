@@ -123,7 +123,8 @@ fn wrap(body: &str, args: &[serde_json::Value]) -> String {
         .map(|index| format!("__wa{index}"))
         .collect::<Vec<_>>()
         .join(",");
-    let args = serde_json::to_string(args).expect("interpolated JavaScript arguments must serialize");
+    let args =
+        serde_json::to_string(args).expect("interpolated JavaScript arguments must serialize");
     format!("globalThis.__wateruiEval(async ({parameters}) => {{ {body} }}, {args})")
 }
 
@@ -233,7 +234,9 @@ mod tests {
             .expect("decodes");
         assert_eq!(title, "WaterUI");
 
-        let count: u32 = outcome(r#"{"ok":true,"value":7}"#).decode().expect("decodes");
+        let count: u32 = outcome(r#"{"ok":true,"value":7}"#)
+            .decode()
+            .expect("decodes");
         assert_eq!(count, 7);
     }
 

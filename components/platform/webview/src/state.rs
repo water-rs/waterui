@@ -45,7 +45,10 @@ pub trait JsField {
 }
 
 /// A field's read side and, when writable, its write side.
-#[expect(missing_debug_implementations, reason = "holds boxed closures with no useful representation")]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds boxed closures with no useful representation"
+)]
 pub struct FieldEntry<T> {
     /// The signal the bridge pushes from.
     pub(crate) read: Computed<T>,
@@ -178,7 +181,9 @@ impl StateRegistry {
             applying_write: Cell::new(false),
             _guard: guard,
         };
-        self.fields.borrow_mut().insert(name.clone(), Rc::new(entry));
+        self.fields
+            .borrow_mut()
+            .insert(name.clone(), Rc::new(entry));
         self.pending.borrow_mut().insert(name);
     }
 
@@ -310,9 +315,8 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>) {
                 let Some(patch) = registry.take_patch() else {
                     return;
                 };
-                let script = crate::JsProgram::raw(format!(
-                    "globalThis.__wateruiState.apply({patch});"
-                ));
+                let script =
+                    crate::JsProgram::raw(format!("globalThis.__wateruiState.apply({patch});"));
                 if let Err(error) = webview.exec(&script).await {
                     tracing::warn!(%error, "failed to push WaterUI state into the page");
                 }
@@ -327,7 +331,10 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>) {
 
     // The page must see correct values on its first line, so the declarations go
     // in as a document-start script rather than being pushed after load.
-    webview.inject_script(&registry.seed_script(), crate::ScriptInjectionTime::DocumentStart);
+    webview.inject_script(
+        &registry.seed_script(),
+        crate::ScriptInjectionTime::DocumentStart,
+    );
 
     webview.handle().add_handler(
         SET_STATE_HANDLER,

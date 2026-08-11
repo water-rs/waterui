@@ -141,7 +141,7 @@ impl WebViewHandle for WpeWebViewHandle {
         self.redirects.replace(Some((enabled, guard)));
     }
 
-    fn watch(&self, watcher: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+    fn watch(&self, watcher: impl Fn(waterui_webview::BackendEvent) + 'static) -> WatcherGuard {
         self.page.watch(watcher)
     }
 

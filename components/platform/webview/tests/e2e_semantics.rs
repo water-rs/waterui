@@ -16,7 +16,7 @@ use waterui::{Computed, Environment, Signal, SignalExt, Str, View};
 use waterui_core::{Binding, binding};
 use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
 use waterui_webview::{
-    CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
+    BackendEvent, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
     WebViewController, WebViewEvent, WebViewHandle,
 };
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -51,7 +51,7 @@ struct FakeWebViewState {
     user_agent: Option<String>,
     redirects_enabled: Option<Computed<bool>>,
     cookies: Vec<Cookie<'static>>,
-    watchers: WatcherSet<WebViewEvent>,
+    watchers: WatcherSet<BackendEvent>,
     handlers: MessageHandlers,
     bridge_origins: Option<waterui_webview::OriginPolicy>,
 }
@@ -61,13 +61,13 @@ impl FakeWebViewHandle {
         clippy::needless_pass_by_value,
         reason = "test double; takes the event by value to mirror the real handle's API"
     )]
-    fn emit(&self, event: WebViewEvent) {
+    fn emit(&self, event: impl Into<BackendEvent>) {
         let watchers = self.state.borrow().watchers.clone();
-        watchers.emit(&event);
+        watchers.emit(&event.into());
     }
 
     fn emit_state_changed(&self) {
-        self.emit(WebViewEvent::StateChanged {
+        self.emit(BackendEvent::NavigationState {
             can_go_back: self.can_go_back(),
             can_go_forward: self.can_go_forward(),
         });
@@ -168,7 +168,7 @@ impl WebViewHandle for FakeWebViewHandle {
         self.state.borrow_mut().redirects_enabled = Some(Computed::new(enabled));
     }
 
-    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) -> WatcherGuard {
+    fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
         let watchers = self.state.borrow().watchers.clone();
         watchers.insert(f)
     }
@@ -267,13 +267,17 @@ fn webview_test_view(webview: WebView) -> impl View {
     let status_guard = webview.events().watch({
         let status = status.clone();
         move |context| {
-            let label = match context.into_value() {
+            // No "nothing happened" or navigation-state variants to skip any
+            // more: the signal is `Option`, and history state has its own signals.
+            let Some(event) = context.into_value() else {
+                return;
+            };
+            let label = match event {
                 WebViewEvent::WillNavigate { .. } => "Navigating",
                 WebViewEvent::Loading { .. } => "Loading",
                 WebViewEvent::Loaded => "Loaded",
                 WebViewEvent::Error(_) => "Error",
                 WebViewEvent::Redirect { .. } => "Redirect",
-                WebViewEvent::None | WebViewEvent::StateChanged { .. } => return,
             };
             status.set(Str::from_static(label));
         }

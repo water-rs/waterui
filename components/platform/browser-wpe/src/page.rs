@@ -21,7 +21,7 @@ use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
 use waterui_str::Str;
 use waterui_url::Url;
-use waterui_webview::{WatcherSet, WebViewError, WebViewEvent, bridge};
+use waterui_webview::{BackendEvent, WatcherSet, WebViewError, WebViewEvent, bridge};
 
 use crate::abi::{WaterWpeBytes, WaterWpeFrame, WaterWpePage};
 use crate::frame::DmaBufFrame;
@@ -39,7 +39,7 @@ type MessageHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
 struct PageState {
     api: std::sync::Arc<RuntimeApi>,
-    watchers: WatcherSet<WebViewEvent>,
+    watchers: WatcherSet<BackendEvent>,
     handlers: RefCell<HashMap<String, MessageHandler>>,
     frame: RefCell<Option<DmaBufFrame>>,
     frame_waker: RefCell<Option<Rc<dyn Fn()>>>,
@@ -49,8 +49,8 @@ struct PageState {
 }
 
 impl PageState {
-    fn emit(&self, event: &WebViewEvent) {
-        self.watchers.emit(event);
+    fn emit(&self, event: impl Into<BackendEvent>) {
+        self.watchers.emit(&event.into());
     }
 }
 
@@ -384,7 +384,7 @@ impl WpePage {
     /// Watches semantic `WebView` events.
     pub fn watch(
         &self,
-        watcher: impl Fn(WebViewEvent) + 'static,
+        watcher: impl Fn(BackendEvent) + 'static,
     ) -> waterui_webview::WatcherGuard {
         self.inner.state.watchers.insert(watcher)
     }
@@ -549,29 +549,29 @@ unsafe extern "C" fn event_callback(
             .into_owned()
     };
     match kind {
-        EVENT_NAVIGATION_STARTED => state.emit(&WebViewEvent::WillNavigate {
+        EVENT_NAVIGATION_STARTED => state.emit(WebViewEvent::WillNavigate {
             url: parse_url(&text(first)),
         }),
-        EVENT_LOADING => state.emit(&WebViewEvent::Loading {
+        EVENT_LOADING => state.emit(WebViewEvent::Loading {
             progress: number
                 .to_f32()
                 .expect("WPE loading progress does not fit f32"),
         }),
-        EVENT_LOADED => state.emit(&WebViewEvent::Loaded),
-        EVENT_REDIRECT => state.emit(&WebViewEvent::Redirect {
+        EVENT_LOADED => state.emit(WebViewEvent::Loaded),
+        EVENT_REDIRECT => state.emit(WebViewEvent::Redirect {
             from: parse_url(&text(first)),
             to: parse_url(&text(second)),
         }),
-        EVENT_LOAD_FAILED => state.emit(&WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
+        EVENT_LOAD_FAILED => state.emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
             text(first),
         )))),
-        EVENT_TLS_FAILED => state.emit(&WebViewEvent::Error(WebViewError::Ssl {
+        EVENT_TLS_FAILED => state.emit(WebViewEvent::Error(WebViewError::Ssl {
             url: parse_url(&text(first)),
             message: Str::from(text(second)),
         })),
         EVENT_HISTORY_CHANGED => {
             let history = number.to_u32().expect("WPE history flags do not fit u32");
-            state.emit(&WebViewEvent::StateChanged {
+            state.emit(BackendEvent::NavigationState {
                 can_go_back: history & 1 != 0,
                 can_go_forward: history & 2 != 0,
             });
