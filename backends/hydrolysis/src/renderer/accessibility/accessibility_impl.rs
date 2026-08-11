@@ -269,6 +269,16 @@ impl HydrolysisRenderer {
         self.accessibility.pending_tree_update.take()
     }
 
+    /// Borrows the pending tree update without consuming it.
+    ///
+    /// The platform accessibility bridge is the update's real consumer; an
+    /// observer such as the inspector must not take it out from under them.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn peek_accessibility_tree_update(&self) -> Option<&AccessibilityTreeUpdate> {
+        self.accessibility.pending_tree_update.as_ref()
+    }
+
     #[cfg(feature = "accessibility")]
     pub fn handle_accessibility_action(
         &mut self,

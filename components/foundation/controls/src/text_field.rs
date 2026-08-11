@@ -152,7 +152,7 @@ impl TextField {
     ///
     /// Platforms without a software keyboard ignore this hint.
     #[must_use]
-    pub fn keyboard(mut self, keyboard: KeyboardType) -> Self {
+    pub const fn keyboard(mut self, keyboard: KeyboardType) -> Self {
         self.0.keyboard = keyboard;
         self
     }

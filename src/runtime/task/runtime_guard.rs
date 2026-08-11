@@ -132,7 +132,7 @@ where
         config: MainThreadStallProbeConfig,
         probes: impl IntoIterator<Item = Arc<dyn RuntimeProbe>>,
     ) -> Self {
-        let refresh_hz = detect_max_refresh_rate_hz();
+        let refresh_hz = max_refresh_rate_hz();
         let frame_budget = Duration::from_secs_f64(1.0 / refresh_hz.max(1.0));
         let probes =
             core::iter::once(Arc::new(MainThreadStallProbe::new(config)) as Arc<dyn RuntimeProbe>)
@@ -377,8 +377,13 @@ fn classify_level(usage_ratio: f64, config: &MainThreadStallProbeConfig) -> Opti
     }
 }
 
+/// Highest refresh rate the display can drive, in hertz.
+///
+/// Frame budgets everywhere — executor monitoring and inspector frame
+/// reporting alike — derive from this one detection.
+#[must_use]
 #[cfg(feature = "gpu")]
-fn detect_max_refresh_rate_hz() -> f64 {
+pub fn max_refresh_rate_hz() -> f64 {
     match waterkit_screen::max_refresh_rate() {
         Ok(refresh_rate) => f64::from(refresh_rate.get()),
         Err(waterkit_screen::Error::Unsupported | waterkit_screen::Error::MonitorNotFound) => {
@@ -403,8 +408,12 @@ fn detect_max_refresh_rate_hz() -> f64 {
 
 // Without the GPU feature (embedded targets) there is no `waterkit-screen`
 // wgpu display query, so frame pacing uses the fallback refresh rate.
+/// Highest refresh rate the display can drive, in hertz.
+///
+/// Without the GPU feature there is no display query, so this is the fallback.
+#[must_use]
 #[cfg(not(feature = "gpu"))]
-const fn detect_max_refresh_rate_hz() -> f64 {
+pub const fn max_refresh_rate_hz() -> f64 {
     FALLBACK_REFRESH_RATE_HZ
 }
 
