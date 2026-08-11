@@ -205,6 +205,10 @@ impl<R: Clone + PartialEq + 'static> NavigationPath<R> {
     }
 
     /// Removes and returns the top route.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "pop is called for its effect; the popped route is a convenience, and requiring `let _ =` at every back action is the wart this signature exists to avoid"
+    )]
     pub fn pop(&self) -> Option<R> {
         self.inner.pop()
     }
@@ -248,6 +252,10 @@ impl NavigationPath<ErasedNavigationRoute> {
     }
 
     /// Removes the top route, reporting whether one was present.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "pop is called for its effect; the popped route is a convenience, and requiring `let _ =` at every back action is the wart this signature exists to avoid"
+    )]
     pub fn pop(&self) -> bool {
         self.inner.pop().is_some()
     }

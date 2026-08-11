@@ -21,12 +21,8 @@ use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guards};
 
-fn css_for_header_bar_color(color: &waterui_graphics::color::Color, env: &Environment) -> String {
-    let resolved = color.resolve(env).get();
-    format!(
-        "background-color: {};",
-        resolved_color_to_css_rgba(resolved)
-    )
+fn css_for_header_bar_color(color: waterui_graphics::color::ResolvedColor) -> String {
+    format!("background-color: {};", resolved_color_to_css_rgba(color))
 }
 
 fn clear_box_children(container: &gtk4::Box) {
@@ -54,7 +50,7 @@ struct RenderedNavigationBar {
     trailing: Option<gtk4::Widget>,
     bottom: Option<gtk4::Widget>,
     search: Option<gtk4::Widget>,
-    color: Option<nami::Computed<waterui_graphics::color::Color>>,
+    color: Option<nami::Computed<waterui_graphics::color::ResolvedColor>>,
     hidden: nami::Computed<bool>,
 }
 
@@ -107,7 +103,10 @@ fn render_navigation_bar(
             .search
             .as_ref()
             .map(|search| render_search_widget(renderer, env, search)),
-        color: bar.color,
+        color: bar
+            .color
+            .as_ref()
+            .map(|color| color.expect_resolved().clone()),
         hidden: bar.hidden,
     }
 }
@@ -159,13 +158,11 @@ impl GtkComponent for NavigationView {
             }
         });
 
-        let env_for_color = env.clone();
         let scoped_css_for_color = scoped_css.clone();
         let color_guard = bar.color.as_ref().map(|color| {
             color.watch(
-                move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
-                    let color = ctx.into_value();
-                    let declarations = css_for_header_bar_color(&color, &env_for_color);
+                move |ctx: nami::watcher::Context<waterui_graphics::color::ResolvedColor>| {
+                    let declarations = css_for_header_bar_color(ctx.into_value());
                     let scoped_css = scoped_css_for_color.clone();
                     glib::idle_add_local_once(move || {
                         scoped_css.set_declarations(&declarations);
@@ -178,7 +175,7 @@ impl GtkComponent for NavigationView {
             header_bar.set_visible(false);
         }
         if let Some(color) = &bar.color {
-            scoped_css.set_declarations(&css_for_header_bar_color(&color.get(), env));
+            scoped_css.set_declarations(&css_for_header_bar_color(color.get()));
         }
 
         container.append(&header_bar);
@@ -327,7 +324,7 @@ struct NavigationViewState {
     trailing_widget: Option<gtk4::Widget>,
     bottom_widget: Option<gtk4::Widget>,
     search_widget: Option<gtk4::Widget>,
-    bar_color: Option<nami::Computed<waterui_graphics::color::Color>>,
+    bar_color: Option<nami::Computed<waterui_graphics::color::ResolvedColor>>,
     bar_hidden: Option<nami::Computed<bool>>,
 }
 
@@ -385,7 +382,7 @@ impl GtkNavigationController {
         trailing_widget: Option<gtk4::Widget>,
         bottom_widget: Option<gtk4::Widget>,
         search_widget: Option<gtk4::Widget>,
-        bar_color: Option<nami::Computed<waterui_graphics::color::Color>>,
+        bar_color: Option<nami::Computed<waterui_graphics::color::ResolvedColor>>,
         bar_hidden: nami::Computed<bool>,
     ) {
         let mut inner = self.inner.borrow_mut();
@@ -534,13 +531,11 @@ impl GtkNavigationControllerInner {
 
         if let Some(color) = &top.bar_color {
             self.color_css
-                .set_declarations(&css_for_header_bar_color(&color.get(), &self.env));
-            let env = self.env.clone();
+                .set_declarations(&css_for_header_bar_color(color.get()));
             let scoped_css = self.color_css.clone();
             let color_guard = color.watch(
-                move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
-                    let color = ctx.into_value();
-                    let declarations = css_for_header_bar_color(&color, &env);
+                move |ctx: nami::watcher::Context<waterui_graphics::color::ResolvedColor>| {
+                    let declarations = css_for_header_bar_color(ctx.into_value());
                     let scoped_css = scoped_css.clone();
                     glib::idle_add_local_once(move || {
                         scoped_css.set_declarations(&declarations);

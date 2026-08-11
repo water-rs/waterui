@@ -198,13 +198,12 @@ impl IntoFFI for Bar {
     type FFI = WuiBar;
 
     fn into_ffi(self) -> Self::FFI {
-        let color = match (self.color, self.resolved_color) {
-            (None, _) => core::ptr::null_mut(),
-            (Some(_), Some(color)) => color.into_ffi(),
-            (Some(_), None) => {
-                panic!("NavigationView must resolve its bar color with an Environment before FFI")
-            }
-        };
+        let color = self
+            .color
+            .as_ref()
+            .map_or_else(core::ptr::null_mut, |color| {
+                color.expect_resolved().clone().into_ffi()
+            });
         WuiBar {
             title: self.title.into_ffi(),
             subtitle: self.subtitle.into_ffi(),
