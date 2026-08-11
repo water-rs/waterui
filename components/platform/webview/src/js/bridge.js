@@ -6,8 +6,13 @@
 //
 // Page-facing API:
 //
-//   const reply = await waterui.invoke("greet", { name: "Lexo" });  // JSON in, JSON out
-//   const bytes = await waterui.invokeBytes("read", "/a.txt");      // → Uint8Array
+//   const reply = await waterui.invoke("greet", { name: "Lexo" });  // → { text: "Hi Lexo" }
+//   const bytes = await waterui.invoke("read", "/a.txt");           // → Uint8Array
+//
+// One call for both: what comes back is decided by what the handler returns,
+// which the page cannot influence. There was a second entry point that asked
+// for bytes, but a handler returning a value could not honour it and one
+// returning bytes needed no asking.
 //
 // `waterui.invoke` is namespaced deliberately: an earlier design installed each
 // handler as `window[name]`, which silently overwrote page globals whenever a
@@ -55,17 +60,21 @@
       entry.reject(error);
       return;
     }
+    // Which branch runs is the handler's choice, not the caller's: a handler
+    // that returns bytes sends `b64`, one that returns a value sends `json`.
+    // Base64 is how bytes travel, never the answer itself, so it is always
+    // decoded.
     if (payload && typeof payload.b64 === "string") {
-      entry.resolve(entry.wantsBytes ? fromBase64(payload.b64) : payload.b64);
+      entry.resolve(fromBase64(payload.b64));
       return;
     }
     entry.resolve(payload ? payload.json : undefined);
   };
 
-  function send(name, payload, wantsBytes) {
+  function send(name, payload) {
     var id = (nextId += 1);
     return new Promise(function (resolve, reject) {
-      pending.set(id, { resolve: resolve, reject: reject, wantsBytes: wantsBytes });
+      pending.set(id, { resolve: resolve, reject: reject });
       var envelope = { id: id, name: String(name) };
       if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
         envelope.b64 = toBase64(payload);
@@ -80,10 +89,7 @@
 
   globalThis.waterui = Object.freeze({
     invoke: function (name, payload) {
-      return send(name, payload, false);
-    },
-    invokeBytes: function (name, payload) {
-      return send(name, payload, true);
+      return send(name, payload);
     },
   });
 })();

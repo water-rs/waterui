@@ -16,8 +16,8 @@ use waterui::{Computed, Environment, Signal, SignalExt, Str, View};
 use waterui_core::{Binding, binding};
 use waterui_testing::{Role, Selector, WaitOptions, WaitResult, ui};
 use waterui_webview::{
-    BackendEvent, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView,
-    WebViewController, WebViewEvent, WebViewHandle,
+    BackendEvent, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
+    WebView, WebViewController, WebViewEvent, WebViewHandle,
 };
 const DOCS_URL: &str = "https://waterui.dev/docs";
 const API_URL: &str = "https://waterui.dev/api";
@@ -57,10 +57,6 @@ struct FakeWebViewState {
 }
 
 impl FakeWebViewHandle {
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "test double; takes the event by value to mirror the real handle's API"
-    )]
     fn emit(&self, event: impl Into<BackendEvent>) {
         let watchers = self.state.borrow().watchers.clone();
         watchers.emit(&event.into());
@@ -312,13 +308,10 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
     let mut env = Environment::new();
     install_m3(&mut env);
     env.insert(controller);
-    let mut app = ui()
-        .environment(env)
-        .viewport(420, 420)
-        .mount({
-            let webview = webview.clone();
-            move || webview_test_view(webview.clone())
-        });
+    let mut app = ui().environment(env).viewport(420, 420).mount({
+        let webview = webview.clone();
+        move || webview_test_view(webview.clone())
+    });
 
     // Navigate only once the view is mounted: the handle emits its events
     // synchronously, so a navigation started before mounting would complete

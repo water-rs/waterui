@@ -25,6 +25,8 @@ use waterui_str::Str;
 
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 
+use crate::message::JsReply;
+
 /// The reserved handler the page writes through.
 pub const SET_STATE_HANDLER: &str = "__wateruiSetState";
 
@@ -355,7 +357,8 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>) {
                         tracing::warn!(%error, "page wrote a WaterUI state value that was refused");
                     }
                 }
-                Box::pin(core::future::ready(Ok(Vec::new())))
+                // The page assigned to a state key; there is no value to answer with.
+                Box::pin(core::future::ready(Ok(JsReply::Json(b"null".to_vec()))))
             }
         }),
     );

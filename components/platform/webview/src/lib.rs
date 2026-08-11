@@ -112,7 +112,7 @@ pub trait JsApi: Sized + 'static {
 #[doc(hidden)]
 pub use serde;
 mod message;
-pub use message::{Bytes, HandlerName, IntoJsReply, Json};
+pub use message::{Bytes, HandlerName, IntoJsReply, JsReply, Json};
 mod state;
 pub use state::{FieldEntry, JsField, StateWriteError};
 
@@ -646,10 +646,15 @@ impl WebViewOpen {
     /// `async`, and returning `Err` rejects the page's promise instead of
     /// resolving it with a failure encoded as success.
     ///
+    /// The return type also decides what the page receives: [`Json<T>`], a
+    /// string, or `()` resolve as the value itself, while [`Bytes`] and
+    /// `Vec<u8>` resolve as a `Uint8Array`.
+    ///
     /// ```ignore
     /// .handler("greet", |Json(req): Json<Greet>| async move {
     ///     Json(Greeting { text: format!("Hi {}", req.name) })
     /// })
+    /// // await waterui.invoke("greet", { name: "Lexo" }) → { text: "Hi Lexo" }
     /// ```
     pub fn handler<F, Args, Fut, Reply>(mut self, name: impl Into<Str>, handler: F) -> Self
     where
