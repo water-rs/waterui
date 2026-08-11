@@ -1568,12 +1568,26 @@ mod tests {
             manifest["dependencies"]["waterui-preview"]["optional"].as_bool(),
             Some(true)
         );
-        assert!(cargo_toml.contains("crate-type = [\"dylib\"]"));
-        assert!(cargo_toml.contains("features = [\"dev\"]"));
-        assert!(!cargo_toml.contains("[dependencies.waterui]"));
-        assert!(!cargo_toml.contains("staticlib"));
-        assert!(!cargo_toml.contains("rlib"));
-        assert!(!cargo_toml.contains("cdylib"));
+        // Assert on the parsed manifest, not on substrings of the whole file: the file
+        // embeds absolute dependency paths, so a checkout living in a directory whose
+        // name happens to contain "rlib" or "cdylib" would fail a substring check.
+        let crate_types = manifest["lib"]["crate-type"]
+            .as_array()
+            .expect("crate-type should be an array")
+            .iter()
+            .map(|value| value.as_str().expect("crate type should be a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(crate_types, ["dylib"]);
+        assert_eq!(
+            manifest["dependencies"]["waterui_test"]["features"]
+                .as_array()
+                .expect("app dependency features should be an array")
+                .iter()
+                .map(|value| value.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>(),
+            ["dev"]
+        );
+        assert!(manifest["dependencies"].get("waterui").is_none());
     }
 
     #[test]
