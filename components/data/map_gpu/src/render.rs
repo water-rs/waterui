@@ -23,7 +23,9 @@ use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneInvalidator,
     VelloScene2D, gpu_surface::GestureState,
 };
-use waterui_map::{Annotation, Coordinate, Location, MapConfig, Region};
+use waterui_map::{
+    Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region,
+};
 
 use crate::{
     MapGestureController, MapGpuOptions, MapLoadError, network,
@@ -77,6 +79,52 @@ const MAP_BACKGROUND: [f32; 4] = [0.973, 0.957, 0.941, 1.0];
 const MAP_TEXTURE_MARGIN: u32 = TILE_OVERSCAN_PIXELS;
 const MAP_RASTER_TILE_SIZE: u32 = 1_024;
 const MAP_RASTER_TILE_GUTTER: u32 = 2;
+/// Inset of the map's own chrome (compass, scale bar) from the viewport edge.
+const CHROME_INSET: f64 = 12.0;
+const COMPASS_RADIUS: f64 = 17.0;
+const SCALE_TICK: f64 = 5.0;
+/// The widest a scale bar is allowed to grow before it is rounded down.
+const SCALE_MAX_WIDTH: f64 = 120.0;
+const CHROME_SURFACE: Color = Color::new([1.0, 1.0, 1.0, 0.88]);
+const CHROME_BORDER: Color = Color::new([0.24, 0.26, 0.30, 0.85]);
+const CHROME_LABEL: Color = Color::new([0.12, 0.13, 0.16, 1.0]);
+const COMPASS_NORTH: Color = Color::new([0.86, 0.22, 0.20, 1.0]);
+const COMPASS_SOUTH: Color = Color::new([0.62, 0.64, 0.68, 1.0]);
+
+/// Which of the map's own chrome overlays the configuration asked for.
+#[derive(Debug, Clone, Copy)]
+struct MapChrome {
+    compass: MapVisibility,
+    scale: MapVisibility,
+}
+
+/// Rounded distances a scale bar is allowed to represent, in metres.
+const SCALE_STEPS: &[f64] = &[
+    1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1_000.0, 2_000.0, 5_000.0, 10_000.0,
+    20_000.0, 50_000.0, 100_000.0, 200_000.0, 500_000.0, 1_000_000.0, 2_000_000.0, 5_000_000.0,
+];
+
+/// Picks the largest round distance whose bar fits the allowed width.
+fn scale_bar_span(camera: Camera, latitude: f64) -> Option<(f64, f64)> {
+    SCALE_STEPS
+        .iter()
+        .rev()
+        .map(|meters| (*meters, camera.meters_to_pixels(latitude, *meters)))
+        .find(|(_, width)| *width <= SCALE_MAX_WIDTH && *width >= 24.0)
+}
+
+fn format_scale_distance(meters: f64) -> String {
+    if meters >= 1_000.0 {
+        let kilometers = meters / 1_000.0;
+        if (kilometers.fract()).abs() < f64::EPSILON {
+            format!("{kilometers:.0} km")
+        } else {
+            format!("{kilometers:.1} km")
+        }
+    } else {
+        format!("{meters:.0} m")
+    }
+}
 
 #[expect(
     clippy::cast_precision_loss,
@@ -231,6 +279,7 @@ pub struct PreparedMap {
     tiles: SourceTiles,
     annotations: Vec<Annotation>,
     location: Option<Location>,
+    chrome: MapChrome,
     cached_base_scene: Option<vello::Scene>,
     raster_tiles: Arc<Vec<PreparedRasterTile>>,
 }
@@ -344,6 +393,10 @@ impl PreparedMap {
             tiles,
             annotations: Vec::new(),
             location: None,
+            chrome: MapChrome {
+                compass: MapVisibility::Hidden,
+                scale: MapVisibility::Hidden,
+            },
             cached_base_scene: Some(cached_base_scene),
             raster_tiles: Arc::new(raster_tiles),
         })
@@ -371,6 +424,7 @@ impl SceneContent for PreparedMap {
             self.camera,
             &self.annotations,
             self.location.as_ref(),
+            self.chrome,
         );
         false
     }
@@ -653,6 +707,7 @@ impl NetworkRetryState {
 struct MapRequestTask {
     generation: u64,
     map_style: waterui_map::MapStyle,
+    status: Option<Binding<MapStatus>>,
     region: Region,
     viewport: Viewport,
     options: MapGpuOptions,
@@ -761,6 +816,9 @@ impl MapRequestTask {
                 state.style = Some(style);
                 state.pending_prepared = Some((self.generation, prepared));
                 state.last_error = None;
+                if let Some(status) = &self.status {
+                    status.set(MapStatus::Ready);
+                }
                 tracing::debug!(
                     generation = self.generation,
                     state = ?Rc::as_ptr(&self.state),
@@ -773,6 +831,9 @@ impl MapRequestTask {
                     %error,
                     "GPU map request failed without replacing the last prepared frame"
                 );
+                if let Some(status) = &self.status {
+                    status.set(MapStatus::Failed(error.to_string().into()));
+                }
                 state.last_error = Some(error.to_string());
             }
         }
@@ -901,6 +962,8 @@ pub struct MapScene {
     annotations: Computed<Vec<Annotation>>,
     location: Computed<Option<Location>>,
     map_style: waterui_map::MapStyle,
+    status: Option<Binding<MapStatus>>,
+    chrome: MapChrome,
     invalidator: Rc<RefCell<Option<SceneInvalidator>>>,
     state: Rc<RefCell<MapSceneState>>,
     cache: Rc<RefCell<TileCache>>,
@@ -971,6 +1034,11 @@ impl MapScene {
             annotations: config.annotations,
             location,
             map_style: config.style,
+            status: config.status,
+            chrome: MapChrome {
+                compass: config.compass_visibility,
+                scale: config.scale_visibility,
+            },
             invalidator,
             state: Rc::new(RefCell::new(MapSceneState {
                 style: None,
@@ -1004,6 +1072,9 @@ impl MapScene {
             state.last_error = None;
             state.generation
         };
+        if let Some(status) = &self.status {
+            status.set(MapStatus::Loading);
+        }
         tracing::debug!(
             generation,
             width = viewport.width,
@@ -1019,6 +1090,7 @@ impl MapScene {
             MapRequestTask {
                 generation,
                 map_style: self.map_style,
+                status: self.status.clone(),
                 region,
                 viewport,
                 options: self.options.clone(),
@@ -1109,7 +1181,13 @@ impl SceneContent for MapScene {
         if let (Some(prepared), Some(camera)) = (state.prepared.as_mut(), frame.camera) {
             prepared.append_base_scene_for_camera(scene, camera);
             self.painter
-                .paint_overlays(scene, camera, &frame.annotations, frame.location.as_ref());
+                .paint_overlays(
+                    scene,
+                    camera,
+                    &frame.annotations,
+                    frame.location.as_ref(),
+                    self.chrome,
+                );
         }
         frame.animating
     }
@@ -1268,6 +1346,10 @@ fn rasterize_tile(
                 camera,
                 &annotations,
                 signature.location.as_ref(),
+                MapChrome {
+                    compass: MapVisibility::Hidden,
+                    scale: MapVisibility::Hidden,
+                },
             );
         }
         let (scene_x, scene_y) = prepared.layout.scene_origin;
@@ -2130,12 +2212,104 @@ impl MapPainter {
         camera: Camera,
         annotations: &[Annotation],
         location: Option<&Location>,
+        chrome: MapChrome,
     ) {
         self.occupied_labels.clear();
         self.paint_annotations(scene, camera, annotations);
         if let Some(location) = location {
             Self::paint_location(scene, camera, location);
         }
+        if chrome.compass.is_visible() {
+            Self::paint_compass(scene, camera);
+        }
+        if chrome.scale.is_visible() {
+            self.paint_scale_bar(scene, camera);
+        }
+    }
+
+    /// Draws the north indicator in the top-trailing corner.
+    ///
+    /// This camera is always north-up, so the needle is fixed; it is drawn
+    /// because the application asked for it, the same way a platform map keeps
+    /// a compass affordance visible when configured to.
+    fn paint_compass(scene: &mut dyn Scene2D, camera: Camera) {
+        let center = (
+            f64::from(camera.viewport.width) - CHROME_INSET - COMPASS_RADIUS,
+            CHROME_INSET + COMPASS_RADIUS,
+        );
+        let dial = Circle::new(center, COMPASS_RADIUS).to_path(0.1);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Brush::Solid(CHROME_SURFACE),
+            &dial,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            &Brush::Solid(CHROME_BORDER),
+            &dial,
+        );
+
+        // The needle: a north half in the accent colour over a muted south half.
+        let tip = COMPASS_RADIUS - 4.0;
+        let waist = COMPASS_RADIUS * 0.34;
+        let mut north = BezPath::new();
+        north.move_to((center.0, center.1 - tip));
+        north.line_to((center.0 - waist, center.1));
+        north.line_to((center.0 + waist, center.1));
+        north.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Brush::Solid(COMPASS_NORTH),
+            &north,
+        );
+        let mut south = BezPath::new();
+        south.move_to((center.0, center.1 + tip));
+        south.line_to((center.0 - waist, center.1));
+        south.line_to((center.0 + waist, center.1));
+        south.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Brush::Solid(COMPASS_SOUTH),
+            &south,
+        );
+    }
+
+    /// Draws a scale bar whose length is a round distance at this latitude.
+    fn paint_scale_bar(&mut self, scene: &mut dyn Scene2D, camera: Camera) {
+        let latitude = camera.region.center.latitude.get();
+        let Some((meters, width)) = scale_bar_span(camera, latitude) else {
+            return;
+        };
+        let bottom = f64::from(camera.viewport.height) - CHROME_INSET;
+        let left = CHROME_INSET;
+        let mut bar = BezPath::new();
+        bar.move_to((left, bottom - SCALE_TICK));
+        bar.line_to((left, bottom));
+        bar.line_to((left + width, bottom));
+        bar.line_to((left + width, bottom - SCALE_TICK));
+        scene.stroke(
+            &Stroke::new(2.0),
+            Affine::IDENTITY,
+            &Brush::Solid(CHROME_BORDER),
+            &bar,
+        );
+        self.draw_label(
+            scene,
+            &format_scale_distance(meters),
+            11.0,
+            (left + width / 2.0, bottom - SCALE_TICK - 4.0),
+            "center",
+            (0.0, 0.0),
+            0.0,
+            2.0,
+            CHROME_LABEL,
+            CHROME_SURFACE,
+            1.0,
+        );
     }
 
     fn paint_background(scene: &mut dyn Scene2D, layer: &StyleLayer, camera: Camera) {
@@ -3300,6 +3474,60 @@ fn segment_length(left: Coord<f32>, right: Coord<f32>) -> f64 {
 }
 
 #[cfg(test)]
+mod chrome_tests {
+    use super::*;
+
+    fn camera_at(zoom_span: f64) -> Camera {
+        Camera::new(
+            Region::new(
+                Coordinate::from_degrees(40.7580, -73.9855).expect("valid coordinate"),
+                zoom_span,
+                zoom_span,
+            ),
+            Viewport {
+                width: 800,
+                height: 600,
+            },
+            0,
+            crate::projection::MAX_CAMERA_ZOOM,
+        )
+    }
+
+    /// The bar must represent a round distance and stay inside its budget,
+    /// otherwise it reads as a precise measurement it is not.
+    #[test]
+    fn the_scale_bar_picks_a_round_distance_that_fits() {
+        for span in [0.001, 0.01, 0.1, 1.0, 10.0] {
+            let camera = camera_at(span);
+            let latitude = camera.region.center.latitude.get();
+            let (meters, width) = scale_bar_span(camera, latitude)
+                .expect("every reasonable zoom must yield a scale bar");
+
+            assert!(
+                SCALE_STEPS.contains(&meters),
+                "scale bar must use a round distance, got {meters}"
+            );
+            assert!(
+                width <= SCALE_MAX_WIDTH,
+                "scale bar must fit its budget, got {width}"
+            );
+            let expected = camera.meters_to_pixels(latitude, meters);
+            assert!(
+                (width - expected).abs() < 1e-6,
+                "bar width must match the distance it claims"
+            );
+        }
+    }
+
+    #[test]
+    fn scale_distances_read_in_metres_or_kilometres() {
+        assert_eq!(format_scale_distance(500.0), "500 m");
+        assert_eq!(format_scale_distance(1_000.0), "1 km");
+        assert_eq!(format_scale_distance(2_000.0), "2 km");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
 
@@ -3474,6 +3702,7 @@ mod tests {
             interactivity: MapInteractivity::ReadOnly,
             compass_visibility: MapVisibility::Hidden,
             scale_visibility: MapVisibility::Hidden,
+            status: None,
         };
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(config, options);
@@ -3515,6 +3744,10 @@ mod tests {
             layers: Vec::new(),
         };
         let prepared = PreparedMap {
+            chrome: MapChrome {
+                compass: MapVisibility::Hidden,
+                scale: MapVisibility::Hidden,
+            },
             style: style.clone(),
             camera: Camera::new(region, viewport, 0, 22),
             tiles: SourceTiles::default(),
@@ -3532,6 +3765,7 @@ mod tests {
             interactivity: MapInteractivity::ReadOnly,
             compass_visibility: MapVisibility::Hidden,
             scale_visibility: MapVisibility::Hidden,
+            status: None,
         };
         let options = MapGpuOptions::new(Url::new("https://tiles.openfreemap.org/styles/positron"));
         let mut map = MapScene::new(config, options);
@@ -3621,6 +3855,7 @@ mod tests {
             interactivity: MapInteractivity::ReadOnly,
             compass_visibility: MapVisibility::Hidden,
             scale_visibility: MapVisibility::Hidden,
+            status: None,
         };
         let map = MapScene::new(config, options);
         {
