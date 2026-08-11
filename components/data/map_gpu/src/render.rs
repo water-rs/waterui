@@ -1005,11 +1005,10 @@ impl MapScene {
         request_region: Computed<Region>,
         animate_camera_changes: Computed<bool>,
     ) -> Self {
-        let location = if config.user_location_visibility.is_visible() {
-            config.user_location
-        } else {
-            Computed::constant(None)
-        };
+        let location = config
+            .user_location
+            .filter(|_| config.user_location_visibility.is_visible())
+            .unwrap_or_else(|| Computed::constant(None));
         let invalidator = Rc::new(RefCell::new(None::<SceneInvalidator>));
         let initial_region = config.region.get();
         let mut watchers = Vec::with_capacity(4);
@@ -3698,7 +3697,7 @@ mod tests {
             annotations: Computed::constant(Vec::new()),
             style: waterui_map::MapStyle::Standard,
             user_location_visibility: MapVisibility::Hidden,
-            user_location: Computed::constant(None),
+            user_location: None,
             interactivity: MapInteractivity::ReadOnly,
             compass_visibility: MapVisibility::Hidden,
             scale_visibility: MapVisibility::Hidden,
@@ -3761,7 +3760,7 @@ mod tests {
             annotations: Computed::constant(Vec::new()),
             style: waterui_map::MapStyle::Standard,
             user_location_visibility: MapVisibility::Hidden,
-            user_location: Computed::constant(None),
+            user_location: None,
             interactivity: MapInteractivity::ReadOnly,
             compass_visibility: MapVisibility::Hidden,
             scale_visibility: MapVisibility::Hidden,
@@ -3851,7 +3850,7 @@ mod tests {
             annotations: Computed::constant(Vec::new()),
             style: waterui_map::MapStyle::Standard,
             user_location_visibility: MapVisibility::Hidden,
-            user_location: Computed::constant(None),
+            user_location: None,
             interactivity: MapInteractivity::ReadOnly,
             compass_visibility: MapVisibility::Hidden,
             scale_visibility: MapVisibility::Hidden,
