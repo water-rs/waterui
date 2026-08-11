@@ -383,9 +383,29 @@ impl SemanticApp {
     /// Asserts that the selector resolves to the current UI-focused element.
     pub fn assert_ui_focus(&mut self, selector: &Selector) {
         let element = self.resolve_single(selector);
-        assert!(
-            self.ui_focus == Some(element.id()),
-            "waterui-testing assertion failed: selector was not the current UI-focused element"
+        if self.ui_focus == Some(element.id()) {
+            return;
+        }
+        let actual = self.ui_focus.map_or_else(
+            || String::from("none"),
+            |id| {
+                self.tree.node(id).map_or_else(
+                    || format!("id={} (no longer in tree)", id.as_u64()),
+                    |node| {
+                        ElementRef {
+                            node_id: id,
+                            node: node.clone(),
+                            revision: self.tree.revision(),
+                        }
+                        .debug_summary()
+                    },
+                )
+            },
+        );
+        panic!(
+            "waterui-testing assertion failed: selector {} resolved ({}) but UI focus is on {actual}",
+            selector.describe(),
+            element.debug_summary()
         );
     }
 
@@ -441,8 +461,26 @@ impl SemanticApp {
         );
 
         let has_inverted = expectations.iter().any(|e| e.inverted);
+        // Order enforcement applies to non-inverted expectations only: an
+        // inverted expectation never "fulfills", so it holds no position in
+        // the required order.
+        let order_ranks = {
+            let mut rank = 0usize;
+            expectations
+                .iter()
+                .map(|expectation| {
+                    if expectation.inverted {
+                        None
+                    } else {
+                        let current = rank;
+                        rank += 1;
+                        Some(current)
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         let mut fulfilled = vec![false; expectations.len()];
-        let mut next_order_index = 0usize;
+        let mut next_order_rank = 0usize;
         let deadline = Instant::now() + options.timeout;
         let mut idle_backoff = Duration::ZERO;
 
@@ -461,22 +499,15 @@ impl SemanticApp {
                 }
 
                 if condition {
-                    if options.enforce_order && idx != next_order_index {
-                        return WaitResult::IncorrectOrder;
+                    if options.enforce_order {
+                        let rank = order_ranks[idx]
+                            .expect("non-inverted expectation must carry an order rank");
+                        if rank != next_order_rank {
+                            return WaitResult::IncorrectOrder;
+                        }
+                        next_order_rank += 1;
                     }
                     fulfilled[idx] = true;
-                    if options.enforce_order {
-                        next_order_index += 1;
-                    }
-                } else if options.enforce_order && idx > next_order_index {
-                    let later_fulfilled = fulfilled
-                        .iter()
-                        .enumerate()
-                        .skip(idx + 1)
-                        .any(|(_, done)| *done);
-                    if later_fulfilled {
-                        return WaitResult::IncorrectOrder;
-                    }
                 }
             }
 

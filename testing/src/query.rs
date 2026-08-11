@@ -130,7 +130,7 @@ impl Query<'_> {
     /// Returns whether at least one matching element exists.
     #[must_use]
     pub fn exists(self) -> bool {
-        self.optional().is_some()
+        !self.all().is_empty()
     }
 
     /// Asserts that at least one matching element exists.
