@@ -28,11 +28,49 @@ use waterui_map::{Annotation, Coordinate, Location, MapConfig, Region};
 use crate::{
     MapGestureController, MapGpuOptions, MapLoadError, network,
     projection::{Camera, TILE_OVERSCAN_PIXELS, TileId, Viewport},
-    style::{LayerKind, MapStyle, StyleLayer, VectorSource},
-    tile::{TileFeature, VectorTile},
+    style::{LayerKind, MapStyle, SourceKind, StyleLayer, TileSource},
+    tile::{DemTile, RasterTile, TileFeature, VectorTile},
 };
 
-type SourceTiles = BTreeMap<String, Vec<Arc<VectorTile>>>;
+/// Every decoded tile for one prepared viewport, grouped by source name.
+///
+/// A source serves exactly one payload kind (validated when the style loads),
+/// so a source name appears in exactly one of these maps.
+#[derive(Debug, Default)]
+struct SourceTiles {
+    vector: BTreeMap<String, Vec<Arc<VectorTile>>>,
+    raster: BTreeMap<String, Vec<Arc<RasterTile>>>,
+    dem: BTreeMap<String, Vec<Arc<DemTile>>>,
+}
+
+impl SourceTiles {
+    fn insert(&mut self, source: String, tiles: LoadedTiles) {
+        match tiles {
+            LoadedTiles::Vector(tiles) => {
+                self.vector.insert(source, tiles);
+            }
+            LoadedTiles::Raster(tiles) => {
+                self.raster.insert(source, tiles);
+            }
+            LoadedTiles::Dem(tiles) => {
+                self.dem.insert(source, tiles);
+            }
+        }
+    }
+
+    fn tile_count(&self) -> usize {
+        self.vector.values().map(Vec::len).sum::<usize>()
+            + self.raster.values().map(Vec::len).sum::<usize>()
+            + self.dem.values().map(Vec::len).sum::<usize>()
+    }
+}
+
+/// One source's decoded tiles, before they are filed into [`SourceTiles`].
+enum LoadedTiles {
+    Vector(Vec<Arc<VectorTile>>),
+    Raster(Vec<Arc<RasterTile>>),
+    Dem(Vec<Arc<DemTile>>),
+}
 
 const MAP_CAMERA_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/map_camera.rs"));
 const MAP_BACKGROUND: [f32; 4] = [0.973, 0.957, 0.941, 1.0];
@@ -67,43 +105,117 @@ struct RequestKey {
     viewport: Viewport,
 }
 
+/// An LRU map of decoded tiles that reports its own memory footprint, so the
+/// three payload caches can be evicted against one shared byte budget.
+#[derive(Debug)]
+struct TileMap<T> {
+    tiles: LruCache<(String, TileId), Arc<T>>,
+    bytes: u64,
+}
+
+/// Implemented by every decoded tile payload so [`TileMap`] can size it.
+trait CachedTile {
+    fn id(&self) -> TileId;
+    fn byte_len(&self) -> usize;
+}
+
+macro_rules! impl_cached_tile {
+    ($($tile:ty),+ $(,)?) => {
+        $(
+            impl CachedTile for $tile {
+                fn id(&self) -> TileId {
+                    self.id
+                }
+
+                fn byte_len(&self) -> usize {
+                    self.byte_len
+                }
+            }
+        )+
+    };
+}
+
+impl_cached_tile!(VectorTile, RasterTile, DemTile);
+
+impl<T: CachedTile> TileMap<T> {
+    fn new() -> Self {
+        Self {
+            tiles: LruCache::unbounded(),
+            bytes: 0,
+        }
+    }
+
+    fn get(&mut self, source: &str, id: TileId) -> Option<Arc<T>> {
+        self.tiles.get(&(source.to_owned(), id)).cloned()
+    }
+
+    fn insert(&mut self, source: String, tile: &Arc<T>) {
+        let key = (source, tile.id());
+        if let Some(replaced) = self.tiles.put(key, Arc::clone(tile)) {
+            self.bytes = self.bytes.saturating_sub(tile_bytes(replaced.byte_len()));
+        }
+        self.bytes = self.bytes.saturating_add(tile_bytes(tile.byte_len()));
+    }
+
+    /// Drops the least recently used tile, returning the bytes it freed.
+    fn evict_lru(&mut self) -> Option<u64> {
+        let (_, evicted) = self.tiles.pop_lru()?;
+        let freed = tile_bytes(evicted.byte_len());
+        self.bytes = self.bytes.saturating_sub(freed);
+        Some(freed)
+    }
+}
+
+fn tile_bytes(byte_len: usize) -> u64 {
+    u64::try_from(byte_len).unwrap_or(u64::MAX)
+}
+
 #[derive(Debug)]
 struct TileCache {
-    tiles: LruCache<(String, TileId), Arc<VectorTile>>,
-    bytes: u64,
+    vector: TileMap<VectorTile>,
+    raster: TileMap<RasterTile>,
+    dem: TileMap<DemTile>,
     maximum_bytes: u64,
 }
 
 impl TileCache {
     fn new(maximum_bytes: u64) -> Self {
         Self {
-            tiles: LruCache::unbounded(),
-            bytes: 0,
+            vector: TileMap::new(),
+            raster: TileMap::new(),
+            dem: TileMap::new(),
             maximum_bytes,
         }
     }
 
-    fn get(&mut self, source: &str, id: TileId) -> Option<Arc<VectorTile>> {
-        self.tiles.get(&(source.to_owned(), id)).cloned()
+    const fn bytes(&self) -> u64 {
+        self.vector
+            .bytes
+            .saturating_add(self.raster.bytes)
+            .saturating_add(self.dem.bytes)
     }
 
-    fn insert(&mut self, source: String, tile: &Arc<VectorTile>) {
-        let key = (source, tile.id);
-        if let Some(replaced) = self.tiles.put(key, Arc::clone(tile)) {
-            self.bytes = self
+    /// Evicts across all three payload caches until the shared budget holds.
+    ///
+    /// Each round drops the least recently used tile from the currently
+    /// largest cache, so one payload kind cannot starve the others.
+    fn enforce_budget(&mut self) {
+        while self.bytes() > self.maximum_bytes {
+            let largest = self
+                .vector
                 .bytes
-                .saturating_sub(u64::try_from(replaced.byte_len).unwrap_or(u64::MAX));
-        }
-        self.bytes = self
-            .bytes
-            .saturating_add(u64::try_from(tile.byte_len).unwrap_or(u64::MAX));
-        while self.bytes > self.maximum_bytes {
-            let Some((_, evicted)) = self.tiles.pop_lru() else {
-                break;
+                .max(self.raster.bytes)
+                .max(self.dem.bytes);
+            let freed = if largest == self.vector.bytes {
+                self.vector.evict_lru()
+            } else if largest == self.raster.bytes {
+                self.raster.evict_lru()
+            } else {
+                self.dem.evict_lru()
             };
-            self.bytes = self
-                .bytes
-                .saturating_sub(u64::try_from(evicted.byte_len).unwrap_or(u64::MAX));
+            if freed.is_none() {
+                break;
+            }
         }
     }
 }
@@ -128,7 +240,7 @@ impl std::fmt::Debug for PreparedMap {
         formatter
             .debug_struct("PreparedMap")
             .field("camera", &self.camera)
-            .field("source_count", &self.tiles.len())
+            .field("tile_count", &self.tiles.tile_count())
             .field("annotation_count", &self.annotations.len())
             .field("has_location", &self.location.is_some())
             .finish_non_exhaustive()
@@ -189,34 +301,35 @@ impl PreparedMap {
             async move {
                 let source = source.ok_or_else(|| {
                     MapLoadError::Unsupported(format!(
-                        "active style layer references non-vector source {source_name}"
+                        "active style layer references undefined source {source_name}"
                     ))
                 })?;
                 let tile_ids = camera.visible_tiles(
                     f64::from(TILE_OVERSCAN_PIXELS),
                     source.min_zoom,
                     source.max_zoom,
+                    source.tile_size,
                 );
                 let source_tiles =
                     load_source_tiles(options, source_name, source, &tile_ids, cache).await?;
                 tracing::debug!(
                     source = source_name.as_str(),
-                    tile_count = source_tiles.len(),
+                    kind = ?source.kind,
                     tile_zoom = tile_ids.first().map_or(source.min_zoom, |tile| tile.z),
-                    total_bytes = source_tiles.iter().map(|tile| tile.byte_len).sum::<usize>(),
-                    decoded_layers = source_tiles
-                        .iter()
-                        .map(|tile| tile.layers.len())
-                        .sum::<usize>(),
-                    "loaded GPU map vector source"
+                    requested_tiles = tile_ids.len(),
+                    "loaded GPU map source"
                 );
                 Ok::<_, MapLoadError>((source_name.clone(), source_tiles))
             }
         });
-        let tiles = join_all(source_requests)
-            .await
-            .into_iter()
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let tiles = join_all(source_requests).await.into_iter().try_fold(
+            SourceTiles::default(),
+            |mut tiles, loaded| {
+                let (source_name, loaded) = loaded?;
+                tiles.insert(source_name, loaded);
+                Ok::<_, MapLoadError>(tiles)
+            },
+        )?;
         let (style, tiles, cached_base_scene, raster_tiles) = blocking::unblock(move || {
             let (cached_base_scene, raster_tiles) = rayon::join(
                 || build_base_scene(&style, camera, &tiles),
@@ -390,23 +503,79 @@ fn camera_transform(source: Camera, target: Camera) -> Option<Affine> {
 async fn load_source_tiles(
     options: &MapGpuOptions,
     source_name: &str,
-    source: &VectorSource,
+    source: &TileSource,
     ids: &[TileId],
     cache: Rc<RefCell<TileCache>>,
-) -> Result<Vec<Arc<VectorTile>>, MapLoadError> {
+) -> Result<LoadedTiles, MapLoadError> {
+    let encoding = source.encoding;
+    match source.kind {
+        SourceKind::Vector => load_tiles(
+            options,
+            source_name,
+            source,
+            ids,
+            cache,
+            |cache| &mut cache.vector,
+            move |id, bytes| VectorTile::decode(id, bytes.to_vec()),
+        )
+        .await
+        .map(LoadedTiles::Vector),
+        SourceKind::Raster => load_tiles(
+            options,
+            source_name,
+            source,
+            ids,
+            cache,
+            |cache| &mut cache.raster,
+            move |id, bytes| RasterTile::decode(id, &bytes),
+        )
+        .await
+        .map(LoadedTiles::Raster),
+        SourceKind::RasterDem => load_tiles(
+            options,
+            source_name,
+            source,
+            ids,
+            cache,
+            |cache| &mut cache.dem,
+            move |id, bytes| DemTile::decode(id, &bytes, encoding),
+        )
+        .await
+        .map(LoadedTiles::Dem),
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "tile loading runs on WaterUI's main-thread local executor and uses an Rc tile cache"
+)]
+async fn load_tiles<T, Decode>(
+    options: &MapGpuOptions,
+    source_name: &str,
+    source: &TileSource,
+    ids: &[TileId],
+    cache: Rc<RefCell<TileCache>>,
+    select: fn(&mut TileCache) -> &mut TileMap<T>,
+    decode: Decode,
+) -> Result<Vec<Arc<T>>, MapLoadError>
+where
+    T: CachedTile + Send + 'static,
+    Decode: Fn(TileId, zenwave::utils::Bytes) -> Result<T, MapLoadError> + Clone + Send + 'static,
+{
     if source.templates.is_empty() {
         return Err(MapLoadError::Unsupported(format!(
-            "vector source {source_name} has no tile templates"
+            "source {source_name} has no tile templates"
         )));
     }
     let requests = ids.iter().copied().enumerate().map(|(index, id)| {
-        let cached = cache.borrow_mut().get(source_name, id);
+        let cached = select(&mut cache.borrow_mut()).get(source_name, id);
         let source_name = source_name.to_owned();
         let template_index = (usize::try_from(id.x).unwrap_or(0)
             + usize::try_from(id.y).unwrap_or(0))
             % source.templates.len();
         let url = tile_url(&source.templates[template_index], id);
         let cache = Rc::clone(&cache);
+        let decode = decode.clone();
         async move {
             if let Some(tile) = cached {
                 return Ok((index, tile));
@@ -417,9 +586,10 @@ async fn load_source_tiles(
                 options.network_request_timeout(),
             )
             .await?;
-            let tile =
-                Arc::new(blocking::unblock(move || VectorTile::decode(id, bytes.to_vec())).await?);
-            cache.borrow_mut().insert(source_name, &tile);
+            let tile = Arc::new(blocking::unblock(move || decode(id, bytes)).await?);
+            let mut cache = cache.borrow_mut();
+            select(&mut cache).insert(source_name, &tile);
+            cache.enforce_budget();
             Ok::<_, MapLoadError>((index, tile))
         }
     });
@@ -1710,15 +1880,247 @@ impl MapPainter {
                 LayerKind::Fill
                 | LayerKind::FillExtrusion
                 | LayerKind::Line
-                | LayerKind::Symbol => {
+                | LayerKind::Symbol
+                | LayerKind::Circle => {
                     self.paint_vector_layer(scene, layer, camera, tiles, render_bounds);
                 }
-                LayerKind::Raster => {
-                    panic!(
-                        "active raster layer {} is unsupported by the vector map realization",
-                        layer.id
-                    );
+                LayerKind::Heatmap => {
+                    Self::paint_heatmap(scene, layer, camera, tiles, render_bounds);
                 }
+                LayerKind::Raster => Self::paint_raster(scene, layer, camera, tiles),
+                LayerKind::Hillshade => Self::paint_hillshade(scene, layer, camera, tiles),
+                // `sky` only has a visible extent once the camera can pitch away
+                // from straight-down. This camera is always top-down, so the
+                // layer is accepted, contributes nothing, and says so once.
+                LayerKind::Sky => tracing::debug!(
+                    layer = layer.id,
+                    "skipped sky layer: the GPU map camera has no pitch"
+                ),
+            }
+        }
+    }
+
+    /// Draws a `heatmap` layer.
+    ///
+    /// Density is accumulated on the CPU into a viewport-sized field, then run
+    /// through the layer's `heatmap-color` ramp. That keeps the result on the
+    /// same image path as `raster` and `hillshade` rather than adding a second
+    /// GPU accumulation target, and the field is the only allocation.
+    fn paint_heatmap(
+        scene: &mut dyn Scene2D,
+        layer: &StyleLayer,
+        camera: Camera,
+        tiles: &SourceTiles,
+        render_bounds: Rect,
+    ) {
+        let zoom_context = EvaluationContext::new().with_zoom(camera.zoom);
+        let opacity = property_number(layer, "heatmap-opacity", &zoom_context).unwrap_or(1.0);
+        let radius = property_number(layer, "heatmap-radius", &zoom_context).unwrap_or(30.0);
+        let intensity = property_number(layer, "heatmap-intensity", &zoom_context).unwrap_or(1.0);
+        if opacity <= 0.0 || radius <= 0.0 || intensity <= 0.0 {
+            return;
+        }
+        let source_name = layer
+            .source
+            .as_ref()
+            .expect("heatmap layer source is validated when the style loads");
+        let source_layer = layer
+            .source_layer
+            .as_ref()
+            .unwrap_or_else(|| panic!("heatmap layer {} requires source-layer", layer.id));
+        let source_tiles = tiles
+            .vector
+            .get(source_name)
+            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
+
+        let mut field = HeatmapField::new(camera.viewport, radius);
+        for tile in source_tiles {
+            let Some(tile_layer) = tile.layers.get(source_layer) else {
+                continue;
+            };
+            for feature in &tile_layer.features {
+                let context = EvaluationContext::new()
+                    .with_zoom(camera.zoom)
+                    .with_feature(feature.style.clone());
+                if !passes_filter(layer, &context) {
+                    continue;
+                }
+                let weight = property_number(layer, "heatmap-weight", &context).unwrap_or(1.0);
+                if weight <= 0.0 {
+                    continue;
+                }
+                for point in geometry_points(&feature.geometry) {
+                    let (x, y) = camera.tile_point(tile.id, tile_layer.extent, point.x, point.y);
+                    if render_bounds.contains(kurbo::Point::new(x, y)) {
+                        field.accumulate(x, y, weight * intensity);
+                    }
+                }
+            }
+        }
+        let Some(pixels) = field.colorize(layer, camera.zoom) else {
+            return;
+        };
+        let brush = peniko::ImageBrush::new(peniko::ImageData {
+            data: peniko::Blob::new(image_blob(Arc::new(pixels))),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: camera.viewport.width,
+            height: camera.viewport.height,
+        });
+        let alpha = clamped_alpha(opacity);
+        if alpha < 1.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                peniko::BlendMode::default(),
+                alpha,
+                Affine::IDENTITY,
+                &render_bounds.to_path(0.1),
+            );
+        }
+        scene.draw_image(&brush, Affine::IDENTITY);
+        if alpha < 1.0 {
+            scene.pop_layer();
+        }
+    }
+
+    /// Draws a `raster` layer by placing each decoded image tile at the screen
+    /// rect its tile id occupies under the current camera.
+    fn paint_raster(
+        scene: &mut dyn Scene2D,
+        layer: &StyleLayer,
+        camera: Camera,
+        tiles: &SourceTiles,
+    ) {
+        let context = EvaluationContext::new().with_zoom(camera.zoom);
+        let opacity = property_number(layer, "raster-opacity", &context).unwrap_or(1.0);
+        if opacity <= 0.0 {
+            return;
+        }
+        let source_name = layer
+            .source
+            .as_ref()
+            .expect("raster layer source is validated when the style loads");
+        let source_tiles = tiles
+            .raster
+            .get(source_name)
+            .unwrap_or_else(|| panic!("raster source {source_name} was not prepared"));
+        let alpha = clamped_alpha(opacity);
+        if alpha < 1.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                peniko::BlendMode::default(),
+                alpha,
+                Affine::IDENTITY,
+                &Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(camera.viewport.width),
+                    f64::from(camera.viewport.height),
+                )
+                .to_path(0.1),
+            );
+        }
+        for tile in source_tiles {
+            let brush = peniko::ImageBrush::new(peniko::ImageData {
+                data: peniko::Blob::new(image_blob(Arc::clone(&tile.pixels))),
+                format: peniko::ImageFormat::Rgba8,
+                alpha_type: peniko::ImageAlphaType::Alpha,
+                width: tile.width,
+                height: tile.height,
+            });
+            scene.draw_image(&brush, tile_image_transform(camera, tile.id, tile.width));
+        }
+        if alpha < 1.0 {
+            scene.pop_layer();
+        }
+    }
+
+    /// Draws a `hillshade` layer by shading each DEM tile on the CPU and
+    /// blitting the result, which keeps terrain on the same image path as
+    /// `raster` instead of introducing a second sampling mechanism.
+    fn paint_hillshade(
+        scene: &mut dyn Scene2D,
+        layer: &StyleLayer,
+        camera: Camera,
+        tiles: &SourceTiles,
+    ) {
+        let context = EvaluationContext::new().with_zoom(camera.zoom);
+        let exaggeration =
+            property_number(layer, "hillshade-exaggeration", &context).unwrap_or(0.5);
+        if exaggeration <= 0.0 {
+            return;
+        }
+        let shadow = property_color(layer, "hillshade-shadow-color", &context)
+            .unwrap_or(Color::new([0.0, 0.0, 0.0, 1.0]));
+        let highlight = property_color(layer, "hillshade-highlight-color", &context)
+            .unwrap_or(Color::new([1.0, 1.0, 1.0, 1.0]));
+        let source_name = layer
+            .source
+            .as_ref()
+            .expect("hillshade layer source is validated when the style loads");
+        let source_tiles = tiles
+            .dem
+            .get(source_name)
+            .unwrap_or_else(|| panic!("raster-dem source {source_name} was not prepared"));
+        for tile in source_tiles {
+            let shaded = shade_dem_tile(tile, camera, exaggeration, shadow, highlight);
+            let brush = peniko::ImageBrush::new(peniko::ImageData {
+                data: peniko::Blob::new(image_blob(Arc::new(shaded))),
+                format: peniko::ImageFormat::Rgba8,
+                alpha_type: peniko::ImageAlphaType::Alpha,
+                width: tile.width,
+                height: tile.height,
+            });
+            scene.draw_image(&brush, tile_image_transform(camera, tile.id, tile.width));
+        }
+    }
+
+    /// Draws one `circle` layer feature: a screen-space disc per geometry point.
+    fn paint_circle(
+        scene: &mut dyn Scene2D,
+        layer: &StyleLayer,
+        context: &EvaluationContext,
+        camera: Camera,
+        tile: TileId,
+        extent: u32,
+        geometry: &Geometry<f32>,
+    ) {
+        let radius = property_number(layer, "circle-radius", context).unwrap_or(5.0);
+        if radius <= 0.0 {
+            return;
+        }
+        let fill = property_color(layer, "circle-color", context).map(|color| {
+            color_with_opacity(
+                color,
+                property_number(layer, "circle-opacity", context).unwrap_or(1.0),
+            )
+        });
+        let stroke_width = property_number(layer, "circle-stroke-width", context).unwrap_or(0.0);
+        let stroke = (stroke_width > 0.0)
+            .then(|| property_color(layer, "circle-stroke-color", context))
+            .flatten()
+            .map(|color| {
+                color_with_opacity(
+                    color,
+                    property_number(layer, "circle-stroke-opacity", context).unwrap_or(1.0),
+                )
+            });
+        if fill.is_none() && stroke.is_none() {
+            return;
+        }
+        for point in geometry_points(geometry) {
+            let (x, y) = camera.tile_point(tile, extent, point.x, point.y);
+            let disc = Circle::new((x, y), radius).to_path(0.1);
+            if let Some(fill) = fill {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(fill), &disc);
+            }
+            if let Some(stroke) = stroke {
+                scene.stroke(
+                    &Stroke::new(stroke_width),
+                    Affine::IDENTITY,
+                    &Brush::Solid(stroke),
+                    &disc,
+                );
             }
         }
     }
@@ -1761,8 +2163,9 @@ impl MapPainter {
             .as_ref()
             .unwrap_or_else(|| panic!("layer {} requires source-layer", layer.id));
         let source_tiles = tiles
+            .vector
             .get(source_name)
-            .unwrap_or_else(|| panic!("source {source_name} was not prepared"));
+            .unwrap_or_else(|| panic!("vector source {source_name} was not prepared"));
         let mut matched_features = 0_usize;
         let mut fill_batches = BTreeMap::<ColorKey, FillBatch>::new();
         let mut line_batches = BTreeMap::<LineKey, LineBatch>::new();
@@ -1818,6 +2221,15 @@ impl MapPainter {
                         tile_layer.extent,
                         feature,
                         render_bounds,
+                    ),
+                    LayerKind::Circle => Self::paint_circle(
+                        scene,
+                        layer,
+                        &context,
+                        camera,
+                        tile.id,
+                        tile_layer.extent,
+                        &feature.geometry,
                     ),
                     _ => unreachable!("vector layer kind was matched above"),
                 }
@@ -2119,6 +2531,220 @@ impl ColorKey {
 struct LineKey {
     color: ColorKey,
     width: u64,
+}
+
+/// Erases an owned pixel buffer into the shape `peniko::Blob` accepts, so image
+/// tiles reach the scene without another copy.
+fn image_blob(pixels: Arc<Vec<u8>>) -> Arc<dyn AsRef<[u8]> + Send + Sync> {
+    pixels
+}
+
+/// A viewport-sized scalar density field used to rasterize `heatmap` layers.
+struct HeatmapField {
+    viewport: Viewport,
+    radius: f64,
+    density: Vec<f32>,
+}
+
+impl HeatmapField {
+    fn new(viewport: Viewport, radius: f64) -> Self {
+        let width = usize::try_from(viewport.width).expect("viewport width must fit usize");
+        let height = usize::try_from(viewport.height).expect("viewport height must fit usize");
+        Self {
+            viewport,
+            radius,
+            density: vec![0.0; width * height],
+        }
+    }
+
+    /// Splats one weighted sample with the quartic kernel `MapLibre` uses.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "screen-space splat bounds are clamped to the integer viewport"
+    )]
+    fn accumulate(&mut self, x: f64, y: f64, weight: f64) {
+        let radius = self.radius;
+        let width = i64::from(self.viewport.width);
+        let height = i64::from(self.viewport.height);
+        let min_x = ((x - radius).floor() as i64).max(0);
+        let max_x = ((x + radius).ceil() as i64).min(width - 1);
+        let min_y = ((y - radius).floor() as i64).max(0);
+        let max_y = ((y + radius).ceil() as i64).min(height - 1);
+        for row in min_y..=max_y {
+            for column in min_x..=max_x {
+                let dx = (f64::from(column as i32) - x) / radius;
+                let dy = (f64::from(row as i32) - y) / radius;
+                let squared = dx.mul_add(dx, dy * dy);
+                if squared >= 1.0 {
+                    continue;
+                }
+                // Quartic falloff: (1 - d^2)^2, peaking at the sample.
+                let falloff = (1.0 - squared) * (1.0 - squared);
+                let index = usize::try_from(row * width + column)
+                    .expect("clamped heatmap index must fit usize");
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "density accumulates in f32 to halve the field's footprint"
+                )]
+                {
+                    self.density[index] += (falloff * weight) as f32;
+                }
+            }
+        }
+    }
+
+    /// Applies the layer's `heatmap-color` ramp to the normalized field.
+    ///
+    /// Returns `None` when nothing accumulated, so an empty heatmap costs no
+    /// image upload at all.
+    fn colorize(&self, layer: &StyleLayer, zoom: f64) -> Option<Vec<u8>> {
+        let peak = self
+            .density
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        if peak <= 0.0 {
+            return None;
+        }
+        let mut pixels = vec![0_u8; self.density.len() * 4];
+        for (texel, density) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(&self.density) {
+            let normalized = f64::from(density / peak);
+            // `heatmap-color` is a ramp over the synthetic `heatmap-density`
+            // input rather than over feature properties.
+            let mut context = EvaluationContext::new().with_zoom(zoom);
+            context.heatmap_density = Some(normalized);
+            let Some(color) = property_color(layer, "heatmap-color", &context) else {
+                continue;
+            };
+            for (channel, value) in texel.iter_mut().take(3).enumerate() {
+                *value = channel_byte(color.components[channel]);
+            }
+            texel[3] = channel_byte(color.components[3]);
+        }
+        Some(pixels)
+    }
+}
+
+/// Maps an image tile's pixel grid onto the screen rect its tile id covers.
+///
+/// `tile_point` already places tile-local coordinates for an arbitrary extent,
+/// so passing the image's pixel size as the extent yields both the tile's
+/// screen origin and the scale that maps one texel to device pixels.
+fn tile_image_transform(camera: Camera, tile: TileId, size: u32) -> Affine {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "raster tile pixel sizes are small powers of two"
+    )]
+    let extent = size as f32;
+    let (x0, y0) = camera.tile_point(tile, size, 0.0, 0.0);
+    let (x1, y1) = camera.tile_point(tile, size, extent, extent);
+    Affine::translate((x0, y0))
+        * Affine::scale_non_uniform((x1 - x0) / f64::from(size), (y1 - y0) / f64::from(size))
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "style opacities are authored in f64 and encoded as f32 alpha"
+)]
+const fn clamped_alpha(opacity: f64) -> f32 {
+    opacity.clamp(0.0, 1.0) as f32
+}
+
+/// Illumination `MapLibre` assumes when a style does not override it: light from
+/// the top-left at 45 degrees.
+const HILLSHADE_LIGHT_AZIMUTH: f32 = 315.0;
+const HILLSHADE_LIGHT_ALTITUDE: f32 = 45.0;
+
+/// Shades one DEM tile into RGBA8 with Horn's surface-normal hillshade.
+///
+/// Slope is metres of rise over metres of run, so the horizontal spacing comes
+/// from the tile's ground resolution at this zoom rather than from texels.
+fn shade_dem_tile(
+    tile: &DemTile,
+    camera: Camera,
+    exaggeration: f64,
+    shadow: Color,
+    highlight: Color,
+) -> Vec<u8> {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "shading runs in f32 over bounded camera and style inputs"
+    )]
+    let (spacing, exaggeration) = (
+        camera.tile_ground_resolution(tile.id, tile.width) as f32,
+        exaggeration as f32,
+    );
+    let azimuth = HILLSHADE_LIGHT_AZIMUTH.to_radians();
+    let altitude = HILLSHADE_LIGHT_ALTITUDE.to_radians();
+    let (light_x, light_y) = (azimuth.sin(), azimuth.cos());
+    let (light_z, horizontal) = (altitude.sin(), altitude.cos());
+
+    let width = usize::try_from(tile.width).expect("DEM tile width must fit usize");
+    let mut pixels = vec![0_u8; width * usize::try_from(tile.height).unwrap_or(0) * 4];
+    pixels
+        .par_chunks_exact_mut(width * 4)
+        .enumerate()
+        .for_each(|(row, line)| {
+            let y = i64::try_from(row).expect("DEM row must fit i64");
+            for (column, texel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let x = i64::try_from(column).expect("DEM column must fit i64");
+                let slope_x =
+                    (tile.height_at(x - 1, y) - tile.height_at(x + 1, y)) * exaggeration
+                        / (2.0 * spacing);
+                let slope_y =
+                    (tile.height_at(x, y - 1) - tile.height_at(x, y + 1)) * exaggeration
+                        / (2.0 * spacing);
+                let normal = slope_x.mul_add(slope_x, slope_y.mul_add(slope_y, 1.0)).sqrt();
+                let illumination = (slope_x
+                    .mul_add(light_x, slope_y * light_y)
+                    .mul_add(horizontal, light_z)
+                    / normal)
+                    .clamp(-1.0, 1.0);
+                // Below the light plane is shadowed terrain, above it is lit.
+                let (color, weight) = if illumination < 0.0 {
+                    (shadow, -illumination)
+                } else {
+                    (highlight, illumination)
+                };
+                for (channel, value) in texel.iter_mut().take(3).enumerate() {
+                    *value = channel_byte(color.components[channel]);
+                }
+                texel[3] = channel_byte(color.components[3] * weight);
+            }
+        });
+    pixels
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "normalized colour components are quantized to the 8-bit texture domain"
+)]
+fn channel_byte(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Returns the points a point-oriented layer (`circle`, `heatmap`) draws from.
+///
+/// Non-point geometry is represented by its bounding-rect centre, matching how
+/// `MapLibre` anchors these layers on non-point features.
+fn geometry_points(geometry: &Geometry<f32>) -> Vec<Coord<f32>> {
+    match geometry {
+        Geometry::Point(point) => vec![point.0],
+        Geometry::MultiPoint(points) => points.iter().map(|point| point.0).collect(),
+        Geometry::Line(_)
+        | Geometry::LineString(_)
+        | Geometry::MultiLineString(_)
+        | Geometry::Polygon(_)
+        | Geometry::MultiPolygon(_)
+        | Geometry::Rect(_)
+        | Geometry::Triangle(_)
+        | Geometry::GeometryCollection(_) => geometry
+            .bounding_rect()
+            .map(|bounds| vec![bounds.center()])
+            .unwrap_or_default(),
+    }
 }
 
 #[derive(Debug)]
@@ -2892,7 +3518,7 @@ mod tests {
         let prepared = PreparedMap {
             style: style.clone(),
             camera: Camera::new(region, viewport, 0, 22),
-            tiles: BTreeMap::new(),
+            tiles: SourceTiles::default(),
             annotations: Vec::new(),
             location: None,
             cached_base_scene: Some(vello::Scene::new()),

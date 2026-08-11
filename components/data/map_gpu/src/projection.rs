@@ -47,18 +47,16 @@ impl Camera {
             "Map viewport must be non-zero"
         );
 
-        let center = coordinate_world(region.center, 0.0);
+        let center = coordinate_world(region.center);
         let north = latitude_world(
             region
                 .latitude_delta
                 .mul_add(0.5, region.center.latitude.get()),
-            0.0,
         );
         let south = latitude_world(
             region
                 .latitude_delta
                 .mul_add(-0.5, region.center.latitude.get()),
-            0.0,
         );
         let normalized_height = (south - north).abs().max(f64::EPSILON);
         let normalized_width = (region.longitude_delta / 360.0).max(f64::EPSILON);
@@ -79,21 +77,29 @@ impl Camera {
         }
     }
 
+    /// Returns the tiles covering the viewport for a source whose tiles are
+    /// `source_tile_size` pixels square.
+    ///
+    /// Tile size does not change a tile's world footprint, only how much
+    /// detail one tile carries: a 256px raster source needs one zoom level
+    /// more than a 512px vector source to match it on screen.
     pub fn visible_tiles(
         self,
         padding: f64,
         minimum_tile_zoom: u8,
         maximum_tile_zoom: u8,
+        source_tile_size: u32,
     ) -> Vec<TileId> {
-        let tile_zoom = self.tile_zoom.clamp(minimum_tile_zoom, maximum_tile_zoom);
-        let scale = (self.zoom - f64::from(tile_zoom)).exp2();
-        let tile_screen_size = f64::from(TILE_SIZE) * scale;
-        let center_tile = (
-            coordinate_world(self.region.center, f64::from(tile_zoom)).0
-                * 2.0_f64.powi(i32::from(tile_zoom)),
-            coordinate_world(self.region.center, f64::from(tile_zoom)).1
-                * 2.0_f64.powi(i32::from(tile_zoom)),
-        );
+        let source_zoom = self.zoom + Self::tile_size_zoom_offset(source_tile_size);
+        let tile_zoom = source_zoom
+            .round()
+            .clamp(f64::from(minimum_tile_zoom), f64::from(maximum_tile_zoom))
+            as u8;
+        let scale = (source_zoom - f64::from(tile_zoom)).exp2();
+        let tile_screen_size = f64::from(source_tile_size.max(1)) * scale;
+        let tiles_across = 2.0_f64.powi(i32::from(tile_zoom));
+        let center = coordinate_world(self.region.center);
+        let center_tile = (center.0 * tiles_across, center.1 * tiles_across);
         let half_x = f64::from(self.viewport.width).mul_add(0.5, padding) / tile_screen_size;
         let half_y = f64::from(self.viewport.height).mul_add(0.5, padding) / tile_screen_size;
         let min_x = (center_tile.0 - half_x).floor() as i64;
@@ -101,10 +107,13 @@ impl Camera {
         let min_y = (center_tile.1 - half_y).floor() as i64;
         let max_y = (center_tile.1 + half_y).floor() as i64;
         let dimension = 1_i64 << tile_zoom;
+        // A viewport wider than the world would wrap onto the same column more
+        // than once; each tile is requested and drawn exactly once.
+        let columns = (max_x - min_x + 1).min(dimension);
         let mut tiles = Vec::new();
         for y in min_y.max(0)..=max_y.min(dimension - 1) {
-            for x in min_x..=max_x {
-                let wrapped_x = x.rem_euclid(dimension);
+            for column in 0..columns {
+                let wrapped_x = (min_x + column).rem_euclid(dimension);
                 tiles.push(TileId {
                     z: tile_zoom,
                     x: u32::try_from(wrapped_x).expect("wrapped tile x must fit u32"),
@@ -137,7 +146,7 @@ impl Camera {
     }
 
     pub fn coordinate_point(self, coordinate: Coordinate) -> (f64, f64) {
-        let normalized = coordinate_world(coordinate, self.zoom);
+        let normalized = coordinate_world(coordinate);
         let world = world_size(self.zoom);
         (
             f64::from(self.viewport.width)
@@ -148,24 +157,48 @@ impl Camera {
     }
 
     pub fn meters_to_pixels(self, latitude: f64, meters: f64) -> f64 {
-        let earth_circumference = 40_075_016.686;
         meters * world_size(self.zoom)
-            / (earth_circumference * latitude.to_radians().cos().abs().max(0.01))
+            / (EARTH_CIRCUMFERENCE * latitude.to_radians().cos().abs().max(0.01))
+    }
+
+    /// Extra zoom levels a source needs because its tiles are smaller than the
+    /// projection's reference tile size.
+    fn tile_size_zoom_offset(source_tile_size: u32) -> f64 {
+        (f64::from(TILE_SIZE) / f64::from(source_tile_size.max(1))).log2()
+    }
+
+    /// Returns the ground distance in metres spanned by one texel of a tile
+    /// that is `size` texels wide, at that tile's own zoom.
+    ///
+    /// Terrain shading needs real-world spacing rather than screen pixels, so
+    /// this deliberately ignores the camera's fractional zoom.
+    pub fn tile_ground_resolution(self, tile: TileId, size: u32) -> f64 {
+        let latitude = self.region.center.latitude.get().to_radians();
+        let tiles_across = 2.0_f64.powi(i32::from(tile.z));
+        EARTH_CIRCUMFERENCE * latitude.cos().abs().max(0.01)
+            / (tiles_across * f64::from(size.max(1)))
     }
 }
+
+/// Length of the equator in metres (`WGS 84`).
+const EARTH_CIRCUMFERENCE: f64 = 40_075_016.686;
 
 fn world_size(zoom: f64) -> f64 {
     f64::from(TILE_SIZE) * zoom.exp2()
 }
 
-fn coordinate_world(coordinate: Coordinate, _zoom: f64) -> (f64, f64) {
+/// Projects a coordinate into the unit Web Mercator square.
+///
+/// The result is zoom-independent; callers scale it by [`world_size`] or by the
+/// tile count for the zoom they care about.
+fn coordinate_world(coordinate: Coordinate) -> (f64, f64) {
     (
         (coordinate.longitude.get() + 180.0) / 360.0,
-        latitude_world(coordinate.latitude.get(), 0.0),
+        latitude_world(coordinate.latitude.get()),
     )
 }
 
-fn latitude_world(latitude: f64, _zoom: f64) -> f64 {
+fn latitude_world(latitude: f64) -> f64 {
     let latitude = latitude.clamp(-MAX_MERCATOR_LATITUDE, MAX_MERCATOR_LATITUDE);
     let sine = latitude.to_radians().sin();
     0.5 - ((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI)
@@ -195,8 +228,60 @@ mod tests {
 
         assert!(camera.zoom > 14.0);
         assert!(camera.tile_zoom > 14);
-        let tiles = camera.visible_tiles(f64::from(TILE_OVERSCAN_PIXELS), 0, 14);
+        let tiles = camera.visible_tiles(f64::from(TILE_OVERSCAN_PIXELS), 0, 14, TILE_SIZE);
         assert!(!tiles.is_empty());
         assert!(tiles.iter().all(|tile| tile.z == 14));
+    }
+
+    /// A 256px raster source carries half the detail of the 512px reference
+    /// tile, so it must be requested one zoom level deeper to match on screen.
+    #[test]
+    fn smaller_source_tiles_are_requested_one_zoom_level_deeper() {
+        let camera = Camera::new(
+            Region::new(
+                Coordinate::from_degrees(40.7580, -73.9855).expect("valid coordinate"),
+                0.03,
+                0.05,
+            ),
+            Viewport {
+                width: 1_024,
+                height: 1_024,
+            },
+            0,
+            MAX_CAMERA_ZOOM,
+        );
+
+        let reference = camera.visible_tiles(0.0, 0, MAX_CAMERA_ZOOM, TILE_SIZE);
+        let halved = camera.visible_tiles(0.0, 0, MAX_CAMERA_ZOOM, TILE_SIZE / 2);
+
+        assert_eq!(
+            halved[0].z,
+            reference[0].z + 1,
+            "a half-size tile source needs one more zoom level"
+        );
+    }
+
+    /// Wrapping used to push the same column repeatedly once the viewport was
+    /// wider than the world, so a tile was fetched and drawn more than once.
+    #[test]
+    fn a_viewport_wider_than_the_world_requests_each_tile_once() {
+        let camera = Camera::new(
+            Region::new(
+                Coordinate::from_degrees(0.0, 0.0).expect("valid coordinate"),
+                80.0,
+                360.0,
+            ),
+            Viewport {
+                width: 4_096,
+                height: 512,
+            },
+            0,
+            MAX_CAMERA_ZOOM,
+        );
+
+        let tiles = camera.visible_tiles(f64::from(TILE_OVERSCAN_PIXELS), 0, 2, TILE_SIZE);
+        let unique: std::collections::HashSet<_> = tiles.iter().copied().collect();
+
+        assert_eq!(unique.len(), tiles.len(), "no tile may be requested twice");
     }
 }

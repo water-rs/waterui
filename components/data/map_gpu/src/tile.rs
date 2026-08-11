@@ -1,10 +1,13 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use geo_types::Geometry;
 use maplibre_expr::{Feature as StyleFeature, Value as StyleValue};
 use mvt_reader::{Reader, feature};
 
-use crate::{MapLoadError, projection::TileId};
+use crate::{MapLoadError, projection::TileId, style::DemEncoding};
 
 #[derive(Debug, Clone)]
 pub struct TileFeature {
@@ -23,6 +26,79 @@ pub struct VectorTile {
     pub id: TileId,
     pub layers: HashMap<String, TileLayer>,
     pub byte_len: usize,
+}
+
+/// A decoded `raster` tile held as RGBA8.
+///
+/// The pixels live behind `Arc<Vec<u8>>` rather than `Arc<[u8]>` so they can be
+/// handed to `peniko::Blob` without another copy per frame.
+#[derive(Debug, Clone)]
+pub struct RasterTile {
+    pub id: TileId,
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Arc<Vec<u8>>,
+    pub byte_len: usize,
+}
+
+impl RasterTile {
+    pub fn decode(id: TileId, bytes: &[u8]) -> Result<Self, MapLoadError> {
+        let image = decode_image(id, bytes)?.into_rgba8();
+        let (width, height) = image.dimensions();
+        let pixels = image.into_raw();
+        Ok(Self {
+            id,
+            width,
+            height,
+            byte_len: pixels.len(),
+            pixels: Arc::new(pixels),
+        })
+    }
+}
+
+/// A decoded `raster-dem` tile resolved to metres above sea level.
+#[derive(Debug, Clone)]
+pub struct DemTile {
+    pub id: TileId,
+    pub width: u32,
+    pub height: u32,
+    pub heights: Arc<[f32]>,
+    pub byte_len: usize,
+}
+
+impl DemTile {
+    pub fn decode(id: TileId, bytes: &[u8], encoding: DemEncoding) -> Result<Self, MapLoadError> {
+        let image = decode_image(id, bytes)?.into_rgb8();
+        let (width, height) = image.dimensions();
+        let heights: Arc<[f32]> = image
+            .pixels()
+            .map(|pixel| encoding.height(pixel.0[0], pixel.0[1], pixel.0[2]))
+            .collect();
+        Ok(Self {
+            id,
+            width,
+            height,
+            byte_len: heights.len() * size_of::<f32>(),
+            heights,
+        })
+    }
+
+    /// Returns the elevation at a clamped texel coordinate.
+    pub fn height_at(&self, x: i64, y: i64) -> f32 {
+        let x = x.clamp(0, i64::from(self.width) - 1);
+        let y = y.clamp(0, i64::from(self.height) - 1);
+        let index = y * i64::from(self.width) + x;
+        self.heights[usize::try_from(index).expect("clamped DEM index must be in range")]
+    }
+}
+
+fn decode_image(id: TileId, bytes: &[u8]) -> Result<image::DynamicImage, MapLoadError> {
+    image::load_from_memory(bytes).map_err(|error| MapLoadError::ImageTile {
+        z: id.z,
+        x: id.x,
+        y: id.y,
+        message: error.to_string(),
+    })
 }
 
 impl VectorTile {
