@@ -722,6 +722,60 @@ fn wait_for_panics_on_empty_expectations() {
 }
 
 #[test]
+fn wait_for_ordered_expectations_skip_inverted_positions() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::LABEL, Some("Ready"), None, true),
+        node(3, Role::BUTTON, Some("Continue"), None, true),
+    ]));
+
+    // An inverted expectation holds no position in the required order, so the
+    // two present elements fulfill in list order and the wait completes.
+    let expectations = [
+        app.expect_exists(Selector::default().role(Role::BUTTON).label("Delete"))
+            .inverted(),
+        app.expect_exists(Selector::default().role(Role::LABEL).label("Ready")),
+        app.expect_exists(Selector::default().role(Role::BUTTON).label("Continue")),
+    ];
+    let result = app.wait_for(
+        &expectations,
+        WaitOptions::new(Duration::from_millis(10)).enforce_order(true),
+    );
+    assert_eq!(result, WaitResult::Completed);
+}
+
+#[test]
+fn query_exists_is_true_for_multiple_matches() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::BUTTON, Some("A"), None, true),
+        node(3, Role::BUTTON, Some("A"), None, true),
+    ]));
+
+    assert!(app.query().role(Role::BUTTON).label("A").exists());
+    assert!(!app.query().role(Role::BUTTON).label("B").exists());
+}
+
+#[test]
+fn assert_ui_focus_failure_names_the_actual_focus_target() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::BUTTON, Some("Save"), None, true),
+        node(3, Role::BUTTON, Some("Cancel"), None, true),
+    ]));
+    app.ui_focus = Some(node_id(3));
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.assert_ui_focus(&Selector::default().role(Role::BUTTON).label("Save"));
+    }));
+    let message = panic_message(&*outcome.expect_err("assertion must fail"));
+    assert!(
+        message.contains("Cancel"),
+        "failure must name the actual focus target: {message}"
+    );
+}
+
+#[test]
 fn query_optional_panics_on_multiple_matches() {
     let mut app = mounted(tree(vec![
         node(1, Role::LIST, Some("root"), None, true),
