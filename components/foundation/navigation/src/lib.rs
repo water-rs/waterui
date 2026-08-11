@@ -1398,6 +1398,18 @@ impl NavigationView {
     }
 }
 
+/// Translation key for the back affordance every navigation backend draws.
+pub const NAVIGATION_BACK_LABEL_KEY: &str = "waterui.navigation.back";
+
+/// Semantic label for the back affordance.
+///
+/// Backends must render and speak this rather than a string of their own, so a
+/// single catalog entry translates the back button on every platform at once.
+#[must_use]
+pub fn navigation_back_label() -> waterui_controls::label::Label {
+    waterui_text::Text::localized_or(NAVIGATION_BACK_LABEL_KEY, "Back").into_label()
+}
+
 /// Convenience function to create a navigation view.
 ///
 /// # Arguments

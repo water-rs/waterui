@@ -14,7 +14,7 @@ use waterui_core::{AnyView, Environment};
 use waterui_navigation::{
     Bar, CustomNavigationController, NativeNavigationTransition, NavigationController,
     NavigationSplitLayout, NavigationStack, NavigationToolbarPlacement, NavigationTransaction,
-    NavigationView, resolve_navigation_root,
+    NavigationView, navigation_back_label, resolve_navigation_root,
 };
 
 use crate::component::GtkComponent;
@@ -223,7 +223,9 @@ impl GtkComponent for NavigationStack<(), ()> {
         );
         bar_container.append(&header_bar);
 
-        let back_button = gtk4::Button::with_label("Back");
+        let back_button = gtk4::Button::with_label(
+            navigation_back_label().resolve(env).accessibility_label().get().to_plain().as_str(),
+        );
         back_button.set_visible(false);
         let leading_slot = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         let trailing_slot = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
