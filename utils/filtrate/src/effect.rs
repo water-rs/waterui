@@ -10,20 +10,104 @@
 //! and use [`FilterAdapter`](crate::FilterAdapter).
 //! `Effect` is the seam used by GPU host code to dispatch a runtime-typed
 //! filter without knowing its concrete shape.
+//!
+//! # Color and alpha contract
+//!
+//! - **Premultiplied alpha, end to end.** Input textures, intermediates,
+//!   and outputs carry premultiplied alpha. Linear spatial operations
+//!   (blurs, convolutions, resampling) run directly on premultiplied data;
+//!   fused color passes unpremultiply once in the shared preamble, apply
+//!   every fragment on straight-alpha color, and re-premultiply in the
+//!   postamble. Opaque content (alpha = 1) is unaffected either way.
+//! - **Encoding-agnostic values.** Filters operate on texel values exactly
+//!   as sampled — no implicit sRGB decode/encode is inserted, matching the
+//!   behavior of non-linear filter stacks like Core Image's default. Hosts
+//!   that want linear-light filtering pass linear(-view) textures in and
+//!   out; scratch intermediates preserve whichever convention the input
+//!   uses (LDR scratch is non-sRGB `Rgba8Unorm`, so sampled values round-
+//!   trip unchanged).
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::sync::Arc;
 use core::fmt;
 use core::future::Future;
 use std::time::{Duration, Instant};
 
+/// Error produced while compiling an effect's GPU pipeline during setup.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EffectSetupError {
+    /// The filter chain declares more parameters than the uniform budget.
+    #[error("filter chain declares {declared} params, exceeding the {limit}-param uniform budget")]
+    TooManyParams {
+        /// Parameters declared by the chain.
+        declared: usize,
+        /// The uniform budget ([`filtrate_core::MAX_FILTER_PARAMS`]).
+        limit: usize,
+    },
+    /// The filter graph produced no stages or passes.
+    #[error("filter graph produced no executable passes")]
+    EmptyGraph,
+    /// Pipeline creation hit a wgpu validation error. The message carries
+    /// the full naga/wgpu diagnostic (shader line/column included).
+    #[error("{stage} pipeline validation failed: {message}")]
+    PipelineValidation {
+        /// Which pipeline failed ("color", "spatial", "blit", …).
+        stage: &'static str,
+        /// The full wgpu validation diagnostic.
+        message: String,
+    },
+    /// The selected scratch texture format is unsupported on this device.
+    #[error("scratch texture format {format:?} is unsupported on this device")]
+    ScratchFormatUnsupported {
+        /// The rejected format.
+        format: wgpu::TextureFormat,
+    },
+    /// HDR intermediates are required by policy but unavailable.
+    #[error("HDR intermediates required by policy but unavailable: {0}")]
+    HdrRequiredUnavailable(#[source] alloc::boxed::Box<Self>),
+    /// An internal planner invariant was violated.
+    #[error("filter planner invariant violated: {0}")]
+    PlannerInvariant(&'static str),
+    /// Effect-specific setup failure outside the planner/pipeline paths.
+    #[error("{0}")]
+    Other(&'static str),
+}
+
+/// Error produced while encoding one effect frame.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EffectRenderError {
+    /// Setup failed earlier; the error is sticky and rendering fails fast.
+    #[error("effect setup failed: {0}")]
+    SetupFailed(#[from] EffectSetupError),
+    /// The input or output texture format differs from the formats the
+    /// pipeline was compiled against during setup.
+    #[error(
+        "render texture formats (input {input:?}, output {output:?}) do not match setup formats \
+         (input {setup_input:?}, output {setup_output:?})"
+    )]
+    FormatMismatch {
+        /// Input format seen at render time.
+        input: wgpu::TextureFormat,
+        /// Output format seen at render time.
+        output: wgpu::TextureFormat,
+        /// Input format the pipeline was compiled for.
+        setup_input: wgpu::TextureFormat,
+        /// Output format the pipeline was compiled for.
+        setup_output: wgpu::TextureFormat,
+    },
+    /// A GPU resource that setup should have produced is missing.
+    #[error("{0}")]
+    MissingResource(&'static str),
+}
+
 /// Result returned by filter setup.
-pub type EffectSetupResult = Result<(), &'static str>;
+pub type EffectSetupResult = Result<(), EffectSetupError>;
 
 /// Result returned by one filter render pass. `Ok(true)` indicates an
 /// animation is still active and the host should request another frame.
-pub type EffectRenderResult = Result<bool, &'static str>;
+pub type EffectRenderResult = Result<bool, EffectRenderError>;
 
 /// Thread-safe callback used by an effect to wake an on-demand renderer.
 pub type EffectRedrawCallback = Arc<dyn Fn() + Send + Sync>;

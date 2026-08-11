@@ -1,9 +1,40 @@
-// Edge work shader
-struct Uniforms { output_dimensions: vec2<f32>, input_dimensions: vec2<f32>, params: array<vec4<f32>, 16>, }
-@group(0) @binding(0) var input_texture: texture_2d<f32>;
-@group(0) @binding(1) var output_texture: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;
-@group(0) @binding(2) var<uniform> uniforms: Uniforms;
-fn param(index:u32)->f32{let v=uniforms.params[index/4u];switch index%4u{case 0u:{return v.x;}case 1u:{return v.y;}case 2u:{return v.z;}default:{return v.w;}}}
-fn luminance(c: vec3<f32>) -> f32 { return dot(c, vec3<f32>(0.2126,0.7152,0.0722)); }
+// Edge work: Sobel gradient magnitude at a configurable sampling radius,
+// scaled by a strength parameter.
+//
+// Parameters: radius (pixels), amount. Output is a grayscale RGB triple
+// scaled by the centre pixel's alpha so premultiplied coverage stays valid.
+
+fn sample_luma(coord: vec2<i32>) -> f32 {
+    return luminance(load_input(coord).rgb);
+}
+
 @compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) { let dims=vec2<u32>(uniforms.output_dimensions); if gid.x>=dims.x||gid.y>=dims.y{return;} let coord=vec2<i32>(gid.xy); let radius=max(i32(round(param(0u))),1); let amount=max(param(1u),0.0); let input_dims=vec2<i32>(vec2<u32>(uniforms.input_dimensions)); let mapped=(vec2<f32>(gid.xy)+vec2<f32>(0.5))*uniforms.input_dimensions/uniforms.output_dimensions; let center=clamp(vec2<i32>(mapped), vec2<i32>(0), input_dims-vec2<i32>(1)); let tl=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(-radius,-radius), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let tc=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(0,-radius), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let tr=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(radius,-radius), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let ml=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(-radius,0), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let mr=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(radius,0), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let bl=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(-radius,radius), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let bc=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(0,radius), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let br=luminance(textureLoad(input_texture, clamp(center+vec2<i32>(radius,radius), vec2<i32>(0), input_dims-vec2<i32>(1)),0).rgb); let gx = -tl - 2.0*ml - bl + tr + 2.0*mr + br; let gy = -tl - 2.0*tc - tr + bl + 2.0*bc + br; let edge = clamp(length(vec2<f32>(gx,gy)) * amount, 0.0, 1.0); textureStore(output_texture, coord, vec4<f32>(edge, edge, edge, 1.0)); }
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = vec2<u32>(uniforms.output_dimensions);
+    if gid.x >= dims.x || gid.y >= dims.y {
+        return;
+    }
+    let radius = max(i32(round(param(0u))), 1);
+    let amount = max(param(1u), 0.0);
+    let center = map_to_input(gid.xy);
+
+    let tl = sample_luma(center + vec2<i32>(-radius, -radius));
+    let tc = sample_luma(center + vec2<i32>(0, -radius));
+    let tr = sample_luma(center + vec2<i32>(radius, -radius));
+    let ml = sample_luma(center + vec2<i32>(-radius, 0));
+    let mr = sample_luma(center + vec2<i32>(radius, 0));
+    let bl = sample_luma(center + vec2<i32>(-radius, radius));
+    let bc = sample_luma(center + vec2<i32>(0, radius));
+    let br = sample_luma(center + vec2<i32>(radius, radius));
+
+    let gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
+    let gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
+    let edge = clamp(length(vec2<f32>(gx, gy)) * amount, 0.0, 1.0);
+
+    let centre_alpha = load_input(center).a;
+    textureStore(
+        output_texture,
+        vec2<i32>(gid.xy),
+        vec4<f32>(vec3<f32>(edge * centre_alpha), centre_alpha),
+    );
+}

@@ -19,7 +19,7 @@ use crate::Filter;
 /// let bright = Brightness(0.2);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/adjustment/brightness.wgsl")]
+#[filter(color_only, shader = "color/adjustment/brightness.wgsl")]
 pub struct Brightness<T>(pub T);
 
 #[cfg(test)]

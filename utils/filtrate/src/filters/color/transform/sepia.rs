@@ -18,7 +18,7 @@ use crate::Filter;
 /// let vintage = Sepia(0.8);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/transform/sepia.wgsl")]
+#[filter(color_only, shader = "color/transform/sepia.wgsl")]
 pub struct Sepia<T>(pub T);
 
 #[cfg(test)]

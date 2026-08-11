@@ -39,12 +39,13 @@ pub mod runtime;
 
 pub use effect::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRedrawCallback, EffectRenderResult, EffectSetupResult,
+    EffectRedrawCallback, EffectRenderError, EffectRenderResult, EffectSetupError,
+    EffectSetupResult,
 };
 pub use filtrate_core::{
     AnimatedCallback, AnimatedTarget, AnimationTrack, Chain, Filter, FilterExt, FilterParam,
-    FragmentList, Interpolator, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray,
-    SignalVisitor, StageCollector, WatchGuard,
+    Interpolator, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray, SignalVisitor,
+    StageCollector, WatchGuard,
 };
 pub use runtime::{FilterAdapter, HdrPolicy};
 

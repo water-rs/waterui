@@ -18,7 +18,7 @@ use crate::Filter;
 /// let dramatic = Vignette(0.3, 0.1);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
-#[filter(color_only, fragment = "color/effect/vignette.wgsl")]
+#[filter(color_only, shader = "color/effect/vignette.wgsl")]
 pub struct Vignette<R, S>(pub R, pub S);
 
 #[cfg(test)]
