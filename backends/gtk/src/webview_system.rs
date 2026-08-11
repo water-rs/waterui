@@ -19,12 +19,19 @@ use gtk4::prelude::*;
 use waterui_core::{Computed, Environment, Signal, Str};
 use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
 };
 
 type JsHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
 
 const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
+
+/// Adapts the shared bridge's one-function transport onto WebKitGTK's message handler.
+const TRANSPORT_SCRIPT: &str = concat!(
+    "globalThis.__wateruiSend = function (envelope) {",
+    "window.webkit.messageHandlers.__wateruiSend.postMessage(envelope);",
+    "};"
+);
 
 struct SharedState {
     watchers: WatcherSet<WebViewEvent>,
@@ -709,7 +716,6 @@ struct NativeState {
     manager: std::ptr::NonNull<webkitgtk::WebKitUserContentManager>,
     cookie_manager: std::ptr::NonNull<webkitgtk::WebKitCookieManager>,
     custom_scripts: RefCell<Vec<InjectedScript>>,
-    handler_scripts: RefCell<HashMap<String, String>>,
     handler_signal_ids: RefCell<HashMap<String, std::os::raw::c_ulong>>,
 }
 
@@ -722,14 +728,9 @@ struct NativeState {
 impl Drop for NativeState {
     fn drop(&mut self) {
         let mut ids = self.handler_signal_ids.borrow_mut();
-        let names: Vec<String> = ids.keys().cloned().collect();
         for (name, id) in ids.drain() {
             webkitgtk::disconnect_signal(self.manager.as_ptr().cast(), id);
             webkitgtk::unregister_script_message_handler(self.manager, &name);
-        }
-        drop(ids);
-        for name in names {
-            self.handler_scripts.borrow_mut().remove(&name);
         }
     }
 }
@@ -777,7 +778,6 @@ impl GtkWebViewHandle {
                 manager: parts.manager,
                 cookie_manager: parts.cookie_manager,
                 custom_scripts: RefCell::new(Vec::new()),
-                handler_scripts: RefCell::new(HashMap::new()),
                 handler_signal_ids: RefCell::new(HashMap::new()),
             });
 
@@ -973,86 +973,23 @@ impl GtkWebViewHandle {
         unix,
         not(target_os = "macos")
     ))]
-    fn bridge_base_script() -> &'static str {
-        r#"(function(){
-  if (window.__waterui) { return; }
-  function toBase64Utf8(s){ return btoa(unescape(encodeURIComponent(s))); }
-  function fromBase64Utf8(b64){ return decodeURIComponent(escape(atob(b64))); }
-  window.__waterui = { pending: Object.create(null), toBase64Utf8: toBase64Utf8, fromBase64Utf8: fromBase64Utf8 };
-  window.__wateruiResolve = function(id, ok, payload){
-    var p = window.__waterui.pending[id];
-    if (!p) { return; }
-    delete window.__waterui.pending[id];
-    if (ok) { p.resolve(payload); } else { p.reject(payload); }
-  };
-})();"#
-    }
-
-    #[cfg(all(
-        feature = "webkitgtk",
-        gtk_webkitgtk_link_available,
-        unix,
-        not(target_os = "macos")
-    ))]
-    fn handler_script(name: &str) -> String {
-        let escaped = name.replace('\\', "\\\\").replace('\'', "\\'");
-        format!(
-            r#"(function(){{
-  var name = '{escaped}';
-  if (!window.__waterui || !window.__wateruiResolve) {{ return; }}
-  if (window[name] && window[name].__wateruiWrapped) {{ return; }}
-  function send(data){{
-    var id = String(Date.now()) + '_' + String(Math.random()).slice(2);
-    var text = (typeof data === 'string') ? data : JSON.stringify(data);
-    var b64 = window.__waterui.toBase64Utf8(text);
-    return new Promise(function(resolve, reject){{
-      window.__waterui.pending[id] = {{ resolve: resolve, reject: reject }};
-      window.webkit.messageHandlers[name].postMessage(id + ':' + b64);
-    }});
-  }}
-  window[name] = {{
-    __wateruiWrapped: true,
-    postMessageRaw: function(data){{ return send(data); }},
-    postMessage: function(data){{
-      return send(data).then(function(replyB64){{
-        return window.__waterui.fromBase64Utf8(replyB64);
-      }});
-    }}
-  }};
-}})();"#,
-        )
-    }
-
-    #[cfg(all(
-        feature = "webkitgtk",
-        gtk_webkitgtk_link_available,
-        unix,
-        not(target_os = "macos")
-    ))]
     fn rebuild_user_scripts(&self) {
         webkitgtk::remove_all_scripts(self.native.manager);
+        // Transport first: the shared script calls `__wateruiSend`, so the adapter
+        // onto WebKitGTK's message handler has to exist before it runs.
         webkitgtk::add_user_script(
             self.native.manager,
-            Self::bridge_base_script(),
+            TRANSPORT_SCRIPT,
+            ScriptInjectionTime::DocumentStart,
+        );
+        webkitgtk::add_user_script(
+            self.native.manager,
+            bridge::SCRIPT,
             ScriptInjectionTime::DocumentStart,
         );
         let custom = self.native.custom_scripts.borrow().clone();
         for script in custom {
             webkitgtk::add_user_script(self.native.manager, &script.source, script.time);
-        }
-        let handler_scripts: Vec<String> = self
-            .native
-            .handler_scripts
-            .borrow()
-            .values()
-            .cloned()
-            .collect();
-        for script in handler_scripts {
-            webkitgtk::add_user_script(
-                self.native.manager,
-                &script,
-                ScriptInjectionTime::DocumentStart,
-            );
         }
     }
 
@@ -1205,23 +1142,38 @@ impl WebViewHandle for GtkWebViewHandle {
         ))]
         {
             let handler: Rc<dyn Fn(&[u8]) -> Vec<u8>> = Rc::from(handler);
+            // Registering the same name twice replaces the handler, matching every
+            // other backend.
             self.shared
                 .handler_callbacks
                 .borrow_mut()
                 .insert(name.to_owned(), handler);
 
-            if self.native.handler_signal_ids.borrow().contains_key(name) {
+            // One WebKit message handler serves every WaterUI handler name, so the
+            // transport is registered once rather than per name.
+            if self
+                .native
+                .handler_signal_ids
+                .borrow()
+                .contains_key(bridge::SEND_FUNCTION)
+            {
                 return;
             }
 
-            let registered = webkitgtk::register_script_message_handler(self.native.manager, name);
+            let registered = webkitgtk::register_script_message_handler(
+                self.native.manager,
+                bridge::SEND_FUNCTION,
+            );
             assert!(
                 registered,
-                "failed to register script message handler `{name}` (fast-fail)"
+                "failed to register the WaterUI bridge script message handler (fast-fail)"
             );
 
-            let signal_name = std::ffi::CString::new(format!("script-message-received::{name}"))
-                .expect("valid detailed signal");
+            let signal_name = std::ffi::CString::new(format!(
+                "script-message-received::{}",
+                bridge::SEND_FUNCTION
+            ))
+            .expect("valid detailed signal");
             let callback = Some(unsafe {
                 std::mem::transmute::<
                     unsafe extern "C" fn(
@@ -1236,7 +1188,6 @@ impl WebViewHandle for GtkWebViewHandle {
             let data = ScriptMessageData {
                 shared: self.shared.clone(),
                 webview: self.native.ptr,
-                handler_name: name.to_owned(),
             };
 
             let signal_id = unsafe {
@@ -1250,11 +1201,7 @@ impl WebViewHandle for GtkWebViewHandle {
             self.native
                 .handler_signal_ids
                 .borrow_mut()
-                .insert(name.to_owned(), signal_id);
-            self.native
-                .handler_scripts
-                .borrow_mut()
-                .insert(name.to_owned(), Self::handler_script(name));
+                .insert(bridge::SEND_FUNCTION.to_owned(), signal_id);
             self.rebuild_user_scripts();
             return;
         }
@@ -1278,13 +1225,9 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         ))]
         {
+            // Removing a name that was never registered is a no-op, matching every
+            // other backend. The transport stays registered for the page's life.
             self.shared.handler_callbacks.borrow_mut().remove(name);
-            if let Some(signal_id) = self.native.handler_signal_ids.borrow_mut().remove(name) {
-                webkitgtk::disconnect_signal(self.native.manager.as_ptr().cast(), signal_id);
-                webkitgtk::unregister_script_message_handler(self.native.manager, name);
-            }
-            self.native.handler_scripts.borrow_mut().remove(name);
-            self.rebuild_user_scripts();
             return;
         }
         #[cfg(not(all(
@@ -1532,7 +1475,6 @@ struct TlsFailedData {
 struct ScriptMessageData {
     shared: Rc<SharedState>,
     webview: std::ptr::NonNull<webkitgtk::WebKitWebView>,
-    handler_name: String,
 }
 
 #[cfg(all(
@@ -1738,45 +1680,45 @@ unsafe extern "C" fn on_cookie_refresh_finished(
     unix,
     not(target_os = "macos")
 ))]
+/// Receives one `waterui.invoke(...)` envelope from page script.
+///
+/// Page script reaches this transport directly, so a malformed envelope or an
+/// unknown handler name is rejected back to JavaScript rather than being fatal.
 unsafe extern "C" fn on_script_message_received(
     _manager: *mut webkitgtk::WebKitUserContentManager,
     value: *mut webkitgtk::JSCValue,
     user_data: *mut std::ffi::c_void,
 ) {
     let data = unsafe { &*(user_data.cast::<ScriptMessageData>()) };
-    let raw = webkitgtk::jsc_value_to_rust(value);
-    let raw = raw.as_str();
-    let Some((request_id, payload_b64)) = raw.split_once(':') else {
-        return;
+    let envelope = webkitgtk::jsc_value_to_rust(value);
+    let request = match bridge::Request::parse(envelope.as_str()) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+            return;
+        }
     };
 
+    // Release the borrow before invoking: a handler may register or remove
+    // handlers on the same web view.
     let handler = data
         .shared
         .handler_callbacks
         .borrow()
-        .get(&data.handler_name)
+        .get(&request.name)
         .cloned();
-    let Some(handler) = handler else {
-        return;
+    let reply = if let Some(handler) = handler {
+        bridge::Reply::Bytes(handler(&request.payload))
+    } else {
+        tracing::warn!(
+            handler = %request.name,
+            "page script called a WaterUI handler that is not registered"
+        );
+        bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
     };
 
-    use base64::Engine as _;
-    let engine = base64::engine::general_purpose::STANDARD;
-    let (ok, reply_payload) = match engine.decode(payload_b64.as_bytes()) {
-        Ok(payload) => {
-            let output = handler(&payload);
-            (true, engine.encode(output))
-        }
-        Err(err) => (false, err.to_string()),
-    };
-
-    let js = format!(
-        "window.__wateruiResolve({}, {}, {});",
-        serde_json::to_string(request_id).expect("request id must serialize to JSON"),
-        if ok { "true" } else { "false" },
-        serde_json::to_string(&reply_payload).expect("reply payload must serialize to JSON"),
-    );
-    let _ = webkitgtk::evaluate_javascript(data.webview, &js, None, std::ptr::null_mut());
+    let script = reply.resolve_script(request.id);
+    let _ = webkitgtk::evaluate_javascript(data.webview, &script, None, std::ptr::null_mut());
 }
 
 #[cfg(all(
