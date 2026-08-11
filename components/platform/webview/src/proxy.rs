@@ -59,6 +59,14 @@ impl WebViewProxy {
         Self { handle }
     }
 
+    /// Navigates to the specified URL.
+    ///
+    /// Takes the same input as [`WebView::go_to`](crate::WebView::go_to): a
+    /// literal or a [`Url`](waterui_url::Url), never unparsed runtime text.
+    pub fn go_to(&self, url: impl waterui_url::IntoUrl) {
+        self.handle.go_to(&url.into_url());
+    }
+
     /// Refreshes the current page.
     pub fn refresh(&self) {
         self.handle.refresh();
