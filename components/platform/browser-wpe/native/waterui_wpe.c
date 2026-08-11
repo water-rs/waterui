@@ -597,18 +597,6 @@ static gboolean water_wpe_tls_failed(
     return FALSE;
 }
 
-static char *water_wpe_json_string(const char *value)
-{
-    JsonNode *node = json_node_new(JSON_NODE_VALUE);
-    json_node_set_string(node, value);
-    JsonGenerator *generator = json_generator_new();
-    json_generator_set_root(generator, node);
-    char *json = json_generator_to_data(generator, NULL);
-    g_object_unref(generator);
-    json_node_free(node);
-    return json;
-}
-
 static void water_wpe_evaluate_without_result(
     WaterWpePage *page,
     const char *script)
@@ -630,43 +618,18 @@ static void water_wpe_script_message(
     WaterWpePage *page)
 {
     (void)manager;
-    char *payload = jsc_value_to_string(value);
-    JsonParser *parser = json_parser_new();
-    GError *error = NULL;
-    gboolean parsed = json_parser_load_from_data(parser, payload, -1, &error);
-    g_assert_no_error(error);
-    g_assert(parsed);
-    JsonObject *object = json_node_get_object(json_parser_get_root(parser));
-    gint64 id = json_object_get_int_member(object, "id");
-    const char *name = json_object_get_string_member(object, "name");
-    JsonArray *array = json_object_get_array_member(object, "data");
-    guint length = json_array_get_length(array);
-    GByteArray *bytes = g_byte_array_sized_new(length);
-    for (guint index = 0; index < length; ++index) {
-        gint64 value_byte = json_array_get_int_element(array, index);
-        g_assert_cmpint(value_byte, >=, 0);
-        g_assert_cmpint(value_byte, <=, 255);
-        guint8 byte = (guint8)value_byte;
-        g_byte_array_append(bytes, &byte, 1);
+    /* The envelope is forwarded verbatim: it is parsed once, in Rust, so its
+     * format is defined in exactly one place. */
+    char *envelope = jsc_value_to_string(value);
+    WaterWpeBytes reply = page->message_callback(page->user_data, envelope);
+    if (reply.data != NULL && reply.len > 0) {
+        char *script = g_strndup((const char *)reply.data, reply.len);
+        water_wpe_evaluate_without_result(page, script);
+        g_free(script);
     }
-    WaterWpeBytes response = page->message_callback(
-        page->user_data,
-        name,
-        bytes->data,
-        bytes->len);
-    char *base64 = g_base64_encode(response.data, response.len);
-    char *script = g_strdup_printf(
-        "globalThis.__wateruiResolve(%" G_GINT64_FORMAT ",\"%s\")",
-        id,
-        base64);
-    water_wpe_evaluate_without_result(page, script);
-    g_free(script);
-    g_free(base64);
-    if (response.destroy)
-        response.destroy(response.user_data);
-    g_byte_array_unref(bytes);
-    g_object_unref(parser);
-    g_free(payload);
+    if (reply.destroy)
+        reply.destroy(reply.user_data);
+    g_free(envelope);
 }
 
 WaterWpePage *water_wpe_page_new(
@@ -965,30 +928,6 @@ void water_wpe_page_add_script(
         NULL);
     webkit_user_content_manager_add_script(page->content_manager, user_script);
     webkit_user_script_unref(user_script);
-}
-
-void water_wpe_page_add_handler(WaterWpePage *page, const char *name)
-{
-    char *quoted = water_wpe_json_string(name);
-    char *script = g_strdup_printf(
-        "globalThis.__wateruiInstallHandler(%s)",
-        quoted);
-    water_wpe_page_add_script(page, script, 0);
-    water_wpe_evaluate_without_result(page, script);
-    g_free(script);
-    g_free(quoted);
-}
-
-void water_wpe_page_remove_handler(WaterWpePage *page, const char *name)
-{
-    char *quoted = water_wpe_json_string(name);
-    char *script = g_strdup_printf(
-        "globalThis.__wateruiRemoveHandler(%s)",
-        quoted);
-    water_wpe_page_add_script(page, script, 0);
-    water_wpe_evaluate_without_result(page, script);
-    g_free(script);
-    g_free(quoted);
 }
 
 typedef struct {
