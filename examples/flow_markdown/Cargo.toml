@@ -14,4 +14,4 @@ publish = false
 dev = ["waterui/dynamic_linking"]
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["flow-markdown"] }

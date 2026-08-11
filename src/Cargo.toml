@@ -98,7 +98,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
-default = ["gpu", "assets", "media", "flow-markdown"]
+default = ["gpu", "assets", "media"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disabling it lets a WaterUI app
 # cross-compile lean for embedded targets without the GPU stack.

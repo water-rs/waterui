@@ -11,13 +11,17 @@ keywords.workspace = true
 categories.workspace = true
 
 [lib]
-crate-type = ["dylib", "rlib"]
+# Dynamic linking only works if downstream crates resolve this anchor as a dylib.
+# Also emitting an rlib gives rustc a static candidate it may prefer instead,
+# silently relinking the whole runtime into each consumer and undoing the shared
+# runtime, on top of codegenning this crate twice.
+crate-type = ["dylib"]
 
 [dependencies]
 waterui-internal = { path = "../../src", default-features = false }
 
 [features]
-default = ["gpu", "assets", "media", "webview", "flow-markdown"]
+default = ["gpu", "assets", "media", "webview"]
 gpu = ["waterui-internal/gpu"]
 assets = ["waterui-internal/assets"]
 media = ["waterui-internal/media", "video"]

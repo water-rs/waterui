@@ -218,7 +218,7 @@ waterui-internal = { path = "src", default-features = false }
 waterui-dylib = { path = "utils/dylib", optional = true, default-features = false }
 
 [features]
-default = ["gpu", "assets", "media", "flow-markdown"]
+default = ["gpu", "assets", "media"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disable it to cross-compile a lean
 # WaterUI app for embedded targets without the GPU stack.

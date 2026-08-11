@@ -55,6 +55,32 @@ pub async fn rust_target_libdir(triple: &Triple) -> eyre::Result<PathBuf> {
     Ok(path)
 }
 
+/// The Cargo target a build selects.
+///
+/// A crate-type override only has meaning for the library target, so carrying the
+/// target kind in the type keeps `cargo rustc -- --crate-type` from ever reaching a
+/// binary build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoTarget<'a> {
+    /// The crate's library target.
+    Lib,
+    /// One named binary target.
+    Binary(&'a str),
+}
+
+impl<'a> CargoTarget<'a> {
+    fn cargo_args(self) -> Vec<&'a str> {
+        match self {
+            Self::Lib => vec!["--lib"],
+            Self::Binary(name) => vec!["--bin", name],
+        }
+    }
+
+    const fn accepts_crate_type_override(self) -> bool {
+        matches!(self, Self::Lib)
+    }
+}
+
 /// Selects how Rust dependencies are linked into a native application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RustLinkage {
@@ -257,6 +283,12 @@ impl RustDynamicLibraries {
 
     /// Copy all required dynamic libraries into a runtime search directory.
     ///
+    /// Staging goes through the reflinking copy so a shared runtime that every build
+    /// output needs a copy of costs one set of extents instead of one full copy per
+    /// destination. A copy-on-write clone is also the only sharing that is safe here:
+    /// these staged libraries are rewritten in place later (`install_name_tool`), so
+    /// hard links would corrupt the Cargo artifact they were linked to.
+    ///
     /// # Errors
     /// Returns an error when the destination cannot be created or a library cannot be copied.
     pub async fn stage(&self, destination: &Path) -> eyre::Result<()> {
@@ -269,7 +301,7 @@ impl RustDynamicLibraries {
                     source.display()
                 )
             })?;
-            smol::fs::copy(source, destination.join(file_name)).await?;
+            crate::utils::copy_file(source, destination.join(file_name)).await?;
         }
         Ok(())
     }
@@ -603,7 +635,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_lib(&self, release: bool) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(release, &["--lib"]).await
+        self.build_inner(release, CargoTarget::Lib).await
     }
 
     /// Build a dynamic library (cdylib) and return the full path to the dylib file.
@@ -619,7 +651,7 @@ impl RustBuild {
         crate_name: &str,
         release: bool,
     ) -> Result<PathBuf, RustBuildError> {
-        let lib_dir = self.build_inner(release, &["--lib"]).await?;
+        let lib_dir = self.build_inner(release, CargoTarget::Lib).await?;
 
         let lib_name = crate_name.replace('-', "_");
         let ext = lib_extension_for_triple(&self.triple);
@@ -648,7 +680,9 @@ impl RustBuild {
         binary_name: &str,
         release: bool,
     ) -> Result<PathBuf, RustBuildError> {
-        let output_dir = self.build_inner(release, &["--bin", binary_name]).await?;
+        let output_dir = self
+            .build_inner(release, CargoTarget::Binary(binary_name))
+            .await?;
         let binary_path = output_dir.join(binary_name);
         if !binary_path.is_file() {
             return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
@@ -684,7 +718,7 @@ impl RustBuild {
     async fn build_inner(
         &self,
         release: bool,
-        cargo_target: &[&str],
+        cargo_target: CargoTarget<'_>,
     ) -> Result<PathBuf, RustBuildError> {
         let mut output = self.cargo_build_output(release, cargo_target).await?;
 
@@ -753,17 +787,22 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
     async fn cargo_build_output(
         &self,
         release: bool,
-        cargo_target: &[&str],
+        cargo_target: CargoTarget<'_>,
     ) -> Result<std::process::Output, RustBuildError> {
+        let crate_type_override = if cargo_target.accepts_crate_type_override() {
+            self.crate_type_override.as_deref()
+        } else {
+            None
+        };
         let mut cmd = Command::new("cargo");
-        let cargo_subcommand = if self.crate_type_override.is_some() {
+        let cargo_subcommand = if crate_type_override.is_some() {
             "rustc"
         } else {
             "build"
         };
         let mut cmd = command(&mut cmd)
             .arg(cargo_subcommand)
-            .args(cargo_target)
+            .args(cargo_target.cargo_args())
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
 
@@ -787,7 +826,7 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
 
         // Use sccache as rustc wrapper if configured
         if let Some(sccache_path) = &self.sccache_path {
-            cmd = cmd.env("RUSTC_WRAPPER", sccache_path);
+            crate::toolchain::sccache::configure_compilation_cache(cmd, sccache_path);
         }
 
         // Set target-scoped bindgen clang args for simulator builds.
@@ -815,7 +854,7 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             cmd = cmd.args(["--features", &self.features.join(",")]);
         }
 
-        if let Some(crate_type) = &self.crate_type_override {
+        if let Some(crate_type) = crate_type_override {
             cmd = cmd.arg("--").arg("--crate-type").arg(crate_type);
         }
 
@@ -977,7 +1016,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BuildOptions, ResolvedRuntimeNode, RustDynamicLibraries, RustLinkage,
+        BuildOptions, CargoTarget, ResolvedRuntimeNode, RustDynamicLibraries, RustLinkage,
         dynamic_library_file_name, fingerprint_resolved_runtime_graph, lib_extension_for_triple,
         resolve_rust_standard_library_in,
     };
@@ -985,6 +1024,17 @@ mod tests {
 
     fn triple(value: &str) -> Triple {
         value.parse().expect("test target triple must parse")
+    }
+
+    #[test]
+    fn crate_type_override_applies_only_to_library_targets() {
+        assert!(CargoTarget::Lib.accepts_crate_type_override());
+        assert!(!CargoTarget::Binary("waterui-cef-helper").accepts_crate_type_override());
+        assert_eq!(CargoTarget::Lib.cargo_args(), ["--lib"]);
+        assert_eq!(
+            CargoTarget::Binary("waterui-cef-helper").cargo_args(),
+            ["--bin", "waterui-cef-helper"]
+        );
     }
 
     #[test]

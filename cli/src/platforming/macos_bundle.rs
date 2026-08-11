@@ -10,7 +10,7 @@ use smol::fs;
 use smol::stream::StreamExt as _;
 
 #[cfg(target_os = "macos")]
-use crate::utils::run_command_os;
+use crate::utils::{copy_file, run_command_os};
 
 #[cfg(target_os = "macos")]
 const CEF_HELPER_VARIANTS: [(&str, &str); 5] = [
@@ -84,7 +84,7 @@ pub async fn package_binary_as_app(
         .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| eyre::eyre!("Binary path has no valid executable name"))?;
     let executable_dest = macos_dir.join(executable_name);
-    fs::copy(binary_path, &executable_dest).await?;
+    copy_file(binary_path, &executable_dest).await?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -249,7 +249,7 @@ pub async fn package_cef_helper_app(
         fs::create_dir_all(&helper_frameworks_dir).await?;
 
         let helper_executable = helper_macos_dir.join(&helper_name);
-        fs::copy(helper_binary_path, &helper_executable).await?;
+        copy_file(helper_binary_path, &helper_executable).await?;
         {
             use std::os::unix::fs::PermissionsExt as _;
 

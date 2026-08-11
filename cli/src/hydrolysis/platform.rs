@@ -68,22 +68,23 @@ async fn hydrolysis_target_dir(
     linkage: RustLinkage,
     extra_features: &[&str],
 ) -> eyre::Result<PathBuf> {
-    if linkage == RustLinkage::Static {
-        return project.backend_target_dir("hydrolysis").await;
-    }
-
-    let backend_manifest = project
-        .backend_path::<HydrolysisBackend>()
-        .join("Cargo.toml");
-    let development_feature = format!("{}/dev", project.crate_name());
-    let build_features = std::iter::once(development_feature)
-        .chain(extra_features.iter().map(|feature| (*feature).to_string()))
-        .collect::<Vec<_>>();
-    let fingerprint =
-        shared_rust_runtime_fingerprint(&backend_manifest, &build_features, &platform.triple())
-            .await?;
+    let fingerprint = if linkage == RustLinkage::Static {
+        None
+    } else {
+        let backend_manifest = project
+            .backend_path::<HydrolysisBackend>()
+            .join("Cargo.toml");
+        let development_feature = format!("{}/dev", project.crate_name());
+        let build_features = std::iter::once(development_feature)
+            .chain(extra_features.iter().map(|feature| (*feature).to_string()))
+            .collect::<Vec<_>>();
+        Some(
+            shared_rust_runtime_fingerprint(&backend_manifest, &build_features, &platform.triple())
+                .await?,
+        )
+    };
     project
-        .shared_backend_target_dir("hydrolysis", &fingerprint)
+        .backend_build_target_dir("hydrolysis", fingerprint.as_deref())
         .await
 }
 
@@ -170,7 +171,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         },
     );
     if let Some(sccache_path) = options.sccache_path() {
-        cargo.env("RUSTC_WRAPPER", sccache_path);
+        crate::toolchain::sccache::configure_compilation_cache(cargo, sccache_path);
     }
     let llvm_envs = WindowsArm64LlvmToolchain
         .cargo_envs()

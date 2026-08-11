@@ -1577,6 +1577,80 @@ mod tests {
     }
 
     #[test]
+    fn generated_ffi_manifest_emits_only_linked_crate_types() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_root = temp.path().join("project");
+        let ffi_dir = temp
+            .path()
+            .join("cache")
+            .join("managed_backends")
+            .join("ffi");
+        let ctx = ctx(
+            Some(PathBuf::from("../waterui")),
+            Some(ffi_dir.clone()),
+            Some(project_root),
+            crate::project::PackageType::Playground,
+        );
+
+        smol::block_on(crate::templates::ffi::scaffold(
+            &ffi_dir,
+            &ctx,
+            "playground-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
+
+        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
+            .expect("ffi Cargo.toml should be written")
+            .parse::<toml::Table>()
+            .expect("ffi Cargo.toml should parse");
+        let crate_types = manifest["lib"]["crate-type"]
+            .as_array()
+            .expect("crate-type should be an array")
+            .iter()
+            .map(|value| value.as_str().expect("crate type should be a string"))
+            .collect::<Vec<_>>();
+
+        // Apple links the staticlib, Android loads the cdylib, and nothing anywhere
+        // consumes an rlib of this crate.
+        assert_eq!(crate_types, ["staticlib", "cdylib"]);
+    }
+
+    #[test]
+    fn generated_manifests_keep_debug_info_off_for_dependencies() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_root = temp.path().join("project");
+        let ffi_dir = temp
+            .path()
+            .join("cache")
+            .join("managed_backends")
+            .join("ffi");
+        let ctx = ctx(
+            Some(PathBuf::from("../waterui")),
+            Some(ffi_dir.clone()),
+            Some(project_root),
+            crate::project::PackageType::Playground,
+        );
+
+        smol::block_on(crate::templates::ffi::scaffold(
+            &ffi_dir,
+            &ctx,
+            "playground-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
+
+        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
+            .expect("ffi Cargo.toml should be written")
+            .parse::<toml::Table>()
+            .expect("ffi Cargo.toml should parse");
+        let dev = &manifest["profile"]["dev"];
+
+        // Generated crates declare `[workspace]`, so they inherit no profile and have
+        // to carry this themselves.
+        assert_eq!(dev["debug"].as_integer(), Some(1));
+        assert_eq!(dev["package"]["*"]["debug"].as_bool(), Some(false));
+    }
+
+    #[test]
     fn playground_android_manifest_enables_picture_in_picture_by_default() {
         let ctx = playground_ctx();
         let template = embedded::ANDROID
@@ -1759,6 +1833,7 @@ async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
 struct SupportCargoManifest {
     package: SupportPackageSection,
     lib: SupportLibSection,
+    profile: cargo_toml::Profiles,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
@@ -1802,6 +1877,34 @@ struct SupportDependencyDetail {
     features: Vec<String>,
 }
 
+/// Build the `[profile.dev]` section every generated crate carries.
+///
+/// Generated crates declare `[workspace]`, which makes each of them its own
+/// workspace root: they inherit nothing from the repository or the user's project,
+/// so whatever profile they should build under has to be written into them here.
+/// Without this they defaulted to full debug info for the entire dependency graph,
+/// which is the bulk of both the link time and the artifact size of a debug build,
+/// and none of which anyone steps through — the `WaterUI` runtime is a dependency of
+/// these crates, not the code under debug.
+///
+/// Line tables are kept for the generated crate itself so panics still resolve to
+/// file and line.
+fn generated_dev_profile() -> cargo_toml::Profiles {
+    let mut dev = cargo_toml::Profile {
+        debug: Some(cargo_toml::DebugSetting::Lines),
+        ..Default::default()
+    };
+    let mut dependency_override = toml::value::Table::new();
+    dependency_override.insert("debug".to_string(), toml::Value::Boolean(false));
+    dev.package
+        .insert("*".to_string(), toml::Value::Table(dependency_override));
+
+    cargo_toml::Profiles {
+        dev: Some(dev),
+        ..Default::default()
+    }
+}
+
 async fn write_support_cargo_toml(
     base_dir: &Path,
     crate_name: &str,
@@ -1815,12 +1918,13 @@ async fn write_support_cargo_toml(
             edition: "2024".to_string(),
         },
         lib: SupportLibSection {
-            crate_type: vec![
-                "staticlib".to_string(),
-                "cdylib".to_string(),
-                "rlib".to_string(),
-            ],
+            // A support app's own crate is only ever consumed as a Rust dependency of
+            // the generated FFI crate, and that FFI crate is what the platform links.
+            // Emitting `staticlib`/`cdylib` here archived and relinked the entire
+            // dependency graph twice more for products nothing ever loads.
+            crate_type: vec!["rlib".to_string()],
         },
+        profile: generated_dev_profile(),
         features,
         dependencies,
         workspace: SupportWorkspaceSection {},
@@ -1916,6 +2020,7 @@ fn render_native_backend_bin_cargo_toml(
     let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
     package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
     manifest.package = Some(package);
+    manifest.profile = generated_dev_profile();
 
     manifest.dependencies.insert(
         ctx.crate_name.to_string(),
@@ -2643,8 +2748,8 @@ pub mod ffi {
     use super::{
         NativeBackendDependencyPathKind, Path, TemplateContext, TemplateNamespace,
         WATERUI_FFI_VERSION, WATERUI_VERSION, cargo_semver, cargo_version_req,
-        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
-        write_file_if_changed,
+        compute_native_backend_dependency_path, embedded, fs, generated_dev_profile, io,
+        scaffold_dir, write_file_if_changed,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -2671,13 +2776,14 @@ pub mod ffi {
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         package.autobins = false;
         manifest.package = Some(package);
+        manifest.profile = generated_dev_profile();
 
+        // Apple links `lib<ffi>.a` and Android loads `lib<ffi>.so`, so the manifest
+        // declares only that union; nothing ever consumes an `rlib` of this crate.
+        // Each build then narrows further to the single crate type its platform
+        // links, via `RustBuild::with_crate_type_override`.
         manifest.lib = Some(Product {
-            crate_type: vec![
-                "staticlib".to_string(),
-                "cdylib".to_string(),
-                "rlib".to_string(),
-            ],
+            crate_type: vec!["staticlib".to_string(), "cdylib".to_string()],
             ..Default::default()
         });
         if ctx.cef_runtime_enabled() {
@@ -3052,8 +3158,8 @@ pub mod preview_ffi {
     use super::{
         NativeBackendDependencyPathKind, PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace,
         WATERUI_FFI_VERSION, cargo_semver, cargo_version_req,
-        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
-        write_file_if_changed,
+        compute_native_backend_dependency_path, embedded, fs, generated_dev_profile, io,
+        scaffold_dir, write_file_if_changed,
     };
 
     /// Preview ABI exported to Apple support applications.
@@ -3090,6 +3196,7 @@ pub mod preview_ffi {
         let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         manifest.package = Some(package);
+        manifest.profile = generated_dev_profile();
 
         manifest.lib = Some(Product {
             crate_type: vec!["dylib".to_string()],

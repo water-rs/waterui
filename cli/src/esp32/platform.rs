@@ -248,7 +248,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     cargo.arg("build");
     cargo.arg("--target-dir").arg(&backend_target_dir);
     if let Some(sccache_path) = options.sccache_path() {
-        cargo.env("RUSTC_WRAPPER", sccache_path);
+        crate::toolchain::sccache::configure_compilation_cache(cargo, sccache_path);
     }
     for (key, value) in esp_toolchain_envs(chip)? {
         cargo.env(key, value);
