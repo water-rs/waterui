@@ -26,7 +26,6 @@ use cef::{
 #[cfg(feature = "chromium")]
 use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
-use serde_json::{Value, json};
 #[cfg(feature = "chromium")]
 use waterui_chromium::{
     CdpError, ChromiumConfiguration, ChromiumEvent, ChromiumPageHandle, ChromiumProfile,
@@ -836,17 +835,15 @@ impl CefPageHandle {
             state,
         };
         if let Some(user_agent) = configuration.user_agent {
-            handle.execute_without_result(
-                "Network.setUserAgentOverride",
-                &json!({"userAgent": user_agent}),
-            );
+            handle.execute_without_result(&crate::cdp::protocol::SetUserAgentOverride {
+                user_agent: &user_agent,
+            });
         }
         handle
     }
 
-    fn execute_without_result(&self, method: &str, params: &Value) {
-        let future = self.cdp.execute_raw(method, params);
-        drop(future);
+    fn execute_without_result<C: crate::cdp::protocol::CdpCommand>(&self, command: &C) {
+        drop(self.cdp.execute(command));
     }
 
     /// Installs the backend GPU importer for a visible page.
@@ -1243,13 +1240,10 @@ impl ChromiumPageHandle for CefPageHandle {
             "Chromium download directory must be absolute: {}",
             directory.display()
         );
-        self.execute_without_result(
-            "Browser.setDownloadBehavior",
-            &json!({
-                "behavior": "allow",
-                "downloadPath": directory,
-            }),
-        );
+        self.execute_without_result(&crate::cdp::protocol::SetDownloadBehavior {
+            behavior: "allow",
+            download_path: &directory.to_string_lossy(),
+        });
     }
 
     fn watch(&self, watcher: impl Fn(ChromiumEvent) + 'static) {
@@ -1275,22 +1269,12 @@ impl ChromiumPageHandle for CefPageHandle {
         &self,
         format: ScreenshotFormat,
     ) -> impl Future<Output = Result<Vec<u8>, CdpError>> + 'static {
-        let parameters = screenshot_parameters(format);
+        let command = screenshot_command(format);
         let session = self.cdp.clone();
         async move {
-            let response = session
-                .execute_raw("Page.captureScreenshot", &parameters)
-                .await
-                .map_err(CdpError::from)?;
-            let encoded = response
-                .get("data")
-                .and_then(Value::as_str)
-                .ok_or_else(|| CdpError::InvalidPayload {
-                    method: "Page.captureScreenshot".to_string(),
-                    message: "response is missing base64 `data`".to_string(),
-                })?;
+            let response = session.execute(&command).await.map_err(CdpError::from)?;
             base64::engine::general_purpose::STANDARD
-                .decode(encoded)
+                .decode(response.data)
                 .map_err(|error| CdpError::InvalidPayload {
                     method: "Page.captureScreenshot".to_string(),
                     message: error.to_string(),
@@ -1305,21 +1289,18 @@ impl ChromiumPageHandle for CefPageHandle {
 }
 
 #[cfg(feature = "chromium")]
-fn screenshot_parameters(format: ScreenshotFormat) -> Value {
+const fn screenshot_command(format: ScreenshotFormat) -> crate::cdp::protocol::CaptureScreenshot {
     let (format, quality) = match format {
         ScreenshotFormat::Png => ("png", None),
         ScreenshotFormat::Jpeg(quality) => ("jpeg", Some(quality)),
         ScreenshotFormat::WebP(quality) => ("webp", Some(quality)),
     };
-    let mut parameters = json!({
-        "format": format,
-        "fromSurface": true,
-        "captureBeyondViewport": false,
-    });
-    if let Some(quality) = quality {
-        parameters["quality"] = Value::from(quality);
+    crate::cdp::protocol::CaptureScreenshot {
+        format,
+        quality,
+        from_surface: true,
+        capture_beyond_viewport: false,
     }
-    parameters
 }
 
 /// Controller shared by standard `WebView` and full Chromium components.
@@ -1495,7 +1476,7 @@ mod tests {
 
     use super::{
         CefPageEvent, CefPageMode, PageState, key_event_type, popup_navigation_target,
-        screenshot_parameters, windows_key_code,
+        screenshot_command, windows_key_code,
     };
 
     #[test]
@@ -1518,12 +1499,12 @@ mod tests {
 
     #[test]
     fn png_screenshot_omits_the_format_specific_quality_parameter() {
-        let png = screenshot_parameters(ScreenshotFormat::Png);
-        assert_eq!(png["format"], "png");
-        assert!(png.get("quality").is_none());
+        let png = screenshot_command(ScreenshotFormat::Png);
+        assert_eq!(png.format, "png");
+        assert!(png.quality.is_none());
 
-        let jpeg = screenshot_parameters(ScreenshotFormat::Jpeg(82));
-        assert_eq!(jpeg["quality"], 82);
+        let jpeg = screenshot_command(ScreenshotFormat::Jpeg(82));
+        assert_eq!(jpeg.quality, Some(82));
     }
 
     #[test]
