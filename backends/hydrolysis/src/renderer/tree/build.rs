@@ -567,7 +567,6 @@ impl RenderNode {
             Ok(map) => return RenderNode::build_map((*map).into_inner(), env, renderer),
             Err(view) => view,
         };
-        #[cfg(hydrolysis_webview)]
         let view = match view.downcast::<WebView>() {
             Ok(webview) => return RenderNode::build_webview(*webview, env, renderer),
             Err(view) => view,

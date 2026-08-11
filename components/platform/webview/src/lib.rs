@@ -260,7 +260,6 @@ impl WebView {
         F: FnOnce() -> V + 'static,
     {
         use waterui_core::env::with;
-        use waterui_layout::spacer;
         let proxy = WebViewProxy::new(self.handle.clone());
         let body = content();
         // Children render above the WebView body and have the proxy injected

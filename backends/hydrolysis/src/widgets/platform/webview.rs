@@ -267,14 +267,20 @@ impl WebViewRenderState {
         }
     }
 
+    /// Built when no web engine feature is selected.
+    ///
+    /// The component still occupies its layout slot and still reports itself to
+    /// the accessibility tree; only the web content is absent. A build without an
+    /// engine is a missing feature, not a crash, and it is the configuration the
+    /// testing harness runs in.
     #[cfg(not(any(
         hydrolysis_macos_system_webview,
         hydrolysis_linux_wpe_webview,
         hydrolysis_cef_webview
     )))]
     pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
-        let _ = (view, env);
-        panic!("Hydrolysis WebView was linked without a selected WebView engine feature")
+        let _ = env;
+        Self { _source: view }
     }
 
     pub(crate) fn prebuild(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
@@ -321,6 +327,35 @@ pub(crate) fn measure_webview_node(
     ))
 }
 
+/// Publishes the web view's own accessibility node.
+///
+/// The engine renders page content into a texture or a native subview, neither of
+/// which the host tree can see into, so the component itself must appear. The role
+/// defaults to a group and is overridden by `a11y_role`; the label comes from
+/// `a11y_label`.
+fn register_webview_accessibility(ctx: &mut WidgetRenderContext<'_>, env: &Environment) {
+    #[cfg(feature = "accessibility")]
+    {
+        use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
+
+        use crate::renderer::transformed_rect;
+
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let renderer = ctx.renderer_mut();
+        let mut node = AccessibilityNode::new(
+            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
+        );
+        if let Some(label) = renderer.resolve_accessibility_label(env, None) {
+            node.set_label(label);
+        }
+        let _ = renderer.register_accessibility_node(node, bounds, env, None);
+    }
+    #[cfg(not(feature = "accessibility"))]
+    {
+        let _ = (ctx, env);
+    }
+}
+
 /// Renders a retained webview leaf every flush: flushes the composed content
 /// sub-view at the node's bounds. The content's own dispatch drives accessibility
 /// (webview a11y is render-driven) and its inner reactive `Text` nodes stay live.
@@ -329,6 +364,11 @@ pub(crate) fn render_webview_node(
     state: &Rc<RefCell<WebViewRenderState>>,
     env: &Environment,
 ) {
+    // Every engine path publishes the same semantic node. Page content is opaque to
+    // the host accessibility tree, so this is what a screen reader has to work
+    // with: the web view's own role, label and bounds.
+    register_webview_accessibility(ctx, env);
+
     #[cfg(hydrolysis_macos_system_webview)]
     {
         let _ = env;
@@ -372,8 +412,8 @@ pub(crate) fn render_webview_node(
         hydrolysis_cef_webview
     )))]
     {
-        let _ = (ctx, state, env);
-        panic!("Hydrolysis WebView has no selected rendering engine")
+        let _ = state;
+        register_webview_accessibility(ctx, env);
     }
 }
 
@@ -390,9 +430,6 @@ pub(crate) fn install_controller(env: &mut Environment) {
     env.insert(WebViewController::new(controller));
 }
 
-#[cfg(not(any(
-    hydrolysis_macos_system_webview,
-    hydrolysis_linux_wpe_webview,
-    hydrolysis_cef_webview
-)))]
-pub(crate) fn install_controller(_env: &mut Environment) {}
+// No `install_controller` without an engine: the caller is gated on
+// `hydrolysis_webview`, so a build with no engine never asks for a controller and
+// a `WebView` in the tree renders as its accessible, contentless placeholder.
