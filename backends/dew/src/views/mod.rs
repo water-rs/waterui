@@ -33,11 +33,6 @@ pub mod stepper;
 pub mod text_field;
 pub mod toggle;
 
-/// Narrows a logical-pixel `f64` to layout's `f32` vocabulary.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "logical-pixel geometry is far below f32 precision limits"
-)]
 /// The disabled state in force at this point in the view tree.
 ///
 /// Disabled is a scoped environment attribute installed by `.disabled(...)`,
@@ -51,6 +46,11 @@ pub fn view_disabled(env: &Environment) -> nami::Computed<bool> {
         )
 }
 
+/// Narrows a logical-pixel `f64` to layout's `f32` vocabulary.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "logical-pixel geometry is far below f32 precision limits"
+)]
 pub const fn to_f32(value: f64) -> f32 {
     value as f32
 }
