@@ -87,6 +87,7 @@ tempfile = "3.27"
 walkdir = "2.5"
 pathdiff = "0.2"
 url = "2.5"
+fs4 = "1.1.0"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
