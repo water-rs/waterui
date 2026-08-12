@@ -34,7 +34,7 @@ use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::display_list::DisplayList;
 use crate::pointer::{PointerRouter, PointerTargetHandle};
-use crate::text::{DewState, TextLayoutCache, emit_text_commands};
+use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
 use crate::theme;
 use crate::views;
 
@@ -92,6 +92,75 @@ pub(crate) trait DewNode {
 
     fn patch(&mut self, _renderer: &mut DewRenderer) -> bool {
         false
+    }
+}
+
+/// A node paired with a per-frame cache of its measurement results.
+///
+/// Container layouts negotiate by probing: `size_that_fits` asks every child
+/// for a size, then `place` asks again, and each child that is itself a
+/// container repeats the pattern with its own children. The number of measure
+/// calls therefore multiplies with depth even though the answers are
+/// identical within a frame — and for a text leaf each answer costs a full
+/// `parley` layout.
+///
+/// Wrapping every node in this cache collapses that to one measurement per
+/// distinct [`ProposalSize`] per node per frame. The cache is cleared in
+/// [`DewNode::patch`], which the runtime runs over the whole tree immediately
+/// before rendering, so a cached size can never outlive the signal values it
+/// came from. The per-frame lifetime is the point: a longer-lived cache would
+/// have to track every signal each measurement happened to read.
+///
+/// This is also where `AGENTS.md` places the cache — measurement caching is
+/// the `SubView`'s responsibility, never the `Layout`'s. Dew confines
+/// measurement to the render thread ([`NodeSubview`] returns `true` from
+/// `require_main_thread`), so a plain [`RefCell`] suffices and no
+/// synchronization is needed.
+struct MeasuredNode {
+    inner: Box<dyn DewNode>,
+    cache: RefCell<Vec<(ProposalSize, ViewDimensions)>>,
+}
+
+impl MeasuredNode {
+    fn wrap(inner: Box<dyn DewNode>) -> Box<dyn DewNode> {
+        Box::new(Self {
+            inner,
+            cache: RefCell::new(Vec::new()),
+        })
+    }
+}
+
+impl DewNode for MeasuredNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        let cached = self
+            .cache
+            .borrow()
+            .iter()
+            .find(|(key, _)| *key == proposal)
+            .map(|(_, dimensions)| dimensions.clone());
+        if let Some(dimensions) = cached {
+            state.borrow_mut().work.measures_reused += 1;
+            return dimensions;
+        }
+        let dimensions = self.inner.measure(state, proposal);
+        state.borrow_mut().work.measures_computed += 1;
+        self.cache
+            .borrow_mut()
+            .push((proposal, dimensions.clone()));
+        dimensions
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        self.inner.render(renderer, ctx);
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.inner.stretch_axis()
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        self.cache.borrow_mut().clear();
+        self.inner.patch(renderer)
     }
 }
 
@@ -167,10 +236,15 @@ impl DewRenderer {
         self.list.clear();
         self.watch_guards.clear();
         self.pointer.begin_frame();
+        // Discard measure counters left over from tree construction so the
+        // frame reports only its own work.
+        self.state.borrow_mut().take_work();
         root.patch(self);
         root.render(self, RenderContext::root(width, height));
         self.pointer.finish_frame();
         self.root = Some(root);
+        let measure_work = self.state.borrow_mut().take_work();
+        self.list.add_work(measure_work);
         core::mem::take(&mut self.list)
     }
 
@@ -206,11 +280,25 @@ impl DewRenderer {
     }
 }
 
+/// Expands `view` into a retained node, wrapped in its measurement cache.
+///
+/// Every node in the tree is wrapped, including the ones widget handlers
+/// build, so the layout pass never measures the same node twice with the same
+/// proposal within a frame. See [`MeasuredNode`].
+pub(crate) fn build_node(
+    renderer: &mut DewRenderer,
+    view: AnyView,
+    env: &Environment,
+    depth: usize,
+) -> Box<dyn DewNode> {
+    MeasuredNode::wrap(build_unmeasured_node(renderer, view, env, depth))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "type-directed retained node construction is clearer as one exhaustive dispatch chain"
 )]
-pub(crate) fn build_node(
+fn build_unmeasured_node(
     renderer: &mut DewRenderer,
     mut view: AnyView,
     env: &Environment,
@@ -226,7 +314,10 @@ pub(crate) fn build_node(
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
             .expect("dew environment metadata downcast must match its type id");
-        return build_node(renderer, content, &value, depth + 1);
+        // Environment metadata is a pass-through, not a node of its own: build
+        // the content unwrapped so it does not collect a second, redundant
+        // measurement cache underneath the one this call is already wrapped in.
+        return build_unmeasured_node(renderer, content, &value, depth + 1);
     }
     if type_id == TypeId::of::<Metadata<Retain>>() {
         let Metadata { content, value } = *view
@@ -312,13 +403,13 @@ pub(crate) fn build_node(
         let button = *view
             .downcast::<Native<ButtonConfig>>()
             .expect("dew ButtonConfig downcast must match its type id");
-        return views::button::build(button.into_inner(), env);
+        return views::button::build(renderer, button.into_inner(), env);
     }
     if type_id == TypeId::of::<Native<ToggleConfig>>() {
         let toggle = *view
             .downcast::<Native<ToggleConfig>>()
             .expect("dew ToggleConfig downcast must match its type id");
-        return views::toggle::build(toggle.into_inner(), env);
+        return views::toggle::build(renderer, toggle.into_inner(), env);
     }
     if type_id == TypeId::of::<Native<SliderConfig>>() {
         let slider = *view
@@ -330,13 +421,13 @@ pub(crate) fn build_node(
         let stepper = *view
             .downcast::<Native<StepperConfig>>()
             .expect("dew StepperConfig downcast must match its type id");
-        return views::stepper::build(stepper.into_inner(), env);
+        return views::stepper::build(renderer, stepper.into_inner(), env);
     }
     if type_id == TypeId::of::<Native<ResolvedTextFieldConfig>>() {
         let field = *view
             .downcast::<Native<ResolvedTextFieldConfig>>()
             .expect("dew text-field downcast must match its type id");
-        return views::text_field::build(field.into_inner(), env);
+        return views::text_field::build(renderer, field.into_inner(), env);
     }
     #[cfg(feature = "progress")]
     if type_id == TypeId::of::<Native<ProgressConfig>>() {
@@ -346,8 +437,10 @@ pub(crate) fn build_node(
         return views::progress::build(renderer, progress.into_inner(), env, depth + 1);
     }
 
+    // Expanding a composite body yields the same logical node, so it stays
+    // unwrapped; the caller's wrapper caches the whole expansion.
     view = AnyView::new(view.body(env));
-    build_node(renderer, view, env, depth + 1)
+    build_unmeasured_node(renderer, view, env, depth + 1)
 }
 
 struct NodeSubview<'a> {
@@ -571,31 +664,42 @@ impl DewNode for TextNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let revision = self.content.revision();
         let mut cache = self.cache.borrow_mut();
-        let layout = cache.get_or_build(revision, proposal.width, || {
-            state.borrow_mut().build_styled_layout(
-                &self.content.get(),
-                &self.env,
-                proposal.width,
-                theme::FOREGROUND,
-            )
-        });
-        ViewDimensions::new(Size::new(layout.width(), layout.height()))
+        let (layout, outcome) = cache.get_or_build(
+            revision,
+            TextLayoutKey::foreground(proposal.width),
+            || {
+                state.borrow_mut().build_styled_layout(
+                    &self.content.get(),
+                    &self.env,
+                    proposal.width,
+                    theme::FOREGROUND,
+                )
+            },
+        );
+        let dimensions = ViewDimensions::new(Size::new(layout.width(), layout.height()));
+        state.borrow_mut().record_layout(outcome);
+        dimensions
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
         let revision = self.content.revision();
         let max_width = max_width_from_bounds(ctx.bounds);
-        let mut cache = self.cache.borrow_mut();
-        let layout = cache.get_or_build(revision, max_width, || {
-            renderer.state.borrow_mut().build_styled_layout(
-                &self.content.get(),
-                &self.env,
-                max_width,
-                theme::FOREGROUND,
-            )
-        });
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
-        emit_text_commands(&mut renderer.list, layout, transform);
+        let outcome = self.cache.borrow_mut().emit(
+            revision,
+            TextLayoutKey::foreground(max_width),
+            transform,
+            &mut renderer.list,
+            || {
+                renderer.state.borrow_mut().build_styled_layout(
+                    &self.content.get(),
+                    &self.env,
+                    max_width,
+                    theme::FOREGROUND,
+                )
+            },
+        );
+        renderer.state.borrow_mut().record_layout(outcome);
     }
 }
 
@@ -607,36 +711,51 @@ struct StrNode {
 impl DewNode for StrNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let mut cache = self.cache.borrow_mut();
-        let layout = cache.get_or_build(0, proposal.width, || {
-            state
-                .borrow_mut()
-                .build_plain_layout(&self.value, proposal.width)
-        });
-        ViewDimensions::new(Size::new(layout.width(), layout.height()))
+        let (layout, outcome) =
+            cache.get_or_build(0, TextLayoutKey::foreground(proposal.width), || {
+                state
+                    .borrow_mut()
+                    .build_plain_layout(&self.value, proposal.width)
+            });
+        let dimensions = ViewDimensions::new(Size::new(layout.width(), layout.height()));
+        state.borrow_mut().record_layout(outcome);
+        dimensions
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
         let max_width = max_width_from_bounds(ctx.bounds);
-        let mut cache = self.cache.borrow_mut();
-        let layout = cache.get_or_build(0, max_width, || {
-            renderer
-                .state
-                .borrow_mut()
-                .build_plain_layout(&self.value, max_width)
-        });
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
-        emit_text_commands(&mut renderer.list, layout, transform);
+        let outcome = self
+            .cache
+            .borrow_mut()
+            .emit(
+                0,
+                TextLayoutKey::foreground(max_width),
+                transform,
+                &mut renderer.list,
+                || {
+                    renderer
+                        .state
+                        .borrow_mut()
+                        .build_plain_layout(&self.value, max_width)
+                },
+            );
+        renderer.state.borrow_mut().record_layout(outcome);
     }
 }
 
-struct WatchedSignal<S: Signal> {
+/// A signal paired with a counter that increments whenever it changes.
+///
+/// The counter is what layout and glyph caches key on: it changes exactly when
+/// the shaped result would, and comparing it costs one load.
+pub(crate) struct WatchedSignal<S: Signal> {
     signal: S,
     revision: Rc<Cell<u64>>,
     _guard: S::Guard,
 }
 
 impl<S: Signal> WatchedSignal<S> {
-    fn new(signal: S, signals: FrameSignals) -> Self {
+    pub(crate) fn new(signal: S, signals: FrameSignals) -> Self {
         let revision = Rc::new(Cell::new(0u64));
         let guard = signal.watch({
             let revision = Rc::clone(&revision);
@@ -657,11 +776,11 @@ impl<S: Signal> WatchedSignal<S> {
         }
     }
 
-    fn get(&self) -> S::Output {
+    pub(crate) fn get(&self) -> S::Output {
         self.signal.get()
     }
 
-    fn revision(&self) -> u64 {
+    pub(crate) fn revision(&self) -> u64 {
         self.revision.get()
     }
 }

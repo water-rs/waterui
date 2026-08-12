@@ -13,14 +13,15 @@
 use std::cell::RefCell;
 
 use kurbo::{Affine, Rect};
-use nami::Signal;
+use nami::Computed;
+use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_core::Environment;
 use waterui_core::layout::Size;
 use waterui_text::styled::StyledStr;
 
-use crate::dispatch::{DewRenderer, RenderContext};
-use crate::text::DewState;
+use crate::dispatch::{DewRenderer, RenderContext, WatchedSignal};
+use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
 use crate::theme;
 
 pub mod button;
@@ -55,51 +56,114 @@ pub const fn to_f32(value: f64) -> f32 {
     value as f32
 }
 
-/// Measures a control [`Label`] through its semantic text.
+/// A control label together with its retained text layout.
 ///
-/// Visually hidden labels measure zero while their semantic text stays
-/// available to future accessibility plumbing.
-pub fn measure_label(state: &RefCell<DewState>, label: &Label, env: &Environment) -> Size {
-    if matches!(label.display_mode_preference(), LabelDisplayMode::Hidden) {
-        return Size::new(0.0, 0.0);
-    }
-    let styled = label.semantic_text().resolve(env).content.get();
-    let (width, height) = state.borrow_mut().measure_styled(&styled, env, None);
-    Size::new(width, height)
+/// Control labels resolve their text from a signal, so they need exactly what
+/// `TextNode` already has: a watched revision, a [`TextLayoutCache`] keyed on
+/// it, and retained glyph runs. Without this every control re-shaped its label
+/// through `parley` on every measure *and* every render — and layout probes
+/// each control several times per frame, so a static button label was being
+/// re-shaped a handful of times per frame forever.
+///
+/// Build one per label at node-construction time and keep it in the node.
+pub struct LabelText {
+    display_mode: LabelDisplayMode,
+    content: WatchedSignal<Computed<StyledStr>>,
+    cache: RefCell<TextLayoutCache>,
 }
 
-/// Renders a control [`Label`]'s semantic text inside `rect`, vertically
-/// centered, subscribing to the text's reactive content.
-pub fn render_label(
-    renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    rect: Rect,
-    label: &Label,
-    env: &Environment,
-) {
-    render_label_with_brush(renderer, ctx, rect, label, env, theme::FOREGROUND);
-}
-
-/// Renders a control [`Label`]'s semantic text with a caller-selected default
-/// brush for styles whose surface changes the foreground contrast.
-pub fn render_label_with_brush(
-    renderer: &mut DewRenderer,
-    ctx: RenderContext,
-    rect: Rect,
-    label: &Label,
-    env: &Environment,
-    brush: peniko::Color,
-) {
-    if matches!(label.display_mode_preference(), LabelDisplayMode::Hidden) {
-        return;
+impl LabelText {
+    /// Retains `label`'s semantic text, subscribing to its reactive content.
+    #[must_use]
+    pub fn new(label: &Label, env: &Environment, signals: FrameSignals) -> Self {
+        Self {
+            display_mode: label.display_mode_preference(),
+            content: WatchedSignal::new(label.semantic_text().resolve(env).content, signals),
+            cache: RefCell::new(TextLayoutCache::default()),
+        }
     }
-    let content = label.semantic_text().resolve(env).content;
-    let styled = renderer.read_signal(&content);
-    emit_styled_text(renderer, ctx, rect, &styled, env, brush);
+
+    /// Whether this label draws nothing.
+    ///
+    /// Visually hidden labels measure zero and emit no glyphs while their
+    /// semantic text stays available to accessibility plumbing.
+    const fn is_hidden(&self) -> bool {
+        matches!(self.display_mode, LabelDisplayMode::Hidden)
+    }
+
+    /// Measures the label at its intrinsic width.
+    pub fn measure(&self, state: &RefCell<DewState>, env: &Environment) -> Size {
+        if self.is_hidden() {
+            return Size::new(0.0, 0.0);
+        }
+        let key = TextLayoutKey::foreground(None);
+        let mut cache = self.cache.borrow_mut();
+        let (layout, outcome) = cache.get_or_build(self.content.revision(), key, || {
+            state
+                .borrow_mut()
+                .build_styled_layout(&self.content.get(), env, None, key.brush)
+        });
+        let size = Size::new(layout.width(), layout.height());
+        state.borrow_mut().record_layout(outcome);
+        size
+    }
+
+    /// Renders the label inside `rect`, vertically centred, in the theme
+    /// foreground.
+    pub fn render(
+        &self,
+        renderer: &mut DewRenderer,
+        ctx: RenderContext,
+        rect: Rect,
+        env: &Environment,
+    ) {
+        self.render_with_brush(renderer, ctx, rect, env, theme::FOREGROUND);
+    }
+
+    /// Renders the label with a caller-selected default brush, for surfaces
+    /// that change the foreground contrast.
+    pub fn render_with_brush(
+        &self,
+        renderer: &mut DewRenderer,
+        ctx: RenderContext,
+        rect: Rect,
+        env: &Environment,
+        brush: peniko::Color,
+    ) {
+        if self.is_hidden() {
+            return;
+        }
+        let max_width = (rect.width() > 0.0).then(|| to_f32(rect.width()));
+        let key = TextLayoutKey { max_width, brush };
+        let revision = self.content.revision();
+        let mut cache = self.cache.borrow_mut();
+        // Vertical centring needs the laid-out height, which is only known
+        // once the layout exists, so resolve it before emitting.
+        let height = {
+            let (layout, outcome) = cache.get_or_build(revision, key, || {
+                renderer.state_cell().borrow_mut().build_styled_layout(
+                    &self.content.get(),
+                    env,
+                    max_width,
+                    brush,
+                )
+            });
+            renderer.state_cell().borrow_mut().record_layout(outcome);
+            f64::from(layout.height())
+        };
+        let dy = ((rect.height() - height) / 2.0).max(0.0);
+        let transform = ctx.transform * Affine::translate((rect.x0, rect.y0 + dy));
+        cache.emit(revision, key, transform, renderer.list_mut(), || {
+            unreachable!("the layout for this key was built moments ago")
+        });
+    }
 }
 
 /// Emits styled text laid out to `rect`'s width, vertically centered within
 /// `rect`, painted with `brush` where spans carry no explicit color.
+///
+/// The uncached path, for text a node does not retain (a value that is
+/// re-derived every frame anyway). Prefer [`LabelText`] for anything stable.
 pub fn emit_styled_text(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
@@ -139,7 +203,11 @@ mod tests {
     use waterui_controls::toggle::Toggle;
     use waterui_core::AnyView;
 
-    fn render_commands(view: impl waterui_core::View, width: f64, height: f64) -> Vec<DrawCommand> {
+    fn render_commands(
+        view: impl waterui_core::View,
+        width: f64,
+        height: f64,
+    ) -> Vec<crate::display_list::PlacedCommand> {
         let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
         waterui_testing::install_test_executor();
         let mut renderer = DewRenderer::default();
@@ -147,8 +215,8 @@ mod tests {
         list.commands().to_vec()
     }
 
-    fn solid_brush(command: &DrawCommand) -> peniko::Color {
-        match command {
+    fn solid_brush(placed: &crate::display_list::PlacedCommand) -> peniko::Color {
+        match placed.command() {
             DrawCommand::FillPath {
                 brush: Brush::Solid(color),
                 ..

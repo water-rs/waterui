@@ -1,13 +1,23 @@
-//! Performance-constrained commercial UI simulation for Dew.
+//! Work-budgeted embedded simulation for Dew.
 //!
 //! The workload models a 480×320 vending-machine panel with twelve product
 //! tiles, a live order summary, and a continuously updating payment-progress
-//! bar. The renderer stays single-threaded and the test is intended to run in
-//! Cargo's unoptimized test profile with the scalar fallback rasterizer. Display
-//! transfer time is accounted for as an `RGB565` panel on a 40 MHz `SPI` bus.
+//! bar, driven single-threaded through the scalar fallback rasterizer.
+//!
+//! What makes it a *simulation* rather than a benchmark is what it asserts on.
+//! Host wall-clock is recorded but is never a pass criterion: a development
+//! machine runs a different instruction set at twenty times the clock, and it
+//! executes `kurbo`'s `f64` geometry in hardware where every ESP32-class FPU
+//! is single-precision and emulates it in software. No constant converts one
+//! to the other. What does transfer exactly is the *amount of work* the engine
+//! asks for, the heap it holds, and the bytes it pushes down the panel bus, so
+//! those are the budgets. See [`waterui_dew::stats`] and `support::simulation`.
+//!
+//! The projected on-chip frame time in the report is exactly that — a
+//! projection from an estimated cost table, labelled as such. Calibrate
+//! [`ChipBudget`] against real hardware to turn it into a measurement.
 
 use std::collections::VecDeque;
-use std::fmt::Write as _;
 use std::time::{Duration, Instant as StdInstant};
 
 use nami::{Binding, binding};
@@ -17,54 +27,105 @@ use waterui_backend_core::input::TouchPhase;
 use waterui_backend_core::time::Instant;
 use waterui_core::AnyView;
 use waterui_dew::{
-    Board, DeviceRegion, DewRuntime, PointerSample, Rgb565Display, Rgb565Sink, render_view_png,
+    Board, ChipBudget, DeviceRegion, DewRuntime, FrameWork, PointerSample, Provenance,
+    Rgb565Display, Rgb565Sink,
 };
 use waterui_layout::frame::Frame;
 
 mod support;
 
+use support::simulation::{PanelBus, PeakTrackingAllocator, Violation, WorkBudget};
+
 use core::prelude::v1::test;
+
+/// Heap accounting for the simulation. Rust requires a `static` here.
+#[global_allocator]
+static ALLOCATOR: PeakTrackingAllocator = PeakTrackingAllocator::new();
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
 const DEFAULT_BAND_HEIGHT: u32 = 16;
-const FRAME_BUDGET: Duration = Duration::from_nanos(16_666_667);
-const SPI_BITS_PER_SECOND: u64 = 40_000_000;
-const RGB565_BITS_PER_PIXEL: u64 = 16;
-const DMA_SETUP: Duration = Duration::from_micros(8);
 const WARMUP_FRAMES: usize = 120;
 const DEFAULT_SAMPLE_FRAMES: usize = 3_600;
 const INTERACTION_PERIOD: usize = 120;
+
+/// Internal SRAM an ESP32-S3 application can realistically use once ESP-IDF
+/// has taken its share. Used to express what heap retention would cost.
+const TARGET_USABLE_SRAM_BYTES: usize = 320 * 1024;
+
+/// Steady-state heap retention tolerated, in bytes per sampled frame.
+///
+/// Expressed per frame rather than as a lump sum so the gate does not loosen
+/// as the sample lengthens: genuine per-frame retention keeps the same
+/// per-frame rate at any frame count, while cache saturation — which is what
+/// this workload actually exhibits — sees its rate fall as frames increase.
+///
+/// Measured behaviour on this screen, for reference: 81 B/frame over 200
+/// frames, 50 over 600, 34 over 1800. Decreasing, i.e. bounded. It has not
+/// been soaked long enough to observe the plateau outright, so this ceiling
+/// is set to catch a *linear* leak rather than to certify the bound.
+const MAX_HEAP_RETENTION_BYTES_PER_FRAME: u64 = 128;
+
+/// Name of the rasterizer pipeline the simulated target runs.
+const TARGET_RENDER_MODE_NAME: &str = "OptimizeQuality (f32 pipeline)";
+
+/// Cost model for the chip this simulation projects onto.
+///
+/// The numbers are ESTIMATES derived from the chip's clock and the rough
+/// instruction counts of each operation — good enough to rank two designs,
+/// not to promise a frame rate. [`Provenance::Estimated`] says so in every
+/// report. Replace them with a fit against on-device cycle counters and flip
+/// the provenance to [`Provenance::Measured`]; nothing else has to change.
+const fn target_chip() -> ChipBudget {
+    ChipBudget {
+        chip: "esp32s3",
+        provenance: Provenance::Estimated,
+        core_hz: 240_000_000,
+        // parley shaping: itemization, font matching, glyph positioning.
+        cycles_per_text_layout: 120_000,
+        // A skrifa outline-bounds read, including a likely flash-cache miss.
+        cycles_per_glyph_bounds: 2_500,
+        cycles_per_measure: 1_200,
+        cycles_per_command: 600,
+        // Soft-float f64 dominates flattening on a single-precision FPU.
+        cycles_per_path_element: 400,
+        cycles_per_band_visit: 120,
+        cycles_per_pixel: 60,
+    }
+}
+
+/// Per-frame work ceilings for this screen.
+///
+/// Each is set a little above the measured steady state, so an algorithmic
+/// regression trips it while ordinary variation does not.
+const fn work_budget() -> WorkBudget {
+    WorkBudget {
+        // Only genuinely changing text reshapes: the order total and the
+        // authorization percentage, at the handful of widths layout proposes.
+        text_layouts_shaped: 8.0,
+        // Retained glyph runs mean only changed text re-reads outlines.
+        glyph_bounds_measured: 40.0,
+        measures_computed: 200.0,
+        commands_emitted: 60.0,
+        // The band index must keep this near the number of commands that can
+        // actually appear in the dirty bands, not commands x bands.
+        command_band_visits: 60.0,
+        // Dirty-region rasterization: a tiny fraction of the 153,600-pixel
+        // panel. Anything approaching full-screen means the diff has broken.
+        pixels_rasterized: 4_000.0,
+        pixels_transferred: 4_000.0,
+    }
+}
 
 #[derive(Debug)]
 struct StreamingPanel {
     width: u32,
     height: u32,
-    frame_pixels: u64,
-    frame_regions: u64,
-    last_transfer: Option<TransferWork>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TransferWork {
-    pixels: u64,
-    regions: u64,
 }
 
 impl StreamingPanel {
     const fn new(width: u32, height: u32) -> Self {
-        Self {
-            width,
-            height,
-            frame_pixels: 0,
-            frame_regions: 0,
-            last_transfer: None,
-        }
-    }
-
-    const fn last_transfer(&self) -> TransferWork {
-        self.last_transfer
-            .expect("a pumped Dew frame must present its transfer work")
+        Self { width, height }
     }
 }
 
@@ -86,18 +147,10 @@ impl Rgb565Sink for StreamingPanel {
             pixel_count,
             "simulated panel RGB565 payload must match the flushed region"
         );
+        // The panel consumes the band and keeps no framebuffer; `black_box`
+        // stops the optimizer from eliding the RGB565 conversion that a real
+        // device would pay for.
         std::hint::black_box(pixels);
-        self.frame_pixels += region.area();
-        self.frame_regions += 1;
-    }
-
-    fn present(&mut self) {
-        self.last_transfer = Some(TransferWork {
-            pixels: self.frame_pixels,
-            regions: self.frame_regions,
-        });
-        self.frame_pixels = 0;
-        self.frame_regions = 0;
     }
 }
 
@@ -167,9 +220,14 @@ impl Board for SimulatedEmbeddedBoard {
 
     fn render_settings(&self) -> RenderSettings {
         RenderSettings {
+            // No SIMD and no worker threads: an ESP32-class core has neither.
             level: Level::fallback(),
             num_threads: 0,
-            render_mode: RenderMode::OptimizeSpeed,
+            // The pipeline the target actually runs. `painter.rs` forces the
+            // f32 path on Xtensa because the Xtensa LLVM backend miscompiles
+            // vello_cpu's u8/u16 fine kernels, so simulating the faster u8
+            // path would measure code the chip will never execute.
+            render_mode: RenderMode::OptimizeQuality,
         }
     }
 
@@ -338,66 +396,213 @@ fn vending_screen(state: &VendingState) -> impl View + use<> {
     ))
 }
 
-fn panel_transfer_time(work: TransferWork) -> Duration {
-    let wire_bits = work.pixels * RGB565_BITS_PER_PIXEL;
-    let wire_nanoseconds = wire_bits
-        .checked_mul(1_000_000_000)
-        .expect("panel transfer duration overflow")
-        / SPI_BITS_PER_SECOND;
-    Duration::from_nanos(wire_nanoseconds)
-        + DMA_SETUP * u32::try_from(work.regions).expect("region count must fit u32")
-}
-
-const fn percentile(samples: &[Duration], numerator: usize, denominator: usize) -> Duration {
-    let index = (samples.len() - 1) * numerator / denominator;
-    samples[index]
-}
-
+/// Frames sampled after warm-up, overridable for longer soak runs.
 fn sample_frames() -> usize {
-    std::env::var("DEW_PERF_FRAMES").map_or(DEFAULT_SAMPLE_FRAMES, |value| {
-        value
-            .parse()
-            .expect("DEW_PERF_FRAMES must be a positive integer")
-    })
+    env_usize("DEW_PERF_FRAMES", DEFAULT_SAMPLE_FRAMES)
 }
 
 fn warmup_frames() -> usize {
-    std::env::var("DEW_PERF_WARMUP").map_or(WARMUP_FRAMES, |value| {
-        value
-            .parse()
-            .expect("DEW_PERF_WARMUP must be a non-negative integer")
-    })
+    env_usize("DEW_PERF_WARMUP", WARMUP_FRAMES)
 }
 
 fn band_height() -> u32 {
-    std::env::var("DEW_PERF_BAND_HEIGHT").map_or(DEFAULT_BAND_HEIGHT, |value| {
+    u32::try_from(env_usize(
+        "DEW_PERF_BAND_HEIGHT",
+        DEFAULT_BAND_HEIGHT as usize,
+    ))
+    .expect("band height must fit u32")
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name).map_or(default, |value| {
         value
             .parse()
-            .expect("DEW_PERF_BAND_HEIGHT must be a positive integer")
+            .unwrap_or_else(|error| panic!("{name} must be a non-negative integer: {error}"))
     })
 }
 
-struct PerformanceSample {
-    cpu_times: Vec<Duration>,
-    effective_times: Vec<Duration>,
-    transferred_pixels: u64,
-    transferred_regions: u64,
+/// Everything one sampled run establishes about the workload.
+struct Sample {
+    work: FrameWork,
+    peak_heap_bytes: usize,
+    heap_growth_bytes: i64,
     peak_rgba_flush_bytes: usize,
     peak_rgb565_bytes: usize,
-    missed_frames: Vec<MissedFrame>,
+    host_cpu_p50: Duration,
+    host_cpu_p99: Duration,
 }
 
-struct MissedFrame {
-    frame: usize,
-    cpu_time: Duration,
-    transfer_time: Duration,
-    transfer: TransferWork,
-    dirty: Vec<kurbo::Rect>,
+/// The simulation's verdict, serialized to TOML for review.
+#[derive(serde::Serialize)]
+struct Report {
+    workload: Workload,
+    target: Target,
+    per_frame_work: PerFrameWork,
+    memory: Memory,
+    panel: Panel,
+    /// Host wall-clock, recorded for context and explicitly not a criterion.
+    host_diagnostics: HostDiagnostics,
+    budget: WorkBudget,
+    violations: Vec<Violation>,
 }
 
-impl PerformanceSample {
-    const fn missed_frames(&self) -> usize {
-        self.missed_frames.len()
+#[derive(serde::Serialize)]
+struct Workload {
+    name: &'static str,
+    width: u32,
+    height: u32,
+    band_height: u32,
+    sample_frames: usize,
+    interaction: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct Target {
+    chip: ChipBudget,
+    /// Rasterizer pipeline, which must match what the chip actually runs.
+    render_mode: &'static str,
+    projected_cpu_ms_per_frame: f64,
+    projected_frame_ms: f64,
+    /// True only when the chip budget was calibrated on real hardware.
+    projection_is_measured: bool,
+}
+
+#[derive(serde::Serialize)]
+struct PerFrameWork {
+    text_layouts_shaped: f64,
+    text_layouts_reused: f64,
+    glyph_bounds_measured: f64,
+    glyph_runs_reused: f64,
+    measures_computed: f64,
+    measures_reused: f64,
+    commands_emitted: f64,
+    path_elements_flattened: f64,
+    command_band_visits: f64,
+    command_band_draws: f64,
+    pixels_rasterized: f64,
+    pixels_transferred: f64,
+    regions_transferred: f64,
+    measure_cache_hit_rate: Option<f64>,
+    text_cache_hit_rate: Option<f64>,
+    band_visit_efficiency: Option<f64>,
+}
+
+#[derive(serde::Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "every field of a memory report is a byte count; naming them so is the point"
+)]
+struct Memory {
+    /// Zero by construction: Dew never allocates a full framebuffer.
+    panel_framebuffer_bytes: u64,
+    scratch_rgba_band_bytes: usize,
+    peak_rgba_flush_bytes: usize,
+    peak_rgb565_dma_bytes: usize,
+    peak_heap_bytes: usize,
+    /// Live-heap delta across the sample. Non-zero means per-frame retention,
+    /// which is fatal on a device with a few hundred KiB of RAM.
+    heap_growth_bytes: i64,
+}
+
+#[derive(serde::Serialize)]
+struct Panel {
+    bus: PanelBus,
+    transfer_ms_per_frame: f64,
+    /// What a full-screen repaint would cost on this bus — the ceiling Dew's
+    /// dirty-region design exists to stay below.
+    full_frame_ms: f64,
+    full_frame_fps: f64,
+}
+
+#[derive(serde::Serialize)]
+struct HostDiagnostics {
+    note: &'static str,
+    cpu_p50_ms: f64,
+    cpu_p99_ms: f64,
+}
+
+fn duration_millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counter and frame magnitudes stay far below f64's exact-integer range"
+)]
+fn per_frame(total: u64, frames: usize) -> f64 {
+    total as f64 / frames as f64
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counter and frame magnitudes stay far below f64's exact-integer range"
+)]
+fn build_report(sample: &Sample, frames: usize, band_height: u32) -> Report {
+    let work = &sample.work;
+    let bus = PanelBus::SPI_40MHZ_RGB565;
+    let transfer = bus.transfer_time(work);
+    let full_frame = bus.full_frame_time(WIDTH, HEIGHT);
+    let chip = target_chip();
+    let projected_cpu = chip.cpu_nanoseconds(work) / frames as u64;
+    let projected_frame =
+        Duration::from_nanos(projected_cpu) + transfer / u32::try_from(frames).expect("frames");
+    let budget = work_budget();
+    Report {
+        workload: Workload {
+            name: "vending-machine-480x320-12-products",
+            width: WIDTH,
+            height: HEIGHT,
+            band_height,
+            sample_frames: frames,
+            interaction: "retained product button every 120 frames",
+        },
+        target: Target {
+            chip,
+            render_mode: TARGET_RENDER_MODE_NAME,
+            projected_cpu_ms_per_frame: projected_cpu as f64 / 1_000_000.0,
+            projected_frame_ms: duration_millis(projected_frame),
+            projection_is_measured: matches!(chip.provenance, Provenance::Measured),
+        },
+        per_frame_work: PerFrameWork {
+            text_layouts_shaped: per_frame(work.text_layouts_shaped, frames),
+            text_layouts_reused: per_frame(work.text_layouts_reused, frames),
+            glyph_bounds_measured: per_frame(work.glyph_bounds_measured, frames),
+            glyph_runs_reused: per_frame(work.glyph_runs_reused, frames),
+            measures_computed: per_frame(work.measures_computed, frames),
+            measures_reused: per_frame(work.measures_reused, frames),
+            commands_emitted: per_frame(work.commands_emitted, frames),
+            path_elements_flattened: per_frame(work.path_elements_flattened, frames),
+            command_band_visits: per_frame(work.command_band_visits, frames),
+            command_band_draws: per_frame(work.command_band_draws, frames),
+            pixels_rasterized: per_frame(work.pixels_rasterized, frames),
+            pixels_transferred: per_frame(work.pixels_transferred, frames),
+            regions_transferred: per_frame(work.regions_transferred, frames),
+            measure_cache_hit_rate: work.measure_hit_rate(),
+            text_cache_hit_rate: work.text_hit_rate(),
+            band_visit_efficiency: work.band_visit_efficiency(),
+        },
+        memory: Memory {
+            panel_framebuffer_bytes: 0,
+            scratch_rgba_band_bytes: WIDTH as usize * band_height as usize * 4,
+            peak_rgba_flush_bytes: sample.peak_rgba_flush_bytes,
+            peak_rgb565_dma_bytes: sample.peak_rgb565_bytes,
+            peak_heap_bytes: sample.peak_heap_bytes,
+            heap_growth_bytes: sample.heap_growth_bytes,
+        },
+        panel: Panel {
+            bus,
+            transfer_ms_per_frame: duration_millis(transfer) / frames as f64,
+            full_frame_ms: duration_millis(full_frame),
+            full_frame_fps: 1.0 / full_frame.as_secs_f64(),
+        },
+        host_diagnostics: HostDiagnostics {
+            note: "host wall-clock; recorded for context, never a pass criterion \
+                   (see waterui_dew::stats)",
+            cpu_p50_ms: duration_millis(sample.host_cpu_p50),
+            cpu_p99_ms: duration_millis(sample.host_cpu_p99),
+        },
+        budget,
+        violations: budget.violations(work, frames),
     }
 }
 
@@ -411,14 +616,6 @@ fn create_runtime(state: &VendingState, band_height: u32) -> DewRuntime<Simulate
     )
 }
 
-fn warm_up(runtime: &mut DewRuntime<SimulatedEmbeddedBoard>, state: &VendingState, frames: usize) {
-    for frame in 0..frames {
-        state.update_animation(frame);
-        enqueue_product_selection(runtime, frame);
-        runtime.pump().expect("warmup state change must render");
-    }
-}
-
 fn enqueue_product_selection(runtime: &mut DewRuntime<SimulatedEmbeddedBoard>, frame: usize) {
     if !frame.is_multiple_of(INTERACTION_PERIOD) {
         return;
@@ -426,208 +623,44 @@ fn enqueue_product_selection(runtime: &mut DewRuntime<SimulatedEmbeddedBoard>, f
     let selection = (frame / INTERACTION_PERIOD) % 12;
     let column = selection % 4;
     let row = selection / 4;
-    let x = 108.0f64.mul_add(
-        f64::from(u32::try_from(column).expect("column must fit u32")),
-        78.0,
-    );
-    let y = 62.0f64.mul_add(
-        f64::from(u32::try_from(row).expect("row must fit u32")),
-        77.0,
-    );
+    let x = 108.0f64.mul_add(f64::from(u32::try_from(column).expect("column")), 78.0);
+    let y = 62.0f64.mul_add(f64::from(u32::try_from(row).expect("row")), 77.0);
     runtime.board_mut().click(x, y);
 }
 
-fn collect_sample(
+fn drive(
     runtime: &mut DewRuntime<SimulatedEmbeddedBoard>,
     state: &VendingState,
     start_frame: usize,
     frames: usize,
-) -> PerformanceSample {
-    let mut sample = PerformanceSample {
-        cpu_times: Vec::with_capacity(frames),
-        effective_times: Vec::with_capacity(frames),
-        transferred_pixels: 0,
-        transferred_regions: 0,
-        peak_rgba_flush_bytes: 0,
-        peak_rgb565_bytes: 0,
-        missed_frames: Vec::new(),
-    };
-    for frame in 0..frames {
-        let animation_frame = frame + start_frame;
-        state.update_animation(animation_frame);
-        enqueue_product_selection(runtime, animation_frame);
+    collect: Option<&mut Sample>,
+) {
+    let mut host_times = Vec::with_capacity(frames);
+    let mut work = FrameWork::ZERO;
+    for offset in 0..frames {
+        let frame = offset + start_frame;
+        state.update_animation(frame);
+        enqueue_product_selection(runtime, frame);
         let started = StdInstant::now();
-        let dirty = runtime
+        let rendered = runtime
             .pump()
-            .expect("commercial animation state change must render");
-        let cpu_time = started.elapsed();
-        let transfer = runtime.board().display.sink().last_transfer();
-        let transfer_time = panel_transfer_time(transfer);
-        let effective_time = cpu_time + transfer_time;
-        if effective_time > FRAME_BUDGET {
-            sample.missed_frames.push(MissedFrame {
-                frame: animation_frame,
-                cpu_time,
-                transfer_time,
-                transfer,
-                dirty,
-            });
-        }
-        sample.cpu_times.push(cpu_time);
-        sample.effective_times.push(effective_time);
-        sample.transferred_pixels += transfer.pixels;
-        sample.transferred_regions += transfer.regions;
+            .expect("an animated frame must always re-render");
+        host_times.push(started.elapsed());
+        work += rendered.work;
     }
+    let Some(sample) = collect else {
+        return;
+    };
+    host_times.sort_unstable();
+    sample.work = work;
+    sample.host_cpu_p50 = percentile(&host_times, 50);
+    sample.host_cpu_p99 = percentile(&host_times, 99);
     sample.peak_rgba_flush_bytes = runtime.board().display.peak_rgba_bytes();
     sample.peak_rgb565_bytes = runtime.board().display.peak_dma_bytes();
-    sample.cpu_times.sort_unstable();
-    sample.effective_times.sort_unstable();
-    sample
 }
 
-fn duration_millis(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
-}
-
-fn format_report(sample: &PerformanceSample, frames: usize, band_height: u32) -> String {
-    let frame_count = u32::try_from(frames).expect("sample frame count must fit u32");
-    let scratch_rgba_bytes = usize::try_from(WIDTH).expect("panel width must fit usize")
-        * usize::try_from(band_height).expect("band height must fit usize")
-        * 4;
-    let pixel_count =
-        u32::try_from(sample.transferred_pixels).expect("sample pixel count must fit u32");
-    let region_count =
-        u32::try_from(sample.transferred_regions).expect("sample region count must fit u32");
-    let elapsed: Duration = sample.effective_times.iter().sum();
-    let paced_elapsed: Duration = sample
-        .effective_times
-        .iter()
-        .map(|duration| (*duration).max(FRAME_BUDGET))
-        .sum();
-    let work_capacity_fps = f64::from(frame_count) / elapsed.as_secs_f64();
-    let sustained_fps = f64::from(frame_count) / paced_elapsed.as_secs_f64();
-    let mut report = String::new();
-    writeln!(report, "workload=vending-machine-480x320-12-products").unwrap();
-    writeln!(
-        report,
-        "interaction=retained-product-button-every-120-frames"
-    )
-    .unwrap();
-    writeln!(report, "cpu_profile=scalar-fallback-single-thread").unwrap();
-    writeln!(report, "sample_frames={frames}").unwrap();
-    writeln!(report, "band_height={band_height}").unwrap();
-    write_memory_report(&mut report, sample, scratch_rgba_bytes);
-    writeln!(
-        report,
-        "frame_budget_ms={:.3}",
-        duration_millis(FRAME_BUDGET)
-    )
-    .unwrap();
-    writeln!(report, "target_fps=60").unwrap();
-    writeln!(report, "missed_frames={}", sample.missed_frames()).unwrap();
-    writeln!(report, "sustained_fps={sustained_fps:.2}").unwrap();
-    writeln!(report, "work_capacity_fps={work_capacity_fps:.2}").unwrap();
-    writeln!(
-        report,
-        "cpu_p50_ms={:.3}",
-        duration_millis(percentile(&sample.cpu_times, 50, 100))
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "cpu_p99_ms={:.3}",
-        duration_millis(percentile(&sample.cpu_times, 99, 100))
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "effective_p50_ms={:.3}",
-        duration_millis(percentile(&sample.effective_times, 50, 100))
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "effective_p95_ms={:.3}",
-        duration_millis(percentile(&sample.effective_times, 95, 100))
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "effective_p99_ms={:.3}",
-        duration_millis(percentile(&sample.effective_times, 99, 100))
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "effective_max_ms={:.3}",
-        duration_millis(
-            *sample
-                .effective_times
-                .last()
-                .expect("performance sample must not be empty")
-        )
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "average_transfer_pixels={:.1}",
-        f64::from(pixel_count) / f64::from(frame_count)
-    )
-    .unwrap();
-    writeln!(
-        report,
-        "average_transfer_regions={:.2}",
-        f64::from(region_count) / f64::from(frame_count)
-    )
-    .unwrap();
-    write_missed_frames(&mut report, sample);
-    report
-}
-
-fn write_memory_report(report: &mut String, sample: &PerformanceSample, scratch_rgba_bytes: usize) {
-    writeln!(report, "panel_framebuffer_bytes=0").unwrap();
-    writeln!(report, "scratch_rgba_bytes={scratch_rgba_bytes}").unwrap();
-    writeln!(
-        report,
-        "peak_rgba_flush_bytes={}",
-        sample.peak_rgba_flush_bytes
-    )
-    .unwrap();
-    writeln!(report, "peak_rgb565_dma_bytes={}", sample.peak_rgb565_bytes).unwrap();
-    writeln!(
-        report,
-        "peak_pixel_working_set_bytes={}",
-        scratch_rgba_bytes + sample.peak_rgb565_bytes
-    )
-    .unwrap();
-}
-
-fn write_missed_frames(report: &mut String, sample: &PerformanceSample) {
-    for missed in &sample.missed_frames {
-        writeln!(
-            report,
-            "missed_frame={} cpu_ms={:.3} transfer_ms={:.3} pixels={} regions={}",
-            missed.frame,
-            duration_millis(missed.cpu_time),
-            duration_millis(missed.transfer_time),
-            missed.transfer.pixels,
-            missed.transfer.regions
-        )
-        .unwrap();
-        writeln!(report, "missed_dirty={:?}", missed.dirty).unwrap();
-    }
-}
-
-fn export_visual(state: &VendingState) {
-    let visual_state = state.clone();
-    let png = render_view_png(
-        move || vending_screen(&visual_state),
-        support::test_environment(),
-        WIDTH,
-        HEIGHT,
-    );
-    std::fs::write("/tmp/waterui_dew_vending_machine.png", png)
-        .expect("vending-machine visual artifact must be writable");
+const fn percentile(sorted: &[Duration], percent: usize) -> Duration {
+    sorted[(sorted.len() - 1) * percent / 100]
 }
 
 #[test]
@@ -647,44 +680,82 @@ fn vending_product_selection_updates_order() {
     assert_eq!(state.total_cents.get(), 175);
 }
 
+/// The panel bus alone caps full-screen repaints well below 60 FPS, which is
+/// the entire reason Dew tracks dirty regions. If this ever stops holding,
+/// the workload is no longer representative of a bandwidth-bound panel.
 #[test]
-#[ignore = "explicit scalar single-thread 60 FPS performance simulation"]
-fn vending_machine_holds_stable_sixty_fps() {
-    let sample_frames = sample_frames();
-    let warmup_frames = warmup_frames();
+fn full_screen_repaint_is_bus_bound_below_thirty_fps() {
+    let full_frame = PanelBus::SPI_40MHZ_RGB565.full_frame_time(WIDTH, HEIGHT);
+    assert!(
+        full_frame > Duration::from_millis(33),
+        "a {WIDTH}x{HEIGHT} RGB565 frame over 40 MHz SPI must exceed a 30 FPS budget, got {full_frame:?}"
+    );
+}
+
+/// The work-budgeted embedded simulation.
+///
+/// Fails on three things, none of which is host speed: exceeding a per-frame
+/// work ceiling, retaining heap across frames, or handing the board more than
+/// one band of pixels at a time.
+#[test]
+fn vending_machine_holds_its_embedded_work_budget() {
+    let frames = sample_frames();
+    let warmup = warmup_frames();
     let band_height = band_height();
-    assert!(sample_frames > 0, "performance sample must contain frames");
-    assert!(band_height > 0, "performance band height must be positive");
+    assert!(frames > 0, "the sample must contain frames");
+    assert!(band_height > 0, "the band height must be positive");
+
     let state = VendingState::new();
-    if std::env::var_os("DEW_PERF_SKIP_IMAGE").is_none() {
-        export_visual(&state);
-    }
     let mut runtime = create_runtime(&state, band_height);
     runtime
         .pump()
         .expect("initial vending-machine frame must render");
+    drive(&mut runtime, &state, 0, warmup, None);
 
-    warm_up(&mut runtime, &state, warmup_frames);
-    let sample = collect_sample(&mut runtime, &state, warmup_frames, sample_frames);
-    let maximum_rgba_band_bytes = usize::try_from(WIDTH).expect("panel width must fit usize")
-        * usize::try_from(band_height).expect("band height must fit usize")
-        * 4;
-    let maximum_rgb565_band_bytes = maximum_rgba_band_bytes / 2;
+    // Warm-up has populated every cache and grown every buffer, so heap from
+    // here on should be flat. Measure the steady state, not the ramp.
+    ALLOCATOR.reset_peak();
+    let heap_before = ALLOCATOR.live_bytes();
+    let mut sample = Sample {
+        work: FrameWork::ZERO,
+        peak_heap_bytes: 0,
+        heap_growth_bytes: 0,
+        peak_rgba_flush_bytes: 0,
+        peak_rgb565_bytes: 0,
+        host_cpu_p50: Duration::ZERO,
+        host_cpu_p99: Duration::ZERO,
+    };
+    drive(&mut runtime, &state, warmup, frames, Some(&mut sample));
+    sample.peak_heap_bytes = ALLOCATOR.peak_bytes();
+    sample.heap_growth_bytes = i64::try_from(ALLOCATOR.live_bytes()).expect("heap fits i64")
+        - i64::try_from(heap_before).expect("heap fits i64");
+
+    let report = build_report(&sample, frames, band_height);
+    let rendered = toml::to_string_pretty(&report).expect("the report must serialize");
+    std::fs::write("/tmp/waterui_dew_vending_performance.toml", &rendered)
+        .expect("the performance report must be writable");
+
+    let max_rgba_band = WIDTH as usize * band_height as usize * 4;
     assert!(
-        sample.peak_rgba_flush_bytes <= maximum_rgba_band_bytes,
-        "simulated board received a region larger than one RGBA band"
+        sample.peak_rgba_flush_bytes <= max_rgba_band,
+        "the board received a region larger than one RGBA band; {rendered}"
     );
     assert!(
-        sample.peak_rgb565_bytes <= maximum_rgb565_band_bytes,
-        "simulated board allocated more than one RGB565 DMA band"
+        sample.peak_rgb565_bytes <= max_rgba_band / 2,
+        "the board allocated more than one RGB565 DMA band; {rendered}"
     );
-    let report = format_report(&sample, sample_frames, band_height);
-    std::fs::write("/tmp/waterui_dew_vending_performance.txt", &report)
-        .expect("performance report must be writable");
-
-    assert_eq!(
-        sample.missed_frames(),
-        0,
-        "vending-machine simulation missed frames; {report}"
+    let retention_per_frame = sample.heap_growth_bytes.unsigned_abs() / frames as u64;
+    assert!(
+        retention_per_frame <= MAX_HEAP_RETENTION_BYTES_PER_FRAME,
+        "steady-state frames retained {retention_per_frame} bytes of heap each ({} total over \
+         {frames} frames). Sustained, that exhausts a {}-KiB device in {} frames — under half an \
+         hour at 60 FPS. {rendered}",
+        sample.heap_growth_bytes,
+        TARGET_USABLE_SRAM_BYTES / 1024,
+        TARGET_USABLE_SRAM_BYTES as u64 / retention_per_frame.max(1)
+    );
+    assert!(
+        report.violations.is_empty(),
+        "the vending-machine simulation exceeded its per-frame work budget; {rendered}"
     );
 }
