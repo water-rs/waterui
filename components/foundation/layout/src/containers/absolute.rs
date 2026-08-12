@@ -661,9 +661,6 @@ mod tests {
         fn priority(&self) -> i32 {
             0
         }
-        fn require_main_thread(&self) -> bool {
-            true
-        }
     }
 
     #[test]

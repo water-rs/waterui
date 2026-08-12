@@ -4,14 +4,14 @@
 //! level while asserting at runtime that the value is only ever accessed on the
 //! thread that created it (the main / UI thread).
 //!
-//! This is the primitive that lets the parallel layout engine measure children
-//! across worker threads. A child whose measurement must stay on the main thread
-//! (see [`SubView::require_main_thread`](crate::layout::SubView::require_main_thread))
-//! keeps its `!Send` measurement state inside a `MainThreadBound`; the layout
-//! executor guarantees such children are only ever measured on the main thread, so
-//! the runtime check never fires in correct operation — it is the fail-fast safety
-//! net for a [`require_main_thread`](crate::layout::SubView::require_main_thread)
-//! misclassification, not a hot-path guard.
+//! Use it for state that is `!Send` because it belongs to the main / UI thread —
+//! a platform widget handle, a GPU view, a renderer's device context — but has to
+//! sit inside a type that some `Send + Sync` bound forces it into. The runtime
+//! check never fires in correct operation; it is a fail-fast net for state that
+//! escaped to a worker, not a hot-path guard.
+//!
+//! Layout measurement does **not** need it: [`SubView`](crate::layout::SubView) is
+//! single-threaded by contract, so a measurement cache is a plain `RefCell`.
 
 use core::fmt;
 use core::mem::ManuallyDrop;
@@ -93,9 +93,8 @@ impl<T> MainThreadBound<T> {
     fn assert_owner(&self) {
         assert!(
             self.is_owner_thread(),
-            "MainThreadBound accessed off the main thread: a view requiring \
-             main-thread measurement was scheduled on a worker. This is a \
-             SubView::require_main_thread() misclassification."
+            "MainThreadBound accessed off the main thread: a value confined to \
+             the main / UI thread escaped to a worker."
         );
     }
 

@@ -52,12 +52,10 @@ pub use waterui_core::layout::*;
 
 mod collections;
 mod containers;
-pub mod measure;
 mod modifiers;
 
 pub use collections::{grid, scroll};
 pub use containers::{absolute, collection_transition, container, divider, frame, spacer};
-pub use measure::measure_children;
 pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
 
 pub use divider::Divider;

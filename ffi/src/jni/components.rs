@@ -202,11 +202,6 @@ impl SubView for JniSubView {
         self.priority
     }
 
-    fn require_main_thread(&self) -> bool {
-        // Android `View.measure` must run on the UI thread; keep the layout executor
-        // from scheduling JNI measurement on a worker.
-        true
-    }
 }
 
 fn horizontal_alignment_to_java<'local>(

@@ -29,7 +29,7 @@ waterui-map-gpu.workspace = true
 waterui-webview.workspace = true
 waterui-chromium = { workspace = true, optional = true }
 waterui-browser-cef = { workspace = true, optional = true }
-waterui-layout = { workspace = true, features = ["parallel"] }
+waterui-layout = { workspace = true }
 waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }

@@ -470,9 +470,6 @@ impl SubView for NodeSubview<'_> {
         0
     }
 
-    fn require_main_thread(&self) -> bool {
-        true
-    }
 }
 
 struct ContainerNode {

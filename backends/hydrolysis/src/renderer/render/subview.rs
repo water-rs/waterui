@@ -5,34 +5,19 @@ use waterui_core::MainThreadBound;
 
 /// Layout proxy that measures a child view through the hydrolysis renderer.
 ///
-/// The per-frame render tree is built serially on the main thread, but each
-/// child's *measurement* runs through the layout executor, which may schedule it
-/// on a worker thread. Only one kind of leaf has a measurement heavy enough to be
-/// worth parallelizing: **text**, whose shaping (parley line-breaking and glyph
-/// layout) dominates. Every other leaf measures in `O(1)` (a fill-of-proposal or a
-/// constant), so there is nothing to offload — those keep measuring on the main
-/// thread, and shapes/images get their parallelism at the GPU encode layer instead.
-///
-/// So a text leaf is fully resolved on the main thread during tree-build (reading
-/// its signals and theme) into a `Send` [`ResolvedTextLayoutInput`]; the remaining
-/// shaping is pure and runs through the thread-safe [`TextMeasureService`]. For
-/// those children `require_main_thread()` returns `false`, so the executor measures
-/// them across worker threads. Every other view measures by recursing into
-/// arbitrary (possibly reactive) bodies, which borrows the renderer's `HydroState`
-/// and a `!Send` `Environment`; those are confined to the main thread via
-/// [`MainThreadBound`] and the subview reports `require_main_thread() == true`.
+/// A text leaf is fully resolved during tree-build (reading its signals and theme)
+/// into a [`ResolvedTextLayoutInput`], and `measure` then shapes it through the
+/// content-keyed [`TextMeasureService`] directly. That shortcut skips the general
+/// path, which measures by recursing into arbitrary (possibly reactive) bodies and
+/// so has to borrow the renderer's `HydroState` and `Environment`.
 pub(crate) struct HydroSubview<'a> {
     view: MainThreadBound<&'a AnyView>,
     state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
     env: MainThreadBound<Environment>,
     stretch_axis: StretchAxis,
     /// Per-proposal memo for this layout pass (containers probe children with
-    /// repeated proposals). The `SubView` contract wants caches thread-safe *when
-    /// measurement can run on a worker*; this subview only caches on the
-    /// main-thread recursion path (`require_main_thread() == true`), so the
-    /// contract-sanctioned `MainThreadBound` confinement makes the interior
-    /// `RefCell` sound. The worker-safe text path never touches it — text memoizes
-    /// in the `Mutex`-guarded, content-keyed [`TextMeasureService`] instead.
+    /// repeated proposals). Only the recursion path caches here; the text path
+    /// memoizes in the content-keyed [`TextMeasureService`] instead.
     measure_cache: MainThreadBound<RefCell<Vec<(ProposalSize, ViewDimensions)>>>,
     /// Present when this child is a text leaf resolved on the main thread. When
     /// set, `measure` shapes through `service` on any thread and the subview is
@@ -133,9 +118,6 @@ impl SubView for HydroSubview<'_> {
         0
     }
 
-    fn require_main_thread(&self) -> bool {
-        self.resolved_text.is_none()
-    }
 }
 
 /// Resolve a text leaf into a `Send` layout input on the main thread, or `None`

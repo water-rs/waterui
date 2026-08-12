@@ -557,21 +557,22 @@ const fn last_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
 /// The [`Layout`] trait deliberately has **no** caching: containers probe their
 /// children freely with many proposals. Any measurement caching must therefore be
 /// owned by the `SubView` implementation itself (the leaf), not the container.
-/// Expensive measures — text shaping above all — **must** cache. Because layout
-/// runs measurement in parallel across worker threads (see
-/// [`require_main_thread`](Self::require_main_thread)), a `SubView`'s cache must be
-/// **thread-safe** (a lock or lock-free structure), not a `RefCell`.
+/// Expensive measures — text shaping above all — **must** cache.
 ///
-/// # Thread-safety: `Send + Sync`
+/// # Measurement is single-threaded by contract
 ///
-/// `SubView` requires `Send + Sync` so layout containers can measure independent
-/// children in parallel. Most measures (text, media, shapes, fixed sizes) are pure
-/// over thread-safe inputs and parallelize directly. An implementation whose
-/// measurement genuinely must touch main-thread-only state should confine that
-/// state in [`MainThreadBound`](crate::MainThreadBound) (to satisfy `Send + Sync`)
-/// and return `true` from [`require_main_thread`](Self::require_main_thread) so the
-/// executor keeps it on the main thread.
-pub trait SubView: Send + Sync {
+/// Measuring runs on whichever thread drives layout, so a `SubView` is neither
+/// `Send` nor `Sync` and its cache may be a plain
+/// [`RefCell`](core::cell::RefCell).
+///
+/// Measuring siblings on a worker pool was tried and removed. A container's
+/// children number in the single digits and a cache-hit measure costs tens of
+/// nanoseconds, while a fork-join costs tens of microseconds — and it was paid by
+/// every container, including the majority with nothing to offload. Parallelism
+/// belongs where the work is genuinely large and batched (a renderer pre-shaping
+/// every visible text run for a frame), not inside the per-container measurement
+/// loop.
+pub trait SubView {
     /// Measure the child for a given proposal.
     ///
     /// This method may be called multiple times with different proposals
@@ -600,19 +601,6 @@ pub trait SubView: Send + Sync {
     ///
     /// Higher priority views are measured first and get space preference.
     fn priority(&self) -> i32;
-
-    /// Whether size measurement for this view must run on the main thread.
-    ///
-    /// Defaults to `false`: measurement (including text shaping and media sizing)
-    /// is parallelizable and the layout executor may run it on a worker thread.
-    /// Override to return `true` only for views whose measurement bridges into
-    /// main-thread-only APIs or touches [`MainThreadBound`](crate::MainThreadBound)
-    /// state; the executor then keeps those measures on the main thread. Returning
-    /// `false` while accessing main-thread-only state is a bug — the
-    /// `MainThreadBound` assertion will catch it at runtime.
-    fn require_main_thread(&self) -> bool {
-        false
-    }
 }
 
 // ============================================================================

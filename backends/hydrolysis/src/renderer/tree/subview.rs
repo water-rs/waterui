@@ -1,6 +1,6 @@
 //! [`NodeSubView`]: the [`SubView`] adapter that lets a real [`Layout`]
-//! measure retained child [`RenderNode`]s on demand, with the worker-thread
-//! text-shaping fast path.
+//! measure retained child [`RenderNode`]s on demand, with the resolved-text
+//! shaping fast path.
 
 use super::*;
 
@@ -11,27 +11,22 @@ use super::*;
 /// width; a `FrameLayout` with no height constraint would otherwise fill the whole
 /// proposed height), so the adapter must forward the live proposal.
 ///
-/// Like [`HydroSubview`], the only measurement heavy enough to parallelize is text
-/// shaping: a text-leaf subtree is resolved on the main thread at construction
-/// (reading its signals and theme) into a `Send` shaping input, and `measure`
-/// then shapes through the thread-safe `TextMeasureService` on whatever worker
-/// the layout executor picks (`require_main_thread() == false`). Every other node
-/// measures by recursing through the renderer's `HydroState`, so it stays on the
-/// main thread; state is shared across one container level's children through a
-/// `RefCell`.
+/// Like [`HydroSubview`], a text-leaf subtree is resolved at construction (reading
+/// its signals and theme) into a shaping input, and `measure` then shapes it
+/// through the content-keyed `TextMeasureService` directly. Every other node
+/// measures by recursing through the renderer's `HydroState`, shared across one
+/// container level's children through a `RefCell`.
 pub(super) struct NodeSubView<'a> {
     node: MainThreadBound<&'a RenderNode>,
     state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
     env: MainThreadBound<Environment>,
     stretch: StretchAxis,
     /// Per-proposal memo for this layout pass (containers probe children with
-    /// repeated proposals). Only the main-thread recursion path caches here, so
-    /// the contract-sanctioned `MainThreadBound` confinement makes the interior
-    /// `RefCell` sound; the worker-safe text path memoizes in the `Mutex`-guarded,
-    /// content-keyed `TextMeasureService` instead.
+    /// repeated proposals). Only the recursion path caches here; the text path
+    /// memoizes in the content-keyed `TextMeasureService` instead.
     measure_cache: MainThreadBound<RefCell<Vec<(ProposalSize, ViewDimensions)>>>,
-    /// Present when this child is a text-leaf subtree resolved on the main
-    /// thread; `measure` then shapes on any thread.
+    /// Present when this child is a resolved text-leaf subtree, letting `measure`
+    /// shape it directly instead of recursing.
     resolved_text: Option<ResolvedNodeTextMeasure>,
 }
 
@@ -142,8 +137,5 @@ impl SubView for NodeSubView<'_> {
     }
     fn priority(&self) -> i32 {
         0
-    }
-    fn require_main_thread(&self) -> bool {
-        self.resolved_text.is_none()
     }
 }
