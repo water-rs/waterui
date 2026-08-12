@@ -7,10 +7,13 @@
 //!    perform identical counts of every operation, so budgets are written
 //!    against counts. A wall-clock budget measured on a development machine
 //!    would be measuring the development machine.
-//! 2. **Memory**, exactly. Heap behaviour transfers verbatim — the same
-//!    allocations happen in the same order — so a growth check on the host is
-//!    a growth check on the target, and it is the failure mode most likely to
-//!    kill a real port.
+//! 2. **Memory**, in allocation behaviour. The same allocations happen in
+//!    the same order, so heap growth, churn, and peak *shape* transfer
+//!    verbatim — the failure modes most likely to kill a real port. Absolute
+//!    byte counts read high on a 64-bit host (pointer-heavy structures are up
+//!    to twice their 32-bit size, and the tracker does not model allocator
+//!    headers or fragmentation), so host gates are conservative rather than
+//!    byte-exact.
 //! 3. **The panel bus**, arithmetically. Pixels, address-window commands, and
 //!    DMA setup all cost wire time at a documented clock.
 
@@ -28,6 +31,10 @@ use waterui_dew::FrameWork;
 pub struct PeakTrackingAllocator {
     live: AtomicUsize,
     peak: AtomicUsize,
+    /// Monotonic count of allocation events (`alloc` + growing `realloc`).
+    allocations: AtomicUsize,
+    /// Monotonic total of bytes ever requested from the allocator.
+    allocated_bytes: AtomicUsize,
 }
 
 impl PeakTrackingAllocator {
@@ -35,6 +42,8 @@ impl PeakTrackingAllocator {
         Self {
             live: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            allocations: AtomicUsize::new(0),
+            allocated_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -48,12 +57,30 @@ impl PeakTrackingAllocator {
         self.peak.load(Ordering::Relaxed)
     }
 
+    /// Allocation events since process start.
+    ///
+    /// The event count and order transfer to the target — the same code
+    /// makes the same allocations — which makes this the simulation's proxy
+    /// for heap churn: on a fragmentation-prone RTOS heap, thousands of
+    /// transient allocations per frame are a liability that host wall-clock
+    /// never shows.
+    pub fn allocation_count(&self) -> usize {
+        self.allocations.load(Ordering::Relaxed)
+    }
+
+    /// Bytes ever requested from the allocator since process start.
+    pub fn allocated_bytes(&self) -> usize {
+        self.allocated_bytes.load(Ordering::Relaxed)
+    }
+
     /// Restarts peak tracking from the current live total.
     pub fn reset_peak(&self) {
         self.peak.store(self.live_bytes(), Ordering::Relaxed);
     }
 
     fn record_allocation(&self, size: usize) {
+        self.allocations.fetch_add(1, Ordering::Relaxed);
+        self.allocated_bytes.fetch_add(size, Ordering::Relaxed);
         let live = self.live.fetch_add(size, Ordering::Relaxed) + size;
         self.peak.fetch_max(live, Ordering::Relaxed);
     }
@@ -178,6 +205,71 @@ pub struct Violation {
     pub counter: &'static str,
     pub budget: f64,
     pub measured: f64,
+}
+
+/// Heap ceilings: absolute steady-state peak plus per-frame churn.
+///
+/// The peak gate is what "尤其是内存占用" comes down to on a device with a
+/// few hundred KiB of SRAM: not just that the heap stops growing, but that
+/// its high-water mark fits the chip at all. Churn gates catch a different
+/// killer — an RTOS heap fragments under transient allocation storms long
+/// before it runs out of bytes.
+///
+/// Like the work budgets, each ceiling sits a little above the measured
+/// steady state so a regression trips it while ordinary variation does not.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct MemoryBudget {
+    /// Ceiling on the steady-state peak live heap, in bytes, after
+    /// subtracting host-only font data (font binaries live in flash on the
+    /// target but in heap on the host).
+    pub steady_peak_heap_bytes: u64,
+    /// Ceiling on allocation events per frame.
+    pub allocations_per_frame: f64,
+    /// Ceiling on bytes requested from the allocator per frame.
+    pub allocated_bytes_per_frame: f64,
+}
+
+impl MemoryBudget {
+    /// Every memory ceiling the sample exceeds.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "counter magnitudes stay far below f64's exact-integer range"
+    )]
+    pub fn violations(
+        &self,
+        adjusted_peak_heap_bytes: u64,
+        allocations: u64,
+        allocated_bytes: u64,
+        frames: usize,
+    ) -> Vec<Violation> {
+        let frames = frames as f64;
+        [
+            (
+                "steady_peak_heap_bytes",
+                self.steady_peak_heap_bytes as f64,
+                adjusted_peak_heap_bytes as f64,
+            ),
+            (
+                "allocations_per_frame",
+                self.allocations_per_frame,
+                allocations as f64 / frames,
+            ),
+            (
+                "allocated_bytes_per_frame",
+                self.allocated_bytes_per_frame,
+                allocated_bytes as f64 / frames,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(counter, budget, measured)| {
+            (measured > budget).then_some(Violation {
+                counter,
+                budget,
+                measured,
+            })
+        })
+        .collect()
+    }
 }
 
 impl WorkBudget {

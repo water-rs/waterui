@@ -13,6 +13,8 @@
 //! than as a structural layer preserves the flat, pairwise-diffable shape
 //! of the list, so scroll viewports do not degrade dirty-region tracking.
 
+use std::sync::Arc;
+
 use kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use peniko::Brush;
 
@@ -52,9 +54,15 @@ pub enum DrawCommand {
         /// Font size in logical pixels.
         font_size: f32,
         /// Shaped glyphs positioned relative to `transform`.
-        glyphs: Vec<vello_cpu::Glyph>,
+        ///
+        /// Shared slices, not owned vectors: a retained text node re-emits
+        /// its runs every frame, and cloning the command must bump two
+        /// reference counts rather than copy the glyph data — per-frame
+        /// glyph copies were a measured heap-churn hotspot, and sharing also
+        /// lets the pairwise diff prove "unchanged" by pointer identity.
+        glyphs: Arc<[vello_cpu::Glyph]>,
         /// Exact local ink bounds corresponding one-to-one with `glyphs`.
-        glyph_bounds: Vec<Rect>,
+        glyph_bounds: Arc<[Rect]>,
         /// Local-to-window transform for the run.
         transform: Affine,
         /// Paint for the glyphs.
@@ -202,8 +210,8 @@ impl PartialEq for DrawCommand {
                     && b1 == b2
                     && r1 == r2
                     && c1 == c2
-                    && glyphs_eq(g1, g2)
-                    && gb1 == gb2
+                    && (Arc::ptr_eq(g1, g2) || glyphs_eq(g1, g2))
+                    && (Arc::ptr_eq(gb1, gb2) || gb1 == gb2)
             }
             _ => false,
         }
@@ -268,10 +276,10 @@ impl DrawCommand {
                 && old_clip == new_clip =>
             {
                 changed_glyph_bounds(
-                    old_glyphs,
-                    old_bounds,
-                    new_glyphs,
-                    new_bounds,
+                    old_glyphs.as_ref(),
+                    old_bounds.as_ref(),
+                    new_glyphs.as_ref(),
+                    new_bounds.as_ref(),
                     *old_transform,
                     *old_clip,
                 )
@@ -701,11 +709,12 @@ mod tests {
         let old = DrawCommand::GlyphRun {
             font: font.clone(),
             font_size: 16.0,
-            glyphs: vec![glyph(1, 0.0), glyph(2, 10.0)],
+            glyphs: vec![glyph(1, 0.0), glyph(2, 10.0)].into(),
             glyph_bounds: vec![
                 Rect::new(0.0, 0.0, 8.0, 16.0),
                 Rect::new(10.0, 0.0, 18.0, 16.0),
-            ],
+            ]
+            .into(),
             transform: Affine::IDENTITY,
             brush: Color::BLACK.into(),
             bounds: Rect::new(0.0, 0.0, 18.0, 16.0),
@@ -714,11 +723,12 @@ mod tests {
         let new = DrawCommand::GlyphRun {
             font,
             font_size: 16.0,
-            glyphs: vec![glyph(1, 0.0), glyph(3, 10.0)],
+            glyphs: vec![glyph(1, 0.0), glyph(3, 10.0)].into(),
             glyph_bounds: vec![
                 Rect::new(0.0, 0.0, 8.0, 16.0),
                 Rect::new(10.0, -1.0, 19.0, 16.0),
-            ],
+            ]
+            .into(),
             transform: Affine::IDENTITY,
             brush: Color::BLACK.into(),
             bounds: Rect::new(0.0, -1.0, 19.0, 16.0),

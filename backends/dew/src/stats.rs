@@ -207,6 +207,20 @@ pub struct ChipBudget {
     pub provenance: Provenance,
     /// Core clock in hertz.
     pub core_hz: u64,
+    /// Internal SRAM an application can realistically allocate from once
+    /// the RTOS has taken its share. The fastest memory; per-band scratch
+    /// and hot caches should fit here.
+    pub usable_sram_bytes: u64,
+    /// External PSRAM the target board maps into the malloc heap, or zero
+    /// for chips/boards without it. Slower than SRAM but still ordinary
+    /// heap; retained caches may spill here on real boards.
+    pub usable_psram_bytes: u64,
+    /// Stack the firmware render task runs on
+    /// (`CONFIG_ESP_MAIN_TASK_STACK_SIZE` on ESP-IDF targets). Host
+    /// simulations pump their frames on a thread with exactly this stack, so
+    /// layout/shaping recursion that would overflow the chip's task overflows
+    /// on the host first.
+    pub main_task_stack_bytes: u64,
     /// Cycles to shape one text layout through `parley`.
     pub cycles_per_text_layout: u64,
     /// Cycles to read one glyph's outline bounds through `skrifa`.
@@ -298,6 +312,9 @@ mod tests {
             chip: "test",
             provenance: Provenance::Estimated,
             core_hz: 1_000_000_000,
+            usable_sram_bytes: 320 * 1024,
+            usable_psram_bytes: 0,
+            main_task_stack_bytes: 160 * 1024,
             cycles_per_text_layout: 1_000,
             cycles_per_glyph_bounds: 0,
             cycles_per_measure: 0,
