@@ -166,11 +166,19 @@ the last thing it does, so the commits land on canonical well before the script
 is done. One run whose workspace sat on a USB volume that dropped off the bus
 left its `rm -rf` in uninterruptible disk wait for eighty minutes; the merge had
 landed, canonical was clean, and every other agent's finish failed with "another
-agent is already integrating" the whole time. Check that the process exited and
-that the lock directory is empty:
+agent is already integrating" the whole time.
 
-    ps -p <pid>
-    ls ~/.waterui-agent/locks/
+The lock records its holder, so this is a question you can answer rather than
+infer — from either side. The lock directory contains `pid`, `source-repo` and
+`workspace-root`:
+
+    ls ~/.waterui-agent/locks/                       # empty means nobody holds it
+    ps -p "$(cat ~/.waterui-agent/locks/*.lock/pid)" # alive, or a lock left behind
+
+Run it after your own finish to confirm the script really exited, and run it
+when yours is refused to see whether the holder is a live merge or a wedged one.
+It is how the eighty-minute stall above was diagnosed — by the blocked session,
+not by the one holding the lock.
 
 A lock held by a wedged run cannot be cleared with `kill -TERM`: zsh defers the
 trap until the foreground command returns, and a process in uninterruptible wait
