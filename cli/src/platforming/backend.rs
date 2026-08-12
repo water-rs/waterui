@@ -45,6 +45,25 @@ impl Backends {
             && self.esp32.is_none()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_esp32_for_tests(&mut self, backend: Esp32Backend) {
+        self.esp32 = Some(backend);
+    }
+
+    /// Whether any backend-project scaffolding is configured.
+    ///
+    /// `[backends.esp32]` is deliberately excluded: it carries device
+    /// configuration — chip, panel geometry, bundled fonts — that only the
+    /// app author can know, while the other entries describe backend
+    /// projects that playground mode delegates to the CLI.
+    #[must_use]
+    pub const fn configures_backend_projects(&self) -> bool {
+        self.android.is_some()
+            || self.apple.is_some()
+            || self.gtk4.is_some()
+            || self.hydrolysis.is_some()
+    }
+
     /// Get the base path for backends, relative to project root.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -250,4 +269,24 @@ pub async fn reinit_backend<B: Backend>(project: &Project) -> Result<B, FailToIn
 
     // Re-scaffold templates (cache dirs untouched)
     B::init(project).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[backends.esp32]` is device configuration, not backend-project
+    /// scaffolding, so it alone must not trip the playground restriction.
+    #[test]
+    fn esp32_device_config_is_not_backend_project_configuration() {
+        let mut backends = Backends::default();
+        assert!(!backends.configures_backend_projects());
+
+        backends.set_esp32_for_tests(Esp32Backend::new());
+        assert!(!backends.configures_backend_projects());
+        assert!(!backends.is_empty());
+
+        backends.set_gtk4(Gtk4Backend::default());
+        assert!(backends.configures_backend_projects());
+    }
 }

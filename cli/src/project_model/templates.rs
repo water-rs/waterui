@@ -1031,6 +1031,11 @@ mod tests {
         assert!(s3_manifest.contains("features = [\"espidf\", \"progress\"]"));
         let c3_manifest = render_esp32("Cargo.toml.tpl", &c3);
         assert!(c3_manifest.contains("opt-level = 2"));
+        // Release firmware is flash-budgeted: whole-program LTO and symbol
+        // stripping are not optional niceties on a 4-16 MB part.
+        assert!(c3_manifest.contains("lto = \"fat\""));
+        assert!(c3_manifest.contains("codegen-units = 1"));
+        assert!(c3_manifest.contains("strip = \"symbols\""));
         assert!(c3_manifest.contains("features = [\"espidf\", \"progress\"]"));
 
         // main.rs panel geometry follows the entry.
@@ -3018,8 +3023,12 @@ pub mod root {
     fn native_target_section(
         waterui_dependency: GeneratedDependencyDetail,
     ) -> BTreeMap<String, GeneratedTargetSection<GeneratedDependencyDetail>> {
+        // Desktop conveniences only: `media` pulls the GPU stack, which does
+        // not exist on espidf targets, so firmware builds must fall through
+        // to the bare default-features-off dependency for the scaffolded app
+        // to cross-compile for ESP32 chips at all.
         BTreeMap::from([(
-            "cfg(not(target_arch = \"wasm32\"))".to_string(),
+            "cfg(not(any(target_arch = \"wasm32\", target_os = \"espidf\")))".to_string(),
             GeneratedTargetSection {
                 dependencies: BTreeMap::from([(
                     "waterui".to_string(),
