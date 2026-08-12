@@ -73,7 +73,7 @@ use nami::Computed;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::MainThreadBound;
 use waterui_core::id::{Id as RawId, SelfId};
-use waterui_core::layout::{Point, Rect, Size};
+use waterui_core::layout::{LayoutPriority, Point, Rect, Size};
 use waterui_core::views::{AnyViews, Views};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView};
 

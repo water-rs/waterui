@@ -21,6 +21,7 @@ pub(super) struct NodeSubView<'a> {
     state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
     env: MainThreadBound<Environment>,
     stretch: StretchAxis,
+    priority: i32,
     /// Per-proposal memo for this layout pass (containers probe children with
     /// repeated proposals). Only the recursion path caches here; the text path
     /// memoizes in the content-keyed `TextMeasureService` instead.
@@ -76,6 +77,7 @@ impl<'a> NodeSubView<'a> {
             });
         Self {
             stretch: node.stretch(),
+            priority: node.priority(),
             node: MainThreadBound::new(node),
             state: MainThreadBound::new(state),
             env: MainThreadBound::new(env.clone()),
@@ -136,6 +138,6 @@ impl SubView for NodeSubView<'_> {
         self.stretch
     }
     fn priority(&self) -> i32 {
-        0
+        self.priority
     }
 }
