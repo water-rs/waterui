@@ -37,6 +37,8 @@ pub enum Esp32Chip {
     Esp32S3,
     /// ESP32-C3: single-core RISC-V (RV32IMC).
     Esp32C3,
+    /// ESP32-P4: dual-core RISC-V (RV32IMAFC, hardware single-precision FPU).
+    Esp32P4,
 }
 
 impl Esp32Chip {
@@ -47,6 +49,7 @@ impl Esp32Chip {
         match self {
             Self::Esp32S3 => "esp32s3",
             Self::Esp32C3 => "esp32c3",
+            Self::Esp32P4 => "esp32p4",
         }
     }
 
@@ -55,19 +58,21 @@ impl Esp32Chip {
     pub const fn arch(self) -> Esp32Arch {
         match self {
             Self::Esp32S3 => Esp32Arch::Xtensa,
-            Self::Esp32C3 => Esp32Arch::RiscV,
+            Self::Esp32C3 | Self::Esp32P4 => Esp32Arch::RiscV,
         }
     }
 
     /// The Rust target triple to cross-compile the firmware for.
     ///
     /// Xtensa chips use a per-chip triple (`xtensa-<chip>-espidf`); RISC-V
-    /// chips share the architecture-level `riscv32imc-esp-espidf` triple.
+    /// chips use the architecture-level triple matching their ISA extensions
+    /// (`imc` on the C-series, `imafc` — hardware single-float — on the P4).
     #[must_use]
     pub const fn target_triple(self) -> &'static str {
         match self {
             Self::Esp32S3 => "xtensa-esp32s3-espidf",
             Self::Esp32C3 => "riscv32imc-esp-espidf",
+            Self::Esp32P4 => "riscv32imafc-esp-espidf",
         }
     }
 
@@ -86,9 +91,10 @@ impl Esp32Chip {
     /// The `target_lexicon` architecture for the chip.
     #[must_use]
     pub const fn lexicon_arch(self) -> Architecture {
-        match self.arch() {
-            Esp32Arch::Xtensa => Architecture::XTensa,
-            Esp32Arch::RiscV => Architecture::Riscv32(Riscv32Architecture::Riscv32imc),
+        match self {
+            Self::Esp32S3 => Architecture::XTensa,
+            Self::Esp32C3 => Architecture::Riscv32(Riscv32Architecture::Riscv32imc),
+            Self::Esp32P4 => Architecture::Riscv32(Riscv32Architecture::Riscv32imafc),
         }
     }
 
@@ -165,6 +171,19 @@ impl Esp32Chip {
                 app_partition_size: "0x300000",
                 opt_level: "2",
             },
+            // The P4 is the RISC-V flagship: dual 400 MHz cores with a
+            // hardware single-precision FPU, 768 KB of L2 memory, and
+            // MIPI-DSI/parallel-RGB LCD peripherals. Mainline LLVM, so full
+            // optimization; boards expose USB-Serial-JTAG and ship 16 MB
+            // flash, and the roomy SRAM affords a 96 KB main task stack.
+            Self::Esp32P4 => Esp32FirmwareParams {
+                console_uart_default: false,
+                flash_size_mb: 16,
+                main_task_stack_bytes: 98_304,
+                app_partition_offset: "0x10000",
+                app_partition_size: "0xC00000",
+                opt_level: "2",
+            },
         }
     }
 }
@@ -176,8 +195,9 @@ impl FromStr for Esp32Chip {
         match value {
             "esp32s3" => Ok(Self::Esp32S3),
             "esp32c3" => Ok(Self::Esp32C3),
+            "esp32p4" => Ok(Self::Esp32P4),
             other => Err(eyre!(
-                "unsupported ESP32 chip {other:?}. Supported chips: esp32s3, esp32c3."
+                "unsupported ESP32 chip {other:?}. Supported chips: esp32s3, esp32c3, esp32p4."
             )),
         }
     }
@@ -240,7 +260,26 @@ mod tests {
             Esp32Chip::from_str("esp32c3").expect("esp32c3 parses"),
             Esp32Chip::Esp32C3
         );
-        assert!(Esp32Chip::from_str("esp32p4").is_err());
+        assert_eq!(
+            Esp32Chip::from_str("esp32p4").expect("esp32p4 parses"),
+            Esp32Chip::Esp32P4
+        );
+        assert!(Esp32Chip::from_str("esp32c6").is_err());
+    }
+
+    #[test]
+    fn esp32p4_derives_riscv_fpu_build_parameters() {
+        let p4 = Esp32Chip::Esp32P4;
+        assert_eq!(p4.arch(), Esp32Arch::RiscV);
+        assert_eq!(p4.target_triple(), "riscv32imafc-esp-espidf");
+        assert_eq!(p4.qemu_binary(), "qemu-system-riscv32");
+        assert_eq!(p4.qemu_machine(), "esp32p4");
+        assert!(!p4.needs_qemu_efuse_workaround());
+        assert_eq!(p4.gcc_component().component, "riscv32-esp-elf");
+        let params = p4.firmware_params();
+        assert!(!params.console_uart_default);
+        assert_eq!(params.flash_size_mb, 16);
+        assert_eq!(params.opt_level, "2");
     }
 
     #[test]
