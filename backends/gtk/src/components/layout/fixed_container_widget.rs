@@ -10,6 +10,7 @@ use gtk4::subclass::prelude::*;
 use gtk4::{Fixed, Widget, glib};
 use waterui_core::layout::{
     Layout, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions, measure_layout,
+    with_memoized_children,
 };
 
 use crate::layout::{GtkSubView, place_children, update_positions};
@@ -164,9 +165,10 @@ mod imp {
 
             // Measure first with bounds-based proposal so children know available width/height.
             let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-            let _ = layout.size_that_fits(proposal, &refs);
-
-            let rects = layout.place(bounds, &refs);
+            let rects = with_memoized_children(&refs, |refs| {
+                let _ = layout.size_that_fits(proposal, refs);
+                layout.place(bounds, refs)
+            });
             if layout_debug_enabled() {
                 trace_layout_rects("allocate", width, height, children.len(), &rects);
             }
@@ -253,8 +255,10 @@ impl WuiFixedContainer {
         });
 
         let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-        let _ = layout.size_that_fits(proposal, &refs);
-        let rects = layout.place(bounds, &refs);
+        let rects = with_memoized_children(&refs, |refs| {
+            let _ = layout.size_that_fits(proposal, refs);
+            layout.place(bounds, refs)
+        });
         if layout_debug_enabled() {
             trace_layout_rects("relayout", width, height, children.len(), &rects);
         }

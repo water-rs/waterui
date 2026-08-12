@@ -7,7 +7,7 @@ use waterui_layout::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
     VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
-    measure_layout,
+    measure_layout, with_memoized_children,
     scroll::Axis,
     stack::{HStackLayout, VStackLayout},
 };
@@ -667,7 +667,7 @@ pub unsafe extern "C" fn waterui_layout_place(
     let subview_refs: Vec<&dyn SubView> =
         children_slice.iter().map(|s| s as &dyn SubView).collect();
 
-    let rects = layout.place(bounds, &subview_refs);
+    let rects = with_memoized_children(&subview_refs, |refs| layout.place(bounds, refs));
 
     children.consume();
 
