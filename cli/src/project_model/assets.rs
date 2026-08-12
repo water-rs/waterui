@@ -896,7 +896,11 @@ pub async fn package_feature_enabled(
 /// Optional `WaterUI` capabilities that are cargo features on both the facade and
 /// the FFI crate, paired so a build can forward the app's choice to the FFI
 /// crate that actually exports the C surface.
-const OPTIONAL_CAPABILITIES: &[&str] = &["map"];
+/// `gpu` is default-on for the facade, but the generated FFI crate must set
+/// `default-features = false` (the `c-api` and `android-jni` ABIs are mutually
+/// exclusive), which drops it. Forwarding it here is what keeps the GPU C
+/// surface present for apps that did not opt out.
+const OPTIONAL_CAPABILITIES: &[&str] = &["gpu", "map"];
 
 /// Returns the `waterui-ffi` features to enable for this app's capabilities.
 ///
