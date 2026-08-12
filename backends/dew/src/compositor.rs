@@ -10,6 +10,8 @@
 
 use kurbo::Rect;
 
+use crate::display_list::DisplayList;
+
 /// An axis-aligned region in whole device pixels, `x`/`y` at the top-left.
 ///
 /// Regions are always fully contained in the screen; constructors clamp.
@@ -126,6 +128,12 @@ impl BandScheduler {
         }
     }
 
+    /// Maximum rows per emitted band, which bounds the scratch pixmap.
+    #[must_use]
+    pub const fn band_height(&self) -> u32 {
+        self.band_height
+    }
+
     /// The full screen as a single dirty region.
     #[must_use]
     pub const fn full_screen(&self) -> DeviceRegion {
@@ -171,26 +179,118 @@ impl BandScheduler {
     }
 }
 
+/// Merges regions that overlap or abut into the fewest covering regions.
+///
+/// Every input comes from one band row, so they already share a bounded row
+/// span and merging reduces to a sweep along `x`: sort by left edge, then
+/// extend the open region while the next one starts at or before its right
+/// edge. That is `O(n log n)` and, more importantly, bounded — the previous
+/// restart-on-merge scan was quadratic in the number of dirty rects and
+/// degenerated further as merges cascaded.
 fn merge_overlapping(mut pending: Vec<DeviceRegion>) -> Vec<DeviceRegion> {
-    let mut merged = Vec::new();
-    while let Some(mut region) = pending.pop() {
-        let mut index = 0;
-        while index < merged.len() {
-            if regions_touch(region, merged[index]) {
-                region = region.union(merged.swap_remove(index));
-                index = 0;
-            } else {
-                index += 1;
-            }
+    if pending.len() < 2 {
+        return pending;
+    }
+    pending.sort_unstable_by_key(|region| (region.x, region.y));
+    let mut merged: Vec<DeviceRegion> = Vec::with_capacity(pending.len());
+    for region in pending {
+        match merged.last_mut() {
+            Some(open) if horizontally_touching(*open, region) => *open = open.union(region),
+            _ => merged.push(region),
         }
-        merged.push(region);
     }
     merged.sort_unstable_by_key(|region| (region.y, region.x));
     merged
 }
 
-const fn regions_touch(a: DeviceRegion, b: DeviceRegion) -> bool {
-    a.x <= b.x + b.width && b.x <= a.x + a.width && a.y <= b.y + b.height && b.y <= a.y + a.height
+/// Whether `next` starts at or before `open`'s right edge.
+///
+/// Both regions belong to the same band row and the sweep guarantees `next`
+/// starts no earlier than `open`, so horizontal adjacency is the only test
+/// needed. Regions that merely touch are merged deliberately: one panel
+/// transaction covering both costs less than two address-window setups for
+/// pixels that are already adjacent.
+const fn horizontally_touching(open: DeviceRegion, next: DeviceRegion) -> bool {
+    next.x <= open.x + open.width
+}
+
+/// Maps band rows to the display-list commands that can touch them.
+///
+/// The painter replays a display list into one band at a time. Without an
+/// index that is `O(bands × commands)` per frame — every command tested
+/// against every band, with the overwhelming majority of tests failing.
+/// Bucketing each command into the band rows its bounds span costs one pass
+/// over the list and leaves each band visiting only the commands that can
+/// possibly appear in it.
+///
+/// Indices are stored in ascending order within a row, so replaying a row's
+/// bucket preserves the list's draw order and therefore its z-order.
+#[derive(Debug, Clone)]
+pub struct BandIndex {
+    band_height: u32,
+    rows: Vec<Vec<u32>>,
+}
+
+impl BandIndex {
+    /// Buckets `list`'s commands into the band rows of a `screen_height`-tall
+    /// screen sliced at `band_height`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `band_height` or `screen_height` is zero, or when the list
+    /// holds more commands than a `u32` can index.
+    #[must_use]
+    pub fn build(list: &DisplayList, screen_height: u32, band_height: u32) -> Self {
+        assert!(
+            band_height > 0 && screen_height > 0,
+            "BandIndex requires a positive screen ({screen_height}) and band height ({band_height})"
+        );
+        let row_count = screen_height.div_ceil(band_height);
+        let mut rows =
+            vec![Vec::new(); usize::try_from(row_count).expect("band row count must fit usize")];
+        for (index, placed) in list.commands().iter().enumerate() {
+            let index = u32::try_from(index).expect("display list exceeds u32 command indices");
+            let bounds = placed.bounds();
+            if !(bounds.width() > 0.0 && bounds.height() > 0.0) {
+                continue;
+            }
+            let first_row = row_of(bounds.y0, band_height, row_count);
+            let final_row = row_of(bounds.y1.next_down(), band_height, row_count);
+            for row in first_row..=final_row {
+                rows[usize::try_from(row).expect("band row must fit usize")].push(index);
+            }
+        }
+        Self { band_height, rows }
+    }
+
+    /// Command indices that may touch the band row containing `region`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `region` lies below the screen the index was built for,
+    /// which would mean the scheduler and the index disagree about the panel.
+    #[must_use]
+    pub fn candidates(&self, region: DeviceRegion) -> &[u32] {
+        let row = usize::try_from(region.y / self.band_height).expect("band row must fit usize");
+        assert!(
+            row < self.rows.len(),
+            "band region at y={} lies outside the {}-row index",
+            region.y,
+            self.rows.len()
+        );
+        &self.rows[row]
+    }
+}
+
+/// The band row a logical `y` coordinate falls in, clamped to the screen.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the quotient is clamped into [0, row_count) before the cast"
+)]
+fn row_of(y: f64, band_height: u32, row_count: u32) -> u32 {
+    let row = (y.max(0.0) / f64::from(band_height)).floor();
+    row.min(f64::from(row_count - 1)) as u32
 }
 
 #[cfg(test)]

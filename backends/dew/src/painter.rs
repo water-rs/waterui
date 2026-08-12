@@ -13,6 +13,7 @@ use vello_cpu::{Image, ImageSource, Pixmap, RenderContext, RenderMode, RenderSet
 
 use crate::compositor::DeviceRegion;
 use crate::display_list::{BEZIER_TOLERANCE, DisplayList, DrawCommand};
+use crate::stats::FrameWork;
 
 /// The rasterizer: owns the persistent `vello_cpu` resources (glyph atlas,
 /// image registry) that must survive across bands and frames.
@@ -52,12 +53,24 @@ impl Painter {
     /// returning a `region.width × region.height` premultiplied-RGBA8
     /// pixmap.
     ///
+    /// `candidates` are indices into `list.commands()` that a spatial index
+    /// has already established *may* touch this region's band row; the
+    /// painter still tests each one against the exact region. Passing every
+    /// index is correct but reduces the pass to the quadratic scan the index
+    /// exists to avoid.
+    ///
     /// # Panics
     ///
     /// Panics when the region exceeds `u16::MAX` in either dimension, far
-    /// beyond any target panel.
+    /// beyond any target panel, or when a candidate index is out of range.
     #[must_use]
-    pub fn rasterize_region(&mut self, list: &DisplayList, region: DeviceRegion) -> Pixmap {
+    pub fn rasterize_region(
+        &mut self,
+        list: &DisplayList,
+        region: DeviceRegion,
+        candidates: &[u32],
+        work: &mut FrameWork,
+    ) -> Pixmap {
         let width = u16::try_from(region.width).expect("region width exceeds u16::MAX");
         let height = u16::try_from(region.height).expect("region height exceeds u16::MAX");
         let mut ctx = RenderContext::new_with(width, height, self.settings);
@@ -68,10 +81,17 @@ impl Painter {
             f64::from(region.x + region.width),
             f64::from(region.y + region.height),
         );
-        for command in list.commands() {
-            if !command.intersects(region_bounds) {
+        let commands = list.commands();
+        work.command_band_visits += candidates.len() as u64;
+        work.pixels_rasterized += region.area();
+        for index in candidates {
+            let placed = &commands[usize::try_from(*index)
+                .expect("display-list command index must fit a pointer-sized value")];
+            if !placed.intersects(region_bounds) {
                 continue;
             }
+            work.command_band_draws += 1;
+            let command = placed.command();
             let clip = command.clip();
             if let Some(clip) = clip {
                 if clip.width() <= 0.0 || clip.height() <= 0.0 {
@@ -198,8 +218,18 @@ mod tests {
     use kurbo::Rect;
     use peniko::{Color, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
+    /// Every command index, i.e. the un-indexed scan the band index replaces.
+    fn all_candidates(list: &DisplayList) -> Vec<u32> {
+        (0..u32::try_from(list.commands().len()).expect("test scenes stay small")).collect()
+    }
+
     fn rasterize(list: &DisplayList, region: DeviceRegion) -> Pixmap {
-        Painter::default().rasterize_region(list, region)
+        rasterize_with(&mut Painter::default(), list, region)
+    }
+
+    fn rasterize_with(painter: &mut Painter, list: &DisplayList, region: DeviceRegion) -> Pixmap {
+        let mut work = FrameWork::ZERO;
+        painter.rasterize_region(list, region, &all_candidates(list), &mut work)
     }
 
     fn checker_scene() -> DisplayList {
@@ -336,7 +366,8 @@ mod tests {
             },
         );
         let mut painter = Painter::default();
-        let top = painter.rasterize_region(
+        let top = rasterize_with(
+            &mut painter,
             &list,
             DeviceRegion {
                 x: 0,
@@ -345,7 +376,8 @@ mod tests {
                 height: 1,
             },
         );
-        let bottom = painter.rasterize_region(
+        let bottom = rasterize_with(
+            &mut painter,
             &list,
             DeviceRegion {
                 x: 0,

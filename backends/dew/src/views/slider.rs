@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use kurbo::{Circle, Rect, RoundedRect, Stroke};
 use nami::{Binding, Computed, Signal};
-use waterui_controls::label::Label;
+
 use waterui_controls::slider::SliderConfig;
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
@@ -15,7 +15,7 @@ use crate::dispatch::{DewNode, DewRenderer, RenderContext, build_node};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
-use crate::views::{child_in_rect, measure_label, render_label, to_f32};
+use crate::views::{LabelText, child_in_rect, to_f32};
 
 const TRACK_HEIGHT: f64 = 4.0;
 const THUMB_RADIUS: f64 = 10.0;
@@ -25,7 +25,7 @@ const MIN_TRACK_WIDTH: f64 = 96.0;
 const THUMB_BORDER: f64 = 1.0;
 
 struct SliderNode {
-    label: Label,
+    label: LabelText,
     min_value_label: Box<dyn DewNode>,
     max_value_label: Box<dyn DewNode>,
     range: RangeInclusive<f64>,
@@ -101,7 +101,7 @@ pub fn build(
         track: Rc::clone(&track),
     });
     Box::new(SliderNode {
-        label: config.label,
+        label: LabelText::new(&config.label, env, renderer.signals()),
         min_value_label: build_node(renderer, config.min_value_label, env, depth),
         max_value_label: build_node(renderer, config.max_value_label, env, depth),
         range: config.range,
@@ -115,7 +115,7 @@ pub fn build(
 
 impl DewNode for SliderNode {
     fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
-        let label = measure_label(state, &self.label, &self.env);
+        let label = self.label.measure(state, &self.env);
         let min_label = self
             .min_value_label
             .measure(state, ProposalSize::UNSPECIFIED)
@@ -154,7 +154,7 @@ impl DewNode for SliderNode {
         assert!(span > 0.0, "dew slider requires range start < end");
 
         let disabled = renderer.read_signal(&self.disabled);
-        let label_size = measure_label(renderer.state_cell(), &self.label, &self.env);
+        let label_size = self.label.measure(renderer.state_cell(), &self.env);
         let label_height = if label_size.height > 0.0 {
             f64::from(label_size.height) + ROW_SPACING
         } else {
@@ -167,7 +167,7 @@ impl DewNode for SliderNode {
                 bounds.x1,
                 (bounds.y0 + f64::from(label_size.height)).min(bounds.y1),
             );
-            render_label(renderer, ctx, label_rect, &self.label, &self.env);
+            self.label.render(renderer, ctx, label_rect, &self.env);
         }
 
         let control_top = bounds.y0 + label_height;

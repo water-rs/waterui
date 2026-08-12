@@ -7,7 +7,7 @@
 
 use kurbo::{Affine, Circle, Rect, RoundedRect, Stroke};
 use peniko::Color;
-use waterui_dew::{BandScheduler, BufferDisplay, DisplayList, Painter, render_frame};
+use waterui_dew::{BandScheduler, BufferDisplay, DisplayList, FrameWork, Painter, render_frame};
 
 fn demo_scene() -> DisplayList {
     let mut list = DisplayList::new();
@@ -51,12 +51,20 @@ fn full_frame_renders_through_bands() {
     let mut display = BufferDisplay::new(320, 240);
     let list = demo_scene();
 
+    let mut work = FrameWork::ZERO;
     render_frame(
         &mut painter,
         &list,
         &scheduler,
         &[Rect::new(0.0, 0.0, 320.0, 240.0)],
         &mut display,
+        &mut work,
+    );
+
+    assert_eq!(
+        work.pixels_transferred,
+        320 * 240,
+        "a full-screen dirty rect must transfer every pixel exactly once"
     );
 
     // Spot checks: background, card body, button pill, accent dot.
@@ -80,12 +88,20 @@ fn partial_update_touches_only_dirty_regions() {
     // The display still shows nothing (transparent black) outside the
     // dirty rect, even though the scene covers the whole screen.
     let list = demo_scene();
+    let mut work = FrameWork::ZERO;
     render_frame(
         &mut painter,
         &list,
         &scheduler,
         &[Rect::new(40.0, 84.0, 160.0, 114.0)],
         &mut display,
+        &mut work,
+    );
+
+    assert!(
+        work.pixels_transferred < 320 * 240,
+        "a partial dirty rect must transfer less than a full frame, got {}",
+        work.pixels_transferred
     );
 
     assert_eq!(display.pixel(100, 99), [70, 130, 240, 255]);

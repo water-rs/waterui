@@ -22,6 +22,7 @@ use waterui_text::font::{Font, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 
 use crate::display_list::{DisplayList, DrawCommand};
+use crate::stats::FrameWork;
 use crate::theme;
 
 /// Shared text-shaping state: the font collection and parley's scratch
@@ -31,6 +32,25 @@ use crate::theme;
 pub struct DewState {
     font_cx: parley::FontContext,
     layout_cx: parley::LayoutContext<[u8; 4]>,
+    /// Measure-side work performed this frame.
+    ///
+    /// Measurement runs behind `&self` — a `SubView` cannot mutate the tree —
+    /// so the counters live in the one piece of shared state every measure
+    /// call already reaches mutably. [`crate::dispatch::DewRenderer`] drains
+    /// them into the frame's totals.
+    pub(crate) work: FrameWork,
+}
+
+/// Whether a cache lookup was answered from the cache or had to build.
+///
+/// Returned rather than counted internally because the caller holds the
+/// `DewState` the counters live in, and the build closure borrows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheOutcome {
+    /// The entry already existed.
+    Reused,
+    /// The entry was built by this call.
+    Built,
 }
 
 /// Per-text-node layout cache keyed by signal revision and width proposal.
@@ -43,35 +63,123 @@ pub(crate) struct TextLayoutCache {
     entries: Vec<CachedTextLayout>,
 }
 
+/// What a cached layout depends on.
+///
+/// The width proposal changes the line breaking; the default brush is baked
+/// into the shaped runs, and controls vary it (a disabled button's label is
+/// painted in a muted colour), so a layout cached for one brush cannot be
+/// replayed for another.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TextLayoutKey {
+    /// Width proposal the text was laid out against.
+    pub(crate) max_width: Option<f32>,
+    /// Default brush spans without an explicit colour were shaped with.
+    pub(crate) brush: peniko::Color,
+}
+
+impl TextLayoutKey {
+    /// A key for text painted in the theme foreground.
+    pub(crate) const fn foreground(max_width: Option<f32>) -> Self {
+        Self {
+            max_width,
+            brush: theme::FOREGROUND,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct CachedTextLayout {
-    max_width: Option<f32>,
+    key: TextLayoutKey,
     layout: parley::Layout<[u8; 4]>,
+    /// Glyph runs derived from `layout`, in layout-local coordinates.
+    ///
+    /// Built on first emit and reused afterwards. Deriving them costs one
+    /// `skrifa` outline-bounds lookup per glyph, which parses `glyf`/`loca`
+    /// from font data that lives in flash on an embedded target — by far the
+    /// largest per-frame cost Dew had, and pure waste for text that has not
+    /// changed. Placement is *not* baked in: only the transform differs
+    /// between frames, and substituting it is free.
+    runs: Option<Vec<RetainedGlyphRun>>,
+}
+
+/// One shaped glyph run held in layout-local coordinates, ready to be placed.
+#[derive(Debug, Clone)]
+struct RetainedGlyphRun {
+    /// The run with an identity transform; emitting substitutes the real one.
+    command: DrawCommand,
+    /// Ink bounds of the run before placement.
+    local_bounds: Rect,
 }
 
 impl TextLayoutCache {
-    pub(crate) fn get_or_build(
+    /// The index of the entry for `max_width`, building it when absent.
+    fn entry(
         &mut self,
         revision: u64,
-        max_width: Option<f32>,
+        key: TextLayoutKey,
         build: impl FnOnce() -> parley::Layout<[u8; 4]>,
-    ) -> &parley::Layout<[u8; 4]> {
+    ) -> (usize, CacheOutcome) {
         if self.revision != revision {
             self.entries.clear();
             self.revision = revision;
         }
+        let mut outcome = CacheOutcome::Reused;
         let index = self
             .entries
             .iter()
-            .position(|entry| entry.max_width == max_width)
+            .position(|entry| entry.key == key)
             .unwrap_or_else(|| {
+                outcome = CacheOutcome::Built;
                 self.entries.push(CachedTextLayout {
-                    max_width,
+                    key,
                     layout: build(),
+                    runs: None,
                 });
                 self.entries.len() - 1
             });
-        &self.entries[index].layout
+        (index, outcome)
+    }
+
+    pub(crate) fn get_or_build(
+        &mut self,
+        revision: u64,
+        key: TextLayoutKey,
+        build: impl FnOnce() -> parley::Layout<[u8; 4]>,
+    ) -> (&parley::Layout<[u8; 4]>, CacheOutcome) {
+        let (index, outcome) = self.entry(revision, key, build);
+        (&self.entries[index].layout, outcome)
+    }
+
+    /// Appends this text's glyph runs to `list`, placed at `transform`.
+    ///
+    /// Derives the runs from the cached layout on first use and replays them
+    /// on every later frame, so unchanged text costs no outline lookups.
+    pub(crate) fn emit(
+        &mut self,
+        revision: u64,
+        key: TextLayoutKey,
+        transform: Affine,
+        list: &mut DisplayList,
+        build: impl FnOnce() -> parley::Layout<[u8; 4]>,
+    ) -> CacheOutcome {
+        let (index, outcome) = self.entry(revision, key, build);
+        let entry = &mut self.entries[index];
+        let runs = match &entry.runs {
+            Some(runs) => {
+                list.add_work(FrameWork {
+                    glyph_runs_reused: runs.len() as u64,
+                    ..FrameWork::ZERO
+                });
+                runs
+            }
+            None => entry.runs.insert(retain_glyph_runs(&entry.layout, list)),
+        };
+        for run in runs {
+            let mut command = run.command.clone();
+            command.set_transform(transform);
+            list.push_placed(command, transform.transform_rect_bbox(run.local_bounds));
+        }
+        outcome
     }
 }
 
@@ -86,6 +194,22 @@ impl Default for DewState {
         Self {
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),
+            work: FrameWork::ZERO,
+        }
+    }
+}
+
+impl DewState {
+    /// Takes the work accumulated since the previous call.
+    pub(crate) const fn take_work(&mut self) -> FrameWork {
+        core::mem::replace(&mut self.work, FrameWork::ZERO)
+    }
+
+    /// Records that a text layout was shaped or served from cache.
+    pub(crate) const fn record_layout(&mut self, outcome: CacheOutcome) {
+        match outcome {
+            CacheOutcome::Built => self.work.text_layouts_shaped += 1,
+            CacheOutcome::Reused => self.work.text_layouts_reused += 1,
         }
     }
 }
@@ -266,13 +390,36 @@ pub(crate) fn peniko_to_rgba8(color: peniko::Color) -> [u8; 4] {
     [rgba.r, rgba.g, rgba.b, rgba.a]
 }
 
-/// Appends one [`DrawCommand::GlyphRun`] per positioned glyph run in
-/// `layout`, placed at `transform`.
+/// Emits `layout`'s glyph runs at `transform` without retaining them.
+///
+/// The uncached path, for callers that do not own a layout cache. Every call
+/// re-reads one outline bound per glyph, so a caller on a per-frame path
+/// should hold a [`TextLayoutCache`] and use [`TextLayoutCache::emit`]
+/// instead.
 pub(crate) fn emit_text_commands(
     list: &mut DisplayList,
     layout: &parley::Layout<[u8; 4]>,
     transform: Affine,
 ) {
+    for run in retain_glyph_runs(layout, list) {
+        let mut command = run.command;
+        command.set_transform(transform);
+        list.push_placed(command, transform.transform_rect_bbox(run.local_bounds));
+    }
+}
+
+/// Derives one retained glyph run per positioned run in `layout`, in
+/// layout-local coordinates.
+///
+/// This is where the per-glyph `skrifa` outline-bounds lookups happen, so it
+/// runs once per (text, width) rather than once per frame; `list` receives the
+/// work accounting.
+fn retain_glyph_runs(
+    layout: &parley::Layout<[u8; 4]>,
+    list: &mut DisplayList,
+) -> Vec<RetainedGlyphRun> {
+    let mut retained = Vec::new();
+    let transform = Affine::IDENTITY;
     let layout_bounds = Rect::new(
         0.0,
         0.0,
@@ -321,18 +468,35 @@ pub(crate) fn emit_text_commands(
             if glyphs.is_empty() {
                 continue;
             }
-            list.push(DrawCommand::GlyphRun {
-                font,
-                font_size,
-                glyphs,
-                glyph_bounds,
-                transform,
-                brush: peniko::Color::from_rgba8(red, green, blue, alpha).into(),
-                bounds: layout_bounds,
-                clip: None,
+            // Each glyph above cost one `skrifa` outline-bounds lookup, which
+            // parses `glyf`/`loca` from font data that lives in flash on an
+            // embedded target. Counting them is how the simulation sees a cost
+            // the host barely pays.
+            list.add_work(FrameWork {
+                glyph_bounds_measured: glyphs.len() as u64,
+                ..FrameWork::ZERO
+            });
+            let local_bounds = glyph_bounds
+                .iter()
+                .copied()
+                .reduce(|current, glyph| current.union(glyph))
+                .unwrap_or(layout_bounds);
+            retained.push(RetainedGlyphRun {
+                command: DrawCommand::GlyphRun {
+                    font,
+                    font_size,
+                    glyphs,
+                    glyph_bounds,
+                    transform,
+                    brush: peniko::Color::from_rgba8(red, green, blue, alpha).into(),
+                    bounds: layout_bounds,
+                    clip: None,
+                },
+                local_bounds,
             });
         }
     }
+    retained
 }
 
 #[cfg(test)]
@@ -457,10 +621,10 @@ mod tests {
             parley::Layout::new()
         };
 
-        cache.get_or_build(0, Some(120.0), build);
-        cache.get_or_build(0, Some(120.0), build);
-        cache.get_or_build(0, Some(80.0), build);
-        cache.get_or_build(1, Some(120.0), build);
+        cache.get_or_build(0, TextLayoutKey::foreground(Some(120.0)), build);
+        cache.get_or_build(0, TextLayoutKey::foreground(Some(120.0)), build);
+        cache.get_or_build(0, TextLayoutKey::foreground(Some(80.0)), build);
+        cache.get_or_build(1, TextLayoutKey::foreground(Some(120.0)), build);
 
         assert_eq!(builds.get(), 3);
     }
