@@ -4,9 +4,10 @@ use super::shader::{
 };
 use super::uniform::FILTER_UNIFORM_WORDS;
 use super::*;
-use shaderloom::WgslModuleCache;
+use core::time::Duration;
 use filtrate_core::{MAX_FILTER_PARAM_VEC4S, ParamArray, StageCollector};
 use image::RgbaImage;
+use shaderloom::WgslModuleCache;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -1494,4 +1495,164 @@ fn gpu_export_filter_gallery_images() {
             threshold: 0.6,
         })
     );
+}
+
+// ============================================================================
+// Multi-input parameter animation
+// ============================================================================
+
+/// A `FilterParam` whose watcher callback the test fires by hand.
+struct ScriptedParam {
+    initial: f32,
+    callback: std::sync::Arc<std::sync::Mutex<Option<filtrate_core::AnimatedCallback>>>,
+}
+
+impl ScriptedParam {
+    fn constant(value: f32) -> Self {
+        Self {
+            initial: value,
+            callback: std::sync::Arc::default(),
+        }
+    }
+}
+
+impl filtrate_core::FilterParam for ScriptedParam {
+    fn snapshot(&self) -> f32 {
+        self.initial
+    }
+
+    fn watch_animated(
+        &self,
+        callback: filtrate_core::AnimatedCallback,
+    ) -> filtrate_core::WatchGuard {
+        *self
+            .callback
+            .lock()
+            .expect("scripted param callback mutex poisoned") = Some(callback);
+        filtrate_core::WatchGuard::new(())
+    }
+}
+
+/// Linear ramp over a fixed duration, for deterministic mid-flight sampling.
+struct LinearRamp(Duration);
+
+impl filtrate_core::Interpolator for LinearRamp {
+    fn duration(&self) -> Duration {
+        self.0
+    }
+
+    fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
+        let progress = (elapsed.as_secs_f32() / self.0.as_secs_f32()).min(1.0);
+        (to - from).mul_add(progress, from)
+    }
+}
+
+#[test]
+fn gpu_multi_input_params_animate_between_frames() {
+    use crate::multi_input::{MultiInputFilter, ToneCurve};
+
+    let gpu = create_test_device();
+    let device = &gpu.device;
+    let queue = &gpu.queue;
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+
+    let amount = ScriptedParam::constant(0.0);
+    let amount_callback = amount.callback.clone();
+    let mut filter = MultiInputFilter::new(ToneCurve {
+        shadows: ScriptedParam::constant(0.0),
+        midtones: ScriptedParam::constant(0.0),
+        highlights: ScriptedParam::constant(0.0),
+        gamma: ScriptedParam::constant(1.0),
+        amount,
+    });
+
+    let shader_cache = WgslModuleCache::new();
+    let ctx = EffectContext {
+        device,
+        queue,
+        shader_cache: &shader_cache,
+        input_format: format,
+        output_format: format,
+    };
+    pollster::block_on(filter.setup(&ctx)).expect("multi-input setup should succeed");
+
+    let make_texture = |usage: wgpu::TextureUsages| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("multi-input animation test"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    };
+    let input_texture = make_texture(wgpu::TextureUsages::TEXTURE_BINDING);
+    let output_texture = make_texture(wgpu::TextureUsages::RENDER_ATTACHMENT);
+
+    let render = |filter: &mut MultiInputFilter<ToneCurve<ScriptedParam>>, delta: Duration| {
+        let input = EffectInput {
+            device,
+            queue,
+            texture: &input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width: 4,
+            height: 4,
+            timing: EffectFrameTiming::new(Duration::ZERO, delta, 0),
+        };
+        let output = EffectOutput {
+            device,
+            queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width: 4,
+            height: 4,
+        };
+        filter
+            .render(&input, &output)
+            .expect("multi-input render should succeed")
+    };
+
+    // Setup snapped every parameter to its snapshot; a static frame is settled.
+    assert!(!render(&mut filter, Duration::ZERO));
+    assert!(!filter.redraw_hint());
+
+    // A watcher event with an interpolator starts an animation and raises the
+    // redraw hint before any frame runs.
+    let fire = amount_callback
+        .lock()
+        .expect("scripted param callback mutex poisoned")
+        .take()
+        .expect("MultiInputFilter must install a watcher on every parameter");
+    fire(filtrate_core::AnimatedTarget {
+        value: 1.0,
+        interpolator: Some(Box::new(LinearRamp(Duration::from_millis(100)))),
+    });
+    assert!(filter.redraw_hint());
+
+    // Mid-flight: half the ramp has elapsed, so the sampled value is halfway
+    // and the filter keeps asking for frames.
+    assert!(render(&mut filter, Duration::from_millis(50)));
+    let mid = filter.animated_values()[4];
+    assert!(
+        (mid - 0.5).abs() < 0.001,
+        "expected the amount halfway through its ramp, got {mid}"
+    );
+    assert!(filter.redraw_hint());
+
+    // Past the end: the value settles on the target and the demand stops.
+    assert!(!render(&mut filter, Duration::from_millis(60)));
+    let done = filter.animated_values()[4];
+    assert!(
+        (done - 1.0).abs() < f32::EPSILON,
+        "expected the amount settled on its target, got {done}"
+    );
+    assert!(!filter.redraw_hint());
 }

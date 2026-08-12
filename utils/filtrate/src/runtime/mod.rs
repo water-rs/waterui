@@ -7,7 +7,7 @@
 
 extern crate alloc;
 
-mod animation;
+pub(crate) mod animation;
 mod pass;
 mod plan;
 mod shader;
@@ -18,11 +18,10 @@ mod tests;
 
 pub use shader::HdrPolicy;
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{fmt, time::Duration};
-use std::sync::{OnceLock, mpsc, mpsc::Receiver};
+use alloc::{boxed::Box, vec::Vec};
+use core::fmt;
 
-use filtrate_core::{AnimationTrack, Chain, Filter, MAX_FILTER_PARAMS, ParamArray, WatchGuard};
+use filtrate_core::{Chain, Filter, MAX_FILTER_PARAMS, ParamArray};
 
 #[cfg(test)]
 use crate::effect::EffectFrameTiming;
@@ -31,9 +30,7 @@ use crate::effect::{
     EffectRenderResult, EffectSetupError, EffectSetupResult,
 };
 
-use animation::{
-    ParamAnimationEvent, ParamTrackState, SharedAnimationState, WatcherInstaller, approx_param_eq,
-};
+use animation::ParamAnimator;
 use pass::{
     ColorTarget, CompiledPass, CompiledPassKind, PassBindingPlan, PassTextureSource,
     SCRATCH_SLOT_COUNT, find_or_insert_dynamic_bind_group, get_or_create_static_bind_group,
@@ -71,10 +68,8 @@ use uniform::{
 /// - **Spatial filters** (`F::COLOR_ONLY = false`): Use compute shaders with intermediate texture for HDR.
 pub struct FilterAdapter<F: Filter> {
     filter: F,
-    /// Current parameter targets delivered by reactive watcher events.
-    target_params: Vec<f32>,
-    /// True when target parameters changed since the last successful render.
-    target_params_dirty: bool,
+    /// Reactive-parameter driver: watchers, event channel, per-parameter tracks.
+    animator: ParamAnimator,
     passes: Vec<CompiledPass>,
     /// Whether render should use scratch ping-pong textures.
     requires_scratch: bool,
@@ -89,18 +84,6 @@ pub struct FilterAdapter<F: Filter> {
     setup_error: Option<EffectSetupError>,
     // Shared resources
     sampler: Option<wgpu::Sampler>,
-    /// Animation state owned by the render thread.
-    animation_state: SharedAnimationState,
-    /// Parameter watcher guards dropped before their event channel and callback.
-    _watcher_guards: Vec<WatchGuard>,
-    /// Parameter-change events, each carrying optional animation metadata.
-    animation_events: Receiver<ParamAnimationEvent>,
-    /// Set by watcher callbacks the instant an event is queued, cleared when
-    /// events are consumed — lets `redraw_hint` see changes that arrived
-    /// between frames without draining the channel.
-    events_pending: Arc<core::sync::atomic::AtomicBool>,
-    /// Host wake callback shared with every parameter watcher.
-    redraw_callback: Arc<OnceLock<EffectRedrawCallback>>,
     // Scratch ping-pong textures for multi-pass.
     scratch_textures: [Option<wgpu::Texture>; SCRATCH_SLOT_COUNT],
     scratch_views: [Option<wgpu::TextureView>; SCRATCH_SLOT_COUNT],
@@ -126,35 +109,14 @@ impl<F: Filter> FilterAdapter<F> {
     #[must_use]
     pub fn new(filter: F) -> Self {
         let param_count = <F::Params as ParamArray>::LEN;
-        let (animation_events_tx, animation_events) = mpsc::channel();
-        let redraw_callback = Arc::new(OnceLock::new());
-        let events_pending = Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut watcher_guards = Vec::with_capacity(param_count);
-        filter.visit_signals(&mut WatcherInstaller {
-            sender: animation_events_tx,
-            redraw_callback: redraw_callback.clone(),
-            events_pending: events_pending.clone(),
-            guards: &mut watcher_guards,
-        });
-
         let mut target_params = alloc::vec![0.0; param_count];
         filter.params().write_to(&mut target_params);
-        let animation_state = SharedAnimationState {
-            tracks: target_params
-                .iter()
-                .copied()
-                .map(|value| ParamTrackState {
-                    track: AnimationTrack::new(value),
-                    animated_target: None,
-                })
-                .collect(),
-            current_values: target_params.clone(),
-            has_active_animation: false,
-        };
+        let animator = ParamAnimator::new(target_params, |installer| {
+            filter.visit_signals(installer);
+        });
         Self {
             filter,
-            target_params,
-            target_params_dirty: true,
+            animator,
             passes: Vec::new(),
             requires_scratch: false,
             hdr_policy: HdrPolicy::default(),
@@ -162,11 +124,6 @@ impl<F: Filter> FilterAdapter<F> {
             setup_formats: None,
             setup_error: None,
             sampler: None,
-            animation_state,
-            _watcher_guards: watcher_guards,
-            animation_events,
-            events_pending,
-            redraw_callback,
             scratch_textures: [const { None }; SCRATCH_SLOT_COUNT],
             scratch_views: [const { None }; SCRATCH_SLOT_COUNT],
             scratch_size: (0, 0),
@@ -191,7 +148,7 @@ impl<F: Filter> FilterAdapter<F> {
     /// Consecutive color-only filters will be fused into a single GPU pass.
     #[must_use]
     pub fn then<F2: Filter>(self, filter: F2) -> FilterAdapter<Chain<F, F2>> {
-        let redraw_callback = self.redraw_callback.get().cloned();
+        let redraw_callback = self.animator.redraw_callback();
         let mut next = FilterAdapter::new(Chain {
             first: self.filter,
             second: filter,
@@ -229,92 +186,7 @@ impl<F: Filter> FilterAdapter<F> {
     }
 
     fn install_redraw_callback(&self, callback: EffectRedrawCallback) {
-        assert!(
-            self.redraw_callback.set(callback).is_ok(),
-            "FilterAdapter redraw callback must be installed exactly once before setup"
-        );
-    }
-
-    fn apply_target_params_to_current_values(&mut self) {
-        let param_count = self.target_params.len();
-        for i in 0..param_count {
-            let target = self.target_params[i];
-            self.animation_state.current_values[i] = target;
-            self.animation_state.tracks[i]
-                .track
-                .set_target(target, None);
-            self.animation_state.tracks[i].animated_target = None;
-        }
-        self.target_params_dirty = false;
-    }
-
-    fn consume_animation_events(&mut self) {
-        self.events_pending
-            .store(false, core::sync::atomic::Ordering::Release);
-        while let Ok(event) = self.animation_events.try_recv() {
-            assert!(
-                event.param_index < self.animation_state.current_values.len(),
-                "FilterAdapter watcher produced out-of-range parameter index {}",
-                event.param_index
-            );
-            self.target_params[event.param_index] = event.target_value;
-            self.target_params_dirty = true;
-            let entry = &mut self.animation_state.tracks[event.param_index];
-            entry
-                .track
-                .set_target(event.target_value, event.interpolator);
-            entry.animated_target = entry.track.is_active().then_some(event.target_value);
-        }
-        self.animation_state.has_active_animation = self
-            .animation_state
-            .tracks
-            .iter()
-            .any(|entry| entry.track.is_active());
-    }
-
-    /// Update interpolated parameters in-place; returns whether another frame is needed.
-    fn update_interpolated_params(&mut self, delta: Duration) -> bool {
-        let param_count = self.target_params.len();
-        // Setup rejects over-budget chains, so this can only trip if render
-        // ran without a successful setup — which encode_render fails first.
-        debug_assert!(
-            param_count <= MAX_FILTER_PARAMS,
-            "parameter count validated at setup"
-        );
-        self.consume_animation_events();
-        let mut needs_redraw = false;
-
-        for i in 0..param_count {
-            let target = self.target_params[i];
-            let entry = &mut self.animation_state.tracks[i];
-
-            if let Some(animated_target) = entry.animated_target {
-                // Underlying target changed without a new animation event:
-                // fail fast to direct target sync so state stays coherent.
-                if !approx_param_eq(animated_target, target) {
-                    entry.track.set_target(target, None);
-                    entry.animated_target = None;
-                }
-            }
-
-            if entry.animated_target.is_none()
-                && !approx_param_eq(self.animation_state.current_values[i], target)
-            {
-                entry.track.set_target(target, None);
-            }
-
-            let active = entry.track.advance(delta);
-            self.animation_state.current_values[i] = entry.track.value();
-
-            if active {
-                needs_redraw = true;
-            } else {
-                entry.animated_target = None;
-            }
-        }
-
-        self.animation_state.has_active_animation = needs_redraw;
-        needs_redraw
+        self.animator.install_redraw_callback(callback);
     }
 
     fn set_setup_error(&mut self, err: &EffectSetupError) {
@@ -629,9 +501,7 @@ impl<F: Filter> FilterAdapter<F> {
     }
 
     fn plan_setup(&mut self, ctx: &EffectContext<'_>) -> Result<FilterSetupPlan, EffectSetupError> {
-        let _ = self
-            .redraw_callback
-            .get_or_init(|| Arc::new(|| {}) as EffectRedrawCallback);
+        self.animator.ensure_redraw_callback();
         if <F::Params as ParamArray>::LEN > MAX_FILTER_PARAMS {
             return Err(EffectSetupError::TooManyParams {
                 declared: <F::Params as ParamArray>::LEN,
@@ -779,7 +649,7 @@ impl<F: Filter> Effect for FilterAdapter<F> {
             return Err(error);
         }
         self.setup_formats = Some((ctx.input_format, ctx.output_format));
-        self.apply_target_params_to_current_values();
+        self.animator.apply_targets_to_current();
         Ok(())
     }
 
@@ -855,8 +725,8 @@ impl<F: Filter> Effect for FilterAdapter<F> {
             }
         }
 
-        let needs_redraw = self.update_interpolated_params(input.timing.delta());
-        let current_values = &self.animation_state.current_values;
+        let needs_redraw = self.animator.update(input.timing.delta());
+        let current_values = self.animator.current_values();
         if current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
             return Err(EffectRenderError::MissingResource(
                 "filter render missing current parameter values",
@@ -1200,7 +1070,7 @@ impl<F: Filter> Effect for FilterAdapter<F> {
             }
         }
 
-        self.target_params_dirty = false;
+        self.animator.mark_rendered();
         #[cfg(test)]
         {
             self.last_render_used_direct_output = used_direct_spatial_output;
@@ -1213,11 +1083,7 @@ impl<F: Filter> Effect for FilterAdapter<F> {
     }
 
     fn redraw_hint(&self) -> bool {
-        self.target_params_dirty
-            || self.animation_state.has_active_animation
-            || self
-                .events_pending
-                .load(core::sync::atomic::Ordering::Acquire)
+        self.animator.redraw_hint()
     }
 }
 #[allow(private_bounds)]
@@ -1228,9 +1094,9 @@ impl<F: Filter> FilterAdapter<F> {
         target_format: wgpu::TextureFormat,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let shader_source = specialize_color_shader(fragments, target_format);
-        let shader = ctx
-            .shader_cache
-            .module(ctx.device, Some("filter color shader"), &shader_source);
+        let shader =
+            ctx.shader_cache
+                .module(ctx.device, Some("filter color shader"), &shader_source);
 
         let filterable = is_filterable_texture_format(ctx.input_format);
         let sampler_binding = if filterable {
@@ -1321,9 +1187,9 @@ impl<F: Filter> FilterAdapter<F> {
         original_input: bool,
     ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
         let shader_source = specialize_spatial_shader(shader_source, storage_format)?;
-        let shader = ctx
-            .shader_cache
-            .module(ctx.device, Some("filter spatial shader"), &shader_source);
+        let shader =
+            ctx.shader_cache
+                .module(ctx.device, Some("filter spatial shader"), &shader_source);
 
         let original_entry = wgpu::BindGroupLayoutEntry {
             binding: 3,
