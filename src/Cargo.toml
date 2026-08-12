@@ -33,7 +33,7 @@ executor-core.workspace = true
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 minstant.workspace = true
 pulldown-cmark = "0.13"
@@ -45,7 +45,7 @@ waterui-shape = { workspace = true, default-features = false }
 waterui-svg = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
-waterui-inspector-protocol.workspace = true
+waterui-inspector-protocol = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
 waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }
@@ -100,12 +100,17 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
-default = ["gpu", "assets", "media"]
+default = ["gpu", "assets", "media", "inspector"]
+# The devtools Inspector hub and its wire protocol. Default-on for
+# development hosts; embedded firmware disables it — the hub is desktop
+# tooling, and its 64-bit sequence counters do not even exist on RV32
+# targets.
+inspector = ["dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
 # Reactive-graph tracing for the Inspector's `signals` channel. Development
 # only: it attributes every state-owning signal node and reports every
 # notification. Off by default so release builds pay nothing — see
 # `nami_core::observe`.
-inspector-signals = ["nami/observability"]
+inspector-signals = ["inspector", "nami/observability"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disabling it lets a WaterUI app
 # cross-compile lean for embedded targets without the GPU stack.

@@ -21,8 +21,9 @@ crate-type = ["dylib", "rlib"]
 waterui-internal = { path = "../../src", default-features = false }
 
 [features]
-default = ["gpu", "assets", "media", "webview"]
+default = ["gpu", "assets", "media", "webview", "inspector"]
 gpu = ["waterui-internal/gpu"]
+inspector = ["waterui-internal/inspector"]
 assets = ["waterui-internal/assets"]
 media = ["waterui-internal/media", "video"]
 video = ["waterui-internal/video"]

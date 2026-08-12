@@ -2,6 +2,7 @@ pub mod app;
 mod entry;
 pub mod error;
 pub mod fullscreen;
+#[cfg(feature = "inspector")]
 pub mod inspector;
 pub mod metadata;
 pub mod reactive_ext;

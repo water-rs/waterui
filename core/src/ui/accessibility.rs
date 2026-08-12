@@ -49,7 +49,7 @@ impl AccessibilityLabel {
 ///
 /// Identifiers are never exposed to end users or spoken by assistive
 /// technologies — they exist purely for automation (`waterui-testing`
-/// selectors, XCUITest `accessibilityIdentifier`, Android UiAutomator resource
+/// selectors, `XCUITest` `accessibilityIdentifier`, Android `UiAutomator` resource
 /// matching). Keep them constant: a query key that changes with app state
 /// defeats its purpose, so unlike [`AccessibilityLabel`] this is not a signal.
 #[derive(Debug, Clone, PartialEq, Eq)]

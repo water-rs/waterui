@@ -36,11 +36,11 @@ mod hub;
 mod logs;
 mod recorder;
 mod server;
-mod tasks;
 /// The reactive-graph bridge only exists when `nami` is built with graph
 /// observability; without it there is no observer trait to implement.
 #[cfg(feature = "inspector-signals")]
 mod signals;
+mod tasks;
 
 use hub::EventHub;
 pub use logs::InspectorLayer;
@@ -184,9 +184,9 @@ impl InspectorRuntime {
     #[must_use]
     pub fn observe_signals(&self) -> nami::observe::ObserverScope {
         use std::rc::Rc;
-        nami::observe::ObserverScope::install(Rc::new(signals::SignalBridge::new(
-            Arc::clone(&self.hub),
-        )))
+        nami::observe::ObserverScope::install(Rc::new(signals::SignalBridge::new(Arc::clone(
+            &self.hub,
+        ))))
     }
 }
 
@@ -213,7 +213,8 @@ pub fn install(environment: &mut Environment, inspector: Option<InspectorRuntime
 /// Advertised in the handshake so an inspector can grey out what it will never
 /// receive instead of waiting forever for it.
 fn available_channels() -> ChannelSet {
-    let mut available = ChannelSet::FRAMES | ChannelSet::TREE | ChannelSet::TASKS | ChannelSet::LOGS;
+    let mut available =
+        ChannelSet::FRAMES | ChannelSet::TREE | ChannelSet::TASKS | ChannelSet::LOGS;
     if cfg!(feature = "inspector-signals") {
         available |= ChannelSet::SIGNALS;
     }

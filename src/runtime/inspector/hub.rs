@@ -199,10 +199,12 @@ mod tests {
         hub.publish(frame());
 
         let seqs: Vec<u64> = (0..2)
-            .map(|_| match receiver.try_recv().expect("event should be queued") {
-                Dispatch::Event(envelope) => envelope.seq,
-                _ => panic!("expected an event"),
-            })
+            .map(
+                |_| match receiver.try_recv().expect("event should be queued") {
+                    Dispatch::Event(envelope) => envelope.seq,
+                    _ => panic!("expected an event"),
+                },
+            )
             .collect();
         assert_eq!(seqs, vec![0, 1]);
     }
