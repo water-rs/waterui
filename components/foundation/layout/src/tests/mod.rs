@@ -31,6 +31,29 @@ impl SubView for FixedSizeView {
     }
 }
 
+/// A child that shrinks to whatever main-axis extent it is proposed, down to
+/// `floor`. This is what compressible content (text, a truncating label) does;
+/// [`FixedSizeView`] deliberately does not, so it models a rigid child instead.
+pub(crate) struct CompressibleView {
+    pub(crate) ideal: Size,
+    pub(crate) floor: f32,
+}
+
+impl SubView for CompressibleView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let width = proposal.width.map_or(self.ideal.width, |proposed| {
+            proposed.clamp(self.floor, self.ideal.width)
+        });
+        ViewDimensions::new(Size::new(width, self.ideal.height))
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
 /// A mock [`SubView`] that respects width proposals (like Text).
 /// When given a width constraint, it wraps and increases height.
 /// When given None, it returns intrinsic single-line size.
@@ -246,12 +269,14 @@ fn test_hstack_children_exceed_bounds() {
     };
 
     // Two texts that together (60 + 60 + 10 spacing = 130) exceed 100
-    let mut text1 = FixedSizeView {
-        size: Size::new(60.0, 20.0),
+    let mut text1 = CompressibleView {
+        ideal: Size::new(60.0, 20.0),
+        floor: 0.0,
     };
     let mut spacer = SpacerView;
-    let mut text2 = FixedSizeView {
-        size: Size::new(60.0, 20.0),
+    let mut text2 = CompressibleView {
+        ideal: Size::new(60.0, 20.0),
+        floor: 0.0,
     };
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 40.0));
@@ -274,7 +299,11 @@ fn test_hstack_children_exceed_bounds() {
 
 #[test]
 fn test_hstack_single_child_exceeds_bounds() {
-    // A single child wider than bounds should be clamped
+    // A child that answers every proposal with 200pt is stating it cannot be
+    // narrower, so it overflows a 100pt row rather than being clamped — the same
+    // thing `.frame(width: 200)` does inside a narrower stack in SwiftUI. A
+    // compressible child in the same position does shrink; see
+    // `test_hstack_children_exceed_bounds`.
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(0.0),
@@ -289,18 +318,19 @@ fn test_hstack_single_child_exceeds_bounds() {
     let rects = layout.place(bounds, &children);
 
     assert_eq!(rects.len(), 1);
-    assert_rect_within_bounds(&rects[0], &bounds, "wide child");
     assert!(
-        rects[0].width() <= bounds.width() + 0.001,
-        "Child width {} exceeds bounds width {}",
-        rects[0].width(),
-        bounds.width()
+        (rects[0].width() - 200.0).abs() < 0.001,
+        "the child reports 200pt at every proposal, so it must keep 200pt, got {}",
+        rects[0].width()
     );
 }
 
 #[test]
 fn test_hstack_multiple_children_total_exceeds_bounds() {
-    // Multiple children whose total width exceeds bounds
+    // Three rigid children — each answers every proposal with 50pt, so each is
+    // saying it cannot shrink. The row then overflows rather than crushing them:
+    // a child's reported minimum is binding, exactly as a `.frame(width:)` row
+    // overflows in SwiftUI instead of being squeezed.
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -322,22 +352,24 @@ fn test_hstack_multiple_children_total_exceeds_bounds() {
 
     let rects = layout.place(bounds, &children);
 
-    // All children must fit within bounds
-    for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
+    // Each child keeps the width it insisted on ...
+    for (index, rect) in rects.iter().enumerate() {
+        assert!(
+            (rect.width() - 50.0).abs() < 0.001,
+            "child {index} reports 50pt at every proposal, so it must keep 50pt, got {}",
+            rect.width()
+        );
     }
 
-    // Children should not overlap
-    assert_no_overlap(&rects, "horizontal");
-
-    // Last child's right edge should not exceed bounds
-    let last_rect = rects.last().unwrap();
+    // ... the row overflows by the difference ...
+    let overflow = rects.last().expect("three children were placed").max_x() - bounds.max_x();
     assert!(
-        last_rect.x() + last_rect.width() <= bounds.width() + 0.001,
-        "Last child exceeds bounds: {} > {}",
-        last_rect.x() + last_rect.width(),
-        bounds.width()
+        (overflow - 70.0).abs() < 0.001,
+        "170pt of rigid content in 100pt must overflow by 70pt, got {overflow}"
     );
+
+    // ... and overflowing must not pile children on top of each other.
+    assert_no_overlap(&rects, "horizontal");
 }
 
 #[test]
@@ -817,11 +849,13 @@ fn test_hstack_in_vstack_respects_width() {
         spacing: Computed::constant(10.0),
     };
 
-    let mut label = FixedSizeView {
-        size: Size::new(50.0, 20.0),
+    let mut label = CompressibleView {
+        ideal: Size::new(50.0, 20.0),
+        floor: 0.0,
     };
-    let mut long_text = FixedSizeView {
-        size: Size::new(500.0, 20.0),
+    let mut long_text = CompressibleView {
+        ideal: Size::new(500.0, 20.0),
+        floor: 0.0,
     }; // Very long text
 
     // Constrained bounds (like inside a VStack)

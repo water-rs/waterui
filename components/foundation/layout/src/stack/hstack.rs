@@ -12,7 +12,10 @@ use crate::{
     Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     ViewDimensions,
     container::FixedContainer,
-    stack::{Axis, VerticalAlignment},
+    stack::{
+        Axis, VerticalAlignment,
+        distribute::{Extent, compress_to_fit, exceeds},
+    },
 };
 
 /// A view that arranges its children in a horizontal line.
@@ -156,78 +159,57 @@ fn hstack_stretch_allocations(
     stretch_indices.iter().map(|&idx| (idx, width)).collect()
 }
 
-/// The floor below which overflow compression never squeezes a child, so tiny
-/// labels stay readable even when the row cannot possibly fit.
-const MIN_COMPRESSED_WIDTH: f32 = 20.0;
-
-/// Returns whether `total` exceeds `available` by more than the accumulated
-/// rounding error of measuring and then reconstructing the same row width.
-fn exceeds_available_width(total: f32, available: f32, terms: usize) -> bool {
-    let magnitude = total.abs().max(available.abs()).max(1.0);
-    let rounding_tolerance = f32::EPSILON * magnitude * usize_to_f32(terms.max(1));
-    total - available > rounding_tolerance
-}
-
-/// Fairly compresses non-stretching children into `available` width by
-/// clamping them to a common cap (water-filling): the cap is the largest `T`
-/// with `Σ min(wᵢ, T) ≤ available`, so the widest children absorb the deficit
-/// first and equal-width children shrink by the same amount — not the previous
-/// order-dependent largest-first squeeze, which crushed the leading children
-/// of an equal-width row (e.g. a calendar's day columns) while later siblings
-/// kept their full width. Children at or below the cap (small labels) keep
-/// their intrinsic width; clamped children are re-measured at the cap so
-/// wrapped content reports its true height. No-op when everything fits.
-fn compress_children_evenly(
+/// Compresses the non-stretching children into `available`, taking space from the
+/// lowest layout priorities first and never pushing a child below the minimum it
+/// reports when proposed zero width.
+///
+/// Children clamped below their ideal are re-measured at the width they end up
+/// with, so wrapped content reports the height that width actually produces.
+fn compress_children(
     measurements: &mut [ChildMeasurement],
     children: &[&dyn SubView],
     compress_indices: &[usize],
     available: f32,
     height_proposal: Option<f32>,
 ) {
-    let total: f32 = compress_indices
-        .iter()
-        .map(|&idx| measurements[idx].size().width)
-        .sum();
-    if compress_indices.is_empty()
-        || !exceeds_available_width(total, available, compress_indices.len())
-    {
+    if compress_indices.is_empty() {
         return;
     }
 
-    let mut widths: Vec<f32> = compress_indices
+    // Probing every child for its minimum only pays when something has to give,
+    // so check the ideals first. That keeps an already-fitting row at one measure
+    // per child — which the embedded backend's per-frame measure budget notices
+    // immediately if it regresses.
+    let ideal_total: f32 = compress_indices
         .iter()
-        .map(|&idx| measurements[idx].size().width)
-        .collect();
-    widths.sort_unstable_by(|left, right| right.total_cmp(left));
-
-    // Lower the cap level by level: with the k+1 widest children clamped and
-    // everyone else keeping their width, the cap solves
-    // (k + 1) · cap + Σ smaller = available; it is the answer once it no
-    // longer dips below the next child's width.
-    let mut prefix = 0.0_f32;
-    let mut cap = f32::NEG_INFINITY;
-    for (k, &width) in widths.iter().enumerate() {
-        prefix += width;
-        let candidate = (available - (total - prefix)) / usize_to_f32(k + 1);
-        let next = if k + 1 < widths.len() {
-            widths[k + 1]
-        } else {
-            f32::NEG_INFINITY
-        };
-        if candidate >= next {
-            cap = candidate;
-            break;
-        }
+        .map(|&index| measurements[index].size().width)
+        .sum();
+    if !exceeds(ideal_total, available, compress_indices.len()) {
+        return;
     }
-    let cap = cap.max(MIN_COMPRESSED_WIDTH);
 
-    for &idx in compress_indices {
-        if measurements[idx].size().width <= cap {
+    let extents: Vec<Extent> = compress_indices
+        .iter()
+        .map(|&index| Extent {
+            ideal: measurements[index].size().width,
+            min: children[index]
+                .measure(ProposalSize::new(Some(0.0), height_proposal))
+                .size
+                .width,
+            priority: children[index].priority(),
+        })
+        .collect();
+
+    for (&index, resolved) in compress_indices
+        .iter()
+        .zip(compress_to_fit(&extents, available))
+    {
+        if resolved >= measurements[index].size().width {
             continue;
         }
-        let constrained_proposal = ProposalSize::new(Some(cap), height_proposal);
-        measurements[idx].dimensions = children[idx].measure(constrained_proposal);
-        measurements[idx].dimensions.size.width = measurements[idx].size().width.min(cap);
+        let constrained = ProposalSize::new(Some(resolved), height_proposal);
+        measurements[index].dimensions = children[index].measure(constrained);
+        measurements[index].dimensions.size.width = measurements[index].size().width.min(resolved);
     }
 }
 
@@ -319,7 +301,7 @@ impl Layout for HStackLayout {
         };
 
         if proposal.width.is_some() {
-            compress_children_evenly(
+            compress_children(
                 &mut measurements,
                 children,
                 &fixed_indices,
@@ -406,7 +388,7 @@ impl Layout for HStackLayout {
             (0..measurements.len()).collect()
         };
 
-        compress_children_evenly(
+        compress_children(
             &mut measurements,
             children,
             &fixed_indices,
@@ -608,6 +590,7 @@ impl<C: TupleViews + 'static> View for HStack<(C,)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::CompressibleView;
 
     struct MockSubView {
         size: Size,
@@ -775,10 +758,10 @@ mod tests {
             spacing: Computed::constant(8.0),
         };
 
-        let mut columns: Vec<MockSubView> = (0..7)
-            .map(|_| MockSubView {
-                size: Size::new(40.0, 40.0),
-                stretch_axis: StretchAxis::None,
+        let mut columns: Vec<CompressibleView> = (0..7)
+            .map(|_| CompressibleView {
+                ideal: Size::new(40.0, 40.0),
+                floor: 0.0,
             })
             .collect();
         let children: Vec<&dyn SubView> = columns
@@ -835,22 +818,22 @@ mod tests {
     }
 
     #[test]
-    fn test_hstack_compression_floors_at_min_readable_width() {
-        // Two 60pt children in 10pt of space: the cap floors at the minimum
-        // readable width, so both clamp to 20 and the row overflows instead of
-        // collapsing children to nothing.
+    fn test_hstack_compression_never_goes_below_a_reported_minimum() {
+        // Two children that will not go below 20pt, in 10pt of space: the row
+        // overflows rather than squeezing them past what they said they need.
+        // The floor is each child's own answer, not a constant the stack picked.
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
             spacing: Computed::constant(0.0),
         };
 
-        let mut first = MockSubView {
-            size: Size::new(60.0, 20.0),
-            stretch_axis: StretchAxis::None,
+        let mut first = CompressibleView {
+            ideal: Size::new(60.0, 20.0),
+            floor: 20.0,
         };
-        let mut second = MockSubView {
-            size: Size::new(60.0, 20.0),
-            stretch_axis: StretchAxis::None,
+        let mut second = CompressibleView {
+            ideal: Size::new(60.0, 20.0),
+            floor: 20.0,
         };
         let children: Vec<&dyn SubView> = vec![&mut first, &mut second];
 
