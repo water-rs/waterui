@@ -23,7 +23,7 @@ use nami::SignalExt;
 use std::sync::Arc;
 use waterui_layout::{
     HorizontalAlignment, Layout, ProposalSize, Rect, Size, StretchAxis, SubView, VerticalAlignment,
-    ViewDimensions, measure_layout,
+    ViewDimensions, measure_layout, with_memoized_children,
 };
 
 use crate::IntoFFI;
@@ -709,7 +709,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFit
         let jni_subviews = extract_subviews(env, subviews);
         let subview_refs: Vec<&dyn SubView> =
             jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-        let size = layout.size_that_fits(proposal, &subview_refs);
+        let size = with_memoized_children(&subview_refs, |refs| {
+            layout.size_that_fits(proposal, refs)
+        });
         env.new_object(
             jni_str!("dev/waterui/android/runtime/SizeStruct"),
             jni_sig!("(FF)V"),
@@ -734,7 +736,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'loca
         let jni_subviews = extract_subviews(env, subviews);
         let subview_refs: Vec<&dyn SubView> =
             jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-        let rects = layout.place(bounds, &subview_refs);
+        let rects = with_memoized_children(&subview_refs, |refs| layout.place(bounds, refs));
         let rect_class = env
             .find_class(jni_str!("dev/waterui/android/runtime/RectStruct"))
             .expect("RectStruct class");

@@ -603,6 +603,109 @@ pub trait SubView {
     fn priority(&self) -> i32;
 }
 
+/// A [`SubView`] that remembers what each proposal measured.
+///
+/// Containers probe the same child repeatedly — `size_that_fits` measures at the
+/// ideal proposal, `place` measures again at the resolved bounds, alignment-guide
+/// resolution measures once more per guide — and a container that is itself a child
+/// re-runs all of that for its own parent's probes, so the repeats multiply with
+/// tree depth. Wrapping each child for the duration of one pass collapses them to
+/// one measure per distinct proposal.
+///
+/// The cache is a fixed-capacity inline array, scanned linearly: a pass probes any
+/// one child a handful of times, and keeping it inline means wrapping a child costs
+/// no allocation — which matters on the embedded backend, whose budget is heap
+/// traffic per frame rather than CPU. A child probed at more than
+/// [`MEMOIZED_PROPOSALS`] distinct proposals simply measures again for the extras.
+/// Entries are keyed on the proposal's bits, so `-0.0` and a NaN proposal compare
+/// consistently instead of by float equality.
+pub struct MemoizedSubView<'a> {
+    inner: &'a dyn SubView,
+    cache: core::cell::RefCell<[Option<(ProposalSize, ViewDimensions)>; MEMOIZED_PROPOSALS]>,
+}
+
+/// How many distinct proposals one child's memo retains. A container probes a child
+/// at its ideal size, at the resolved bounds, and — once the distribution algorithm
+/// asks — at its minimum and maximum, so four covers a pass without spilling.
+pub const MEMOIZED_PROPOSALS: usize = 4;
+
+impl<'a> MemoizedSubView<'a> {
+    /// Wraps `inner` with a cache that lives as long as this value.
+    #[must_use]
+    pub fn new(inner: &'a dyn SubView) -> Self {
+        Self {
+            inner,
+            cache: core::cell::RefCell::new([const { None }; MEMOIZED_PROPOSALS]),
+        }
+    }
+}
+
+impl Debug for MemoizedSubView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemoizedSubView").finish_non_exhaustive()
+    }
+}
+
+const fn proposal_axis_bits(axis: Option<f32>) -> Option<u32> {
+    match axis {
+        Some(value) => Some(value.to_bits()),
+        None => None,
+    }
+}
+
+fn same_proposal(left: ProposalSize, right: ProposalSize) -> bool {
+    proposal_axis_bits(left.width) == proposal_axis_bits(right.width)
+        && proposal_axis_bits(left.height) == proposal_axis_bits(right.height)
+}
+
+impl SubView for MemoizedSubView<'_> {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        if let Some((_, dimensions)) = self
+            .cache
+            .borrow()
+            .iter()
+            .flatten()
+            .find(|(cached, _)| same_proposal(*cached, proposal))
+        {
+            return dimensions.clone();
+        }
+        let dimensions = self.inner.measure(proposal);
+        if let Some(slot) = self
+            .cache
+            .borrow_mut()
+            .iter_mut()
+            .find(|slot| slot.is_none())
+        {
+            *slot = Some((proposal, dimensions.clone()));
+        }
+        dimensions
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.inner.stretch_axis()
+    }
+
+    fn priority(&self) -> i32 {
+        self.inner.priority()
+    }
+}
+
+/// Runs `pass` with every child wrapped in a [`MemoizedSubView`], so repeated
+/// probes within that one layout pass measure each child at most once per
+/// distinct proposal.
+///
+/// Call this at the boundary where a layout pass begins — driving a [`Layout`]
+/// directly rather than through [`measure_layout`] means owning this yourself.
+pub fn with_memoized_children<R>(
+    children: &[&dyn SubView],
+    pass: impl FnOnce(&[&dyn SubView]) -> R,
+) -> R {
+    let memoized: Vec<MemoizedSubView<'_>> =
+        children.iter().copied().map(MemoizedSubView::new).collect();
+    let refs: Vec<&dyn SubView> = memoized.iter().map(|child| child as &dyn SubView).collect();
+    pass(&refs)
+}
+
 // ============================================================================
 // Layout Trait - Container Layout
 // ============================================================================
@@ -706,8 +809,22 @@ pub trait Layout: Debug + Any {
 }
 
 /// Measures a layout and resolves its explicit guides for the given children.
+///
+/// Children are memoized for the duration of the call (see
+/// [`with_memoized_children`]): sizing, placement and guide resolution all probe
+/// the same children, so without it each child is measured several times over.
 #[must_use]
 pub fn measure_layout(
+    layout: &dyn Layout,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> ViewDimensions {
+    with_memoized_children(children, |children| {
+        measure_layout_memoized(layout, proposal, children)
+    })
+}
+
+fn measure_layout_memoized(
     layout: &dyn Layout,
     proposal: ProposalSize,
     children: &[&dyn SubView],
@@ -1364,5 +1481,61 @@ mod tests {
         let with_height = proposal.with_height(Some(200.0));
         assert_eq!(with_height.width, Some(100.0));
         assert_eq!(with_height.height, Some(200.0));
+    }
+
+    /// A child that records how many times it was actually measured.
+    struct CountingSubView {
+        measures: core::cell::Cell<usize>,
+    }
+
+    impl SubView for CountingSubView {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            self.measures.set(self.measures.get() + 1);
+            ViewDimensions::new(Size::new(
+                proposal.width_or(10.0),
+                proposal.height_or(20.0),
+            ))
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn memoized_subview_measures_once_per_distinct_proposal() {
+        let inner = CountingSubView {
+            measures: core::cell::Cell::new(0),
+        };
+        let memo = MemoizedSubView::new(&inner);
+
+        let ideal = ProposalSize::UNSPECIFIED;
+        let constrained = ProposalSize::new(Some(80.0), None);
+
+        for _ in 0..5 {
+            assert_eq!(memo.measure(ideal).size, Size::new(10.0, 20.0));
+            assert_eq!(memo.measure(constrained).size, Size::new(80.0, 20.0));
+        }
+
+        assert_eq!(
+            inner.measures.get(),
+            2,
+            "ten probes over two distinct proposals must reach the child twice"
+        );
+    }
+
+    #[test]
+    fn memoized_subview_forwards_priority_and_stretch() {
+        let inner = CountingSubView {
+            measures: core::cell::Cell::new(0),
+        };
+        let memo = MemoizedSubView::new(&inner);
+
+        assert_eq!(memo.priority(), inner.priority());
+        assert_eq!(memo.stretch_axis(), inner.stretch_axis());
     }
 }

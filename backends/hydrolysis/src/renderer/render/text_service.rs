@@ -21,7 +21,8 @@ use core::num::NonZeroUsize;
 use core::ops::Range;
 use lru::LruCache;
 use rustc_hash::FxHasher;
-use std::sync::{Arc, Mutex};
+use core::cell::RefCell;
+use std::sync::Arc;
 
 /// Upper bound on retained shaped layouts.
 ///
@@ -41,17 +42,16 @@ pub(crate) struct TextMeasureService {
     /// Mutated only during single-threaded font registration via
     /// [`Self::fonts_mut`], read-only afterward.
     fonts: parley::FontContext,
-    /// Shared layout cache — one source of truth for main-thread render and
-    /// worker-thread measurement. Locked only to get/insert; shaping happens
-    /// outside the lock. Bounded at [`TEXT_LAYOUT_CACHE_CAPACITY`], evicting
+    /// Shared layout cache — one source of truth for the render path and
+    /// measurement. Bounded at [`TEXT_LAYOUT_CACHE_CAPACITY`], evicting
     /// least-recently-shaped entries. Layouts are shared as [`Arc`] so a hit
     /// hands out a handle instead of copying the glyph runs.
-    cache: Mutex<LruCache<TextLayoutCacheKey, Arc<parley::Layout<[u8; 4]>>>>,
+    cache: RefCell<LruCache<TextLayoutCacheKey, Arc<parley::Layout<[u8; 4]>>>>,
     /// Reusable `(FontContext, LayoutContext)` shaping scratch, checked out per
-    /// shape call. Each entry is a clone of [`Self::fonts`] (carrying the
-    /// registered resource fonts) plus a fresh layout context; the pool size
-    /// settles at the number of concurrent shapers.
-    scratch: Mutex<Vec<TextShapingScratch>>,
+    /// shape call. Built once as a clone of [`Self::fonts`] (carrying the
+    /// registered resource fonts) plus a fresh layout context, then returned for
+    /// the next call rather than rebuilt.
+    scratch: RefCell<Option<TextShapingScratch>>,
 }
 
 /// Owned, mutable shaping scratch for one in-flight shape call.
@@ -64,11 +64,11 @@ impl TextMeasureService {
     pub(crate) fn new() -> Self {
         Self {
             fonts: parley::FontContext::new(),
-            cache: Mutex::new(LruCache::new(
+            cache: RefCell::new(LruCache::new(
                 NonZeroUsize::new(TEXT_LAYOUT_CACHE_CAPACITY)
                     .expect("text layout cache capacity must be non-zero"),
             )),
-            scratch: Mutex::new(Vec::new()),
+            scratch: RefCell::new(None),
         }
     }
 
@@ -79,19 +79,12 @@ impl TextMeasureService {
     /// installed can never be reused. Requires unique ownership of the service,
     /// which holds during single-threaded setup before any subview clones it.
     pub(crate) fn fonts_mut(&mut self) -> &mut parley::FontContext {
-        self.cache
-            .get_mut()
-            .expect("hydrolysis text layout cache mutex poisoned")
-            .clear();
-        self.scratch
-            .get_mut()
-            .expect("hydrolysis text shaping scratch mutex poisoned")
-            .clear();
+        self.cache.get_mut().clear();
+        *self.scratch.get_mut() = None;
         &mut self.fonts
     }
 
-    /// Shape `input` into a parley layout, reusing the shared cache. Safe to call
-    /// from any thread.
+    /// Shape `input` into a parley layout, reusing the shared cache.
     ///
     /// The layout is shared rather than copied: measurement only reads it, and
     /// copying glyph runs on every probe is the bulk of a cache hit's cost. Call
@@ -106,12 +99,7 @@ impl TextMeasureService {
         }
 
         let cache_key = input.cache_key(max_width);
-        if let Some(layout) = self
-            .cache
-            .lock()
-            .expect("hydrolysis text layout cache mutex poisoned")
-            .get(&cache_key)
-        {
+        if let Some(layout) = self.cache.borrow_mut().get(&cache_key) {
             return Arc::clone(layout);
         }
 
@@ -120,8 +108,7 @@ impl TextMeasureService {
         self.return_scratch(scratch);
 
         self.cache
-            .lock()
-            .expect("hydrolysis text layout cache mutex poisoned")
+            .borrow_mut()
             .put(cache_key, Arc::clone(&layout));
         layout
     }
@@ -137,9 +124,8 @@ impl TextMeasureService {
 
     fn checkout_scratch(&self) -> TextShapingScratch {
         self.scratch
-            .lock()
-            .expect("hydrolysis text shaping scratch mutex poisoned")
-            .pop()
+            .borrow_mut()
+            .take()
             .unwrap_or_else(|| TextShapingScratch {
                 font_cx: self.fonts.clone(),
                 layout_cx: parley::LayoutContext::new(),
@@ -147,10 +133,7 @@ impl TextMeasureService {
     }
 
     fn return_scratch(&self, scratch: TextShapingScratch) {
-        self.scratch
-            .lock()
-            .expect("hydrolysis text shaping scratch mutex poisoned")
-            .push(scratch);
+        *self.scratch.borrow_mut() = Some(scratch);
     }
 }
 
@@ -160,11 +143,11 @@ impl core::fmt::Debug for TextMeasureService {
     }
 }
 
-/// A fully-resolved, `Send` text layout description.
+/// A fully-resolved, self-contained text layout description.
 ///
-/// Every reactive/`!Send` input (signal values, [`Str`]-backed font families)
-/// has been read on the main thread and projected into owned, thread-safe data,
-/// so shaping this input is a pure function that runs on any thread.
+/// Every reactive input (signal values, [`Str`]-backed font families) has been
+/// read out and projected into owned data, so shaping this input is a pure
+/// function of it — which is what makes the content-keyed cache correct.
 pub(crate) struct ResolvedTextLayoutInput {
     plain: String,
     spans: Vec<(Range<usize>, ResolvedTextStyleSpec)>,

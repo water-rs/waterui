@@ -499,6 +499,9 @@ impl DewNode for ContainerNode {
                 .map(|subview| subview as &dyn SubView)
                 .collect::<Vec<_>>();
             let proposal = proposal_from_bounds(ctx.bounds);
+            // Deliberately unmemoized: dew's budget is heap traffic per frame, not
+            // CPU, and its containers are small enough that re-probing a child costs
+            // less than the wrapper's allocations. See `vending_performance`.
             let size = self.layout.size_that_fits(proposal, &refs);
             self.layout.place(LayoutRect::from_size(size), &refs)
         };
