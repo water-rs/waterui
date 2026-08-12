@@ -70,13 +70,19 @@ pub mod text;
 pub mod theme;
 mod views;
 
-pub use board::{Board, FontSources, HostBoard, PointerSample};
+#[cfg(feature = "host")]
+pub use board::HostBoard;
+pub use board::{Board, FontSources, PointerSample};
 pub use compositor::{BandIndex, BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};
-pub use display::{BufferDisplay, DisplayFlush, Rgb565Display, Rgb565Sink};
+#[cfg(feature = "host")]
+pub use display::BufferDisplay;
+pub use display::{DisplayFlush, Rgb565Display, Rgb565Sink};
 pub use display_list::{DisplayList, DrawCommand, PlacedCommand};
 pub use painter::Painter;
-pub use runtime::{DewRuntime, Frame, render_view_png};
+#[cfg(feature = "host")]
+pub use runtime::render_view_png;
+pub use runtime::{DewRuntime, Frame};
 pub use stats::{ChipBudget, FrameWork, Provenance};
 
 use kurbo::Rect;

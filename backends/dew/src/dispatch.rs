@@ -465,7 +465,6 @@ impl SubView for NodeSubview<'_> {
     fn priority(&self) -> i32 {
         0
     }
-
 }
 
 struct ContainerNode {

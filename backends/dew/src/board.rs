@@ -20,7 +20,9 @@ use vello_cpu::RenderSettings;
 use waterui_backend_core::input::TouchPhase;
 use waterui_backend_core::time::Instant;
 
-use crate::display::{BufferDisplay, DisplayFlush};
+#[cfg(feature = "host")]
+use crate::display::BufferDisplay;
+use crate::display::DisplayFlush;
 use crate::painter::target_render_settings;
 
 /// Where a board's text faces come from.
@@ -127,6 +129,7 @@ pub trait Board {
 /// into is inspectable via [`HostBoard::framebuffer`] for snapshot tests and
 /// for presentation by a desktop window (see the `embedded-simulator`
 /// feature).
+#[cfg(feature = "host")]
 #[derive(Debug, Clone)]
 pub struct HostBoard {
     display: BufferDisplay,
@@ -134,6 +137,7 @@ pub struct HostBoard {
     fonts: Vec<Blob<u8>>,
 }
 
+#[cfg(feature = "host")]
 impl HostBoard {
     /// Creates a host board with a `width` × `height` framebuffer.
     #[must_use]
@@ -169,6 +173,7 @@ impl HostBoard {
     }
 }
 
+#[cfg(feature = "host")]
 impl Board for HostBoard {
     type Display = BufferDisplay;
 

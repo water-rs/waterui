@@ -14,7 +14,9 @@
 use kurbo::Rect;
 use waterui_core::{AnyView, Environment, View};
 
-use crate::board::{Board, HostBoard};
+use crate::board::Board;
+#[cfg(feature = "host")]
+use crate::board::HostBoard;
 use crate::compositor::BandScheduler;
 use crate::dispatch::DewRenderer;
 use crate::display::DisplayFlush;
@@ -196,6 +198,7 @@ fn diff_dirty(old: &DisplayList, new: &DisplayList) -> Vec<Rect> {
 ///
 /// Panics when the initial frame fails to render or the framebuffer cannot
 /// be encoded as PNG.
+#[cfg(feature = "host")]
 pub fn render_view_png<V: View>(
     build_root: impl Fn() -> V + 'static,
     env: Environment,
@@ -209,7 +212,7 @@ pub fn render_view_png<V: View>(
     runtime.board().framebuffer().to_png()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
     use crate::display_list::DisplayList;
