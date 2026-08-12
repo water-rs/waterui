@@ -70,7 +70,7 @@ commit_submodule_pointer_updates_if_needed() {
     return 0
   fi
 
-  git -C "$workspace_root" commit -m "$commit_message" >/dev/null 2>&1 || die "failed to commit rebased submodule pointers in workspace"
+  run_quietly git -C "$workspace_root" commit -m "$commit_message" || die "failed to commit rebased submodule pointers in workspace"
 }
 
 sync_submodules() {
