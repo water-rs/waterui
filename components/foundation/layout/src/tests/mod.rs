@@ -1715,18 +1715,18 @@ fn test_stack_cross_axis_stretch_is_symmetric() {
 
     assert_eq!(
         vstack.stretch_axis(),
-        StretchAxis::Horizontal,
-        "VStack claims its horizontal cross-axis"
+        StretchAxis::None,
+        "VStack is content-sized, like SwiftUI's"
     );
     assert_eq!(
         hstack.stretch_axis(),
-        StretchAxis::Vertical,
-        "HStack must claim its vertical cross-axis, mirroring VStack"
+        StretchAxis::None,
+        "HStack is content-sized, mirroring VStack"
     );
 }
 
 #[test]
-fn test_hstack_gives_nested_hstack_the_full_cross_axis_height() {
+fn test_hstack_keeps_nested_stack_content_sized_and_centered() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(0.0),
@@ -1746,13 +1746,18 @@ fn test_hstack_gives_nested_hstack_the_full_cross_axis_height() {
 
     assert_eq!(
         rects[0].height(),
-        100.0,
-        "A nested HStack fills the parent HStack's height, as a nested VStack fills a VStack's width"
+        20.0,
+        "a nested HStack keeps its intrinsic height instead of filling the row"
     );
     assert_eq!(
         rects[0].width(),
         40.0,
         "A nested HStack keeps its intrinsic main-axis width"
+    );
+    assert_eq!(
+        rects[0].y(),
+        40.0,
+        "an undersized nested stack is centered in the 100pt row"
     );
     assert_eq!(rects[1].height(), 20.0);
 }

@@ -277,10 +277,12 @@ impl Layout for VStackLayout {
         None
     }
 
-    /// `VStack` stretches horizontally to fill available width (cross-axis).
-    /// It uses intrinsic height based on children (main-axis).
+    /// `VStack` is content-sized on both axes, like `SwiftUI`'s: it never
+    /// claims the cross axis for itself. Filling comes from children that ask
+    /// for it (`Spacer`, greedy frames, `Color`), and a parent placing an
+    /// undersized stack centers it per its alignment.
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
+        StretchAxis::None
     }
 
     fn watch_invalidation(

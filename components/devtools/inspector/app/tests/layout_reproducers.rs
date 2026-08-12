@@ -25,7 +25,7 @@ use waterui_testing::ui as test_ui;
 #[core::prelude::v1::test]
 #[ignore = "writes a visual acceptance PNG for direct image review"]
 fn nested_vstack_with_and_without_alignment() {
-    let mut app = test_ui().viewport(600, 200).theme(install).mount(move || {
+    let mut app = test_ui().viewport(600, 200).theme(install).mount_offscreen(move || {
         hstack((
             vstack((text("aligned one"), text("aligned two")))
                 .alignment(HorizontalAlignment::Leading)
@@ -49,7 +49,7 @@ fn vstack_of_hstacks_of_vstacks() {
             .spacing(2.0)
     }
 
-    let mut app = test_ui().viewport(600, 300).theme(install).mount(move || {
+    let mut app = test_ui().viewport(600, 300).theme(install).mount_offscreen(move || {
         vstack((
             hstack((cell("Kind", "reencode"), cell("Total", "3.39ms"))).spacing(32.0),
             hstack((cell("Layout", "1.13ms"), cell("Encode", "1.13ms"))).spacing(32.0),
@@ -77,7 +77,7 @@ fn vstack_of_hstacks_with_reactive_text() {
         Computed::constant(Str::from(value))
     }
 
-    let mut app = test_ui().viewport(600, 300).theme(install).mount(move || {
+    let mut app = test_ui().viewport(600, 300).theme(install).mount_offscreen(move || {
         vstack((
             hstack((
                 cell("Kind", &constant("reencode").computed()),
@@ -105,7 +105,7 @@ fn stack_rows_with_visible_modifiers() {
     let shown = Binding::bool(true);
     let hidden = Binding::bool(false);
 
-    let mut app = test_ui().viewport(600, 300).theme(install).mount(move || {
+    let mut app = test_ui().viewport(600, 300).theme(install).mount_offscreen(move || {
         vstack((
             text("first row").headline(),
             text("hidden row").headline().visible(hidden.clone()),
@@ -139,7 +139,7 @@ fn toggle_reflects_a_derived_binding() {
     );
     assert!(derived.get(), "the derived binding reads true");
 
-    let mut app = test_ui().viewport(400, 160).theme(install).mount(move || {
+    let mut app = test_ui().viewport(400, 160).theme(install).mount_offscreen(move || {
         vstack((
             toggle("plain container", &plain),
             toggle("derived mapping", &derived),
@@ -160,7 +160,7 @@ fn toggle_with_modifiers() {
     let c = Binding::bool(true);
     let never = Binding::bool(false);
 
-    let mut app = test_ui().viewport(460, 220).theme(install).mount(move || {
+    let mut app = test_ui().viewport(460, 220).theme(install).mount_offscreen(move || {
         vstack((
             toggle("bare", &a),
             toggle("disabled-false", &b).disabled(never.clone()),
@@ -189,7 +189,7 @@ fn chart_above_a_metric_grid() {
         .map(|index| DataPoint::new(f32::from(index), f32::from(index % 7).mul_add(0.3, 2.0)))
         .collect();
 
-    let mut app = test_ui().viewport(600, 500).theme(install).mount(move || {
+    let mut app = test_ui().viewport(600, 500).theme(install).mount_offscreen(move || {
         vstack((
             LineChart::new(series.clone()).line_width(1.5).height(160.0),
             Divider,
@@ -232,7 +232,7 @@ fn chart_containment_strategies() {
         .map(|index| DataPoint::new(f32::from(index), f32::from(index % 7).mul_add(0.3, 2.0)))
         .collect();
 
-    let mut app = test_ui().viewport(600, 520).theme(install).mount(move || {
+    let mut app = test_ui().viewport(600, 520).theme(install).mount_offscreen(move || {
         vstack((
             text("wrapped in a sized vstack").caption(),
             vstack((LineChart::new(series.clone()).line_width(1.5),)).height(120.0),
@@ -266,7 +266,7 @@ fn chart_with_fixed_height_rows() {
         .map(|index| DataPoint::new(f32::from(index), f32::from(index % 7).mul_add(0.3, 2.0)))
         .collect();
 
-    let mut app = test_ui().viewport(600, 420).theme(install).mount(move || {
+    let mut app = test_ui().viewport(600, 420).theme(install).mount_offscreen(move || {
         vstack((
             hstack((cell("Kind", "reencode"), cell("Total", "3.39ms"))).spacing(32.0),
             hstack((cell("Layout", "1.13ms"), cell("Encode", "1.13ms"))).spacing(32.0),

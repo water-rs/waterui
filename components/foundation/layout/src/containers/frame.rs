@@ -2,7 +2,10 @@
 
 use alloc::{collections::BTreeSet, vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt};
-use waterui_core::{AnyView, IntoSignalF32, View, layout::LayoutInvalidationCallback};
+use waterui_core::{
+    AnyView, IntoSignalF32, View,
+    layout::{LayoutInvalidationCallback, StretchAxis},
+};
 
 use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
@@ -46,6 +49,22 @@ impl FrameLayout {
 }
 
 impl Layout for FrameLayout {
+    /// A frame whose `max` on an axis is infinite is greedy on that axis —
+    /// `SwiftUI`'s `.frame(maxWidth: .infinity)`. With stacks content-sized,
+    /// this (plus `Spacer`/`Color`) is how a view opts into filling its
+    /// container.
+    fn stretch_axis(&self) -> StretchAxis {
+        let resolved = self.resolved();
+        let horizontal = resolved.max_width.is_some_and(f32::is_infinite);
+        let vertical = resolved.max_height.is_some_and(f32::is_infinite);
+        match (horizontal, vertical) {
+            (true, true) => StretchAxis::Both,
+            (true, false) => StretchAxis::Horizontal,
+            (false, true) => StretchAxis::Vertical,
+            (false, false) => StretchAxis::None,
+        }
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let resolved = self.resolved();
         // A Frame proposes a modified size to its single child.
