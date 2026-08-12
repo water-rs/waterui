@@ -19,7 +19,7 @@ fn layout_debug_enabled() -> bool {
 /// without knowing about GTK internals.
 ///
 /// GTK widget measurement is main-thread only, so the widget is confined in a
-/// [`MainThreadBound`] and [`SubView::require_main_thread`] returns `true`.
+/// [`MainThreadBound`].
 #[derive(Debug)]
 pub struct GtkSubView {
     widget: MainThreadBound<Widget>,
@@ -192,10 +192,6 @@ impl SubView for GtkSubView {
         self.priority
     }
 
-    fn require_main_thread(&self) -> bool {
-        // GTK widget measurement must run on the thread that owns the widget.
-        true
-    }
 }
 
 /// Helper to determine the `StretchAxis` for common GTK widgets.

@@ -1945,69 +1945,38 @@ fn text_shaping_produces_nonzero_intrinsic_in_tests() {
 }
 
 #[test]
-fn text_leaves_measure_off_thread_and_match_main_thread() {
+fn resolved_text_fast_path_matches_the_recursive_measure() {
     use core::cell::RefCell;
 
     let env = test_environment();
     let proposal = ProposalSize::UNSPECIFIED;
 
-    // Text is the only leaf whose measurement is heavy enough to offload: it
-    // resolves to a `Send` layout input on the main thread and shapes on any
-    // thread. Covers a bare `Str` and a string-like (`String`) that is bodied
-    // into text and recursed.
+    // A text leaf resolves once into a layout input and is then shaped through the
+    // text service directly, skipping the general recursion through `HydroState`.
+    // That shortcut is only sound while it reports what the path it bypasses would.
+    // Covers a bare `Str` and a string-like (`String`) bodied into text and recursed.
     let str_view = AnyView::new(Str::from("probe"));
     let string_view = AnyView::new(String::from("hello world"));
-    let text_views: [&AnyView; 2] = [&str_view, &string_view];
 
-    for view in text_views {
+    for view in [&str_view, &string_view] {
         let mut state = HydroState::default();
         let state_cell = RefCell::new(&mut state);
-        let subview = HydroSubview::from_view(view, &state_cell, &env);
-        assert!(
-            !subview.require_main_thread(),
-            "text leaf {} must be measurable off the main thread",
-            view.name()
-        );
-
-        // Measuring on a worker thread must touch no `MainThreadBound` state
-        // (which would panic) and must reproduce the main-thread measurement.
-        let off_thread = std::thread::scope(|scope| {
-            scope
-                .spawn(|| subview.measure(proposal))
-                .join()
-                .expect("worker measurement thread panicked")
-        });
-        let main_thread = {
+        let fast_path = HydroSubview::from_view(view, &state_cell, &env).measure(proposal);
+        let recursive = {
             let mut state = state_cell.borrow_mut();
             measure_view_dimensions_with_proposal(view, proposal, &mut state, &env)
         };
+
         assert_eq!(
-            off_thread.size,
-            main_thread.size,
-            "off-thread measure of {} must equal the main-thread measure",
+            fast_path.size,
+            recursive.size,
+            "the resolved-text fast path for {} must equal the recursive measure",
             view.name()
         );
         assert!(
-            off_thread.size.width > 0.0 && off_thread.size.height > 0.0,
+            fast_path.size.width > 0.0 && fast_path.size.height > 0.0,
             "text shaping must produce a non-zero size for {}",
             view.name()
-        );
-    }
-
-    // Non-text leaves measure in O(1); they are not offloaded and stay
-    // main-thread-bound, as does any container that recurses into its children.
-    {
-        let unit_view = AnyView::new(());
-        let container_view = AnyView::new(vstack((Str::from("a"), Str::from("b"))));
-        let mut state = HydroState::default();
-        let state_cell = RefCell::new(&mut state);
-        assert!(
-            HydroSubview::from_view(&unit_view, &state_cell, &env).require_main_thread(),
-            "a non-text leaf must measure on the main thread"
-        );
-        assert!(
-            HydroSubview::from_view(&container_view, &state_cell, &env).require_main_thread(),
-            "a container that recurses into children must measure on the main thread"
         );
     }
 }
