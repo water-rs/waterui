@@ -25,6 +25,49 @@
   var pending = new Map();
   var nextId = 0;
 
+  // Integers Rust can hold and a JS number cannot. JSON has no spelling for
+  // them, so they cross as {"__wateruiBigInt": "123..."} and become BigInt
+  // here; anything that fits in a double is an ordinary number and stays one,
+  // so page arithmetic on normal values is unaffected. Shared with state.js
+  // through the internal global below.
+  var BIG_INT_TAG = "__wateruiBigInt";
+
+  function reviveBigInts(value) {
+    if (value === null || typeof value !== "object") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i += 1) {
+        value[i] = reviveBigInts(value[i]);
+      }
+      return value;
+    }
+    var keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === BIG_INT_TAG && typeof value[BIG_INT_TAG] === "string") {
+      return BigInt(value[BIG_INT_TAG]);
+    }
+    for (var k = 0; k < keys.length; k += 1) {
+      value[keys[k]] = reviveBigInts(value[keys[k]]);
+    }
+    return value;
+  }
+
+  // JSON.stringify throws on a BigInt rather than guessing, so every value
+  // leaving the page goes through this.
+  function replaceBigInts(key, value) {
+    if (typeof value === "bigint") {
+      var tagged = {};
+      tagged[BIG_INT_TAG] = value.toString();
+      return tagged;
+    }
+    return value;
+  }
+
+  globalThis.__wateruiBigInts = {
+    revive: reviveBigInts,
+    replacer: replaceBigInts,
+  };
+
   function toBase64(bytes) {
     var binary = "";
     var view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -68,7 +111,7 @@
       entry.resolve(fromBase64(payload.b64));
       return;
     }
-    entry.resolve(payload ? payload.json : undefined);
+    entry.resolve(payload ? reviveBigInts(payload.json) : undefined);
   };
 
   function send(name, payload) {
@@ -83,13 +126,22 @@
         // own JSON.stringify produces and what the native side parses directly.
         envelope.json = payload === undefined ? null : payload;
       }
-      globalThis.__wateruiSend(JSON.stringify(envelope));
+      globalThis.__wateruiSend(JSON.stringify(envelope, replaceBigInts));
     });
   }
 
-  globalThis.waterui = Object.freeze({
-    invoke: function (name, payload) {
+  globalThis.waterui = {};
+
+  // Not writable and not configurable, so page script cannot swap the transport
+  // out from under the handlers — but the object itself stays extensible.
+  // Freezing it whole is what this used to do, and `state.js` runs after this
+  // file and adds `state` and `watch` to the same object: `defineProperty` on a
+  // frozen object throws, so neither has ever existed in a page and the entire
+  // mirrored-state feature was unreachable from JavaScript.
+  Object.defineProperty(globalThis.waterui, "invoke", {
+    value: function (name, payload) {
       return send(name, payload);
     },
+    enumerable: true,
   });
 })();
