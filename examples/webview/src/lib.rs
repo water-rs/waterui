@@ -10,6 +10,7 @@
 //! environment exactly the way `State<T>` is.
 
 use waterui::app::App;
+use waterui::js_api;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -17,10 +18,50 @@ use waterui::webview::{
     Json, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent, WebViewProxy,
 };
 
-/// The payload the page exchanges with the `greet` handler.
+/// What the `greet` handler answers with.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Greeting {
-    name: String,
+    text: String,
+}
+
+/// Everything the page is allowed to reach.
+///
+/// One object instead of a list of `.handler(...)` and `.expose(...)` calls,
+/// each repeating a name as a string that nothing checks. `#[js_api]` writes
+/// those calls from the method names.
+struct PageApi {
+    /// The same binding the toolbar's address field edits, so a write from
+    /// either side moves both.
+    address: Binding<Str>,
+    greetings: Binding<u32>,
+}
+
+#[js_api]
+impl PageApi {
+    /// Mirrored state, writable: `waterui.state.address = "https://..."` in the
+    /// page moves the toolbar, because this is one binding with two views onto
+    /// it.
+    fn address(&self) -> Binding<Str> {
+        self.address.clone()
+    }
+
+    /// Mirrored state, read-only: derived in Rust, so the page may read
+    /// `waterui.state.greetings` and subscribe with `waterui.watch`, while
+    /// assigning to it throws.
+    fn greetings(&self) -> Computed<u32> {
+        self.greetings.clone().computed()
+    }
+
+    /// A handler: `await waterui.invoke("greet", { name: "Lexo" })` resolves to
+    /// `{ text: "Hi Lexo" }` — the object, not a string of it.
+    ///
+    /// `async` is how `#[js_api]` tells a handler from mirrored state.
+    async fn greet(&self, name: String) -> Json<Greeting> {
+        self.greetings.set(self.greetings.get() + 1);
+        Json(Greeting {
+            text: format!("Hi {name}"),
+        })
+    }
 }
 
 /// Applies one web view event to the UI state.
@@ -158,6 +199,7 @@ impl View for WebViewDemo {
         let address: Binding<Str> = binding("https://waterui.dev");
         let allow_redirects = Binding::bool(false);
         let js_result: Binding<Str> = binding("");
+        let greetings: Binding<u32> = binding(0_u32);
 
         let open = WebView::open("https://waterui.dev")
             .redirects_enabled(allow_redirects.clone())
@@ -167,14 +209,13 @@ impl View for WebViewDemo {
                 "document.documentElement.dataset.waterui = 'ready';",
                 ScriptInjectionTime::DocumentEnd,
             )
-            // `await waterui.invoke("greet", { name: "Lexo" })` in the page.
-            // The closure reads exactly like a `Button::action`: take the
-            // extractors you need, return anything `IntoJsReply`, and it may be
-            // async.
-            .handler("greet", |Json(request): Json<Greeting>| async move {
-                Json(Greeting {
-                    name: format!("Hi {}", request.name),
-                })
+            // Hands the page the whole surface at once: `greet` as a handler,
+            // `address` and `greetings` as mirrored state. `.handler(...)` and
+            // `.expose(...)` still exist for one-off cases — this is what they
+            // look like collected onto a type.
+            .serve(PageApi {
+                address: address.clone(),
+                greetings: greetings.clone(),
             })
             .on_event({
                 let status = status.clone();
@@ -182,7 +223,13 @@ impl View for WebViewDemo {
                 let address = address.clone();
                 let allow_redirects = allow_redirects.clone();
                 move |event| {
-                    handle_webview_event(event, &status, &progress_value, &address, &allow_redirects)
+                    handle_webview_event(
+                        event,
+                        &status,
+                        &progress_value,
+                        &address,
+                        &allow_redirects,
+                    )
                 }
             });
 
