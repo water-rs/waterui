@@ -67,6 +67,11 @@ pollster.workspace = true
 [lints]
 workspace = true
 
+# This realization fetches its style and vector tiles over HTTPS, so an app
+# that shows a GPU map has to grant network access.
+[package.metadata.waterui.permissions]
+internet = { reason = "downloads map styles and vector tiles" }
+
 # `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
 ignored = ["waterui-build-support"]
