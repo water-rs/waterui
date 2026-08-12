@@ -54,6 +54,13 @@ pub struct Esp32Backend {
     /// text-rendering app must list at least one face here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fonts: Vec<PathBuf>,
+    /// Unicode ranges to subset every bundled font to before embedding
+    /// (e.g. `["U+0020-007E", "U+00A0-00FF"]`). Absent means the whole font
+    /// is embedded. Subsetting is explicit because it silently drops glyphs
+    /// outside the ranges; when set, a full Latin face shrinks from
+    /// hundreds of kilobytes of flash to a few dozen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    font_ranges: Vec<String>,
 }
 
 impl Esp32Backend {
@@ -67,6 +74,7 @@ impl Esp32Backend {
             panel_height: default_esp32_panel_height(),
             band_height: default_esp32_band_height(),
             fonts: Vec::new(),
+            font_ranges: Vec::new(),
         }
     }
 
@@ -109,13 +117,21 @@ impl Esp32Backend {
     /// Get the harness parameters substituted into generated templates.
     ///
     /// Font paths are resolved against `project_root` so the generated
-    /// harness can `include_bytes!` them from wherever it lives.
+    /// harness can `include_bytes!` them from wherever it lives. When
+    /// `font_ranges` is configured, each font is subset to those ranges
+    /// into `harness_fonts_dir` and the subset file is embedded instead.
     ///
     /// # Errors
     ///
     /// Returns an error when the configured chip string is not a supported
-    /// ESP32 chip, or when a configured font file does not exist.
-    pub fn template_entry(&self, project_root: &Path) -> eyre::Result<Esp32TemplateEntry> {
+    /// ESP32 chip, when a configured font file does not exist, or when
+    /// subsetting fails.
+    pub fn template_entry(
+        &self,
+        project_root: &Path,
+        harness_fonts_dir: &Path,
+    ) -> eyre::Result<Esp32TemplateEntry> {
+        let ranges = self.font_ranges.join(",");
         let fonts = self
             .fonts
             .iter()
@@ -132,6 +148,11 @@ impl Esp32Backend {
                         path.display()
                     );
                 }
+                let path = if ranges.is_empty() {
+                    path
+                } else {
+                    crate::esp32::fonts::subset_into(&path, &ranges, harness_fonts_dir)?
+                };
                 Ok(path.to_string_lossy().into_owned())
             })
             .collect::<eyre::Result<Vec<_>>>()?;
@@ -167,7 +188,7 @@ impl Esp32Backend {
             .esp32_backend()
             .cloned()
             .unwrap_or_default()
-            .template_entry(project.root())?;
+            .template_entry(project.root(), &backend_path.join("fonts"))?;
         let main_matches_panel = main_rs.contains(&format!(
             "PanelConfig::new({}, {}, {})",
             config.panel_width, config.panel_height, config.band_height
@@ -225,7 +246,10 @@ impl Backend for Esp32Backend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
         let template_entry = backend
-            .template_entry(project.root())
+            .template_entry(
+                project.root(),
+                &project.backend_path::<Self>().join("fonts"),
+            )
             .map_err(crate::backend::FailToInitBackend::Config)?;
         if template_entry.fonts.is_empty() {
             tracing::warn!(

@@ -2,4 +2,5 @@
 
 pub mod backend;
 pub mod chip;
+pub mod fonts;
 pub mod platform;
