@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use waterui::app::App;
 
-use crate::board::Board;
+use crate::board::{Board, FontSources};
 use crate::compositor::DeviceRegion;
 use crate::display::{Rgb565Display, Rgb565Sink};
 use crate::frame_cadence::FrameCadence;
@@ -50,12 +50,14 @@ impl Rgb565Sink for SimulatedPanel {
 #[derive(Debug)]
 struct SimulationBoard {
     display: Rgb565Display<SimulatedPanel>,
+    fonts: &'static [&'static [u8]],
 }
 
 impl SimulationBoard {
-    fn new(width: u32, height: u32) -> Self {
+    fn new(width: u32, height: u32, fonts: &'static [&'static [u8]]) -> Self {
         Self {
             display: Rgb565Display::new(SimulatedPanel::new(width, height)),
+            fonts,
         }
     }
 }
@@ -69,6 +71,10 @@ impl Board for SimulationBoard {
 
     fn now(&self) -> Instant {
         Instant::now()
+    }
+
+    fn fonts(&self) -> FontSources {
+        FontSources::bundled(self.fonts)
     }
 }
 
@@ -114,7 +120,13 @@ pub fn init_executors() {
 ///
 /// Panics when the app defines no main window — embedded targets render
 /// exactly one window.
-pub fn run(app: App, panel: PanelConfig) -> ! {
+///
+/// `fonts` are the TTF/OTF binaries text shapes with (typically
+/// `include_bytes!` data, which stays in flash). Firmware has no font
+/// directory to enumerate, so an app that renders text must bundle at least
+/// one face; shaping with an empty bundle fails fast with an actionable
+/// message.
+pub fn run(app: App, panel: PanelConfig, fonts: &'static [&'static [u8]]) -> ! {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
     init_executors();
@@ -127,20 +139,22 @@ pub fn run(app: App, panel: PanelConfig) -> ! {
     let content = windows.remove(0).content;
 
     log::info!(
-        "dew[espidf-sim]: starting {}x{} RGB565 stream, {}px bands",
+        "dew[espidf-sim]: starting {}x{} RGB565 stream, {}px bands, {} bundled fonts",
         panel.width,
         panel.height,
-        panel.band_height
+        panel.band_height,
+        fonts.len()
     );
-    let board = SimulationBoard::new(panel.width, panel.height);
+    let board = SimulationBoard::new(panel.width, panel.height, fonts);
     let mut runtime = DewRuntime::new(board, env, panel.band_height, move || content.build());
     let mut cadence = FrameCadence::sixty_hz(Instant::now());
 
     loop {
-        if let Some(dirty) = runtime.pump() {
+        if let Some(frame) = runtime.pump() {
             log::debug!(
-                "dew[espidf-sim]: frame with {} logical dirty regions",
-                dirty.len()
+                "dew[espidf-sim]: frame with {} logical dirty regions, {} pixels transferred",
+                frame.dirty.len(),
+                frame.work.pixels_transferred
             );
         }
         // Drive reactive watcher tasks so signal changes propagate.
