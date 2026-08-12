@@ -950,7 +950,7 @@ pub struct GpuSurface {
     /// The GPU view that handles rendering (type-erased).
     // The GPU view is `!Send` (it owns wgpu/render state and may capture reactive
     // signals). `measure` is the only `SubView` method touched during layout, so the
-    // surface confines the view to the main thread and reports `require_main_thread`.
+    // surface confines the view to the main thread.
     renderer: MainThreadBound<Box<dyn GpuViewImpl>>,
     /// Preferred maximum MSAA sample count for this surface.
     ///
@@ -1277,14 +1277,6 @@ impl GpuSurface {
         self.renderer.priority()
     }
 
-    /// Returns whether layout measurement requires the main thread.
-    ///
-    /// Always `true`: measuring the surface dereferences the main-thread-confined
-    /// GPU view, so the layout executor must keep it on the main thread.
-    #[must_use]
-    pub const fn require_main_thread(&self) -> bool {
-        true
-    }
 }
 
 fn resolve_offscreen_msaa(
@@ -1387,9 +1379,6 @@ impl SubView for GpuSurface {
         self.priority()
     }
 
-    fn require_main_thread(&self) -> bool {
-        Self::require_main_thread(self)
-    }
 }
 
 impl NativeView for GpuSurface {

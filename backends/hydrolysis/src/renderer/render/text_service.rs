@@ -1,22 +1,19 @@
-//! Thread-safe text shaping and measurement.
+//! Text shaping and measurement.
 //!
-//! Text shaping (parley layout) is the heaviest part of measuring a text leaf,
-//! and it is pure over fully-resolved, `Send` inputs. This module splits the
-//! work into two phases so the expensive half can run off the main thread:
+//! Shaping (parley layout) is by far the heaviest part of measuring a text leaf —
+//! tens of microseconds against the tens of nanoseconds every other leaf costs — so
+//! it is the one measure that genuinely must be cached. This module splits the work
+//! into two phases to make that cache correct:
 //!
 //! 1. **Resolve** ([`resolve_text_layout_input`]) reads the [`Environment`] and
-//!    reactive signals to turn a [`StyledStr`] into a fully-`Send`
-//!    [`ResolvedTextLayoutInput`]. This must run on the main thread because it
-//!    touches `!Send` reactive state ([`Str`]-backed fonts, signal `.get()`s).
-//! 2. **Shape** ([`TextMeasureService::shape`]) takes that resolved input and
-//!    produces a [`parley::Layout`]. It touches no `!Send` state and runs on any
-//!    thread, which is what lets [`HydroSubview`](super::HydroSubview) report
-//!    `require_main_thread() == false` for text leaves so the layout executor
-//!    measures them across worker threads.
+//!    reactive signals to turn a [`StyledStr`] into a self-contained
+//!    [`ResolvedTextLayoutInput`], capturing everything that can affect shaping.
+//! 2. **Shape** ([`TextMeasureService::shape`]) turns that input into a
+//!    [`parley::Layout`]. It reads no ambient state, so it is a pure function of
+//!    the resolved input and can be memoized on that input's content identity.
 //!
-//! The service owns the loaded fonts plus a shared layout cache, so the
-//! main-thread render path and worker-thread measurement shape identical text
-//! through one cache.
+//! The service owns the loaded fonts plus that layout cache, so the render path and
+//! measurement shape identical text through one cache.
 
 use super::*;
 use core::hash::{Hash, Hasher};
