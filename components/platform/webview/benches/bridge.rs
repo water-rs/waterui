@@ -19,7 +19,19 @@
 //! render reply script   (100 B)      0.46 µs      (10 KB)   14 µs   (1 MB)   1.5 ms
 //! ```
 //!
-//! Two things worth knowing before optimising anything:
+//! Absolute numbers move a lot with what else the machine is doing, so read the
+//! ratios within one run rather than against the figures above.
+//!
+//! Three things worth knowing before optimising anything:
+//!
+//! * Tagging integers a JavaScript number cannot hold costs about 20% on top of
+//!   serializing a reply, and it used to cost two to four times: the first
+//!   version went through a `serde_json::Value` unconditionally, and building
+//!   that tree — not walking it — was the whole expense. Serializing once and
+//!   scanning the bytes for a 16-digit run keeps the round trip for the messages
+//!   that need it, which are almost none. What remains is the scan itself, and
+//!   removing that means a `Serializer` wrapper that tags as it writes, which is
+//!   a lot of code to save 20% of a cost that is already small.
 //!
 //! * Base64 is not the expensive part at scale — structure is. A 1 MB binary
 //!   payload, base64 and all, parses seven times faster than a 1 MB JSON one.
@@ -35,6 +47,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use waterui_webview::bridge::{Reply, Request};
+use waterui_webview::{IntoJsReply, Json};
 
 /// A JSON payload of roughly `bytes` bytes, shaped like a real message rather
 /// than one enormous string.
@@ -43,7 +56,19 @@ fn json_envelope(bytes: usize) -> String {
     let items: Vec<String> = (0..entries)
         .map(|index| format!(r#"{{"id":{index},"name":"item-{index}"}}"#))
         .collect();
-    format!(r#"{{"id":1,"name":"save","json":{{"items":[{}]}}}}"#, items.join(","))
+    format!(
+        r#"{{"id":1,"name":"save","json":{{"items":[{}]}}}}"#,
+        items.join(",")
+    )
+}
+
+/// The JSON body of a message of roughly `bytes` bytes, without an envelope.
+fn json_payload(bytes: usize) -> String {
+    let entries = (bytes / 24).max(1);
+    let items: Vec<String> = (0..entries)
+        .map(|index| format!(r#"{{"id":{index},"name":"item-{index}"}}"#))
+        .collect();
+    format!(r#"{{"items":[{}]}}"#, items.join(","))
 }
 
 /// A binary payload of `bytes` bytes, base64-encoded as the wire format requires.
@@ -89,5 +114,36 @@ fn main() {
         measure(&format!("render reply script ({label})"), 2_000, || {
             black_box(reply.resolve_script(black_box(1)));
         });
+    }
+
+    // A value reply is the common path now. It used to be sent as base64 like
+    // any other bytes, which is what made `await waterui.invoke(...)` resolve to
+    // a base64 string; it goes out as JSON through `RawValue`, so the handler's
+    // own bytes land in the envelope rather than being parsed and printed again.
+    for (label, size) in [("100 B", 100_usize), ("10 KB", 10_240), ("1 MB", 1_048_576)] {
+        let reply = Reply::Json(json_payload(size).into_bytes());
+        measure(&format!("render value reply ({label})"), 2_000, || {
+            black_box(reply.resolve_script(black_box(1)));
+        });
+    }
+
+    // Serializing a handler's answer walks it once to tag integers a JavaScript
+    // number cannot hold. Measured against a plain `to_vec` of the same value,
+    // because the walk is on every JSON reply: it should be small enough not to
+    // matter, and it is worth knowing when that stops being true.
+    for (label, size) in [("100 B", 100_usize), ("10 KB", 10_240), ("1 MB", 1_048_576)] {
+        let value: serde_json::Value =
+            serde_json::from_str(&json_payload(size)).expect("well-formed");
+
+        measure(&format!("serialize reply, plain ({label})"), 2_000, || {
+            black_box(serde_json::to_vec(black_box(&value)).expect("serializes"));
+        });
+        measure(
+            &format!("serialize reply, tagging ({label})"),
+            2_000,
+            || {
+                black_box(Json(black_box(&value)).into_js_reply().expect("serializes"));
+            },
+        );
     }
 }
