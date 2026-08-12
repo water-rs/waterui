@@ -35,6 +35,7 @@ macro_rules! impl_stack_for_each {
 
 pub(crate) use impl_stack_for_each;
 
+mod distribute;
 mod vstack;
 pub use vstack::*;
 mod hstack;
