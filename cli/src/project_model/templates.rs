@@ -139,6 +139,10 @@ pub struct Esp32TemplateEntry {
     pub panel_height: u32,
     /// Maximum rows per rasterization band (bounds scratch memory).
     pub band_height: u32,
+    /// Absolute paths of TTF/OTF binaries the harness `include_bytes!`es
+    /// into flash for dew text shaping. Firmware has no font directory to
+    /// enumerate, so a text-rendering app must bundle at least one face.
+    pub fonts: Vec<String>,
     /// Route the firmware console to UART0 (`true`) or USB-Serial-JTAG.
     pub console_uart_default: bool,
     /// Flash size in megabytes (`CONFIG_ESPTOOLPY_FLASHSIZE_*MB`).
@@ -170,6 +174,7 @@ impl Esp32TemplateEntry {
             panel_width,
             panel_height,
             band_height,
+            fonts: Vec::new(),
             console_uart_default: params.console_uart_default,
             flash_size_mb: params.flash_size_mb,
             main_task_stack_bytes: params.main_task_stack_bytes,
@@ -177,6 +182,13 @@ impl Esp32TemplateEntry {
             app_partition_size: params.app_partition_size.to_string(),
             opt_level: params.opt_level.to_string(),
         }
+    }
+
+    /// Sets the flash-bundled font binaries (absolute paths).
+    #[must_use]
+    pub fn with_fonts(mut self, fonts: Vec<String>) -> Self {
+        self.fonts = fonts;
+        self
     }
 
     /// The Rust target triple for the configured chip (e.g.
@@ -834,7 +846,10 @@ struct Esp32CargoTomlTemplate {
     core_path: Option<String>,
     dew_version: &'static str,
     waterui_version: &'static str,
-    opt_level: String,
+    /// The `opt-level` value as a TOML literal: numeric levels are bare
+    /// integers, while `"s"`/`"z"` must be quoted strings — cargo rejects a
+    /// quoted `"2"`.
+    opt_level_literal: String,
 }
 
 impl Esp32CargoTomlTemplate {
@@ -862,7 +877,17 @@ impl Esp32CargoTomlTemplate {
             core_path,
             dew_version: DEW_VERSION,
             waterui_version: WATERUI_VERSION,
-            opt_level: ctx.esp32.opt_level.clone(),
+            opt_level_literal: match ctx.esp32.opt_level.as_str() {
+                symbolic @ ("s" | "z") => format!("\"{symbolic}\""),
+                numeric => numeric
+                    .parse::<u8>()
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "ESP32 opt-level {numeric:?} is neither symbolic nor numeric: {error}"
+                        )
+                    })
+                    .to_string(),
+            },
         }
     }
 }
@@ -1005,11 +1030,21 @@ mod tests {
         assert!(s3_manifest.contains("opt-level = \"s\""));
         assert!(s3_manifest.contains("features = [\"espidf\", \"progress\"]"));
         let c3_manifest = render_esp32("Cargo.toml.tpl", &c3);
-        assert!(c3_manifest.contains("opt-level = \"2\""));
+        assert!(c3_manifest.contains("opt-level = 2"));
         assert!(c3_manifest.contains("features = [\"espidf\", \"progress\"]"));
 
         // main.rs panel geometry follows the entry.
         assert!(render_esp32("src/main.rs.tpl", &c3).contains("PanelConfig::new(200, 240, 16)"));
+
+        // Configured fonts render as flash-embedded binaries; without any,
+        // the FONTS table is empty and dew fails fast at the first text.
+        let mut with_fonts = app_ctx();
+        with_fonts.esp32 = Esp32TemplateEntry::new(Esp32Chip::Esp32C3, 200, 240, 16)
+            .with_fonts(vec!["/tmp/fonts/Demo.ttf".to_string()]);
+        let main_rs = render_esp32("src/main.rs.tpl", &with_fonts);
+        assert!(main_rs.contains("include_bytes!(\"/tmp/fonts/Demo.ttf\")"));
+        assert!(main_rs.contains("FONTS"));
+        assert!(!render_esp32("src/main.rs.tpl", &c3).contains("include_bytes!"));
     }
 
     #[test]
@@ -3313,8 +3348,8 @@ pub mod preview_ffi {
 /// Inspector app templates.
 pub mod inspector {
     use super::{
-        Path, TemplateContext, TemplateNamespace, dependency_path, embedded,
-        io, scaffold_dir, write_support_cargo_toml,
+        Path, TemplateContext, TemplateNamespace, dependency_path, embedded, io, scaffold_dir,
+        write_support_cargo_toml,
     };
 
     /// Hash of embedded inspector template files.
@@ -3352,7 +3387,7 @@ pub mod inspector {
         .await
     }
 
-    /// Path of the Inspector application crate inside a WaterUI checkout.
+    /// Path of the Inspector application crate inside a `WaterUI` checkout.
     ///
     /// The Inspector's user interface is a real crate rather than template
     /// text, so it is compiled, linted, and tested with the rest of the

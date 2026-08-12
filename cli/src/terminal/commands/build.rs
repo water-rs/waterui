@@ -43,6 +43,8 @@ pub enum TargetPlatform {
     Esp32s3,
     /// ESP32-C3 (RISC-V firmware).
     Esp32c3,
+    /// ESP32-P4 (RISC-V firmware, hardware FPU).
+    Esp32p4,
 }
 
 impl TargetPlatform {
@@ -52,6 +54,7 @@ impl TargetPlatform {
         match self {
             Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
             Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
+            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
             _ => None,
         }
     }
@@ -382,7 +385,9 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows => TargetBackend::Hydrolysis,
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 => TargetBackend::Dew,
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            TargetBackend::Dew
+        }
     };
     let backend = backend_override.unwrap_or(default_backend);
 
@@ -401,7 +406,7 @@ fn resolve_backend(
             )
             | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
             | (
-                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3,
+                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
                 TargetBackend::Dew
             )
     );
@@ -415,7 +420,8 @@ fn resolve_backend(
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis\n  \
              - ESP32-S3: dew\n  \
-             - ESP32-C3: dew",
+             - ESP32-C3: dew\n  \
+             - ESP32-P4: dew",
             backend,
             platform
         );
@@ -461,7 +467,8 @@ async fn check_toolchain_for_backend(
                 | TargetPlatform::Linux
                 | TargetPlatform::Windows
                 | TargetPlatform::Esp32s3
-                | TargetPlatform::Esp32c3 => {
+                | TargetPlatform::Esp32c3
+                | TargetPlatform::Esp32p4 => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
@@ -533,7 +540,8 @@ async fn build_for_apple(
             | TargetPlatform::Linux
             | TargetPlatform::Windows
             | TargetPlatform::Esp32s3
-            | TargetPlatform::Esp32c3,
+            | TargetPlatform::Esp32c3
+            | TargetPlatform::Esp32p4,
             _,
         ) => {
             bail!(
@@ -611,6 +619,7 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Esp32s3 => LibTargetPlatform::Esp32S3,
         TargetPlatform::Esp32c3 => LibTargetPlatform::Esp32C3,
+        TargetPlatform::Esp32p4 => LibTargetPlatform::Esp32P4,
     }
 }
 
@@ -633,6 +642,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Windows => "Windows",
         TargetPlatform::Esp32s3 => "ESP32-S3",
         TargetPlatform::Esp32c3 => "ESP32-C3",
+        TargetPlatform::Esp32p4 => "ESP32-P4",
     }
 }
 

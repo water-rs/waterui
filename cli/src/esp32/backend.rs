@@ -49,6 +49,11 @@ pub struct Esp32Backend {
         skip_serializing_if = "is_default_esp32_band_height"
     )]
     band_height: u32,
+    /// TTF/OTF binaries bundled into flash for dew text shaping, relative to
+    /// the project root. Firmware has no font directory to enumerate, so a
+    /// text-rendering app must list at least one face here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fonts: Vec<PathBuf>,
 }
 
 impl Esp32Backend {
@@ -61,6 +66,7 @@ impl Esp32Backend {
             panel_width: default_esp32_panel_width(),
             panel_height: default_esp32_panel_height(),
             band_height: default_esp32_band_height(),
+            fonts: Vec::new(),
         }
     }
 
@@ -102,17 +108,40 @@ impl Esp32Backend {
 
     /// Get the harness parameters substituted into generated templates.
     ///
+    /// Font paths are resolved against `project_root` so the generated
+    /// harness can `include_bytes!` them from wherever it lives.
+    ///
     /// # Errors
     ///
     /// Returns an error when the configured chip string is not a supported
-    /// ESP32 chip.
-    pub fn template_entry(&self) -> eyre::Result<Esp32TemplateEntry> {
+    /// ESP32 chip, or when a configured font file does not exist.
+    pub fn template_entry(&self, project_root: &Path) -> eyre::Result<Esp32TemplateEntry> {
+        let fonts = self
+            .fonts
+            .iter()
+            .map(|font| {
+                let path = if font.is_absolute() {
+                    font.clone()
+                } else {
+                    project_root.join(font)
+                };
+                if !path.is_file() {
+                    color_eyre::eyre::bail!(
+                        "[backends.esp32] fonts entry {} does not exist (resolved to {})",
+                        font.display(),
+                        path.display()
+                    );
+                }
+                Ok(path.to_string_lossy().into_owned())
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
         Ok(Esp32TemplateEntry::new(
             self.resolved_chip()?,
             self.panel_width,
             self.panel_height,
             self.band_height,
-        ))
+        )
+        .with_fonts(fonts))
     }
 
     /// Check whether generated ESP32 harness files should be regenerated.
@@ -138,11 +167,16 @@ impl Esp32Backend {
             .esp32_backend()
             .cloned()
             .unwrap_or_default()
-            .template_entry()?;
+            .template_entry(project.root())?;
         let main_matches_panel = main_rs.contains(&format!(
             "PanelConfig::new({}, {}, {})",
             config.panel_width, config.panel_height, config.band_height
         ));
+        let main_matches_fonts = main_rs.matches("include_bytes!").count() == config.fonts.len()
+            && config
+                .fonts
+                .iter()
+                .all(|font| main_rs.contains(font.as_str()));
         let cargo_target_matches = backend_path
             .join(".cargo/config.toml")
             .exists()
@@ -154,6 +188,7 @@ impl Esp32Backend {
 
         Ok(!manifest.dependencies.contains_key("waterui-dew")
             || !main_matches_panel
+            || !main_matches_fonts
             || !cargo_target_matches
             || !backend_path.join("rust-toolchain.toml").exists()
             || !backend_path.join(".cargo/config.toml").exists()
@@ -190,8 +225,14 @@ impl Backend for Esp32Backend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
         let template_entry = backend
-            .template_entry()
+            .template_entry(project.root())
             .map_err(crate::backend::FailToInitBackend::Config)?;
+        if template_entry.fonts.is_empty() {
+            tracing::warn!(
+                "[backends.esp32] bundles no fonts; dew fails fast at the first text layout. \
+                 Add `fonts = [\"path/to/Font.ttf\"]` (relative to the project root) to render text."
+            );
+        }
         let ctx =
             TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
                 .with_backend_project_path(project.backend_path::<Self>())
@@ -217,7 +258,7 @@ impl Backend for Esp32Backend {
     ) -> eyre::Result<PathBuf> {
         if !is_esp32_platform(platform) {
             color_eyre::eyre::bail!(
-                "ESP32 backend only supports the esp32s3 and esp32c3 platforms"
+                "ESP32 backend only supports the esp32s3, esp32c3, and esp32p4 platforms"
             );
         }
         build_esp32(project, options).await
@@ -231,7 +272,7 @@ impl Backend for Esp32Backend {
     ) -> eyre::Result<Artifact> {
         if !is_esp32_platform(platform) {
             color_eyre::eyre::bail!(
-                "ESP32 backend only supports the esp32s3 and esp32c3 platforms"
+                "ESP32 backend only supports the esp32s3, esp32c3, and esp32p4 platforms"
             );
         }
         package_esp32(project, options).await

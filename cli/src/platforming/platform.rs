@@ -50,6 +50,8 @@ pub enum TargetPlatform {
     Esp32S3,
     /// ESP32-C3 (RISC-V, ESP-IDF firmware via the Dew backend)
     Esp32C3,
+    /// ESP32-P4 (RISC-V with FPU, ESP-IDF firmware via the Dew backend)
+    Esp32P4,
 }
 
 /// Backend types available for building.
@@ -159,6 +161,8 @@ impl TargetPlatform {
                 .expect("esp32s3 target triple must remain valid"),
             Self::Esp32C3 => Triple::from_str("riscv32imc-esp-espidf")
                 .expect("esp32c3 target triple must remain valid"),
+            Self::Esp32P4 => Triple::from_str("riscv32imafc-esp-espidf")
+                .expect("esp32p4 target triple must remain valid"),
         }
     }
 
@@ -178,7 +182,7 @@ impl TargetPlatform {
             Self::Android => &[TargetBackend::Android],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows | Self::Web => &[TargetBackend::Hydrolysis],
-            Self::Esp32S3 | Self::Esp32C3 => &[TargetBackend::Dew],
+            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => &[TargetBackend::Dew],
         }
     }
 
@@ -198,7 +202,7 @@ impl TargetPlatform {
             Self::Android => TargetBackend::Android,
             Self::Linux => TargetBackend::Gtk4,
             Self::Windows | Self::Web => TargetBackend::Hydrolysis,
-            Self::Esp32S3 | Self::Esp32C3 => TargetBackend::Dew,
+            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => TargetBackend::Dew,
         }
     }
 
@@ -232,7 +236,8 @@ impl TargetPlatform {
             | Self::Windows
             | Self::Web
             | Self::Esp32S3
-            | Self::Esp32C3 => None,
+            | Self::Esp32C3
+            | Self::Esp32P4 => None,
         }
     }
 
@@ -253,6 +258,7 @@ impl TargetPlatform {
             Self::Web => Architecture::Wasm32,
             Self::Esp32S3 => Architecture::XTensa,
             Self::Esp32C3 => Architecture::Riscv32(Riscv32Architecture::Riscv32imc),
+            Self::Esp32P4 => Architecture::Riscv32(Riscv32Architecture::Riscv32imafc),
         }
     }
 }

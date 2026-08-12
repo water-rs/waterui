@@ -165,6 +165,8 @@ pub enum TargetPlatform {
     Esp32s3,
     /// ESP32-C3 board or QEMU (Dew firmware, RISC-V).
     Esp32c3,
+    /// ESP32-P4 board (Dew firmware, RISC-V with FPU).
+    Esp32p4,
 }
 
 impl TargetPlatform {
@@ -174,6 +176,7 @@ impl TargetPlatform {
         match self {
             Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
             Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
+            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
             _ => None,
         }
     }
@@ -266,7 +269,9 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows | TargetPlatform::Web => TargetBackend::Hydrolysis,
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 => TargetBackend::Dew,
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            TargetBackend::Dew
+        }
     };
 
     let backend = backend_override.unwrap_or(default_backend);
@@ -289,7 +294,7 @@ fn resolve_backend(
                 TargetBackend::Hydrolysis
             )
             | (
-                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3,
+                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
                 TargetBackend::Dew
             )
     );
@@ -305,7 +310,8 @@ fn resolve_backend(
              - Windows: hydrolysis\n  \
              - Web: hydrolysis\n  \
              - ESP32-S3: dew\n  \
-             - ESP32-C3: dew",
+             - ESP32-C3: dew\n  \
+             - ESP32-P4: dew",
             backend,
             platform
         );
@@ -321,7 +327,9 @@ const fn default_backend_priority(platform: TargetPlatform) -> &'static [TargetB
         TargetPlatform::Macos => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
         TargetPlatform::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
         TargetPlatform::Windows | TargetPlatform::Web => &[TargetBackend::Hydrolysis],
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 => &[TargetBackend::Dew],
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            &[TargetBackend::Dew]
+        }
     }
 }
 
@@ -833,7 +841,7 @@ fn resolve_build_plan(
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Web => panic!("web run should not enter build_and_run"),
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 => {
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
             panic!("esp32 run should not enter build_and_run")
         }
     };
@@ -994,7 +1002,8 @@ async fn check_toolchain_for_backend(
                 | TargetPlatform::Windows
                 | TargetPlatform::Web
                 | TargetPlatform::Esp32s3
-                | TargetPlatform::Esp32c3 => {
+                | TargetPlatform::Esp32c3
+                | TargetPlatform::Esp32p4 => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
@@ -1119,7 +1128,7 @@ async fn find_device(
         TargetPlatform::Web => {
             bail!("web platform does not use the device pipeline");
         }
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 => {
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
             bail!("esp32 platform does not use the device pipeline");
         }
     }
@@ -1144,6 +1153,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Web => "Web",
         TargetPlatform::Esp32s3 => "ESP32-S3",
         TargetPlatform::Esp32c3 => "ESP32-C3",
+        TargetPlatform::Esp32p4 => "ESP32-P4",
     }
 }
 
@@ -1187,6 +1197,7 @@ fn validate_log_pipeline_args(
         // The serial monitor streams firmware logs directly.
         TargetPlatform::Esp32s3 => Some("esp32s3"),
         TargetPlatform::Esp32c3 => Some("esp32c3"),
+        TargetPlatform::Esp32p4 => Some("esp32p4"),
         _ => None,
     };
     let Some(platform_label) = log_pipeline_unsupported else {
