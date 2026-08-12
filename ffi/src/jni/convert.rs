@@ -723,7 +723,9 @@ impl ToJavaStruct for crate::WuiMetadata<crate::WuiDynamicRangeMarker> {
     }
 }
 
-#[cfg(target_os = "android")]
+// The host struct itself only exists with the GPU stack compiled in, so its
+// Java projection has to carry the same gate.
+#[cfg(all(target_os = "android", feature = "gpu"))]
 impl ToJavaStruct for crate::components::media::video::WuiAndroidVideoSurfaceHost {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
