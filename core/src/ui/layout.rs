@@ -78,6 +78,31 @@ impl StretchAxis {
     }
 }
 
+/// How strongly a view holds on to space when its container runs short.
+///
+/// A stack takes space from its lowest-priority children first, and only starts
+/// on the next band up once every child below sits at the minimum it reports.
+/// Ties share the shortfall. Defaults to `0`, so raising one child's priority is
+/// enough to protect it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct LayoutPriority(i32);
+
+impl LayoutPriority {
+    /// Wraps a raw priority.
+    #[must_use]
+    pub const fn new(priority: i32) -> Self {
+        Self(priority)
+    }
+
+    /// The raw priority.
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
+impl crate::components::metadata::MetadataKey for LayoutPriority {}
+
 // ============================================================================
 // Alignment Guides
 // ============================================================================

@@ -404,6 +404,9 @@ pub(crate) struct WidgetNode {
 /// variant defers to the matching `apply_*` helper in `metadata.rs`, so the
 /// effect logic is shared byte-for-byte with the dispatch path.
 pub(super) enum WrapperEffect {
+    /// Purely a layout hint: it changes which child a stack compresses first and
+    /// draws nothing, so the flush path renders straight through it.
+    LayoutPriority(LayoutPriority),
     NavigationTransitionSource(RawId),
     NavigationTransitionDestination(RawId),
     Clip(ClipShape),

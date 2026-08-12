@@ -6,6 +6,28 @@ use super::*;
 
 impl RenderNode {
     /// The stretch axis this node exposes when it is a layout child.
+    /// The layout priority this subtree carries, or `0` when nothing set one.
+    ///
+    /// Only layout-transparent wrappers are walked through: a priority applies to
+    /// the child it wraps, not across a container boundary.
+    pub(super) fn priority(&self) -> i32 {
+        match self {
+            RenderNode::Wrapper(node) => match &node.effect {
+                WrapperEffect::LayoutPriority(priority) => priority.get(),
+                _ => node.child.priority(),
+            },
+            RenderNode::Opacity(node) => node.child.priority(),
+            RenderNode::Scale(node) => node.child.priority(),
+            RenderNode::Rotation(node) => node.child.priority(),
+            RenderNode::Offset(node) => node.child.priority(),
+            RenderNode::Retain(node) => node.child.priority(),
+            RenderNode::Env(node) => node.child.priority(),
+            RenderNode::Dynamic(node) => node.child.priority(),
+            RenderNode::AppliedFilter(node) => node.child.priority(),
+            _ => 0,
+        }
+    }
+
     pub(super) fn stretch(&self) -> StretchAxis {
         match self {
             RenderNode::Color(_) => StretchAxis::Both,

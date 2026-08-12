@@ -1,5 +1,6 @@
 use super::*;
 use waterui_core::Computed;
+use waterui_core::layout::LayoutPriority;
 use waterui_core::metadata::MetadataKey;
 
 pub(crate) fn gesture_group_identity(view: &AnyView) -> usize {
@@ -231,6 +232,7 @@ fn normalize_layout_view_with_budget(
     }
 
     normalize_passthrough_metadata!(
+        LayoutPriority,
         Retain,
         Opacity,
         AppliedFilter,
