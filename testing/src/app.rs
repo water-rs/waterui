@@ -286,6 +286,41 @@ impl OffscreenApp {
         }
     }
 
+    /// Pumps frames in real time, running work `spawn_local` parked, until
+    /// `ready` reports the app has what it needs or `timeout` elapses.
+    ///
+    /// [`Self::pump_for`] advances a virtual clock, which is right for
+    /// animation but cannot let real I/O finish: a component that loads over
+    /// the network never progresses, because no wall-clock time passes and the
+    /// test executor parks its futures. This drives both, so an offscreen
+    /// visual test can cover a component that has to fetch something first.
+    ///
+    /// Returns whether `ready` became true before the timeout.
+    pub fn pump_until(&mut self, timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            // Between frames is the one point where draining cannot re-enter
+            // the call that spawned the work.
+            let _ = crate::executor::drain_parked_local_work();
+            let outcome = self.app.driver.pump_step(
+                crate::driver::VIRTUAL_FRAME,
+                &self.app.content,
+                &self.app.env,
+            );
+            let _ = self.app.apply_pump_result(outcome);
+
+            if ready() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            // Per-frame pacing inside a pump loop: this is what lets real I/O
+            // make progress between frames.
+            std::thread::sleep(crate::driver::VIRTUAL_FRAME);
+        }
+    }
+
     /// Captures the latest RGBA snapshot from the offscreen renderer.
     ///
     /// # Panics

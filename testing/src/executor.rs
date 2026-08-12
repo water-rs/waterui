@@ -48,3 +48,22 @@ impl LocalExecutor for TestLocalExecutor {
 pub fn install_test_executor() {
     let _ = executor_core::try_init_local_executor(TestLocalExecutor);
 }
+
+/// Runs the work `spawn_local` parked, returning how many runnables ran.
+///
+/// Parking exists so a runnable never polls in the middle of the call that
+/// spawned it, which would re-enter the code under test. Draining is therefore
+/// only safe from a point that is not inside such a call — between frames of a
+/// pump loop is the intended one.
+///
+/// Each drained runnable may spawn more work; this runs only what was already
+/// parked, so a task that reschedules itself cannot spin forever here.
+#[must_use]
+pub fn drain_parked_local_work() -> usize {
+    let ready = PARKED_RUNNABLES.with(|parked| core::mem::take(&mut *parked.borrow_mut()));
+    let count = ready.len();
+    for runnable in ready {
+        runnable.run();
+    }
+    count
+}
