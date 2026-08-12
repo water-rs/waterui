@@ -32,7 +32,7 @@ embuild = "0.33"
 # strip indices, LoadProhibited crashes), so those chips size-optimize ("s");
 # RISC-V chips use the mainline backend and build at full optimization ("2").
 [profile.dev]
-opt-level = "{{ opt_level }}"
+opt-level = {{ opt_level_literal }}
 
 [profile.release]
-opt-level = "{{ opt_level }}"
+opt-level = {{ opt_level_literal }}

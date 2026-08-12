@@ -33,7 +33,10 @@ const ESP_USB_VENDOR_IDS: [u16; 4] = [0x303a, 0x10c4, 0x1a86, 0x0403];
 /// Check if a platform is supported by the ESP32 backend.
 #[must_use]
 pub const fn is_esp32_platform(platform: TargetPlatform) -> bool {
-    matches!(platform, TargetPlatform::Esp32S3 | TargetPlatform::Esp32C3)
+    matches!(
+        platform,
+        TargetPlatform::Esp32S3 | TargetPlatform::Esp32C3 | TargetPlatform::Esp32P4
+    )
 }
 
 /// Summary of a host serial port for device listing and board auto-detection.
