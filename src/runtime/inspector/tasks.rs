@@ -220,7 +220,7 @@ fn saturating_u32(value: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskProbe, super::hub::EventHub};
+    use super::{super::hub::EventHub, TaskProbe};
     use std::sync::Arc;
     use std::time::Duration;
     use waterui_inspector_protocol::{ChannelSet, InspectorEvent};

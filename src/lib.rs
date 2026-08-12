@@ -9,7 +9,9 @@ pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
-pub use runtime::{app, entry, error, fullscreen, inspector, metadata, snackbar, task, window};
+#[cfg(feature = "inspector")]
+pub use runtime::inspector;
+pub use runtime::{app, entry, error, fullscreen, metadata, snackbar, task, window};
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.

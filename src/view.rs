@@ -541,9 +541,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// Identifiers are invisible to end users and assistive technologies; they
     /// exist for `waterui-testing` selectors and native automation frameworks
-    /// (XCUITest `accessibilityIdentifier`, Android UiAutomator).
+    /// (`XCUITest` `accessibilityIdentifier`, Android `UiAutomator`).
     fn a11y_id(self, identifier: impl Into<Str>) -> IgnorableMetadata<AccessibilityIdentifier> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityIdentifier::new(identifier))
+        IgnorableMetadata::new(
+            self,
+            accessibility::AccessibilityIdentifier::new(identifier),
+        )
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
