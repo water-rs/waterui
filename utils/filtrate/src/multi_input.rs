@@ -11,6 +11,10 @@ use core::fmt;
 use core::future::Future;
 use num_traits::ToPrimitive;
 
+use filtrate_core::{FilterParam, SignalVisitor};
+
+use crate::effect::EffectRedrawCallback;
+use crate::runtime::animation::{ParamAnimator, SnapshotCollector};
 use crate::{Effect, EffectContext, EffectInput, EffectOutput};
 
 const MAX_AUX_IMAGES: usize = 2;
@@ -244,16 +248,32 @@ impl BlendMode {
 }
 
 /// Low-level operation contract implemented by concrete multi-input filters.
+///
+/// Scalar parameters are [`FilterParam`]s: an operation can hold plain `f32`
+/// values or reactive signals, and [`MultiInputFilter`] drives them through
+/// the same watcher/track animation runtime the single-input adapter uses.
 pub trait MultiInputOperation: 'static {
     /// Shader mode selector used by the shared multi-input shader.
     const MODE_ID: u32;
     /// Number of auxiliary images required by the operation.
     const AUX_IMAGE_COUNT: usize;
+    /// Number of animatable scalar parameters the operation exposes.
+    const ANIMATED_PARAM_COUNT: usize;
 
     /// Returns the auxiliary image bound at the given slot.
     fn aux_image(&self, index: usize) -> &FilterImage;
+
+    /// Visits each animatable parameter with its stable index
+    /// (`0..ANIMATED_PARAM_COUNT`), in the order `write_params` consumes
+    /// `animated`.
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V);
+
     /// Writes operation-specific parameters into the shared uniform buffer.
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]);
+    ///
+    /// `animated[i]` carries the current (possibly mid-animation) value of
+    /// the parameter visited at index `i`; discrete selectors (blend modes,
+    /// directions, LUT sizes) are written from the operation itself.
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]);
 }
 
 #[derive(Debug)]
@@ -369,6 +389,8 @@ impl MultiInputRuntime {
 pub struct MultiInputFilter<O: MultiInputOperation> {
     operation: O,
     runtime: MultiInputRuntime,
+    /// Reactive-parameter driver shared with the single-input runtime.
+    animator: ParamAnimator,
 }
 
 impl<O: MultiInputOperation> fmt::Debug for MultiInputFilter<O> {
@@ -378,12 +400,26 @@ impl<O: MultiInputOperation> fmt::Debug for MultiInputFilter<O> {
 }
 
 impl<O: MultiInputOperation> MultiInputFilter<O> {
+    /// The per-frame sampled parameter values, for test observation only.
+    #[cfg(test)]
+    pub(crate) fn animated_values(&self) -> &[f32] {
+        self.animator.current_values()
+    }
+
     /// Creates a multi-input filter from a concrete operation.
     #[must_use]
     pub fn new(operation: O) -> Self {
+        let mut snapshot = SnapshotCollector {
+            values: alloc::vec![0.0; O::ANIMATED_PARAM_COUNT],
+        };
+        operation.visit_params(&mut snapshot);
+        let animator = ParamAnimator::new(snapshot.values, |installer| {
+            operation.visit_params(installer);
+        });
         Self {
             operation,
             runtime: MultiInputRuntime::default(),
+            animator,
         }
     }
 
@@ -585,6 +621,14 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
 }
 
 impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
+    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
+        self.animator.install_redraw_callback(callback);
+    }
+
+    fn redraw_hint(&self) -> bool {
+        self.animator.redraw_hint()
+    }
+
     fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = crate::EffectSetupResult> {
         if O::AUX_IMAGE_COUNT > MAX_AUX_IMAGES {
             let err = crate::EffectSetupError::Other(
@@ -622,6 +666,8 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
             }
         }
 
+        self.animator.ensure_redraw_callback();
+        self.animator.apply_targets_to_current();
         core::future::ready(Ok(()))
     }
 
@@ -635,8 +681,10 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
             return Err(crate::EffectRenderError::SetupFailed(err.clone()));
         }
 
+        let needs_redraw = self.animator.update(input.timing.delta());
         let mut params = [0.0f32; MAX_PARAMS];
-        self.operation.write_params(&mut params);
+        self.operation
+            .write_params(self.animator.current_values(), &mut params);
         let uniform = Self::encode_uniform(O::MODE_ID, output.width, output.height, params);
         self.runtime.ensure_bind_group(input, uniform)?;
         let Some(pipeline) = self.runtime.pipeline.as_ref() else {
@@ -673,24 +721,26 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
             render_pass.draw(0..6, 0..1);
         }
 
-        Ok(false)
+        self.animator.mark_rendered();
+        Ok(needs_redraw)
     }
 }
 
 /// Blends the current frame with a second image.
 #[derive(Debug, Clone)]
-pub struct BlendWithImage {
+pub struct BlendWithImage<A: FilterParam = f32> {
     /// Auxiliary image used during blending.
     pub image: FilterImage,
     /// Blend strength in the range expected by the shader.
-    pub amount: f32,
+    pub amount: A,
     /// Blend operator to apply.
     pub mode: BlendMode,
 }
 
-impl MultiInputOperation for BlendWithImage {
+impl<A: FilterParam> MultiInputOperation for BlendWithImage<A> {
     const MODE_ID: u32 = 0;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 1;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -699,26 +749,31 @@ impl MultiInputOperation for BlendWithImage {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.amount);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
         params[0] = self.mode.token();
-        params[1] = self.amount;
+        params[1] = animated[0];
     }
 }
 
 /// Applies blur intensity based on a mask image.
 #[derive(Debug, Clone)]
-pub struct MaskedBlur {
+pub struct MaskedBlur<P: FilterParam = f32> {
     /// Blur mask image.
     pub mask: FilterImage,
     /// Blur radius in pixels.
-    pub radius: f32,
+    pub radius: P,
     /// Additional blur strength multiplier.
-    pub strength: f32,
+    pub strength: P,
 }
 
-impl MultiInputOperation for MaskedBlur {
+impl<P: FilterParam> MultiInputOperation for MaskedBlur<P> {
     const MODE_ID: u32 = 1;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 2;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -727,26 +782,32 @@ impl MultiInputOperation for MaskedBlur {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.radius;
-        params[1] = self.strength;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.radius);
+        visitor.visit(1, &self.strength);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
     }
 }
 
 /// Transitions from the input image to a target image.
 #[derive(Debug, Clone)]
-pub struct TransitionToImage {
+pub struct TransitionToImage<P: FilterParam = f32> {
     /// Target image revealed by the transition.
     pub target: FilterImage,
     /// Transition progress from `0.0` to `1.0`.
-    pub progress: f32,
+    pub progress: P,
     /// Feathering amount around the transition boundary.
-    pub softness: f32,
+    pub softness: P,
 }
 
-impl MultiInputOperation for TransitionToImage {
+impl<P: FilterParam> MultiInputOperation for TransitionToImage<P> {
     const MODE_ID: u32 = 2;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 2;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -755,26 +816,32 @@ impl MultiInputOperation for TransitionToImage {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.progress;
-        params[1] = self.softness;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.progress);
+        visitor.visit(1, &self.softness);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
     }
 }
 
 /// Warps the input image using a displacement map.
 #[derive(Debug, Clone)]
-pub struct DisplacementWarp {
+pub struct DisplacementWarp<P: FilterParam = f32> {
     /// Displacement map image.
     pub map: FilterImage,
     /// Horizontal displacement scale.
-    pub scale_x: f32,
+    pub scale_x: P,
     /// Vertical displacement scale.
-    pub scale_y: f32,
+    pub scale_y: P,
 }
 
-impl MultiInputOperation for DisplacementWarp {
+impl<P: FilterParam> MultiInputOperation for DisplacementWarp<P> {
     const MODE_ID: u32 = 3;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 2;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -783,28 +850,34 @@ impl MultiInputOperation for DisplacementWarp {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.scale_x;
-        params[1] = self.scale_y;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.scale_x);
+        visitor.visit(1, &self.scale_y);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
     }
 }
 
 /// Smooths the input image with guidance from another image.
 #[derive(Debug, Clone)]
-pub struct GuidedSmooth {
+pub struct GuidedSmooth<P: FilterParam = f32> {
     /// Guide image that preserves major edges.
     pub guide: FilterImage,
     /// Filter radius.
-    pub radius: f32,
+    pub radius: P,
     /// Range sensitivity.
-    pub range_sigma: f32,
+    pub range_sigma: P,
     /// Blend amount for the smoothed result.
-    pub amount: f32,
+    pub amount: P,
 }
 
-impl MultiInputOperation for GuidedSmooth {
+impl<P: FilterParam> MultiInputOperation for GuidedSmooth<P> {
     const MODE_ID: u32 = 4;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 3;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -813,29 +886,36 @@ impl MultiInputOperation for GuidedSmooth {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.radius;
-        params[1] = self.range_sigma;
-        params[2] = self.amount;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.radius);
+        visitor.visit(1, &self.range_sigma);
+        visitor.visit(2, &self.amount);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
+        params[2] = animated[2];
     }
 }
 
 /// Blurs the input based on a depth texture.
 #[derive(Debug, Clone)]
-pub struct DepthAwareBlur {
+pub struct DepthAwareBlur<P: FilterParam = f32> {
     /// Depth map that drives blur strength.
     pub depth: FilterImage,
     /// Depth plane that remains in focus.
-    pub focus_depth: f32,
+    pub focus_depth: P,
     /// Simulated aperture size.
-    pub aperture: f32,
+    pub aperture: P,
     /// Maximum blur radius.
-    pub max_radius: f32,
+    pub max_radius: P,
 }
 
-impl MultiInputOperation for DepthAwareBlur {
+impl<P: FilterParam> MultiInputOperation for DepthAwareBlur<P> {
     const MODE_ID: u32 = 5;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 3;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -844,27 +924,34 @@ impl MultiInputOperation for DepthAwareBlur {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.focus_depth;
-        params[1] = self.aperture;
-        params[2] = self.max_radius;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.focus_depth);
+        visitor.visit(1, &self.aperture);
+        visitor.visit(2, &self.max_radius);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
+        params[2] = animated[2];
     }
 }
 
 /// Denoises the current frame using history and motion textures.
 #[derive(Debug, Clone)]
-pub struct TemporalDenoise {
+pub struct TemporalDenoise<P: FilterParam = f32> {
     /// Previous filtered frame.
     pub history: FilterImage,
     /// Motion vectors or reprojection helper image.
     pub motion: FilterImage,
     /// Weight assigned to history data.
-    pub history_weight: f32,
+    pub history_weight: P,
 }
 
-impl MultiInputOperation for TemporalDenoise {
+impl<P: FilterParam> MultiInputOperation for TemporalDenoise<P> {
     const MODE_ID: u32 = 6;
     const AUX_IMAGE_COUNT: usize = 2;
+    const ANIMATED_PARAM_COUNT: usize = 1;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -874,25 +961,30 @@ impl MultiInputOperation for TemporalDenoise {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.history_weight;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.history_weight);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
     }
 }
 
 /// Composites the subject over a replacement background.
 #[derive(Debug, Clone)]
-pub struct BackgroundReplace {
+pub struct BackgroundReplace<P: FilterParam = f32> {
     /// Foreground matte image.
     pub matte: FilterImage,
     /// Replacement background image.
     pub background: FilterImage,
     /// Softening factor for matte edges.
-    pub edge_softness: f32,
+    pub edge_softness: P,
 }
 
-impl MultiInputOperation for BackgroundReplace {
+impl<P: FilterParam> MultiInputOperation for BackgroundReplace<P> {
     const MODE_ID: u32 = 7;
     const AUX_IMAGE_COUNT: usize = 2;
+    const ANIMATED_PARAM_COUNT: usize = 1;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -902,23 +994,28 @@ impl MultiInputOperation for BackgroundReplace {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.edge_softness;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.edge_softness);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
     }
 }
 
 /// Applies a 3D LUT-based color grade.
 #[derive(Debug, Clone)]
-pub struct LutColorGrade {
+pub struct LutColorGrade<P: FilterParam = f32> {
     /// LUT texture encoded as a 2D strip.
     pub lut: LutImage,
     /// Grade intensity multiplier.
-    pub intensity: f32,
+    pub intensity: P,
 }
 
-impl MultiInputOperation for LutColorGrade {
+impl<P: FilterParam> MultiInputOperation for LutColorGrade<P> {
     const MODE_ID: u32 = 8;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 1;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -927,60 +1024,74 @@ impl MultiInputOperation for LutColorGrade {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.intensity);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
         params[0] = u32_to_f32(self.lut.size());
-        params[1] = self.intensity;
+        params[1] = animated[0];
     }
 }
 
 /// Shapes tonal regions of the input image.
 #[derive(Debug, Clone)]
-pub struct ToneCurve {
+pub struct ToneCurve<P: FilterParam = f32> {
     /// Shadow adjustment.
-    pub shadows: f32,
+    pub shadows: P,
     /// Midtone adjustment.
-    pub midtones: f32,
+    pub midtones: P,
     /// Highlight adjustment.
-    pub highlights: f32,
+    pub highlights: P,
     /// Gamma adjustment.
-    pub gamma: f32,
+    pub gamma: P,
     /// Overall blend amount.
-    pub amount: f32,
+    pub amount: P,
 }
 
-impl MultiInputOperation for ToneCurve {
+impl<P: FilterParam> MultiInputOperation for ToneCurve<P> {
     const MODE_ID: u32 = 9;
     const AUX_IMAGE_COUNT: usize = 0;
+    const ANIMATED_PARAM_COUNT: usize = 5;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         panic!("ToneCurve: no auxiliary image available, requested index {index}")
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.shadows;
-        params[1] = self.midtones;
-        params[2] = self.highlights;
-        params[3] = self.gamma;
-        params[4] = self.amount;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.shadows);
+        visitor.visit(1, &self.midtones);
+        visitor.visit(2, &self.highlights);
+        visitor.visit(3, &self.gamma);
+        visitor.visit(4, &self.amount);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
+        params[2] = animated[2];
+        params[3] = animated[3];
+        params[4] = animated[4];
     }
 }
 
 /// Performs a directional swipe transition to a target image.
 #[derive(Debug, Clone)]
-pub struct SwipeTransitionToImage {
+pub struct SwipeTransitionToImage<P: FilterParam = f32> {
     /// Target image revealed by the transition.
     pub target: FilterImage,
     /// Transition progress from `0.0` to `1.0`.
-    pub progress: f32,
+    pub progress: P,
     /// Feathering amount around the swipe edge.
-    pub softness: f32,
+    pub softness: P,
     /// Swipe direction.
     pub direction: TransitionDirection,
 }
 
-impl MultiInputOperation for SwipeTransitionToImage {
+impl<P: FilterParam> MultiInputOperation for SwipeTransitionToImage<P> {
     const MODE_ID: u32 = 10;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 2;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -989,31 +1100,37 @@ impl MultiInputOperation for SwipeTransitionToImage {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.progress;
-        params[1] = self.softness;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.progress);
+        visitor.visit(1, &self.softness);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
         params[2] = self.direction.token();
     }
 }
 
 /// Performs a radial transition to a target image.
 #[derive(Debug, Clone)]
-pub struct RadialTransitionToImage {
+pub struct RadialTransitionToImage<P: FilterParam = f32> {
     /// Target image revealed by the transition.
     pub target: FilterImage,
     /// Transition progress from `0.0` to `1.0`.
-    pub progress: f32,
+    pub progress: P,
     /// Feathering amount around the radial edge.
-    pub softness: f32,
+    pub softness: P,
     /// Horizontal transition center in normalized coordinates.
-    pub center_x: f32,
+    pub center_x: P,
     /// Vertical transition center in normalized coordinates.
-    pub center_y: f32,
+    pub center_y: P,
 }
 
-impl MultiInputOperation for RadialTransitionToImage {
+impl<P: FilterParam> MultiInputOperation for RadialTransitionToImage<P> {
     const MODE_ID: u32 = 11;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 4;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -1022,32 +1139,40 @@ impl MultiInputOperation for RadialTransitionToImage {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.progress;
-        params[1] = self.softness;
-        params[2] = self.center_x;
-        params[3] = self.center_y;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.progress);
+        visitor.visit(1, &self.softness);
+        visitor.visit(2, &self.center_x);
+        visitor.visit(3, &self.center_y);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
+        params[2] = animated[2];
+        params[3] = animated[3];
     }
 }
 
 /// Performs a zoom-based transition to a target image.
 #[derive(Debug, Clone)]
-pub struct ZoomTransitionToImage {
+pub struct ZoomTransitionToImage<P: FilterParam = f32> {
     /// Target image revealed by the transition.
     pub target: FilterImage,
     /// Transition progress from `0.0` to `1.0`.
-    pub progress: f32,
+    pub progress: P,
     /// Zoom magnitude applied during the transition.
-    pub amount: f32,
+    pub amount: P,
     /// Horizontal zoom center in normalized coordinates.
-    pub center_x: f32,
+    pub center_x: P,
     /// Vertical zoom center in normalized coordinates.
-    pub center_y: f32,
+    pub center_y: P,
 }
 
-impl MultiInputOperation for ZoomTransitionToImage {
+impl<P: FilterParam> MultiInputOperation for ZoomTransitionToImage<P> {
     const MODE_ID: u32 = 12;
     const AUX_IMAGE_COUNT: usize = 1;
+    const ANIMATED_PARAM_COUNT: usize = 4;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -1056,30 +1181,38 @@ impl MultiInputOperation for ZoomTransitionToImage {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.progress;
-        params[1] = self.amount;
-        params[2] = self.center_x;
-        params[3] = self.center_y;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.progress);
+        visitor.visit(1, &self.amount);
+        visitor.visit(2, &self.center_x);
+        visitor.visit(3, &self.center_y);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
+        params[2] = animated[2];
+        params[3] = animated[3];
     }
 }
 
 /// Performs a displacement-driven transition to a target image.
 #[derive(Debug, Clone)]
-pub struct DisplacementTransitionToImage {
+pub struct DisplacementTransitionToImage<P: FilterParam = f32> {
     /// Target image revealed by the transition.
     pub target: FilterImage,
     /// Displacement map used during transition.
     pub map: FilterImage,
     /// Transition progress from `0.0` to `1.0`.
-    pub progress: f32,
+    pub progress: P,
     /// Displacement strength.
-    pub scale: f32,
+    pub scale: P,
 }
 
-impl MultiInputOperation for DisplacementTransitionToImage {
+impl<P: FilterParam> MultiInputOperation for DisplacementTransitionToImage<P> {
     const MODE_ID: u32 = 13;
     const AUX_IMAGE_COUNT: usize = 2;
+    const ANIMATED_PARAM_COUNT: usize = 2;
 
     fn aux_image(&self, index: usize) -> &FilterImage {
         match index {
@@ -1089,48 +1222,54 @@ impl MultiInputOperation for DisplacementTransitionToImage {
         }
     }
 
-    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.progress;
-        params[1] = self.scale;
+    fn visit_params<V: SignalVisitor>(&self, visitor: &mut V) {
+        visitor.visit(0, &self.progress);
+        visitor.visit(1, &self.scale);
+    }
+
+    fn write_params(&self, animated: &[f32], params: &mut [f32; MAX_PARAMS]) {
+        params[0] = animated[0];
+        params[1] = animated[1];
     }
 }
 
 /// Filter type for [`BlendWithImage`].
-pub type BlendWithImageFilter = MultiInputFilter<BlendWithImage>;
+pub type BlendWithImageFilter<P = f32> = MultiInputFilter<BlendWithImage<P>>;
 /// Filter type for [`MaskedBlur`].
-pub type MaskedBlurFilter = MultiInputFilter<MaskedBlur>;
+pub type MaskedBlurFilter<P = f32> = MultiInputFilter<MaskedBlur<P>>;
 /// Filter type for [`TransitionToImage`].
-pub type TransitionToImageFilter = MultiInputFilter<TransitionToImage>;
+pub type TransitionToImageFilter<P = f32> = MultiInputFilter<TransitionToImage<P>>;
 /// Filter type for [`DisplacementWarp`].
-pub type DisplacementWarpFilter = MultiInputFilter<DisplacementWarp>;
+pub type DisplacementWarpFilter<P = f32> = MultiInputFilter<DisplacementWarp<P>>;
 /// Filter type for [`GuidedSmooth`].
-pub type GuidedSmoothFilter = MultiInputFilter<GuidedSmooth>;
+pub type GuidedSmoothFilter<P = f32> = MultiInputFilter<GuidedSmooth<P>>;
 /// Filter type for [`DepthAwareBlur`].
-pub type DepthAwareBlurFilter = MultiInputFilter<DepthAwareBlur>;
+pub type DepthAwareBlurFilter<P = f32> = MultiInputFilter<DepthAwareBlur<P>>;
 /// Filter type for [`TemporalDenoise`].
-pub type TemporalDenoiseFilter = MultiInputFilter<TemporalDenoise>;
+pub type TemporalDenoiseFilter<P = f32> = MultiInputFilter<TemporalDenoise<P>>;
 /// Filter type for [`BackgroundReplace`].
-pub type BackgroundReplaceFilter = MultiInputFilter<BackgroundReplace>;
+pub type BackgroundReplaceFilter<P = f32> = MultiInputFilter<BackgroundReplace<P>>;
 /// Filter type for [`LutColorGrade`].
-pub type LutColorGradeFilter = MultiInputFilter<LutColorGrade>;
+pub type LutColorGradeFilter<P = f32> = MultiInputFilter<LutColorGrade<P>>;
 /// Filter type for [`ToneCurve`].
-pub type ToneCurveFilter = MultiInputFilter<ToneCurve>;
+pub type ToneCurveFilter<P = f32> = MultiInputFilter<ToneCurve<P>>;
 /// Filter type for [`SwipeTransitionToImage`].
-pub type SwipeTransitionToImageFilter = MultiInputFilter<SwipeTransitionToImage>;
+pub type SwipeTransitionToImageFilter<P = f32> = MultiInputFilter<SwipeTransitionToImage<P>>;
 /// Filter type for [`RadialTransitionToImage`].
-pub type RadialTransitionToImageFilter = MultiInputFilter<RadialTransitionToImage>;
+pub type RadialTransitionToImageFilter<P = f32> = MultiInputFilter<RadialTransitionToImage<P>>;
 /// Filter type for [`ZoomTransitionToImage`].
-pub type ZoomTransitionToImageFilter = MultiInputFilter<ZoomTransitionToImage>;
+pub type ZoomTransitionToImageFilter<P = f32> = MultiInputFilter<ZoomTransitionToImage<P>>;
 /// Filter type for [`DisplacementTransitionToImage`].
-pub type DisplacementTransitionToImageFilter = MultiInputFilter<DisplacementTransitionToImage>;
+pub type DisplacementTransitionToImageFilter<P = f32> =
+    MultiInputFilter<DisplacementTransitionToImage<P>>;
 
 #[must_use]
 /// Creates a blend filter that composites an auxiliary image over the input.
-pub fn blend_with_image_filter(
+pub fn blend_with_image_filter<P: FilterParam>(
     image: FilterImage,
-    amount: f32,
+    amount: P,
     mode: BlendMode,
-) -> BlendWithImageFilter {
+) -> BlendWithImageFilter<P> {
     MultiInputFilter::new(BlendWithImage {
         image,
         amount,
@@ -1140,7 +1279,11 @@ pub fn blend_with_image_filter(
 
 #[must_use]
 /// Creates a masked blur filter.
-pub fn masked_blur_filter(mask: FilterImage, radius: f32, strength: f32) -> MaskedBlurFilter {
+pub fn masked_blur_filter<P: FilterParam>(
+    mask: FilterImage,
+    radius: P,
+    strength: P,
+) -> MaskedBlurFilter<P> {
     MultiInputFilter::new(MaskedBlur {
         mask,
         radius,
@@ -1150,11 +1293,11 @@ pub fn masked_blur_filter(mask: FilterImage, radius: f32, strength: f32) -> Mask
 
 #[must_use]
 /// Creates a single-image transition filter.
-pub fn transition_to_image_filter(
+pub fn transition_to_image_filter<P: FilterParam>(
     target: FilterImage,
-    progress: f32,
-    softness: f32,
-) -> TransitionToImageFilter {
+    progress: P,
+    softness: P,
+) -> TransitionToImageFilter<P> {
     MultiInputFilter::new(TransitionToImage {
         target,
         progress,
@@ -1164,11 +1307,11 @@ pub fn transition_to_image_filter(
 
 #[must_use]
 /// Creates a displacement warp filter.
-pub fn displacement_warp_filter(
+pub fn displacement_warp_filter<P: FilterParam>(
     map: FilterImage,
-    scale_x: f32,
-    scale_y: f32,
-) -> DisplacementWarpFilter {
+    scale_x: P,
+    scale_y: P,
+) -> DisplacementWarpFilter<P> {
     MultiInputFilter::new(DisplacementWarp {
         map,
         scale_x,
@@ -1178,12 +1321,12 @@ pub fn displacement_warp_filter(
 
 #[must_use]
 /// Creates a guided smoothing filter.
-pub fn guided_smooth_filter(
+pub fn guided_smooth_filter<P: FilterParam>(
     guide: FilterImage,
-    radius: f32,
-    range_sigma: f32,
-    amount: f32,
-) -> GuidedSmoothFilter {
+    radius: P,
+    range_sigma: P,
+    amount: P,
+) -> GuidedSmoothFilter<P> {
     MultiInputFilter::new(GuidedSmooth {
         guide,
         radius,
@@ -1194,12 +1337,12 @@ pub fn guided_smooth_filter(
 
 #[must_use]
 /// Creates a depth-aware blur filter.
-pub fn depth_aware_blur_filter(
+pub fn depth_aware_blur_filter<P: FilterParam>(
     depth: FilterImage,
-    focus_depth: f32,
-    aperture: f32,
-    max_radius: f32,
-) -> DepthAwareBlurFilter {
+    focus_depth: P,
+    aperture: P,
+    max_radius: P,
+) -> DepthAwareBlurFilter<P> {
     MultiInputFilter::new(DepthAwareBlur {
         depth,
         focus_depth,
@@ -1210,11 +1353,11 @@ pub fn depth_aware_blur_filter(
 
 #[must_use]
 /// Creates a temporal denoise filter.
-pub fn temporal_denoise_filter(
+pub fn temporal_denoise_filter<P: FilterParam>(
     history: FilterImage,
     motion: FilterImage,
-    history_weight: f32,
-) -> TemporalDenoiseFilter {
+    history_weight: P,
+) -> TemporalDenoiseFilter<P> {
     MultiInputFilter::new(TemporalDenoise {
         history,
         motion,
@@ -1224,11 +1367,11 @@ pub fn temporal_denoise_filter(
 
 #[must_use]
 /// Creates a background replacement filter.
-pub fn background_replace_filter(
+pub fn background_replace_filter<P: FilterParam>(
     matte: FilterImage,
     background: FilterImage,
-    edge_softness: f32,
-) -> BackgroundReplaceFilter {
+    edge_softness: P,
+) -> BackgroundReplaceFilter<P> {
     MultiInputFilter::new(BackgroundReplace {
         matte,
         background,
@@ -1238,19 +1381,22 @@ pub fn background_replace_filter(
 
 #[must_use]
 /// Creates a LUT color grading filter.
-pub fn lut_color_grade_filter(lut: LutImage, intensity: f32) -> LutColorGradeFilter {
+pub fn lut_color_grade_filter<P: FilterParam>(
+    lut: LutImage,
+    intensity: P,
+) -> LutColorGradeFilter<P> {
     MultiInputFilter::new(LutColorGrade { lut, intensity })
 }
 
 #[must_use]
 /// Creates a tone-curve adjustment filter.
-pub fn tone_curve_filter(
-    shadows: f32,
-    midtones: f32,
-    highlights: f32,
-    gamma: f32,
-    amount: f32,
-) -> ToneCurveFilter {
+pub fn tone_curve_filter<P: FilterParam>(
+    shadows: P,
+    midtones: P,
+    highlights: P,
+    gamma: P,
+    amount: P,
+) -> ToneCurveFilter<P> {
     MultiInputFilter::new(ToneCurve {
         shadows,
         midtones,
@@ -1262,12 +1408,12 @@ pub fn tone_curve_filter(
 
 #[must_use]
 /// Creates a directional swipe transition filter.
-pub fn swipe_transition_to_image_filter(
+pub fn swipe_transition_to_image_filter<P: FilterParam>(
     target: FilterImage,
-    progress: f32,
-    softness: f32,
+    progress: P,
+    softness: P,
     direction: TransitionDirection,
-) -> SwipeTransitionToImageFilter {
+) -> SwipeTransitionToImageFilter<P> {
     MultiInputFilter::new(SwipeTransitionToImage {
         target,
         progress,
@@ -1278,13 +1424,13 @@ pub fn swipe_transition_to_image_filter(
 
 #[must_use]
 /// Creates a radial transition filter.
-pub fn radial_transition_to_image_filter(
+pub fn radial_transition_to_image_filter<P: FilterParam>(
     target: FilterImage,
-    progress: f32,
-    softness: f32,
-    center_x: f32,
-    center_y: f32,
-) -> RadialTransitionToImageFilter {
+    progress: P,
+    softness: P,
+    center_x: P,
+    center_y: P,
+) -> RadialTransitionToImageFilter<P> {
     MultiInputFilter::new(RadialTransitionToImage {
         target,
         progress,
@@ -1296,13 +1442,13 @@ pub fn radial_transition_to_image_filter(
 
 #[must_use]
 /// Creates a zoom transition filter.
-pub fn zoom_transition_to_image_filter(
+pub fn zoom_transition_to_image_filter<P: FilterParam>(
     target: FilterImage,
-    progress: f32,
-    amount: f32,
-    center_x: f32,
-    center_y: f32,
-) -> ZoomTransitionToImageFilter {
+    progress: P,
+    amount: P,
+    center_x: P,
+    center_y: P,
+) -> ZoomTransitionToImageFilter<P> {
     MultiInputFilter::new(ZoomTransitionToImage {
         target,
         progress,
@@ -1314,12 +1460,12 @@ pub fn zoom_transition_to_image_filter(
 
 #[must_use]
 /// Creates a displacement-driven transition filter.
-pub fn displacement_transition_to_image_filter(
+pub fn displacement_transition_to_image_filter<P: FilterParam>(
     target: FilterImage,
     map: FilterImage,
-    progress: f32,
-    scale: f32,
-) -> DisplacementTransitionToImageFilter {
+    progress: P,
+    scale: P,
+) -> DisplacementTransitionToImageFilter<P> {
     MultiInputFilter::new(DisplacementTransitionToImage {
         target,
         map,
