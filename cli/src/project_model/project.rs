@@ -597,8 +597,11 @@ pub enum FailToOpenProject {
     #[error("Project permissions are not allowed in non-playground projects")]
     PermissionsNotAllowedInNonPlayground,
 
-    /// Backends configuration is not allowed in playground manifests.
-    #[error("Backends configuration is not allowed in playground projects")]
+    /// Backend-project configuration is not allowed in playground manifests.
+    #[error(
+        "Backend project configuration is not allowed in playground projects \
+         (device settings under [backends.esp32] are the exception)"
+    )]
     BackendsNotAllowedInPlayground,
 
     /// Failed to initialize backend for playground project.
@@ -1131,8 +1134,12 @@ impl Project {
             return Err(FailToOpenProject::PermissionsNotAllowedInNonPlayground);
         }
 
-        // Check that backends are not configured in playground manifests
-        if is_playground && !manifest.backends.is_empty() {
+        // Playgrounds delegate backend projects to the CLI, so backend
+        // scaffolding configuration is rejected. `[backends.esp32]` is the
+        // exception: it is device configuration (chip, panel geometry,
+        // bundled fonts) only the app author can supply, and its harness
+        // still lives in the managed build cache.
+        if is_playground && manifest.backends.configures_backend_projects() {
             return Err(FailToOpenProject::BackendsNotAllowedInPlayground);
         }
 
