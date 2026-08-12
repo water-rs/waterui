@@ -172,8 +172,15 @@ The lock records its holder, so this is a question you can answer rather than
 infer — from either side. The lock directory contains `pid`, `source-repo` and
 `workspace-root`:
 
-    ls ~/.waterui-agent/locks/                       # empty means nobody holds it
-    ps -p "$(cat ~/.waterui-agent/locks/*.lock/pid)" # alive, or a lock left behind
+    ls ~/.waterui-agent/locks/    # empty means nobody holds it
+    ps -p "$(cat ~/.waterui-agent/locks/*.lock/pid)" -o pid,command
+
+Ask for the command, not just whether the pid exists. A run killed with `kill
+-9`, or lost to a power cut, never reaches its trap and leaves the lock behind,
+and by then the kernel may have handed that pid number to something unrelated —
+so a bare `ps -p` reports "alive" for a lock whose owner is long dead, and
+nobody dares clear it. The answer is only trustworthy if the command column
+says `finish_workspace.sh`.
 
 Run it after your own finish to confirm the script really exited, and run it
 when yours is refused to see whether the holder is a live merge or a wedged one.
