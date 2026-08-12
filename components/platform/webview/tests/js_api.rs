@@ -138,6 +138,41 @@ impl App {
     }
 }
 
+/// The declarations are what a page's TypeScript compiles against, so the
+/// names, the argument shapes and the read-only marks have to be exact. The
+/// application's own `Greeting` is `unknown`: this boundary does not know what
+/// is in it, and a declaration TypeScript believes is worse than one that says
+/// so.
+#[test]
+fn the_surface_describes_itself_in_typescript() {
+    let declarations = waterui::webview::typescript_declarations::<App>();
+
+    assert!(
+        declarations
+            .contains(r#"invoke(name: "app.greet", args: { name: string }): Promise<unknown>;"#),
+        "{declarations}"
+    );
+    // Renamed, and with no arguments there is no argument object to send.
+    assert!(
+        declarations.contains(r#"invoke(name: "app.reset"): Promise<void>;"#),
+        "{declarations}"
+    );
+    // A binding is assignable; a computed is not, and `readonly` is how
+    // TypeScript refuses the assignment the page would otherwise be told throws.
+    assert!(
+        declarations.contains(r#""app.theme": string;"#),
+        "{declarations}"
+    );
+    assert!(
+        declarations.contains(r#"readonly "app.doubled": number;"#),
+        "{declarations}"
+    );
+    assert!(
+        !declarations.contains("internal"),
+        "#[js(skip)] must not appear in the declarations either"
+    );
+}
+
 #[test]
 fn an_impl_block_becomes_the_surface_the_page_calls() {
     let controller = RecordingController::default();
