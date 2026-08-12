@@ -11,6 +11,7 @@
 //! path stays equivalent and the macro adds no capability of its own.
 
 use proc_macro2::TokenStream;
+use quote::ToTokens as _;
 use quote::{format_ident, quote};
 use syn::{FnArg, ImplItem, ImplItemFn, ItemImpl, LitStr, Meta, ReturnType};
 
@@ -121,6 +122,143 @@ fn exposed_name(method: &ImplItemFn, namespace: Option<&LitStr>) -> String {
     }
 }
 
+/// How a Rust type is spelled in TypeScript.
+///
+/// Only the types this boundary actually deals in are named; anything else
+/// becomes `unknown`, which is honest — a wrong declaration is worse than an
+/// unspecific one, because TypeScript will believe it.
+///
+/// `u64` and `i64` are `number | bigint` rather than `number`: a value past
+/// 2^53 arrives as a `BigInt`, and a declaration saying otherwise would send
+/// page authors looking for a bug in their own arithmetic.
+fn typescript_type(ty: &syn::Type) -> String {
+    let syn::Type::Path(path) = ty else {
+        return match ty {
+            syn::Type::Tuple(tuple) if tuple.elems.is_empty() => "void".to_owned(),
+            syn::Type::Reference(reference) => typescript_type(&reference.elem),
+            _ => "unknown".to_owned(),
+        };
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return "unknown".to_owned();
+    };
+
+    let parameter = |index: usize| {
+        let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+            return None;
+        };
+        arguments
+            .args
+            .iter()
+            .nth(index)
+            .and_then(|argument| match argument {
+                syn::GenericArgument::Type(inner) => Some(inner),
+                _ => None,
+            })
+    };
+
+    match segment.ident.to_string().as_str() {
+        "String" | "Str" | "str" | "char" | "PathBuf" | "Path" => "string".to_owned(),
+        "bool" => "boolean".to_owned(),
+        "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" | "usize" | "isize" => {
+            "number".to_owned()
+        }
+        "u64" | "i64" | "u128" | "i128" => "number | bigint".to_owned(),
+        // Bytes cross as a `Uint8Array`, whichever wrapper carries them.
+        "Bytes" => "Uint8Array".to_owned(),
+        "Vec" | "VecDeque" | "HashSet" | "BTreeSet" => match parameter(0) {
+            Some(inner) if typescript_type(inner) == "number" && is_u8(inner) => {
+                "Uint8Array".to_owned()
+            }
+            Some(inner) => format!("{}[]", typescript_type(inner)),
+            None => "unknown[]".to_owned(),
+        },
+        "Option" => parameter(0).map_or_else(
+            || "unknown | null".to_owned(),
+            |inner| format!("{} | null", typescript_type(inner)),
+        ),
+        "HashMap" | "BTreeMap" => match (parameter(0), parameter(1)) {
+            (Some(key), Some(value)) => format!(
+                "Record<{}, {}>",
+                typescript_type(key),
+                typescript_type(value)
+            ),
+            _ => "Record<string, unknown>".to_owned(),
+        },
+        // WaterUI's own wrappers are transparent on the wire.
+        "Json" | "Result" | "Binding" | "Computed" => {
+            parameter(0).map_or_else(|| "unknown".to_owned(), typescript_type)
+        }
+        _ => "unknown".to_owned(),
+    }
+}
+
+fn is_u8(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path)
+        if path.path.segments.last().is_some_and(|last| last.ident == "u8"))
+}
+
+/// The TypeScript for one exposed method, and which member it belongs under.
+///
+/// The two groups are not interchangeable: a handler is reached through
+/// `waterui.invoke(name, …)` while mirrored state is a property of
+/// `waterui.state`, so declaring them side by side would describe an object the
+/// page does not have.
+fn declaration(method: &ImplItemFn, name: &str, exposure: &Exposure) -> Option<(bool, String)> {
+    let returns = match &method.sig.output {
+        ReturnType::Default => "void".to_owned(),
+        ReturnType::Type(_, ty) => typescript_type(ty),
+    };
+
+    match exposure {
+        Exposure::Skipped => None,
+        Exposure::State => {
+            // Only a `Binding` is assignable; everything else is derived in Rust
+            // and throws on assignment, which `readonly` is exactly how to say.
+            let writable = method
+                .sig
+                .output
+                .to_token_stream()
+                .to_string()
+                .contains("Binding");
+            let prefix = if writable { "" } else { "readonly " };
+            Some((true, format!("    {prefix}{name:?}: {returns};")))
+        }
+        Exposure::Method => {
+            let arguments: Vec<String> = method
+                .sig
+                .inputs
+                .iter()
+                .skip(1)
+                .filter_map(|argument| match argument {
+                    FnArg::Typed(typed) => Some(format!(
+                        "{}: {}",
+                        typed.pat.to_token_stream(),
+                        typescript_type(&typed.ty)
+                    )),
+                    FnArg::Receiver(_) => None,
+                })
+                .collect();
+            let parameters = if arguments.is_empty() {
+                String::new()
+            } else {
+                format!("args: {{ {} }}", arguments.join("; "))
+            };
+            Some((
+                false,
+                format!(
+                    "  invoke(name: {name:?}{}): Promise<{returns}>;",
+                    if parameters.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {parameters}")
+                    }
+                ),
+            ))
+        }
+    }
+}
+
 /// Strips the `#[js(...)]` attributes so the emitted impl block still compiles.
 fn strip_js_attributes(block: &mut ItemImpl) {
     for item in &mut block.items {
@@ -140,6 +278,8 @@ fn strip_js_attributes(block: &mut ItemImpl) {
 pub fn expand(args: &Args, mut block: ItemImpl) -> Result<TokenStream, syn::Error> {
     let self_ty = block.self_ty.clone();
     let mut registrations = Vec::new();
+    let mut state_members = Vec::new();
+    let mut call_members = Vec::new();
 
     for item in &block.items {
         let ImplItem::Fn(method) = item else {
@@ -148,6 +288,13 @@ pub fn expand(args: &Args, mut block: ItemImpl) -> Result<TokenStream, syn::Erro
         let exposure = classify(method)?;
         let name = exposed_name(method, args.namespace.as_ref());
         let ident = &method.sig.ident;
+        if let Some((is_state, line)) = declaration(method, &name, &exposure) {
+            if is_state {
+                state_members.push(line);
+            } else {
+                call_members.push(line);
+            }
+        }
 
         match exposure {
             Exposure::Skipped => {}
@@ -222,6 +369,14 @@ pub fn expand(args: &Args, mut block: ItemImpl) -> Result<TokenStream, syn::Erro
 
     strip_js_attributes(&mut block);
 
+    // `state` is always declared, even when empty: the page can still reach it,
+    // and an interface that omits it would make `waterui.state` a type error.
+    let typescript = format!(
+        "  state: {{\n{}\n  }};\n{}",
+        state_members.join("\n"),
+        call_members.join("\n")
+    );
+
     Ok(quote! {
         #block
 
@@ -232,6 +387,10 @@ pub fn expand(args: &Args, mut block: ItemImpl) -> Result<TokenStream, syn::Erro
             ) -> ::waterui::webview::WebViewOpen {
                 #(#registrations)*
                 builder
+            }
+
+            fn typescript() -> &'static str {
+                #typescript
             }
         }
     })
