@@ -3,6 +3,12 @@
 //! The semantic [`waterui_map::Map`] API stays platform-neutral. A self-drawn
 //! backend installs this realization and applications provide a `MapLibre` style
 //! through [`MapGpuOptions`]. Native backends do not install this hook.
+//!
+//! This realization fetches its style and vector tiles over the network, so an
+//! application using it must declare network access. On Android in particular,
+//! an app without `android.permission.INTERNET` is refused DNS resolution
+//! outright, and every tile request fails with `EAI_NODATA` after exhausting
+//! the retry policy — the map draws its background and nothing else.
 
 pub(crate) mod network;
 pub(crate) mod projection;
