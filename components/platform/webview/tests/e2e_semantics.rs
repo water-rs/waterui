@@ -306,7 +306,7 @@ fn webview_exposes_accessibility_surface_and_navigation_state(ui: UiBuilder) {
 
     let mut env = Environment::new();
     env.insert(controller);
-    let mut app = ui.environment(env).mount({
+    let mut app = ui.theme(install_m3).environment(env).mount({
         let webview = webview.clone();
         move || webview_test_view(webview.clone())
     });
