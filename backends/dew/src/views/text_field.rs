@@ -12,7 +12,7 @@ use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
-use crate::dispatch::{DewNode, DewRenderer, RenderContext};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{LabelText, emit_styled_text, to_f32};
@@ -35,6 +35,10 @@ const BOX_BORDER: f64 = 1.0;
 struct TextFieldNode {
     config: ResolvedTextFieldConfig,
     label: LabelText,
+    /// The bound value text, subscribed once at build.
+    value: WatchedSignal<nami::Binding<waterui_text::styled::StyledStr>>,
+    /// The placeholder prompt, subscribed once at build.
+    prompt: WatchedSignal<nami::Computed<waterui_text::styled::StyledStr>>,
     env: Environment,
 }
 
@@ -44,9 +48,13 @@ pub fn build(
     env: &Environment,
 ) -> Box<dyn DewNode> {
     let label = LabelText::new(&config.label, env, renderer.signals());
+    let value = WatchedSignal::new(config.value.clone(), renderer.signals());
+    let prompt = WatchedSignal::new(config.prompt.content.clone(), renderer.signals());
     Box::new(TextFieldNode {
         config,
         label,
+        value,
+        prompt,
         env: env.clone(),
     })
 }
@@ -57,7 +65,14 @@ impl DewNode for TextFieldNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        render(renderer, ctx, &self.config, &self.label, &self.env);
+        render(
+            renderer,
+            ctx,
+            &self.label,
+            &self.env,
+            &self.value.get(),
+            &self.prompt.get(),
+        );
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -68,9 +83,10 @@ impl DewNode for TextFieldNode {
 fn render(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
-    config: &ResolvedTextFieldConfig,
     label: &LabelText,
     env: &Environment,
+    value: &waterui_text::styled::StyledStr,
+    prompt: &waterui_text::styled::StyledStr,
 ) {
     let bounds = ctx.bounds;
 
@@ -112,19 +128,17 @@ fn render(
     if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
         return;
     }
-    let value = renderer.read_signal(&config.value);
     if value.to_plain().is_empty() {
-        let prompt = renderer.read_signal(&config.prompt.content);
         emit_styled_text(
             renderer,
             ctx,
             content_rect,
-            &prompt,
+            prompt,
             env,
             theme::MUTED_FOREGROUND,
         );
     } else {
-        emit_styled_text(renderer, ctx, content_rect, &value, env, theme::FOREGROUND);
+        emit_styled_text(renderer, ctx, content_rect, value, env, theme::FOREGROUND);
     }
 }
 
