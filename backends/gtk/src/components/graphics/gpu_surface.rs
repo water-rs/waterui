@@ -224,6 +224,9 @@ fn map_gl_internal_format_to_wgpu(internal: i32) -> wgpu::TextureFormat {
 )]
 fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
     // GLArea binds its framebuffer before invoking the "render" signal.
+    // SAFETY: the caller runs with the GtkGLArea's GL context current on this
+    // thread (GTK makes it current before its GL signals), and this query only
+    // reads driver state for the framebuffer GTK just bound.
     let obj_type = unsafe {
         gl.get_framebuffer_attachment_parameter_i32(
             glow::FRAMEBUFFER,
@@ -234,6 +237,8 @@ fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
 
     match obj_type as u32 {
         glow::RENDERBUFFER => {
+            // SAFETY: same current-context invariant as above; reads the
+            // attachment's object name from driver state.
             let name = unsafe {
                 gl.get_framebuffer_attachment_parameter_i32(
                     glow::FRAMEBUFFER,
@@ -245,21 +250,28 @@ fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
                 glow::NativeRenderbuffer(NonZeroU32::new(name as u32).unwrap_or_else(|| {
                     panic!("GpuSurface(GL): expected non-zero renderbuffer name")
                 }));
+            // SAFETY: same current-context invariant; `rb` is the live
+            // renderbuffer the driver just reported as the color attachment.
             unsafe {
                 gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
             }
+            // SAFETY: same current-context invariant; queries the renderbuffer
+            // bound directly above.
             let internal = unsafe {
                 gl.get_renderbuffer_parameter_i32(
                     glow::RENDERBUFFER,
                     glow::RENDERBUFFER_INTERNAL_FORMAT,
                 )
             };
+            // SAFETY: same current-context invariant; restores the binding
+            // touched above.
             unsafe {
                 gl.bind_renderbuffer(glow::RENDERBUFFER, None);
             }
             map_gl_internal_format_to_wgpu(internal)
         }
         glow::TEXTURE => {
+            // SAFETY: same current-context invariant as the query above.
             let _name = unsafe {
                 gl.get_framebuffer_attachment_parameter_i32(
                     glow::FRAMEBUFFER,
@@ -267,6 +279,7 @@ fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
                     glow::FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
                 )
             };
+            // SAFETY: same current-context invariant as the query above.
             let encoding = unsafe {
                 gl.get_framebuffer_attachment_parameter_i32(
                     glow::FRAMEBUFFER,
@@ -274,6 +287,7 @@ fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
                     glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
                 )
             } as u32;
+            // SAFETY: same current-context invariant as the query above.
             let component_type = unsafe {
                 gl.get_framebuffer_attachment_parameter_i32(
                     glow::FRAMEBUFFER,
@@ -307,6 +321,8 @@ fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
     reason = "OpenGL enums and object names are non-negative"
 )]
 fn current_framebuffer(gl: &glow::Context) -> glow::NativeFramebuffer {
+    // SAFETY: the caller runs with the GtkGLArea's GL context current on this
+    // thread; reading FRAMEBUFFER_BINDING only inspects driver state.
     let id = unsafe { gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING) };
     glow::NativeFramebuffer(NonZeroU32::new(id as u32).unwrap_or_else(|| {
         panic!(
@@ -322,6 +338,8 @@ const FRAMEBUFFER_ATTACHMENT_TEXTURE_TARGET_PNAME: u32 = 0x8CD2;
     reason = "OpenGL enums and object names are non-negative"
 )]
 fn current_color_attachment(gl: &glow::Context) -> glow::NativeFramebuffer {
+    // SAFETY: the caller runs with the GtkGLArea's GL context current on this
+    // thread; this query only reads driver state for the bound framebuffer.
     let obj_type = unsafe {
         gl.get_framebuffer_attachment_parameter_i32(
             glow::FRAMEBUFFER,
@@ -333,6 +351,7 @@ fn current_color_attachment(gl: &glow::Context) -> glow::NativeFramebuffer {
     match obj_type {
         glow::RENDERBUFFER => current_framebuffer(gl),
         glow::TEXTURE => {
+            // SAFETY: same current-context invariant as the query above.
             let target = unsafe {
                 gl.get_framebuffer_attachment_parameter_i32(
                     glow::FRAMEBUFFER,
@@ -391,21 +410,30 @@ impl GlProcResolver {
         let mut glx_get_proc = None;
 
         for path in candidates {
+            // SAFETY: these are the platform's own GL runtime libraries, which
+            // GDK has already loaded to create the GL context this resolver
+            // serves, so dlopening them again only bumps a refcount and runs
+            // no untrusted initializer.
             let Ok(lib) = (unsafe { libloading::Library::new(*path) }) else {
                 continue;
             };
             if egl_get_proc.is_none() {
-                // SAFETY: symbol lookup only; pointer is copied and used while process is alive.
-                if let Ok(symbol) = unsafe { lib.get::<EglGetProcAddress>(b"eglGetProcAddress\0") }
-                {
+                // SAFETY: symbol lookup only; the signature matches the EGL
+                // specification for eglGetProcAddress, and the pointer is used
+                // while the library stays loaded (GDK pins it for the process
+                // lifetime).
+                let symbol = unsafe { lib.get::<EglGetProcAddress>(b"eglGetProcAddress\0") };
+                if let Ok(symbol) = symbol {
                     egl_get_proc = Some(*symbol);
                 }
             }
             if glx_get_proc.is_none() {
-                // SAFETY: symbol lookup only; pointer is copied and used while process is alive.
-                if let Ok(symbol) =
-                    unsafe { lib.get::<GlxGetProcAddress>(b"glXGetProcAddressARB\0") }
-                {
+                // SAFETY: symbol lookup only; the signature matches the GLX
+                // specification for glXGetProcAddressARB, and the pointer is
+                // used while the library stays loaded (GDK pins it for the
+                // process lifetime).
+                let symbol = unsafe { lib.get::<GlxGetProcAddress>(b"glXGetProcAddressARB\0") };
+                if let Ok(symbol) = symbol {
                     glx_get_proc = Some(*symbol);
                 }
             }
@@ -497,6 +525,11 @@ fn init_wgpu_if_needed(
     );
 
     let mut loader = make_gl_loader(gl_ctx);
+    // SAFETY: the GLArea's GL context is current (this runs inside the
+    // "render" signal after `make_current`), and the loader resolves symbols
+    // from the platform GL runtime libraries, returning null for unknown
+    // names; glow copies the function pointers here, and the libraries stay
+    // loaded for the process lifetime because GDK's own GL context holds them.
     let glow = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
     let format = query_framebuffer_format(&glow);
     let (prefers_hdr_explicit, msaa_max_samples) = {
@@ -527,6 +560,9 @@ fn init_wgpu_if_needed(
         "selected GTK GpuSurface framebuffer"
     );
 
+    // SAFETY: the GLArea's GL context is current on this thread, which is
+    // what `new_external` requires while it probes the context; the loader
+    // has the same validity guarantees as for the glow context above.
     let exposed = unsafe {
         wgpu::hal::gles::Adapter::new_external(|s| loader(s), wgpu::GlBackendOptions::default())
     }
@@ -535,6 +571,9 @@ fn init_wgpu_if_needed(
     let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     instance_descriptor.backends = wgpu::Backends::GL;
     let instance = wgpu::Instance::new(instance_descriptor);
+    // SAFETY: `exposed` was created by wgpu-hal's GL backend just above and is
+    // handed to an instance configured for exactly that backend, with the same
+    // GL context still current.
     let adapter = unsafe { instance.create_adapter_from_hal::<wgpu::hal::api::Gles>(exposed) };
 
     // Request what the adapter actually supports: capping a native GL driver
@@ -781,9 +820,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             (cached.size == size && cached.attachment == attachment).then(|| cached.texture.clone())
         })
     };
-    let texture = if let Some(texture) = cached {
-        texture
-    } else {
+    let texture = cached.unwrap_or_else(|| {
         // The framebuffer changed (resize or FBO swap): re-run the format
         // introspection - the one point a driver could legally hand us a
         // different attachment - and re-wrap it for wgpu. Doing this per frame
@@ -809,6 +846,13 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             },
         };
 
+        // SAFETY: `hal_texture` wraps the framebuffer the driver reported for
+        // this frame, whose introspected format was just asserted to match
+        // `format` and whose extent is the widget's current pixel size, so the
+        // descriptor describes the real attachment. The wrapped texture is
+        // only used while that attachment exists: the cache is invalidated
+        // whenever the size or attachment changes, and unrealize drops it with
+        // the GL context still current.
         let texture = unsafe {
             device.create_texture_from_hal::<wgpu::hal::api::Gles>(
                 hal_texture,
@@ -834,7 +878,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             texture: texture.clone(),
         });
         texture
-    };
+    });
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -1021,12 +1065,11 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
     area.add_controller(zoom);
 }
 
-pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
-    tracing::debug!("[gtk-gpu] create GLArea widget");
-    let area = gtk4::GLArea::new();
-    // Honor the surface's layout contract instead of assuming it is greedy on
-    // both axes: a non-stretch axis takes its extent from the view's own
-    // measurement (an aspect-ratio renderer, a fixed-size gauge).
+/// Sizes the `GLArea` to honor the surface's layout contract instead of
+/// assuming it is greedy on both axes: a non-stretch axis takes its extent
+/// from the view's own measurement (an aspect-ratio renderer, a fixed-size
+/// gauge).
+fn apply_stretch_sizing(area: &gtk4::GLArea, gpu_surface: &GpuSurface) {
     let stretch = gpu_surface.stretch_axis();
     area.set_hexpand(stretch.stretches_horizontal());
     area.set_vexpand(stretch.stretches_vertical());
@@ -1049,6 +1092,12 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             },
         );
     }
+}
+
+pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
+    tracing::debug!("[gtk-gpu] create GLArea widget");
+    let area = gtk4::GLArea::new();
+    apply_stretch_sizing(&area, &gpu_surface);
     area.set_visible(true);
     area.set_can_target(true);
     area.set_auto_render(false);
