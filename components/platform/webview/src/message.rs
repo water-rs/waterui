@@ -63,9 +63,14 @@ impl<T: DeserializeOwned + 'static> Extractor for Json<T> {
                 core::any::type_name::<T>()
             ))
         };
-        // Through a `Value` so an integer too large for the page's number type
-        // arrives as the one it was given, rather than as the rounded one a
-        // page would otherwise have to send back.
+        // The tag is a fixed key, so a payload without it has nothing to undo
+        // and is deserialized straight from its bytes.
+        if !crate::big_integers::contains_tag(&request.payload) {
+            return serde_json::from_slice(&request.payload)
+                .map(Self)
+                .map_err(describe);
+        }
+
         let mut value: serde_json::Value =
             serde_json::from_slice(&request.payload).map_err(describe)?;
         crate::big_integers::untag(&mut value);
@@ -162,9 +167,15 @@ impl IntoJsReply for Str {
 
 impl<T: Serialize> IntoJsReply for Json<T> {
     fn into_js_reply(self) -> Result<JsReply, String> {
-        // Through a `Value` rather than straight to bytes, so an integer the
-        // page's number type cannot hold is tagged instead of silently rounded.
-        let mut value = serde_json::to_value(&self.0).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec(&self.0).map_err(|error| error.to_string())?;
+        if !crate::big_integers::might_contain_unrepresentable(&bytes) {
+            return Ok(JsReply::Json(bytes));
+        }
+
+        // Only now is the round trip through a `Value` worth its cost: an
+        // integer here would otherwise reach the page with its low bits gone.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         crate::big_integers::tag_unrepresentable(&mut value);
         serde_json::to_vec(&value)
             .map(JsReply::Json)

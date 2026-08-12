@@ -39,6 +39,42 @@ fn is_beyond_double(value: &Value) -> bool {
         .is_some_and(|signed| signed.unsigned_abs() > MAX_SAFE)
 }
 
+/// Whether serialized JSON could contain an integer a double cannot hold.
+///
+/// Going through a `serde_json::Value` to find out costs two to four times what
+/// serializing the answer costs in the first place — building the tree, not
+/// walking it — and almost every message has nothing to find. This reads the
+/// bytes instead: every integer past 2^53 has at least 16 digits, so a shorter
+/// run cannot be one, and a false positive (16 digits inside a string, or a
+/// 16-digit value that does fit) only takes the slow path, which is correct
+/// anyway.
+pub fn might_contain_unrepresentable(json: &[u8]) -> bool {
+    /// `9007199254740991` is 16 digits, and nothing longer than it fits.
+    const SHORTEST: usize = 16;
+
+    let mut run = 0_usize;
+    for byte in json {
+        if byte.is_ascii_digit() {
+            run += 1;
+            if run >= SHORTEST {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+/// Whether a payload from a page carries a tagged integer.
+///
+/// Exact rather than a guess: the tag is a fixed key, so a payload without it
+/// has nothing to untag and can be deserialized straight from its bytes.
+pub fn contains_tag(json: &[u8]) -> bool {
+    json.windows(TAG.len())
+        .any(|window| window == TAG.as_bytes())
+}
+
 /// Replaces every integer a double cannot hold with its tagged form.
 ///
 /// Walks the whole value: one of these can sit anywhere a number can, including
@@ -84,7 +120,7 @@ pub fn untag(value: &mut Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{tag_unrepresentable, untag};
+    use super::{contains_tag, might_contain_unrepresentable, tag_unrepresentable, untag};
     use serde_json::{Value, json};
 
     fn tagged(value: Value) -> Value {
@@ -148,6 +184,42 @@ mod tests {
     fn tagging_round_trips() {
         let original = json!({ "id": 9_007_199_254_740_993_u64, "small": 7 });
         assert_eq!(untagged(tagged(original.clone())), original);
+    }
+
+    /// The fast path must never say "nothing here" about a value that has
+    /// something, or the tagging silently stops happening.
+    #[test]
+    fn the_prescan_never_misses_a_value_it_should_tag() {
+        for value in [
+            json!(9_007_199_254_740_992_u64),
+            json!(u64::MAX),
+            json!(i64::MIN),
+            json!({ "nested": [ { "id": 9_007_199_254_740_993_u64 } ] }),
+        ] {
+            let bytes = serde_json::to_vec(&value).expect("serializes");
+            assert!(
+                might_contain_unrepresentable(&bytes),
+                "{value} must reach the slow path"
+            );
+        }
+    }
+
+    /// And it should say so for ordinary messages, or it buys nothing.
+    #[test]
+    fn the_prescan_passes_over_ordinary_messages() {
+        let bytes = serde_json::to_vec(&json!({
+            "items": [{ "id": 1, "name": "item-1" }, { "id": 2_000_000, "name": "item-2" }],
+            "when": 1_760_000_000_u64,
+        }))
+        .expect("serializes");
+        assert!(!might_contain_unrepresentable(&bytes));
+    }
+
+    #[test]
+    fn the_inbound_prescan_looks_for_the_tag_itself() {
+        assert!(contains_tag(br#"{"id":{"__wateruiBigInt":"1"}}"#));
+        assert!(!contains_tag(br#"{"id":12345678901234567890}"#));
+        assert!(!contains_tag(b"{}"));
     }
 
     /// Page script reaches this, so a malformed tag must not be fatal, and must
