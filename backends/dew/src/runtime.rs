@@ -71,9 +71,11 @@ impl<B: Board> DewRuntime<B> {
         build_root: impl Fn() -> AnyView + 'static,
     ) -> Self {
         let render_settings = board.render_settings();
+        let fonts = board.fonts();
+        let signals = waterui_backend_core::frame_signals::FrameSignals::new(board.now());
         let (width, height) = board.display().size();
         Self {
-            renderer: DewRenderer::default(),
+            renderer: DewRenderer::new(signals, fonts),
             painter: Painter::new(render_settings),
             scheduler: BandScheduler::new(width, height, band_height),
             board,

@@ -9,7 +9,7 @@ use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
 use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
 
-use crate::dispatch::{DewNode, DewRenderer, RenderContext};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
@@ -24,7 +24,8 @@ const BORDER_WIDTH: f64 = 1.0;
 struct ButtonNode {
     label: LabelText,
     style: ButtonStyle,
-    disabled: Computed<bool>,
+    /// The environment's disabled scope, subscribed once at build.
+    disabled: WatchedSignal<Computed<bool>>,
     env: Environment,
     pointer: PointerTargetHandle,
 }
@@ -56,11 +57,7 @@ impl PointerHandler for ButtonPointer {
     }
 }
 
-pub fn build(
-    renderer: &DewRenderer,
-    config: ButtonConfig,
-    env: &Environment,
-) -> Box<dyn DewNode> {
+pub fn build(renderer: &DewRenderer, config: ButtonConfig, env: &Environment) -> Box<dyn DewNode> {
     let ButtonConfig {
         label,
         action,
@@ -79,7 +76,7 @@ pub fn build(
     Box::new(ButtonNode {
         label,
         style,
-        disabled,
+        disabled: WatchedSignal::new(disabled, renderer.signals()),
         env: env.clone(),
         pointer,
     })
@@ -99,7 +96,7 @@ impl DewNode for ButtonNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let disabled = renderer.read_signal(&self.disabled);
+        let disabled = self.disabled.get();
         let (background, border, foreground) = palette(self.style, disabled);
         if let Some(background) = background {
             renderer.list_mut().fill(

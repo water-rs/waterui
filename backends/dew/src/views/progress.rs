@@ -8,7 +8,7 @@ use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
-use crate::dispatch::{DewNode, DewRenderer, RenderContext, build_node};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal, build_node};
 use crate::text::DewState;
 use crate::theme;
 use crate::views::{child_in_rect, to_f32};
@@ -21,7 +21,8 @@ const MIN_TRACK_WIDTH: f64 = 96.0;
 struct ProgressNode {
     label: Box<dyn DewNode>,
     value_label: Box<dyn DewNode>,
-    value: Computed<f64>,
+    /// The progress fraction, subscribed once at build.
+    value: WatchedSignal<Computed<f64>>,
 }
 
 pub fn build(
@@ -38,7 +39,7 @@ pub fn build(
     Box::new(ProgressNode {
         label: build_node(renderer, config.label, env, depth),
         value_label: build_node(renderer, config.value_label, env, depth),
-        value: config.value,
+        value: WatchedSignal::new(config.value, renderer.signals()),
     })
 }
 
@@ -67,7 +68,7 @@ impl DewNode for ProgressNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let value = renderer.read_signal(&self.value);
+        let value = self.value.get();
         assert!(
             value.is_finite(),
             "dew does not render indeterminate progress"
