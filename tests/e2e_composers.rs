@@ -6,10 +6,10 @@
 //! contract is exactly what the accessibility tree exposes.
 
 use hydrolysis_m3::install as install_m3;
+use waterui::Binding;
 use waterui::component::badge::Badge;
 use waterui::widget::accordion::Accordion;
 use waterui::widget::card::Card;
-use waterui::Binding;
 use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 fn titled_card() -> impl waterui::View {
@@ -20,7 +20,10 @@ fn titled_card() -> impl waterui::View {
 
 #[waterui::test(titled_card, theme = install_m3)]
 fn card_exposes_title_subtitle_and_content(app: &mut SemanticApp) {
-    app.query().role(Role::LABEL).label("Receipts").assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("Receipts")
+        .assert_exists();
     app.query()
         .role(Role::LABEL)
         .label("Last 30 days")
@@ -35,21 +38,19 @@ fn card_exposes_title_subtitle_and_content(app: &mut SemanticApp) {
 fn badge_value_tracks_its_signal(ui: UiBuilder) {
     let unread = Binding::i32(3);
     let unread_for_view = unread.clone();
-    let mut app = ui.mount(move || {
-        Badge::new(
-            unread_for_view.clone(),
-            waterui::component::text("Inbox"),
-        )
-    });
+    let mut app =
+        ui.mount(move || Badge::new(unread_for_view.clone(), waterui::component::text("Inbox")));
     app.query().role(Role::LABEL).label("Inbox").assert_exists();
     app.query().role(Role::LABEL).label("3").assert_exists();
 
     unread.set(12);
-    app.query()
-        .role(Role::LABEL)
-        .label("12")
-        .wait_for_existence(core::time::Duration::from_secs(2));
-    app.query().role(Role::LABEL).label("12").assert_exists();
+    assert!(
+        app.query()
+            .role(Role::LABEL)
+            .label("12")
+            .wait_for_existence(core::time::Duration::from_secs(2)),
+        "badge count must re-render when its signal changes"
+    );
     app.query().role(Role::LABEL).label("3").assert_not_exists();
 }
 
@@ -65,7 +66,10 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
         )
     });
 
-    app.query().role(Role::LABEL).label("Details").assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("Details")
+        .assert_exists();
     app.query()
         .role(Role::LABEL)
         .label("Hidden specifics")
@@ -73,7 +77,10 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
 
     let header = app.query().role(Role::LABEL).label("Details").single();
     header.tap_at(&mut app, 0.5, 0.5);
-    assert!(expanded.get(), "tapping the header must expand the accordion");
+    assert!(
+        expanded.get(),
+        "tapping the header must expand the accordion"
+    );
     app.query()
         .role(Role::LABEL)
         .label("Hidden specifics")
