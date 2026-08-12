@@ -31,7 +31,7 @@
   globalThis.__wateruiState = {
     // Declares a key. `writable` false means the page may read but not assign.
     define: function (key, value, epoch, writable) {
-      mirror[key] = value;
+      mirror[key] = globalThis.__wateruiBigInts.revive(value);
       epochs[key] = epoch;
       Object.defineProperty(target, key, {
         enumerable: true,
@@ -67,7 +67,7 @@
           continue;
         }
         var entry = patch[key];
-        mirror[key] = entry.v;
+        mirror[key] = globalThis.__wateruiBigInts.revive(entry.v);
         epochs[key] = entry.e;
         notify(key, entry.v);
       }

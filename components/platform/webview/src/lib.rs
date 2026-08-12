@@ -111,6 +111,7 @@ pub trait JsApi: Sized + 'static {
 /// without the calling crate having to depend on `serde` itself.
 #[doc(hidden)]
 pub use serde;
+mod big_integers;
 mod message;
 pub use message::{Bytes, HandlerName, IntoJsReply, JsReply, Json};
 mod state;

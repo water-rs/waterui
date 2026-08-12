@@ -171,11 +171,17 @@ impl StateRegistry {
 
         let reader = read.clone();
         let entry = Field {
+            // One closure serves both ways out — the seed script and every later
+            // patch read through it — so tagging here covers both.
             read: Box::new(move || {
-                serde_json::to_value(reader.get()).expect("exposed state must serialize")
+                let mut value =
+                    serde_json::to_value(reader.get()).expect("exposed state must serialize");
+                crate::big_integers::tag_unrepresentable(&mut value);
+                value
             }),
             write: write.map(|write| {
-                Box::new(move |value: serde_json::Value| {
+                Box::new(move |mut value: serde_json::Value| {
+                    crate::big_integers::untag(&mut value);
                     serde_json::from_value(value).map(|value| write(value))
                 }) as ApplyWrite
             }),

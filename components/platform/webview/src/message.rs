@@ -56,15 +56,20 @@ fn request(env: &Environment) -> Result<JsRequest, Error> {
 impl<T: DeserializeOwned + 'static> Extractor for Json<T> {
     fn extract(env: &Environment) -> Result<Self, Error> {
         let request = request(env)?;
-        serde_json::from_slice(&request.payload)
-            .map(Self)
-            .map_err(|error| {
-                Error::msg(format!(
-                    "handler `{}` received a payload that is not {}: {error}",
-                    request.name,
-                    core::any::type_name::<T>()
-                ))
-            })
+        let describe = |error: serde_json::Error| {
+            Error::msg(format!(
+                "handler `{}` received a payload that is not {}: {error}",
+                request.name,
+                core::any::type_name::<T>()
+            ))
+        };
+        // Through a `Value` so an integer too large for the page's number type
+        // arrives as the one it was given, rather than as the rounded one a
+        // page would otherwise have to send back.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&request.payload).map_err(describe)?;
+        crate::big_integers::untag(&mut value);
+        serde_json::from_value(value).map(Self).map_err(describe)
     }
 
     fn extract_from_action(env: &Environment, _state: &mut ExtractionState) -> Result<Self, Error> {
@@ -157,7 +162,11 @@ impl IntoJsReply for Str {
 
 impl<T: Serialize> IntoJsReply for Json<T> {
     fn into_js_reply(self) -> Result<JsReply, String> {
-        serde_json::to_vec(&self.0)
+        // Through a `Value` rather than straight to bytes, so an integer the
+        // page's number type cannot hold is tagged instead of silently rounded.
+        let mut value = serde_json::to_value(&self.0).map_err(|error| error.to_string())?;
+        crate::big_integers::tag_unrepresentable(&mut value);
+        serde_json::to_vec(&value)
             .map(JsReply::Json)
             .map_err(|error| error.to_string())
     }
