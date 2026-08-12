@@ -8,7 +8,7 @@ use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
-use crate::dispatch::{DewNode, DewRenderer, RenderContext};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
@@ -35,6 +35,10 @@ fn require_switch_style(style: ToggleStyle) {
 struct ToggleNode {
     config: ToggleConfig,
     label: LabelText,
+    /// The bound switch state, subscribed once at build.
+    on: WatchedSignal<Binding<bool>>,
+    /// The environment's disabled scope, subscribed once at build.
+    disabled: WatchedSignal<Computed<bool>>,
     env: Environment,
     pointer: PointerTargetHandle,
 }
@@ -66,11 +70,7 @@ impl PointerHandler for TogglePointer {
     }
 }
 
-pub fn build(
-    renderer: &DewRenderer,
-    config: ToggleConfig,
-    env: &Environment,
-) -> Box<dyn DewNode> {
+pub fn build(renderer: &DewRenderer, config: ToggleConfig, env: &Environment) -> Box<dyn DewNode> {
     require_switch_style(config.style);
     let pointer = PointerTargetHandle::new(TogglePointer {
         toggle: config.toggle.clone(),
@@ -78,9 +78,13 @@ pub fn build(
         armed: false,
     });
     let label = LabelText::new(&config.label, env, renderer.signals());
+    let on = WatchedSignal::new(config.toggle.clone(), renderer.signals());
+    let disabled = WatchedSignal::new(crate::views::view_disabled(env), renderer.signals());
     Box::new(ToggleNode {
         config,
         label,
+        on,
+        disabled,
         env: env.clone(),
         pointer,
     })
@@ -92,8 +96,18 @@ impl DewNode for ToggleNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        render(renderer, ctx, &self.config, &self.label, &self.env);
-        if !crate::views::view_disabled(&self.env).get() {
+        let on = self.on.get();
+        let disabled = self.disabled.get();
+        render(
+            renderer,
+            ctx,
+            &self.config,
+            &self.label,
+            &self.env,
+            on,
+            disabled,
+        );
+        if !disabled {
             renderer.register_pointer_target(ctx.window_bounds(), self.pointer.clone());
         }
     }
@@ -109,10 +123,10 @@ fn render(
     config: &ToggleConfig,
     label: &LabelText,
     env: &Environment,
+    on: bool,
+    disabled: bool,
 ) {
     require_switch_style(config.style);
-    let on = renderer.read_signal(&config.toggle);
-    let disabled = renderer.read_signal(&crate::views::view_disabled(env));
     let bounds = ctx.bounds;
 
     let track_left = (bounds.x1 - TRACK_WIDTH).max(bounds.x0);

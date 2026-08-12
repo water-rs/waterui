@@ -14,6 +14,7 @@ use nami::{Computed, Signal};
 #[cfg(feature = "progress")]
 use waterui::component::progress::ProgressConfig;
 use waterui_backend_core::frame_signals::FrameSignals;
+#[cfg(feature = "system-fonts")]
 use waterui_backend_core::time::Instant;
 use waterui_controls::button::ButtonConfig;
 use waterui_controls::slider::SliderConfig;
@@ -144,9 +145,7 @@ impl DewNode for MeasuredNode {
         }
         let dimensions = self.inner.measure(state, proposal);
         state.borrow_mut().work.measures_computed += 1;
-        self.cache
-            .borrow_mut()
-            .push((proposal, dimensions.clone()));
+        self.cache.borrow_mut().push((proposal, dimensions.clone()));
         dimensions
     }
 
@@ -169,7 +168,6 @@ pub struct DewRenderer {
     signals: FrameSignals,
     state: RefCell<DewState>,
     list: DisplayList,
-    watch_guards: Vec<Box<dyn core::any::Any>>,
     pointer: PointerRouter,
     root: Option<Box<dyn DewNode>>,
 }
@@ -179,28 +177,32 @@ impl core::fmt::Debug for DewRenderer {
         formatter
             .debug_struct("DewRenderer")
             .field("list", &self.list)
-            .field("watchers", &self.watch_guards.len())
             .field("pointer", &self.pointer)
             .field("has_root", &self.root.is_some())
             .finish_non_exhaustive()
     }
 }
 
+/// Desktop-only default: system fonts and a wall-clock frame origin.
+#[cfg(feature = "system-fonts")]
 impl Default for DewRenderer {
     fn default() -> Self {
-        Self::new(FrameSignals::new(Instant::now()))
+        Self::new(
+            FrameSignals::new(Instant::now()),
+            crate::board::FontSources::System,
+        )
     }
 }
 
 impl DewRenderer {
-    /// Creates a retained renderer wired to `signals`.
+    /// Creates a retained renderer wired to `signals`, shaping text with
+    /// `fonts`.
     #[must_use]
-    pub fn new(signals: FrameSignals) -> Self {
+    pub fn new(signals: FrameSignals, fonts: crate::board::FontSources) -> Self {
         Self {
             signals,
-            state: RefCell::new(DewState::default()),
+            state: RefCell::new(DewState::new(fonts)),
             list: DisplayList::new(),
-            watch_guards: Vec::new(),
             pointer: PointerRouter::default(),
             root: None,
         }
@@ -234,7 +236,6 @@ impl DewRenderer {
             .take()
             .expect("Dew refresh requires an initialized retained root");
         self.list.clear();
-        self.watch_guards.clear();
         self.pointer.begin_frame();
         // Discard measure counters left over from tree construction so the
         // frame reports only its own work.
@@ -248,19 +249,14 @@ impl DewRenderer {
         core::mem::take(&mut self.list)
     }
 
-    /// Reads a reactive input and schedules a retained-tree refresh on change.
-    pub(crate) fn read_signal<S>(&mut self, signal: &S) -> S::Output
-    where
-        S: Signal + Clone + 'static,
-    {
-        let signals = self.signals.clone();
-        let guard = signal.watch(move |_| signals.request_refresh());
-        self.watch_guards.push(Box::new(guard));
-        signal.get()
-    }
-
     pub(crate) const fn list_mut(&mut self) -> &mut DisplayList {
         &mut self.list
+    }
+
+    /// The display list and shaping state, split-borrowed so a caller can
+    /// emit into the list while a build closure reaches the state.
+    pub(crate) const fn list_and_state(&mut self) -> (&mut DisplayList, &RefCell<DewState>) {
+        (&mut self.list, &self.state)
     }
 
     pub(crate) const fn state_cell(&self) -> &RefCell<DewState> {
@@ -356,7 +352,7 @@ fn build_unmeasured_node(
             .downcast::<Native<Color>>()
             .expect("dew Color downcast must match its type id");
         return Box::new(ColorNode {
-            color: color.into_inner().resolve(env),
+            color: WatchedSignal::new(color.into_inner().resolve(env), renderer.signals()),
         });
     }
     if type_id == TypeId::of::<Native<ResolvedColor>>() {
@@ -602,7 +598,7 @@ impl DewNode for DynamicNode {
 }
 
 struct ColorNode {
-    color: nami::Computed<ResolvedColor>,
+    color: WatchedSignal<Computed<ResolvedColor>>,
 }
 
 impl DewNode for ColorNode {
@@ -614,8 +610,7 @@ impl DewNode for ColorNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let color = renderer.read_signal(&self.color);
-        render_color(renderer, ctx, color);
+        render_color(renderer, ctx, self.color.get());
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -661,19 +656,16 @@ impl DewNode for TextNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let revision = self.content.revision();
         let mut cache = self.cache.borrow_mut();
-        let (layout, outcome) = cache.get_or_build(
-            revision,
-            TextLayoutKey::foreground(proposal.width),
-            || {
+        let ((width, height), outcome) =
+            cache.measure(revision, TextLayoutKey::foreground(proposal.width), || {
                 state.borrow_mut().build_styled_layout(
                     &self.content.get(),
                     &self.env,
                     proposal.width,
                     theme::FOREGROUND,
                 )
-            },
-        );
-        let dimensions = ViewDimensions::new(Size::new(layout.width(), layout.height()));
+            });
+        let dimensions = ViewDimensions::new(Size::new(width, height));
         state.borrow_mut().record_layout(outcome);
         dimensions
     }
@@ -708,13 +700,13 @@ struct StrNode {
 impl DewNode for StrNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let mut cache = self.cache.borrow_mut();
-        let (layout, outcome) =
-            cache.get_or_build(0, TextLayoutKey::foreground(proposal.width), || {
+        let ((width, height), outcome) =
+            cache.measure(0, TextLayoutKey::foreground(proposal.width), || {
                 state
                     .borrow_mut()
                     .build_plain_layout(&self.value, proposal.width)
             });
-        let dimensions = ViewDimensions::new(Size::new(layout.width(), layout.height()));
+        let dimensions = ViewDimensions::new(Size::new(width, height));
         state.borrow_mut().record_layout(outcome);
         dimensions
     }
@@ -722,21 +714,18 @@ impl DewNode for StrNode {
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
-        let outcome = self
-            .cache
-            .borrow_mut()
-            .emit(
-                0,
-                TextLayoutKey::foreground(max_width),
-                transform,
-                &mut renderer.list,
-                || {
-                    renderer
-                        .state
-                        .borrow_mut()
-                        .build_plain_layout(&self.value, max_width)
-                },
-            );
+        let outcome = self.cache.borrow_mut().emit(
+            0,
+            TextLayoutKey::foreground(max_width),
+            transform,
+            &mut renderer.list,
+            || {
+                renderer
+                    .state
+                    .borrow_mut()
+                    .build_plain_layout(&self.value, max_width)
+            },
+        );
         renderer.state.borrow_mut().record_layout(outcome);
     }
 }

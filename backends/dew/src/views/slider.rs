@@ -11,7 +11,7 @@ use waterui_controls::slider::SliderConfig;
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
-use crate::dispatch::{DewNode, DewRenderer, RenderContext, build_node};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal, build_node};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
@@ -29,8 +29,10 @@ struct SliderNode {
     min_value_label: Box<dyn DewNode>,
     max_value_label: Box<dyn DewNode>,
     range: RangeInclusive<f64>,
-    value: Binding<f64>,
-    disabled: Computed<bool>,
+    /// The bound value, subscribed once at build.
+    value: WatchedSignal<Binding<f64>>,
+    /// The environment's disabled scope, subscribed once at build.
+    disabled: WatchedSignal<Computed<bool>>,
     env: Environment,
     track: Rc<Cell<Rect>>,
     pointer: PointerTargetHandle,
@@ -105,8 +107,8 @@ pub fn build(
         min_value_label: build_node(renderer, config.min_value_label, env, depth),
         max_value_label: build_node(renderer, config.max_value_label, env, depth),
         range: config.range,
-        value: config.value,
-        disabled: crate::views::view_disabled(env),
+        value: WatchedSignal::new(config.value, renderer.signals()),
+        disabled: WatchedSignal::new(crate::views::view_disabled(env), renderer.signals()),
         env: env.clone(),
         track,
         pointer,
@@ -153,7 +155,7 @@ impl DewNode for SliderNode {
         let span = range_end - range_start;
         assert!(span > 0.0, "dew slider requires range start < end");
 
-        let disabled = renderer.read_signal(&self.disabled);
+        let disabled = self.disabled.get();
         let label_size = self.label.measure(renderer.state_cell(), &self.env);
         let label_height = if label_size.height > 0.0 {
             f64::from(label_size.height) + ROW_SPACING
@@ -210,9 +212,7 @@ impl DewNode for SliderNode {
             "dew slider resolved a non-positive track width"
         );
 
-        let clamped = renderer
-            .read_signal(&self.value)
-            .clamp(range_start, range_end);
+        let clamped = self.value.get().clamp(range_start, range_end);
         let progress = (clamped - range_start) / span;
         let fill_x = (track_right - track_left).mul_add(progress, track_left);
         self.render_track(

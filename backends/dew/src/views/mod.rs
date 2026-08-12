@@ -98,12 +98,12 @@ impl LabelText {
         }
         let key = TextLayoutKey::foreground(None);
         let mut cache = self.cache.borrow_mut();
-        let (layout, outcome) = cache.get_or_build(self.content.revision(), key, || {
+        let ((width, height), outcome) = cache.measure(self.content.revision(), key, || {
             state
                 .borrow_mut()
                 .build_styled_layout(&self.content.get(), env, None, key.brush)
         });
-        let size = Size::new(layout.width(), layout.height());
+        let size = Size::new(width, height);
         state.borrow_mut().record_layout(outcome);
         size
     }
@@ -137,25 +137,23 @@ impl LabelText {
         let key = TextLayoutKey { max_width, brush };
         let revision = self.content.revision();
         let mut cache = self.cache.borrow_mut();
+        let (list, state) = renderer.list_and_state();
         // Vertical centring needs the laid-out height, which is only known
-        // once the layout exists, so resolve it before emitting.
-        let height = {
-            let (layout, outcome) = cache.get_or_build(revision, key, || {
-                renderer.state_cell().borrow_mut().build_styled_layout(
-                    &self.content.get(),
-                    env,
-                    max_width,
-                    brush,
-                )
-            });
-            renderer.state_cell().borrow_mut().record_layout(outcome);
-            f64::from(layout.height())
-        };
-        let dy = ((rect.height() - height) / 2.0).max(0.0);
-        let transform = ctx.transform * Affine::translate((rect.x0, rect.y0 + dy));
-        cache.emit(revision, key, transform, renderer.list_mut(), || {
-            unreachable!("the layout for this key was built moments ago")
+        // once a layout for this key has existed.
+        let ((_, height), outcome) = cache.measure(revision, key, || {
+            state
+                .borrow_mut()
+                .build_styled_layout(&self.content.get(), env, max_width, brush)
         });
+        state.borrow_mut().record_layout(outcome);
+        let dy = ((rect.height() - f64::from(height)) / 2.0).max(0.0);
+        let transform = ctx.transform * Affine::translate((rect.x0, rect.y0 + dy));
+        let outcome = cache.emit(revision, key, transform, list, || {
+            state
+                .borrow_mut()
+                .build_styled_layout(&self.content.get(), env, max_width, brush)
+        });
+        state.borrow_mut().record_layout(outcome);
     }
 }
 

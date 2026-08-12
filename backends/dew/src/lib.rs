@@ -70,7 +70,7 @@ pub mod text;
 pub mod theme;
 mod views;
 
-pub use board::{Board, HostBoard, PointerSample};
+pub use board::{Board, FontSources, HostBoard, PointerSample};
 pub use compositor::{BandIndex, BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};
 pub use display::{BufferDisplay, DisplayFlush, Rgb565Display, Rgb565Sink};

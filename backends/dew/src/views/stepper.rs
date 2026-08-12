@@ -9,7 +9,7 @@ use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_text::styled::StyledStr;
 
-use crate::dispatch::{DewNode, DewRenderer, RenderContext};
+use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
@@ -32,16 +32,6 @@ const ICON_STROKE: f64 = 1.6;
 /// Outline width of the buttons.
 const BUTTON_BORDER: f64 = 1.0;
 
-/// The formatted value text: the configured formatter when present,
-/// otherwise the plain decimal value.
-fn value_text(renderer: &mut DewRenderer, config: &StepperConfig) -> StyledStr {
-    if let Some(formatter) = &config.value_formatter {
-        renderer.read_signal(formatter)
-    } else {
-        StyledStr::plain(renderer.read_signal(&config.value).to_string())
-    }
-}
-
 /// The intrinsic value text for measurement, without subscribing.
 fn value_text_for_measure(config: &StepperConfig) -> StyledStr {
     config.value_formatter.as_ref().map_or_else(
@@ -53,9 +43,26 @@ fn value_text_for_measure(config: &StepperConfig) -> StyledStr {
 struct StepperNode {
     config: StepperConfig,
     label: LabelText,
+    /// The formatted value text signal, subscribed once at build.
+    formatter: Option<WatchedSignal<Computed<StyledStr>>>,
+    /// The raw value, subscribed once at build.
+    value: WatchedSignal<Binding<i32>>,
+    /// The step amount, subscribed once at build.
+    step: WatchedSignal<Computed<i32>>,
     env: Environment,
     decrement: PointerTargetHandle,
     increment: PointerTargetHandle,
+}
+
+impl StepperNode {
+    /// The formatted value text: the configured formatter when present,
+    /// otherwise the plain decimal value.
+    fn value_text(&self) -> StyledStr {
+        self.formatter.as_ref().map_or_else(
+            || StyledStr::plain(self.value.get().to_string()),
+            WatchedSignal::get,
+        )
+    }
 }
 
 struct StepperPointer {
@@ -95,11 +102,7 @@ impl PointerHandler for StepperPointer {
     }
 }
 
-pub fn build(
-    renderer: &DewRenderer,
-    config: StepperConfig,
-    env: &Environment,
-) -> Box<dyn DewNode> {
+pub fn build(renderer: &DewRenderer, config: StepperConfig, env: &Environment) -> Box<dyn DewNode> {
     let decrement = PointerTargetHandle::new(StepperPointer {
         value: config.value.clone(),
         step: config.step.clone(),
@@ -115,9 +118,18 @@ pub fn build(
         armed: false,
     });
     let label = LabelText::new(&config.label, env, renderer.signals());
+    let formatter = config
+        .value_formatter
+        .clone()
+        .map(|formatter| WatchedSignal::new(formatter, renderer.signals()));
+    let value = WatchedSignal::new(config.value.clone(), renderer.signals());
+    let step = WatchedSignal::new(config.step.clone(), renderer.signals());
     Box::new(StepperNode {
         config,
         label,
+        formatter,
+        value,
+        step,
         env: env.clone(),
         decrement,
         increment,
@@ -130,7 +142,16 @@ impl DewNode for StepperNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let (minus, plus) = render(renderer, ctx, &self.config, &self.label, &self.env);
+        assert!(self.step.get() > 0, "dew stepper requires a positive step");
+        let styled_value = self.value_text();
+        let (minus, plus) = render(
+            renderer,
+            ctx,
+            &self.config,
+            &self.label,
+            &self.env,
+            &styled_value,
+        );
         renderer.register_pointer_target(
             ctx.transform.transform_rect_bbox(minus),
             self.decrement.clone(),
@@ -152,14 +173,11 @@ fn render(
     config: &StepperConfig,
     label: &LabelText,
     env: &Environment,
+    styled_value: &StyledStr,
 ) -> (Rect, Rect) {
     assert!(
         config.range.start() <= config.range.end(),
         "dew stepper requires an ordered range"
-    );
-    assert!(
-        renderer.read_signal(&config.step) > 0,
-        "dew stepper requires a positive step"
     );
     let bounds = ctx.bounds;
 
@@ -167,12 +185,11 @@ fn render(
     let controls_width = button_size.mul_add(2.0, BUTTON_SPACING);
     let controls_x0 = (bounds.x1 - controls_width).max(bounds.x0);
 
-    let styled_value = value_text(renderer, config);
     let (value_width, _) =
         renderer
             .state_cell()
             .borrow_mut()
-            .measure_styled(&styled_value, env, None);
+            .measure_styled(styled_value, env, None);
     let value_x0 = (controls_x0 - VALUE_SPACING - f64::from(value_width)).max(bounds.x0);
     let value_rect = Rect::new(value_x0, bounds.y0, controls_x0 - VALUE_SPACING, bounds.y1);
     if value_rect.width() > 0.0 {
@@ -180,7 +197,7 @@ fn render(
             renderer,
             ctx,
             value_rect,
-            &styled_value,
+            styled_value,
             env,
             theme::MUTED_FOREGROUND,
         );

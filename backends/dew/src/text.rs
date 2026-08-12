@@ -32,6 +32,10 @@ use crate::theme;
 pub struct DewState {
     font_cx: parley::FontContext,
     layout_cx: parley::LayoutContext<[u8; 4]>,
+    /// Whether the collection holds any face at all. Shaping against an
+    /// empty collection silently produces no glyphs, so it fails fast
+    /// instead — see [`DewState::assert_has_fonts`].
+    has_fonts: bool,
     /// Measure-side work performed this frame.
     ///
     /// Measurement runs behind `&self` — a `SubView` cannot mutate the tree —
@@ -57,10 +61,38 @@ pub(crate) enum CacheOutcome {
 ///
 /// Dew confines layout to the main render thread, so the cache stays with the
 /// retained node instead of adding synchronization or global state.
+///
+/// The cache deliberately holds two very different weights of state:
+///
+/// - a **size** per probed [`TextLayoutKey`] — a dozen bytes, kept for every
+///   key, because container layouts probe several widths per pass and only
+///   need the answer;
+/// - the **glyph runs** for one key — the one the display list is actually
+///   showing. A full `parley::Layout` per probed width (the previous design)
+///   held clusters, runs, and style tables for layouts that would never be
+///   painted; on a 320 KiB-SRAM target that was the difference between
+///   fitting and not fitting, and the work simulation's peak-heap gate is
+///   what caught it. The `Layout` itself is dropped as soon as runs are
+///   derived from it.
 #[derive(Debug, Default)]
 pub(crate) struct TextLayoutCache {
     revision: u64,
-    entries: Vec<CachedTextLayout>,
+    /// Laid-out size per proposal key, in probe order (a handful per node).
+    sizes: Vec<(TextLayoutKey, (f32, f32))>,
+    /// Full shaped state for the most recently emitted (or, before the first
+    /// emit, most recently built) key.
+    retained: Option<RetainedText>,
+}
+
+/// The heavyweight half of the cache: one key's shaped output.
+#[derive(Debug)]
+struct RetainedText {
+    key: TextLayoutKey,
+    /// The parley layout, kept only until [`RetainedText::runs`] is derived,
+    /// then dropped — deriving runs is the sole remaining consumer.
+    layout: Option<parley::Layout<[u8; 4]>>,
+    /// Glyph runs in layout-local coordinates, replayed every frame.
+    runs: Option<Vec<RetainedGlyphRun>>,
 }
 
 /// What a cached layout depends on.
@@ -87,21 +119,6 @@ impl TextLayoutKey {
     }
 }
 
-#[derive(Debug)]
-struct CachedTextLayout {
-    key: TextLayoutKey,
-    layout: parley::Layout<[u8; 4]>,
-    /// Glyph runs derived from `layout`, in layout-local coordinates.
-    ///
-    /// Built on first emit and reused afterwards. Deriving them costs one
-    /// `skrifa` outline-bounds lookup per glyph, which parses `glyf`/`loca`
-    /// from font data that lives in flash on an embedded target — by far the
-    /// largest per-frame cost Dew had, and pure waste for text that has not
-    /// changed. Placement is *not* baked in: only the transform differs
-    /// between frames, and substituting it is free.
-    runs: Option<Vec<RetainedGlyphRun>>,
-}
-
 /// One shaped glyph run held in layout-local coordinates, ready to be placed.
 #[derive(Debug, Clone)]
 struct RetainedGlyphRun {
@@ -112,48 +129,54 @@ struct RetainedGlyphRun {
 }
 
 impl TextLayoutCache {
-    /// The index of the entry for `max_width`, building it when absent.
-    fn entry(
-        &mut self,
-        revision: u64,
-        key: TextLayoutKey,
-        build: impl FnOnce() -> parley::Layout<[u8; 4]>,
-    ) -> (usize, CacheOutcome) {
+    /// Discards everything when the text's content revision moved on.
+    fn sync_revision(&mut self, revision: u64) {
         if self.revision != revision {
-            self.entries.clear();
+            self.sizes.clear();
+            self.retained = None;
             self.revision = revision;
         }
-        let mut outcome = CacheOutcome::Reused;
-        let index = self
-            .entries
-            .iter()
-            .position(|entry| entry.key == key)
-            .unwrap_or_else(|| {
-                outcome = CacheOutcome::Built;
-                self.entries.push(CachedTextLayout {
-                    key,
-                    layout: build(),
-                    runs: None,
-                });
-                self.entries.len() - 1
-            });
-        (index, outcome)
     }
 
-    pub(crate) fn get_or_build(
+    /// The laid-out size for `key`, shaping only on a cache miss.
+    ///
+    /// A missed measurement keeps its layout for the emit that usually
+    /// follows at the same key — unless glyph runs for another key are
+    /// already on screen, in which case the layout is measured and dropped
+    /// rather than evicting live runs (layout passes probe widths that are
+    /// never painted).
+    pub(crate) fn measure(
         &mut self,
         revision: u64,
         key: TextLayoutKey,
         build: impl FnOnce() -> parley::Layout<[u8; 4]>,
-    ) -> (&parley::Layout<[u8; 4]>, CacheOutcome) {
-        let (index, outcome) = self.entry(revision, key, build);
-        (&self.entries[index].layout, outcome)
+    ) -> ((f32, f32), CacheOutcome) {
+        self.sync_revision(revision);
+        if let Some((_, size)) = self.sizes.iter().find(|(cached, _)| *cached == key) {
+            return (*size, CacheOutcome::Reused);
+        }
+        let layout = build();
+        let size = (layout.width(), layout.height());
+        self.sizes.push((key, size));
+        let displayed_elsewhere = self
+            .retained
+            .as_ref()
+            .is_some_and(|retained| retained.runs.is_some() && retained.key != key);
+        if !displayed_elsewhere {
+            self.retained = Some(RetainedText {
+                key,
+                layout: Some(layout),
+                runs: None,
+            });
+        }
+        (size, CacheOutcome::Built)
     }
 
     /// Appends this text's glyph runs to `list`, placed at `transform`.
     ///
-    /// Derives the runs from the cached layout on first use and replays them
-    /// on every later frame, so unchanged text costs no outline lookups.
+    /// Derives the runs from the retained layout on first use — dropping the
+    /// layout in the process — and replays them on every later frame, so
+    /// unchanged text costs no shaping and no outline lookups.
     pub(crate) fn emit(
         &mut self,
         revision: u64,
@@ -162,17 +185,42 @@ impl TextLayoutCache {
         list: &mut DisplayList,
         build: impl FnOnce() -> parley::Layout<[u8; 4]>,
     ) -> CacheOutcome {
-        let (index, outcome) = self.entry(revision, key, build);
-        let entry = &mut self.entries[index];
-        let runs = match &entry.runs {
-            Some(runs) => {
-                list.add_work(FrameWork {
-                    glyph_runs_reused: runs.len() as u64,
-                    ..FrameWork::ZERO
-                });
-                runs
+        self.sync_revision(revision);
+        let mut outcome = CacheOutcome::Reused;
+        if !self
+            .retained
+            .as_ref()
+            .is_some_and(|retained| retained.key == key)
+        {
+            outcome = CacheOutcome::Built;
+            let layout = build();
+            if !self.sizes.iter().any(|(cached, _)| *cached == key) {
+                self.sizes.push((key, (layout.width(), layout.height())));
             }
-            None => entry.runs.insert(retain_glyph_runs(&entry.layout, list)),
+            self.retained = Some(RetainedText {
+                key,
+                layout: Some(layout),
+                runs: None,
+            });
+        }
+        let retained = self
+            .retained
+            .as_mut()
+            .expect("retained text state exists after the key check");
+        let runs = if let Some(runs) = &retained.runs {
+            list.add_work(FrameWork {
+                glyph_runs_reused: runs.len() as u64,
+                ..FrameWork::ZERO
+            });
+            runs
+        } else {
+            let layout = retained
+                .layout
+                .take()
+                .expect("the parley layout is present until runs are derived");
+            // The layout's job ends here: runs replay from now on, and the
+            // heavyweight parley structures go back to the heap.
+            retained.runs.insert(retain_glyph_runs(&layout, list))
         };
         for run in runs {
             let mut command = run.command.clone();
@@ -189,17 +237,104 @@ impl core::fmt::Debug for DewState {
     }
 }
 
+/// Desktop-only default: the system font collection.
+#[cfg(feature = "system-fonts")]
 impl Default for DewState {
     fn default() -> Self {
-        Self {
-            font_cx: parley::FontContext::new(),
-            layout_cx: parley::LayoutContext::new(),
-            work: FrameWork::ZERO,
-        }
+        Self::new(crate::board::FontSources::System)
     }
 }
 
 impl DewState {
+    /// Builds the shared shaping state for the given font sources.
+    ///
+    /// [`FontSources::Bundled`] registers each binary into a collection with
+    /// system enumeration disabled — the firmware configuration, identical on
+    /// host and target — and routes every CSS generic family to the
+    /// registered faces so unstyled text resolves. Fallback coverage is the
+    /// bundle's responsibility: a glyph the bundled fonts do not cover has
+    /// nothing to fall back to, which is the documented asymmetry of an
+    /// embedded target, not a defect.
+    ///
+    /// [`FontSources`]: crate::board::FontSources
+    pub(crate) fn new(sources: crate::board::FontSources) -> Self {
+        use parley::fontique;
+
+        let (collection, has_fonts) = match sources {
+            #[cfg(feature = "system-fonts")]
+            crate::board::FontSources::System => (
+                fontique::Collection::new(fontique::CollectionOptions {
+                    shared: false,
+                    system_fonts: true,
+                }),
+                true,
+            ),
+            crate::board::FontSources::Bundled(fonts) => {
+                use fontique::GenericFamily;
+
+                let mut collection = fontique::Collection::new(fontique::CollectionOptions {
+                    shared: false,
+                    system_fonts: false,
+                });
+                let mut families = Vec::new();
+                for data in fonts {
+                    families.extend(
+                        collection
+                            .register_fonts(data, None)
+                            .into_iter()
+                            .map(|(family, _)| family),
+                    );
+                }
+                // Route every CSS generic to the bundled faces: with system
+                // enumeration off there is nothing else a generic could mean.
+                for generic in [
+                    GenericFamily::Serif,
+                    GenericFamily::SansSerif,
+                    GenericFamily::Monospace,
+                    GenericFamily::Cursive,
+                    GenericFamily::Fantasy,
+                    GenericFamily::SystemUi,
+                    GenericFamily::UiSerif,
+                    GenericFamily::UiSansSerif,
+                    GenericFamily::UiMonospace,
+                    GenericFamily::UiRounded,
+                    GenericFamily::Emoji,
+                    GenericFamily::Math,
+                    GenericFamily::FangSong,
+                ] {
+                    collection.set_generic_families(generic, families.iter().copied());
+                }
+                let has_fonts = !families.is_empty();
+                (collection, has_fonts)
+            }
+        };
+        Self {
+            font_cx: parley::FontContext {
+                collection,
+                source_cache: parley::fontique::SourceCache::default(),
+            },
+            layout_cx: parley::LayoutContext::new(),
+            has_fonts,
+            work: FrameWork::ZERO,
+        }
+    }
+
+    /// Fails fast when text is shaped with no font registered.
+    ///
+    /// An empty collection would lay out zero glyph runs and the screen
+    /// would simply show no text — the exact silent degradation dew's
+    /// design forbids. Firmware boards must return their bundled fonts from
+    /// `Board::fonts`.
+    fn assert_has_fonts(&self) {
+        assert!(
+            self.has_fonts,
+            "dew has no fonts to shape text with: this build has no system font \
+             collection, and Board::fonts provided no bundled fonts. Return \
+             FontSources::bundled(&[include_bytes!(\"YourFont.ttf\")]) from the \
+             board (or register fonts on HostBoard::with_font in tests)."
+        );
+    }
+
     /// Takes the work accumulated since the previous call.
     pub(crate) const fn take_work(&mut self) -> FrameWork {
         core::mem::replace(&mut self.work, FrameWork::ZERO)
@@ -226,6 +361,7 @@ impl DewState {
         text: &str,
         max_width: Option<f32>,
     ) -> parley::Layout<[u8; 4]> {
+        self.assert_has_fonts();
         let mut builder = self
             .layout_cx
             .ranged_builder(&mut self.font_cx, text, 1.0, true);
@@ -264,6 +400,7 @@ impl DewState {
         if plain.is_empty() {
             return parley::Layout::new();
         }
+        self.assert_has_fonts();
 
         let default_font = Font::default().resolve(env).get();
         let mut builder = self
@@ -485,8 +622,8 @@ fn retain_glyph_runs(
                 command: DrawCommand::GlyphRun {
                     font,
                     font_size,
-                    glyphs,
-                    glyph_bounds,
+                    glyphs: glyphs.into(),
+                    glyph_bounds: glyph_bounds.into(),
                     transform,
                     brush: peniko::Color::from_rgba8(red, green, blue, alpha).into(),
                     bounds: layout_bounds,
@@ -621,10 +758,10 @@ mod tests {
             parley::Layout::new()
         };
 
-        cache.get_or_build(0, TextLayoutKey::foreground(Some(120.0)), build);
-        cache.get_or_build(0, TextLayoutKey::foreground(Some(120.0)), build);
-        cache.get_or_build(0, TextLayoutKey::foreground(Some(80.0)), build);
-        cache.get_or_build(1, TextLayoutKey::foreground(Some(120.0)), build);
+        cache.measure(0, TextLayoutKey::foreground(Some(120.0)), build);
+        cache.measure(0, TextLayoutKey::foreground(Some(120.0)), build);
+        cache.measure(0, TextLayoutKey::foreground(Some(80.0)), build);
+        cache.measure(1, TextLayoutKey::foreground(Some(120.0)), build);
 
         assert_eq!(builds.get(), 3);
     }

@@ -15,12 +15,49 @@
 
 use std::collections::VecDeque;
 
+use peniko::Blob;
 use vello_cpu::RenderSettings;
 use waterui_backend_core::input::TouchPhase;
 use waterui_backend_core::time::Instant;
 
 use crate::display::{BufferDisplay, DisplayFlush};
 use crate::painter::target_render_settings;
+
+/// Where a board's text faces come from.
+///
+/// Text shaping needs at least one font, and a microcontroller has no font
+/// directory to enumerate — its faces are TTF/OTF binaries linked into
+/// flash. The board owns that decision because the board is the hardware
+/// model: desktop hosts enumerate the system collection, firmware boards
+/// hand over their flash-resident font data.
+#[derive(Debug, Clone)]
+pub enum FontSources {
+    /// Enumerate the host's installed fonts.
+    ///
+    /// Only exists when the `system-fonts` feature is enabled; firmware
+    /// builds disable that feature and must bundle fonts instead.
+    #[cfg(feature = "system-fonts")]
+    System,
+    /// Register these font binaries (TTF/OTF/TTC).
+    ///
+    /// On embedded targets each blob typically wraps `include_bytes!` data,
+    /// which stays in flash — registering it costs a handful of heap bytes
+    /// of face metadata, not a copy of the font.
+    Bundled(Vec<Blob<u8>>),
+}
+
+impl FontSources {
+    /// Wraps flash-resident font binaries without copying them.
+    #[must_use]
+    pub fn bundled(fonts: &[&'static [u8]]) -> Self {
+        Self::Bundled(
+            fonts
+                .iter()
+                .map(|data| Blob::new(std::sync::Arc::new(*data)))
+                .collect(),
+        )
+    }
+}
 
 /// A pointer/touch sample from the board's input device, in device pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,6 +92,27 @@ pub trait Board {
         target_render_settings()
     }
 
+    /// The fonts text on this board shapes with.
+    ///
+    /// Called once when the runtime is created. On hosts with the
+    /// `system-fonts` feature this defaults to the system collection;
+    /// firmware builds disable that feature, so every firmware board must
+    /// say which flash-resident fonts it ships — there is nothing to
+    /// enumerate on a microcontroller, and rendering text with no font is
+    /// an error dew refuses to hide.
+    #[cfg(feature = "system-fonts")]
+    fn fonts(&self) -> FontSources {
+        FontSources::System
+    }
+
+    /// The fonts text on this board shapes with.
+    ///
+    /// This build has no `system-fonts` feature, so there is no default:
+    /// the board must provide its bundled font binaries (usually
+    /// `include_bytes!` data via [`FontSources::bundled`]).
+    #[cfg(not(feature = "system-fonts"))]
+    fn fonts(&self) -> FontSources;
+
     /// Returns the next pending pointer event, or [`None`] when the board has
     /// no input device or no event is queued.
     fn poll_pointer(&mut self) -> Option<PointerSample> {
@@ -73,6 +131,7 @@ pub trait Board {
 pub struct HostBoard {
     display: BufferDisplay,
     pointer_samples: VecDeque<PointerSample>,
+    fonts: Vec<Blob<u8>>,
 }
 
 impl HostBoard {
@@ -82,7 +141,20 @@ impl HostBoard {
         Self {
             display: BufferDisplay::new(width, height),
             pointer_samples: VecDeque::new(),
+            fonts: Vec::new(),
         }
+    }
+
+    /// Registers a bundled font, replacing system enumeration.
+    ///
+    /// With at least one registered font the board shapes text exactly like
+    /// a firmware board: the same binaries, no system collection. This is
+    /// what makes a host simulation's font path — and therefore its heap
+    /// profile — match the embedded target it stands in for.
+    #[must_use]
+    pub fn with_font(mut self, data: impl Into<Blob<u8>>) -> Self {
+        self.fonts.push(data.into());
+        self
     }
 
     /// The framebuffer the engine renders into.
@@ -106,6 +178,14 @@ impl Board for HostBoard {
 
     fn now(&self) -> Instant {
         Instant::now()
+    }
+
+    fn fonts(&self) -> FontSources {
+        #[cfg(feature = "system-fonts")]
+        if self.fonts.is_empty() {
+            return FontSources::System;
+        }
+        FontSources::Bundled(self.fonts.clone())
     }
 
     fn poll_pointer(&mut self) -> Option<PointerSample> {
