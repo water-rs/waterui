@@ -24,6 +24,7 @@ pub struct Painter {
     resources: Resources,
     settings: RenderSettings,
     images: Vec<CachedImage>,
+    scratch: Vec<ScratchSlot>,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,28 @@ struct CachedImage {
     data: peniko::ImageData,
     source: ImageSource,
 }
+
+/// A reusable render context and pixmap for one region size.
+///
+/// A `RenderContext` is fixed-size, and steady-state dirty regions repeat the
+/// same handful of sizes frame after frame (an animating progress bar dirties
+/// identical bands every frame). Recreating the context and pixmap per band
+/// was the single largest source of per-frame heap churn the work simulation
+/// measured, and on an RTOS heap churn is fragmentation pressure — so the
+/// painter keeps one slot per recent size and `reset()`s it instead.
+#[derive(Debug)]
+struct ScratchSlot {
+    width: u16,
+    height: u16,
+    context: RenderContext,
+    pixmap: Pixmap,
+}
+
+/// Distinct region sizes kept alive for reuse, least recently used evicted.
+///
+/// Steady-state frames cycle through only a few sizes; the bound exists so a
+/// pathological size storm cannot hoard band-sized buffers.
+const SCRATCH_SLOTS: usize = 8;
 
 impl Default for Painter {
     fn default() -> Self {
@@ -46,12 +69,49 @@ impl Painter {
             resources: Resources::new(),
             settings,
             images: Vec::new(),
+            scratch: Vec::new(),
         }
+    }
+
+    /// The reusable scratch slot for a `width` × `height` region, creating it
+    /// (evicting the least recently used) when absent. The returned slot's
+    /// context is reset and ready to encode.
+    fn scratch_slot(&mut self, width: u16, height: u16) -> &mut ScratchSlot {
+        if let Some(index) = self
+            .scratch
+            .iter()
+            .position(|slot| slot.width == width && slot.height == height)
+        {
+            // Move to the back: the back is the most recently used.
+            let slot = self.scratch.remove(index);
+            self.scratch.push(slot);
+        } else {
+            if self.scratch.len() == SCRATCH_SLOTS {
+                self.scratch.remove(0);
+            }
+            self.scratch.push(ScratchSlot {
+                width,
+                height,
+                context: RenderContext::new_with(width, height, self.settings),
+                pixmap: Pixmap::new(width, height),
+            });
+        }
+        let slot = self
+            .scratch
+            .last_mut()
+            .expect("a scratch slot was just ensured");
+        slot.context.reset();
+        slot
     }
 
     /// Rasterizes the window-coordinate `list` clipped to `region`,
     /// returning a `region.width × region.height` premultiplied-RGBA8
     /// pixmap.
+    ///
+    /// The pixmap borrows the painter's reusable scratch slot for this
+    /// region size and is valid until the next `rasterize_region` call —
+    /// callers stream it out immediately, which is also the only usage the
+    /// banded flush model permits.
     ///
     /// `candidates` are indices into `list.commands()` that a spatial index
     /// has already established *may* touch this region's band row; the
@@ -70,10 +130,22 @@ impl Painter {
         region: DeviceRegion,
         candidates: &[u32],
         work: &mut FrameWork,
-    ) -> Pixmap {
+    ) -> &Pixmap {
         let width = u16::try_from(region.width).expect("region width exceeds u16::MAX");
         let height = u16::try_from(region.height).expect("region height exceeds u16::MAX");
-        let mut ctx = RenderContext::new_with(width, height, self.settings);
+        // Ensure the slot exists and is reset, then split borrows so the
+        // brush cache and the slot can be used simultaneously.
+        let _ = self.scratch_slot(width, height);
+        let Self {
+            resources,
+            images,
+            scratch,
+            ..
+        } = self;
+        let slot = scratch
+            .last_mut()
+            .expect("scratch_slot just ensured a slot");
+        let ctx = &mut slot.context;
         let shift = Affine::translate((-f64::from(region.x), -f64::from(region.y)));
         let region_bounds = Rect::new(
             f64::from(region.x),
@@ -110,7 +182,7 @@ impl Painter {
                     ..
                 } => {
                     ctx.set_transform(shift * *transform);
-                    self.set_brush(&mut ctx, brush);
+                    set_brush(images, ctx, brush);
                     ctx.fill_path(path);
                 }
                 DrawCommand::StrokePath {
@@ -122,7 +194,7 @@ impl Painter {
                 } => {
                     ctx.set_transform(shift * *transform);
                     ctx.set_stroke(stroke.clone());
-                    self.set_brush(&mut ctx, brush);
+                    set_brush(images, ctx, brush);
                     ctx.stroke_path(path);
                 }
                 DrawCommand::GlyphRun {
@@ -135,14 +207,14 @@ impl Painter {
                     ..
                 } => {
                     ctx.set_transform(shift * *transform);
-                    self.set_brush(&mut ctx, brush);
-                    ctx.glyph_run(&mut self.resources, font)
+                    set_brush(images, ctx, brush);
+                    ctx.glyph_run(resources, font)
                         .font_size(*font_size)
                         .hint(true)
                         .fill_glyphs(
                             glyphs
                                 .iter()
-                                .zip(glyph_bounds)
+                                .zip(glyph_bounds.iter())
                                 .filter(|(_, bounds)| {
                                     transform
                                         .transform_rect_bbox(**bounds)
@@ -159,36 +231,33 @@ impl Painter {
             }
         }
         ctx.flush();
-        let mut pixmap = Pixmap::new(width, height);
-        ctx.render_to_pixmap(&mut self.resources, &mut pixmap);
-        pixmap
+        slot.context.render_to_pixmap(resources, &mut slot.pixmap);
+        &slot.pixmap
     }
+}
 
-    fn set_brush(&mut self, ctx: &mut RenderContext, brush: &peniko::Brush) {
-        match brush {
-            peniko::Brush::Solid(color) => ctx.set_paint(*color),
-            peniko::Brush::Gradient(gradient) => ctx.set_paint(gradient.clone()),
-            peniko::Brush::Image(image) => {
-                let cached = self
-                    .images
-                    .iter()
-                    .find(|cached| cached.data == image.image)
-                    .map(|cached| cached.source.clone());
-                let source = if let Some(cached) = cached {
-                    cached
-                } else {
-                    let source = ImageSource::from_peniko_image_data(&image.image);
-                    self.images.push(CachedImage {
-                        data: image.image.clone(),
-                        source: source.clone(),
-                    });
-                    source
-                };
-                ctx.set_paint(Image {
-                    image: source,
-                    sampler: image.sampler,
+/// Sets the context paint, converting and caching image brushes once.
+fn set_brush(images: &mut Vec<CachedImage>, ctx: &mut RenderContext, brush: &peniko::Brush) {
+    match brush {
+        peniko::Brush::Solid(color) => ctx.set_paint(*color),
+        peniko::Brush::Gradient(gradient) => ctx.set_paint(gradient.clone()),
+        peniko::Brush::Image(image) => {
+            let cached = images
+                .iter()
+                .find(|cached| cached.data == image.image)
+                .map(|cached| cached.source.clone());
+            let source = cached.unwrap_or_else(|| {
+                let source = ImageSource::from_peniko_image_data(&image.image);
+                images.push(CachedImage {
+                    data: image.image.clone(),
+                    source: source.clone(),
                 });
-            }
+                source
+            });
+            ctx.set_paint(Image {
+                image: source,
+                sampler: image.sampler,
+            });
         }
     }
 }
@@ -229,7 +298,9 @@ mod tests {
 
     fn rasterize_with(painter: &mut Painter, list: &DisplayList, region: DeviceRegion) -> Pixmap {
         let mut work = FrameWork::ZERO;
-        painter.rasterize_region(list, region, &all_candidates(list), &mut work)
+        painter
+            .rasterize_region(list, region, &all_candidates(list), &mut work)
+            .clone()
     }
 
     fn checker_scene() -> DisplayList {
@@ -340,8 +411,11 @@ mod tests {
         );
         let scheduler = BandScheduler::new(64, 64, 16);
         let full_data = full.data_as_u8_slice();
+        // One painter across all bands: same-size bands share one reset
+        // scratch slot, so this also proves reuse renders like fresh state.
+        let mut painter = Painter::default();
         for band in scheduler.schedule(&[Rect::new(0.0, 0.0, 64.0, 64.0)]) {
-            let pixmap = rasterize(&list, band);
+            let pixmap = rasterize_with(&mut painter, &list, band);
             let band_data = pixmap.data_as_u8_slice();
             for row in 0..band.height as usize {
                 let band_row =
