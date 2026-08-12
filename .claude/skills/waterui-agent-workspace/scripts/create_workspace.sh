@@ -71,9 +71,13 @@ main() {
 
   clone_submodules_locally "$source_root" "$destination"
   activate_all_submodules "$destination"
-  copy_target_cow "$source_root" "$destination"
+  # Branch before warming `target/`: the branches are what make the workspace
+  # usable, the cache copy is the long step that can still fail, and a workspace
+  # left sitting on the canonical branch silently violates the agent-branch
+  # workflow.
   ensure_branch "$destination" "$branch_name"
   branch_submodules "$destination" "$branch_name"
+  copy_target_cow "$source_root" "$destination"
 
   print -- "$destination"
 }

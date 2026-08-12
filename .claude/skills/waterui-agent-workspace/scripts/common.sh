@@ -141,6 +141,40 @@ clone_submodules_locally() {
   done < <(submodule_records "$source_root")
 }
 
+# The canonical `target/` is a live cache, and an unrelated build (Xcode, Gradle,
+# `water run`) may be writing into it while a workspace is created. rustc's
+# per-CGU object files exist only for the duration of one invocation, so a copy
+# can enumerate an entry that is gone by the time it is read. That lost race is
+# harmless — the entry is a build temporary and cargo rebuilds whatever is
+# missing — so it is retried, and the retry no longer enumerates the vanished
+# entry. Any other failure, a full destination volume above all, is fatal at
+# once rather than retried. Each attempt copies directory *contents* so a retry
+# lands on the same path instead of nesting inside the partial copy.
+copy_target_entry() {
+  local source="$1"
+  local destination="$2"
+  local attempt
+  local errors
+  local line
+
+  for attempt in 1 2 3; do
+    if [[ -d "$source" && ! -L "$source" ]]; then
+      mkdir -p "$destination"
+      errors="$(LC_ALL=C cp -cR "$source/." "$destination" 2>&1 >/dev/null)" && return 0
+    else
+      errors="$(LC_ALL=C cp -cR "$source" "$destination" 2>&1 >/dev/null)" && return 0
+    fi
+
+    [[ -n "$errors" ]] || die "failed to copy ${source} into ${destination}"
+    for line in ${(f)errors}; do
+      [[ "$line" == *': No such file or directory' ]] ||
+        die "failed to copy ${source} into ${destination}: ${line}"
+    done
+  done
+
+  warn "left ${source:t} out of the warm target cache: it kept vanishing under the copy, so another build is writing to ${source:h}"
+}
+
 copy_target_cow() {
   local source_root="$1"
   local destination_root="$2"
@@ -163,10 +197,10 @@ copy_target_cow() {
       mkdir -p "${destination_target}/${top:t}"
       for child in "$top"/*(DN); do
         [[ "${child:t}" == "incremental" ]] && continue
-        cp -cR "$child" "${destination_target}/${top:t}/${child:t}" || die "failed to copy ${child} into ${destination_target}"
+        copy_target_entry "$child" "${destination_target}/${top:t}/${child:t}"
       done
     else
-      cp -cR "$top" "${destination_target}/${top:t}" || die "failed to copy ${top} into ${destination_target}"
+      copy_target_entry "$top" "${destination_target}/${top:t}"
     fi
   done
 }
