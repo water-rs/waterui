@@ -12,10 +12,16 @@ keywords = ["ui", "backend", "waterui", "embedded", "gui"]
 categories = ["gui", "embedded"]
 
 [features]
-default = ["system-fonts", "progress"]
+default = ["system-fonts", "progress", "host"]
+# Host-side surfaces: the in-memory framebuffer (`BufferDisplay`), the
+# reference `HostBoard`, and PNG snapshot export. Firmware builds
+# (default-features = false) drop them along with the PNG encoder they pull
+# in — a flash image has no use for either.
+host = ["vello_cpu/png"]
 # Embedded-device simulator: a desktop window standing in for the panel of
 # an embedded device, running the full dew pipeline natively (winit + softbuffer).
 embedded-simulator = [
+    "host",
     "dep:winit",
     "dep:softbuffer",
     "dep:executor-core",
@@ -59,7 +65,14 @@ parley = { workspace = true, features = ["libm"] }
 kurbo.workspace = true
 peniko.workspace = true
 skrifa.workspace = true
-vello_cpu = { workspace = true, features = ["f32_pipeline"] }
+# Default features deliberately off: they include the PNG encoder, which
+# only the host-side snapshot surface needs — see the `host` feature.
+vello_cpu = { workspace = true, features = [
+    "std",
+    "text",
+    "u8_pipeline",
+    "f32_pipeline",
+] }
 winit = { version = "0.30", optional = true }
 softbuffer = { version = "0.4", optional = true }
 executor-core = { workspace = true, optional = true }

@@ -181,7 +181,7 @@ vello_svg = "0.10.0"
 kurbo = "0.13"
 peniko = "0.6"
 skrifa = "0.42.1"
-vello_cpu = "0.0.9"
+vello_cpu = { version = "0.0.9", default-features = false }
 lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from

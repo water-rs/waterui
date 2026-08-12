@@ -139,6 +139,7 @@ impl<S: Rgb565Sink> DisplayFlush for Rgb565Display<S> {
 /// visually inspect rendered output. Embedded targets do not use this
 /// type — it deliberately holds the full frame that dew otherwise avoids
 /// allocating.
+#[cfg(feature = "host")]
 #[derive(Debug, Clone)]
 pub struct BufferDisplay {
     width: u32,
@@ -146,6 +147,7 @@ pub struct BufferDisplay {
     pixels: Vec<u8>,
 }
 
+#[cfg(feature = "host")]
 impl BufferDisplay {
     /// Creates a black, fully transparent framebuffer.
     #[must_use]
@@ -208,6 +210,7 @@ impl BufferDisplay {
     }
 }
 
+#[cfg(feature = "host")]
 impl DisplayFlush for BufferDisplay {
     fn size(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -257,6 +260,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn flushed_region_lands_at_its_offset() {
         let mut display = BufferDisplay::new(8, 4);
