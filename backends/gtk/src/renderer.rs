@@ -8,7 +8,7 @@ use glib::value::ToValue;
 use gtk4::Widget;
 use gtk4::prelude::*;
 use gtk4::{Align, Overflow};
-use nami::{Signal, watcher::BoxWatcherGuard};
+use nami::Signal;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
     AccessibilityState, AccessibilityStateSignal,
@@ -75,9 +75,9 @@ use crate::components::menu::rebuild_menu_popover;
 use crate::util::{ScopedCss, store_watcher_guard, subscribe_then_get};
 
 const FOCUS_ANCHOR_DATA_KEY: &str = "waterui_focus_anchor";
-const FOCUS_METADATA_GUARDS_DATA_KEY: &str = "waterui_focus_metadata_guards";
 const FOCUS_REQUEST_PENDING_DATA_KEY: &str = "waterui_focus_request_pending";
 const FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY: &str = "waterui_focus_map_handler_installed";
+const RETAIN_DATA_KEY: &str = "waterui-retain-metadata";
 
 #[derive(Debug)]
 pub(crate) struct FocusAnchorMarker;
@@ -109,6 +109,10 @@ impl ReactiveAxisPair {
 }
 
 pub(crate) fn mark_focus_anchor(widget: &impl IsA<Widget>) {
+    // SAFETY: `FOCUS_ANCHOR_DATA_KEY` is private to this module and is only
+    // ever paired with `FocusAnchorMarker`, so every read of the key downcasts
+    // to the type stored here; widget data is only touched on the GTK main
+    // thread.
     unsafe {
         widget
             .as_ref()
@@ -142,7 +146,7 @@ fn attach_focus_metadata(widget: Widget, binding: &Binding<bool>) -> Widget {
     if focused {
         request_focus(&anchor);
     }
-    store_focus_metadata_guard(&widget, guard);
+    store_watcher_guard(&widget, guard);
 
     widget
 }
@@ -161,6 +165,9 @@ fn resolve_single_focus_anchor(widget: &Widget) -> Widget {
 }
 
 fn collect_focus_anchors(widget: &Widget, anchors: &mut Vec<Widget>) {
+    // SAFETY: `FOCUS_ANCHOR_DATA_KEY` only ever stores `FocusAnchorMarker`
+    // (see `mark_focus_anchor`), and the returned pointer is discarded after
+    // the presence check, so no reference outlives this main-thread call.
     if unsafe { widget.data::<FocusAnchorMarker>(FOCUS_ANCHOR_DATA_KEY) }.is_some() {
         anchors.push(widget.clone());
     }
@@ -185,16 +192,26 @@ fn request_focus(anchor: &Widget) {
         return;
     }
 
+    // SAFETY: `FOCUS_REQUEST_PENDING_DATA_KEY` only ever stores
+    // `PendingFocusRequest`, and the returned pointer is discarded after the
+    // presence check, so no reference outlives this main-thread call.
     if unsafe { anchor.data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) }.is_some() {
         return;
     }
 
+    // SAFETY: same key/type pairing as the check above; widget data is only
+    // touched on the GTK main thread.
     unsafe { anchor.set_data(FOCUS_REQUEST_PENDING_DATA_KEY, PendingFocusRequest) };
+    // SAFETY: `FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY` only ever stores
+    // `FocusMapHandlerInstalled`, and the returned pointer is discarded after
+    // the presence check, so no reference outlives this main-thread call.
     if unsafe {
         anchor
             .data::<FocusMapHandlerInstalled>(FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY)
             .is_none()
     } {
+        // SAFETY: same key/type pairing as the check above; widget data is
+        // only touched on the GTK main thread.
         unsafe {
             anchor.set_data(
                 FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY,
@@ -202,6 +219,10 @@ fn request_focus(anchor: &Widget) {
             );
         };
         anchor.connect_map(|widget| {
+            // SAFETY: `FOCUS_REQUEST_PENDING_DATA_KEY` only ever stores
+            // `PendingFocusRequest`; stealing transfers ownership of the
+            // marker to this main-thread call, and no other reference to it
+            // exists because presence checks discard their pointers.
             if unsafe { widget.steal_data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) }
                 .is_none()
             {
@@ -217,6 +238,10 @@ fn request_focus(anchor: &Widget) {
 }
 
 fn clear_focus(anchor: &Widget) {
+    // SAFETY: `FOCUS_REQUEST_PENDING_DATA_KEY` only ever stores
+    // `PendingFocusRequest`; stealing transfers ownership of the marker to
+    // this main-thread call, and no other reference to it exists because
+    // presence checks discard their pointers.
     let _ = unsafe { anchor.steal_data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) };
 
     if !anchor.has_focus() {
@@ -229,28 +254,17 @@ fn clear_focus(anchor: &Widget) {
     root.set_focus(None::<&Widget>);
 }
 
-fn store_focus_metadata_guard(widget: &Widget, guard: BoxWatcherGuard) {
-    let mut guards =
-        unsafe { widget.steal_data::<Vec<BoxWatcherGuard>>(FOCUS_METADATA_GUARDS_DATA_KEY) }
-            .unwrap_or_default();
-    guards.push(guard);
-    unsafe { widget.set_data(FOCUS_METADATA_GUARDS_DATA_KEY, guards) };
-}
-
 /// Context passed to component renderers.
+///
+/// Only [`GtkRenderer::render`] and [`GtkRenderer::render_any`] construct
+/// this, always from a live `&mut GtkRenderer` immediately before a
+/// synchronous dispatch, so the pointer is never null and outlives every
+/// handler invocation it is passed to.
 #[derive(Debug, Clone)]
 pub struct RenderContext {
     /// Reference to the renderer for recursive rendering.
     /// This is a raw pointer because we can't have self-referential borrows.
     renderer_ptr: *mut GtkRenderer,
-}
-
-impl Default for RenderContext {
-    fn default() -> Self {
-        Self {
-            renderer_ptr: std::ptr::null_mut(),
-        }
-    }
 }
 
 impl RenderContext {
@@ -571,8 +585,7 @@ fn install_gesture_observer(
 ) {
     use waterui::gesture::{
         DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent,
-        RotationEvent,
-        TapEvent,
+        RotationEvent, TapEvent,
     };
 
     match gesture {
@@ -920,50 +933,53 @@ impl GtkRenderer {
         use waterui::style::Shadow;
 
         // Metadata<Environment> - use provided environment for subtree
-        dispatcher.register::<Metadata<Environment>>(|_state, ctx, metadata, _env| {
-            let renderer = unsafe { ctx.renderer() };
-            renderer.render_any(metadata.content, &metadata.value)
-        });
+        Self::register_with_renderer::<Metadata<Environment>>(
+            dispatcher,
+            |renderer, metadata, _env| renderer.render_any(metadata.content, &metadata.value),
+        );
 
         // Metadata<Retain> - keep retained value alive for the widget lifetime
-        dispatcher.register::<Metadata<Retain>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Retain>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
-            unsafe { widget.set_data("waterui-retain-metadata", metadata.value) };
+            // SAFETY: `RETAIN_DATA_KEY` is written here only and never read
+            // back; the value is stored purely so the widget's destruction
+            // drops it, and widget data lives on the GTK main thread.
+            unsafe { widget.set_data(RETAIN_DATA_KEY, metadata.value) };
             widget
         });
 
         // Metadata<LifeCycleHook> - invoke hook on appear/disappear
-        dispatcher.register::<Metadata<LifeCycleHook>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let widget = renderer.render_any(metadata.content, env);
-            match metadata.value.lifecycle() {
-                LifeCycle::Appear => {
-                    let mut hook = Some(metadata.value);
-                    let env = env.clone();
-                    glib::idle_add_local_once(move || {
-                        if let Some(hook) = hook.take() {
-                            hook.handle(&env);
-                        }
-                    });
+        Self::register_with_renderer::<Metadata<LifeCycleHook>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                match metadata.value.lifecycle() {
+                    LifeCycle::Appear => {
+                        let mut hook = Some(metadata.value);
+                        let env = env.clone();
+                        glib::idle_add_local_once(move || {
+                            if let Some(hook) = hook.take() {
+                                hook.handle(&env);
+                            }
+                        });
+                    }
+                    LifeCycle::Disappear => {
+                        let hook = Rc::new(RefCell::new(Some(metadata.value)));
+                        let env = env.clone();
+                        widget.connect_unrealize(move |_| {
+                            if let Some(hook) = hook.borrow_mut().take() {
+                                hook.handle(&env);
+                            }
+                        });
+                    }
+                    _ => panic!("unsupported LifeCycle variant on GTK backend"),
                 }
-                LifeCycle::Disappear => {
-                    let hook = Rc::new(RefCell::new(Some(metadata.value)));
-                    let env = env.clone();
-                    widget.connect_unrealize(move |_| {
-                        if let Some(hook) = hook.borrow_mut().take() {
-                            hook.handle(&env);
-                        }
-                    });
-                }
-                _ => panic!("unsupported LifeCycle variant on GTK backend"),
-            }
-            widget
-        });
+                widget
+            },
+        );
 
         // Metadata<Opacity> - apply opacity via GTK widget opacity
-        dispatcher.register::<Metadata<Opacity>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Opacity>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             let alpha = metadata.value.value;
             let (initial, guard) = subscribe_then_get(&alpha, {
@@ -982,8 +998,7 @@ impl GtkRenderer {
         });
 
         // Metadata<Shadow> - apply CSS shadow to a wrapper
-        dispatcher.register::<Metadata<Shadow>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Shadow>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SHADOW);
@@ -1017,15 +1032,13 @@ impl GtkRenderer {
         });
 
         // Metadata<Focused> - bridge focus state with GTK focus
-        dispatcher.register::<Metadata<Focused>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Focused>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             attach_focus_metadata(widget, &metadata.value.0)
         });
 
         // Metadata<Cursor> - update pointer cursor while hovering
-        dispatcher.register::<Metadata<Cursor>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Cursor>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
             let style_signal = metadata.value.style;
@@ -1072,8 +1085,7 @@ impl GtkRenderer {
         });
 
         // Metadata<Border> - apply CSS border to a wrapper
-        dispatcher.register::<Metadata<Border>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Border>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_BORDER);
@@ -1107,8 +1119,7 @@ impl GtkRenderer {
         });
 
         // Metadata<Scale> - visual scale transform wrapper
-        dispatcher.register::<Metadata<Scale>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Scale>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SCALE);
@@ -1151,30 +1162,31 @@ impl GtkRenderer {
         });
 
         // Metadata<Rotation> - visual rotation transform wrapper
-        dispatcher.register::<Metadata<Rotation>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(&content);
-            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
-            let rotation = metadata.value;
-            let (initial, guard) = subscribe_then_get(&rotation.angle, {
-                let scoped_css = scoped_css.clone();
-                move |ctx| {
-                    let angle = ctx.into_value();
+        Self::register_with_renderer::<Metadata<Rotation>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let content = renderer.render_any(metadata.content, env);
+                let wrapper = wrap_for_metadata(&content);
+                let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
+                let rotation = metadata.value;
+                let (initial, guard) = subscribe_then_get(&rotation.angle, {
                     let scoped_css = scoped_css.clone();
-                    glib::idle_add_local_once(move || {
-                        apply_rotation_css(&scoped_css, angle, rotation.anchor);
-                    });
-                }
-            });
-            apply_rotation_css(&scoped_css, initial, rotation.anchor);
-            store_watcher_guard(&wrapper, Box::new(guard));
-            wrapper.upcast()
-        });
+                    move |ctx| {
+                        let angle = ctx.into_value();
+                        let scoped_css = scoped_css.clone();
+                        glib::idle_add_local_once(move || {
+                            apply_rotation_css(&scoped_css, angle, rotation.anchor);
+                        });
+                    }
+                });
+                apply_rotation_css(&scoped_css, initial, rotation.anchor);
+                store_watcher_guard(&wrapper, Box::new(guard));
+                wrapper.upcast()
+            },
+        );
 
         // Metadata<Offset> - visual translate transform wrapper
-        dispatcher.register::<Metadata<Offset>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<Offset>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_OFFSET);
@@ -1217,38 +1229,28 @@ impl GtkRenderer {
         });
 
         // Metadata<ClipShape> - clip content for known canonical shapes
-        dispatcher.register::<Metadata<ClipShape>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(&content);
-            wrapper.set_overflow(Overflow::Hidden);
-            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_CLIP_SHAPE);
-            let css = clip_shape_css(&metadata.value);
-            apply_clip_shape_css(&scoped_css, css);
-            wrapper.upcast()
-        });
+        Self::register_with_renderer::<Metadata<ClipShape>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let content = renderer.render_any(metadata.content, env);
+                let wrapper = wrap_for_metadata(&content);
+                wrapper.set_overflow(Overflow::Hidden);
+                let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_CLIP_SHAPE);
+                let css = clip_shape_css(&metadata.value);
+                apply_clip_shape_css(&scoped_css, css);
+                wrapper.upcast()
+            },
+        );
 
         // Metadata<Secure> - passthrough (GTK cannot enforce screenshot protection)
-        dispatcher.register::<Metadata<Secure>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            renderer.render_any(metadata.content, env)
-        });
+        Self::register_passthrough_metadata::<Secure>(dispatcher);
 
-        // Metadata<StandardDynamicRange> - passthrough on GTK
-        dispatcher.register::<Metadata<StandardDynamicRange>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            renderer.render_any(metadata.content, env)
-        });
-
-        // Metadata<HighDynamicRange> - passthrough on GTK
-        dispatcher.register::<Metadata<HighDynamicRange>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            renderer.render_any(metadata.content, env)
-        });
+        // Metadata<StandardDynamicRange> / Metadata<HighDynamicRange> - passthrough on GTK
+        Self::register_passthrough_metadata::<StandardDynamicRange>(dispatcher);
+        Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
 
         // Metadata<OnEvent> - handle hover events
-        dispatcher.register::<Metadata<OnEvent>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<Metadata<OnEvent>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
             let expected = metadata.value.event();
@@ -1293,173 +1295,168 @@ impl GtkRenderer {
         });
 
         // Metadata<GestureObserver> - attach gesture recognizers
-        dispatcher.register::<Metadata<GestureObserver>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let widget = renderer.render_any(metadata.content, env);
-            widget.set_can_target(true);
-            let action = Rc::new(RefCell::new(metadata.value.action));
-            install_gesture_observer(&widget, metadata.value.gesture, action, env.clone());
-            widget
-        });
+        Self::register_with_renderer::<Metadata<GestureObserver>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                widget.set_can_target(true);
+                let action = Rc::new(RefCell::new(metadata.value.action));
+                install_gesture_observer(&widget, metadata.value.gesture, action, env.clone());
+                widget
+            },
+        );
 
         // Metadata<ResolvedContextMenu> - right-click popover menu
-        dispatcher.register::<Metadata<ResolvedContextMenu>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let widget = renderer.render_any(metadata.content, env);
-            widget.set_can_target(true);
-            let items = metadata.value.items;
-            let popover_state: Rc<RefCell<Option<gtk4::Popover>>> = Rc::new(RefCell::new(None));
-            let click = gtk4::GestureClick::new();
-            click.set_button(3);
-            click.connect_pressed({
-                let widget = widget.clone();
-                let env = env.clone();
-                let popover_state = popover_state;
-                move |_, _, x, y| {
-                    let entries = items.get();
-                    if entries.is_empty() {
-                        return;
+        Self::register_with_renderer::<Metadata<ResolvedContextMenu>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                widget.set_can_target(true);
+                let items = metadata.value.items;
+                let popover_state: Rc<RefCell<Option<gtk4::Popover>>> = Rc::new(RefCell::new(None));
+                let click = gtk4::GestureClick::new();
+                click.set_button(3);
+                click.connect_pressed({
+                    let widget = widget.clone();
+                    let env = env.clone();
+                    let popover_state = popover_state;
+                    move |_, _, x, y| {
+                        let entries = items.get();
+                        if entries.is_empty() {
+                            return;
+                        }
+                        if let Some(existing) = popover_state.borrow_mut().take() {
+                            existing.popdown();
+                        }
+                        let popover = gtk4::Popover::new();
+                        popover.set_has_arrow(true);
+                        popover.set_parent(&widget);
+                        popover
+                            .set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
+                        rebuild_menu_popover(&popover, entries, &env);
+                        popover.popup();
+                        *popover_state.borrow_mut() = Some(popover);
                     }
-                    if let Some(existing) = popover_state.borrow_mut().take() {
-                        existing.popdown();
-                    }
-                    let popover = gtk4::Popover::new();
-                    popover.set_has_arrow(true);
-                    popover.set_parent(&widget);
-                    popover.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
-                    rebuild_menu_popover(&popover, entries, &env);
-                    popover.popup();
-                    *popover_state.borrow_mut() = Some(popover);
-                }
-            });
-            widget.add_controller(click);
-            widget
-        });
+                });
+                widget.add_controller(click);
+                widget
+            },
+        );
 
         // Metadata<Draggable> - native GTK drag source
-        dispatcher.register::<Metadata<Draggable>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let widget = renderer.render_any(metadata.content, env);
-            widget.set_can_target(true);
-            let data = metadata.value.data;
-            let source = gtk4::DragSource::new();
-            source.set_actions(gdk4::DragAction::COPY);
-            source.connect_prepare(move |_, _, _| {
-                let payload = data.get();
-                Some(drag_content_provider(&payload))
-            });
-            widget.add_controller(source);
-            widget
-        });
+        Self::register_with_renderer::<Metadata<Draggable>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                widget.set_can_target(true);
+                let data = metadata.value.data;
+                let source = gtk4::DragSource::new();
+                source.set_actions(gdk4::DragAction::COPY);
+                source.connect_prepare(move |_, _, _| {
+                    let payload = data.get();
+                    Some(drag_content_provider(&payload))
+                });
+                widget.add_controller(source);
+                widget
+            },
+        );
 
         // Metadata<DropDestination> - native GTK drop target
-        dispatcher.register::<Metadata<DropDestination>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let widget = renderer.render_any(metadata.content, env);
-            widget.set_can_target(true);
-            let drop = Rc::new(RefCell::new(metadata.value.on_drop));
-            let enter = metadata
-                .value
-                .on_enter
-                .map(|handler| Rc::new(RefCell::new(handler)));
-            let exit = metadata
-                .value
-                .on_exit
-                .map(|handler| Rc::new(RefCell::new(handler)));
-            let target = gtk4::DropTarget::new(
-                String::static_type(),
-                gdk4::DragAction::COPY | gdk4::DragAction::MOVE,
-            );
-            target.set_types(&[String::static_type(), glib::GString::static_type()]);
-            target.connect_enter({
-                let env = env.clone();
-                let enter = enter.clone();
-                move |_, _, _| {
-                    if let Some(handler) = &enter
-                        && let Ok(mut handler) = handler.try_borrow_mut()
-                    {
-                        (**handler)(&env);
+        Self::register_with_renderer::<Metadata<DropDestination>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                widget.set_can_target(true);
+                let drop = Rc::new(RefCell::new(metadata.value.on_drop));
+                let enter = metadata
+                    .value
+                    .on_enter
+                    .map(|handler| Rc::new(RefCell::new(handler)));
+                let exit = metadata
+                    .value
+                    .on_exit
+                    .map(|handler| Rc::new(RefCell::new(handler)));
+                let target = gtk4::DropTarget::new(
+                    String::static_type(),
+                    gdk4::DragAction::COPY | gdk4::DragAction::MOVE,
+                );
+                target.set_types(&[String::static_type(), glib::GString::static_type()]);
+                target.connect_enter({
+                    let env = env.clone();
+                    let enter = enter.clone();
+                    move |_, _, _| {
+                        if let Some(handler) = &enter
+                            && let Ok(mut handler) = handler.try_borrow_mut()
+                        {
+                            (**handler)(&env);
+                        }
+                        gdk4::DragAction::COPY
                     }
-                    gdk4::DragAction::COPY
-                }
-            });
-            target.connect_leave({
-                let env = env.clone();
-                let exit = exit.clone();
-                move |_| {
-                    if let Some(handler) = &exit
-                        && let Ok(mut handler) = handler.try_borrow_mut()
-                    {
-                        (**handler)(&env);
+                });
+                target.connect_leave({
+                    let env = env.clone();
+                    let exit = exit.clone();
+                    move |_| {
+                        if let Some(handler) = &exit
+                            && let Ok(mut handler) = handler.try_borrow_mut()
+                        {
+                            (**handler)(&env);
+                        }
                     }
-                }
-            });
-            target.connect_drop({
-                let env = env.clone();
-                let drop = drop.clone();
-                move |_, value, _, _| {
-                    let Some(data) = drag_data_from_drop_value(value) else {
-                        return false;
-                    };
-                    let mut local_env = env.clone();
-                    local_env.insert(data);
-                    if let Ok(mut handler) = drop.try_borrow_mut() {
-                        (**handler)(&local_env);
-                        return true;
+                });
+                target.connect_drop({
+                    let env = env.clone();
+                    let drop = drop.clone();
+                    move |_, value, _, _| {
+                        let Some(data) = drag_data_from_drop_value(value) else {
+                            return false;
+                        };
+                        let mut local_env = env.clone();
+                        local_env.insert(data);
+                        if let Ok(mut handler) = drop.try_borrow_mut() {
+                            (**handler)(&local_env);
+                            return true;
+                        }
+                        false
                     }
-                    false
-                }
-            });
-            widget.add_controller(target);
-            widget
-        });
+                });
+                widget.add_controller(target);
+                widget
+            },
+        );
 
         // Metadata<Hittable> - control hit testing and interaction
-        dispatcher.register::<Metadata<Hittable>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            let widget = renderer.render_any(metadata.content, env);
-            let enabled = metadata.value.enabled;
-            let (initial, guard) = subscribe_then_get(&enabled, {
-                let widget = widget.clone();
-                move |ctx| {
-                    let enabled = ctx.into_value();
+        Self::register_with_renderer::<Metadata<Hittable>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                let enabled = metadata.value.enabled;
+                let (initial, guard) = subscribe_then_get(&enabled, {
                     let widget = widget.clone();
-                    glib::idle_add_local_once(move || {
-                        widget.set_can_target(enabled);
-                        widget.set_sensitive(enabled);
-                    });
-                }
-            });
-            widget.set_can_target(initial);
-            widget.set_sensitive(initial);
-            store_watcher_guard(&widget, Box::new(guard));
-            widget
-        });
+                    move |ctx| {
+                        let enabled = ctx.into_value();
+                        let widget = widget.clone();
+                        glib::idle_add_local_once(move || {
+                            widget.set_can_target(enabled);
+                            widget.set_sensitive(enabled);
+                        });
+                    }
+                });
+                widget.set_can_target(initial);
+                widget.set_sensitive(initial);
+                store_watcher_guard(&widget, Box::new(guard));
+                widget
+            },
+        );
 
         // Metadata<IgnoreSafeArea> - passthrough on GTK windowing model
-        dispatcher.register::<Metadata<IgnoreSafeArea>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            renderer.render_any(metadata.content, env)
-        });
+        Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
 
         // Metadata<Background> - passthrough for compatibility with metadata-based callers
-        dispatcher.register::<Metadata<Background>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            renderer.render_any(metadata.content, env)
-        });
+        Self::register_passthrough_metadata::<Background>(dispatcher);
 
-        dispatcher.register::<Metadata<NavigationTransitionSource>>(
-            |_state, ctx, metadata, env| {
-                let renderer = unsafe { ctx.renderer() };
-                renderer.render_any(metadata.content, env)
-            },
-        );
-        dispatcher.register::<Metadata<NavigationTransitionDestination>>(
-            |_state, ctx, metadata, env| {
-                let renderer = unsafe { ctx.renderer() };
-                renderer.render_any(metadata.content, env)
-            },
-        );
+        Self::register_passthrough_metadata::<NavigationTransitionSource>(dispatcher);
+        Self::register_passthrough_metadata::<NavigationTransitionDestination>(dispatcher);
 
         dispatcher.register::<Metadata<AppliedFilter>>(|_state, _ctx, _metadata, _env| {
             panic!(
@@ -1476,9 +1473,9 @@ impl GtkRenderer {
         Self::register_ignorable_metadata::<AccessibilityHidden>(dispatcher);
         Self::register_ignorable_metadata::<AccessibilityChildren>(dispatcher);
         Self::register_ignorable_metadata::<AccessibilityState>(dispatcher);
-        dispatcher.register::<IgnorableMetadata<AccessibilityStateSignal>>(
-            |_state, ctx, metadata, env| {
-                let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<IgnorableMetadata<AccessibilityStateSignal>>(
+            dispatcher,
+            |renderer, metadata, env| {
                 let IgnorableMetadata { content, value } = metadata;
                 let mut local_env = env.clone();
                 local_env.insert(value.state().get());
@@ -1487,14 +1484,45 @@ impl GtkRenderer {
         );
     }
 
+    /// Registers a handler for `Metadata<T>` that renders the content
+    /// unchanged because the metadata has no GTK realization.
+    fn register_passthrough_metadata<T: MetadataKey>(
+        dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
+    ) where
+        Metadata<T>: View,
+    {
+        Self::register_with_renderer::<Metadata<T>>(dispatcher, |renderer, metadata, env| {
+            renderer.render_any(metadata.content, env)
+        });
+    }
+
+    /// Registers a handler that receives the dispatching [`GtkRenderer`]
+    /// directly, so handlers can recurse without touching the raw context
+    /// pointer themselves.
+    fn register_with_renderer<V: View>(
+        dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
+        handler: impl 'static + Clone + Fn(&mut Self, V, &Environment) -> Widget,
+    ) {
+        dispatcher.register::<V>(move |_state, ctx, view, env| {
+            // SAFETY: every `RenderContext` is created by
+            // `GtkRenderer::render`/`render_any` from a live `&mut GtkRenderer`
+            // immediately before the synchronous `dispatch` call that invokes
+            // this handler, and rendering runs exclusively on the GTK main
+            // thread, so the pointer is valid for the whole handler invocation
+            // and this is the only renderer reference used during it.
+            let renderer = unsafe { ctx.renderer() };
+            handler(renderer, view, env)
+        });
+    }
+
     /// Registers a handler for `IgnorableMetadata<T>` that just renders the content.
     fn register_ignorable_metadata<T: MetadataKey>(
         dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
     ) {
-        dispatcher.register::<IgnorableMetadata<T>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() };
-            renderer.render_any(metadata.content, env)
-        });
+        Self::register_with_renderer::<IgnorableMetadata<T>>(
+            dispatcher,
+            |renderer, metadata, env| renderer.render_any(metadata.content, env),
+        );
     }
 
     /// Registers a `Native<T>` wrapped component with the dispatcher.
@@ -1508,8 +1536,7 @@ impl GtkRenderer {
 
     /// Registers a `GtkComponent` view type with the dispatcher.
     fn register<V: GtkComponent>(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
-        dispatcher.register::<V>(|_state, ctx, view, env| {
-            let renderer = unsafe { ctx.renderer() };
+        Self::register_with_renderer::<V>(dispatcher, |renderer, view, env| {
             view.render(env, renderer)
         });
     }
