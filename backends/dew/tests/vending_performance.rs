@@ -21,20 +21,21 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant as StdInstant};
 
 use nami::{Binding, binding};
+use peniko::Blob;
 use vello_cpu::{Level, RenderMode, RenderSettings};
 use waterui::prelude::*;
 use waterui_backend_core::input::TouchPhase;
 use waterui_backend_core::time::Instant;
 use waterui_core::AnyView;
 use waterui_dew::{
-    Board, ChipBudget, DeviceRegion, DewRuntime, FrameWork, PointerSample, Provenance,
+    Board, ChipBudget, DeviceRegion, DewRuntime, FontSources, FrameWork, PointerSample, Provenance,
     Rgb565Display, Rgb565Sink,
 };
 use waterui_layout::frame::Frame;
 
 mod support;
 
-use support::simulation::{PanelBus, PeakTrackingAllocator, Violation, WorkBudget};
+use support::simulation::{MemoryBudget, PanelBus, PeakTrackingAllocator, Violation, WorkBudget};
 
 use core::prelude::v1::test;
 
@@ -49,9 +50,37 @@ const WARMUP_FRAMES: usize = 120;
 const DEFAULT_SAMPLE_FRAMES: usize = 3_600;
 const INTERACTION_PERIOD: usize = 120;
 
-/// Internal SRAM an ESP32-S3 application can realistically use once ESP-IDF
-/// has taken its share. Used to express what heap retention would cost.
-const TARGET_USABLE_SRAM_BYTES: usize = 320 * 1024;
+/// Host font files standing in for the flash-bundled face, first hit wins.
+///
+/// The simulated board bundles one real font exactly like firmware does —
+/// system enumeration stays off, so font matching, generic-family routing,
+/// and the heap profile follow the target's font path instead of the host's.
+/// Override with `DEW_PERF_FONT=/path/to/font.ttf` when none of these exist.
+const HOST_FONT_CANDIDATES: &[&str] = &[
+    // macOS.
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    // Debian/Ubuntu CI images.
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    // Fedora.
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+];
+
+/// Loads the stand-in bundled font, failing fast with instructions.
+fn load_simulation_font() -> Vec<u8> {
+    if let Ok(path) = std::env::var("DEW_PERF_FONT") {
+        return std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("DEW_PERF_FONT {path} is unreadable: {error}"));
+    }
+    HOST_FONT_CANDIDATES
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())
+        .unwrap_or_else(|| {
+            panic!(
+                "no host font found at any of {HOST_FONT_CANDIDATES:?}; set \
+                 DEW_PERF_FONT=/path/to/font.ttf"
+            )
+        })
+}
 
 /// Steady-state heap retention tolerated, in bytes per sampled frame.
 ///
@@ -81,6 +110,16 @@ const fn target_chip() -> ChipBudget {
         chip: "esp32s3",
         provenance: Provenance::Estimated,
         core_hz: 240_000_000,
+        // Internal SRAM an application can realistically allocate once
+        // ESP-IDF has taken its share of the 512 KiB.
+        usable_sram_bytes: 320 * 1024,
+        // The devkit norm for this chip (N16R8: 8 MiB octal PSRAM), mapped
+        // into the malloc heap by ESP-IDF's CONFIG_SPIRAM_USE_MALLOC.
+        usable_psram_bytes: 8 * 1024 * 1024,
+        // CONFIG_ESP_MAIN_TASK_STACK_SIZE the water CLI configures for this
+        // chip (cli/src/esp32/chip.rs); the simulation pumps frames on a
+        // thread with exactly this stack.
+        main_task_stack_bytes: 163_840,
         // parley shaping: itemization, font matching, glyph positioning.
         cycles_per_text_layout: 120_000,
         // A skrifa outline-bounds read, including a likely flash-cache miss.
@@ -114,6 +153,27 @@ const fn work_budget() -> WorkBudget {
         // panel. Anything approaching full-screen means the diff has broken.
         pixels_rasterized: 4_000.0,
         pixels_transferred: 4_000.0,
+    }
+}
+
+/// Heap ceilings for this screen, set a little above the measured steady
+/// state like the work budgets — regression tripwires, not fit certificates.
+///
+/// Where the workload actually stands (host, 64-bit, so target-conservative):
+/// steady-state peak live heap after subtracting the font blob measured
+/// ~740 KiB. Broken down by experiment: ~330 KiB is the retained node tree,
+/// text caches, and display list; ~100 KiB is the rasterizer's retained
+/// resources; the rest is baseline plus transients. On a 32-bit target that
+/// projects to roughly half — which does NOT fit an ESP32-S3's ~320 KiB of
+/// usable internal SRAM, and is why the chip model carries the devkit's
+/// PSRAM: boards for this screen class need PSRAM in the malloc heap (the
+/// S3 N16R8 norm), or the retained tree needs another round of slimming.
+/// Per-band scratch (30 KiB) and hot caches still fit SRAM comfortably.
+const fn memory_budget() -> MemoryBudget {
+    MemoryBudget {
+        steady_peak_heap_bytes: 792 * 1024,
+        allocations_per_frame: 1_050.0,
+        allocated_bytes_per_frame: 256.0 * 1024.0,
     }
 }
 
@@ -158,13 +218,17 @@ impl Rgb565Sink for StreamingPanel {
 struct SimulatedEmbeddedBoard {
     display: Rgb565Display<StreamingPanel>,
     pointer_samples: VecDeque<PointerSample>,
+    /// The stand-in flash-bundled font. On the host this blob lives in heap,
+    /// so its size is subtracted from the peak-heap gate.
+    font: Blob<u8>,
 }
 
 impl SimulatedEmbeddedBoard {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             display: Rgb565Display::new(StreamingPanel::new(WIDTH, HEIGHT)),
             pointer_samples: VecDeque::new(),
+            font: Blob::from(load_simulation_font()),
         }
     }
 
@@ -229,6 +293,10 @@ impl Board for SimulatedEmbeddedBoard {
             // path would measure code the chip will never execute.
             render_mode: RenderMode::OptimizeQuality,
         }
+    }
+
+    fn fonts(&self) -> FontSources {
+        FontSources::Bundled(vec![self.font.clone()])
     }
 
     fn poll_pointer(&mut self) -> Option<PointerSample> {
@@ -426,6 +494,10 @@ struct Sample {
     work: FrameWork,
     peak_heap_bytes: usize,
     heap_growth_bytes: i64,
+    heap_allocations: u64,
+    heap_allocated_bytes: u64,
+    /// Bytes of the stand-in font blob living in host heap (flash on target).
+    host_font_bytes: usize,
     peak_rgba_flush_bytes: usize,
     peak_rgb565_bytes: usize,
     host_cpu_p50: Duration,
@@ -443,6 +515,7 @@ struct Report {
     /// Host wall-clock, recorded for context and explicitly not a criterion.
     host_diagnostics: HostDiagnostics,
     budget: WorkBudget,
+    memory_budget: MemoryBudget,
     violations: Vec<Violation>,
 }
 
@@ -488,10 +561,6 @@ struct PerFrameWork {
 }
 
 #[derive(serde::Serialize)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "every field of a memory report is a byte count; naming them so is the point"
-)]
 struct Memory {
     /// Zero by construction: Dew never allocates a full framebuffer.
     panel_framebuffer_bytes: u64,
@@ -499,9 +568,19 @@ struct Memory {
     peak_rgba_flush_bytes: usize,
     peak_rgb565_dma_bytes: usize,
     peak_heap_bytes: usize,
+    /// Bytes of the stand-in font blob, heap on the host but flash on the
+    /// target; subtracted from the peak before gating.
+    host_font_bytes: usize,
+    /// The gated number: steady-state peak live heap minus the font blob.
+    steady_peak_heap_bytes: u64,
     /// Live-heap delta across the sample. Non-zero means per-frame retention,
     /// which is fatal on a device with a few hundred KiB of RAM.
     heap_growth_bytes: i64,
+    /// Allocation events per frame — the fragmentation-pressure proxy; the
+    /// count and order transfer to the target exactly.
+    heap_allocations_per_frame: f64,
+    /// Bytes requested from the allocator per frame.
+    heap_allocated_bytes_per_frame: f64,
 }
 
 #[derive(serde::Serialize)]
@@ -587,7 +666,11 @@ fn build_report(sample: &Sample, frames: usize, band_height: u32) -> Report {
             peak_rgba_flush_bytes: sample.peak_rgba_flush_bytes,
             peak_rgb565_dma_bytes: sample.peak_rgb565_bytes,
             peak_heap_bytes: sample.peak_heap_bytes,
+            host_font_bytes: sample.host_font_bytes,
+            steady_peak_heap_bytes: steady_peak_heap_bytes(sample),
             heap_growth_bytes: sample.heap_growth_bytes,
+            heap_allocations_per_frame: per_frame(sample.heap_allocations, frames),
+            heap_allocated_bytes_per_frame: per_frame(sample.heap_allocated_bytes, frames),
         },
         panel: Panel {
             bus,
@@ -602,8 +685,28 @@ fn build_report(sample: &Sample, frames: usize, band_height: u32) -> Report {
             cpu_p99_ms: duration_millis(sample.host_cpu_p99),
         },
         budget,
-        violations: budget.violations(work, frames),
+        memory_budget: memory_budget(),
+        violations: {
+            let mut violations = budget.violations(work, frames);
+            violations.extend(memory_budget().violations(
+                steady_peak_heap_bytes(sample),
+                sample.heap_allocations,
+                sample.heap_allocated_bytes,
+                frames,
+            ));
+            violations
+        },
     }
+}
+
+/// The gated peak: steady-state peak live heap minus the host-only font blob.
+fn steady_peak_heap_bytes(sample: &Sample) -> u64 {
+    u64::try_from(
+        sample
+            .peak_heap_bytes
+            .saturating_sub(sample.host_font_bytes),
+    )
+    .expect("peak heap must fit u64")
 }
 
 fn create_runtime(state: &VendingState, band_height: u32) -> DewRuntime<SimulatedEmbeddedBoard> {
@@ -692,13 +795,59 @@ fn full_screen_repaint_is_bus_bound_below_thirty_fps() {
     );
 }
 
+/// Debug stack frames are several times their optimized size, so the
+/// firmware-stack gate scales the target's task stack by this factor in
+/// unoptimized builds.
+///
+/// The factor is a modeling estimate in the same spirit as
+/// [`ChipBudget`]'s cycle costs, and it is calibrated against evidence in
+/// both directions: real `opt-level=2` firmware renders a full facade app in
+/// a 48 KiB task on an emulated ESP32-C3, while this unoptimized host
+/// pipeline overflows the S3's 160 KiB task stack and first fits between
+/// 320 KiB and 384 KiB (the deepest path is the first frame's build → label
+/// emit → parley shaping chain). 3× (480 KiB) passes with bounded margin, so
+/// recursion-depth growth still trips the gate; optimized builds use the
+/// chip's stack unscaled.
+const DEBUG_STACK_FACTOR: u64 = 3;
+
 /// The work-budgeted embedded simulation.
 ///
-/// Fails on three things, none of which is host speed: exceeding a per-frame
-/// work ceiling, retaining heap across frames, or handing the board more than
-/// one band of pixels at a time.
+/// Fails on four things, none of which is host speed: exceeding a per-frame
+/// work ceiling, exceeding a heap ceiling (steady-state peak or per-frame
+/// churn), retaining heap across frames, or handing the board more than one
+/// band of pixels at a time. The whole pipeline runs on a thread with the
+/// target's main-task stack (debug-scaled, see [`DEBUG_STACK_FACTOR`]), so
+/// recursion that would overflow the chip overflows here first.
 #[test]
 fn vending_machine_holds_its_embedded_work_budget() {
+    let chip = target_chip();
+    assert!(
+        memory_budget().steady_peak_heap_bytes
+            <= chip.usable_sram_bytes.midpoint(chip.usable_psram_bytes),
+        "the heap budget must leave at least half of the {} + {} byte SRAM+PSRAM heap as \
+         headroom for allocator overhead, fragmentation, and non-heap statics",
+        chip.usable_sram_bytes,
+        chip.usable_psram_bytes
+    );
+    let scale = if cfg!(debug_assertions) {
+        DEBUG_STACK_FACTOR
+    } else {
+        1
+    };
+    let stack = usize::try_from(chip.main_task_stack_bytes * scale)
+        .expect("task stack size must fit usize");
+    let outcome = std::thread::Builder::new()
+        .name("dew-main-task".into())
+        .stack_size(stack)
+        .spawn(run_budgeted_simulation)
+        .expect("the firmware-stack simulation thread must spawn")
+        .join();
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn run_budgeted_simulation() {
     let frames = sample_frames();
     let warmup = warmup_frames();
     let band_height = band_height();
@@ -707,6 +856,7 @@ fn vending_machine_holds_its_embedded_work_budget() {
 
     let state = VendingState::new();
     let mut runtime = create_runtime(&state, band_height);
+    let host_font_bytes = runtime.board().font.len();
     runtime
         .pump()
         .expect("initial vending-machine frame must render");
@@ -716,10 +866,15 @@ fn vending_machine_holds_its_embedded_work_budget() {
     // here on should be flat. Measure the steady state, not the ramp.
     ALLOCATOR.reset_peak();
     let heap_before = ALLOCATOR.live_bytes();
+    let allocations_before = ALLOCATOR.allocation_count();
+    let allocated_bytes_before = ALLOCATOR.allocated_bytes();
     let mut sample = Sample {
         work: FrameWork::ZERO,
         peak_heap_bytes: 0,
         heap_growth_bytes: 0,
+        heap_allocations: 0,
+        heap_allocated_bytes: 0,
+        host_font_bytes,
         peak_rgba_flush_bytes: 0,
         peak_rgb565_bytes: 0,
         host_cpu_p50: Duration::ZERO,
@@ -729,6 +884,10 @@ fn vending_machine_holds_its_embedded_work_budget() {
     sample.peak_heap_bytes = ALLOCATOR.peak_bytes();
     sample.heap_growth_bytes = i64::try_from(ALLOCATOR.live_bytes()).expect("heap fits i64")
         - i64::try_from(heap_before).expect("heap fits i64");
+    sample.heap_allocations =
+        u64::try_from(ALLOCATOR.allocation_count() - allocations_before).expect("count fits u64");
+    sample.heap_allocated_bytes =
+        u64::try_from(ALLOCATOR.allocated_bytes() - allocated_bytes_before).expect("bytes fit u64");
 
     let report = build_report(&sample, frames, band_height);
     let rendered = toml::to_string_pretty(&report).expect("the report must serialize");
@@ -744,6 +903,7 @@ fn vending_machine_holds_its_embedded_work_budget() {
         sample.peak_rgb565_bytes <= max_rgba_band / 2,
         "the board allocated more than one RGB565 DMA band; {rendered}"
     );
+    let chip = target_chip();
     let retention_per_frame = sample.heap_growth_bytes.unsigned_abs() / frames as u64;
     assert!(
         retention_per_frame <= MAX_HEAP_RETENTION_BYTES_PER_FRAME,
@@ -751,11 +911,11 @@ fn vending_machine_holds_its_embedded_work_budget() {
          {frames} frames). Sustained, that exhausts a {}-KiB device in {} frames — under half an \
          hour at 60 FPS. {rendered}",
         sample.heap_growth_bytes,
-        TARGET_USABLE_SRAM_BYTES / 1024,
-        TARGET_USABLE_SRAM_BYTES as u64 / retention_per_frame.max(1)
+        chip.usable_sram_bytes / 1024,
+        chip.usable_sram_bytes / retention_per_frame.max(1)
     );
     assert!(
         report.violations.is_empty(),
-        "the vending-machine simulation exceeded its per-frame work budget; {rendered}"
+        "the vending-machine simulation exceeded its per-frame work or memory budget; {rendered}"
     );
 }
