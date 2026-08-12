@@ -52,6 +52,9 @@ waterui-graphics.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true
 nami.workspace = true
+# FrameWork and ChipBudget serialize into the performance report. The
+# workspace pins serde without default features, which suits a firmware graph.
+serde = { workspace = true, features = ["derive"] }
 parley = { workspace = true, features = ["libm"] }
 kurbo.workspace = true
 peniko.workspace = true
@@ -73,6 +76,9 @@ waterui-testing.workspace = true
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 executor-core.workspace = true
 native-executor.workspace = true
+# The performance simulation emits its report as serialized TOML rather than
+# hand-concatenated lines.
+toml = "1.1.3"
 
 [[example]]
 name = "watch_sim"

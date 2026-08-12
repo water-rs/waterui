@@ -65,36 +65,50 @@ pub(crate) mod frame_cadence;
 pub mod painter;
 mod pointer;
 pub mod runtime;
+pub mod stats;
 pub mod text;
 pub mod theme;
 mod views;
 
 pub use board::{Board, HostBoard, PointerSample};
-pub use compositor::{BandScheduler, DeviceRegion};
+pub use compositor::{BandIndex, BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};
 pub use display::{BufferDisplay, DisplayFlush, Rgb565Display, Rgb565Sink};
-pub use display_list::{DisplayList, DrawCommand};
+pub use display_list::{DisplayList, DrawCommand, PlacedCommand};
 pub use painter::Painter;
-pub use runtime::{DewRuntime, render_view_png};
+pub use runtime::{DewRuntime, Frame, render_view_png};
+pub use stats::{ChipBudget, FrameWork, Provenance};
 
 use kurbo::Rect;
 
 /// Rasterizes the dirty parts of `list` band-by-band and flushes them to
-/// `display`, then presents the frame.
+/// `display`, then presents the frame, accumulating the work performed into
+/// `work`.
 ///
 /// This is the per-frame composition step: `WaterUI` reactivity collects
-/// `dirty` logical-pixel rects, the scheduler slices them into bands, the
-/// painter rasterizes each band into a scratch pixmap, and the display
-/// streams it out. Peak pixel memory is one band, not one frame.
+/// `dirty` logical-pixel rects, the scheduler slices them into bands, a
+/// [`BandIndex`] narrows each band to the commands that can appear in it, the
+/// painter rasterizes it into a scratch pixmap, and the display streams it
+/// out. Peak pixel memory is one band, not one frame.
 pub fn render_frame(
     painter: &mut Painter,
     list: &DisplayList,
     scheduler: &BandScheduler,
     dirty: &[Rect],
     display: &mut impl DisplayFlush,
+    work: &mut FrameWork,
 ) {
-    for region in scheduler.schedule(dirty) {
-        let pixmap = painter.rasterize_region(list, region);
+    let regions = scheduler.schedule(dirty);
+    if regions.is_empty() {
+        display.present();
+        return;
+    }
+    let (_, screen_height) = display.size();
+    let index = BandIndex::build(list, screen_height, scheduler.band_height());
+    for region in regions {
+        let pixmap = painter.rasterize_region(list, region, index.candidates(region), work);
+        work.pixels_transferred += region.area();
+        work.regions_transferred += 1;
         display.flush_region(region, pixmap.data_as_u8_slice());
     }
     display.present();

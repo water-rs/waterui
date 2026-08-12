@@ -65,22 +65,65 @@ cargo run -p waterui-dew --example watch_sim --features embedded-simulator
 virtual panel of any size; `render_view_png` renders one frame headlessly
 for snapshot tests.
 
-## Performance gate
+## Performance gate: a work simulation, not a benchmark
 
-The ignored commercial-load test renders an interactive 480×320 vending-machine
-screen with twelve product buttons, reactive order/payment text, and a
-continuously updating progress bar. It constrains rasterization to the scalar
-single-thread fallback, converts every rendered band through the same
-`Rgb565Display` adapter used by ESP-IDF, accounts for transfers over a 40 MHz
-SPI bus, and fails if any sampled frame exceeds the 60 Hz budget. Its simulated
-panel retains no framebuffer; only one RGBA raster band and one RGB565 DMA band
-exist at a time.
+The vending-machine test renders an interactive 480×320 screen with twelve
+product buttons, reactive order/payment text, and a continuously updating
+progress bar, single-threaded through the scalar fallback rasterizer and the
+same `Rgb565Display` adapter ESP-IDF uses. Its simulated panel retains no
+framebuffer: one RGBA raster band and one RGB565 DMA band exist at a time.
+
+What it asserts on is the point. **Host wall-clock is recorded but is never a
+pass criterion.** A development machine runs a different instruction set at
+roughly twenty times the clock, and it executes `kurbo`'s `f64` geometry in
+hardware where every ESP32-class FPU is single-precision and emulates it in
+software — so the host is disproportionately fast at exactly the arithmetic Dew
+does most. No constant converts one to the other.
+
+What transfers exactly is the *amount of work*: how many text runs get shaped,
+how many glyph outlines get read, how many measure calls layout makes, how many
+commands the painter revisits per band, how many pixels are rasterized and
+pushed down the bus. Those counts are identical on host and target because they
+are properties of the algorithm rather than of the machine. `stats::FrameWork`
+carries them, `DewRuntime::pump` returns them, and the test fails on:
+
+- a per-frame **work budget** exceeded,
+- **heap retained** across steady-state frames — the failure mode most likely
+  to kill a real port, since a few hundred KiB of SRAM is unforgiving,
+- more than **one band of pixels** handed to the board at once.
+
+None of that depends on host speed, so the test is deterministic and runs in
+CI rather than being `#[ignore]`d.
 
 ```bash
-DEW_PERF_WARMUP=120 DEW_PERF_FRAMES=3600 cargo test -p waterui-dew \
-  --test vending_performance vending_machine_holds_stable_sixty_fps \
-  -- --ignored --exact
+cargo nextest run -p waterui-dew -E 'test(vending_machine_holds_its_embedded_work_budget)'
+
+# Longer soak, for heap-retention confidence.
+DEW_PERF_WARMUP=120 DEW_PERF_FRAMES=3600 \
+  cargo nextest run -p waterui-dew -E 'test(vending_machine_holds)'
 ```
+
+Each run writes `/tmp/waterui_dew_vending_performance.toml` with the full work
+vector, cache hit rates, memory figures, and panel-bus arithmetic.
+
+### The projected on-chip time is a projection
+
+The report also carries a projected per-frame time for a named chip, derived
+from `ChipBudget` — a small table of per-operation cycle costs. Those costs are
+`Provenance::Estimated`: inferred from clock rates and rough instruction counts,
+good for ranking two designs and not for promising a frame rate. Every report
+says so in its own text. Calibrating the table against on-device cycle counters
+and flipping the provenance to `Measured` turns every existing simulation into a
+real time estimate, with no other change anywhere.
+
+### The bus is usually the ceiling
+
+480×320 RGB565 over 40 MHz SPI is ~65 ms per full frame — about 15 FPS — no
+matter how fast the chip is. Dew's dirty-region design exists to stay off that
+ceiling, and `full_screen_repaint_is_bus_bound_below_thirty_fps` pins the
+assumption so it cannot rot. Any full-screen change (a scroll, a page
+transition) stays bus-bound on SPI; a parallel RGB/i80 or MIPI-DSI panel is what
+removes the limit.
 
 ## Status
 

@@ -5,7 +5,6 @@ use core::cell::RefCell;
 use kurbo::{Rect, RoundedRect, Stroke};
 use nami::{Computed, Signal};
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
-use waterui_controls::label::Label;
 use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
 use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
@@ -14,7 +13,7 @@ use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
-use crate::views::{measure_label, render_label_with_brush, to_f32};
+use crate::views::{LabelText, to_f32};
 
 const HORIZONTAL_PADDING: f64 = 12.0;
 const VERTICAL_PADDING: f64 = 7.0;
@@ -23,7 +22,7 @@ const CORNER_RADIUS: f64 = 7.0;
 const BORDER_WIDTH: f64 = 1.0;
 
 struct ButtonNode {
-    label: Label,
+    label: LabelText,
     style: ButtonStyle,
     disabled: Computed<bool>,
     env: Environment,
@@ -57,7 +56,11 @@ impl PointerHandler for ButtonPointer {
     }
 }
 
-pub fn build(config: ButtonConfig, env: &Environment) -> Box<dyn DewNode> {
+pub fn build(
+    renderer: &DewRenderer,
+    config: ButtonConfig,
+    env: &Environment,
+) -> Box<dyn DewNode> {
     let ButtonConfig {
         label,
         action,
@@ -72,6 +75,7 @@ pub fn build(config: ButtonConfig, env: &Environment) -> Box<dyn DewNode> {
         disabled: disabled.clone(),
         armed: false,
     });
+    let label = LabelText::new(&label, env, renderer.signals());
     Box::new(ButtonNode {
         label,
         style,
@@ -83,7 +87,7 @@ pub fn build(config: ButtonConfig, env: &Environment) -> Box<dyn DewNode> {
 
 impl DewNode for ButtonNode {
     fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
-        let label = measure_label(state, &self.label, &self.env);
+        let label = self.label.measure(state, &self.env);
         ViewDimensions::new(Size::new(
             to_f32(HORIZONTAL_PADDING.mul_add(2.0, f64::from(label.width))),
             to_f32(
@@ -118,14 +122,8 @@ impl DewNode for ButtonNode {
             (ctx.bounds.x1 - HORIZONTAL_PADDING).max(ctx.bounds.x0 + HORIZONTAL_PADDING),
             (ctx.bounds.y1 - VERTICAL_PADDING).max(ctx.bounds.y0 + VERTICAL_PADDING),
         );
-        render_label_with_brush(
-            renderer,
-            ctx,
-            label_rect,
-            &self.label,
-            &self.env,
-            foreground,
-        );
+        self.label
+            .render_with_brush(renderer, ctx, label_rect, &self.env, foreground);
         if !disabled {
             renderer.register_pointer_target(ctx.window_bounds(), self.pointer.clone());
         }

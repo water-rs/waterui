@@ -12,7 +12,7 @@ use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
-use crate::views::{measure_label, render_label, to_f32};
+use crate::views::{LabelText, to_f32};
 
 /// Switch track width in logical pixels (the familiar pill footprint).
 const TRACK_WIDTH: f64 = 51.0;
@@ -34,6 +34,7 @@ fn require_switch_style(style: ToggleStyle) {
 
 struct ToggleNode {
     config: ToggleConfig,
+    label: LabelText,
     env: Environment,
     pointer: PointerTargetHandle,
 }
@@ -65,15 +66,21 @@ impl PointerHandler for TogglePointer {
     }
 }
 
-pub fn build(config: ToggleConfig, env: &Environment) -> Box<dyn DewNode> {
+pub fn build(
+    renderer: &DewRenderer,
+    config: ToggleConfig,
+    env: &Environment,
+) -> Box<dyn DewNode> {
     require_switch_style(config.style);
     let pointer = PointerTargetHandle::new(TogglePointer {
         toggle: config.toggle.clone(),
         disabled: crate::views::view_disabled(env),
         armed: false,
     });
+    let label = LabelText::new(&config.label, env, renderer.signals());
     Box::new(ToggleNode {
         config,
+        label,
         env: env.clone(),
         pointer,
     })
@@ -81,11 +88,11 @@ pub fn build(config: ToggleConfig, env: &Environment) -> Box<dyn DewNode> {
 
 impl DewNode for ToggleNode {
     fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(measure(state, &self.config, &self.env))
+        ViewDimensions::new(measure(state, &self.config, &self.label, &self.env))
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        render(renderer, ctx, &self.config, &self.env);
+        render(renderer, ctx, &self.config, &self.label, &self.env);
         if !crate::views::view_disabled(&self.env).get() {
             renderer.register_pointer_target(ctx.window_bounds(), self.pointer.clone());
         }
@@ -100,6 +107,7 @@ fn render(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
     config: &ToggleConfig,
+    label: &LabelText,
     env: &Environment,
 ) {
     require_switch_style(config.style);
@@ -123,7 +131,7 @@ fn render(
         bounds.y1,
     );
     if label_rect.width() > 0.0 {
-        render_label(renderer, ctx, label_rect, &config.label, env);
+        label.render(renderer, ctx, label_rect, env);
     }
 
     let radius = TRACK_HEIGHT / 2.0;
@@ -159,9 +167,14 @@ fn render(
 
 /// Label width plus the switch footprint; the dispatcher's horizontal
 /// stretch lets the row expand so the switch trails at the far edge.
-fn measure(state: &RefCell<DewState>, config: &ToggleConfig, env: &Environment) -> Size {
+fn measure(
+    state: &RefCell<DewState>,
+    config: &ToggleConfig,
+    label: &LabelText,
+    env: &Environment,
+) -> Size {
     require_switch_style(config.style);
-    let label = measure_label(state, &config.label, env);
+    let label = label.measure(state, env);
     let width = if label.width > 0.0 {
         f64::from(label.width) + LABEL_SPACING + TRACK_WIDTH
     } else {

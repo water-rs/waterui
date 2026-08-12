@@ -13,7 +13,7 @@ use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
 use crate::theme;
-use crate::views::{emit_styled_text, measure_label, render_label, to_f32};
+use crate::views::{LabelText, emit_styled_text, to_f32};
 
 /// Side length of each square stepper button.
 const BUTTON_SIZE: f64 = 28.0;
@@ -52,6 +52,7 @@ fn value_text_for_measure(config: &StepperConfig) -> StyledStr {
 
 struct StepperNode {
     config: StepperConfig,
+    label: LabelText,
     env: Environment,
     decrement: PointerTargetHandle,
     increment: PointerTargetHandle,
@@ -94,7 +95,11 @@ impl PointerHandler for StepperPointer {
     }
 }
 
-pub fn build(config: StepperConfig, env: &Environment) -> Box<dyn DewNode> {
+pub fn build(
+    renderer: &DewRenderer,
+    config: StepperConfig,
+    env: &Environment,
+) -> Box<dyn DewNode> {
     let decrement = PointerTargetHandle::new(StepperPointer {
         value: config.value.clone(),
         step: config.step.clone(),
@@ -109,8 +114,10 @@ pub fn build(config: StepperConfig, env: &Environment) -> Box<dyn DewNode> {
         direction: 1,
         armed: false,
     });
+    let label = LabelText::new(&config.label, env, renderer.signals());
     Box::new(StepperNode {
         config,
+        label,
         env: env.clone(),
         decrement,
         increment,
@@ -119,11 +126,11 @@ pub fn build(config: StepperConfig, env: &Environment) -> Box<dyn DewNode> {
 
 impl DewNode for StepperNode {
     fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(measure(state, &self.config, &self.env))
+        ViewDimensions::new(measure(state, &self.config, &self.label, &self.env))
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let (minus, plus) = render(renderer, ctx, &self.config, &self.env);
+        let (minus, plus) = render(renderer, ctx, &self.config, &self.label, &self.env);
         renderer.register_pointer_target(
             ctx.transform.transform_rect_bbox(minus),
             self.decrement.clone(),
@@ -143,6 +150,7 @@ fn render(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
     config: &StepperConfig,
+    label: &LabelText,
     env: &Environment,
 ) -> (Rect, Rect) {
     assert!(
@@ -185,7 +193,7 @@ fn render(
         bounds.y1,
     );
     if label_rect.width() > 0.0 {
-        render_label(renderer, ctx, label_rect, &config.label, env);
+        label.render(renderer, ctx, label_rect, env);
     }
 
     let button_y0 = bounds.y0 + ((bounds.height() - button_size) / 2.0).max(0.0);
@@ -244,7 +252,12 @@ fn draw_button(renderer: &mut DewRenderer, ctx: RenderContext, rect: Rect, plus:
 
 /// Label plus value text plus the two-button block; horizontal stretch
 /// pushes the buttons to the trailing edge during placement.
-fn measure(state: &RefCell<DewState>, config: &StepperConfig, env: &Environment) -> Size {
+fn measure(
+    state: &RefCell<DewState>,
+    config: &StepperConfig,
+    label: &LabelText,
+    env: &Environment,
+) -> Size {
     assert!(
         config.range.start() <= config.range.end(),
         "dew stepper requires an ordered range"
@@ -253,7 +266,7 @@ fn measure(state: &RefCell<DewState>, config: &StepperConfig, env: &Environment)
         config.step.get() > 0,
         "dew stepper requires a positive step"
     );
-    let label = measure_label(state, &config.label, env);
+    let label = label.measure(state, env);
     let styled_value = value_text_for_measure(config);
     let (value_width, value_height) = state.borrow_mut().measure_styled(&styled_value, env, None);
 

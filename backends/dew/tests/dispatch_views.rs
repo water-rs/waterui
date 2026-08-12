@@ -100,15 +100,18 @@ fn binding_change_dirties_only_the_text_region() {
     });
 
     let first = runtime.pump().expect("initial frame renders");
-    assert_eq!(first.len(), 1, "first frame is one full-screen rect");
+    assert_eq!(first.dirty.len(), 1, "first frame is one full-screen rect");
     assert!(runtime.pump().is_none(), "clean frame must not render");
 
     count.set(2);
-    let dirty = runtime
+    let frame = runtime
         .pump()
         .expect("binding change must request a retained refresh");
-    assert!(!dirty.is_empty(), "changed text must produce dirty rects");
-    for rect in &dirty {
+    assert!(
+        !frame.dirty.is_empty(),
+        "changed text must produce dirty rects"
+    );
+    for rect in &frame.dirty {
         assert!(
             rect.width() < 240.0 && rect.height() < 120.0,
             "dirty rect should stay local to the text, got {rect:?}"

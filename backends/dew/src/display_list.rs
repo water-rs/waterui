@@ -16,6 +16,8 @@
 use kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use peniko::Brush;
 
+use crate::stats::FrameWork;
+
 /// One retained draw operation, in window coordinates.
 #[derive(Debug, Clone)]
 pub enum DrawCommand {
@@ -110,10 +112,23 @@ impl DrawCommand {
         }
     }
 
-    /// Whether this command can touch any pixel in `region`.
-    pub(crate) fn intersects(&self, region: Rect) -> bool {
-        let intersection = self.bounds().intersect(region);
-        intersection.width() > 0.0 && intersection.height() > 0.0
+    /// Replaces this command's local-to-window transform.
+    ///
+    /// Retained geometry is built once in local coordinates and placed each
+    /// frame by substituting the transform, which is what makes reusing a
+    /// shaped glyph run across frames possible.
+    pub const fn set_transform(&mut self, transform: Affine) {
+        match self {
+            Self::FillPath {
+                transform: current, ..
+            }
+            | Self::StrokePath {
+                transform: current, ..
+            }
+            | Self::GlyphRun {
+                transform: current, ..
+            } => *current = transform,
+        }
     }
 
     const fn clip_mut(&mut self) -> &mut Option<Rect> {
@@ -372,14 +387,63 @@ fn glyph_eq(a: &vello_cpu::Glyph, b: &vello_cpu::Glyph) -> bool {
     a.id == b.id && a.x == b.x && a.y == b.y
 }
 
+/// A [`DrawCommand`] together with the window-coordinate bounds computed when
+/// it was pushed.
+///
+/// [`DrawCommand::bounds`] is not free — for a glyph run it unions every
+/// glyph's ink box — and the painter asks a command for its bounds once per
+/// band it might intersect. Computing the bounds once at push time and
+/// carrying them turns that repeated union into a field read, which matters
+/// most on exactly the targets Dew exists for.
+#[derive(Debug, Clone)]
+pub struct PlacedCommand {
+    command: DrawCommand,
+    bounds: Rect,
+}
+
+impl PlacedCommand {
+    /// The retained draw operation.
+    #[must_use]
+    pub const fn command(&self) -> &DrawCommand {
+        &self.command
+    }
+
+    /// Window-coordinate bounds, computed once when the command was pushed.
+    #[must_use]
+    pub const fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    /// Whether this command can touch any pixel in `region`.
+    #[must_use]
+    pub fn intersects(&self, region: Rect) -> bool {
+        let intersection = self.bounds.intersect(region);
+        intersection.width() > 0.0 && intersection.height() > 0.0
+    }
+
+    /// Window-coordinate regions whose pixels differ between two placed
+    /// commands.
+    #[must_use]
+    pub fn changed_bounds(&self, other: &Self) -> Vec<Rect> {
+        self.command.changed_bounds(&other.command)
+    }
+}
+
+impl PartialEq for PlacedCommand {
+    fn eq(&self, other: &Self) -> bool {
+        self.command == other.command
+    }
+}
+
 /// An ordered list of [`DrawCommand`]s with a running bounds union.
 ///
 /// This is the unit the painter replays into a region-sized scratch pixmap.
 #[derive(Debug, Clone, Default)]
 pub struct DisplayList {
-    commands: Vec<DrawCommand>,
+    commands: Vec<PlacedCommand>,
     bounds: Option<Rect>,
     clip_stack: Vec<Rect>,
+    work: FrameWork,
 }
 
 impl DisplayList {
@@ -391,8 +455,10 @@ impl DisplayList {
 
     /// Appends a filled shape.
     pub fn fill(&mut self, shape: &impl Shape, transform: Affine, brush: impl Into<Brush>) {
+        let path = shape.to_path(BEZIER_TOLERANCE);
+        self.count_flattened(&path);
         self.push(DrawCommand::FillPath {
-            path: shape.to_path(BEZIER_TOLERANCE),
+            path,
             transform,
             brush: brush.into(),
             clip: None,
@@ -407,13 +473,19 @@ impl DisplayList {
         stroke: Stroke,
         brush: impl Into<Brush>,
     ) {
+        let path = shape.to_path(BEZIER_TOLERANCE);
+        self.count_flattened(&path);
         self.push(DrawCommand::StrokePath {
-            path: shape.to_path(BEZIER_TOLERANCE),
+            path,
             transform,
             stroke,
             brush: brush.into(),
             clip: None,
         });
+    }
+
+    fn count_flattened(&mut self, path: &BezPath) {
+        self.work.path_elements_flattened += path.elements().len() as u64;
     }
 
     /// Appends a raw command, recording the active clip.
@@ -426,10 +498,51 @@ impl DisplayList {
             *clip = Some(clip.map_or(active, |own| own.intersect(active)));
         }
         let bounds = command.bounds();
+        self.push_placed(command, bounds);
+    }
+
+    /// Appends a command whose un-clipped window-coordinate bounds the caller
+    /// already knows, skipping the bounds computation.
+    ///
+    /// Nodes that retain their geometry across frames use this: the bounds
+    /// follow from local bounds the node computed once and the placement
+    /// transform, so recomputing them from the path or glyph set would repeat
+    /// work that is already done. The active clip is applied here exactly as
+    /// [`DisplayList::push`] applies it, so callers never have to reason about
+    /// clipping differently.
+    pub fn push_placed(&mut self, mut command: DrawCommand, bounds: Rect) {
+        let mut bounds = bounds;
+        if let Some(active) = self.clip_stack.last().copied() {
+            let clip = command.clip_mut();
+            *clip = Some(clip.map_or(active, |own| own.intersect(active)));
+            bounds = bounds.intersect(active);
+        }
         if bounds.width() > 0.0 && bounds.height() > 0.0 {
             self.bounds = Some(self.bounds.map_or(bounds, |current| current.union(bounds)));
         }
-        self.commands.push(command);
+        self.work.commands_emitted += 1;
+        self.commands.push(PlacedCommand { command, bounds });
+    }
+
+    /// The clip rectangle currently in force, if any.
+    ///
+    /// Nodes emitting pre-placed commands need it to reproduce what
+    /// [`DisplayList::push`] would have recorded.
+    #[must_use]
+    pub fn active_clip(&self) -> Option<Rect> {
+        self.clip_stack.last().copied()
+    }
+
+    /// Work accumulated while building this list.
+    #[must_use]
+    pub const fn work(&self) -> FrameWork {
+        self.work
+    }
+
+    /// Adds work accounted for elsewhere (text shaping, glyph measurement) to
+    /// this list's totals.
+    pub fn add_work(&mut self, work: FrameWork) {
+        self.work += work;
     }
 
     /// Pushes a window-coordinate clip rectangle.
@@ -455,9 +568,9 @@ impl DisplayList {
             .expect("DisplayList::pop_clip without a matching push_clip");
     }
 
-    /// The retained commands in draw order.
+    /// The retained commands in draw order, each with its cached bounds.
     #[must_use]
-    pub fn commands(&self) -> &[DrawCommand] {
+    pub fn commands(&self) -> &[PlacedCommand] {
         &self.commands
     }
 
@@ -474,11 +587,13 @@ impl DisplayList {
         self.commands.is_empty()
     }
 
-    /// Removes all commands and resets the bounds and clip stack.
+    /// Removes all commands and resets the bounds, clip stack, and work
+    /// counters.
     pub fn clear(&mut self) {
         self.commands.clear();
         self.bounds = None;
         self.clip_stack.clear();
+        self.work = FrameWork::ZERO;
     }
 }
 
@@ -554,7 +669,10 @@ mod tests {
         );
         list.pop_clip();
         let command = &list.commands()[0];
-        assert_eq!(command.clip(), Some(Rect::new(0.0, 0.0, 50.0, 50.0)));
+        assert_eq!(
+            command.command().clip(),
+            Some(Rect::new(0.0, 0.0, 50.0, 50.0))
+        );
         assert_eq!(command.bounds(), Rect::new(40.0, 40.0, 50.0, 50.0));
         assert_eq!(list.bounds(), Some(Rect::new(40.0, 40.0, 50.0, 50.0)));
     }
@@ -652,7 +770,7 @@ mod tests {
         list.pop_clip();
         list.pop_clip();
         assert_eq!(
-            list.commands()[0].clip(),
+            list.commands()[0].command().clip(),
             Some(Rect::new(25.0, 25.0, 50.0, 50.0))
         );
     }

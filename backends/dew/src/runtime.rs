@@ -21,6 +21,21 @@ use crate::display::DisplayFlush;
 use crate::display_list::DisplayList;
 use crate::painter::Painter;
 use crate::render_frame;
+use crate::stats::FrameWork;
+
+/// One rendered frame: what changed on screen, and what producing it cost.
+///
+/// [`Frame::work`] is the machine-independent half — identical on host and
+/// target for the same view tree and signal values — and is what performance
+/// budgets are written against. See [`crate::stats`] for why wall-clock is
+/// not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Frame {
+    /// Logical-pixel regions that were re-rasterized and flushed.
+    pub dirty: Vec<Rect>,
+    /// Work performed producing this frame.
+    pub work: FrameWork,
+}
 
 /// Drives a view tree onto a [`Board`].
 pub struct DewRuntime<B: Board> {
@@ -70,14 +85,14 @@ impl<B: Board> DewRuntime<B> {
     }
 
     /// Renders one frame if the retained tree requested a refresh (or none was
-    /// rendered yet); returns the logical dirty rects that were flushed, or
-    /// [`None`] when the frame was clean.
+    /// rendered yet); returns what was flushed and what it cost, or [`None`]
+    /// when the frame was clean.
     ///
     /// # Panics
     ///
     /// Panics when external code requests a root rebuild after the initial
     /// frame; structural changes must use an explicit local `Dynamic` node.
-    pub fn pump(&mut self) -> Option<Vec<Rect>> {
+    pub fn pump(&mut self) -> Option<Frame> {
         let first = !self.rendered_once;
         let signals = self.renderer.signals();
         let mut input_changed = false;
@@ -115,6 +130,7 @@ impl<B: Board> DewRuntime<B> {
         } else {
             diff_dirty(&self.current, &list)
         };
+        let mut work = list.work();
         if !dirty.is_empty() {
             render_frame(
                 &mut self.painter,
@@ -122,11 +138,12 @@ impl<B: Board> DewRuntime<B> {
                 &self.scheduler,
                 &dirty,
                 self.board.display(),
+                &mut work,
             );
         }
         self.current = list;
         self.rendered_once = true;
-        Some(dirty)
+        Some(Frame { dirty, work })
     }
 
     /// The board being rendered to.
@@ -234,11 +251,11 @@ mod tests {
         assert!(runtime.pump().is_none(), "clean frame must not render");
 
         value.set(true);
-        let dirty = runtime
+        let frame = runtime
             .pump()
             .expect("binding refresh must render the retained tree");
 
-        assert!(!dirty.is_empty());
+        assert!(!frame.dirty.is_empty());
         assert_eq!(body_calls.get(), 1, "refresh must not evaluate body again");
     }
 

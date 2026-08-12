@@ -21,3 +21,8 @@ pub fn test_environment() -> Environment {
         .install(&mut environment);
     environment
 }
+
+// Only the performance simulation uses this; other integration tests include
+// `support` for `test_environment` alone.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub mod simulation;

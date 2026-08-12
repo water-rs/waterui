@@ -123,9 +123,9 @@ fn form_scene_contains_expected_widget_commands() {
 
     let title_runs = commands
         .iter()
-        .filter(|command| {
+        .filter(|placed| {
             matches!(
-                command,
+                placed.command(),
                 DrawCommand::GlyphRun { font_size, .. } if (font_size - 24.0).abs() < f32::EPSILON
             )
         })
@@ -134,9 +134,9 @@ fn form_scene_contains_expected_widget_commands() {
 
     let subheadline_runs = commands
         .iter()
-        .filter(|command| {
+        .filter(|placed| {
             matches!(
-                command,
+                placed.command(),
                 DrawCommand::GlyphRun { font_size, .. } if (font_size - 20.0).abs() < f32::EPSILON
             )
         })
@@ -148,9 +148,9 @@ fn form_scene_contains_expected_widget_commands() {
 
     let accent_fills = commands
         .iter()
-        .filter(|command| {
+        .filter(|placed| {
             matches!(
-                command,
+                placed.command(),
                 DrawCommand::FillPath { brush: peniko::Brush::Solid(color), .. }
                     if *color == theme::ACCENT
             )
@@ -163,7 +163,7 @@ fn form_scene_contains_expected_widget_commands() {
 
     let clipped = commands
         .iter()
-        .filter(|command| command.clip().is_some())
+        .filter(|placed| placed.command().clip().is_some())
         .count();
     assert!(
         clipped > 0,

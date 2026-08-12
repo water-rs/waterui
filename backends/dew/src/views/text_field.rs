@@ -15,7 +15,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::text::DewState;
 use crate::theme;
-use crate::views::{emit_styled_text, measure_label, render_label, to_f32};
+use crate::views::{LabelText, emit_styled_text, to_f32};
 
 /// Minimum input box width.
 const MIN_WIDTH: f64 = 96.0;
@@ -34,23 +34,30 @@ const BOX_BORDER: f64 = 1.0;
 
 struct TextFieldNode {
     config: ResolvedTextFieldConfig,
+    label: LabelText,
     env: Environment,
 }
 
-pub fn build(config: ResolvedTextFieldConfig, env: &Environment) -> Box<dyn DewNode> {
+pub fn build(
+    renderer: &DewRenderer,
+    config: ResolvedTextFieldConfig,
+    env: &Environment,
+) -> Box<dyn DewNode> {
+    let label = LabelText::new(&config.label, env, renderer.signals());
     Box::new(TextFieldNode {
         config,
+        label,
         env: env.clone(),
     })
 }
 
 impl DewNode for TextFieldNode {
     fn measure(&self, state: &RefCell<DewState>, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(measure(state, &self.config, &self.env))
+        ViewDimensions::new(measure(state, &self.config, &self.label, &self.env))
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        render(renderer, ctx, &self.config, &self.env);
+        render(renderer, ctx, &self.config, &self.label, &self.env);
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -62,11 +69,12 @@ fn render(
     renderer: &mut DewRenderer,
     ctx: RenderContext,
     config: &ResolvedTextFieldConfig,
+    label: &LabelText,
     env: &Environment,
 ) {
     let bounds = ctx.bounds;
 
-    let label_size = measure_label(renderer.state_cell(), &config.label, env);
+    let label_size = label.measure(renderer.state_cell(), env);
     let label_height = if label_size.height > 0.0 {
         f64::from(label_size.height) + LABEL_SPACING
     } else {
@@ -79,7 +87,7 @@ fn render(
             bounds.x1,
             (bounds.y0 + f64::from(label_size.height)).min(bounds.y1),
         );
-        render_label(renderer, ctx, label_rect, &config.label, env);
+        label.render(renderer, ctx, label_rect, env);
     }
 
     let box_rect = Rect::new(bounds.x0, bounds.y0 + label_height, bounds.x1, bounds.y1);
@@ -122,8 +130,13 @@ fn render(
 
 /// Intrinsic size: the label row above a box sized for the larger of the
 /// value and prompt texts, floored at the minimum box footprint.
-fn measure(state: &RefCell<DewState>, config: &ResolvedTextFieldConfig, env: &Environment) -> Size {
-    let label = measure_label(state, &config.label, env);
+fn measure(
+    state: &RefCell<DewState>,
+    config: &ResolvedTextFieldConfig,
+    label: &LabelText,
+    env: &Environment,
+) -> Size {
+    let label = label.measure(state, env);
     let value = config.value.get();
     let prompt = config.prompt.content.get();
     let (value_width, value_height) = state.borrow_mut().measure_styled(&value, env, None);
