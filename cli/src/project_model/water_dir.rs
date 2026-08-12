@@ -12,6 +12,7 @@ use std::{
 };
 
 use color_eyre::eyre::{self, WrapErr};
+use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
 use smol::fs;
 use tracing::{info, warn};
@@ -585,32 +586,45 @@ async fn cleanup_stale_caches_if_idle(
     };
 
     let cleanup_result = cleanup_stale_caches(cache_root, current_project_root, config).await;
+    // Closing the descriptor releases the lock. The file stays behind on
+    // purpose: it is what the next sweep locks, and leaving it means no exit
+    // path — including one that never runs — can stop cleanup happening again.
     drop(lock_file);
-
-    if let Err(error) = fs::remove_file(&lock_path).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        warn!(
-            lock_path = %lock_path.display(),
-            "Failed to remove build-cache cleanup lock: {error}"
-        );
-    }
 
     cleanup_result.map(BuildCacheGcOutcome::Ran)
 }
 
-async fn try_acquire_cleanup_lock(lock_path: &Path) -> eyre::Result<Option<fs::File>> {
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(lock_path)
-        .await
-    {
-        Ok(file) => Ok(Some(file)),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
-        Err(error) => Err(eyre::Report::from(error))
-            .wrap_err_with(|| format!("Failed to create cleanup lock {}", lock_path.display())),
-    }
+/// Takes the cleanup lock, or reports that another sweep already holds it.
+///
+/// The lock has to be released even when the process holding it dies, and
+/// creating the file exclusively is not that: a sweep that is killed leaves the
+/// file behind, and since then every run takes the "already running" path
+/// against a process that no longer exists. Cleanup is spawned detached with its
+/// output discarded, so nothing says so — one interrupted sweep in May left the
+/// cache unswept until August, by which point it had grown to 149 GB, most of it
+/// belonging to workspaces deleted months earlier.
+///
+/// `flock` is released by the kernel when the descriptor closes, which a crash
+/// does too. The file itself stays: it is the thing being locked, not the
+/// signal, so nothing has to remove it and nothing is stranded if a process
+/// dies before it can.
+async fn try_acquire_cleanup_lock(lock_path: &Path) -> eyre::Result<Option<std::fs::File>> {
+    let lock_path = lock_path.to_path_buf();
+    smol::unblock(move || {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .wrap_err_with(|| format!("Failed to open cleanup lock {}", lock_path.display()))?;
+        match FileExt::try_lock(&file) {
+            Ok(()) => Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(eyre::Report::from(error))
+                .wrap_err_with(|| format!("Failed to lock {}", lock_path.display())),
+        }
+    })
+    .await
 }
 
 async fn discover_managed_build_cache_dirs(cache_root: &Path) -> eyre::Result<Vec<PathBuf>> {
@@ -871,6 +885,79 @@ mod tests {
 
             assert!(!parent_cache.exists());
             assert!(child_cache.exists());
+        });
+    }
+
+    /// A sweep that dies leaves the lock file behind, because only the happy
+    /// path could ever remove it. Cleanup must still run afterwards: when it did
+    /// not, one interrupted sweep stopped every later one for three months, and
+    /// silently, since cleanup is spawned with its output discarded.
+    #[test]
+    fn cleanup_runs_again_after_a_sweep_dies_holding_the_lock() {
+        smol::block_on(async {
+            let project = tempdir().expect("project dir");
+            let water_home = tempdir().expect("water home");
+            let config = ensure_global_config_in(water_home.path())
+                .await
+                .expect("ensure config");
+            let cache_root = water_home.path().join("build_cache");
+            smol::fs::create_dir_all(&cache_root)
+                .await
+                .expect("create cache root");
+
+            // What a killed sweep leaves on disk: the lock file, with no live
+            // process behind it.
+            let lock_path = cache_root.join(super::CLEANUP_LOCK_FILE_NAME);
+            smol::fs::write(&lock_path, [])
+                .await
+                .expect("leave a lock file behind");
+
+            let stale_project = tempdir().expect("stale project");
+            let stale_cache =
+                ensure_project_build_cache_in(stale_project.path(), &cache_root, &config)
+                    .await
+                    .expect("ensure stale cache");
+            drop(stale_project);
+
+            let outcome = super::cleanup_stale_caches_if_idle(&cache_root, project.path(), &config)
+                .await
+                .expect("cleanup");
+
+            assert!(
+                matches!(outcome, super::BuildCacheGcOutcome::Ran(_)),
+                "an abandoned lock file must not be read as a running sweep, got {outcome:?}"
+            );
+            assert!(!stale_cache.exists());
+        });
+    }
+
+    /// The other half: while a sweep really is holding the lock, a second one
+    /// stands down instead of walking the same tree.
+    #[test]
+    fn a_second_sweep_stands_down_while_the_first_holds_the_lock() {
+        smol::block_on(async {
+            let project = tempdir().expect("project dir");
+            let water_home = tempdir().expect("water home");
+            let config = ensure_global_config_in(water_home.path())
+                .await
+                .expect("ensure config");
+            let cache_root = water_home.path().join("build_cache");
+            smol::fs::create_dir_all(&cache_root)
+                .await
+                .expect("create cache root");
+
+            let lock_path = cache_root.join(super::CLEANUP_LOCK_FILE_NAME);
+            let held = super::try_acquire_cleanup_lock(&lock_path)
+                .await
+                .expect("acquire lock")
+                .expect("lock is free");
+
+            let outcome = super::cleanup_stale_caches_if_idle(&cache_root, project.path(), &config)
+                .await
+                .expect("cleanup");
+            assert_eq!(outcome, super::BuildCacheGcOutcome::SkippedAlreadyRunning);
+
+            drop(held);
         });
     }
 }
