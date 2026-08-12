@@ -187,6 +187,10 @@ cargo nextest run -p waterui-cli
 # Doctests are the one thing nextest cannot run
 cargo test --doc
 
+# The web view bridge's JavaScript half, which cargo cannot reach. Not in CI —
+# run it yourself after touching components/platform/webview/src/js/
+bun test components/platform/webview/tests/js/
+
 # Generate FFI C header (after modifying ffi/ APIs), never write C header by hand
 cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
 
@@ -393,6 +397,25 @@ waterui_ffi::export!();  // Generates FFI entry points
     test written to rely on a sibling's initialization will start failing under
     nextest. Fix the shared-state assumption rather than reaching back for
     `cargo test`.
+- **The web view bridge has a JavaScript half, and `cargo` cannot see it.**
+  `components/platform/webview/src/js/{bridge,state,eval}.js` is injected into
+  every page by every backend, and no Rust test executes a line of it. If you
+  touch anything under that directory — or anything that decides what crosses
+  it, such as `bridge.rs`'s envelope or `state.rs`'s patches — run:
+
+  ```bash
+  bun test components/platform/webview/tests/js/
+  ```
+
+  This is deliberately **not** in CI: it is a few hundred milliseconds of a
+  toolchain the Rust pipeline otherwise has no reason to install, so it is on
+  you to run it. Take that seriously — three separate *total* breaks shipped
+  behind a fully green Rust suite before these tests existed: every reply
+  crossing as base64 so `await waterui.invoke(...)` returned base64 text; a
+  frozen `waterui` object that made `waterui.state` and `waterui.watch` throw on
+  install, leaving mirrored state unreachable from a page for the entire life of
+  the feature; and integers past 2^53 losing their low bits in both directions.
+  A green `cargo nextest` is not evidence about any of that.
 - No explicit CLI unit tests found; likely relies on integration testing
 - Use `tracing::debug!` and `water run --logs debug` for debugging runtime issues
 
