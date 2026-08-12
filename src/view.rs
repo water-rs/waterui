@@ -32,7 +32,8 @@ use waterui_graphics::color::Color;
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use waterui_layout::{
-    EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, Overlay, VerticalAlignmentGuide,
+    EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
+    VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -119,6 +120,18 @@ pub trait ViewExt: View + Sized {
     /// * `amount` - The opacity value (0.0 = transparent, 1.0 = opaque). Can be reactive.
     fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity> {
         Metadata::new(self, Opacity::new(amount))
+    }
+
+    /// Sets how strongly this view holds on to space when its stack runs short.
+    ///
+    /// A stack compresses its lowest-priority children first, so raising one
+    /// child above its siblings keeps it at its ideal size while they give way.
+    /// The default is `0`.
+    ///
+    /// # Arguments
+    /// * `priority` - Higher keeps more space; ties share the shortfall.
+    fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority> {
+        Metadata::new(self, LayoutPriority::new(priority))
     }
 
     /// Sets the visibility of this view.

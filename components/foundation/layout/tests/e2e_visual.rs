@@ -135,3 +135,36 @@ fn scroll_view_scroll_down_changes_content(app: &mut SemanticApp) {
         "scrolling down should move earlier content upward: before={second_before:?} after={second_after:?}"
     );
 }
+
+/// Two texts too wide for the row. Without a priority they share the shortfall;
+/// the prioritized one should keep its width while the other gives way.
+fn layout_priority_view() -> impl View {
+    visual_shell(
+        hstack((
+            text("Keep me whole")
+                .body()
+                .foreground(Srgb::WHITE)
+                .background(Srgb::new(1.0, 0.1, 0.1))
+                .layout_priority(1),
+            text("I can shrink")
+                .body()
+                .foreground(Srgb::WHITE)
+                .background(Srgb::new(0.1, 1.0, 0.1)),
+        ))
+        .spacing(0.0),
+    )
+}
+
+#[waterui::test(layout_priority_view, theme = hydrolysis_m3::install, viewport = (160, 120))]
+fn layout_priority_protects_the_prioritized_child(app: &mut SemanticApp) {
+    let kept = app.query().role(Role::LABEL).label("Keep me whole").single();
+    let yielded = app.query().role(Role::LABEL).label("I can shrink").single();
+
+    assert!(
+        kept.bounds().width() > yielded.bounds().width(),
+        "the prioritized child must keep more width than the one that gives way: \
+         kept={:?} yielded={:?}",
+        kept.bounds(),
+        yielded.bounds()
+    );
+}

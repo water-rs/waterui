@@ -306,6 +306,18 @@ impl RenderNode {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<Metadata<LayoutPriority>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                return RenderNode::build_wrapper(
+                    WrapperEffect::LayoutPriority(value),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Metadata<Cursor>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
