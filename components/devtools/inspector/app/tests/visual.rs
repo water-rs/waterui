@@ -19,7 +19,7 @@ fn pane(case: &str, width: u32, height: u32, section: Section) {
     let mut app = test_ui()
         .viewport(width, height)
         .theme(install)
-        .mount(move || {
+        .mount_offscreen(move || {
             let model = preview_model();
             let (sender, _receiver) = connection::subscription_channel();
             ui::pane(section, model, sender)
@@ -70,7 +70,7 @@ fn full_window() {
     let mut app = test_ui()
         .viewport(1200, 800)
         .theme(install)
-        .mount(move || {
+        .mount_offscreen(move || {
             let model = preview_model();
             let (sender, _receiver) = connection::subscription_channel();
             ui::inspector(model, sender)

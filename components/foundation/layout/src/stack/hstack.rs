@@ -234,11 +234,12 @@ fn compress_children_evenly(
 
 #[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
-    /// `HStack` stretches vertically to fill available height (cross-axis).
-    /// It uses intrinsic width based on children (main-axis), mirroring
-    /// `VStackLayout::stretch_axis`, which claims the horizontal cross-axis.
+    /// `HStack` is content-sized on both axes, like `SwiftUI`'s: it never
+    /// claims the cross axis for itself. Filling comes from children that ask
+    /// for it (`Spacer`, greedy frames, `Color`), and a parent placing an
+    /// undersized stack centers it per its alignment.
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Vertical
+        StretchAxis::None
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
