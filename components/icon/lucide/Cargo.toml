@@ -35,3 +35,7 @@ remote_path = "https://github.com/lucide-icons/lucide/releases/download/0.562.0/
 required-feature = "webfont"
 [package.metadata.cargo-machete]
 ignored = ["serde_json", "waterui-build-support"]
+
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true

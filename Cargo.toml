@@ -219,6 +219,11 @@ dirs = "6"
 waterui-internal = { path = "src", default-features = false }
 waterui-dylib = { path = "utils/dylib", optional = true, default-features = false }
 
+
+[dev-dependencies]
+waterui-testing = { path = "testing" }
+hydrolysis-m3 = { path = "backends/hydrolysis_m3" }
+
 [features]
 default = ["gpu", "assets", "media"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on

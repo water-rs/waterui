@@ -11,6 +11,10 @@ use crate::renderer::{
     WidgetRenderContext, measure_view_dimensions_with_proposal, measure_view_intrinsic,
     normalize_view_for_render,
 };
+#[cfg(feature = "accessibility")]
+use crate::renderer::transformed_rect;
+#[cfg(feature = "accessibility")]
+use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 use crate::widgets::widget_theme;
 
 /// The retained render state of a badge. The wrapped `content` is a move-only
@@ -153,6 +157,18 @@ pub(crate) fn render_badge_parts(
     {
         let mut draw = ctx.draw_context();
         theme.draw_badge_large(&mut draw, rect);
+    }
+
+    // The count indicator is vector-drawn, so it must emit its own semantic
+    // node — otherwise the badge value is invisible to assistive technology.
+    #[cfg(feature = "accessibility")]
+    {
+        let mut node = AccessibilityNode::new(AccessibilityNodeRole::Label);
+        node.set_label(value.to_string());
+        let node_bounds = transformed_rect(ctx.hit_transform, rect);
+        let _ = ctx
+            .renderer_mut()
+            .register_accessibility_node(node, node_bounds, env, None);
     }
 
     let text_height = f64::from(text_size.height);

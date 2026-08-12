@@ -37,3 +37,7 @@ remote_path = "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesig
 required-feature = "webfont"
 [package.metadata.cargo-machete]
 ignored = ["regex", "serde", "serde_json", "waterui-build-support"]
+
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true

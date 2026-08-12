@@ -578,7 +578,8 @@ pub fn app(env: Environment) -> App {
 mod tests {
     use super::{catalog, new_state};
     use core::time::Duration;
-    use waterui_testing::UiBuilder;
+    use waterui::Str;
+    use waterui_testing::{Role, UiBuilder};
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
@@ -739,5 +740,283 @@ mod tests {
                 .wait_for_existence(Duration::from_secs(3)),
             "tapping a demo button should increment the counter"
         );
+    }
+
+    /// Selecting the Toggle demo and flipping its switch and checkbox through
+    /// accessibility updates their `DemoState` bindings (`wifi`/`bluetooth`,
+    /// which start on and off respectively) and their exposed checked state.
+    /// The two styles report different accesskit roles (`Switch` vs.
+    /// `CheckBox`), so this also pins that `ToggleStyle` maps to distinct
+    /// accessibility semantics rather than one shared role.
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn toggle_demo_flips_switch_and_checkbox_bindings(ui: UiBuilder) {
+        let (selected, groups_open, rows, state) = new_state();
+        let wifi = state.wifi.clone();
+        let bluetooth = state.bluetooth.clone();
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
+
+        app.query().label("Toggle").tap();
+        assert!(
+            app.query()
+                .role(Role::SWITCH)
+                .label("Wi-Fi")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the Toggle demo should render its Wi-Fi switch"
+        );
+
+        app.query()
+            .role(Role::SWITCH)
+            .label("Wi-Fi")
+            .checked(true)
+            .assert_exists();
+        app.query()
+            .role(Role::CHECKBOX)
+            .label("Bluetooth")
+            .checked(false)
+            .assert_exists();
+
+        app.query().role(Role::SWITCH).label("Wi-Fi").tap();
+        assert!(
+            !wifi.get(),
+            "flipping the Wi-Fi switch should clear its binding"
+        );
+        app.query()
+            .role(Role::SWITCH)
+            .label("Wi-Fi")
+            .checked(false)
+            .assert_exists();
+
+        app.query().role(Role::CHECKBOX).label("Bluetooth").tap();
+        assert!(
+            bluetooth.get(),
+            "tapping the Bluetooth checkbox should set its binding"
+        );
+        app.query()
+            .role(Role::CHECKBOX)
+            .label("Bluetooth")
+            .checked(true)
+            .assert_exists();
+    }
+
+    /// Selecting the Slider demo and driving it through accessibility
+    /// increment/decrement moves `DemoState::volume` by the slider's a11y
+    /// step (`(range.end() - range.start()) / 100.0`, which is `1.0` for the
+    /// demo's `0.0..=100.0` range), and the live echo text tracks it.
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn slider_demo_increment_decrement_updates_volume(ui: UiBuilder) {
+        let (selected, groups_open, rows, state) = new_state();
+        let volume = state.volume.clone();
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
+
+        app.query().label("Slider").tap();
+        assert!(
+            app.query()
+                .role(Role::SLIDER)
+                .label("Volume")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the Slider demo should render its Volume slider"
+        );
+        app.query()
+            .role(Role::LABEL)
+            .label_contains("Value: 40")
+            .assert_exists();
+
+        app.query().role(Role::SLIDER).label("Volume").increment();
+        assert!(
+            (volume.get() - 41.0).abs() < 0.0001,
+            "incrementing the slider should raise the volume binding by one a11y step"
+        );
+        assert!(
+            app.query()
+                .role(Role::LABEL)
+                .label_contains("Value: 41")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the echoed value should track the incremented binding"
+        );
+
+        app.query().role(Role::SLIDER).label("Volume").decrement();
+        assert!(
+            (volume.get() - 40.0).abs() < 0.0001,
+            "decrementing the slider should restore the previous volume"
+        );
+        assert!(
+            app.query()
+                .role(Role::LABEL)
+                .label_contains("Value: 40")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the echoed value should track the decremented binding"
+        );
+    }
+
+    /// Selecting the Stepper demo and driving it through accessibility
+    /// increment/decrement moves `DemoState::quantity` by the stepper's fixed
+    /// step of `1`, clamped to its `0..=10` range, and the live echo text
+    /// tracks it.
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn stepper_demo_increment_decrement_updates_quantity(ui: UiBuilder) {
+        let (selected, groups_open, rows, state) = new_state();
+        let quantity = state.quantity.clone();
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
+
+        app.query().label("Stepper").tap();
+        assert!(
+            app.query()
+                .label("Quantity")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the Stepper demo should render its Quantity stepper"
+        );
+
+        app.query().label("Quantity").value("2").increment();
+        assert_eq!(
+            quantity.get(),
+            3,
+            "incrementing the stepper should raise its binding by one"
+        );
+        assert!(
+            app.query()
+                .role(Role::LABEL)
+                .label_contains("Quantity: 3")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the echoed quantity should track the incremented binding"
+        );
+
+        app.query().label("Quantity").value("3").decrement();
+        assert_eq!(
+            quantity.get(),
+            2,
+            "decrementing the stepper should restore the previous quantity"
+        );
+        assert!(
+            app.query()
+                .role(Role::LABEL)
+                .label_contains("Quantity: 2")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the echoed quantity should track the decremented binding"
+        );
+    }
+
+    /// Selecting the Text Field demo and setting its text through
+    /// accessibility updates `DemoState::name`, and the live echo text
+    /// tracks it.
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn text_field_demo_set_text_updates_name(ui: UiBuilder) {
+        let (selected, groups_open, rows, state) = new_state();
+        let name = state.name.clone();
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
+
+        app.query().label("Text Field").tap();
+        assert!(
+            app.query()
+                .role(Role::TEXT_INPUT)
+                .label("Name")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the Text Field demo should render its Name field"
+        );
+
+        app.query()
+            .role(Role::TEXT_INPUT)
+            .label("Name")
+            .set_text("Ada Lovelace");
+        assert_eq!(
+            name.get(),
+            Str::from("Ada Lovelace"),
+            "the text field should update its bound demo state"
+        );
+        assert!(
+            app.query()
+                .role(Role::LABEL)
+                .label_contains("Echo: Ada Lovelace")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the demo should echo the updated name live"
+        );
+    }
+
+    /// A full navigation flow: the catalog opens on the first control
+    /// (Buttons), so its title is the initial detail heading. Collapsing and
+    /// re-expanding a group (Selection) restores its items, and selecting a
+    /// control from the re-expanded group swaps the detail heading — which
+    /// the [`NavigationView`](waterui::navigation::NavigationView) backend
+    /// exposes as accesskit's `Header` role — to that control's title.
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn expanding_a_collapsed_group_and_selecting_its_control_switches_the_heading(ui: UiBuilder) {
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app = ui.mount(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
+
+        assert!(
+            app.query()
+                .role(Role::HEADER)
+                .label("Buttons")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the catalog should open on the Buttons demo heading"
+        );
+
+        // Collapse the Selection group (Toggle + Picker), then re-expand it.
+        app.query().label("Selection").tap();
+        assert!(
+            app.query()
+                .label("Toggle")
+                .wait_for_nonexistence(Duration::from_secs(3)),
+            "collapsing Selection should remove its items"
+        );
+        app.query().label("Selection").tap();
+        assert!(
+            app.query()
+                .label("Toggle")
+                .wait_for_existence(Duration::from_secs(3)),
+            "re-expanding Selection should restore its items"
+        );
+
+        // Selecting Toggle from the re-expanded group swaps the detail heading.
+        app.query().label("Toggle").tap();
+        assert!(
+            app.query()
+                .role(Role::HEADER)
+                .label("Toggle")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the detail heading should switch to the selected control's title"
+        );
+        app.query()
+            .role(Role::HEADER)
+            .label("Buttons")
+            .assert_not_exists();
+        app.query()
+            .role(Role::SWITCH)
+            .label("Wi-Fi")
+            .assert_exists();
     }
 }
