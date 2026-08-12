@@ -78,15 +78,23 @@ The finish step is serialized across all agent workspaces with a lock on the can
 The create script fails immediately if any of the following are true:
 
 - It is not run from the canonical source repository.
-- The canonical repository or any canonical submodule has uncommitted tracked changes, staged changes, or untracked non-ignored files.
 - Cargo resolves any `build.target-dir`.
 - The source or workspace filesystem is not APFS.
+
+Uncommitted changes in the canonical checkout do not stop it, and are reported
+rather than obeyed: a workspace is built from committed state, so whatever is
+in someone's working tree has no bearing on what lands in it. Requiring a clean
+tree here protected nothing while letting one agent's half-finished edit stop
+every other agent from starting.
 
 A workspace root on a different volume than the source repository is allowed
 (the usual answer when the boot disk is out of space) but only warns: APFS
 clonefile cannot span volumes, so the `target/` copy degrades from
 copy-on-write to a full byte copy — creation is slower and the copy occupies
-real disk space instead of sharing blocks.
+real disk space instead of sharing blocks. The difference is large enough to
+change behaviour: seconds against tens of minutes. A root on a removable volume
+costs more than time, because a workspace is unusable while that volume is
+detached and `finish_workspace.sh` can wedge on it — see below.
 - Any configured submodule is missing, is not a Git worktree, or does not keep its gitdir under the source repository metadata.
 - The destination path already exists.
 - The task slug is not lowercase hyphenated text.
@@ -117,6 +125,58 @@ The sync script fails immediately if any of the following are true:
 - The workspace branch does not start with `agent/`.
 - Any workspace submodule is on a different branch from the workspace superproject.
 - A submodule rebase or superproject rebase stops for conflicts.
+
+## When Merging Back Is Blocked
+
+Finish and sync do require a clean canonical checkout, because they write to it.
+That state is routine here and it is almost never yours: several sessions share
+the one checkout, and its uncommitted files usually belong to an agent still
+working in it.
+
+Treat another session's working tree as untouchable. Do not stash it, revert it,
+commit it, or move it aside "just for a moment" — the file you take away is
+live, not stale. Stashing to unblock a merge cost a commit: the owning session
+ran `git add` during the seconds its file was stashed, and the commit it
+produced described a fix while containing only half of it. Restoring the stash
+then resurrected a diagnostic edit that session had already tried and discarded,
+which it caught only by reading the diff line by line.
+
+Say something instead. The sessions are addressable, and asking is cheaper than
+waiting blindly:
+
+1. `mcp__ccd_session_mgmt__list_sessions` — the owner is normally the running
+   session whose title matches the dirty paths, near the top of the list.
+2. `mcp__ccd_session_mgmt__send_message` — name the exact paths blocking you and
+   ask that session to commit or stash them itself. It knows whether its own
+   work is in a committable state; you do not.
+3. Wait on the condition rather than polling by hand — a background `until`
+   loop over `git status --porcelain` wakes you once, when it clears.
+
+If nothing owns the changes — a session that has since exited — ask the user
+rather than deciding for them.
+
+## When Finish Does Not Return
+
+`finish_workspace.sh` holds a global integration lock under
+`~/.waterui-agent/locks/` from before the merge until it exits, so while it runs
+no other agent can merge. It releases the lock from an `EXIT INT TERM` trap.
+
+Never conclude it succeeded because its effects appeared. `delete_workspace` is
+the last thing it does, so the commits land on canonical well before the script
+is done. One run whose workspace sat on a USB volume that dropped off the bus
+left its `rm -rf` in uninterruptible disk wait for eighty minutes; the merge had
+landed, canonical was clean, and every other agent's finish failed with "another
+agent is already integrating" the whole time. Check that the process exited and
+that the lock directory is empty:
+
+    ps -p <pid>
+    ls ~/.waterui-agent/locks/
+
+A lock held by a wedged run cannot be cleared with `kill -TERM`: zsh defers the
+trap until the foreground command returns, and a process in uninterruptible wait
+never returns. Force-unmounting the volume lets the `rm` fail, after which the
+script finishes and cleans up after itself. `kill -9` skips the trap, so the
+lock directory must then be removed by hand.
 
 ## Moving The Workspace Root
 

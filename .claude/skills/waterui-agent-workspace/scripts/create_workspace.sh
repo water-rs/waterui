@@ -42,7 +42,18 @@ main() {
   source_root="$(canonical_dir "$SOURCE_REPO")"
   source_branch="$(current_branch "$source_root")"
   ensure_source_submodules_ready "$source_root"
-  ensure_repo_and_submodules_clean "$source_root" "canonical repository"
+
+  # A workspace is built from committed state — `git clone` copies refs, and each
+  # submodule is checked out at the gitlink recorded in HEAD — so whatever is
+  # uncommitted in the canonical checkout has no bearing on what lands here.
+  # Refusing to run therefore protected nothing, while meaning one agent's
+  # half-finished edit stopped every other agent from *starting*, on a repository
+  # several sessions share. Say what will be left behind and carry on.
+  # `finish_workspace.sh` still requires a clean canonical: that one writes to it.
+  if ! repo_and_submodules_are_clean "$source_root"; then
+    warn "canonical repository has uncommitted changes; this workspace starts from committed HEAD and does not include them"
+  fi
+
   mkdir -p "$WORKSPACE_ROOT"
   workspace_root="$(canonical_dir "$WORKSPACE_ROOT")"
 

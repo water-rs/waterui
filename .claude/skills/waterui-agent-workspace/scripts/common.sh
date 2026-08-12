@@ -47,6 +47,25 @@ die() {
   exit 1
 }
 
+# Runs a command, saying nothing unless it fails — and saying everything if it
+# does.
+#
+# Discarding both streams outright is what these calls used to do, and it makes
+# a failure undiagnosable: `git clone` reporting "Input/output error" from a
+# dying disk surfaced only as "failed to clone canonical repository", which sent
+# the reader looking for a git problem that was not there. Letting stderr
+# through instead is no good either, because git narrates success on stderr too
+# ("Switched to a new branch ..."). So: hold the output, drop it when the
+# command succeeds, print it when it does not.
+run_quietly() {
+  local output
+
+  if ! output="$("$@" 2>&1)"; then
+    [[ -z "$output" ]] || print -u2 -- "$output"
+    return 1
+  fi
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
@@ -104,7 +123,7 @@ clone_superproject_locally() {
   local clone_options
 
   clone_options="$(local_clone_options "$source_root" "${destination:h}")"
-  git clone ${=clone_options} --branch "$source_branch" --single-branch "$source_root" "$destination" >/dev/null 2>&1 || die "failed to clone canonical repository into $destination"
+  run_quietly git clone ${=clone_options} --branch "$source_branch" --single-branch "$source_root" "$destination" || die "failed to clone canonical repository into $destination"
 }
 
 submodule_gitlink_commit() {
@@ -134,10 +153,10 @@ clone_submodules_locally() {
     destination_submodule="${destination_root}/${submodule_relpath}"
     desired_commit="$(submodule_gitlink_commit "$destination_root" "$submodule_relpath")"
 
-    git -C "$destination_root" submodule init -- "$submodule_relpath" >/dev/null 2>&1 || die "failed to initialize submodule config for ${submodule_relpath}"
-    git clone ${=clone_options} --no-checkout "$source_submodule" "$destination_submodule" >/dev/null 2>&1 || die "failed to clone submodule ${submodule_relpath}"
-    git -C "$destination_submodule" checkout "$desired_commit" >/dev/null 2>&1 || die "failed to checkout ${desired_commit} in submodule ${submodule_relpath}"
-    git -C "$destination_root" submodule absorbgitdirs -- "$submodule_relpath" >/dev/null 2>&1 || die "failed to absorb gitdir for submodule ${submodule_relpath}"
+    run_quietly git -C "$destination_root" submodule init -- "$submodule_relpath" || die "failed to initialize submodule config for ${submodule_relpath}"
+    run_quietly git clone ${=clone_options} --no-checkout "$source_submodule" "$destination_submodule" || die "failed to clone submodule ${submodule_relpath}"
+    run_quietly git -C "$destination_submodule" checkout "$desired_commit" || die "failed to checkout ${desired_commit} in submodule ${submodule_relpath}"
+    run_quietly git -C "$destination_root" submodule absorbgitdirs -- "$submodule_relpath" || die "failed to absorb gitdir for submodule ${submodule_relpath}"
   done < <(submodule_records "$source_root")
 }
 
@@ -247,6 +266,15 @@ ensure_repo_and_submodules_clean() {
   done < <(submodule_records "$SOURCE_REPO")
 }
 
+# The same question as a yes-or-no, for callers that want to mention the state
+# rather than refuse to run.
+#
+# Asking it through the checking form keeps one definition of "clean": `die`
+# ends the subshell rather than this script, so the exit status answers.
+repo_and_submodules_are_clean() {
+  (ensure_repo_and_submodules_clean "$1" "canonical repository") >/dev/null 2>&1
+}
+
 activate_all_submodules() {
   local repo_root="$1"
   git -C "$repo_root" config submodule.active . || die "failed to activate submodules in workspace"
@@ -257,9 +285,9 @@ ensure_branch() {
   local branch_name="$2"
 
   if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch_name"; then
-    git -C "$repo_root" switch "$branch_name" >/dev/null 2>&1 || die "failed to switch to existing branch $branch_name in $repo_root"
+    run_quietly git -C "$repo_root" switch "$branch_name" || die "failed to switch to existing branch $branch_name in $repo_root"
   else
-    git -C "$repo_root" switch -c "$branch_name" >/dev/null 2>&1 || die "failed to create branch $branch_name in $repo_root"
+    run_quietly git -C "$repo_root" switch -c "$branch_name" || die "failed to create branch $branch_name in $repo_root"
   fi
 }
 
@@ -319,12 +347,12 @@ ensure_branch_available() {
   local branch_name="$2"
 
   if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch_name"; then
-    git -C "$repo_root" switch "$branch_name" >/dev/null 2>&1 || die "failed to switch to ${branch_name} in $repo_root"
+    run_quietly git -C "$repo_root" switch "$branch_name" || die "failed to switch to ${branch_name} in $repo_root"
     return
   fi
 
   if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/$branch_name"; then
-    git -C "$repo_root" switch -c "$branch_name" --track "origin/$branch_name" >/dev/null 2>&1 || die "failed to create local branch ${branch_name} in $repo_root"
+    run_quietly git -C "$repo_root" switch -c "$branch_name" --track "origin/$branch_name" || die "failed to create local branch ${branch_name} in $repo_root"
     return
   fi
 
@@ -359,8 +387,8 @@ merge_branch_ff_only() {
   local label="$4"
 
   git -C "$source_repo" show-ref --verify --quiet "refs/heads/$source_branch" || die "${label} source branch ${source_branch} does not exist in $source_repo"
-  git -C "$destination_repo" fetch "$source_repo" "$source_branch" >/dev/null 2>&1 || die "failed to fetch ${label} branch ${source_branch} from $source_repo"
-  git -C "$destination_repo" merge --ff-only FETCH_HEAD >/dev/null 2>&1 || die "failed to fast-forward merge ${label} from ${source_repo}; update or rebase the workspace first"
+  run_quietly git -C "$destination_repo" fetch "$source_repo" "$source_branch" || die "failed to fetch ${label} branch ${source_branch} from $source_repo"
+  run_quietly git -C "$destination_repo" merge --ff-only FETCH_HEAD || die "failed to fast-forward merge ${label} from ${source_repo}; update or rebase the workspace first"
 }
 
 ensure_fast_forward_possible() {
@@ -473,6 +501,6 @@ rebase_current_branch_onto_source_branch() {
   local source_branch="$3"
   local label="$4"
 
-  git -C "$workspace_repo" fetch "$source_repo" "$source_branch" >/dev/null 2>&1 || die "failed to fetch ${label} branch ${source_branch} from $source_repo"
-  git -C "$workspace_repo" rebase FETCH_HEAD >/dev/null 2>&1 || die "rebase stopped in ${label}; resolve conflicts inside the workspace and continue or abort manually"
+  run_quietly git -C "$workspace_repo" fetch "$source_repo" "$source_branch" || die "failed to fetch ${label} branch ${source_branch} from $source_repo"
+  run_quietly git -C "$workspace_repo" rebase FETCH_HEAD || die "rebase stopped in ${label}; resolve conflicts inside the workspace and continue or abort manually"
 }
