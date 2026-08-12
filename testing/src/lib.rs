@@ -96,6 +96,7 @@ pub(crate) mod wait;
 
 pub use accesskit::Role as AccessKitRole;
 pub use app::{DragOptions, OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, ui};
+pub use executor::drain_parked_local_work;
 pub use hydrolysis::{KeyCode, Modifiers};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::FrameTiming;
