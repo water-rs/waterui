@@ -6,7 +6,7 @@
 //! - Download remote fonts with caching
 //! - Copy assets to platform-specific locations
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::PackageId;
@@ -18,6 +18,7 @@ use walkdir::WalkDir;
 use waterui_assets::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 
 use crate::project::Project;
+use crate::project_model::project_types::PermissionKey;
 
 mod unified;
 mod web;
@@ -138,6 +139,30 @@ struct HydrolysisWebFontManifestEntry {
 struct WaterUIMetadata {
     #[serde(default)]
     assets: AssetsMetadata,
+    /// Permissions this crate cannot work without, keyed by logical permission.
+    #[serde(default)]
+    permissions: BTreeMap<PermissionKey, PermissionRequirement>,
+}
+
+/// One crate's declaration that it needs a permission to function.
+#[derive(Debug, Deserialize)]
+struct PermissionRequirement {
+    /// Human-readable justification, shown to the application author.
+    reason: String,
+    /// Only required when this cargo feature is enabled on the declaring crate.
+    #[serde(default, rename = "required-feature")]
+    required_feature: Option<String>,
+}
+
+/// A permission some dependency needs, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequiredPermission {
+    /// Crate that declared the requirement.
+    pub package: String,
+    /// The logical permission.
+    pub key: PermissionKey,
+    /// Why that crate needs it.
+    pub reason: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1046,5 +1071,195 @@ mod tests {
             .expect("resolve should succeed")
             .expect("font should exist");
         assert_eq!(resolved, font_path.canonicalize().expect("canonical path"));
+    }
+}
+
+/// Collects the permissions this app's dependencies declare they need.
+///
+/// A crate states its own requirement in its manifest, so the CLI never has to
+/// know what any component does:
+///
+/// ```toml
+/// [package.metadata.waterui.permissions]
+/// internet = { reason = "downloads map styles and vector tiles" }
+/// ```
+///
+/// Declarations gated behind a cargo feature are skipped unless the resolved
+/// graph actually enabled that feature for the declaring crate.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` cannot be read.
+pub async fn scan_required_permissions(
+    project: &Project,
+) -> eyre::Result<Vec<RequiredPermission>> {
+    let manifest_path = project.root().join("Cargo.toml");
+    let metadata = smol::unblock({
+        let manifest_path = manifest_path.clone();
+        move || {
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(&manifest_path)
+                .exec()
+        }
+    })
+    .await
+    .wrap_err("Failed to run cargo metadata")?;
+
+    let enabled_features: HashMap<&PackageId, HashSet<&str>> = metadata
+        .resolve
+        .as_ref()
+        .map(|resolve| {
+            resolve
+                .nodes
+                .iter()
+                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut required = Vec::new();
+    for package in &metadata.packages {
+        let Some(waterui) = package.metadata.get("waterui") else {
+            continue;
+        };
+        let parsed: WaterUIMetadata = match serde_json::from_value(waterui.clone()) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                warn!(
+                    "Failed to parse waterui metadata for {}: {error}",
+                    package.name
+                );
+                continue;
+            }
+        };
+        let features = enabled_features.get(&package.id).cloned().unwrap_or_default();
+        for (key, requirement) in parsed.permissions {
+            if let Some(gate) = &requirement.required_feature
+                && !features.contains(gate.as_str())
+            {
+                debug!(
+                    "Skipping {key:?} for {}: feature `{gate}` is not enabled",
+                    package.name
+                );
+                continue;
+            }
+            required.push(RequiredPermission {
+                package: package.name.to_string(),
+                key,
+                reason: requirement.reason.clone(),
+            });
+        }
+    }
+    required.sort_by(|left, right| {
+        (left.key, left.package.as_str()).cmp(&(right.key, right.package.as_str()))
+    });
+    required.dedup();
+    Ok(required)
+}
+
+/// Selects the declared requirements this app has not satisfied.
+///
+/// `relevant` decides whether a permission means anything on the platform being
+/// built, so an iOS build stays quiet about `internet` (which iOS never
+/// declares) while an Android build does not. Keeping this separate from the
+/// reporting makes the selection itself testable.
+fn missing_permissions<'a>(
+    enabled: &HashSet<PermissionKey>,
+    required: &'a [RequiredPermission],
+    relevant: impl Fn(PermissionKey) -> bool,
+) -> Vec<&'a RequiredPermission> {
+    required
+        .iter()
+        .filter(|requirement| {
+            !enabled.contains(&requirement.key) && relevant(requirement.key)
+        })
+        .collect()
+}
+
+/// Reports dependencies that need a permission this app has not enabled.
+pub fn warn_missing_permissions(
+    project: &Project,
+    required: &[RequiredPermission],
+    relevant: impl Fn(PermissionKey) -> bool,
+) {
+    let enabled: HashSet<PermissionKey> = project
+        .manifest()
+        .permissions
+        .iter()
+        .filter(|(_, entry)| entry.is_enabled())
+        .map(|(key, _)| *key)
+        .collect();
+
+    for requirement in missing_permissions(&enabled, required, relevant) {
+        let key = permission_toml_key(requirement.key);
+        warn!(
+            "{} needs the `{key}` permission ({}). Add it to Water.toml:\n\n    [permissions.{key}]\n    enable = true\n",
+            requirement.package, requirement.reason
+        );
+    }
+}
+
+/// Renders a permission key the way it is written in `Water.toml`.
+fn permission_toml_key(key: PermissionKey) -> String {
+    serde_json::to_value(key)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{key:?}"))
+}
+
+#[cfg(test)]
+mod permission_audit_tests {
+    use super::*;
+
+    fn requirement(key: PermissionKey) -> RequiredPermission {
+        RequiredPermission {
+            package: String::from("waterui-map-gpu"),
+            key,
+            reason: String::from("downloads map styles and vector tiles"),
+        }
+    }
+
+    #[test]
+    fn a_declared_permission_the_app_enabled_is_not_reported() {
+        let enabled = HashSet::from([PermissionKey::Internet]);
+        let required = vec![requirement(PermissionKey::Internet)];
+
+        assert!(missing_permissions(&enabled, &required, |_| true).is_empty());
+    }
+
+    #[test]
+    fn a_missing_permission_is_reported_once() {
+        let required = vec![requirement(PermissionKey::Internet)];
+
+        let missing = missing_permissions(&HashSet::new(), &required, |_| true);
+
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].key, PermissionKey::Internet);
+    }
+
+    /// iOS never declares network access, so warning about it there would be
+    /// noise — and a warning that cries wolf stops being read.
+    #[test]
+    fn a_permission_the_platform_does_not_declare_stays_quiet() {
+        let required = vec![requirement(PermissionKey::Internet)];
+
+        let android = missing_permissions(&HashSet::new(), &required, |key| {
+            key.android_permission_name().is_some()
+        });
+        let ios = missing_permissions(&HashSet::new(), &required, |key| {
+            key.ios_plist_key().is_some()
+        });
+
+        assert_eq!(android.len(), 1, "Android must ask for INTERNET");
+        assert!(ios.is_empty(), "iOS declares no network permission");
+    }
+
+    #[test]
+    fn the_reported_key_matches_the_water_toml_spelling() {
+        assert_eq!(permission_toml_key(PermissionKey::Internet), "internet");
+        assert_eq!(
+            permission_toml_key(PermissionKey::CoarseLocation),
+            "coarse_location"
+        );
     }
 }

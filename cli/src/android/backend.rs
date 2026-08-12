@@ -91,6 +91,15 @@ impl Backend for AndroidBackend {
 
         let project_path = default_android_project_path();
 
+        // Android is where a missing declaration actually breaks things, so
+        // surface anything a dependency needs that the app has not enabled.
+        match crate::assets::scan_required_permissions(project).await {
+            Ok(required) => crate::assets::warn_missing_permissions(project, &required, |key| {
+                key.android_permission_name().is_some()
+            }),
+            Err(error) => tracing::debug!("skipped permission audit: {error}"),
+        }
+
         // Extract enabled permissions from the manifest
         let android_permissions = manifest
             .permissions
