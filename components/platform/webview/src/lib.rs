@@ -27,6 +27,8 @@ mod controller;
 pub use controller::*;
 pub use cookie::Cookie;
 use std::{cell::Cell, fmt, rc::Rc};
+#[macro_use]
+mod handle_layers;
 mod handler;
 pub use handler::*;
 mod proxy;
