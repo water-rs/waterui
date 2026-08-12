@@ -14,7 +14,7 @@ categories = ["gui"]
 waterui-core.workspace = true
 waterui-layout.workspace = true
 waterui-url.workspace = true
-waterui-str.workspace = true
+waterui-str = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 tracing.workspace = true
 executor-core.workspace = true
