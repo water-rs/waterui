@@ -84,6 +84,29 @@ impl<T: Effect> ErasedEffect for T {
 }
 
 type ReactiveParam = Reactive<Computed<f32>>;
+type BlendWithImageFilter = crate::multi_input_filter::BlendWithImageFilter<ReactiveParam>;
+type MaskedBlurFilter = crate::multi_input_filter::MaskedBlurFilter<ReactiveParam>;
+type TransitionToImageFilter = crate::multi_input_filter::TransitionToImageFilter<ReactiveParam>;
+type SwipeTransitionToImageFilter =
+    crate::multi_input_filter::SwipeTransitionToImageFilter<ReactiveParam>;
+type RadialTransitionToImageFilter =
+    crate::multi_input_filter::RadialTransitionToImageFilter<ReactiveParam>;
+type ZoomTransitionToImageFilter =
+    crate::multi_input_filter::ZoomTransitionToImageFilter<ReactiveParam>;
+type DisplacementTransitionToImageFilter =
+    crate::multi_input_filter::DisplacementTransitionToImageFilter<ReactiveParam>;
+type DisplacementWarpFilter = crate::multi_input_filter::DisplacementWarpFilter<ReactiveParam>;
+type GuidedSmoothFilter = crate::multi_input_filter::GuidedSmoothFilter<ReactiveParam>;
+type DepthAwareBlurFilter = crate::multi_input_filter::DepthAwareBlurFilter<ReactiveParam>;
+type TemporalDenoiseFilter = crate::multi_input_filter::TemporalDenoiseFilter<ReactiveParam>;
+type BackgroundReplaceFilter = crate::multi_input_filter::BackgroundReplaceFilter<ReactiveParam>;
+type LutColorGradeFilter = crate::multi_input_filter::LutColorGradeFilter<ReactiveParam>;
+type ToneCurveFilter = crate::multi_input_filter::ToneCurveFilter<ReactiveParam>;
+
+/// Wraps a signal-convertible scalar as a reactive filter parameter.
+fn reactive(value: impl IntoSignalF32) -> ReactiveParam {
+    Reactive(value.into_signal_f32().computed())
+}
 type ChainedFilter<V, F, Next> = Filtered<V, FilterAdapter<Chain<F, Next>>>;
 type TemperatureTintFilter = filtrate::filters::TemperatureTint<ReactiveParam, ReactiveParam>;
 type HighlightsShadowsFilter = filtrate::filters::HighlightsShadows<ReactiveParam, ReactiveParam>;
@@ -1204,207 +1227,256 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Blend the current content with an auxiliary image.
-    fn blend_with_image(
+    fn blend_with_image<T: IntoSignalF32>(
         self,
         image: crate::multi_input_filter::FilterImage,
-        amount: f32,
+        amount: T,
         mode: crate::multi_input_filter::BlendMode,
-    ) -> Filtered<Self, crate::multi_input_filter::BlendWithImageFilter> {
+    ) -> Filtered<Self, BlendWithImageFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::blend_with_image_filter(image, amount, mode),
+            crate::multi_input_filter::blend_with_image_filter(image, reactive(amount), mode),
         )
     }
 
     /// Apply masked blur using an auxiliary mask image.
-    fn masked_blur(
+    fn masked_blur<T: IntoSignalF32, U: IntoSignalF32>(
         self,
         mask: crate::multi_input_filter::FilterImage,
-        radius: f32,
-        strength: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::MaskedBlurFilter> {
+        radius: T,
+        strength: U,
+    ) -> Filtered<Self, MaskedBlurFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::masked_blur_filter(mask, radius, strength),
+            crate::multi_input_filter::masked_blur_filter(
+                mask,
+                reactive(radius),
+                reactive(strength),
+            ),
         )
     }
 
     /// Transition to another image.
-    fn transition_to_image(
+    fn transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
         target: crate::multi_input_filter::FilterImage,
-        progress: f32,
-        softness: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::TransitionToImageFilter> {
+        progress: T,
+        softness: U,
+    ) -> Filtered<Self, TransitionToImageFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::transition_to_image_filter(target, progress, softness),
+            crate::multi_input_filter::transition_to_image_filter(
+                target,
+                reactive(progress),
+                reactive(softness),
+            ),
         )
     }
 
     /// Transition to another image with a directional swipe.
-    fn swipe_transition_to_image(
+    fn swipe_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
         target: crate::multi_input_filter::FilterImage,
-        progress: f32,
-        softness: f32,
+        progress: T,
+        softness: U,
         direction: crate::multi_input_filter::TransitionDirection,
-    ) -> Filtered<Self, crate::multi_input_filter::SwipeTransitionToImageFilter> {
+    ) -> Filtered<Self, SwipeTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::swipe_transition_to_image_filter(
-                target, progress, softness, direction,
+                target,
+                reactive(progress),
+                reactive(softness),
+                direction,
             ),
         )
     }
 
     /// Transition to another image from a radial reveal center.
-    fn radial_transition_to_image(
+    fn radial_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
         target: crate::multi_input_filter::FilterImage,
-        progress: f32,
-        softness: f32,
+        progress: T,
+        softness: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::RadialTransitionToImageFilter> {
+    ) -> Filtered<Self, RadialTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::radial_transition_to_image_filter(
-                target, progress, softness, center_x, center_y,
+                target,
+                reactive(progress),
+                reactive(softness),
+                reactive(center_x),
+                reactive(center_y),
             ),
         )
     }
 
     /// Transition to another image with a zooming blend.
-    fn zoom_transition_to_image(
+    fn zoom_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
         target: crate::multi_input_filter::FilterImage,
-        progress: f32,
-        amount: f32,
+        progress: T,
+        amount: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::ZoomTransitionToImageFilter> {
+    ) -> Filtered<Self, ZoomTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::zoom_transition_to_image_filter(
-                target, progress, amount, center_x, center_y,
+                target,
+                reactive(progress),
+                reactive(amount),
+                reactive(center_x),
+                reactive(center_y),
             ),
         )
     }
 
     /// Transition to another image driven by a displacement map.
-    fn displacement_transition_to_image(
+    fn displacement_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
         target: crate::multi_input_filter::FilterImage,
         map: crate::multi_input_filter::FilterImage,
-        progress: f32,
-        scale: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::DisplacementTransitionToImageFilter> {
+        progress: T,
+        scale: U,
+    ) -> Filtered<Self, DisplacementTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::displacement_transition_to_image_filter(
-                target, map, progress, scale,
+                target,
+                map,
+                reactive(progress),
+                reactive(scale),
             ),
         )
     }
 
     /// Warp with an auxiliary displacement map.
-    fn displacement_warp(
+    fn displacement_warp<T: IntoSignalF32, U: IntoSignalF32>(
         self,
         map: crate::multi_input_filter::FilterImage,
-        scale_x: f32,
-        scale_y: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::DisplacementWarpFilter> {
+        scale_x: T,
+        scale_y: U,
+    ) -> Filtered<Self, DisplacementWarpFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::displacement_warp_filter(map, scale_x, scale_y),
+            crate::multi_input_filter::displacement_warp_filter(
+                map,
+                reactive(scale_x),
+                reactive(scale_y),
+            ),
         )
     }
 
     /// Apply guide-image-aware smoothing.
-    fn guided_smooth(
+    fn guided_smooth<T: IntoSignalF32, U: IntoSignalF32, W: IntoSignalF32>(
         self,
         guide: crate::multi_input_filter::FilterImage,
-        radius: f32,
-        range_sigma: f32,
-        amount: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::GuidedSmoothFilter> {
+        radius: T,
+        range_sigma: U,
+        amount: W,
+    ) -> Filtered<Self, GuidedSmoothFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::guided_smooth_filter(guide, radius, range_sigma, amount),
+            crate::multi_input_filter::guided_smooth_filter(
+                guide,
+                reactive(radius),
+                reactive(range_sigma),
+                reactive(amount),
+            ),
         )
     }
 
     /// Apply depth-aware blur using a depth map.
-    fn depth_aware_blur(
+    fn depth_aware_blur<T: IntoSignalF32, U: IntoSignalF32, W: IntoSignalF32>(
         self,
         depth: crate::multi_input_filter::FilterImage,
-        focus_depth: f32,
-        aperture: f32,
-        max_radius: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::DepthAwareBlurFilter> {
+        focus_depth: T,
+        aperture: U,
+        max_radius: W,
+    ) -> Filtered<Self, DepthAwareBlurFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::depth_aware_blur_filter(
                 depth,
-                focus_depth,
-                aperture,
-                max_radius,
+                reactive(focus_depth),
+                reactive(aperture),
+                reactive(max_radius),
             ),
         )
     }
 
     /// Temporal denoise/stabilize using history and motion maps.
-    fn temporal_denoise(
+    fn temporal_denoise<T: IntoSignalF32>(
         self,
         history: crate::multi_input_filter::FilterImage,
         motion: crate::multi_input_filter::FilterImage,
-        history_weight: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::TemporalDenoiseFilter> {
+        history_weight: T,
+    ) -> Filtered<Self, TemporalDenoiseFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::temporal_denoise_filter(history, motion, history_weight),
+            crate::multi_input_filter::temporal_denoise_filter(
+                history,
+                motion,
+                reactive(history_weight),
+            ),
         )
     }
 
     /// Replace background using matte and background images.
-    fn replace_background(
+    fn replace_background<T: IntoSignalF32>(
         self,
         matte: crate::multi_input_filter::FilterImage,
         background: crate::multi_input_filter::FilterImage,
-        edge_softness: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::BackgroundReplaceFilter> {
+        edge_softness: T,
+    ) -> Filtered<Self, BackgroundReplaceFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::background_replace_filter(matte, background, edge_softness),
+            crate::multi_input_filter::background_replace_filter(
+                matte,
+                background,
+                reactive(edge_softness),
+            ),
         )
     }
 
     /// Apply a 3D LUT color transform encoded as a 2D strip (`size*size x size`).
-    fn lut_color_grade(
+    fn lut_color_grade<T: IntoSignalF32>(
         self,
         lut: crate::multi_input_filter::LutImage,
-        intensity: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::LutColorGradeFilter> {
+        intensity: T,
+    ) -> Filtered<Self, LutColorGradeFilter> {
         Filtered::new(
             self,
-            crate::multi_input_filter::lut_color_grade_filter(lut, intensity),
+            crate::multi_input_filter::lut_color_grade_filter(lut, reactive(intensity)),
         )
     }
 
     /// Apply a simple master tone curve.
-    fn tone_curve(
+    fn tone_curve<
+        T: IntoSignalF32,
+        U: IntoSignalF32,
+        W: IntoSignalF32,
+        X: IntoSignalF32,
+        Y: IntoSignalF32,
+    >(
         self,
-        shadows: f32,
-        midtones: f32,
-        highlights: f32,
-        gamma: f32,
-        amount: f32,
-    ) -> Filtered<Self, crate::multi_input_filter::ToneCurveFilter> {
+        shadows: T,
+        midtones: U,
+        highlights: W,
+        gamma: X,
+        amount: Y,
+    ) -> Filtered<Self, ToneCurveFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::tone_curve_filter(
-                shadows, midtones, highlights, gamma, amount,
+                reactive(shadows),
+                reactive(midtones),
+                reactive(highlights),
+                reactive(gamma),
+                reactive(amount),
             ),
         )
     }
