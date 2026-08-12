@@ -233,6 +233,52 @@ mod tests {
         assert!(tiles.iter().all(|tile| tile.z == 14));
     }
 
+    /// North must land above south on screen. The existing tests only check
+    /// the projection's arithmetic, which stays self-consistent under a flip,
+    /// so nothing caught the map rendering upside down.
+    #[test]
+    fn north_projects_above_south() {
+        let camera = Camera::new(
+            Region::new(
+                Coordinate::from_degrees(40.7580, -73.9855).expect("valid coordinate"),
+                0.06,
+                0.06,
+            ),
+            Viewport {
+                width: 800,
+                height: 800,
+            },
+            0,
+            MAX_CAMERA_ZOOM,
+        );
+
+        let north = camera.coordinate_point(
+            Coordinate::from_degrees(40.7880, -73.9855).expect("valid coordinate"),
+        );
+        let south = camera.coordinate_point(
+            Coordinate::from_degrees(40.7280, -73.9855).expect("valid coordinate"),
+        );
+        let east = camera.coordinate_point(
+            Coordinate::from_degrees(40.7580, -73.9555).expect("valid coordinate"),
+        );
+        let west = camera.coordinate_point(
+            Coordinate::from_degrees(40.7580, -74.0155).expect("valid coordinate"),
+        );
+
+        assert!(
+            north.1 < south.1,
+            "north must be above south, got north_y={} south_y={}",
+            north.1,
+            south.1
+        );
+        assert!(
+            west.0 < east.0,
+            "west must be left of east, got west_x={} east_x={}",
+            west.0,
+            east.0
+        );
+    }
+
     /// A 256px raster source carries half the detail of the 512px reference
     /// tile, so it must be requested one zoom level deeper to match on screen.
     #[test]
