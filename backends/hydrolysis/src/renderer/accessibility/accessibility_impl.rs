@@ -171,6 +171,26 @@ impl AccessibilityBuilder {
         self.reset_scene();
     }
 
+    /// The most specific node covering `point`, in window coordinates.
+    ///
+    /// Nodes are registered as the tree is walked, so a child is always pushed
+    /// after the parent that contains it and the last match is the innermost
+    /// one — the element a user pointing at that spot means.
+    pub(crate) fn node_at_point(&self, point: vello::kurbo::Point) -> Option<AccessibilityNodeId> {
+        self.nodes
+            .iter()
+            .rev()
+            .find(|(_, node)| {
+                node.bounds().is_some_and(|bounds| {
+                    point.x >= bounds.x0
+                        && point.x < bounds.x1
+                        && point.y >= bounds.y0
+                        && point.y < bounds.y1
+                })
+            })
+            .map(|(id, _)| *id)
+    }
+
     pub(crate) fn next_node_id(&mut self) -> AccessibilityNodeId {
         let node_id = AccessibilityNodeId(self.next_node_id);
         self.next_node_id = self

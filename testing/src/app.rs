@@ -805,6 +805,13 @@ impl SemanticApp {
         self.settle();
     }
 
+    /// Right-clicks at viewport coordinates, opening a context menu if there is
+    /// one there.
+    pub fn secondary_click_at(&mut self, x: f32, y: f32) {
+        self.driver.secondary_click(x, y, &self.env);
+        self.settle();
+    }
+
     /// Dispatches a primary pointer-up event at viewport coordinates.
     pub fn pointer_up_at(&mut self, x: f32, y: f32) {
         self.driver.pointer_up(x, y, &self.env);

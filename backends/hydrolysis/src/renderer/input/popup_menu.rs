@@ -642,6 +642,55 @@ impl HydrolysisRenderer {
         self.popup_menu.register_picker_menu(open);
     }
 
+    /// Appends the debug build's "inspect this element" entry.
+    ///
+    /// A debug build offers it on every secondary click, the way a browser
+    /// does, so an application does not have to opt in to being inspectable.
+    /// A release build appends nothing, and a secondary click on something with
+    /// no menu of its own goes on doing nothing.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn append_inspect_element_item(
+        &self,
+        items: &mut Vec<PopupMenuNode>,
+        point: vello::kurbo::Point,
+    ) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        // Without a node there is nothing to reveal, and an entry that silently
+        // does nothing is worse than no entry at all.
+        let Some(node) = self.accessibility.node_at_point(point) else {
+            return;
+        };
+        if !items.is_empty() {
+            items.push(PopupMenuNode::Divider);
+        }
+        let plain_label = String::from("Inspect element");
+        items.push(PopupMenuNode::Command {
+            label: waterui_controls::label::label(plain_label.clone()),
+            plain_label,
+            action: waterui_core::handler::SharedAction::new(
+                move |env: waterui_core::Environment| {
+                    let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+                        return;
+                    };
+                    inspector.inspect_node(waterui_inspector_protocol::NodeId(node.0));
+                },
+            ),
+            disabled: false,
+        });
+    }
+
+    /// Inspecting an element means naming it in the accessibility tree, so a
+    /// build without that tree has no name to send.
+    #[cfg(not(feature = "accessibility"))]
+    pub(crate) fn append_inspect_element_item(
+        &self,
+        _items: &mut Vec<PopupMenuNode>,
+        _point: vello::kurbo::Point,
+    ) {
+    }
+
     pub(crate) fn topmost_context_menu_target_at_point(
         &self,
         point: vello::kurbo::Point,

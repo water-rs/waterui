@@ -32,6 +32,8 @@ use std::time::Duration;
 
 use waterui_core::Environment;
 #[cfg(not(target_arch = "wasm32"))]
+use waterui_inspector_protocol::discovery::Advertisement;
+#[cfg(not(target_arch = "wasm32"))]
 use waterui_inspector_protocol::{ChannelSet, TargetInfo};
 
 use crate::task::RuntimeProbe;
@@ -48,6 +50,13 @@ mod signals;
 mod tasks;
 
 use hub::EventHub;
+/// The wire protocol this endpoint speaks.
+///
+/// Re-exported because the public API is stated in its terms — inspecting an
+/// element names a [`protocol::NodeId`] — and a caller cannot depend on the
+/// protocol crate just to say which node it means.
+pub use waterui_inspector_protocol as protocol;
+
 pub use logs::InspectorLayer;
 pub use recorder::{FrameRecorder, TreeRecorder};
 
@@ -118,6 +127,57 @@ impl InspectorServerConfig {
                 .unwrap_or_else(|_| String::from("WaterUI application")),
         }))
     }
+
+    /// The configuration a debug build inspects itself with.
+    ///
+    /// Returns `None` in a release build: inspection there stays opt-in through
+    /// [`Self::from_env`].
+    ///
+    /// The token is generated per process, so an endpoint is never open to
+    /// whoever happens to reach the port. Where the endpoint listens depends on
+    /// who needs to reach it: a desktop application is inspected from the same
+    /// machine and binds loopback, while a phone or a simulator is inspected
+    /// from the developer's computer and has to be reachable from it.
+    #[must_use]
+    pub fn for_debug_build() -> Option<Self> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        Some(Self {
+            host: debug_host(),
+            port: DEFAULT_PORT,
+            token: generate_token(),
+            task_window: Duration::from_millis(DEFAULT_TASK_WINDOW_MS),
+            stall_ratio: DEFAULT_STALL_RATIO,
+            app_name: std::env::var("WATERUI_INSPECTOR_APP_NAME")
+                .unwrap_or_else(|_| String::from("WaterUI application")),
+        })
+    }
+}
+
+/// Where a debug build listens.
+///
+/// A mobile target is inspected from a computer, so it has to accept a
+/// connection that did not come from itself; everything else is inspected from
+/// the machine it runs on.
+const fn debug_host() -> IpAddr {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    } else {
+        DEFAULT_HOST
+    }
+}
+
+/// A token for one process, from the system's random source.
+fn generate_token() -> String {
+    use std::hash::{BuildHasher, Hasher, RandomState};
+
+    let mut token = String::with_capacity(32);
+    for _ in 0..2 {
+        let value = RandomState::new().build_hasher().finish();
+        token.push_str(&format!("{value:016x}"));
+    }
+    token
 }
 
 fn parse_env<T>(name: &str) -> Result<Option<T>, String>
@@ -138,8 +198,25 @@ where
 /// A listening inspector endpoint and the producers that feed it.
 pub struct InspectorRuntime {
     endpoint: InspectorEndpointInfo,
+    #[cfg(not(target_arch = "wasm32"))]
+    advertisement: Advertisement,
     hub: Arc<EventHub>,
     task_probe: Arc<tasks::TaskProbe>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for InspectorRuntime {
+    fn drop(&mut self) {
+        // A file naming an endpoint that no longer exists sends the next reader
+        // to a closed port.
+        if let Err(error) = self.advertisement.withdraw() {
+            tracing::warn!(
+                target: "waterui::inspector",
+                error = %error,
+                "Could not withdraw the inspector advertisement"
+            );
+        }
+    }
 }
 
 impl std::fmt::Debug for InspectorRuntime {
@@ -162,6 +239,63 @@ impl InspectorRuntime {
     #[must_use]
     pub fn runtime_probe(&self) -> Arc<dyn RuntimeProbe> {
         Arc::clone(&self.task_probe) as Arc<dyn RuntimeProbe>
+    }
+
+    /// Reveals `node` in an inspector, opening one if none is attached.
+    ///
+    /// This is what "inspect this element" does. When an inspector is already
+    /// attached it simply jumps to the node; otherwise one is launched and the
+    /// node waits for it, so the element the user pointed at is what they see
+    /// when the window appears.
+    ///
+    /// On a phone or a simulator there is nothing to launch — the inspector
+    /// runs on the developer's computer — so the endpoint is reported instead
+    /// and the node is revealed whenever that inspector attaches.
+    pub fn inspect_node(&self, node: waterui_inspector_protocol::NodeId) {
+        self.hub.select_node(node);
+        if self.hub.has_clients() {
+            return;
+        }
+        self.launch_inspector();
+    }
+
+    /// Starts an inspector pointed at this endpoint.
+    fn launch_inspector(&self) {
+        if cfg!(any(target_os = "android", target_os = "ios")) {
+            tracing::info!(
+                target: "waterui::inspector",
+                inspector_addr = %self.endpoint.addr,
+                token = %self.endpoint.token,
+                "Inspect requested; attach from your computer with `water inspect`"
+            );
+            return;
+        }
+
+        // The CLI owns knowing how to build and run the inspector application
+        // for this platform, so this asks for it by name rather than
+        // reimplementing any of that here.
+        let launched = std::process::Command::new("water")
+            .arg("inspect")
+            .arg("--target")
+            .arg(self.endpoint.addr.to_string())
+            .arg("--token")
+            .arg(&self.endpoint.token)
+            .spawn();
+
+        match launched {
+            Ok(_) => tracing::info!(
+                target: "waterui::inspector",
+                inspector_addr = %self.endpoint.addr,
+                "Launching the inspector"
+            ),
+            Err(error) => tracing::warn!(
+                target: "waterui::inspector",
+                error = %error,
+                inspector_addr = %self.endpoint.addr,
+                token = %self.endpoint.token,
+                "Could not launch `water inspect`; attach manually"
+            ),
+        }
     }
 
     /// A handle the rendering backend uses to report frame timings.
@@ -228,12 +362,16 @@ fn available_channels() -> ChannelSet {
     available
 }
 
-/// Starts the endpoint from the environment, if inspection is enabled.
+/// Starts the endpoint from the environment, or automatically in a debug build.
+///
+/// A debug build listens without being asked, so that any WaterUI application a
+/// developer runs can be inspected without deciding in advance that it should
+/// be. A release build inspects only when the environment says so.
 #[must_use]
 pub fn maybe_init_from_env() -> Option<InspectorRuntime> {
     let config = match InspectorServerConfig::from_env() {
         Ok(Some(config)) => config,
-        Ok(None) => return None,
+        Ok(None) => InspectorServerConfig::for_debug_build()?,
         Err(error) => {
             tracing::warn!(
                 target: "waterui::inspector",
@@ -292,6 +430,29 @@ pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorRu
             move || server::dispatch_loop(&hub, &receiver, available)
         })?;
 
+        // Publishing is what lets a tool attach without being told a port. A
+        // failure here costs discovery, not inspection, so it is reported and
+        // the endpoint keeps running.
+        let advertisement = Advertisement {
+            pid: target.pid,
+            app_name: target.name.clone(),
+            backend: target.backend.clone(),
+            addr,
+            token: config.token.clone(),
+        };
+        match advertisement.publish() {
+            Ok(path) => tracing::info!(
+                target: "waterui::inspector",
+                path = %path.display(),
+                "Inspector endpoint advertised"
+            ),
+            Err(error) => tracing::warn!(
+                target: "waterui::inspector",
+                error = %error,
+                "Could not advertise the inspector endpoint; attach by address instead"
+            ),
+        }
+
         spawn("waterui-inspector-accept", {
             let hub = Arc::clone(&hub);
             let token = config.token.clone();
@@ -305,6 +466,7 @@ pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorRu
         );
 
         Ok(InspectorRuntime {
+            advertisement,
             endpoint: InspectorEndpointInfo {
                 addr,
                 token: config.token,

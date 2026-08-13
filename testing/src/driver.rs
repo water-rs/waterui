@@ -53,6 +53,9 @@ pub trait A11yDriver {
     fn hover_at(&mut self, x: f32, y: f32, env: &Environment);
     fn pointer_down(&mut self, x: f32, y: f32, env: &Environment);
     fn pointer_move(&mut self, x: f32, y: f32, env: &Environment);
+    /// Presses and releases the secondary button, which is what opens a context
+    /// menu.
+    fn secondary_click(&mut self, x: f32, y: f32, env: &Environment);
     fn pointer_up(&mut self, x: f32, y: f32, env: &Environment);
     fn scroll_at(
         &mut self,
@@ -241,6 +244,27 @@ impl A11yDriver for HydrolysisA11yDriver {
             x,
             y,
             button: PointerButton::Primary,
+        });
+    }
+
+    fn secondary_click(&mut self, x: f32, y: f32, _env: &Environment) {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing secondary click requested before runtime initialization");
+        runtime.push_input_event(InputEvent::PointerDown {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Secondary,
+        });
+        runtime.push_input_event(InputEvent::PointerUp {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Secondary,
         });
     }
 

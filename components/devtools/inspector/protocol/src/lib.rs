@@ -17,7 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 
-pub mod channel;
+mod channel;
+pub mod discovery;
 pub mod event;
 pub mod tcp;
 pub mod transport;
@@ -114,6 +115,15 @@ pub enum InspectorServerMessage {
         channel: Channel,
         /// How many events were lost since the last report.
         events: u64,
+    },
+    /// Show this node: the user asked to inspect an element in the target.
+    ///
+    /// Sent unprompted, when someone picks "inspect" on something they are
+    /// pointing at. An inspector that has not opened the tree channel still
+    /// receives it, and is expected to open the tree and reveal the node.
+    Select {
+        /// The node to reveal, in the same id space as the tree channel.
+        node: NodeId,
     },
     /// Liveness response.
     Pong,
