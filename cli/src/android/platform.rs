@@ -394,7 +394,8 @@ impl AndroidPlatform {
         let abi = self.abi();
         let triple = self.triple();
         let build_context = resolve_android_build_context(abi, &triple).await?;
-        let mut build = configure_android_rust_build(project, &triple, &build_context, &options).await?;
+        let mut build =
+            configure_android_rust_build(project, &triple, &build_context, &options).await?;
         let runtime_fingerprint = if options.linkage() == RustLinkage::SharedRuntime {
             // The fingerprint must resolve the same feature set the build passes
             // (capabilities included), or projects with different capabilities
