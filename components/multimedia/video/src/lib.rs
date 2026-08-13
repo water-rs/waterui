@@ -20,7 +20,7 @@ pub use session::{
 /// Public video view configuration types.
 pub mod video;
 pub use video::{
-    AspectRatio, AudioTrackInfo, AudioTrackSelection, EquirectangularProjection, Event, LiveWindow,
+    AudioTrackInfo, AudioTrackSelection, ContentMode, EquirectangularProjection, Event, LiveWindow,
     NetworkPlaybackPolicy, PlaybackConfiguration, PlaybackMetrics, PlaybackOutputPath,
     PlaybackPolicy, PlaybackPowerPolicy, SphericalStereoLayout, SphericalViewport,
     SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TimedMetadata, TrackCatalog, Video,

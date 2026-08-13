@@ -64,7 +64,7 @@ use waterui_text::Text;
 
 use waterui_video::video::VideoEventHandler;
 use waterui_video::{
-    AspectRatio, AudioTrackInfo, AudioTrackSelection, Delivery, DrmConfiguration,
+    AudioTrackInfo, AudioTrackSelection, ContentMode, Delivery, DrmConfiguration,
     EquirectangularProjection, Event, LiveWindow, MediaItem, PlaybackConfiguration,
     PlaybackMetrics, PlaybackOutputPath, PlaybackPhase, PlaybackPolicy, PlaybackPowerPolicy,
     PlayerController, RepeatMode, SphericalStereoLayout, SphericalViewport, SubtitleSelection,
@@ -628,7 +628,7 @@ struct VertexLayoutKey {
     surface_height: u32,
     video_width: u32,
     video_height: u32,
-    aspect_ratio: AspectRatio,
+    content_mode: ContentMode,
 }
 
 #[derive(Debug)]
@@ -760,7 +760,7 @@ fn prepare_playback(
 fn video_hook(env: &Environment, config: VideoConfig, options: &VideoGpuOptions) -> AnyView {
     let VideoConfig {
         playback,
-        aspect_ratio,
+        content_mode,
         projection,
         loops,
     } = config;
@@ -804,7 +804,7 @@ fn video_hook(env: &Environment, config: VideoConfig, options: &VideoGpuOptions)
         muted,
         playback_rate,
         preserve_pitch,
-        aspect_ratio,
+        content_mode,
         projection,
         loops,
         playback_policy,
@@ -825,7 +825,7 @@ fn video_player_hook(
 ) -> AnyView {
     let VideoPlayerConfig {
         playback,
-        aspect_ratio,
+        content_mode,
         projection,
         show_controls,
     } = config;
@@ -885,7 +885,7 @@ fn video_player_hook(
             muted,
             playback_rate,
             preserve_pitch,
-            aspect_ratio,
+            content_mode,
             projection,
             loops: false,
             playback_policy,
@@ -1944,7 +1944,7 @@ struct VideoSurfaceConfig {
     muted: Binding<bool>,
     playback_rate: Binding<f32>,
     preserve_pitch: Binding<bool>,
-    aspect_ratio: AspectRatio,
+    content_mode: ContentMode,
     projection: VideoProjection,
     loops: bool,
     playback_policy: PlaybackPolicy,
@@ -2335,7 +2335,7 @@ struct VideoRenderer {
     muted: Binding<bool>,
     playback_rate: Binding<f32>,
     preserve_pitch: Binding<bool>,
-    aspect_ratio: AspectRatio,
+    content_mode: ContentMode,
     projection: VideoProjection,
     viewport: Option<(u32, u32)>,
     loops: bool,
@@ -2585,7 +2585,7 @@ impl fmt::Debug for VideoRenderer {
             .field("subtitle_track_count", &self.subtitle_tracks.len())
             .field("active_subtitle_track", &self.active_subtitle_track)
             .field("loops", &self.loops)
-            .field("aspect_ratio", &self.aspect_ratio)
+            .field("content_mode", &self.content_mode)
             .field("source_asset", &self.source_asset)
             .field("has_decode", &self.decode_worker.is_some())
             .field("has_pending_frame", &self.pending_frame.is_some())
@@ -2641,7 +2641,7 @@ impl VideoRenderer {
             muted,
             playback_rate,
             preserve_pitch,
-            aspect_ratio,
+            content_mode,
             projection,
             loops,
             playback_policy,
@@ -2685,7 +2685,7 @@ impl VideoRenderer {
             muted,
             playback_rate,
             preserve_pitch,
-            aspect_ratio,
+            content_mode,
             projection,
             viewport: None,
             loops,
@@ -5100,10 +5100,10 @@ impl VideoRenderer {
             surface_height: surface_height.max(1),
             video_width: texture.width().max(1),
             video_height: texture.height().max(1),
-            aspect_ratio: if self.projection.is_spherical() {
-                AspectRatio::Stretch
+            content_mode: if self.projection.is_spherical() {
+                ContentMode::Stretch
             } else {
-                self.aspect_ratio
+                self.content_mode
             },
         };
 
@@ -5112,7 +5112,7 @@ impl VideoRenderer {
         }
 
         let vertices = build_vertices(
-            key.aspect_ratio,
+            key.content_mode,
             key.video_width,
             key.video_height,
             key.surface_width,
@@ -5406,7 +5406,7 @@ impl GpuView for VideoRenderer {
     }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        if self.projection.is_spherical() || self.aspect_ratio != AspectRatio::Fit {
+        if self.projection.is_spherical() || self.content_mode != ContentMode::Fit {
             return ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
@@ -5442,9 +5442,9 @@ impl GpuView for VideoRenderer {
         if self.projection.is_spherical() {
             return StretchAxis::Both;
         }
-        match self.aspect_ratio {
-            AspectRatio::Fit => StretchAxis::Horizontal,
-            AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
+        match self.content_mode {
+            ContentMode::Fit => StretchAxis::Horizontal,
+            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     }
 }
@@ -5875,7 +5875,7 @@ fn start_asset_download(url: &str, destination: PathBuf) -> (PathBuf, Receiver<D
 }
 
 fn build_vertices(
-    aspect_ratio: AspectRatio,
+    content_mode: ContentMode,
     video_width: u32,
     video_height: u32,
     surface_width: u32,
@@ -5893,15 +5893,15 @@ fn build_vertices(
     let mut v_min = 0.0;
     let mut v_max = 1.0;
 
-    match aspect_ratio {
-        AspectRatio::Fit => {
+    match content_mode {
+        ContentMode::Fit => {
             if surface_ratio > video_ratio {
                 scale_x = (video_ratio / surface_ratio).clamp(0.0, 1.0);
             } else {
                 scale_y = (surface_ratio / video_ratio).clamp(0.0, 1.0);
             }
         }
-        AspectRatio::Fill => {
+        ContentMode::Fill => {
             if surface_ratio > video_ratio {
                 let visible_vertical = (video_ratio / surface_ratio).clamp(0.0, 1.0);
                 let crop = (1.0 - visible_vertical) * 0.5;
@@ -5914,7 +5914,7 @@ fn build_vertices(
                 u_max = 1.0 - crop;
             }
         }
-        AspectRatio::Stretch => {}
+        ContentMode::Stretch => {}
     }
 
     [
@@ -5930,7 +5930,7 @@ fn build_vertices(
 #[cfg(test)]
 mod tests {
     use super::{
-        AspectRatio, ColorOutputTarget, DecodedPixelLayout, PlaybackObservability, PlaybackPolicy,
+        ColorOutputTarget, ContentMode, DecodedPixelLayout, PlaybackObservability, PlaybackPolicy,
         PresentedFrameHistory, SphericalProjectionUniform, VideoColorInfo, Volume, build_vertices,
         create_color_uniform_buffer, create_spherical_projection_uniform_buffer,
         create_video_bind_group_layout, create_video_render_pipeline, create_video_sampler,
@@ -6157,7 +6157,7 @@ mod tests {
                 entries: &entries,
             });
             let vertices = build_vertices(
-                AspectRatio::Stretch,
+                ContentMode::Stretch,
                 VISUAL_WIDTH,
                 VISUAL_HEIGHT,
                 VISUAL_WIDTH,

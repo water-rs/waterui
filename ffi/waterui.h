@@ -898,22 +898,22 @@ typedef enum WuiVideoPlaybackPowerPolicy {
 } WuiVideoPlaybackPowerPolicy;
 
 /**
- * FFI representation of the video content's aspect-ratio fit mode.
+ * FFI representation of how the picture fills the bounds it is given.
  */
-typedef enum WuiAspectRatio {
+typedef enum WuiContentMode {
   /**
    * Scale to fit entirely within the bounds, preserving aspect ratio.
    */
-  WuiAspectRatio_Fit = 0,
+  WuiContentMode_Fit = 0,
   /**
    * Scale to fill the bounds, preserving aspect ratio and cropping overflow.
    */
-  WuiAspectRatio_Fill = 1,
+  WuiContentMode_Fill = 1,
   /**
    * Stretch to exactly fill the bounds, ignoring aspect ratio.
    */
-  WuiAspectRatio_Stretch = 2,
-} WuiAspectRatio;
+  WuiContentMode_Stretch = 2,
+} WuiContentMode;
 
 /**
  * Native projection support discriminator.
@@ -5552,9 +5552,9 @@ typedef struct WuiVideo {
    */
   struct WuiVideoPlaybackDescriptor playback;
   /**
-   * The aspect ratio mode for video playback.
+   * How the picture fills the bounds it is given.
    */
-  enum WuiAspectRatio aspect_ratio;
+  enum WuiContentMode content_mode;
   /**
    * Projection requested by the semantic component.
    */
@@ -5574,9 +5574,9 @@ typedef struct WuiVideoPlayer {
    */
   struct WuiVideoPlaybackDescriptor playback;
   /**
-   * The aspect ratio mode for video playback.
+   * How the picture fills the bounds it is given.
    */
-  enum WuiAspectRatio aspect_ratio;
+  enum WuiContentMode content_mode;
   /**
    * Projection requested by the semantic component.
    */

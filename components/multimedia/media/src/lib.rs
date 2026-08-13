@@ -74,10 +74,10 @@ pub mod video {
 pub use {
     live::LivePhoto,
     photo::Photo,
-    video::{
-        AspectRatio, Event, SubtitleSelection, Video, VideoConfig, VideoPlayer, VideoPlayerConfig,
-        Volume,
-    },
+    // `ContentMode` is deliberately not re-exported unqualified: the layout crate
+    // owns that name in the prelude for its ratio-box fill mode. Video's own
+    // gravity mode stays at `media::video::ContentMode`.
+    video::{Event, SubtitleSelection, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume},
     waterui_image::Image,
     waterui_video::{
         Delivery, MediaItem, MediaItemId, PlaybackError, PlaybackPhase, PlaybackSession,

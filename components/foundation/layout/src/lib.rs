@@ -67,6 +67,7 @@ pub mod stack;
 pub use scroll::{ScrollController, ScrollView, scroll};
 
 pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
+pub use aspect_ratio::{AspectRatio, AspectRatioLayout, ContentMode, aspect_ratio};
 pub use collection_transition::{CollectionTransition, collection_transition};
 pub use container::LazyContainer;
 
