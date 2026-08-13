@@ -31,15 +31,19 @@ impl Layout for PaddingLayout {
             .first()
             .map_or(Size::zero(), |c| c.measure(child_proposal).size);
 
-        // Handle infinite dimensions
+        // A greedy child reports an infinite extent, which cannot be added to the
+        // insets, so resolve it against the offer instead. With nothing offered
+        // there is nothing to fill, and the inset alone is the answer — never a
+        // negative extent, which is what subtracting the insets from a missing
+        // proposal used to produce.
         let child_width = if child_size.width.is_infinite() {
-            proposal.width.unwrap_or(0.0) - horizontal_padding
+            (proposal.width.unwrap_or(0.0) - horizontal_padding).max(0.0)
         } else {
             child_size.width
         };
 
         let child_height = if child_size.height.is_infinite() {
-            proposal.height.unwrap_or(0.0) - vertical_padding
+            (proposal.height.unwrap_or(0.0) - vertical_padding).max(0.0)
         } else {
             child_size.height
         };
