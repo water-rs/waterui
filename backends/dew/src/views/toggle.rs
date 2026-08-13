@@ -11,7 +11,6 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
-use crate::theme;
 use crate::views::{LabelText, to_f32};
 
 /// Switch track width in logical pixels (the familiar pill footprint).
@@ -149,13 +148,16 @@ fn render(
     }
 
     let radius = TRACK_HEIGHT / 2.0;
+    let palette = renderer.theme();
     let track_color = if disabled {
-        theme::BORDER
+        palette.border()
     } else if on {
-        theme::ACCENT
+        palette.accent()
     } else {
-        theme::TRACK
+        palette.track()
     };
+    let thumb_color = palette.thumb();
+    let border_color = palette.border();
     renderer.list_mut().fill(
         &RoundedRect::from_rect(track, radius),
         ctx.transform,
@@ -168,14 +170,12 @@ fn render(
         track.x0 + radius
     };
     let thumb = Circle::new((thumb_center_x, track.y0 + radius), radius - THUMB_INSET);
-    renderer
-        .list_mut()
-        .fill(&thumb, ctx.transform, theme::THUMB);
+    renderer.list_mut().fill(&thumb, ctx.transform, thumb_color);
     renderer.list_mut().stroke(
         &thumb,
         ctx.transform,
         Stroke::new(THUMB_BORDER),
-        theme::BORDER,
+        border_color,
     );
 }
 

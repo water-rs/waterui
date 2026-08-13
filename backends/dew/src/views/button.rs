@@ -97,7 +97,7 @@ impl DewNode for ButtonNode {
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
         let disabled = self.disabled.get();
-        let (background, border, foreground) = palette(self.style, disabled);
+        let (background, border, foreground) = palette(renderer.theme(), self.style, disabled);
         if let Some(background) = background {
             renderer.list_mut().fill(
                 &RoundedRect::from_rect(ctx.bounds, CORNER_RADIUS),
@@ -128,6 +128,7 @@ impl DewNode for ButtonNode {
 }
 
 fn palette(
+    theme: &theme::ThemePalette,
     style: ButtonStyle,
     disabled: bool,
 ) -> (Option<peniko::Color>, Option<peniko::Color>, peniko::Color) {
@@ -137,19 +138,21 @@ fn palette(
                 style,
                 ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::BorderedProminent
             )
-            .then_some(theme::SURFACE),
+            .then_some(theme.surface()),
             matches!(style, ButtonStyle::Automatic | ButtonStyle::Bordered)
-                .then_some(theme::BORDER),
-            theme::MUTED_FOREGROUND,
+                .then_some(theme.border()),
+            theme.muted_foreground(),
         );
     }
     match style {
-        ButtonStyle::Automatic | ButtonStyle::Bordered => {
-            (Some(theme::SURFACE), Some(theme::BORDER), theme::FOREGROUND)
-        }
-        ButtonStyle::BorderedProminent => (Some(theme::ACCENT), None, theme::ACCENT_FOREGROUND),
-        ButtonStyle::Plain | ButtonStyle::Borderless => (None, None, theme::FOREGROUND),
-        ButtonStyle::Link => (None, None, theme::ACCENT),
+        ButtonStyle::Automatic | ButtonStyle::Bordered => (
+            Some(theme.surface()),
+            Some(theme.border()),
+            theme.foreground(),
+        ),
+        ButtonStyle::BorderedProminent => (Some(theme.accent()), None, theme.accent_foreground()),
+        ButtonStyle::Plain | ButtonStyle::Borderless => (None, None, theme.foreground()),
+        ButtonStyle::Link => (None, None, theme.accent()),
         _ => panic!("dew does not implement ButtonStyle::{style:?}"),
     }
 }

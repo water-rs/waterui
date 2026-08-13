@@ -123,6 +123,7 @@ impl GtkApp {
                     .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
                 env.insert(runtime);
                 let window = create_window(&app, "WaterUI App", 800, 600);
+                crate::theme::install(&mut env, window.upcast_ref());
                 let mut renderer = GtkRenderer::new();
                 let widget = renderer.render(view, &env);
                 window.set_child(Some(&widget));
@@ -189,6 +190,7 @@ impl GtkApp {
                     .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
                 env.insert(runtime);
                 let window = create_window(&app, "", 800, 600);
+                crate::theme::install(&mut env, window.upcast_ref());
                 apply_window_background(&window, &background, &env);
 
                 let (initial_title, title_guard) = subscribe_then_get(&title, {

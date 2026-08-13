@@ -14,7 +14,6 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::text::DewState;
-use crate::theme;
 use crate::views::{LabelText, emit_styled_text, to_f32};
 
 /// Minimum input box width.
@@ -107,16 +106,20 @@ fn render(
     }
 
     let box_rect = Rect::new(bounds.x0, bounds.y0 + label_height, bounds.x1, bounds.y1);
+    let surface = renderer.theme().surface();
+    let border = renderer.theme().border();
+    let muted_foreground = renderer.theme().muted_foreground();
+    let foreground = renderer.theme().foreground();
     renderer.list_mut().fill(
         &RoundedRect::from_rect(box_rect, CORNER_RADIUS),
         ctx.transform,
-        theme::SURFACE,
+        surface,
     );
     renderer.list_mut().stroke(
         &RoundedRect::from_rect(box_rect, CORNER_RADIUS),
         ctx.transform,
         Stroke::new(BOX_BORDER),
-        theme::BORDER,
+        border,
     );
 
     let content_rect = Rect::new(
@@ -129,16 +132,9 @@ fn render(
         return;
     }
     if value.to_plain().is_empty() {
-        emit_styled_text(
-            renderer,
-            ctx,
-            content_rect,
-            prompt,
-            env,
-            theme::MUTED_FOREGROUND,
-        );
+        emit_styled_text(renderer, ctx, content_rect, prompt, env, muted_foreground);
     } else {
-        emit_styled_text(renderer, ctx, content_rect, value, env, theme::FOREGROUND);
+        emit_styled_text(renderer, ctx, content_rect, value, env, foreground);
     }
 }
 
