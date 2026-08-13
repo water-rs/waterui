@@ -153,6 +153,7 @@ use waterui_graphics::{
     AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
     ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
 };
+
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -180,6 +181,9 @@ use crate::platform::{
 use crate::scroll::ScrollHandle;
 use crate::time::Instant;
 use crate::widgets::{inset_rect, widget_theme};
+
+#[derive(Clone, Copy)]
+pub(crate) struct DynamicRangePreference(pub(crate) bool);
 
 const OPACITY_ANIMATION_KEY: usize = 0x0100_0001;
 const SCALE_X_ANIMATION_KEY: usize = 0x0100_0002;

@@ -74,6 +74,9 @@ use crate::component::GtkComponent;
 use crate::components::menu::rebuild_menu_popover;
 use crate::util::{ScopedCss, store_watcher_guard, subscribe_then_get};
 
+pub(crate) const CSS_CLASS_DYNAMIC_RANGE_SDR: &str = "waterui-dynamic-range-sdr";
+pub(crate) const CSS_CLASS_DYNAMIC_RANGE_HDR: &str = "waterui-dynamic-range-hdr";
+
 const FOCUS_ANCHOR_DATA_KEY: &str = "waterui_focus_anchor";
 const FOCUS_REQUEST_PENDING_DATA_KEY: &str = "waterui_focus_request_pending";
 const FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY: &str = "waterui_focus_map_handler_installed";
@@ -1297,9 +1300,24 @@ impl GtkRenderer {
         // Metadata<Secure> - passthrough (GTK cannot enforce screenshot protection)
         Self::register_passthrough_metadata::<Secure>(dispatcher);
 
-        // Metadata<StandardDynamicRange> / Metadata<HighDynamicRange> - passthrough on GTK
-        Self::register_passthrough_metadata::<StandardDynamicRange>(dispatcher);
-        Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
+        Self::register_with_renderer::<Metadata<StandardDynamicRange>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let content = renderer.render_any(metadata.content, env);
+                let wrapper = wrap_for_metadata(&content);
+                wrapper.add_css_class(CSS_CLASS_DYNAMIC_RANGE_SDR);
+                wrapper.upcast()
+            },
+        );
+        Self::register_with_renderer::<Metadata<HighDynamicRange>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let content = renderer.render_any(metadata.content, env);
+                let wrapper = wrap_for_metadata(&content);
+                wrapper.add_css_class(CSS_CLASS_DYNAMIC_RANGE_HDR);
+                wrapper.upcast()
+            },
+        );
 
         // Metadata<OnEvent> - handle hover events
         Self::register_with_renderer::<Metadata<OnEvent>>(dispatcher, |renderer, metadata, env| {
