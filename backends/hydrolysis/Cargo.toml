@@ -149,6 +149,8 @@ web-sys = { version = "0.3", optional = true, features = [
 
 [dev-dependencies]
 waterui-testing.workspace = true
+waterui-navigation.workspace = true
+jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { path = "../..", default-features = false, features = ["flow-markdown", "gpu"] }
 
@@ -199,7 +201,7 @@ winit = [
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
 ]
-web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
+web = ["accessibility", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 # `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
 ignored = ["cfg_aliases", "waterui-build-support"]

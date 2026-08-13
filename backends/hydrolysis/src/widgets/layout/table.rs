@@ -228,7 +228,14 @@ pub(crate) fn table_accessibility(
                 header_node.set_label(label);
             }
             header_node.add_action(AccessibilityAction::Focus);
-            if let Some(header_node_id) = renderer.register_accessibility_child_node(
+            let column_key = i64::try_from(column_index)
+                .expect("hydrolysis table column index exceeds accessibility identity range");
+            let header_key = column_key
+                .checked_add(1)
+                .and_then(i64::checked_neg)
+                .expect("hydrolysis table header accessibility identity overflow");
+            if let Some(header_node_id) = renderer.register_accessibility_child_node_with_key(
+                header_key,
                 header_node,
                 transformed_rect(ctx.hit_transform, header_cell),
                 env,
@@ -257,7 +264,20 @@ pub(crate) fn table_accessibility(
                         cell_node.set_label(label);
                     }
                     cell_node.add_action(AccessibilityAction::Focus);
-                    if let Some(cell_node_id) = renderer.register_accessibility_child_node(
+                    let row_key = i64::try_from(row_index)
+                        .expect("hydrolysis table row index exceeds accessibility identity range");
+                    let diagonal = column_key
+                        .checked_add(row_key)
+                        .expect("hydrolysis table cell accessibility identity overflow");
+                    let cell_key = diagonal
+                        .checked_add(1)
+                        .and_then(|next| diagonal.checked_mul(next))
+                        .and_then(|product| product.checked_div(2))
+                        .and_then(|pair| pair.checked_add(row_key))
+                        .and_then(|pair| pair.checked_add(1))
+                        .expect("hydrolysis table cell accessibility identity overflow");
+                    if let Some(cell_node_id) = renderer.register_accessibility_child_node_with_key(
+                        cell_key,
                         cell_node,
                         transformed_rect(ctx.hit_transform, cell_rect),
                         env,

@@ -18,7 +18,7 @@ use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
-use crate::widgets::util::{inset_rect, widget_theme};
+use crate::widgets::util::{inset_rect, widget_disabled, widget_theme};
 
 /// The retained render state of a date picker: the cloneable [`DatePickerConfig`]
 /// drives the field + accessibility, and its main label is held as a
@@ -61,6 +61,7 @@ pub(crate) fn date_picker_accessibility(
 ) {
     #[cfg(feature = "accessibility")]
     {
+        let disabled = renderer.read_signal(&widget_disabled(env));
         let value = date_picker.ty.format_value(
             renderer
                 .read_signal(&date_picker.value)
@@ -76,15 +77,19 @@ pub(crate) fn date_picker_accessibility(
         }
         node.set_value(value);
         node.add_action(AccessibilityAction::Focus);
-        node.add_action(AccessibilityAction::Click);
-        node.add_action(AccessibilityAction::SetValue);
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+        }
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let origin = waterui_core::layout::Point::new(bounds.x0 as f32, bounds.y1 as f32);
         let _ = renderer.register_accessibility_node(
             node,
             bounds,
             env,
-            Some(AccessibilityActionTarget::DatePicker {
+            (!disabled).then(|| AccessibilityActionTarget::DatePicker {
                 value: date_picker.value.clone(),
                 range: date_picker.range.clone(),
                 ty: date_picker.ty,

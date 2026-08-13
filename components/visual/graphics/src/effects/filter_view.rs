@@ -84,24 +84,28 @@ impl<T: Effect> ErasedEffect for T {
 }
 
 type ReactiveParam = Reactive<Computed<f32>>;
-type BlendWithImageFilter = crate::multi_input_filter::BlendWithImageFilter<ReactiveParam>;
-type MaskedBlurFilter = crate::multi_input_filter::MaskedBlurFilter<ReactiveParam>;
-type TransitionToImageFilter = crate::multi_input_filter::TransitionToImageFilter<ReactiveParam>;
-type SwipeTransitionToImageFilter =
+type ReactiveBlendWithImageFilter = crate::multi_input_filter::BlendWithImageFilter<ReactiveParam>;
+type ReactiveMaskedBlurFilter = crate::multi_input_filter::MaskedBlurFilter<ReactiveParam>;
+type ReactiveTransitionToImageFilter =
+    crate::multi_input_filter::TransitionToImageFilter<ReactiveParam>;
+type ReactiveSwipeTransitionToImageFilter =
     crate::multi_input_filter::SwipeTransitionToImageFilter<ReactiveParam>;
-type RadialTransitionToImageFilter =
+type ReactiveRadialTransitionToImageFilter =
     crate::multi_input_filter::RadialTransitionToImageFilter<ReactiveParam>;
-type ZoomTransitionToImageFilter =
+type ReactiveZoomTransitionToImageFilter =
     crate::multi_input_filter::ZoomTransitionToImageFilter<ReactiveParam>;
-type DisplacementTransitionToImageFilter =
+type ReactiveDisplacementTransitionToImageFilter =
     crate::multi_input_filter::DisplacementTransitionToImageFilter<ReactiveParam>;
-type DisplacementWarpFilter = crate::multi_input_filter::DisplacementWarpFilter<ReactiveParam>;
-type GuidedSmoothFilter = crate::multi_input_filter::GuidedSmoothFilter<ReactiveParam>;
-type DepthAwareBlurFilter = crate::multi_input_filter::DepthAwareBlurFilter<ReactiveParam>;
-type TemporalDenoiseFilter = crate::multi_input_filter::TemporalDenoiseFilter<ReactiveParam>;
-type BackgroundReplaceFilter = crate::multi_input_filter::BackgroundReplaceFilter<ReactiveParam>;
-type LutColorGradeFilter = crate::multi_input_filter::LutColorGradeFilter<ReactiveParam>;
-type ToneCurveFilter = crate::multi_input_filter::ToneCurveFilter<ReactiveParam>;
+type ReactiveDisplacementWarpFilter =
+    crate::multi_input_filter::DisplacementWarpFilter<ReactiveParam>;
+type ReactiveGuidedSmoothFilter = crate::multi_input_filter::GuidedSmoothFilter<ReactiveParam>;
+type ReactiveDepthAwareBlurFilter = crate::multi_input_filter::DepthAwareBlurFilter<ReactiveParam>;
+type ReactiveTemporalDenoiseFilter =
+    crate::multi_input_filter::TemporalDenoiseFilter<ReactiveParam>;
+type ReactiveBackgroundReplaceFilter =
+    crate::multi_input_filter::BackgroundReplaceFilter<ReactiveParam>;
+type ReactiveLutColorGradeFilter = crate::multi_input_filter::LutColorGradeFilter<ReactiveParam>;
+type ReactiveToneCurveFilter = crate::multi_input_filter::ToneCurveFilter<ReactiveParam>;
 
 /// Wraps a signal-convertible scalar as a reactive filter parameter.
 fn reactive(value: impl IntoSignalF32) -> ReactiveParam {
@@ -1232,7 +1236,7 @@ pub trait FilterViewExt: View + Sized {
         image: crate::multi_input_filter::FilterImage,
         amount: T,
         mode: crate::multi_input_filter::BlendMode,
-    ) -> Filtered<Self, BlendWithImageFilter> {
+    ) -> Filtered<Self, ReactiveBlendWithImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::blend_with_image_filter(image, reactive(amount), mode),
@@ -1245,7 +1249,7 @@ pub trait FilterViewExt: View + Sized {
         mask: crate::multi_input_filter::FilterImage,
         radius: T,
         strength: U,
-    ) -> Filtered<Self, MaskedBlurFilter> {
+    ) -> Filtered<Self, ReactiveMaskedBlurFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::masked_blur_filter(
@@ -1262,7 +1266,7 @@ pub trait FilterViewExt: View + Sized {
         target: crate::multi_input_filter::FilterImage,
         progress: T,
         softness: U,
-    ) -> Filtered<Self, TransitionToImageFilter> {
+    ) -> Filtered<Self, ReactiveTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::transition_to_image_filter(
@@ -1280,7 +1284,7 @@ pub trait FilterViewExt: View + Sized {
         progress: T,
         softness: U,
         direction: crate::multi_input_filter::TransitionDirection,
-    ) -> Filtered<Self, SwipeTransitionToImageFilter> {
+    ) -> Filtered<Self, ReactiveSwipeTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::swipe_transition_to_image_filter(
@@ -1300,7 +1304,7 @@ pub trait FilterViewExt: View + Sized {
         softness: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, RadialTransitionToImageFilter> {
+    ) -> Filtered<Self, ReactiveRadialTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::radial_transition_to_image_filter(
@@ -1321,7 +1325,7 @@ pub trait FilterViewExt: View + Sized {
         amount: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, ZoomTransitionToImageFilter> {
+    ) -> Filtered<Self, ReactiveZoomTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::zoom_transition_to_image_filter(
@@ -1341,7 +1345,7 @@ pub trait FilterViewExt: View + Sized {
         map: crate::multi_input_filter::FilterImage,
         progress: T,
         scale: U,
-    ) -> Filtered<Self, DisplacementTransitionToImageFilter> {
+    ) -> Filtered<Self, ReactiveDisplacementTransitionToImageFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::displacement_transition_to_image_filter(
@@ -1359,7 +1363,7 @@ pub trait FilterViewExt: View + Sized {
         map: crate::multi_input_filter::FilterImage,
         scale_x: T,
         scale_y: U,
-    ) -> Filtered<Self, DisplacementWarpFilter> {
+    ) -> Filtered<Self, ReactiveDisplacementWarpFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::displacement_warp_filter(
@@ -1377,7 +1381,7 @@ pub trait FilterViewExt: View + Sized {
         radius: T,
         range_sigma: U,
         amount: W,
-    ) -> Filtered<Self, GuidedSmoothFilter> {
+    ) -> Filtered<Self, ReactiveGuidedSmoothFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::guided_smooth_filter(
@@ -1396,7 +1400,7 @@ pub trait FilterViewExt: View + Sized {
         focus_depth: T,
         aperture: U,
         max_radius: W,
-    ) -> Filtered<Self, DepthAwareBlurFilter> {
+    ) -> Filtered<Self, ReactiveDepthAwareBlurFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::depth_aware_blur_filter(
@@ -1414,7 +1418,7 @@ pub trait FilterViewExt: View + Sized {
         history: crate::multi_input_filter::FilterImage,
         motion: crate::multi_input_filter::FilterImage,
         history_weight: T,
-    ) -> Filtered<Self, TemporalDenoiseFilter> {
+    ) -> Filtered<Self, ReactiveTemporalDenoiseFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::temporal_denoise_filter(
@@ -1431,7 +1435,7 @@ pub trait FilterViewExt: View + Sized {
         matte: crate::multi_input_filter::FilterImage,
         background: crate::multi_input_filter::FilterImage,
         edge_softness: T,
-    ) -> Filtered<Self, BackgroundReplaceFilter> {
+    ) -> Filtered<Self, ReactiveBackgroundReplaceFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::background_replace_filter(
@@ -1447,7 +1451,7 @@ pub trait FilterViewExt: View + Sized {
         self,
         lut: crate::multi_input_filter::LutImage,
         intensity: T,
-    ) -> Filtered<Self, LutColorGradeFilter> {
+    ) -> Filtered<Self, ReactiveLutColorGradeFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::lut_color_grade_filter(lut, reactive(intensity)),
@@ -1468,7 +1472,7 @@ pub trait FilterViewExt: View + Sized {
         highlights: W,
         gamma: X,
         amount: Y,
-    ) -> Filtered<Self, ToneCurveFilter> {
+    ) -> Filtered<Self, ReactiveToneCurveFilter> {
         Filtered::new(
             self,
             crate::multi_input_filter::tone_curve_filter(

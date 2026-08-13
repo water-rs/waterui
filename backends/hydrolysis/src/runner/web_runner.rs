@@ -8,6 +8,7 @@ use std::{
     sync::Arc,
 };
 
+use accesskit::ActionRequest as AccessibilityActionRequest;
 use async_task::spawn_unchecked as spawn_local_task;
 use executor_core::{
     LocalExecutor,
@@ -27,6 +28,7 @@ use web_sys::Response;
 use super::fonts::ResourceFontFamilies;
 use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
+use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{RenderDiagnosticsConfig, RuntimeWindow, handle_input_events, render_window};
 
 const WEB_FONT_MANIFEST_PATH: &str = "fonts/waterui-fonts.json";
@@ -145,6 +147,8 @@ struct BrowserRunner {
     env: Environment,
     runtime: RuntimeWindow<BrowserWindow>,
     runnable_queue: Rc<RefCell<VecDeque<Runnable>>>,
+    accessibility_actions: Rc<RefCell<VecDeque<AccessibilityActionRequest>>>,
+    accessibility_bridge: WebAccessibilityBridge,
 }
 
 impl BrowserRunner {
@@ -163,6 +167,15 @@ impl BrowserRunner {
 
     fn frame(&mut self) -> bool {
         let _ = self.drain_local_executor_queue();
+        while let Some(request) = self.accessibility_actions.borrow_mut().pop_front() {
+            if self
+                .runtime
+                .renderer
+                .handle_accessibility_action(request, &self.env)
+            {
+                self.runtime.request_refresh();
+            }
+        }
         let should_close = handle_input_events(&mut self.runtime, &self.env);
         if should_close || self.runtime.window.state.get() == WindowState::Closed {
             return false;
@@ -170,6 +183,9 @@ impl BrowserRunner {
         render_window(&mut self.runtime, &self.env, &mut || {
             Self::drain_runnable_queue(&self.runnable_queue)
         });
+        if let Some(update) = self.runtime.renderer.take_accessibility_tree_update() {
+            self.accessibility_bridge.update(update);
+        }
         true
     }
 
@@ -264,7 +280,7 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
             crate::view_renderer::HydrolysisViewRenderer::default(),
         ));
 
-        let mut platform = BrowserWindow::new(browser_schedule).await;
+        let mut platform = BrowserWindow::new(Rc::clone(&browser_schedule)).await;
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
@@ -272,10 +288,15 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
         };
         load_web_fonts(&mut renderer).await;
         let runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
+        let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
+        let accessibility_bridge =
+            WebAccessibilityBridge::new(Rc::clone(&accessibility_actions), browser_schedule);
         let runner = BrowserRunner {
             env,
             runtime,
             runnable_queue,
+            accessibility_actions,
+            accessibility_bridge,
         };
 
         let handle = Rc::new(BrowserRunnerHandle {

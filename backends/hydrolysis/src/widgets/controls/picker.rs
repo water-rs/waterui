@@ -24,7 +24,7 @@ use waterui_text::styled::StyledStr;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility_activation_point;
 use crate::renderer::local_interaction_state;
-use crate::widgets::util::widget_theme;
+use crate::widgets::util::{widget_disabled, widget_theme};
 use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {
@@ -59,6 +59,7 @@ pub(crate) fn picker_accessibility(
 ) {
     #[cfg(feature = "accessibility")]
     {
+        let disabled = renderer.read_signal(&widget_disabled(env));
         let items = renderer.read_signal(&picker.items);
         assert!(
             !(items.is_empty()),
@@ -98,7 +99,11 @@ pub(crate) fn picker_accessibility(
                 }
                 node.set_value(selected_text.as_str().to_owned());
                 node.add_action(AccessibilityAction::Focus);
-                node.add_action(AccessibilityAction::Click);
+                if disabled {
+                    node.set_disabled();
+                } else {
+                    node.add_action(AccessibilityAction::Click);
+                }
                 let metrics = widget_theme(env).picker_metrics(PickerStyle::Menu);
                 let row_height = menu_picker_row_height(max_item_text_height, metrics);
                 let popup_rect =
@@ -113,16 +118,21 @@ pub(crate) fn picker_accessibility(
                     option.set_selected(is_selected);
                     option.set_toggled(AccessibilityToggled::from(is_selected));
                     option.add_action(AccessibilityAction::Focus);
-                    option.add_action(AccessibilityAction::Click);
+                    if disabled {
+                        option.set_disabled();
+                    } else {
+                        option.add_action(AccessibilityAction::Click);
+                    }
                     let option_bounds = transformed_rect(
                         ctx.hit_transform,
                         menu_picker_option_rect(popup_rect, row_height, index),
                     );
-                    if let Some(option_id) = renderer.register_accessibility_child_node(
+                    if let Some(option_id) = renderer.register_accessibility_child_node_with_key(
+                        i64::from(i32::from(item.tag)),
                         option,
                         option_bounds,
                         env,
-                        Some(AccessibilityActionTarget::PickerSelect {
+                        (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
                             selection: picker.selection.clone(),
                             target: item.tag,
                         }),
@@ -135,7 +145,7 @@ pub(crate) fn picker_accessibility(
                     node,
                     bounds,
                     env,
-                    Some(AccessibilityActionTarget::PointerPrimaryClick {
+                    (!disabled).then(|| AccessibilityActionTarget::PointerPrimaryClick {
                         point: accessibility_activation_point(bounds),
                     }),
                 );
@@ -195,13 +205,18 @@ pub(crate) fn picker_accessibility(
                     option.set_toggled(AccessibilityToggled::from(is_selected));
                     option.set_selected(is_selected);
                     option.add_action(AccessibilityAction::Focus);
-                    option.add_action(AccessibilityAction::Click);
+                    if disabled {
+                        option.set_disabled();
+                    } else {
+                        option.add_action(AccessibilityAction::Click);
+                    }
                     let row_bounds = transformed_rect(ctx.hit_transform, row_rect);
-                    if let Some(child_id) = renderer.register_accessibility_child_node(
+                    if let Some(child_id) = renderer.register_accessibility_child_node_with_key(
+                        i64::from(i32::from(item.tag)),
                         option,
                         row_bounds,
                         env,
-                        Some(AccessibilityActionTarget::PickerSelect {
+                        (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
                             selection: picker.selection.clone(),
                             target: item.tag,
                         }),

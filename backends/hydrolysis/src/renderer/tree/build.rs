@@ -33,6 +33,8 @@ impl RenderNode {
             Ok(text) => {
                 let config = (*text).into_inner();
                 return RenderNode::Text(Box::new(TextNode {
+                    #[cfg(feature = "accessibility")]
+                    accessibility_identity: Rc::new(()),
                     content: config.content,
                     alignment: config.paragraph_alignment,
                 }));
@@ -63,6 +65,8 @@ impl RenderNode {
                     })
                     .collect();
                 return RenderNode::Container(Box::new(ContainerNode {
+                    #[cfg(feature = "accessibility")]
+                    accessibility_identity: Rc::new(()),
                     layout,
                     children,
                     #[cfg(feature = "accessibility")]
@@ -170,7 +174,12 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<AccessibilityIdentifier>>() {
-            Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
+            Ok(meta) => {
+                let IgnorableMetadata { content, value } = *meta;
+                let scoped = a11y_scoped_env(env, &ScopedAccessibilityIdentifier::new(value));
+                let child = RenderNode::build(content, &scoped, renderer);
+                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+            }
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<AccessibilityRole>>() {
@@ -439,6 +448,8 @@ impl RenderNode {
                 let (axis, content, controller) = (*scroll).into_inner().into_inner();
                 let content = normalize_layout_view(content, env);
                 return RenderNode::Scroll(Box::new(ScrollNode {
+                    #[cfg(feature = "accessibility")]
+                    accessibility_identity: Rc::new(()),
                     axis,
                     child: RenderNode::build(content, env, renderer),
                     controller,
@@ -659,6 +670,8 @@ impl RenderNode {
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {
         RenderNode::Wrapper(Box::new(WrapperNode {
+            #[cfg(feature = "accessibility")]
+            accessibility_identity: Rc::new(()),
             effect,
             env: env.clone(),
             child: RenderNode::build(content, env, renderer),
@@ -801,6 +814,8 @@ impl RenderNode {
             signals.request_refresh();
         })));
         RenderNode::SceneView(Box::new(SceneViewNode {
+            #[cfg(feature = "accessibility")]
+            accessibility_identity: Rc::new(()),
             content: RefCell::new(content),
         }))
     }
@@ -816,7 +831,11 @@ impl RenderNode {
     ) -> RenderNode {
         let runtime = Rc::new(RefCell::new(EmbeddedGpuSurfaceRuntime::new(surface, env)));
         renderer.register_node_gpu_surface(Rc::clone(&runtime));
-        RenderNode::GpuSurface(Box::new(GpuSurfaceNode { runtime }))
+        RenderNode::GpuSurface(Box::new(GpuSurfaceNode {
+            #[cfg(feature = "accessibility")]
+            accessibility_identity: Rc::new(()),
+            runtime,
+        }))
     }
 
     /// Build a `ViewEffect` node owning its [`ViewEffectRuntime`] and building its

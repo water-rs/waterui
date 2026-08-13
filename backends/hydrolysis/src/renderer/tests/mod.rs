@@ -22,8 +22,14 @@ use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 use waterui_controls::toggle::{ToggleStyle, toggle};
 use waterui_form::picker::PickerStyle;
+#[cfg(feature = "accessibility")]
+use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
 use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
 use waterui_layout::{Divider, scroll};
+#[cfg(feature = "accessibility")]
+use waterui_navigation::NavigationView;
+#[cfg(feature = "accessibility")]
+use waterui_navigation::tab::{Tab, Tabs};
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
@@ -929,6 +935,137 @@ fn reactive_hidden_accessibility_group_suppresses_descendants() {
             .nodes
             .iter()
             .all(|(_, node)| node.label() != Some("Hidden child"))
+    );
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let busy = Binding::bool(false);
+    let state = busy.map(|busy| AccessibilityState::new().mixed().busy(busy));
+    let view = text("Tri-state")
+        .a11y_role(AccessibilityRole::Checkbox)
+        .a11y_state_signal(state);
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    let first = renderer
+        .take_accessibility_tree_update()
+        .expect("initial accessibility update must exist");
+    let (first_id, first_node) = first
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Tri-state"))
+        .expect("tri-state node must exist");
+    assert_eq!(first_node.toggled(), Some(AccessibilityToggled::Mixed));
+    assert!(!first_node.is_busy());
+
+    busy.set(true);
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let second = renderer
+        .take_accessibility_tree_update()
+        .expect("refreshed accessibility update must exist");
+    let (second_id, second_node) = second
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Tri-state"))
+        .expect("refreshed tri-state node must exist");
+    assert_eq!(
+        first_id, second_id,
+        "reactive refresh must preserve node identity"
+    );
+    assert_eq!(second_node.toggled(), Some(AccessibilityToggled::Mixed));
+    assert!(second_node.is_busy());
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn accessibility_identifier_is_consumed_by_only_one_descendant() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = vstack((text("First"), text("Second"))).a11y_id("settings.section");
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("identifier render must publish an accessibility tree");
+    let identified = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.author_id() == Some("settings.section"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        identified.len(),
+        1,
+        "an identifier scope must have one nearest consumer"
+    );
+    assert_eq!(identified[0].1.label(), Some("First"));
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
+    use core::convert::TryFrom as _;
+    use jiff::civil::Date;
+    use waterui_core::id::Id;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let picker_selection = Binding::container("Alpha");
+    let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
+    let color = Binding::container(Color::srgb(0, 0, 0));
+    let first = Id::try_from(1).expect("non-zero tab id");
+    let second = Id::try_from(2).expect("non-zero tab id");
+    let tabs = Tabs::new(
+        Binding::container(first),
+        vec![
+            Tab::new(first, "First tab", || {
+                NavigationView::new("First", text("One"))
+            }),
+            Tab::new(second, "Second tab", || {
+                NavigationView::new("Second", text("Two"))
+            }),
+        ],
+    );
+    let view = vstack((
+        Picker::new(
+            vec![text("Alpha").tag("Alpha"), text("Beta").tag("Beta")],
+            &picker_selection,
+        )
+        .style(PickerStyle::Menu)
+        .disabled(true),
+        DatePicker::new("Date", &date).disabled(true),
+        ColorPicker::new("Color", &color).disabled(true),
+        tabs.disabled(true),
+    ));
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 480.0, 480.0));
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("disabled controls must publish an accessibility tree");
+    let mut verified = 0;
+    for (_, node) in &update.nodes {
+        if matches!(
+            node.role(),
+            AccessibilityNodeRole::ComboBox
+                | AccessibilityNodeRole::ListBoxOption
+                | AccessibilityNodeRole::Button
+                | AccessibilityNodeRole::Tab
+        ) {
+            assert!(
+                node.is_disabled(),
+                "disabled control node must be announced disabled"
+            );
+            assert!(!node.supports_action(AccessibilityAction::Click));
+            assert!(!node.supports_action(AccessibilityAction::SetValue));
+            verified += 1;
+        }
+    }
+    assert!(
+        verified >= 7,
+        "expected picker, options, date, color, and tab nodes"
     );
 }
 

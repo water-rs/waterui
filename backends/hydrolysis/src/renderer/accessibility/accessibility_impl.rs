@@ -3,16 +3,58 @@ use super::*;
 #[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 
 #[cfg(feature = "accessibility")]
+#[derive(Clone)]
+pub(crate) struct ScopedAccessibilityIdentifier {
+    identifier: AccessibilityIdentifier,
+    identity: Rc<()>,
+}
+
+#[cfg(feature = "accessibility")]
+impl MetadataKey for ScopedAccessibilityIdentifier {}
+
+#[cfg(feature = "accessibility")]
+impl ScopedAccessibilityIdentifier {
+    pub(crate) fn new(identifier: AccessibilityIdentifier) -> Self {
+        Self {
+            identifier,
+            identity: Rc::new(()),
+        }
+    }
+
+    fn key(&self) -> usize {
+        Rc::as_ptr(&self.identity) as usize
+    }
+
+    fn value(&self) -> &AccessibilityIdentifier {
+        &self.identifier
+    }
+}
+
+#[cfg(feature = "accessibility")]
 pub(crate) const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
 #[cfg(feature = "accessibility")]
 pub(crate) const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
+
+#[cfg(feature = "accessibility")]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AccessibilityNodeKey {
+    owner: RetainedIdentity,
+    local: AccessibilityLocalNodeKey,
+}
+
+#[cfg(feature = "accessibility")]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AccessibilityLocalNodeKey {
+    Ordinal(u64),
+    Semantic(i64),
+}
 
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
@@ -62,12 +104,18 @@ pub(crate) struct AccessibilityBuilder {
     pub(crate) root_children: Vec<AccessibilityNodeId>,
     pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
     pub(crate) next_node_id: u64,
+    node_ids: BTreeMap<AccessibilityNodeKey, AccessibilityNodeId>,
+    active_node_keys: BTreeSet<AccessibilityNodeKey>,
+    owner_ordinals: BTreeMap<RetainedIdentity, u64>,
+    owner_stack: Vec<RetainedIdentity>,
+    fallback_owner: Rc<()>,
     pub(crate) root_bounds: vello::kurbo::Rect,
     pub(crate) root_label: String,
     pub(crate) focus: AccessibilityNodeId,
     pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
     pub(crate) parent_stack: Vec<AccessibilityNodeId>,
     pub(crate) suppression_depth: usize,
+    pub(crate) consumed_identifier_scopes: BTreeSet<usize>,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
 }
 
@@ -79,12 +127,18 @@ impl Default for AccessibilityBuilder {
             root_children: Vec::new(),
             actions: BTreeMap::new(),
             next_node_id: ACCESSIBILITY_FIRST_NODE_ID,
+            node_ids: BTreeMap::new(),
+            active_node_keys: BTreeSet::new(),
+            owner_ordinals: BTreeMap::new(),
+            owner_stack: Vec::new(),
+            fallback_owner: Rc::new(()),
             root_bounds: vello::kurbo::Rect::ZERO,
             root_label: String::from("WaterUI Window"),
             focus: ACCESSIBILITY_ROOT_NODE_ID,
             pending_text_input_nodes: VecDeque::new(),
             parent_stack: Vec::new(),
             suppression_depth: 0,
+            consumed_identifier_scopes: BTreeSet::new(),
             pending_tree_update: None,
         }
     }
@@ -104,10 +158,13 @@ impl AccessibilityBuilder {
         self.nodes.clear();
         self.root_children.clear();
         self.actions.clear();
-        self.next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
+        self.active_node_keys.clear();
+        self.owner_ordinals.clear();
+        self.owner_stack.clear();
         self.pending_text_input_nodes.clear();
         self.parent_stack.clear();
         self.suppression_depth = 0;
+        self.consumed_identifier_scopes.clear();
     }
 
     pub(crate) fn begin_rebuild_frame(&mut self) {
@@ -121,6 +178,44 @@ impl AccessibilityBuilder {
             .checked_add(1)
             .expect("hydrolysis accessibility node ID overflow");
         node_id
+    }
+
+    fn push_owner(&mut self, owner: &Rc<()>) {
+        self.owner_stack.push(RetainedIdentity::for_rc(owner));
+    }
+
+    fn pop_owner(&mut self) {
+        self.owner_stack
+            .pop()
+            .expect("hydrolysis accessibility owner stack underflow");
+    }
+
+    fn stable_node_id(&mut self, semantic_key: Option<i64>) -> AccessibilityNodeId {
+        let owner = self
+            .owner_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| RetainedIdentity::for_rc(&self.fallback_owner));
+        let local = semantic_key.map_or_else(
+            || {
+                let ordinal = self.owner_ordinals.entry(owner.clone()).or_default();
+                let current = *ordinal;
+                *ordinal = ordinal
+                    .checked_add(1)
+                    .expect("hydrolysis accessibility owner-local node index overflow");
+                AccessibilityLocalNodeKey::Ordinal(current)
+            },
+            AccessibilityLocalNodeKey::Semantic,
+        );
+        let key = AccessibilityNodeKey { owner, local };
+        self.active_node_keys.insert(key.clone());
+        if let Some(node_id) = self.node_ids.get(&key) {
+            *node_id
+        } else {
+            let node_id = self.next_node_id();
+            self.node_ids.insert(key, node_id);
+            node_id
+        }
     }
 
     pub(crate) fn push_pending_text_input_node(&mut self, node_id: AccessibilityNodeId) {
@@ -162,7 +257,11 @@ impl AccessibilityBuilder {
             node.set_selected(true);
         }
         if let Some(checked) = state.checked_state() {
-            node.set_toggled(AccessibilityToggled::from(checked));
+            node.set_toggled(match checked {
+                waterui::accessibility::AccessibilityChecked::False => AccessibilityToggled::False,
+                waterui::accessibility::AccessibilityChecked::True => AccessibilityToggled::True,
+                waterui::accessibility::AccessibilityChecked::Mixed => AccessibilityToggled::Mixed,
+            });
         }
         if let Some(expanded) = state.expanded_state() {
             node.set_expanded(expanded);
@@ -182,6 +281,7 @@ impl AccessibilityBuilder {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
         attach_to_root: bool,
+        semantic_key: Option<i64>,
     ) -> Option<AccessibilityNodeId> {
         if self.suppression_depth > 0 {
             return None;
@@ -193,11 +293,12 @@ impl AccessibilityBuilder {
         // Nearest-consumer automation identifier: a leaf that already carries
         // an author id (an explicit backend decision) keeps it.
         if node.author_id().is_none()
-            && let Some(identifier) = env.get::<AccessibilityIdentifier>()
+            && let Some(scope) = env.get::<ScopedAccessibilityIdentifier>()
+            && self.consumed_identifier_scopes.insert(scope.key())
         {
-            node.set_author_id(identifier.as_str().to_string());
+            node.set_author_id(scope.value().as_str().to_string());
         }
-        let node_id = self.next_node_id();
+        let node_id = self.stable_node_id(semantic_key);
         node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
         self.nodes.push((node_id, node));
         if attach_to_root {
@@ -219,6 +320,8 @@ impl AccessibilityBuilder {
     }
 
     pub(crate) fn finalize_tree_update(&mut self) {
+        self.node_ids
+            .retain(|key, _| self.active_node_keys.contains(key));
         let mut root = AccessibilityNode::new(AccessibilityNodeRole::Window);
         root.set_label(self.root_label.clone());
         root.set_bounds(kurbo_rect_to_accesskit_rect(self.root_bounds));
@@ -254,7 +357,7 @@ pub(crate) fn accessibility_group_child_environment(env: &Environment) -> Option
     }
 
     let mut child_env = env.clone();
-    child_env.remove::<AccessibilityIdentifier>();
+    child_env.remove::<ScopedAccessibilityIdentifier>();
     child_env.remove::<AccessibilityLabel>();
     child_env.remove::<AccessibilityRole>();
     child_env.remove::<AccessibilityHidden>();
@@ -449,6 +552,16 @@ impl HydrolysisRenderer {
     }
 
     #[cfg(feature = "accessibility")]
+    pub(crate) fn push_accessibility_owner(&mut self, owner: &Rc<()>) {
+        self.accessibility.push_owner(owner);
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn pop_accessibility_owner(&mut self) {
+        self.accessibility.pop_owner();
+    }
+
+    #[cfg(feature = "accessibility")]
     pub(crate) fn pop_accessibility_suppression(&mut self) {
         self.accessibility.pop_suppression();
     }
@@ -532,7 +645,7 @@ impl HydrolysisRenderer {
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         self.accessibility
-            .register_node_internal(node, bounds, env, action_target, true)
+            .register_node_internal(node, bounds, env, action_target, true, None)
     }
 
     #[cfg(feature = "accessibility")]
@@ -545,7 +658,27 @@ impl HydrolysisRenderer {
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         self.accessibility
-            .register_node_internal(node, bounds, env, action_target, false)
+            .register_node_internal(node, bounds, env, action_target, false, None)
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn register_accessibility_child_node_with_key(
+        &mut self,
+        semantic_key: i64,
+        node: AccessibilityNode,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        action_target: Option<AccessibilityActionTarget>,
+    ) -> Option<AccessibilityNodeId> {
+        self.watch_accessibility_state(env);
+        self.accessibility.register_node_internal(
+            node,
+            bounds,
+            env,
+            action_target,
+            false,
+            Some(semantic_key),
+        )
     }
 
     /// Subscribes the scoped accessibility-state signal (if any) to the refresh

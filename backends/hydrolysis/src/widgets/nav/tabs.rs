@@ -17,7 +17,7 @@ use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::widgets::widget_theme;
+use crate::widgets::{util::widget_disabled, widget_theme};
 
 /// The retained render state of one tab. Its `label` is a move-only `AnyView`, so
 /// it is held as a [`RetainedSubview`] built once and re-flushed each frame; its
@@ -99,6 +99,7 @@ pub(crate) fn tabs_accessibility(
     labels: &[(Id, Option<String>, bool)],
     env: &Environment,
 ) {
+    let disabled = renderer.read_signal(&widget_disabled(env));
     let metrics = widget_theme(env).tabs_metrics();
     let (bar_rect, _content_rect) =
         tabs_bar_and_content_rect(ctx.bounds, style, metrics.bar_height);
@@ -119,16 +120,21 @@ pub(crate) fn tabs_accessibility(
         }
         tab_node.set_selected(*is_selected);
         tab_node.add_action(AccessibilityAction::Focus);
-        tab_node.add_action(AccessibilityAction::Click);
+        if disabled {
+            tab_node.set_disabled();
+        } else {
+            tab_node.add_action(AccessibilityAction::Click);
+        }
         let tab_bounds = crate::renderer::transformed_rect(
             ctx.hit_transform,
             tabs_button_rect(bar_rect, labels.len(), index, style),
         );
-        if let Some(tab_node_id) = renderer.register_accessibility_child_node(
+        if let Some(tab_node_id) = renderer.register_accessibility_child_node_with_key(
+            i64::from(i32::from(*tag)),
             tab_node,
             tab_bounds,
             env,
-            Some(AccessibilityActionTarget::PickerSelect {
+            (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
                 selection: selection.clone(),
                 target: *tag,
             }),

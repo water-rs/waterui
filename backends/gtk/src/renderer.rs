@@ -10,8 +10,8 @@ use gtk4::prelude::*;
 use gtk4::{Align, Overflow};
 use nami::Signal;
 use waterui::accessibility::{
-    AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
-    AccessibilityState, AccessibilityStateSignal,
+    AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel,
+    AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
 };
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
@@ -78,6 +78,58 @@ const FOCUS_ANCHOR_DATA_KEY: &str = "waterui_focus_anchor";
 const FOCUS_REQUEST_PENDING_DATA_KEY: &str = "waterui_focus_request_pending";
 const FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY: &str = "waterui_focus_map_handler_installed";
 const RETAIN_DATA_KEY: &str = "waterui-retain-metadata";
+
+fn gtk_accessibility_role(role: AccessibilityRole) -> gtk4::AccessibleRole {
+    match role {
+        AccessibilityRole::Button => gtk4::AccessibleRole::Button,
+        AccessibilityRole::Link => gtk4::AccessibleRole::Link,
+        AccessibilityRole::Image => gtk4::AccessibleRole::Img,
+        AccessibilityRole::Text => gtk4::AccessibleRole::Label,
+        AccessibilityRole::Header => gtk4::AccessibleRole::Heading,
+        AccessibilityRole::Footer => gtk4::AccessibleRole::Section,
+        AccessibilityRole::Navigation => gtk4::AccessibleRole::Navigation,
+        AccessibilityRole::Main => gtk4::AccessibleRole::Main,
+        AccessibilityRole::Search => gtk4::AccessibleRole::Search,
+        AccessibilityRole::Article => gtk4::AccessibleRole::Document,
+        AccessibilityRole::Section => gtk4::AccessibleRole::Section,
+        AccessibilityRole::List => gtk4::AccessibleRole::List,
+        AccessibilityRole::ListItem => gtk4::AccessibleRole::ListItem,
+        AccessibilityRole::Checkbox => gtk4::AccessibleRole::Checkbox,
+        AccessibilityRole::RadioButton => gtk4::AccessibleRole::Radio,
+        AccessibilityRole::Switch => gtk4::AccessibleRole::Switch,
+        AccessibilityRole::Slider => gtk4::AccessibleRole::Slider,
+        AccessibilityRole::ProgressBar => gtk4::AccessibleRole::ProgressBar,
+        AccessibilityRole::Tab => gtk4::AccessibleRole::Tab,
+        AccessibilityRole::TabList => gtk4::AccessibleRole::TabList,
+        AccessibilityRole::TabPanel => gtk4::AccessibleRole::TabPanel,
+        AccessibilityRole::Menu => gtk4::AccessibleRole::Menu,
+        AccessibilityRole::MenuItem => gtk4::AccessibleRole::MenuItem,
+        AccessibilityRole::MenuBar => gtk4::AccessibleRole::MenuBar,
+        AccessibilityRole::MenuItemCheckbox => gtk4::AccessibleRole::MenuItemCheckbox,
+        AccessibilityRole::MenuItemRadio => gtk4::AccessibleRole::MenuItemRadio,
+        AccessibilityRole::Combobox => gtk4::AccessibleRole::ComboBox,
+        AccessibilityRole::Option => gtk4::AccessibleRole::Option,
+        AccessibilityRole::Group => gtk4::AccessibleRole::Group,
+        _ => panic!("unsupported accessibility role in GTK backend"),
+    }
+}
+
+fn apply_gtk_accessibility_state(widget: &Widget, state: &AccessibilityState) {
+    let checked = match state.checked_state() {
+        None => gtk4::AccessibleTristate::Undefined,
+        Some(AccessibilityChecked::False) => gtk4::AccessibleTristate::False,
+        Some(AccessibilityChecked::True) => gtk4::AccessibleTristate::True,
+        Some(AccessibilityChecked::Mixed) => gtk4::AccessibleTristate::Mixed,
+    };
+    widget.update_state(&[
+        gtk4::accessible::State::Disabled(state.is_disabled()),
+        gtk4::accessible::State::Selected(Some(state.is_selected())),
+        gtk4::accessible::State::Checked(checked),
+        gtk4::accessible::State::Expanded(state.expanded_state()),
+        gtk4::accessible::State::Busy(state.is_busy()),
+        gtk4::accessible::State::Hidden(state.is_hidden()),
+    ]);
+}
 
 #[derive(Debug)]
 pub(crate) struct FocusAnchorMarker;
@@ -1466,20 +1518,79 @@ impl GtkRenderer {
             )
         });
 
-        // IgnorableMetadata handlers - these can safely just render the content
+        // Ignorable metadata with no native semantic realization.
         Self::register_ignorable_metadata::<MaterialBackground>(dispatcher);
-        Self::register_ignorable_metadata::<AccessibilityLabel>(dispatcher);
-        Self::register_ignorable_metadata::<AccessibilityRole>(dispatcher);
-        Self::register_ignorable_metadata::<AccessibilityHidden>(dispatcher);
-        Self::register_ignorable_metadata::<AccessibilityChildren>(dispatcher);
-        Self::register_ignorable_metadata::<AccessibilityState>(dispatcher);
+
+        Self::register_with_renderer::<IgnorableMetadata<AccessibilityLabel>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                let weak = widget.downgrade();
+                let (initial, guard) = subscribe_then_get(metadata.value.signal(), move |ctx| {
+                    if let Some(widget) = weak.upgrade() {
+                        let label = ctx.into_value();
+                        widget
+                            .update_property(&[gtk4::accessible::Property::Label(label.as_str())]);
+                    }
+                });
+                widget.update_property(&[gtk4::accessible::Property::Label(initial.as_str())]);
+                store_watcher_guard(&widget, Box::new(guard));
+                widget
+            },
+        );
+        Self::register_with_renderer::<IgnorableMetadata<AccessibilityRole>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                widget.set_accessible_role(gtk_accessibility_role(metadata.value));
+                widget
+            },
+        );
+        Self::register_with_renderer::<IgnorableMetadata<AccessibilityHidden>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                widget.update_state(&[gtk4::accessible::State::Hidden(metadata.value.is_hidden())]);
+                widget
+            },
+        );
+        Self::register_with_renderer::<IgnorableMetadata<AccessibilityChildren>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let child = renderer.render_any(metadata.content, env);
+                if !metadata.value.excludes_descendants() {
+                    return child;
+                }
+                child.set_accessible_role(gtk4::AccessibleRole::Group);
+                let mut descendant = child.first_child();
+                while let Some(widget) = descendant {
+                    widget.update_state(&[gtk4::accessible::State::Hidden(true)]);
+                    descendant = widget.next_sibling();
+                }
+                child
+            },
+        );
+        Self::register_with_renderer::<IgnorableMetadata<AccessibilityState>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                apply_gtk_accessibility_state(&widget, &metadata.value);
+                widget
+            },
+        );
         Self::register_with_renderer::<IgnorableMetadata<AccessibilityStateSignal>>(
             dispatcher,
             |renderer, metadata, env| {
-                let IgnorableMetadata { content, value } = metadata;
-                let mut local_env = env.clone();
-                local_env.insert(value.state().get());
-                renderer.render_any(content, &local_env)
+                let widget = renderer.render_any(metadata.content, env);
+                let weak = widget.downgrade();
+                let (initial, guard) = subscribe_then_get(metadata.value.state(), move |ctx| {
+                    if let Some(widget) = weak.upgrade() {
+                        apply_gtk_accessibility_state(&widget, &ctx.into_value());
+                    }
+                });
+                apply_gtk_accessibility_state(&widget, &initial);
+                store_watcher_guard(&widget, Box::new(guard));
+                widget
             },
         );
     }

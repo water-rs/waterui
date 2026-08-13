@@ -3,6 +3,8 @@
 use super::{test_environment, test_renderer};
 use crate::renderer::{ContainerNode, RenderContext, RenderNode, TextNode};
 use nami::Computed;
+#[cfg(feature = "accessibility")]
+use std::rc::Rc;
 use vello::kurbo::{Affine, Rect};
 use waterui::ViewExt as _;
 use waterui_controls::button::button;
@@ -13,6 +15,8 @@ use waterui_text::styled::StyledStr;
 
 fn text_node(content: &'static str) -> RenderNode {
     RenderNode::Text(Box::new(TextNode {
+        #[cfg(feature = "accessibility")]
+        accessibility_identity: Rc::new(()),
         content: Computed::constant(StyledStr::plain(content)),
         alignment: Computed::constant(HorizontalAlignment::Leading),
     }))
@@ -24,6 +28,8 @@ fn render_node_container_lays_out_and_flushes_text() {
     let mut renderer = test_renderer();
 
     let mut node = RenderNode::Container(Box::new(ContainerNode {
+        #[cfg(feature = "accessibility")]
+        accessibility_identity: Rc::new(()),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -75,6 +81,8 @@ fn geometry_static_flush_reuses_cached_placement() {
     let mut renderer = test_renderer();
 
     let mut node = RenderNode::Container(Box::new(ContainerNode {
+        #[cfg(feature = "accessibility")]
+        accessibility_identity: Rc::new(()),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),

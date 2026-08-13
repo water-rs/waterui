@@ -73,10 +73,24 @@ impl Query<'_> {
         self
     }
 
+    /// Restricts the query to nodes with an indeterminate checked state.
+    #[must_use]
+    pub fn mixed(mut self) -> Self {
+        self.selector = self.selector.mixed();
+        self
+    }
+
     /// Restricts the query to nodes with the requested expanded state.
     #[must_use]
     pub fn expanded(mut self, expanded: bool) -> Self {
         self.selector = self.selector.expanded(expanded);
+        self
+    }
+
+    /// Restricts the query to nodes with the requested busy state.
+    #[must_use]
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.selector = self.selector.busy(busy);
         self
     }
 

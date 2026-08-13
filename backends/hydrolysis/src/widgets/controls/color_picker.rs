@@ -23,6 +23,7 @@ use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     measure_label_intrinsic, resolved_color_to_peniko, transformed_rect,
 };
+use crate::widgets::util::widget_disabled;
 use crate::widgets::util::{inset_rect, widget_theme};
 
 const COLOR_SWATCH_SIZE: f64 = 32.0;
@@ -70,6 +71,7 @@ pub(crate) fn color_picker_accessibility(
 ) {
     #[cfg(feature = "accessibility")]
     {
+        let disabled = renderer.read_signal(&widget_disabled(env));
         let label = color_picker
             .label
             .semantic_text()
@@ -85,14 +87,18 @@ pub(crate) fn color_picker_accessibility(
         node.set_label(label);
         node.set_value(value);
         node.add_action(AccessibilityAction::Focus);
-        node.add_action(AccessibilityAction::Click);
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Click);
+        }
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let activation_point = accessibility_activation_point(bounds);
         let _ = renderer.register_accessibility_node(
             node,
             bounds,
             env,
-            Some(AccessibilityActionTarget::PointerPrimaryClick {
+            (!disabled).then(|| AccessibilityActionTarget::PointerPrimaryClick {
                 point: activation_point,
             }),
         );

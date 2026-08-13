@@ -179,6 +179,17 @@ pub enum AccessibilityChildren {
     ExcludeDescendants,
 }
 
+/// The semantic checked state of a checkable control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityChecked {
+    /// The control is not checked.
+    False,
+    /// The control is checked.
+    True,
+    /// The control is in an indeterminate or mixed state.
+    Mixed,
+}
+
 impl MetadataKey for AccessibilityChildren {}
 
 impl AccessibilityChildren {
@@ -196,7 +207,7 @@ impl AccessibilityChildren {
 pub struct AccessibilityState {
     disabled: bool,
     selected: bool,
-    checked: Option<bool>,
+    checked: Option<AccessibilityChecked>,
     expanded: Option<bool>,
     busy: bool,
     hidden: bool,
@@ -236,7 +247,18 @@ impl AccessibilityState {
     /// Sets the checkbox or tri-state checked value.
     #[must_use]
     pub const fn checked(mut self, checked: Option<bool>) -> Self {
-        self.checked = checked;
+        self.checked = match checked {
+            Some(true) => Some(AccessibilityChecked::True),
+            Some(false) => Some(AccessibilityChecked::False),
+            None => None,
+        };
+        self
+    }
+
+    /// Marks the element as having an indeterminate or mixed checked state.
+    #[must_use]
+    pub const fn mixed(mut self) -> Self {
+        self.checked = Some(AccessibilityChecked::Mixed);
         self
     }
 
@@ -275,7 +297,7 @@ impl AccessibilityState {
 
     /// Returns the checked state for checkbox-like roles.
     #[must_use]
-    pub const fn checked_state(&self) -> Option<bool> {
+    pub const fn checked_state(&self) -> Option<AccessibilityChecked> {
         self.checked
     }
 
