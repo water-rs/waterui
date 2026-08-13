@@ -1222,3 +1222,59 @@ fn handle_accessibility_picker_select_action(
         ),
     }
 }
+
+#[cfg(all(test, feature = "accessibility"))]
+mod inspect_tests {
+    use super::*;
+    use vello::kurbo::{Point, Rect};
+
+    /// Registers a node covering `bounds` and returns its id.
+    fn push(builder: &mut AccessibilityBuilder, bounds: Rect) -> AccessibilityNodeId {
+        let id = builder.next_node_id();
+        let mut node = AccessibilityNode::new(accesskit::Role::Label);
+        node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
+        builder.nodes.push((id, node));
+        id
+    }
+
+    /// "Inspect element" has to mean the element under the pointer, which is the
+    /// innermost one, not the container that happens to contain it.
+    #[test]
+    fn the_innermost_node_covering_a_point_wins() {
+        let mut builder = AccessibilityBuilder::default();
+        // A container, then a child inside it: registration order is tree order.
+        let container = push(&mut builder, Rect::new(0.0, 0.0, 100.0, 100.0));
+        let child = push(&mut builder, Rect::new(10.0, 10.0, 40.0, 40.0));
+
+        assert_eq!(builder.node_at_point(Point::new(20.0, 20.0)), Some(child));
+        assert_eq!(
+            builder.node_at_point(Point::new(80.0, 80.0)),
+            Some(container),
+            "a point outside the child still belongs to the container"
+        );
+    }
+
+    /// A point on nothing names nothing, so no menu entry is offered there.
+    #[test]
+    fn a_point_outside_every_node_names_none() {
+        let mut builder = AccessibilityBuilder::default();
+        push(&mut builder, Rect::new(0.0, 0.0, 10.0, 10.0));
+
+        assert_eq!(builder.node_at_point(Point::new(50.0, 50.0)), None);
+    }
+
+    /// Bounds are half-open, so two nodes sharing an edge do not both claim it.
+    #[test]
+    fn an_edge_belongs_to_exactly_one_node() {
+        let mut builder = AccessibilityBuilder::default();
+        let left = push(&mut builder, Rect::new(0.0, 0.0, 50.0, 50.0));
+        let right = push(&mut builder, Rect::new(50.0, 0.0, 100.0, 50.0));
+
+        assert_eq!(builder.node_at_point(Point::new(49.9, 10.0)), Some(left));
+        assert_eq!(
+            builder.node_at_point(Point::new(50.0, 10.0)),
+            Some(right),
+            "the shared edge belongs to the node that starts there"
+        );
+    }
+}

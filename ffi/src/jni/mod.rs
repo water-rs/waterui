@@ -11,6 +11,7 @@ pub mod android_runtime;
 pub mod components;
 pub mod convert;
 pub mod ffi_bridge;
+pub mod inspector;
 pub mod navigation;
 pub mod reactive;
 pub mod webview_bridge;

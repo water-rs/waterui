@@ -259,6 +259,17 @@ impl InspectorRuntime {
         self.launch_inspector();
     }
 
+    /// Opens an inspector on this application, if one is not already attached.
+    ///
+    /// Reveals nothing in particular; [`Self::inspect_node`] is what an
+    /// "inspect this element" gesture wants.
+    pub fn open(&self) {
+        if self.hub.has_clients() {
+            return;
+        }
+        self.launch_inspector();
+    }
+
     /// Starts an inspector pointed at this endpoint.
     fn launch_inspector(&self) {
         if cfg!(any(target_os = "android", target_os = "ios")) {
