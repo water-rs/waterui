@@ -16,14 +16,18 @@ fn acquire_surface_texture(
     context: &'static str,
 ) -> Option<wgpu::SurfaceTexture> {
     match checked_surface_acquire(surface, device) {
-        Ok(wgpu::CurrentSurfaceTexture::Success(output)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(output)) => Some(output),
+        Ok(
+            wgpu::CurrentSurfaceTexture::Success(output)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(output),
+        ) => Some(output),
         Ok(wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
             tracing::debug!(context, "surface lost or outdated; reconfiguring");
             checked_surface_configure(surface, device, config, context);
             match checked_surface_acquire(surface, device) {
-                Ok(wgpu::CurrentSurfaceTexture::Success(output)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(output)) => Some(output),
+                Ok(
+                    wgpu::CurrentSurfaceTexture::Success(output)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(output),
+                ) => Some(output),
                 Ok(wgpu::CurrentSurfaceTexture::Occluded) => {
                     tracing::debug!(context, "surface is occluded; skipping frame");
                     None
@@ -64,10 +68,7 @@ fn checked_surface_acquire(
 ) -> Result<wgpu::CurrentSurfaceTexture, wgpu::Error> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let status = surface.get_current_texture();
-    match pollster::block_on(scope.pop()) {
-        Some(error) => Err(error),
-        None => Ok(status),
-    }
+    pollster::block_on(scope.pop()).map_or_else(|| Ok(status), Err)
 }
 
 /// Configures the surface with validation failures surfaced instead of dropped.
@@ -80,7 +81,7 @@ fn checked_surface_acquire(
 /// Panics with the underlying validation error when the configuration is
 /// rejected by the device.
 #[cfg(feature = "gpu")]
-pub(crate) fn checked_surface_configure(
+pub fn checked_surface_configure(
     surface: &wgpu::Surface<'_>,
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
