@@ -107,7 +107,11 @@ pub(super) fn collection_transition_runtime(
     layout: &dyn Layout,
 ) -> Option<CollectionTransitionRuntime> {
     let transition = env.get::<CollectionTransition>()?;
-    let axis = lazy_stack_axis_config(layout).map(|config| match config {
+    let axis = lazy_stack_axis_config(
+        layout,
+        nami::Computed::constant(waterui_core::layout::LayoutDirection::default()),
+    )
+    .map(|config| match config {
         LazyStackAxisConfig::Vertical { spacing, .. } => TransitionAxis {
             vertical: true,
             spacing: f64::from(spacing.get()),
@@ -195,6 +199,8 @@ pub(crate) struct LazyStackNode {
     /// Membership-change watcher: a change schedules a window refresh, which
     /// re-resolves the visible window (the collection `len`/items are re-read).
     pub(super) _guard: BoxWatcherGuard,
+    /// Direction-change watcher: locale changes immediately mirror placement.
+    pub(super) _direction_guard: BoxWatcherGuard,
 }
 
 impl CollectionNode {
@@ -681,6 +687,14 @@ impl LazyStackNode {
             .unwrap_or(ctx.bounds);
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => (visible.y0, visible.y1),
+            LazyStackAxisConfig::Horizontal { .. }
+                if self.axis.direction().get().is_right_to_left() =>
+            {
+                (
+                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x1,
+                    ctx.bounds.x0 + ctx.bounds.x1 - visible.x0,
+                )
+            }
             LazyStackAxisConfig::Horizontal { .. } => (visible.x0, visible.x1),
         };
         let spacing = self.spacing();

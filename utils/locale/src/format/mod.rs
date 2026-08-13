@@ -73,6 +73,68 @@ impl<T: Display> LocalizedDisplay for T {
     }
 }
 
+/// A directionally isolated, locale-aware interpolation argument used by
+/// WaterUI's `text!` macro.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct LocalizedArgument<'a, T> {
+    value: &'a T,
+    locale: &'a Locale,
+}
+
+impl<'a, T> LocalizedArgument<'a, T> {
+    /// Creates an interpolation adapter.
+    #[must_use]
+    pub const fn new(value: &'a T, locale: &'a Locale) -> Self {
+        Self { value, locale }
+    }
+}
+
+struct RawArgument<'a, T: LocalizedDisplay + ?Sized>(&'a T, &'a Locale);
+
+impl<T: LocalizedDisplay + ?Sized> Display for RawArgument<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(self.1, f)
+    }
+}
+
+fn numeric_argument<T: LocalizedDisplay + ?Sized>(
+    value: &T,
+    locale: &Locale,
+    precision: Option<usize>,
+) -> Option<String> {
+    let numeric = matches!(
+        core::any::type_name::<T>(),
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+    );
+    let argument = RawArgument(value, locale);
+    numeric.then(|| precision.map_or_else(|| argument.to_string(), |p| format!("{argument:.p$}")))
+}
+
+impl<T: LocalizedDisplay> Display for LocalizedArgument<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("\u{2068}")?;
+        if let Some(number) = numeric_argument(self.value, self.locale, f.precision()) {
+            f.write_str(&number::format_number_text(self.locale, &number))?;
+        } else {
+            self.value.fmt(self.locale, f)?;
+        }
+        f.write_str("\u{2069}")
+    }
+}
+
 /// Wrapper for locale-aware list formatting.
 ///
 /// Formats lists according to locale conventions:
@@ -109,5 +171,32 @@ impl LocalizedDisplay for LocalizedList<'_> {
 
         let result = formatter.format(self.0.iter().copied());
         write!(f, "{result}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::locale::locales;
+
+    #[test]
+    fn localized_argument_formats_numbers_and_adds_bidi_isolation() {
+        let value = 1234.5_f64;
+        let formatted = format!("{}", LocalizedArgument::new(&value, &locales::DE));
+
+        assert!(formatted.starts_with('\u{2068}'));
+        assert!(formatted.ends_with('\u{2069}'));
+        assert!(formatted.contains("1.234,5"));
+    }
+
+    #[test]
+    fn localized_argument_accepts_non_static_borrowed_text() {
+        let owned = String::from("مرحبا");
+        let borrowed = owned.as_str();
+
+        assert_eq!(
+            LocalizedArgument::new(&borrowed, &locales::AR).to_string(),
+            "\u{2068}مرحبا\u{2069}"
+        );
     }
 }

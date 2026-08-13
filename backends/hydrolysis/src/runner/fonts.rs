@@ -1,7 +1,7 @@
-//! Resource font registration and CJK fallback installation.
+//! Resource font registration and locale-aware fallback installation.
 //!
-//! WaterUI ships a known set of resource fonts (Roboto plus the Noto Sans
-//! CJK variants). Classification and fallback installation are shared by the
+//! WaterUI ships a known set of resource fonts (Roboto plus script-specific
+//! Noto Sans families). Classification and fallback installation are shared by the
 //! native loader (which scans `resources/fonts` directories) and the web
 //! loader in [`super::web_runner`] (which fetches fonts from a manifest).
 
@@ -15,6 +15,8 @@ pub(super) struct ResourceFontFamilies {
     hani_traditional: Vec<FamilyId>,
     hani_japanese: Vec<FamilyId>,
     hani_korean: Vec<FamilyId>,
+    arabic: Vec<FamilyId>,
+    hebrew: Vec<FamilyId>,
 }
 
 fn extend_family_ids(target: &mut Vec<FamilyId>, families: &[(FamilyId, Vec<FontInfo>)]) {
@@ -42,17 +44,17 @@ impl ResourceFontFamilies {
         if key.contains("roboto") {
             extend_family_ids(&mut self.generic, families);
         } else if key.contains("notosanscjksc") {
-            extend_family_ids(&mut self.generic, families);
             extend_family_ids(&mut self.hani_simplified, families);
         } else if key.contains("notosanscjktc") {
-            extend_family_ids(&mut self.generic, families);
             extend_family_ids(&mut self.hani_traditional, families);
         } else if key.contains("notosanscjkjp") {
-            extend_family_ids(&mut self.generic, families);
             extend_family_ids(&mut self.hani_japanese, families);
         } else if key.contains("notosanscjkkr") {
-            extend_family_ids(&mut self.generic, families);
             extend_family_ids(&mut self.hani_korean, families);
+        } else if key.contains("notosansarabic") {
+            extend_family_ids(&mut self.arabic, families);
+        } else if key.contains("notosanshebrew") {
+            extend_family_ids(&mut self.hebrew, families);
         }
     }
 
@@ -76,11 +78,13 @@ impl ResourceFontFamilies {
         }
         set_fallbacks(collection, (hani, "ja"), &self.hani_japanese);
         set_fallbacks(collection, (hani, "ko"), &self.hani_korean);
+        set_fallbacks(collection, Script::from_str_unchecked("Arab"), &self.arabic);
+        set_fallbacks(collection, Script::from_str_unchecked("Hebr"), &self.hebrew);
     }
 }
 
 /// Register every `.ttf`/`.otf` under the app's `resources/fonts` directories
-/// and install the recognized CJK fallbacks.
+/// and install the recognized script fallbacks.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::HydrolysisRenderer) {
     use parley::fontique::Blob;

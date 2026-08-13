@@ -1265,7 +1265,7 @@ pub(crate) fn navigation_stack_accessibility(
         let mut back_node = AccessibilityNode::new(
             renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
         );
-        back_node.set_label("Back".to_owned());
+        back_node.set_label(crate::localization::text(env, "back"));
         back_node.add_action(AccessibilityAction::Focus);
         back_node.add_action(AccessibilityAction::Click);
         let back_bounds = transformed_rect(

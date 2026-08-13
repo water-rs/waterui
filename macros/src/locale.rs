@@ -420,8 +420,31 @@ fn build_format_signal(
     format_str: &LitStr,
     idents: &[Ident],
 ) -> TokenStream2 {
-    let body = quote! { #waterui::reactive::__alloc::format!(#format_str) };
-    build_signal_map(waterui, idents, &body)
+    let locale_ident = unique_ident("__waterui_format_locale", idents);
+    let bindings = idents.iter().map(|ident| {
+        quote! {
+            let #ident = #waterui::locale::LocalizedArgument::new(&#ident, &#locale_ident);
+        }
+    });
+    let body = quote! {
+        #(#bindings)*
+        #waterui::reactive::__alloc::format!(#format_str)
+    };
+    let signal = build_signal_map(waterui, idents, &body);
+    quote! {{
+        let #locale_ident = locale.clone();
+        #signal
+    }}
+}
+
+fn localized_argument_bindings(
+    waterui: &TokenStream2,
+    idents: &[Ident],
+    locale_ident: &Ident,
+) -> TokenStream2 {
+    quote! {
+        #(let #idents = #waterui::locale::LocalizedArgument::new(&#idents, &#locale_ident);)*
+    }
 }
 
 fn unique_ident(base: &str, existing: &[Ident]) -> Ident {
@@ -824,8 +847,10 @@ fn generate_plural_translation_arm(
 
     let other_format_lit = translation_format_lit(forms.other);
     let locale_ident = unique_ident("__waterui_locale_value", all_idents);
+    let localized_bindings = localized_argument_bindings(waterui, all_idents, &locale_ident);
     let body = quote! {
         let category = #waterui::locale::select_plural(&#locale_ident, &#plural_ident);
+        #localized_bindings
         match category {
             #(#category_arms)*
             _ => #waterui::reactive::__alloc::format!(#other_format_lit),
@@ -870,6 +895,7 @@ fn generate_dual_plural_translation_arm(
     let other_one_format = forms.other_one.map(|text| translation_format_lit(text));
     let other_other_lit = translation_format_lit(forms.other_other);
     let locale_ident = unique_ident("__waterui_locale_value", all_idents);
+    let localized_bindings = localized_argument_bindings(waterui, all_idents, &locale_ident);
 
     let one_one_expr = optional_format_expr(waterui, one_one_format, &other_other_lit);
     let one_other_expr = optional_format_expr(waterui, one_other_format, &other_other_lit);
@@ -878,6 +904,7 @@ fn generate_dual_plural_translation_arm(
     let body = quote! {
         let category_1 = #waterui::locale::select_plural(&#locale_ident, &#plural_ident_1);
         let category_2 = #waterui::locale::select_plural(&#locale_ident, &#plural_ident_2);
+        #localized_bindings
         match (category_1, category_2) {
             (#waterui::locale::PluralCategory::One, #waterui::locale::PluralCategory::One) => {
                 #one_one_expr

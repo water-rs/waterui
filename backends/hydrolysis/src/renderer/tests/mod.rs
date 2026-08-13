@@ -98,6 +98,7 @@ pub(crate) fn test_environment() -> Environment {
     ));
     let mut env = Environment::new();
     crate::testing::install_theme(&mut env);
+    crate::localization::install(&mut env);
     env.insert(Box::new(MinimalTestTheme) as Box<dyn WidgetTheme>);
     env
 }
@@ -2012,7 +2013,9 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
     }));
     let target = text_input_target(secure_field_model("abc"), selection);
 
-    let entries = HydrolysisRenderer::build_text_context_menu_entries(&target);
+    let mut env = test_environment();
+    crate::localization::install(&mut env);
+    let entries = HydrolysisRenderer::build_text_context_menu_entries(&target, &env);
     let labels = entries
         .iter()
         .filter_map(|entry| match entry {

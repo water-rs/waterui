@@ -6,6 +6,7 @@
 mod engine;
 mod env;
 mod gpu_view;
+mod localization;
 mod platform;
 mod readback;
 mod renderer;

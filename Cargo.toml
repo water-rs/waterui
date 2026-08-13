@@ -234,6 +234,7 @@ default = ["gpu", "assets", "media", "inspector"]
 # WaterUI app for embedded targets without the GPU stack.
 gpu = ["waterui-internal/gpu", "waterui-dylib?/gpu"]
 inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
+inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
 media = ["waterui-internal/media", "waterui-dylib?/media", "video"]
 video = ["waterui-internal/video", "waterui-dylib?/video"]

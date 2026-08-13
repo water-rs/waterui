@@ -310,6 +310,16 @@ impl AccessibilityBuilder {
             return None;
         }
         self.apply_state(env, &mut node);
+        node.set_text_direction(
+            if waterui_core::layout::layout_direction(env)
+                .get()
+                .is_right_to_left()
+            {
+                AccessibilityTextDirection::RightToLeft
+            } else {
+                AccessibilityTextDirection::LeftToRight
+            },
+        );
         // Nearest-consumer automation identifier: a leaf that already carries
         // an author id (an explicit backend decision) keeps it.
         if node.author_id().is_none()

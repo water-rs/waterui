@@ -79,6 +79,7 @@ impl RenderNode {
         };
         let view = match view.downcast::<Native<LazyContainer>>() {
             Ok(container) => {
+                let direction = container.as_inner().direction();
                 let (layout, children) = (*container).into_inner().into_inner();
                 // A viewport-virtualizable stack layout (and not opting into a
                 // membership transition, which must retain every item) becomes a
@@ -87,7 +88,7 @@ impl RenderNode {
                     .get::<waterui_layout::collection_transition::CollectionTransition>()
                     .is_some();
                 if let Some(axis) =
-                    lazy_stack_axis_config(layout.as_ref()).filter(|_| !wants_transition)
+                    lazy_stack_axis_config(layout.as_ref(), direction).filter(|_| !wants_transition)
                 {
                     return RenderNode::build_lazy_stack(axis, children, env, renderer);
                 }
@@ -799,6 +800,8 @@ impl RenderNode {
             dirty_for_watch.set(true);
             signals.mark_collection_dirty(key, 0);
         });
+        let signals = renderer.signals.clone();
+        let direction_guard = axis.direction().watch(move |_| signals.request_refresh());
         RenderNode::LazyStack(Box::new(LazyStackNode {
             axis,
             views,
@@ -810,6 +813,7 @@ impl RenderNode {
             dirty,
             _dirty_key: dirty_key,
             _guard: guard,
+            _direction_guard: direction_guard,
         }))
     }
 

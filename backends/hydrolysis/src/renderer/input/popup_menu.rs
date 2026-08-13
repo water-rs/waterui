@@ -376,6 +376,7 @@ pub(crate) fn color_picker_window(
     support_hdr: bool,
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
+    env: &Environment,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let width = 280.0;
@@ -387,6 +388,7 @@ pub(crate) fn color_picker_window(
     let height = 16.0 + rows * swatch + 2.0 * gap + alpha_row_height + hdr_row_height + 16.0;
     let group_for_content = group.clone();
     let state_for_content = state.clone();
+    let popup_env = env.clone();
     let popup_content = move || {
         let palette = color_picker_palette();
         let mut row_views = Vec::with_capacity(5);
@@ -394,7 +396,8 @@ pub(crate) fn color_picker_window(
             let mut swatches = Vec::with_capacity(4);
             for column_index in 0..4 {
                 let palette_index = row_index * 4 + column_index;
-                let (label, color) = palette[palette_index].clone();
+                let (label_key, color) = palette[palette_index].clone();
+                let label = crate::localization::text(&popup_env, label_key);
                 let selected = value.clone();
                 let group = group_for_content.clone();
                 let swatch_color = color.clone();
@@ -422,13 +425,15 @@ pub(crate) fn color_picker_window(
             let selected = value.clone();
             let group = group_for_content.clone();
             row_views.push(AnyView::new(
-                Frame::new(button("50% opacity").style(ButtonStyle::Borderless).action(
-                    move || {
-                        let current = selected.get();
-                        selected.set(current.with_opacity(0.5));
-                        group.close_all();
-                    },
-                ))
+                Frame::new(
+                    button(crate::localization::text(&popup_env, "opacity_50"))
+                        .style(ButtonStyle::Borderless)
+                        .action(move || {
+                            let current = selected.get();
+                            selected.set(current.with_opacity(0.5));
+                            group.close_all();
+                        }),
+                )
                 .width((width - 32.0) as f32)
                 .height(40.0),
             ));
@@ -439,7 +444,7 @@ pub(crate) fn color_picker_window(
             let group = group_for_content.clone();
             row_views.push(AnyView::new(
                 Frame::new(
-                    button("HDR headroom")
+                    button(crate::localization::text(&popup_env, "hdr_headroom"))
                         .style(ButtonStyle::Borderless)
                         .action(move || {
                             let current = selected.get();
@@ -473,11 +478,7 @@ pub(crate) fn color_picker_window(
     (popup, state)
 }
 
-fn time_part_binding(
-    value: &Binding<i32>,
-    range: RangeInclusive<i32>,
-    label: &'static str,
-) -> Stepper {
+fn time_part_binding(value: &Binding<i32>, range: RangeInclusive<i32>, label: String) -> Stepper {
     stepper(label, value)
         .range(range)
         .value_formatter(|part| format!("{part:02}"))
@@ -508,6 +509,7 @@ pub(crate) fn date_picker_window(
     ty: DatePickerType,
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
+    env: &Environment,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let current = value.get().clamp(*range.start(), *range.end());
@@ -540,15 +542,22 @@ pub(crate) fn date_picker_window(
     let range_end = *range.end();
     let group_for_content = group.clone();
     let state_for_content = state.clone();
+    let popup_env = env.clone();
     let popup_content = move || {
         let mut sections = Vec::new();
-        sections.push(AnyView::new(text("Select date").headline()));
+        sections.push(AnyView::new(
+            text(crate::localization::text(&popup_env, "select_date")).headline(),
+        ));
         if uses_date {
             let visible_month = staged_visible_month.clone();
             sections.push(AnyView::new(
-                Calendar::new("Date", &staged_date, &visible_month)
-                    .range(range_start.date()..=range_end.date())
-                    .hide_label(),
+                Calendar::new(
+                    crate::localization::text(&popup_env, "date"),
+                    &staged_date,
+                    &visible_month,
+                )
+                .range(range_start.date()..=range_end.date())
+                .hide_label(),
             ));
         }
         if uses_time {
@@ -556,18 +565,18 @@ pub(crate) fn date_picker_window(
             time_controls.push(AnyView::new(time_part_binding(
                 &staged_hour,
                 0..=23,
-                "Hour",
+                crate::localization::text(&popup_env, "hour"),
             )));
             time_controls.push(AnyView::new(time_part_binding(
                 &staged_minute,
                 0..=59,
-                "Minute",
+                crate::localization::text(&popup_env, "minute"),
             )));
             if uses_second {
                 time_controls.push(AnyView::new(time_part_binding(
                     &staged_second,
                     0..=59,
-                    "Second",
+                    crate::localization::text(&popup_env, "second"),
                 )));
             }
             let time_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
@@ -585,22 +594,24 @@ pub(crate) fn date_picker_window(
         sections.push(AnyView::new(
             hstack((
                 spacer(),
-                button("Cancel")
+                button(crate::localization::text(&popup_env, "cancel"))
                     .style(ButtonStyle::Borderless)
                     .action(move || {
                         cancel_group.close_all();
                     }),
-                button("OK").style(ButtonStyle::Borderless).action(move || {
-                    apply_staged_date_time(
-                        &apply_value,
-                        &apply_range,
-                        apply_date.get(),
-                        apply_hour.get(),
-                        apply_minute.get(),
-                        if uses_second { apply_second.get() } else { 0 },
-                    );
-                    apply_group.close_all();
-                }),
+                button(crate::localization::text(&popup_env, "ok"))
+                    .style(ButtonStyle::Borderless)
+                    .action(move || {
+                        apply_staged_date_time(
+                            &apply_value,
+                            &apply_range,
+                            apply_date.get(),
+                            apply_hour.get(),
+                            apply_minute.get(),
+                            if uses_second { apply_second.get() } else { 0 },
+                        );
+                        apply_group.close_all();
+                    }),
             ))
             .spacing(8.0),
         ));
@@ -780,6 +791,7 @@ impl HydrolysisRenderer {
             support_hdr,
             popup_origin,
             group.clone(),
+            env,
         );
         group.push(state);
         env.get::<PopupWindowManager>()
@@ -800,7 +812,8 @@ impl HydrolysisRenderer {
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let popup_origin = popup_window_origin(origin, env);
-        let (window, state) = date_picker_window(value, range, ty, popup_origin, group.clone());
+        let (window, state) =
+            date_picker_window(value, range, ty, popup_origin, group.clone(), env);
         group.push(state);
         env.get::<PopupWindowManager>()
             .expect("hydrolysis date picker requires PopupWindowManager in environment")

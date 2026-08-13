@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::DrawContext;
+use unicode_segmentation::UnicodeSegmentation;
 use waterui_controls::button::button;
 
 #[derive(Clone)]
@@ -319,27 +320,26 @@ pub(crate) fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-pub(crate) fn previous_char_boundary(text: &str, index: usize) -> usize {
+pub(crate) fn previous_grapheme_boundary(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     if clamped == 0 {
         return 0;
     }
     text[..clamped]
-        .char_indices()
+        .grapheme_indices(true)
         .next_back()
         .map_or(0, |(value, _)| value)
 }
 
-pub(crate) fn next_char_boundary(text: &str, index: usize) -> usize {
+pub(crate) fn next_grapheme_boundary(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     if clamped >= text.len() {
         return text.len();
     }
-    let mut chars = text[clamped..].chars();
-    let Some(ch) = chars.next() else {
+    let Some(grapheme) = text[clamped..].graphemes(true).next() else {
         return text.len();
     };
-    clamped + ch.len_utf8()
+    clamped + grapheme.len()
 }
 
 pub(crate) fn byte_index_to_char_offset(text: &str, index: usize) -> usize {
@@ -408,11 +408,7 @@ pub(crate) fn delete_backward_in_selection(
     if start == 0 {
         return false;
     }
-    let previous = text[..start]
-        .char_indices()
-        .next_back()
-        .map(|(index, _)| index)
-        .unwrap_or(0);
+    let previous = previous_grapheme_boundary(text.as_str(), start);
     text.replace_range(previous..start, "");
     *anchor = previous;
     *focus = previous;
@@ -435,11 +431,7 @@ pub(crate) fn delete_forward_in_selection(
     if start >= text.len() {
         return false;
     }
-    let mut iter = text[start..].char_indices();
-    let Some((_, ch)) = iter.next() else {
-        return false;
-    };
-    let next = start + ch.len_utf8();
+    let next = next_grapheme_boundary(text.as_str(), start);
     text.replace_range(start..next, "");
     *anchor = start;
     *focus = start;
@@ -550,39 +542,6 @@ pub(crate) fn set_model_caret_position(
     slot.focus = index;
     slot.initialized = true;
     changed
-}
-
-pub(crate) fn move_model_caret_horizontal(
-    model: &TextInputModel,
-    slot: &mut TextSelectionSlot,
-    backward: bool,
-    extend: bool,
-) -> bool {
-    let text = model.plain_text();
-    let anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
-    let focus = clamp_to_char_boundary(text.as_str(), slot.focus);
-    let base = if !extend && anchor != focus {
-        if backward {
-            anchor.min(focus)
-        } else {
-            anchor.max(focus)
-        }
-    } else {
-        focus
-    };
-    let next = if backward {
-        previous_char_boundary(text.as_str(), base)
-    } else {
-        next_char_boundary(text.as_str(), base)
-    };
-    if extend {
-        let changed = slot.focus != next || !slot.initialized;
-        slot.anchor = anchor;
-        slot.focus = next;
-        slot.initialized = true;
-        return changed;
-    }
-    set_model_caret_position(model, slot, next)
 }
 
 pub(crate) async fn read_clipboard_text_async() -> Option<String> {
@@ -1328,11 +1287,24 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn move_focused_caret_horizontal(&mut self, backward: bool, extend: bool) -> bool {
-        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+        let Some((index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
+        let target = &self.text_editing.text_input_targets[index];
         let mut slot = selection.borrow_mut();
-        move_model_caret_horizontal(&model, &mut slot, backward, extend)
+        let current = selection_for_target_layout(&model, &target.layout, &slot);
+        let next = if backward {
+            current.previous_visual(&target.layout, extend)
+        } else {
+            current.next_visual(&target.layout, extend)
+        };
+        let anchor = model.plain_index_from_layout_index(next.anchor().index());
+        let focus = model.plain_index_from_layout_index(next.focus().index());
+        let changed = slot.anchor != anchor || slot.focus != focus || !slot.initialized;
+        slot.anchor = anchor;
+        slot.focus = focus;
+        slot.initialized = true;
+        changed
     }
 
     pub(crate) fn move_focused_caret_to_boundary(&mut self, end: bool, extend: bool) -> bool {
@@ -1354,6 +1326,7 @@ impl HydrolysisRenderer {
 
     pub(crate) fn build_text_context_menu_entries(
         target: &TextInputTarget,
+        env: &Environment,
     ) -> Vec<TextContextMenuEntry> {
         let has_selection = {
             let slot = target.selection.borrow();
@@ -1363,21 +1336,21 @@ impl HydrolysisRenderer {
         let mut entries = Vec::new();
         if has_selection && !target.model.is_secure() {
             entries.push(TextContextMenuEntry::Command {
-                label: "Copy".to_owned(),
+                label: crate::localization::text(env, "copy"),
                 action: Box::new(TextContextMenuAction::Copy),
             });
             entries.push(TextContextMenuEntry::Command {
-                label: "Cut".to_owned(),
+                label: crate::localization::text(env, "cut"),
                 action: Box::new(TextContextMenuAction::Cut),
             });
         }
         entries.push(TextContextMenuEntry::Command {
-            label: "Paste".to_owned(),
+            label: crate::localization::text(env, "paste"),
             action: Box::new(TextContextMenuAction::Paste),
         });
         if has_text {
             entries.push(TextContextMenuEntry::Command {
-                label: "Select All".to_owned(),
+                label: crate::localization::text(env, "select_all"),
                 action: Box::new(TextContextMenuAction::SelectAll),
             });
         }
@@ -1416,7 +1389,7 @@ impl HydrolysisRenderer {
             return false;
         };
         let target_key = target.interaction_key.clone();
-        let entries = Self::build_text_context_menu_entries(&target);
+        let entries = Self::build_text_context_menu_entries(&target, env);
         if entries.is_empty() {
             self.dismiss_active_text_context_menu();
             return false;
@@ -1794,22 +1767,40 @@ mod tests {
         ));
         assert_eq!(collapsed, "ac");
         assert_eq!((anchor, focus), (1, 1));
+
+        let mut joined = String::from("a👨‍👩‍👧‍👦e\u{301}");
+        let (mut anchor, mut focus) = (joined.len(), joined.len());
+        assert!(delete_backward_in_selection(
+            &mut joined,
+            &mut anchor,
+            &mut focus,
+        ));
+        assert_eq!(joined, "a👨‍👩‍👧‍👦");
+        assert!(delete_backward_in_selection(
+            &mut joined,
+            &mut anchor,
+            &mut focus,
+        ));
+        assert_eq!(joined, "a");
+        assert_eq!((anchor, focus), (1, 1));
     }
 
     #[test]
-    fn move_model_caret_horizontal_collapses_selection_before_moving() {
-        let model = text_field_model("hello", None);
-        let mut slot = TextSelectionSlot {
-            anchor: 1,
-            focus: 4,
-            initialized: true,
-        };
-
-        assert!(move_model_caret_horizontal(&model, &mut slot, true, false));
-        assert_eq!((slot.anchor, slot.focus), (0, 0));
-
-        assert!(move_model_caret_horizontal(&model, &mut slot, false, true));
-        assert_eq!((slot.anchor, slot.focus), (0, 1));
+    fn delete_forward_in_selection_removes_one_extended_grapheme() {
+        let mut text = String::from("e\u{301}👩🏽‍💻z");
+        let (mut anchor, mut focus) = (0, 0);
+        assert!(delete_forward_in_selection(
+            &mut text,
+            &mut anchor,
+            &mut focus,
+        ));
+        assert_eq!(text, "👩🏽‍💻z");
+        assert!(delete_forward_in_selection(
+            &mut text,
+            &mut anchor,
+            &mut focus,
+        ));
+        assert_eq!(text, "z");
     }
 
     #[test]
