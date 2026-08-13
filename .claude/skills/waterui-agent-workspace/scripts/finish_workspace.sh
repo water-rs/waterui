@@ -70,13 +70,43 @@ preflight_fast_forward_merges() {
   ensure_fast_forward_possible "$source_root" "$workspace_root" "$workspace_branch" "superproject"
 }
 
+# Removes the workspace once its work has landed.
+#
+# By this point the merge is already in the canonical repository, so a failure
+# here costs a directory, not any work — and it must not read as though the
+# integration failed. `rm -rf` gives up outright when the tree grows a file while
+# it is being walked, which a build, an editor or the file-system indexer can all
+# still be doing seconds after the last command returned, so retry before
+# concluding anything is actually stuck.
 delete_workspace() {
   local workspace_root="$1"
   local source_root
+  local attempt
+  local survivors
 
   source_root="$(canonical_dir "$SOURCE_REPO")"
   cd "$source_root"
-  rm -rf "$workspace_root"
+
+  for attempt in 1 2 3 4 5; do
+    if rm -rf "$workspace_root" 2>/dev/null && [[ ! -e "$workspace_root" ]]; then
+      return 0
+    fi
+    sleep "$attempt"
+  done
+
+  survivors="$(find "$workspace_root" -type f 2>/dev/null | head -5)"
+  print -u2 -- ""
+  print -u2 -- "integration SUCCEEDED: the workspace branch is merged and the lock is released."
+  print -u2 -- "Only the cleanup failed — ${workspace_root} could not be removed after 5 attempts,"
+  print -u2 -- "which means something is still writing into it. Nothing is lost; remove it with:"
+  print -u2 -- ""
+  print -u2 -- "  rm -rf ${workspace_root}"
+  if [[ -n "$survivors" ]]; then
+    print -u2 -- ""
+    print -u2 -- "Files still present (first 5):"
+    print -u2 -- "$survivors"
+  fi
+  return 1
 }
 
 main() {

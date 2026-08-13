@@ -477,12 +477,38 @@ ensure_no_integration_lock() {
   [[ ! -d "$lock_dir" ]] || die "another agent is already integrating into $source_root"
 }
 
+# Whether a lock directory has an owner that is still integrating.
+#
+# The recorded pid existing is not enough. A run killed with `kill -9`, or lost
+# to a power cut, never reaches its trap, and by the time anyone looks the kernel
+# may have handed that pid number to something unrelated — so the command has to
+# match too. Anything else is a lock nobody can end, which is a worse failure
+# than the one the lock exists to prevent.
+integration_lock_has_owner() {
+  local lock_dir="$1"
+  local pid
+
+  pid="$(cat "${lock_dir}/pid" 2>/dev/null)" || return 1
+  [[ -n "$pid" ]] || return 1
+  ps -p "$pid" -o command= 2>/dev/null | rg -q "finish_workspace\.sh"
+}
+
 acquire_integration_lock() {
   local source_root="$1"
   local lock_dir
 
   lock_dir="$(integration_lock_dir_for_source "$source_root")"
-  mkdir "$lock_dir" 2>/dev/null || die "another agent is already integrating into $source_root"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    if integration_lock_has_owner "$lock_dir"; then
+      die "another agent is already integrating into $source_root (holder pid $(cat "${lock_dir}/pid" 2>/dev/null))"
+    fi
+    # Nobody is behind it. Clear it and race for it again: whoever loses the
+    # second `mkdir` has a live winner and is refused, so reclaiming cannot hand
+    # the lock to two runs at once.
+    warn "clearing an integration lock whose holder is gone (pid $(cat "${lock_dir}/pid" 2>/dev/null))"
+    rm -rf "$lock_dir"
+    mkdir "$lock_dir" 2>/dev/null || die "another agent is already integrating into $source_root"
+  fi
   print -- "$$" > "${lock_dir}/pid"
   print -- "$WORKSPACE_ROOT" > "${lock_dir}/workspace-root"
   print -- "$source_root" > "${lock_dir}/source-repo"
