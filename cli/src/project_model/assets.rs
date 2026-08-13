@@ -61,6 +61,14 @@ const FONT_REGISTRY: &[(&str, &str)] = &[
         "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/09_NotoSansCJKtc.zip",
     ),
     (
+        "Noto Sans Arabic",
+        "https://github.com/notofonts/arabic/releases/download/NotoSansArabic-v2.013/NotoSansArabic-v2.013.zip",
+    ),
+    (
+        "Noto Sans Hebrew",
+        "https://github.com/notofonts/hebrew/releases/download/NotoSansHebrew-v3.001/NotoSansHebrew-v3.001.zip",
+    ),
+    (
         "JetBrainsMono",
         "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
     ),
@@ -81,6 +89,8 @@ const HYDROLYSIS_DEFAULT_FONT_FAMILIES: &[&str] = &[
     "Noto Sans CJK KR",
     "Noto Sans CJK SC",
     "Noto Sans CJK TC",
+    "Noto Sans Arabic",
+    "Noto Sans Hebrew",
 ];
 
 /// Font declaration from a crate's Cargo.toml metadata.
@@ -600,12 +610,11 @@ async fn find_font_in_extracted_zip(zip_path: &Path, name: &str) -> eyre::Result
         })
         .await?;
 
-        // For Font Awesome archives, also copy icons.json to the fontawesome cache
-        if let Err(e) = copy_fontawesome_icons_json(&extract_dir).await {
-            warn!(
-                "Failed to copy Font Awesome icons.json from {}: {e}",
-                extract_dir.display()
-            );
+        // Font Awesome's generated Rust bindings require the archive metadata.
+        // Other font ZIPs do not contain icons.json and must not be treated as
+        // damaged Font Awesome distributions.
+        if name.to_ascii_lowercase().contains("fontawesome") {
+            copy_fontawesome_icons_json(&extract_dir).await?;
         }
     }
 
@@ -936,7 +945,11 @@ pub async fn package_feature_enabled(
                 .nodes
                 .iter()
                 .filter(|node| node.id == candidate.id)
-                .any(|node| node.features.iter().any(|enabled| enabled.as_str() == feature))
+                .any(|node| {
+                    node.features
+                        .iter()
+                        .any(|enabled| enabled.as_str() == feature)
+                })
         });
     debug!("resolved feature {package}/{feature}: {enabled}");
     Ok(enabled)
@@ -1001,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn hydrolysis_default_fonts_include_material_base_and_cjk_fallbacks() {
+    fn hydrolysis_default_fonts_include_material_base_and_script_fallbacks() {
         let declarations = hydrolysis_default_font_declarations();
         let names: HashSet<&str> = declarations
             .iter()
@@ -1012,6 +1025,8 @@ mod tests {
         assert!(names.contains("Noto Sans CJK KR"));
         assert!(names.contains("Noto Sans CJK SC"));
         assert!(names.contains("Noto Sans CJK TC"));
+        assert!(names.contains("Noto Sans Arabic"));
+        assert!(names.contains("Noto Sans Hebrew"));
         assert!(
             declarations
                 .iter()
@@ -1114,9 +1129,7 @@ mod tests {
 /// # Errors
 ///
 /// Returns an error when `cargo metadata` cannot be read.
-pub async fn scan_required_permissions(
-    project: &Project,
-) -> eyre::Result<Vec<RequiredPermission>> {
+pub async fn scan_required_permissions(project: &Project) -> eyre::Result<Vec<RequiredPermission>> {
     let manifest_path = app_closure_manifest(project);
     let metadata = smol::unblock({
         let manifest_path = manifest_path.clone();
@@ -1156,7 +1169,10 @@ pub async fn scan_required_permissions(
                 continue;
             }
         };
-        let features = enabled_features.get(&package.id).cloned().unwrap_or_default();
+        let features = enabled_features
+            .get(&package.id)
+            .cloned()
+            .unwrap_or_default();
         for (key, requirement) in parsed.permissions {
             if let Some(gate) = &requirement.required_feature
                 && !features.contains(gate.as_str())
@@ -1246,9 +1262,7 @@ fn missing_permissions<'a>(
 ) -> Vec<&'a RequiredPermission> {
     required
         .iter()
-        .filter(|requirement| {
-            !enabled.contains(&requirement.key) && relevant(requirement.key)
-        })
+        .filter(|requirement| !enabled.contains(&requirement.key) && relevant(requirement.key))
         .collect()
 }
 

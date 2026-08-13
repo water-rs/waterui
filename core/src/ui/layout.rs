@@ -33,6 +33,53 @@ use fmt::Debug;
 use alloc::{rc::Rc, vec::Vec};
 use nami::watcher::BoxWatcherGuard;
 
+/// The logical horizontal direction used by layout containers.
+///
+/// This is a semantic direction: leading and trailing follow it, while physical
+/// coordinates exposed to renderers remain left-to-right.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LayoutDirection {
+    /// Leading is the physical left edge.
+    #[default]
+    LeftToRight,
+    /// Leading is the physical right edge.
+    RightToLeft,
+}
+
+/// Locale-derived application direction, lower priority than scoped overrides.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct AutomaticLayoutDirection(pub nami::Computed<LayoutDirection>);
+
+impl LayoutDirection {
+    /// Returns whether leading is the physical right edge.
+    #[must_use]
+    pub const fn is_right_to_left(self) -> bool {
+        matches!(self, Self::RightToLeft)
+    }
+}
+
+/// Resolves the reactive layout direction installed in an environment.
+///
+/// Applications normally receive a locale-derived value automatically. A
+/// static value, binding, or computed value can be inserted to override it.
+#[must_use]
+pub fn layout_direction(environment: &crate::Environment) -> nami::Computed<LayoutDirection> {
+    if let Some(direction) = environment.get::<LayoutDirection>() {
+        return nami::Computed::constant(*direction);
+    }
+    if let Some(direction) = environment.get::<nami::Binding<LayoutDirection>>() {
+        return direction.clone().into();
+    }
+    if let Some(direction) = environment.get::<nami::Computed<LayoutDirection>>() {
+        return direction.clone();
+    }
+    environment.get::<AutomaticLayoutDirection>().map_or_else(
+        || nami::Computed::constant(LayoutDirection::default()),
+        |direction| direction.0.clone(),
+    )
+}
+
 // ============================================================================
 // StretchAxis - Specifies which axis a view stretches on
 // ============================================================================
@@ -1391,6 +1438,7 @@ macro_rules! impl_layout_signal_constant {
 }
 
 impl_layout_signal_constant!(
+    LayoutDirection,
     Point,
     Size,
     Rect,
@@ -1536,10 +1584,7 @@ mod tests {
     impl SubView for CountingSubView {
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.measures.set(self.measures.get() + 1);
-            ViewDimensions::new(Size::new(
-                proposal.width_or(10.0),
-                proposal.height_or(20.0),
-            ))
+            ViewDimensions::new(Size::new(proposal.width_or(10.0), proposal.height_or(20.0)))
         }
 
         fn stretch_axis(&self) -> StretchAxis {

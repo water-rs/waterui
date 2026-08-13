@@ -58,6 +58,16 @@ fn to_decimal(n: f64) -> Decimal {
         .expect("fixed decimal fallback formatting should always produce a parseable decimal")
 }
 
+pub(crate) fn format_number_text(locale: &Locale, value: &str) -> String {
+    let decimal = value.parse::<Decimal>().unwrap_or_else(|error| {
+        panic!("localized numeric argument `{value}` is not a valid decimal: {error}")
+    });
+    decimal_formatter(locale).map_or_else(
+        || value.to_owned(),
+        |formatter| formatter.format(&decimal).to_string(),
+    )
+}
+
 /// Format a number with locale-appropriate separators.
 ///
 /// # Examples

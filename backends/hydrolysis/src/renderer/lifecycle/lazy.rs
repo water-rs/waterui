@@ -37,11 +37,21 @@ pub(crate) enum LazyStackAxisConfig {
     Vertical {
         spacing: nami::Computed<f32>,
         alignment: HorizontalAlignment,
+        direction: nami::Computed<waterui_core::layout::LayoutDirection>,
     },
     Horizontal {
         spacing: nami::Computed<f32>,
         alignment: VerticalAlignment,
+        direction: nami::Computed<waterui_core::layout::LayoutDirection>,
     },
+}
+
+impl LazyStackAxisConfig {
+    pub(crate) fn direction(&self) -> &nami::Computed<waterui_core::layout::LayoutDirection> {
+        match self {
+            Self::Vertical { direction, .. } | Self::Horizontal { direction, .. } => direction,
+        }
+    }
 }
 
 impl LazyTableSlot {
@@ -60,14 +70,21 @@ impl LazyTableSlot {
 /// container (e.g. `AbsoluteLayout`/`ZStackLayout` overlay) is rendered by the
 /// retained per-id collection path, which keeps one cached subtree per item id
 /// and reconciles membership changes incrementally.
-pub(crate) fn lazy_stack_axis_config(layout: &dyn Layout) -> Option<LazyStackAxisConfig> {
+pub(crate) fn lazy_stack_axis_config(
+    layout: &dyn Layout,
+    direction: nami::Computed<waterui_core::layout::LayoutDirection>,
+) -> Option<LazyStackAxisConfig> {
     waterui_layout::stack::lazy_stack_axis(layout).map(|axis| match axis {
-        LazyStackAxis::Vertical { spacing, alignment } => {
-            LazyStackAxisConfig::Vertical { spacing, alignment }
-        }
-        LazyStackAxis::Horizontal { spacing, alignment } => {
-            LazyStackAxisConfig::Horizontal { spacing, alignment }
-        }
+        LazyStackAxis::Vertical { spacing, alignment } => LazyStackAxisConfig::Vertical {
+            spacing,
+            alignment,
+            direction,
+        },
+        LazyStackAxis::Horizontal { spacing, alignment } => LazyStackAxisConfig::Horizontal {
+            spacing,
+            alignment,
+            direction,
+        },
     })
 }
 
@@ -102,12 +119,17 @@ pub(crate) fn place_lazy_stack_item(
                 f64::from(size.width).min(bounds.width())
             };
             let child_height = f64::from(size.height);
-            let x = if *alignment == HorizontalAlignment::Leading {
+            let logical_x = if *alignment == HorizontalAlignment::Leading {
                 bounds.x0
             } else if *alignment == HorizontalAlignment::Trailing {
                 bounds.x1 - child_width
             } else {
                 bounds.x0 + (bounds.width() - child_width) / 2.0
+            };
+            let x = if axis_config.direction().get().is_right_to_left() {
+                bounds.x0 + bounds.x1 - logical_x - child_width
+            } else {
+                logical_x
             };
             vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
         }
@@ -136,7 +158,12 @@ pub(crate) fn place_lazy_stack_item(
             } else {
                 bounds.y0 + (bounds.height() - child_height) / 2.0
             };
-            vello::kurbo::Rect::new(cursor, y, cursor + child_width, y + child_height)
+            let x = if axis_config.direction().get().is_right_to_left() {
+                bounds.x0 + bounds.x1 - cursor - child_width
+            } else {
+                cursor
+            };
+            vello::kurbo::Rect::new(x, y, x + child_width, y + child_height)
         }
     }
 }
@@ -353,7 +380,12 @@ pub(crate) fn table_metrics_from_slot(
 
 #[cfg(test)]
 mod tests {
-    use super::VirtualExtentIndex;
+    use nami::Computed;
+    use waterui_core::layout::{
+        HorizontalAlignment, LayoutDirection, Size, StretchAxis, VerticalAlignment,
+    };
+
+    use super::{LazyStackAxisConfig, VirtualExtentIndex, place_lazy_stack_item};
 
     #[test]
     fn deep_window_resolves_without_measuring_preceding_items() {
@@ -394,5 +426,43 @@ mod tests {
         assert_eq!(window.start, 0);
         assert_eq!(window.end, 0);
         assert_eq!(index.total_extent(), 0.0);
+    }
+
+    #[test]
+    fn rtl_vertical_stack_mirrors_leading_cross_axis_placement() {
+        let axis = LazyStackAxisConfig::Vertical {
+            spacing: Computed::constant(0.0),
+            alignment: HorizontalAlignment::Leading,
+            direction: Computed::constant(LayoutDirection::RightToLeft),
+        };
+
+        let rect = place_lazy_stack_item(
+            &axis,
+            StretchAxis::None,
+            Size::new(20.0, 10.0),
+            vello::kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            8.0,
+        );
+
+        assert_eq!(rect, vello::kurbo::Rect::new(80.0, 8.0, 100.0, 18.0));
+    }
+
+    #[test]
+    fn rtl_horizontal_stack_places_first_item_at_the_right_edge() {
+        let axis = LazyStackAxisConfig::Horizontal {
+            spacing: Computed::constant(0.0),
+            alignment: VerticalAlignment::Top,
+            direction: Computed::constant(LayoutDirection::RightToLeft),
+        };
+
+        let rect = place_lazy_stack_item(
+            &axis,
+            StretchAxis::None,
+            Size::new(20.0, 10.0),
+            vello::kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            0.0,
+        );
+
+        assert_eq!(rect, vello::kurbo::Rect::new(80.0, 0.0, 100.0, 10.0));
     }
 }

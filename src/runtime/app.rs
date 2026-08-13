@@ -38,11 +38,23 @@ impl App {
     /// # Panics
     ///
     /// Panics if no windows are provided.
-    pub fn new_with_windows(windows: impl Into<Vec<Window>>, env: Environment) -> Self {
+    pub fn new_with_windows(windows: impl Into<Vec<Window>>, mut env: Environment) -> Self {
         let mut iter = windows.into().into_iter();
         let main_window = iter
             .next()
             .expect("App::new_with_windows requires at least one window");
+        if env
+            .get::<Computed<waterui_core::layout::LayoutDirection>>()
+            .is_none()
+            && env
+                .get::<nami::Binding<waterui_core::layout::LayoutDirection>>()
+                .is_none()
+            && env.get::<waterui_core::layout::LayoutDirection>().is_none()
+        {
+            env.insert(waterui_core::layout::AutomaticLayoutDirection(
+                waterui_locale::layout_direction_computed(&env),
+            ));
+        }
         Self {
             main_window,
             windows: iter.collect(),
@@ -110,5 +122,40 @@ impl App {
     pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
         self.main_window.title = title.into_computed();
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::{Binding, Signal};
+    use waterui_core::layout::{LayoutDirection, layout_direction};
+    use waterui_locale::locales;
+
+    use super::*;
+
+    #[test]
+    fn application_direction_tracks_locale_binding() {
+        let locale = Binding::container(locales::AR);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        let app = App::new(|| (), env);
+        let direction = layout_direction(&app.env);
+
+        assert_eq!(direction.get(), LayoutDirection::RightToLeft);
+        locale.set(locales::EN);
+        assert_eq!(direction.get(), LayoutDirection::LeftToRight);
+    }
+
+    #[test]
+    fn explicit_application_direction_overrides_locale() {
+        let mut env = Environment::new();
+        env.insert(locales::AR);
+        env.insert(LayoutDirection::LeftToRight);
+        let app = App::new(|| (), env);
+
+        assert_eq!(
+            layout_direction(&app.env).get(),
+            LayoutDirection::LeftToRight
+        );
     }
 }

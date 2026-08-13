@@ -274,13 +274,13 @@ pub(crate) fn render_color_picker_parts(
     );
     if text_bounds.width() > 0.0 {
         let suffix = match (support_alpha, support_hdr) {
-            (true, true) => "Alpha, HDR",
-            (true, false) => "Alpha",
-            (false, true) => "HDR",
-            (false, false) => "Color",
+            (true, true) => "alpha_hdr",
+            (true, false) => "alpha",
+            (false, true) => "hdr",
+            (false, false) => "color",
         };
         ctx.render_styled_text(
-            StyledStr::plain(suffix),
+            StyledStr::plain(crate::localization::text(env, suffix)),
             HorizontalAlignment::Leading,
             env,
             text_bounds,

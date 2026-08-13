@@ -34,9 +34,31 @@ mod system;
 // Re-exports
 pub use catalog::TranslationCatalog;
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
-pub use format::{LocalizedDisplay, LocalizedList};
+pub use format::{LocalizedArgument, LocalizedDisplay, LocalizedList};
 pub use locale::{Locale, locales};
 pub use plural::{PluralCategory, select_plural};
+
+/// Returns the Unicode layout direction for a locale.
+#[must_use]
+pub fn layout_direction(locale: &Locale) -> waterui_core::layout::LayoutDirection {
+    if icu_locale::LocaleDirectionality::new_extended().is_right_to_left(locale.id()) {
+        waterui_core::layout::LayoutDirection::RightToLeft
+    } else {
+        waterui_core::layout::LayoutDirection::LeftToRight
+    }
+}
+
+/// Returns a reactive layout direction derived from the effective locale.
+#[must_use]
+pub fn layout_direction_computed(
+    env: &waterui_core::Environment,
+) -> nami::Computed<waterui_core::layout::LayoutDirection> {
+    use nami::SignalExt;
+
+    locale_binding(env)
+        .map(|locale| layout_direction(&locale))
+        .computed()
+}
 
 #[doc(hidden)]
 /// Clears the current thread's cached runtime locale binding before an executor shuts down.
@@ -80,7 +102,13 @@ mod tests {
 
         let locale = locale_binding(&env).get();
         assert_eq!(locale.language.as_str(), "en");
-        assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("GB"));
+        assert_eq!(
+            locale
+                .region
+                .as_ref()
+                .map(icu_locale::subtags::Region::as_str),
+            Some("GB")
+        );
     }
 
     #[test]
@@ -96,6 +124,23 @@ mod tests {
         // The returned binding is the very same one, so later writes are visible.
         binding.set(locales::EN_US);
         assert_eq!(resolved.get().language.as_str(), "en");
+    }
+
+    #[test]
+    fn locale_direction_uses_unicode_script_data() {
+        assert_eq!(
+            layout_direction(&locales::EN),
+            waterui_core::layout::LayoutDirection::LeftToRight
+        );
+        assert_eq!(
+            layout_direction(&locales::AR),
+            waterui_core::layout::LayoutDirection::RightToLeft
+        );
+        let hebrew = "he".parse().expect("Hebrew locale must parse");
+        assert_eq!(
+            layout_direction(&hebrew),
+            waterui_core::layout::LayoutDirection::RightToLeft
+        );
     }
 
     // =========================================================

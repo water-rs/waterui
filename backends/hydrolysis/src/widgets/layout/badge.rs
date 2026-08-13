@@ -6,16 +6,16 @@ use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize
 use waterui_core::{Environment, Native};
 use waterui_text::styled::StyledStr;
 
+#[cfg(feature = "accessibility")]
+use crate::renderer::transformed_rect;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_view_dimensions_with_proposal, measure_view_intrinsic,
     normalize_view_for_render,
 };
-#[cfg(feature = "accessibility")]
-use crate::renderer::transformed_rect;
+use crate::widgets::widget_theme;
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
-use crate::widgets::widget_theme;
 
 /// The retained render state of a badge. The wrapped `content` is a move-only
 /// `AnyView` (built once from the config's `AnyViewBuilder`), so the persistent

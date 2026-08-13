@@ -76,7 +76,8 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
     NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
-    Toggled as AccessibilityToggled, Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
+    TextDirection as AccessibilityTextDirection, Toggled as AccessibilityToggled,
+    Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use executor_core::spawn_local;
@@ -86,8 +87,7 @@ use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
-    AccessibilityRole,
-    AccessibilityState, AccessibilityStateSignal,
+    AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
 };
 use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};

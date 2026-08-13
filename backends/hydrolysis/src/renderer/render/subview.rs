@@ -117,7 +117,6 @@ impl SubView for HydroSubview<'_> {
     fn priority(&self) -> i32 {
         0
     }
-
 }
 
 /// Resolve a text leaf into a `Send` layout input on the main thread, or `None`
