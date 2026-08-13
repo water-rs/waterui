@@ -12,7 +12,7 @@ categories = ["gui", "multimedia::video", "rendering"]
 
 [dependencies]
 async-channel.workspace = true
-async-io = "2.6"
+futures-timer.workspace = true
 waterui-video.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
@@ -22,7 +22,7 @@ shaderloom.workspace = true
 waterui-text.workspace = true
 waterkit-video.workspace = true
 waterkit-codec.workspace = true
-waterkit-audio = { workspace = true, features = ["he-aac"] }
+waterkit-audio = { workspace = true, features = ["streaming"] }
 futures.workspace = true
 executor-core.workspace = true
 nami.workspace = true
@@ -38,6 +38,12 @@ waterkit-codec.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+waterkit-audio = { workspace = true, features = ["he-aac"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true

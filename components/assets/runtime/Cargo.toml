@@ -20,15 +20,12 @@ tracing.workspace = true
 executor-core.workspace = true
 blocking = "1.6.2"
 
-# Memory mapping for large files
-memmap2 = "0.9"
-
 # Caching
 sha2 = "0.11"
 hex = "0.4"
 
-# Async filesystem
-smol = "2.0"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+memmap2 = "0.9"
 tempfile = "3.27"
 dirs.workspace = true
 

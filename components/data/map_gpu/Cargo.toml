@@ -57,8 +57,12 @@ zenwave = { workspace = true, features = ["native-tls"] }
 [target.'cfg(target_os = "android")'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
 
-[target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), not(any(target_vendor = "apple", target_os = "android"))))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["js"] }
+zenwave.workspace = true
 
 [dev-dependencies]
 num-traits = { version = "0.2", default-features = false }
@@ -74,4 +78,4 @@ internet = { reason = "downloads map styles and vector tiles" }
 
 # `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
-ignored = ["waterui-build-support"]
+ignored = ["getrandom", "waterui-build-support"]

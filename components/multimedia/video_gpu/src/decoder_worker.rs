@@ -703,15 +703,15 @@ impl ProgressiveDecoderState {
             None
         };
 
-        if updates
-            .send_blocking(DecoderOutput::Opened {
+        if !send_sync(
+            updates,
+            DecoderOutput::Opened {
                 duration: video.duration(),
                 has_audio: audio.is_some(),
                 video_dimensions: video.dimensions(),
                 color_info: video.color_info(),
-            })
-            .is_err()
-        {
+            },
+        ) {
             return Ok(None);
         }
         if let Some(requested) = opening_seek {
@@ -3666,7 +3666,7 @@ fn run_segment_prefetcher(
             PrefetchWait::Closed => return,
             PrefetchWait::Poll(Ok(SessionPoll::Ready(batch))) => {
                 if let Err(error) = state.validate_segment_duration(batch.duration) {
-                    let _ = outputs.send_blocking(PrefetchOutput::Error(error));
+                    let _ = send_sync(outputs, PrefetchOutput::Error(error));
                     return;
                 }
                 let generation = state.generation;
@@ -3696,13 +3696,16 @@ fn run_segment_prefetcher(
                 }
             }
             PrefetchWait::Poll(Ok(SessionPoll::Ended)) => {
-                let _ = outputs.send_blocking(PrefetchOutput::Ended {
-                    generation: state.generation,
-                });
+                let _ = send_sync(
+                    outputs,
+                    PrefetchOutput::Ended {
+                        generation: state.generation,
+                    },
+                );
                 return;
             }
             PrefetchWait::Poll(Err(error)) => {
-                let _ = outputs.send_blocking(PrefetchOutput::Error(error));
+                let _ = send_sync(outputs, PrefetchOutput::Error(error));
                 return;
             }
         }
@@ -3728,16 +3731,17 @@ fn publish_live_window_if_changed(
             published.initialized = true;
             published.value = window;
             published.playback_rate_range = playback_rate_range;
-            outputs
-                .send_blocking(PrefetchOutput::LiveWindow {
+            send_sync(
+                outputs,
+                PrefetchOutput::LiveWindow {
                     window,
                     playback_rate_range,
-                })
-                .is_ok()
+                },
+            )
         }
         Ok(_) => true,
         Err(error) => {
-            let _ = outputs.send_blocking(PrefetchOutput::Error(error));
+            let _ = send_sync(outputs, PrefetchOutput::Error(error));
             false
         }
     }
@@ -3770,14 +3774,15 @@ impl PrefetchState {
                 self.generation = self.generation.wrapping_add(1);
                 self.queued_duration = Duration::ZERO;
                 match session.seek(position) {
-                    Ok(pts) => outputs
-                        .send_blocking(PrefetchOutput::SeekCompleted {
+                    Ok(pts) => send_sync(
+                        outputs,
+                        PrefetchOutput::SeekCompleted {
                             generation: self.generation,
                             pts,
-                        })
-                        .is_ok(),
+                        },
+                    ),
                     Err(error) => {
-                        let _ = outputs.send_blocking(PrefetchOutput::Error(error));
+                        let _ = send_sync(outputs, PrefetchOutput::Error(error));
                         false
                     }
                 }
@@ -3792,16 +3797,17 @@ impl PrefetchState {
                 batch.duration,
                 self.maximum_prefetch.saturating_sub(self.queued_duration)
             ));
-            let _ = outputs.send_blocking(PrefetchOutput::Error(error));
+            let _ = send_sync(outputs, PrefetchOutput::Error(error));
             return false;
         }
         self.queued_duration = self.queued_duration.saturating_add(batch.duration);
-        outputs
-            .send_blocking(PrefetchOutput::Ready {
+        send_sync(
+            outputs,
+            PrefetchOutput::Ready {
                 generation: self.generation,
                 batch,
-            })
-            .is_ok()
+            },
+        )
     }
 
     fn prefetch_full(&self) -> bool {
@@ -3926,7 +3932,7 @@ fn wait_for_retry(
     retry_after: Duration,
     commands: &Receiver<PrefetchCommand>,
 ) -> Option<PrefetchCommand> {
-    let timer = async_io::Timer::after(retry_after);
+    let timer = futures_timer::Delay::new(retry_after);
     let command = commands.recv();
     futures::pin_mut!(timer, command);
     match futures::executor::block_on(select(command, timer)) {
@@ -3962,6 +3968,22 @@ fn normalized_time_progress(position: Duration, duration: Duration) -> f64 {
         0.0
     } else {
         (position.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn send_sync<T>(sender: &Sender<T>, value: T) -> bool {
+    sender.send_blocking(value).is_ok()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn send_sync<T>(sender: &Sender<T>, value: T) -> bool {
+    match sender.try_send(value) {
+        Ok(()) => true,
+        Err(async_channel::TrySendError::Closed(_)) => false,
+        Err(async_channel::TrySendError::Full(_)) => {
+            panic!("synchronous Web video publication exceeded its channel capacity")
+        }
     }
 }
 
@@ -4040,6 +4062,10 @@ mod tests {
         SegmentPrefetcher, SegmentSession, SendResult, SessionFuture, SessionPoll, publish_latest,
     };
     use waterkit_video::VideoError;
+
+    fn recv_sync<T>(receiver: &async_channel::Receiver<T>) -> Result<T, async_channel::RecvError> {
+        futures::executor::block_on(receiver.recv())
+    }
 
     struct FakeSession {
         durations: VecDeque<Duration>,
@@ -4150,10 +4176,7 @@ mod tests {
             buffered_nanos,
         );
         assert!(matches!(
-            prefetcher
-                .outputs
-                .recv_blocking()
-                .expect("prefetch output must remain connected"),
+            recv_sync(&prefetcher.outputs).expect("prefetch output must remain connected"),
             PrefetchOutput::LiveWindow {
                 window: None,
                 playback_rate_range: None,
@@ -4162,10 +4185,8 @@ mod tests {
 
         let mut first_generation = None;
         for _ in 0..3 {
-            let PrefetchOutput::Ready { generation, batch } = prefetcher
-                .outputs
-                .recv_blocking()
-                .expect("prefetch output must remain connected")
+            let PrefetchOutput::Ready { generation, batch } =
+                recv_sync(&prefetcher.outputs).expect("prefetch output must remain connected")
             else {
                 panic!("prefetcher must emit a ready batch before reaching its budget");
             };
@@ -4180,9 +4201,7 @@ mod tests {
             generation: first_generation.expect("ready batches must expose a generation"),
             duration: Duration::from_secs(2),
         });
-        let PrefetchOutput::Ready { batch, .. } = prefetcher
-            .outputs
-            .recv_blocking()
+        let PrefetchOutput::Ready { batch, .. } = recv_sync(&prefetcher.outputs)
             .expect("consuming a batch must release prefetch capacity")
         else {
             panic!("released capacity must admit the next ready batch");

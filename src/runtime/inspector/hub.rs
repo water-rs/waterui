@@ -20,9 +20,23 @@ use waterui_inspector_protocol::{Channel, ChannelSet, InspectorEvent, InspectorE
 ///
 /// Deep enough to absorb a burst between dispatcher wake-ups, shallow enough
 /// that a wedged client is noticed rather than silently buffering forever.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        dead_code,
+        reason = "browsers cannot host the TCP inspector dispatcher"
+    )
+)]
 const PUBLISH_CAPACITY: usize = 8192;
 
 /// What the dispatcher thread consumes.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        dead_code,
+        reason = "browsers cannot host the TCP inspector dispatcher"
+    )
+)]
 pub(super) enum Dispatch {
     /// An event to fan out to subscribed clients.
     Event(InspectorEventEnvelope),
@@ -62,6 +76,10 @@ pub(super) struct ClientId(pub(super) u64);
 #[derive(Debug)]
 pub struct EventHub {
     seq: AtomicU64,
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "browsers cannot accept TCP inspector clients")
+    )]
     next_client: AtomicU64,
     /// Union of every connected client's subscription.
     ///
@@ -74,6 +92,13 @@ pub struct EventHub {
 
 impl EventHub {
     /// Creates a hub and the receiver its dispatcher thread will drain.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "browser inspector initialization returns Unsupported"
+        )
+    )]
     pub(super) fn new() -> (Arc<Self>, async_channel::Receiver<Dispatch>) {
         let (sender, receiver) = async_channel::bounded(PUBLISH_CAPACITY);
         let hub = Arc::new(Self {
@@ -121,6 +146,13 @@ impl EventHub {
     }
 
     /// Takes the number of events dropped on `channel` since the last call.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "browsers cannot dispatch inspector events over TCP"
+        )
+    )]
     pub(super) fn take_dropped(&self, channel: Channel) -> u64 {
         self.dropped[channel as usize].swap(0, Ordering::Relaxed)
     }
@@ -129,6 +161,7 @@ impl EventHub {
     ///
     /// Control messages are rare, so losing one would be a correctness bug
     /// rather than backpressure; this blocks instead of dropping.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn send_control(&self, dispatch: Dispatch) {
         // A closed channel means the dispatcher is gone and the process is
         // shutting down; there is nothing useful to do about it here.
@@ -136,11 +169,22 @@ impl EventHub {
     }
 
     /// Allocates the next client identifier.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "browsers cannot accept TCP inspector clients")
+    )]
     pub(super) fn next_client_id(&self) -> ClientId {
         ClientId(self.next_client.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Replaces the union of client subscriptions.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "browsers cannot negotiate TCP inspector subscriptions"
+        )
+    )]
     pub(super) fn set_subscribed(&self, channels: ChannelSet) {
         self.subscribed.store(channels.bits(), Ordering::Relaxed);
     }
