@@ -46,17 +46,24 @@ impl LocalExecutor for GtkMainThreadExecutor {
 }
 
 /// Initialize executors for GTK apps on the main thread.
-pub fn init_main_thread_executors() {
+///
+/// Returns the inspector endpoint, which the caller must keep alive and install
+/// into the environment: dropping it shuts the endpoint down and withdraws the
+/// advertisement that lets `water inspect` find this application.
+#[must_use]
+pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
     // GTK apps run UI rendering on the main thread. Initialize executors there so
     // spawn/spawn_local paths used by reactive bindings are always available.
     let _ = try_init_global_executor(NativeExecutor::new());
-    let inspector_probe = waterui::inspector::maybe_init_from_env()
+    let inspector = waterui::inspector::maybe_init_from_env();
+    let inspector_probe = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::runtime_probe);
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
         GtkMainThreadExecutor,
         inspector_probe,
     ));
+    inspector
 }
 
 /// GTK4 application wrapper for `WaterUI`.
@@ -109,7 +116,7 @@ impl GtkApp {
         let cef_pump_started = Rc::new(Cell::new(false));
 
         self.app.connect_activate(move |app| {
-            init_main_thread_executors();
+            let inspector = init_main_thread_executors();
             #[cfg(any(feature = "webview-cef", feature = "chromium"))]
             if !cef_pump_started.replace(true) {
                 crate::browser_cef::start_message_pump(cef_runtime.clone());
@@ -117,6 +124,7 @@ impl GtkApp {
             let app = app.clone();
             let view = view.clone();
             let mut env = env.clone();
+            waterui::inspector::install(&mut env, inspector);
             spawn_local(async move {
                 let runtime = waterui_graphics::GpuRuntime::new()
                     .await
@@ -174,7 +182,7 @@ impl GtkApp {
         let cef_pump_started = Rc::new(Cell::new(false));
 
         self.app.connect_activate(move |app| {
-            init_main_thread_executors();
+            let inspector = init_main_thread_executors();
             #[cfg(any(feature = "webview-cef", feature = "chromium"))]
             if !cef_pump_started.replace(true) {
                 crate::browser_cef::start_message_pump(cef_runtime.clone());
@@ -184,6 +192,7 @@ impl GtkApp {
             let title = title.clone();
             let background = background.clone();
             let mut env = env.clone();
+            waterui::inspector::install(&mut env, inspector);
             spawn_local(async move {
                 let runtime = waterui_graphics::GpuRuntime::new()
                     .await
