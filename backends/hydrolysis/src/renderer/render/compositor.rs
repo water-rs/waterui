@@ -579,7 +579,10 @@ impl GpuSurfaceCompositorState {
 impl EmbeddedGpuSurfaceRuntime {
     pub(crate) fn new(surface: GpuSurface, env: &Environment) -> Self {
         let msaa_samples = surface.msaa_sample_limit();
-        let prefers_hdr = surface.resolved_hdr_preference();
+        let prefers_hdr = surface.resolved_hdr_preference().or_else(|| {
+            env.get::<DynamicRangePreference>()
+                .map(|preference| preference.0)
+        });
         Self {
             surface: Some(surface),
             env: Some(env.clone()),
@@ -1603,5 +1606,19 @@ mod tests {
         runtime.finish_trackpad_pan_frame();
         assert!(!runtime.gesture.active);
         assert!(!runtime.trackpad_pan_ending);
+    }
+
+    #[test]
+    fn embedded_surface_inherits_dynamic_range_metadata() {
+        let mut env = Environment::new();
+        env.insert(DynamicRangePreference(false));
+        let runtime = EmbeddedGpuSurfaceRuntime::new(GpuSurface::new(GestureProbe), &env);
+        assert_eq!(runtime.prefers_hdr, Some(false));
+
+        let explicit = EmbeddedGpuSurfaceRuntime::new(
+            GpuSurface::new(GestureProbe).prefer_hdr_surface(),
+            &env,
+        );
+        assert_eq!(explicit.prefers_hdr, Some(true));
     }
 }

@@ -227,11 +227,21 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<StandardDynamicRange>>() {
-            Ok(meta) => return RenderNode::build(meta.content, env, renderer),
+            Ok(meta) => {
+                let mut scoped = env.clone();
+                scoped.insert(DynamicRangePreference(false));
+                let child = RenderNode::build(meta.content, &scoped, renderer);
+                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+            }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<HighDynamicRange>>() {
-            Ok(meta) => return RenderNode::build(meta.content, env, renderer),
+            Ok(meta) => {
+                let mut scoped = env.clone();
+                scoped.insert(DynamicRangePreference(true));
+                let child = RenderNode::build(meta.content, &scoped, renderer);
+                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+            }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<IgnoreSafeArea>>() {
