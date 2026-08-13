@@ -88,6 +88,13 @@ impl SharedGpuContext {
             .await
             .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))?;
 
+        // Device loss otherwise surfaces only as a bare `Validation` status on the
+        // next swapchain acquire, with the reason discarded; log it at the moment
+        // it happens so the failure names its cause.
+        device.set_device_lost_callback(|reason, message| {
+            tracing::error!(?reason, message, "WaterUI GPU runtime device was lost");
+        });
+
         let device = Arc::new(device);
         let queue = Arc::new(queue);
         let submission_completion_driver =

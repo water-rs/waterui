@@ -662,9 +662,11 @@ pub struct MemoizedSubView<'a> {
     cache: core::cell::RefCell<[Option<(ProposalSize, ViewDimensions)>; MEMOIZED_PROPOSALS]>,
 }
 
-/// How many distinct proposals one child's memo retains. A container probes a child
-/// at its ideal size, at the resolved bounds, and — once the distribution algorithm
-/// asks — at its minimum and maximum, so four covers a pass without spilling.
+/// How many distinct proposals one child's memo retains.
+///
+/// A container probes a child at its ideal size, at the resolved bounds, and —
+/// once the distribution algorithm asks — at its minimum and maximum, so four
+/// covers a pass without spilling.
 pub const MEMOIZED_PROPOSALS: usize = 4;
 
 impl<'a> MemoizedSubView<'a> {

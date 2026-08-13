@@ -50,6 +50,7 @@ tracing.workspace = true
 tracing-panic.workspace = true
 jiff.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pollster = { workspace = true, optional = true }
 raw-window-handle = "0.6"
 waterui-browser-cef = { workspace = true, optional = true }
 waterui-chromium = { workspace = true, optional = true }
@@ -100,6 +101,7 @@ gpu = [
     "dep:wgpu-hal",
     "dep:waterui-video-gpu",
     "dep:objc2-metal",
+    "dep:pollster",
 ]
 # C FFI for Apple/GTK backends (default)
 c-api = ["std"]
