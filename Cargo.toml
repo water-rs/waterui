@@ -302,3 +302,8 @@ lto = "thin"
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
+
+# vello 0.9 loses the Vulkan device on Mali (select's discarded arm computes an
+# underflowed workgroup-array index; Mali page-faults on it). Fixed upstream in
+# linebender/vello#1817; drop this patch when a release containing it ships.
+vello = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
