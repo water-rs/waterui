@@ -266,6 +266,26 @@ all = [
 workspace = true
 
 # Optimize release builds for size
+# Development builds of this repository. Cargo only honours profiles from the
+# top-level workspace, so none of this reaches an application built against the
+# published crates — it tunes how WaterUI itself is developed.
+[profile.dev]
+# sccache refuses to cache incremental compilation, so leaving it on means this
+# workspace pays for a cache it can never use — and pays again in every agent
+# workspace, each of which then compiles the tree from scratch. Off, the shared
+# cache actually serves them, and the per-crate incremental directories (easily
+# tens of gigabytes across a few checkouts) stop existing.
+incremental = false
+# Backtraces still resolve to file and line; what goes is the full type and
+# variable debug info, which dominates artifact size and is rarely how a layout
+# or rendering bug gets diagnosed here.
+debug = "line-tables-only"
+
+# Dependencies are debugged even more rarely than they are stepped into, and the
+# graph carries wgpu, vello and parley — the bulk of the debug info by far.
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = true
 codegen-units = 1
