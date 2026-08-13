@@ -32,6 +32,8 @@ impl RenderNode {
                 );
             }
             RenderNode::Text(text) => {
+                #[cfg(feature = "accessibility")]
+                renderer.push_accessibility_owner(&text.accessibility_identity);
                 // Read the content/alignment signals through `read_signal` so a change
                 // re-subscribes this frame and schedules a window refresh — the same
                 // cheap pump every other reactive leaf uses. (A bare reactive `Text`
@@ -39,10 +41,14 @@ impl RenderNode {
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
                 text.emit_accessibility(renderer, ctx, &styled, env);
+                #[cfg(feature = "accessibility")]
+                renderer.pop_accessibility_owner();
                 let (state, scene) = renderer.state_and_scene_mut();
                 HydrolysisRenderer::render_styled_text(state, scene, ctx, styled, alignment, env);
             }
             RenderNode::Container(container) => {
+                #[cfg(feature = "accessibility")]
+                renderer.push_accessibility_owner(&container.accessibility_identity);
                 #[cfg(feature = "accessibility")]
                 let group_scope = container.accessibility_child_env.as_ref().map(|_| {
                     renderer.begin_accessibility_group(
@@ -54,6 +60,8 @@ impl RenderNode {
                 let child_env = container.accessibility_child_env.as_ref().unwrap_or(env);
                 #[cfg(not(feature = "accessibility"))]
                 let child_env = env;
+                #[cfg(feature = "accessibility")]
+                renderer.pop_accessibility_owner();
                 for (child, rect) in container.children.iter().zip(container.placed.iter()) {
                     let child_ctx = ctx.child(
                         vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
@@ -68,7 +76,9 @@ impl RenderNode {
                 }
                 #[cfg(feature = "accessibility")]
                 if let Some(group_scope) = group_scope {
+                    renderer.push_accessibility_owner(&container.accessibility_identity);
                     renderer.end_accessibility_group(group_scope);
+                    renderer.pop_accessibility_owner();
                 }
             }
             RenderNode::Opacity(node) => {
@@ -130,6 +140,8 @@ impl RenderNode {
             RenderNode::Retain(node) => node.child.flush(renderer, ctx, env),
             RenderNode::Env(node) => node.child.flush(renderer, ctx, &node.env),
             RenderNode::Wrapper(node) => {
+                #[cfg(feature = "accessibility")]
+                renderer.push_accessibility_owner(&node.accessibility_identity);
                 // Each effect re-applies through the shared `apply_*` helper, with
                 // a closure that flushes the child node under the wrapper's scoped
                 // environment — so reactive descendants reach their own nodes and
@@ -244,9 +256,15 @@ impl RenderNode {
                         }
                     }
                 }
+                #[cfg(feature = "accessibility")]
+                renderer.pop_accessibility_owner();
             }
             RenderNode::SceneView(node) => {
+                #[cfg(feature = "accessibility")]
+                renderer.push_accessibility_owner(&node.accessibility_identity);
                 emit_graphics_image_accessibility(renderer, ctx, env);
+                #[cfg(feature = "accessibility")]
+                renderer.pop_accessibility_owner();
                 let mut scene = vello::Scene::new();
                 // Scope `scene2d` so its `&mut scene` borrow ends before `&scene` is
                 // appended below.
@@ -271,7 +289,11 @@ impl RenderNode {
                 }
             }
             RenderNode::GpuSurface(node) => {
+                #[cfg(feature = "accessibility")]
+                renderer.push_accessibility_owner(&node.accessibility_identity);
                 emit_graphics_image_accessibility(renderer, ctx, env);
+                #[cfg(feature = "accessibility")]
+                renderer.pop_accessibility_owner();
                 node.flush(renderer, ctx);
             }
             RenderNode::ViewEffect(node) => node.flush(renderer, ctx),
@@ -322,14 +344,18 @@ impl RenderNode {
                     },
                 );
                 #[cfg(feature = "accessibility")]
-                crate::widgets::scroll::register_scroll_accessibility_node(
-                    renderer,
-                    &node.env,
-                    transformed_rect(ctx.hit_transform, viewport_rect),
-                    &handle,
-                    metrics,
-                    node.axis,
-                );
+                {
+                    renderer.push_accessibility_owner(&node.accessibility_identity);
+                    crate::widgets::scroll::register_scroll_accessibility_node(
+                        renderer,
+                        &node.env,
+                        transformed_rect(ctx.hit_transform, viewport_rect),
+                        &handle,
+                        metrics,
+                        node.axis,
+                    );
+                    renderer.pop_accessibility_owner();
+                }
                 let scroll_ctx =
                     RenderContext::with_transforms(viewport_rect, ctx.transform, ctx.hit_transform);
                 let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx);
@@ -344,11 +370,15 @@ impl RenderNode {
             RenderNode::LazyStack(node) => node.flush(renderer, ctx, env),
             RenderNode::Collection(node) => node.flush(renderer, ctx),
             RenderNode::Widget(node) => {
+                #[cfg(feature = "accessibility")]
+                renderer.push_accessibility_owner(&node.accessibility_identity);
                 // Re-render the leaf widget from its retained config so its handler
                 // re-reads live signals and re-emits interaction targets + a11y at the
                 // current bounds. A leaf render starts a fresh recursion depth.
                 renderer.render_depth = 0;
                 Rc::clone(&node.behavior).render(renderer, ctx, &node.env);
+                #[cfg(feature = "accessibility")]
+                renderer.pop_accessibility_owner();
             }
         }
     }

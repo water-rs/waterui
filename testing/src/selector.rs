@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
 
 use crate::app::SemanticApp;
-use crate::semantics::{NodeBounds, NodeId, NodeSnapshot, Role};
+use crate::semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role};
 
 /// Chainable semantic selector.
 #[derive(Debug, Clone)]
@@ -16,8 +16,9 @@ pub struct Selector {
     label_contains: Option<String>,
     enabled: Option<bool>,
     selected: Option<bool>,
-    checked: Option<bool>,
+    checked: Option<CheckedState>,
     expanded: Option<bool>,
+    busy: Option<bool>,
     value_exact: Option<String>,
     value_contains: Option<String>,
     hidden: Option<bool>,
@@ -35,6 +36,7 @@ impl Default for Selector {
             selected: None,
             checked: None,
             expanded: None,
+            busy: None,
             value_exact: None,
             value_contains: None,
             hidden: Some(false),
@@ -89,7 +91,18 @@ impl Selector {
     /// Restricts matches to a checked state.
     #[must_use]
     pub const fn checked(mut self, checked: bool) -> Self {
-        self.checked = Some(checked);
+        self.checked = Some(if checked {
+            CheckedState::True
+        } else {
+            CheckedState::False
+        });
+        self
+    }
+
+    /// Restricts matches to nodes with an indeterminate checked state.
+    #[must_use]
+    pub const fn mixed(mut self) -> Self {
+        self.checked = Some(CheckedState::Mixed);
         self
     }
 
@@ -97,6 +110,13 @@ impl Selector {
     #[must_use]
     pub const fn expanded(mut self, expanded: bool) -> Self {
         self.expanded = Some(expanded);
+        self
+    }
+
+    /// Restricts matches to nodes with the requested busy state.
+    #[must_use]
+    pub const fn busy(mut self, busy: bool) -> Self {
+        self.busy = Some(busy);
         self
     }
 
@@ -160,10 +180,13 @@ impl Selector {
             parts.push(format!("selected={selected}"));
         }
         if let Some(checked) = self.checked {
-            parts.push(format!("checked={checked}"));
+            parts.push(format!("checked={checked:?}"));
         }
         if let Some(expanded) = self.expanded {
             parts.push(format!("expanded={expanded}"));
+        }
+        if let Some(busy) = self.busy {
+            parts.push(format!("busy={busy}"));
         }
         if let Some(value) = self.value_exact.as_deref() {
             parts.push(format!("value={value:?}"));
@@ -221,13 +244,19 @@ impl Selector {
         }
 
         if let Some(expected) = self.checked
-            && node.checked() != Some(expected)
+            && node.checked_state() != Some(expected)
         {
             return false;
         }
 
         if let Some(expected) = self.expanded
             && node.expanded() != Some(expected)
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.busy
+            && node.busy() != expected
         {
             return false;
         }

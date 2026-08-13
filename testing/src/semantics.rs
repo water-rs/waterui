@@ -104,6 +104,17 @@ impl Role {
     }
 }
 
+/// Semantic checked state exposed by a checkable accessibility node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CheckedState {
+    /// The node is not checked.
+    False,
+    /// The node is checked.
+    True,
+    /// The node is indeterminate or represents a mixed selection.
+    Mixed,
+}
+
 impl From<AccessibilityRole> for Role {
     fn from(role: AccessibilityRole) -> Self {
         Self(role)
@@ -211,8 +222,9 @@ pub struct NodeSnapshot {
     pub(crate) bounds: Option<NodeBounds>,
     pub(crate) enabled: bool,
     pub(crate) selected: bool,
-    pub(crate) checked: Option<bool>,
+    pub(crate) checked: Option<CheckedState>,
     pub(crate) expanded: Option<bool>,
+    pub(crate) busy: bool,
     pub(crate) hidden: bool,
     pub(crate) children: Vec<NodeId>,
 }
@@ -263,6 +275,16 @@ impl NodeSnapshot {
     /// Returns the checked state, if applicable.
     #[must_use]
     pub const fn checked(&self) -> Option<bool> {
+        match self.checked_state() {
+            Some(CheckedState::False) => Some(false),
+            Some(CheckedState::True) => Some(true),
+            Some(CheckedState::Mixed) | None => None,
+        }
+    }
+
+    /// Returns the complete checked state, preserving an indeterminate value.
+    #[must_use]
+    pub const fn checked_state(&self) -> Option<CheckedState> {
         self.checked
     }
 
@@ -270,6 +292,12 @@ impl NodeSnapshot {
     #[must_use]
     pub const fn expanded(&self) -> Option<bool> {
         self.expanded
+    }
+
+    /// Returns whether the node reports that it is busy.
+    #[must_use]
+    pub const fn busy(&self) -> bool {
+        self.busy
     }
 
     /// Returns node bounds, if present.
@@ -292,9 +320,10 @@ impl NodeSnapshot {
 
     fn from_accesskit(id: AccessibilityNodeId, node: &AccessibilityNode) -> Self {
         let checked = match node.toggled() {
-            Some(AccessibilityToggled::True) => Some(true),
-            Some(AccessibilityToggled::False) => Some(false),
-            Some(AccessibilityToggled::Mixed) | None => None,
+            Some(AccessibilityToggled::True) => Some(CheckedState::True),
+            Some(AccessibilityToggled::False) => Some(CheckedState::False),
+            Some(AccessibilityToggled::Mixed) => Some(CheckedState::Mixed),
+            None => None,
         };
         let expanded = node.is_expanded();
 
@@ -314,6 +343,7 @@ impl NodeSnapshot {
             selected: node.is_selected().unwrap_or(false),
             checked,
             expanded,
+            busy: node.is_busy(),
             hidden: node.is_hidden(),
             children: node.children().iter().copied().map(NodeId::from).collect(),
         }

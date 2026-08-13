@@ -132,6 +132,7 @@ fn node(
         selected: false,
         checked: None,
         expanded: None,
+        busy: false,
         hidden: false,
         children: Vec::new(),
     }
@@ -691,6 +692,22 @@ fn value_contains_matches_semantic_values() {
 }
 
 #[test]
+fn mixed_and_busy_selectors_preserve_complete_accessibility_state() {
+    let mut state = node(2, Role::CHECKBOX, Some("Sync all"), None, true);
+    state.checked = Some(CheckedState::Mixed);
+    state.busy = true;
+    let mut app = mounted(tree(vec![
+        node(1, Role::GROUP, Some("root"), None, true),
+        state,
+    ]));
+
+    let element = app.query().role(Role::CHECKBOX).mixed().busy(true).single();
+
+    assert_eq!(element.node().checked_state(), Some(CheckedState::Mixed));
+    assert!(element.node().busy());
+}
+
+#[test]
 fn wait_for_existence_and_nonexistence_complete_immediately() {
     let mut app = mounted(tree(vec![
         node(1, Role::LIST, Some("root"), None, true),
@@ -1218,4 +1235,3 @@ fn headless_capture_waits_for_async_gpu_setup() {
         "the GpuSurface content must be present in the captured frame"
     );
 }
-

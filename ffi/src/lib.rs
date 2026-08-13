@@ -50,11 +50,11 @@ use executor_core::{init_global_executor, init_local_executor};
 use waterkit_audio as _;
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
+#[cfg(all(not(target_vendor = "apple"), feature = "map"))]
+pub use waterui_map_gpu;
 pub use waterui_video;
 #[cfg(all(not(target_vendor = "apple"), feature = "gpu"))]
 pub use waterui_video_gpu;
-#[cfg(all(not(target_vendor = "apple"), feature = "map"))]
-pub use waterui_map_gpu;
 
 /// Installs the GPU video pipeline where it is the platform's video backend.
 ///
@@ -931,7 +931,11 @@ ffi_metadata!(Cursor, WuiMetadataCursor, cursor);
 // A stable automation identifier: Apple maps it to `accessibilityIdentifier`,
 // Android exposes it as the node's view-id resource name for UiAutomator.
 
-use waterui::accessibility::AccessibilityIdentifier;
+use nami::{Computed, SignalExt as _};
+use waterui::accessibility::{
+    AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
+    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+};
 
 /// FFI-safe representation of `IgnorableMetadata`<`AccessibilityIdentifier`>
 #[repr(C)]
@@ -960,6 +964,223 @@ ffi_ignorable_metadata!(
     AccessibilityIdentifier,
     WuiIgnorableMetadataAccessibilityIdentifier,
     accessibility_identifier
+);
+
+/// Reactive accessibility label metadata.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiIgnorableMetadataAccessibilityLabel {
+    /// Wrapped view content.
+    pub content: *mut WuiAnyView,
+    /// Resolved semantic label.
+    pub label: *mut WuiComputed<StyledStr>,
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityLabel> {
+    type FFI = WuiIgnorableMetadataAccessibilityLabel;
+
+    fn into_ffi(self) -> Self::FFI {
+        let label = self.value.signal().clone().map(StyledStr::from).computed();
+        WuiIgnorableMetadataAccessibilityLabel {
+            content: self.content.into_ffi(),
+            label: label.into_ffi(),
+        }
+    }
+}
+
+ffi_ignorable_metadata!(
+    AccessibilityLabel,
+    WuiIgnorableMetadataAccessibilityLabel,
+    accessibility_label
+);
+
+fn accessibility_role_code(role: AccessibilityRole) -> i32 {
+    match role {
+        AccessibilityRole::Button => 0,
+        AccessibilityRole::Link => 1,
+        AccessibilityRole::Image => 2,
+        AccessibilityRole::Text => 3,
+        AccessibilityRole::Header => 4,
+        AccessibilityRole::Footer => 5,
+        AccessibilityRole::Navigation => 6,
+        AccessibilityRole::Main => 7,
+        AccessibilityRole::Search => 8,
+        AccessibilityRole::Article => 9,
+        AccessibilityRole::Section => 10,
+        AccessibilityRole::List => 11,
+        AccessibilityRole::ListItem => 12,
+        AccessibilityRole::Checkbox => 13,
+        AccessibilityRole::RadioButton => 14,
+        AccessibilityRole::Switch => 15,
+        AccessibilityRole::Slider => 16,
+        AccessibilityRole::ProgressBar => 17,
+        AccessibilityRole::Tab => 18,
+        AccessibilityRole::TabList => 19,
+        AccessibilityRole::TabPanel => 20,
+        AccessibilityRole::Menu => 21,
+        AccessibilityRole::MenuItem => 22,
+        AccessibilityRole::MenuBar => 23,
+        AccessibilityRole::MenuItemCheckbox => 24,
+        AccessibilityRole::MenuItemRadio => 25,
+        AccessibilityRole::Combobox => 26,
+        AccessibilityRole::Option => 27,
+        AccessibilityRole::Group => 28,
+        _ => panic!("unsupported accessibility role in native FFI"),
+    }
+}
+
+/// Accessibility metadata containing a static integer value.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiIgnorableMetadataAccessibilityValue {
+    /// Wrapped view content.
+    pub content: *mut WuiAnyView,
+    /// Backend-independent semantic value.
+    pub value: i32,
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityRole> {
+    type FFI = WuiIgnorableMetadataAccessibilityValue;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataAccessibilityValue {
+            content: self.content.into_ffi(),
+            value: accessibility_role_code(self.value),
+        }
+    }
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityHidden> {
+    type FFI = WuiIgnorableMetadataAccessibilityValue;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataAccessibilityValue {
+            content: self.content.into_ffi(),
+            value: i32::from(self.value.is_hidden()),
+        }
+    }
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityChildren> {
+    type FFI = WuiIgnorableMetadataAccessibilityValue;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataAccessibilityValue {
+            content: self.content.into_ffi(),
+            value: i32::from(self.value.excludes_descendants()),
+        }
+    }
+}
+
+ffi_ignorable_metadata!(
+    AccessibilityRole,
+    WuiIgnorableMetadataAccessibilityValue,
+    accessibility_role
+);
+ffi_ignorable_metadata!(
+    AccessibilityHidden,
+    WuiIgnorableMetadataAccessibilityValue,
+    accessibility_hidden
+);
+ffi_ignorable_metadata!(
+    AccessibilityChildren,
+    WuiIgnorableMetadataAccessibilityValue,
+    accessibility_children
+);
+
+/// Reactive accessibility state split into primitive signals for native APIs.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiAccessibilityState {
+    /// Whether the semantic node is disabled.
+    pub disabled: *mut WuiComputed<bool>,
+    /// Whether the semantic node is selected.
+    pub selected: *mut WuiComputed<bool>,
+    /// -1 is absent, 0 false, 1 true, and 2 mixed.
+    pub checked: *mut WuiComputed<i32>,
+    /// -1 is absent, 0 collapsed, and 1 expanded.
+    pub expanded: *mut WuiComputed<i32>,
+    /// Whether the semantic node is busy.
+    pub busy: *mut WuiComputed<bool>,
+    /// Whether the semantic node is hidden.
+    pub hidden: *mut WuiComputed<bool>,
+}
+
+fn accessibility_state_ffi(state: Computed<AccessibilityState>) -> WuiAccessibilityState {
+    let checked = state.clone().map(|state| match state.checked_state() {
+        None => -1,
+        Some(AccessibilityChecked::False) => 0,
+        Some(AccessibilityChecked::True) => 1,
+        Some(AccessibilityChecked::Mixed) => 2,
+    });
+    let expanded = state.clone().map(|state| match state.expanded_state() {
+        None => -1,
+        Some(false) => 0,
+        Some(true) => 1,
+    });
+    WuiAccessibilityState {
+        disabled: state
+            .clone()
+            .map(|state| state.is_disabled())
+            .computed()
+            .into_ffi(),
+        selected: state
+            .clone()
+            .map(|state| state.is_selected())
+            .computed()
+            .into_ffi(),
+        checked: checked.computed().into_ffi(),
+        expanded: expanded.computed().into_ffi(),
+        busy: state
+            .clone()
+            .map(|state| state.is_busy())
+            .computed()
+            .into_ffi(),
+        hidden: state.map(|state| state.is_hidden()).computed().into_ffi(),
+    }
+}
+
+/// Accessibility state metadata wrapper.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiIgnorableMetadataAccessibilityState {
+    /// Wrapped view content.
+    pub content: *mut WuiAnyView,
+    /// Reactive semantic state.
+    pub state: WuiAccessibilityState,
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityState> {
+    type FFI = WuiIgnorableMetadataAccessibilityState;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataAccessibilityState {
+            content: self.content.into_ffi(),
+            state: accessibility_state_ffi(Computed::constant(self.value)),
+        }
+    }
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityStateSignal> {
+    type FFI = WuiIgnorableMetadataAccessibilityState;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataAccessibilityState {
+            content: self.content.into_ffi(),
+            state: accessibility_state_ffi(self.value.state().clone()),
+        }
+    }
+}
+
+ffi_ignorable_metadata!(
+    AccessibilityState,
+    WuiIgnorableMetadataAccessibilityState,
+    accessibility_state
+);
+ffi_ignorable_metadata!(
+    AccessibilityStateSignal,
+    WuiIgnorableMetadataAccessibilityState,
+    accessibility_state_signal
 );
 
 // ========== Common imports for metadata FFI ==========
