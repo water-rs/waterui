@@ -84,6 +84,12 @@ impl<T: Effect> ErasedEffect for T {
 }
 
 type ReactiveParam = Reactive<Computed<f32>>;
+
+// Each alias below pins one multi-input filter to `ReactiveParam`. The `Reactive`
+// prefix is load-bearing: cbindgen resolves type names in a single flat namespace,
+// so an alias reusing the filter's own name shadows the generic it aliases and
+// aborts header generation with "has 0 params but is being instantiated with 1
+// values". Keep these names distinct from `crate::multi_input_filter::*`.
 type ReactiveBlendWithImageFilter = crate::multi_input_filter::BlendWithImageFilter<ReactiveParam>;
 type ReactiveMaskedBlurFilter = crate::multi_input_filter::MaskedBlurFilter<ReactiveParam>;
 type ReactiveTransitionToImageFilter =

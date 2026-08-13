@@ -32,9 +32,8 @@ use waterui_graphics::color::Color;
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use waterui_layout::{
-    EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
-    VerticalAlignmentGuide,
-    aspect_ratio::{AspectRatio, ContentMode},
+    AspectRatio, ContentMode, EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority,
+    Overlay, VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,

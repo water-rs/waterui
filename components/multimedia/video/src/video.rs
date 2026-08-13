@@ -8,11 +8,11 @@
 //! ## Examples
 //!
 //! ```no_run
-//! use waterui_video::{AspectRatio, video, video_player};
+//! use waterui_video::{ContentMode, video, video_player};
 //!
 //! // Raw video view - no controls, just displays video
 //! let video = video("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")
-//!     .aspect_ratio(AspectRatio::Fill);
+//!     .content_mode(ContentMode::Fill);
 //!
 //! // Interactive video player with platform-appropriate controls
 //! let player = video_player("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")
@@ -32,10 +32,10 @@ use crate::{
     source::{MediaItem, OfflineDrmKeySet},
 };
 
-/// Aspect ratio mode for video playback.
+/// How the decoded picture fills the bounds it is given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
-pub enum AspectRatio {
+pub enum ContentMode {
     /// Fit the video within the bounds while maintaining aspect ratio (letterbox/pillarbox).
     #[default]
     Fit = 0,
@@ -238,7 +238,7 @@ impl EquirectangularProjection {
 /// Projection used to present decoded video frames.
 #[derive(Debug, Clone, Default)]
 pub enum VideoProjection {
-    /// Ordinary planar presentation using [`AspectRatio`].
+    /// Ordinary planar presentation using [`ContentMode`].
     #[default]
     Rectilinear,
     /// Interactive equirectangular spherical presentation.
@@ -1456,8 +1456,8 @@ impl<H> PlaybackConfiguration<H> {
 pub struct VideoConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,
-    /// The aspect ratio mode for video playback.
-    pub aspect_ratio: AspectRatio,
+    /// How the picture fills the bounds it is given.
+    pub content_mode: ContentMode,
     /// Projection used to present decoded frames.
     pub projection: VideoProjection,
     /// Whether the video should loop when it ends.
@@ -1467,7 +1467,7 @@ pub struct VideoConfig<H = Option<VideoEventHandler>> {
 impl<H> fmt::Debug for VideoConfig<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VideoConfig")
-            .field("aspect_ratio", &self.aspect_ratio)
+            .field("content_mode", &self.content_mode)
             .field("projection", &self.projection)
             .field("loops", &self.loops)
             .field("playback_policy", &self.playback.playback_policy)
@@ -1484,13 +1484,13 @@ impl<H> VideoConfig<H> {
     fn map_event_handler<T>(self, map: impl FnOnce(H) -> T) -> VideoConfig<T> {
         let Self {
             playback,
-            aspect_ratio,
+            content_mode,
             projection,
             loops,
         } = self;
         VideoConfig {
             playback: playback.map_event_handler(map),
-            aspect_ratio,
+            content_mode,
             projection,
             loops,
         }
@@ -1508,9 +1508,9 @@ impl NativeView for NativeVideoConfig {
         if self.projection.is_spherical() {
             return StretchAxis::Both;
         }
-        match self.aspect_ratio {
-            AspectRatio::Fit => StretchAxis::Horizontal,
-            AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
+        match self.content_mode {
+            ContentMode::Fit => StretchAxis::Horizontal,
+            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     }
 }
@@ -1531,9 +1531,9 @@ configurable!(
     |config| if config.projection.is_spherical() {
         StretchAxis::Both
     } else {
-        match config.aspect_ratio {
-            AspectRatio::Fit => StretchAxis::Horizontal,
-            AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
+        match config.content_mode {
+            ContentMode::Fit => StretchAxis::Horizontal,
+            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     },
     resolve |config, env| config.bind_event_environment(env)
@@ -1545,16 +1545,16 @@ impl Video {
     pub fn new(session: PlaybackSession) -> Self {
         Self(VideoConfig {
             playback: PlaybackConfiguration::from_session(session, None),
-            aspect_ratio: AspectRatio::default(),
+            content_mode: ContentMode::default(),
             projection: VideoProjection::default(),
             loops: true,
         })
     }
 
-    /// Sets the aspect ratio mode for the video.
+    /// Sets how the picture fills the video's bounds.
     #[must_use]
-    pub const fn aspect_ratio(mut self, aspect_ratio: AspectRatio) -> Self {
-        self.0.aspect_ratio = aspect_ratio;
+    pub const fn content_mode(mut self, content_mode: ContentMode) -> Self {
+        self.0.content_mode = content_mode;
         self
     }
 
@@ -1621,8 +1621,8 @@ pub fn video(item: impl Into<MediaItem>) -> Video {
 pub struct VideoPlayerConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,
-    /// The aspect ratio mode for video playback.
-    pub aspect_ratio: AspectRatio,
+    /// How the picture fills the bounds it is given.
+    pub content_mode: ContentMode,
     /// Projection used to present decoded frames.
     pub projection: VideoProjection,
     /// Whether to show interactive playback controls.
@@ -1632,7 +1632,7 @@ pub struct VideoPlayerConfig<H = Option<VideoEventHandler>> {
 impl<H> fmt::Debug for VideoPlayerConfig<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VideoPlayerConfig")
-            .field("aspect_ratio", &self.aspect_ratio)
+            .field("content_mode", &self.content_mode)
             .field("projection", &self.projection)
             .field("show_controls", &self.show_controls)
             .field("playback_policy", &self.playback.playback_policy)
@@ -1649,13 +1649,13 @@ impl<H> VideoPlayerConfig<H> {
     fn map_event_handler<T>(self, map: impl FnOnce(H) -> T) -> VideoPlayerConfig<T> {
         let Self {
             playback,
-            aspect_ratio,
+            content_mode,
             projection,
             show_controls,
         } = self;
         VideoPlayerConfig {
             playback: playback.map_event_handler(map),
-            aspect_ratio,
+            content_mode,
             projection,
             show_controls,
         }
@@ -1673,9 +1673,9 @@ impl NativeView for NativeVideoPlayerConfig {
         if self.projection.is_spherical() {
             return StretchAxis::Both;
         }
-        match self.aspect_ratio {
-            AspectRatio::Fit => StretchAxis::Horizontal,
-            AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
+        match self.content_mode {
+            ContentMode::Fit => StretchAxis::Horizontal,
+            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     }
 }
@@ -1697,9 +1697,9 @@ configurable!(
     |config| if config.projection.is_spherical() {
         StretchAxis::Both
     } else {
-        match config.aspect_ratio {
-            AspectRatio::Fit => StretchAxis::Horizontal,
-            AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
+        match config.content_mode {
+            ContentMode::Fit => StretchAxis::Horizontal,
+            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     },
     resolve |config, env| config.bind_event_environment(env)
@@ -1711,16 +1711,16 @@ impl VideoPlayer {
     pub fn new(session: PlaybackSession) -> Self {
         Self(VideoPlayerConfig {
             playback: PlaybackConfiguration::from_session(session, None),
-            aspect_ratio: AspectRatio::default(),
+            content_mode: ContentMode::default(),
             projection: VideoProjection::default(),
             show_controls: true,
         })
     }
 
-    /// Sets the aspect ratio mode for the video player.
+    /// Sets how the picture fills the player's bounds.
     #[must_use]
-    pub const fn aspect_ratio(mut self, aspect_ratio: AspectRatio) -> Self {
-        self.0.aspect_ratio = aspect_ratio;
+    pub const fn content_mode(mut self, content_mode: ContentMode) -> Self {
+        self.0.content_mode = content_mode;
         self
     }
 

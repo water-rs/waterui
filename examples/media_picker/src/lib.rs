@@ -185,7 +185,7 @@ fn video_view(url: Url) -> impl View {
     vstack((
         video_player(url)
             .show_controls(true)
-            .aspect_ratio(AspectRatio::Fit),
+            .content_mode(video::ContentMode::Fit),
         text("Video")
             .body()
             .foreground(MutedForeground)

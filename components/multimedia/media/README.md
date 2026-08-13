@@ -120,13 +120,13 @@ fn volume_demo() -> impl View {
 ### Raw Video View with Custom Controls
 
 ```rust
-use waterui_media::{Video, AspectRatio, Url};
+use waterui_media::{Video, Url, video::ContentMode};
 use waterui_core::binding;
 
 let video = Video::new(Url::new(
     "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
 ))
-    .aspect_ratio(AspectRatio::Fill)
+    .content_mode(ContentMode::Fill)
     .loops(true)
     .on_event(|event| {
         // Handle buffering, playback errors, etc.
@@ -202,7 +202,7 @@ let video = Media::Video(Url::new(
 - `Url` - Type-safe URL representation (web, local, data, blob)
 - `Media` - Unified enum for Image, Video, or LivePhoto
 - `LivePhotoSource` - Pairing of image and video URLs for Live Photos
-- `AspectRatio` - Video scaling modes: Fit, Fill, Stretch
+- `video::ContentMode` - How the picture fills its bounds: Fit, Fill, Stretch
 - `Volume` - f32 type with special encoding for mute state
 - `Event` - Photo and video event types (loaded, error, buffering, etc.)
 - `MediaFilter` - Filters for media picker (Image, Video, LivePhoto, combinators)

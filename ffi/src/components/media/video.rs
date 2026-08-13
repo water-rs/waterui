@@ -11,7 +11,7 @@ use nami::SignalExt;
 use nami::signal::IntoComputed;
 use waterui::{Binding, Str};
 use waterui_video::{
-    AspectRatio, AudioTrackInfo, Delivery, LiveWindow, PlaybackMetrics, PlaybackOutputPath,
+    AudioTrackInfo, ContentMode, Delivery, LiveWindow, PlaybackMetrics, PlaybackOutputPath,
     PlaybackPhase, PlaybackPowerPolicy, PlayerController, RepeatMode, SubtitleTrackInfo,
     SubtitleTrackOrigin, TrackCatalog, VideoProjection, VideoTrackInfo, Volume,
     video::{
@@ -52,10 +52,10 @@ ffi_view!(
     all()
 );
 
-/// FFI representation of the video content's aspect-ratio fit mode.
+/// FFI representation of how the picture fills the bounds it is given.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub enum WuiAspectRatio {
+pub enum WuiContentMode {
     /// Scale to fit entirely within the bounds, preserving aspect ratio.
     Fit = 0,
     /// Scale to fill the bounds, preserving aspect ratio and cropping overflow.
@@ -85,14 +85,14 @@ impl IntoFFI for VideoProjection {
     }
 }
 
-impl IntoFFI for AspectRatio {
-    type FFI = WuiAspectRatio;
+impl IntoFFI for ContentMode {
+    type FFI = WuiContentMode;
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Self::Fit => WuiAspectRatio::Fit,
-            Self::Fill => WuiAspectRatio::Fill,
-            Self::Stretch => WuiAspectRatio::Stretch,
+            Self::Fit => WuiContentMode::Fit,
+            Self::Fill => WuiContentMode::Fill,
+            Self::Stretch => WuiContentMode::Stretch,
         }
     }
 }
@@ -1122,8 +1122,8 @@ fn into_playback_descriptor(
 pub struct WuiVideo {
     /// Shared reactive playback state.
     pub playback: WuiVideoPlaybackDescriptor,
-    /// The aspect ratio mode for video playback.
-    pub aspect_ratio: WuiAspectRatio,
+    /// How the picture fills the bounds it is given.
+    pub content_mode: WuiContentMode,
     /// Projection requested by the semantic component.
     pub projection: WuiVideoProjection,
     /// Whether the video should loop when it ends.
@@ -1134,14 +1134,14 @@ impl IntoFFI for NativeVideoConfig {
     type FFI = WuiVideo;
 
     fn into_ffi(self) -> Self::FFI {
-        let aspect_ratio = self.aspect_ratio.into_ffi();
+        let content_mode = self.content_mode.into_ffi();
         let projection = self.projection.into_ffi();
         let loops = self.loops;
         let playback = into_playback_descriptor(self.playback);
 
         WuiVideo {
             playback,
-            aspect_ratio,
+            content_mode,
             projection,
             loops,
         }
@@ -1154,8 +1154,8 @@ impl IntoFFI for NativeVideoConfig {
 pub struct WuiVideoPlayer {
     /// Shared reactive playback state.
     pub playback: WuiVideoPlaybackDescriptor,
-    /// The aspect ratio mode for video playback.
-    pub aspect_ratio: WuiAspectRatio,
+    /// How the picture fills the bounds it is given.
+    pub content_mode: WuiContentMode,
     /// Projection requested by the semantic component.
     pub projection: WuiVideoProjection,
     /// Whether to show interactive playback controls.
@@ -1166,14 +1166,14 @@ impl IntoFFI for NativeVideoPlayerConfig {
     type FFI = WuiVideoPlayer;
 
     fn into_ffi(self) -> Self::FFI {
-        let aspect_ratio = self.aspect_ratio.into_ffi();
+        let content_mode = self.content_mode.into_ffi();
         let projection = self.projection.into_ffi();
         let show_controls = self.show_controls;
         let playback = into_playback_descriptor(self.playback);
 
         WuiVideoPlayer {
             playback,
-            aspect_ratio,
+            content_mode,
             projection,
             show_controls,
         }
