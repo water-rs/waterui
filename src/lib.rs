@@ -119,7 +119,10 @@ pub mod prelude {
         LargeFile, LargeFileAsset, VideoAsset, asset, assets, include_bundle,
     };
 
-    // Re-export macros
+    // Re-export macros. The UI-test attribute is `ui_test` here rather than
+    // `test`: glob-importing a macro named `test` shadows the built-in `#[test]`
+    // in every file that writes `use waterui::prelude::*`, and the resulting
+    // error names neither the prelude nor the collision.
     pub use waterui_macros::*;
 }
 pub use color::Color;
@@ -154,6 +157,12 @@ pub use waterui_locale as locale;
 pub use waterui_locale::regional;
 #[doc(inline)]
 pub use waterui_macros::*;
+/// The UI-test attribute, written qualified as `#[waterui::test(...)]`.
+///
+/// It is `ui_test` inside [`prelude`] so that a glob import of the prelude does
+/// not shadow the built-in `#[test]`; this alias keeps the short spelling at the
+/// path where it is actually written.
+pub use waterui_macros::ui_test as test;
 #[cfg(feature = "map")]
 pub use waterui_map as map;
 #[cfg(feature = "media")]

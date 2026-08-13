@@ -1494,7 +1494,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 ///
 /// The macro always expands into a regular `#[test]` wrapper.
 #[proc_macro_attribute]
-pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     let test_args = match parse_test_view_arg(args) {
         Ok(test_args) => test_args,
         Err(err) => return err,

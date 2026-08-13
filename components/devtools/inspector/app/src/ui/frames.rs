@@ -26,10 +26,6 @@ pub fn view(model: Model) -> impl View {
         when(has_frames, {
             move || {
                 let model = model.clone();
-                // The chart is greedy: a `LineChart` placed above its siblings
-                // in a stack leaves them no height and they draw on top of each
-                // other. Keeping it last confines that to the bottom of the
-                // pane, where there is nothing after it to starve.
                 vstack((
                     breakdown(&model.last_frame),
                     Divider,
@@ -79,8 +75,7 @@ fn breakdown(last_frame: &Binding<Option<FrameSample>>) -> impl View + use<> {
             ),
             spacer(),
         ))
-        .spacing(32.0)
-        .height(parts::METRIC_HEIGHT),
+        .spacing(32.0),
         hstack((
             parts::metric(
                 "Layout",
@@ -102,8 +97,7 @@ fn breakdown(last_frame: &Binding<Option<FrameSample>>) -> impl View + use<> {
             ),
             spacer(),
         ))
-        .spacing(32.0)
-        .height(parts::METRIC_HEIGHT),
+        .spacing(32.0),
         hstack((
             parts::metric(
                 "Layers",
@@ -121,8 +115,7 @@ fn breakdown(last_frame: &Binding<Option<FrameSample>>) -> impl View + use<> {
             ),
             spacer(),
         ))
-        .spacing(32.0)
-        .height(parts::METRIC_HEIGHT),
+        .spacing(32.0),
         idle_note(last_frame),
     ))
     .alignment(HorizontalAlignment::Leading)
