@@ -73,7 +73,7 @@ pub struct ZStackLayout {
 
 impl Layout for ZStackLayout {
     /// `ZStack` is content-sized by default (it does not stretch automatically).
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::None
     }
 

@@ -1748,12 +1748,12 @@ fn test_stack_cross_axis_stretch_is_symmetric() {
     };
 
     assert_eq!(
-        vstack.stretch_axis(),
+        vstack.stretch_axis(&[]),
         StretchAxis::None,
         "VStack is content-sized, like SwiftUI's"
     );
     assert_eq!(
-        hstack.stretch_axis(),
+        hstack.stretch_axis(&[]),
         StretchAxis::None,
         "HStack is content-sized, mirroring VStack"
     );
@@ -1768,7 +1768,7 @@ fn test_hstack_keeps_nested_stack_content_sized_and_centered() {
 
     let mut nested = NestedStackView {
         size: Size::new(40.0, 20.0),
-        stretch_axis: layout.stretch_axis(),
+        stretch_axis: layout.stretch_axis(&[]),
     };
     let mut sibling = FixedSizeView {
         size: Size::new(40.0, 20.0),

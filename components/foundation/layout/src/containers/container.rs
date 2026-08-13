@@ -58,9 +58,16 @@ impl FixedContainer {
     }
 }
 
+impl FixedContainer {
+    /// What each child says about itself, in order, for the layout to answer from.
+    fn child_stretch_axes(&self) -> Vec<StretchAxis> {
+        self.contents.iter().map(View::stretch_axis).collect()
+    }
+}
+
 impl NativeView for FixedContainer {
     fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis()
+        self.layout.stretch_axis(&self.child_stretch_axes())
     }
 }
 
@@ -70,7 +77,7 @@ impl View for FixedContainer {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis()
+        self.layout.stretch_axis(&self.child_stretch_axes())
     }
 }
 
@@ -110,9 +117,19 @@ impl LazyContainer {
     }
 }
 
+impl LazyContainer {
+    /// A lazy container cannot enumerate its children without materializing the
+    /// collection, which is the one thing it exists to avoid, so its layout
+    /// answers with no children. Every layout that virtualizes — the two stacks —
+    /// is content-sized and ignores them anyway.
+    fn child_stretch_axes() -> &'static [StretchAxis] {
+        &[]
+    }
+}
+
 impl NativeView for LazyContainer {
     fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis()
+        self.layout.stretch_axis(Self::child_stretch_axes())
     }
 }
 
@@ -122,6 +139,6 @@ impl View for LazyContainer {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis()
+        self.layout.stretch_axis(Self::child_stretch_axes())
     }
 }

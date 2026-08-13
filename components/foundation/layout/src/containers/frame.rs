@@ -53,7 +53,7 @@ impl Layout for FrameLayout {
     /// `SwiftUI`'s `.frame(maxWidth: .infinity)`. With stacks content-sized,
     /// this (plus `Spacer`/`Color`) is how a view opts into filling its
     /// container.
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         let resolved = self.resolved();
         let horizontal = resolved.max_width.is_some_and(f32::is_infinite);
         let vertical = resolved.max_height.is_some_and(f32::is_infinite);
@@ -349,6 +349,26 @@ impl Frame {
         self
     }
 
+    /// Sets the width the frame asks for when its parent proposes nothing.
+    ///
+    /// This is `SwiftUI`'s `.frame(idealWidth:)`. Unlike [`width`](Self::width),
+    /// which pins all three constraints, it leaves the frame free to be smaller
+    /// or larger when the parent does have a size in mind.
+    #[must_use]
+    pub fn ideal_width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
+        self.layout.ideal_width = Some(width.into_signal_f32().computed());
+        self
+    }
+
+    /// Sets the height the frame asks for when its parent proposes nothing.
+    ///
+    /// This is `SwiftUI`'s `.frame(idealHeight:)`; see [`ideal_width`](Self::ideal_width).
+    #[must_use]
+    pub fn ideal_height(mut self, height: impl IntoSignalF32 + 'static) -> Self {
+        self.layout.ideal_height = Some(height.into_signal_f32().computed());
+        self
+    }
+
     /// Sets the minimum width of the frame.
     #[must_use]
     pub fn min_width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
@@ -566,6 +586,35 @@ mod tests {
             (size.width - 300.0).abs() < f32::EPSILON,
             "expected the frame to fill the proposal, got {}",
             size.width
+        );
+    }
+
+    #[test]
+    fn an_ideal_size_is_what_an_unconstrained_parent_gets() {
+        let layout = FrameLayout {
+            ideal_width: Some(Computed::constant(120.0)),
+            ..Default::default()
+        };
+
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+
+        // Nothing proposed: the frame asks for its ideal rather than the child's.
+        let unconstrained = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
+        assert!(
+            (unconstrained.width - 120.0).abs() < f32::EPSILON,
+            "expected the ideal width, got {}",
+            unconstrained.width
+        );
+
+        // An ideal alone sets no maximum, so a parent that does propose a size
+        // does not get to stretch the frame past its content.
+        let proposed = layout.size_that_fits(ProposalSize::new(Some(300.0), None), &[&child]);
+        assert!(
+            (proposed.width - 120.0).abs() < f32::EPSILON,
+            "an ideal width is not a licence to fill, got {}",
+            proposed.width
         );
     }
 }

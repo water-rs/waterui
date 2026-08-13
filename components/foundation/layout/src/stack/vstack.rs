@@ -367,7 +367,7 @@ impl Layout for VStackLayout {
     /// claims the cross axis for itself. Filling comes from children that ask
     /// for it (`Spacer`, greedy frames, `Color`), and a parent placing an
     /// undersized stack centers it per its alignment.
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::None
     }
 

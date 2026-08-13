@@ -55,7 +55,9 @@ mod containers;
 mod modifiers;
 
 pub use collections::{grid, scroll};
-pub use containers::{absolute, collection_transition, container, divider, frame, spacer};
+pub use containers::{
+    absolute, aspect_ratio, collection_transition, container, divider, frame, spacer,
+};
 pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
 
 pub use divider::Divider;
