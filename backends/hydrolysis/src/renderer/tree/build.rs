@@ -177,9 +177,19 @@ impl RenderNode {
         let view = match view.downcast::<IgnorableMetadata<AccessibilityIdentifier>>() {
             Ok(meta) => {
                 let IgnorableMetadata { content, value } = *meta;
-                let scoped = a11y_scoped_env(env, &ScopedAccessibilityIdentifier::new(value));
-                let child = RenderNode::build(content, &scoped, renderer);
-                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+                #[cfg(feature = "accessibility")]
+                {
+                    let scoped = a11y_scoped_env(env, &ScopedAccessibilityIdentifier::new(value));
+                    let child = RenderNode::build(content, &scoped, renderer);
+                    return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+                }
+                // An identifier names a node in the accessibility tree. Without
+                // that tree there is nothing to name, so it only unwraps.
+                #[cfg(not(feature = "accessibility"))]
+                {
+                    drop(value);
+                    return RenderNode::build(content, env, renderer);
+                }
             }
             Err(view) => view,
         };

@@ -18,6 +18,7 @@ waterui.workspace = true
 waterui-core.workspace = true
 waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
 waterui-layout.workspace = true
+waterui-locale.workspace = true
 waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
