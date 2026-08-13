@@ -95,7 +95,6 @@ fn vstack_intrinsic_cross_metrics(
     (max_leading, max_trailing)
 }
 
-#[allow(clippy::cast_precision_loss)]
 /// Compresses the children that do not stretch vertically into `available`,
 /// taking height from the lowest layout priorities first and never pushing a
 /// child below the height it reports when proposed zero.
@@ -149,6 +148,13 @@ fn compress_children(
     }
 }
 
+fn usize_to_f32(value: usize) -> f32 {
+    use num_traits::ToPrimitive;
+    value
+        .to_f32()
+        .expect("VStackLayout: child count must be representable as f32")
+}
+
 impl Layout for VStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
@@ -181,7 +187,7 @@ impl Layout for VStackLayout {
 
         let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * spacing
+            usize_to_f32(children.len() - 1) * spacing
         } else {
             0.0
         };
@@ -230,7 +236,7 @@ impl Layout for VStackLayout {
 
         let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f32 * spacing
+            usize_to_f32(children.len() - 1) * spacing
         } else {
             0.0
         };
@@ -264,7 +270,7 @@ impl Layout for VStackLayout {
 
         let remaining_height = bounds.height() - non_stretch_height - total_spacing;
         let stretch_height = if main_axis_stretch_count > 0 {
-            (remaining_height / main_axis_stretch_count as f32).max(0.0)
+            (remaining_height / usize_to_f32(main_axis_stretch_count)).max(0.0)
         } else {
             0.0
         };
@@ -674,8 +680,7 @@ mod tests {
                 floor: 0.0,
             })
             .collect();
-        let children: Vec<&dyn SubView> =
-            rows.iter_mut().map(|row| row as &dyn SubView).collect();
+        let children: Vec<&dyn SubView> = rows.iter_mut().map(|row| row as &dyn SubView).collect();
 
         let bounds = Rect::new(Point::zero(), Size::new(50.0, 120.0));
         let rects = layout.place(bounds, &children);
