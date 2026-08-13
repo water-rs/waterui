@@ -93,6 +93,7 @@ executor-core = { version = "0.7.1", features = ["std"]}
 futures = "0.3"
 futures-lite = "2.6"
 geo = { version = "0.32", default-features = false }
+getrandom = "0.2"
 geo-types = "0.7"
 lru = "0.16"
 maplibre-expr = "0.3.2"
@@ -188,7 +189,8 @@ wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
 # `wgpu::hal::gles` fail to unify with locally created ones.
 glow = "0.17"
 tiny-skia = "0.12"
-zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend", "ws"] }
+zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend"] }
+futures-timer = "3"
 pastey = "0.2.3"
 tracing-panic = "0.1.2"
 robius-open = { version = "0.3", default-features = false }

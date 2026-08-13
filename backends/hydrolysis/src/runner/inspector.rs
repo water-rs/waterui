@@ -84,10 +84,7 @@ fn micros(duration: Duration) -> u32 {
 /// Hydrolysis regenerates its whole tree whenever it changes, so the entire node
 /// set is handed over and [`TreeRecorder`] turns it into a delta.
 #[cfg(feature = "accessibility")]
-pub(super) fn publish_tree(
-    environment: &Environment,
-    update: &accesskit::TreeUpdate,
-) {
+pub(super) fn publish_tree(environment: &Environment, update: &accesskit::TreeUpdate) {
     let Some(recorder) = environment.get::<TreeRecorder>() else {
         return;
     };

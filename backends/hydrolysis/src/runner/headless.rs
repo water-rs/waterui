@@ -411,13 +411,10 @@ impl HeadlessRuntime {
             && !self.local_executor.has_pending()
             && self.pending_window_queue.borrow().is_empty()
             && !self.runtime.renderer.has_scheduled_semantic_work()
-            && self
-                .popup_windows
-                .iter()
-                .all(|popup| {
-                    !popup.platform.has_pending_events()
-                        && !popup.renderer.has_scheduled_semantic_work()
-                })
+            && self.popup_windows.iter().all(|popup| {
+                !popup.platform.has_pending_events()
+                    && !popup.renderer.has_scheduled_semantic_work()
+            })
     }
 
     pub fn pump(&mut self, capture_snapshot: bool) -> HeadlessPumpResult {

@@ -13,6 +13,9 @@ use waterui_text::{
     text,
 };
 
+#[cfg(target_arch = "wasm32")]
+use executor_core::spawn_local;
+
 use crate::ViewExt;
 use crate::snackbar::{Snackbar, SnackbarManager};
 

@@ -7,22 +7,24 @@
 //! - [`fonts`]: resource font registration and CJK fallbacks
 //! - [`diagnostics`]: opt-in frame timing reports
 
-use std::cell::Cell;
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+    sync::{Arc, mpsc},
+};
 #[cfg(feature = "winit")]
 #[cfg(target_os = "linux")]
 use std::{process::Command, str};
 
-#[cfg(feature = "accessibility")]
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use executor_core::{
     LocalExecutor,
     async_task::{AsyncTask, Runnable},
@@ -33,11 +35,14 @@ use waterui::app::App;
 use waterui::component::table::TableConfig;
 use waterui::graphics::Color;
 use waterui::theme;
+#[cfg(not(target_arch = "wasm32"))]
 use waterui::window::WindowManager;
 use waterui::window::{Window, WindowBackground};
+#[cfg(not(target_arch = "wasm32"))]
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
+#[cfg(not(target_arch = "wasm32"))]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
 use waterui_map::MapConfig;
@@ -64,16 +69,18 @@ pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 use window::*;
 mod inspector;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use window::{FrameCounters, FramePhases, FrameProfile, HeadlessSnapshot};
 
 use crate::env::{parse_bool_env, parse_positive_u64_env};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::readback::readback_texture_rgba8;
-use crate::renderer::{
-    HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin, PopupWindowManager,
-};
+use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::renderer::{HydrolysisTextContextMenuMode, PopupWindowManager};
 use crate::time::Instant;
 
 fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {

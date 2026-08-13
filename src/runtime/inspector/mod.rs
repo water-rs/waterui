@@ -22,12 +22,16 @@
 //! ```
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+#[cfg(not(target_arch = "wasm32"))]
+use std::net::TcpListener;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 use std::time::Duration;
 
 use waterui_core::Environment;
+#[cfg(not(target_arch = "wasm32"))]
 use waterui_inspector_protocol::{ChannelSet, TargetInfo};
 
 use crate::task::RuntimeProbe;
@@ -35,6 +39,7 @@ use crate::task::RuntimeProbe;
 mod hub;
 mod logs;
 mod recorder;
+#[cfg(not(target_arch = "wasm32"))]
 mod server;
 /// The reactive-graph bridge only exists when `nami` is built with graph
 /// observability; without it there is no observer trait to implement.
@@ -47,6 +52,7 @@ pub use logs::InspectorLayer;
 pub use recorder::{FrameRecorder, TreeRecorder};
 
 /// How long a connecting peer has to complete the handshake.
+#[cfg(not(target_arch = "wasm32"))]
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -212,6 +218,7 @@ pub fn install(environment: &mut Environment, inspector: Option<InspectorRuntime
 ///
 /// Advertised in the handshake so an inspector can grey out what it will never
 /// receive instead of waiting forever for it.
+#[cfg(not(target_arch = "wasm32"))]
 fn available_channels() -> ChannelSet {
     let mut available =
         ChannelSet::FRAMES | ChannelSet::TREE | ChannelSet::TASKS | ChannelSet::LOGS;
@@ -257,49 +264,62 @@ pub fn maybe_init_from_env() -> Option<InspectorRuntime> {
 /// Returns an I/O error when the socket cannot be bound or a thread cannot be
 /// spawned.
 pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorRuntime> {
-    let listener = TcpListener::bind(SocketAddr::new(config.host, config.port))?;
-    listener.set_nonblocking(false)?;
-    let addr = listener.local_addr()?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = config;
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the TCP inspector endpoint is unavailable in browsers",
+        ));
+    }
 
-    let (hub, receiver) = EventHub::new();
-    let available = available_channels();
-    let target = TargetInfo {
-        pid: std::process::id(),
-        name: config.app_name.clone(),
-        backend: backend_name().to_string(),
-    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let listener = TcpListener::bind(SocketAddr::new(config.host, config.port))?;
+        listener.set_nonblocking(false)?;
+        let addr = listener.local_addr()?;
 
-    spawn("waterui-inspector-dispatch", {
-        let hub = Arc::clone(&hub);
-        move || server::dispatch_loop(&hub, &receiver, available)
-    })?;
+        let (hub, receiver) = EventHub::new();
+        let available = available_channels();
+        let target = TargetInfo {
+            pid: std::process::id(),
+            name: config.app_name.clone(),
+            backend: backend_name().to_string(),
+        };
 
-    spawn("waterui-inspector-accept", {
-        let hub = Arc::clone(&hub);
-        let token = config.token.clone();
-        move || server::accept_loop(&listener, &hub, token.as_str(), &target, available)
-    })?;
+        spawn("waterui-inspector-dispatch", {
+            let hub = Arc::clone(&hub);
+            move || server::dispatch_loop(&hub, &receiver, available)
+        })?;
 
-    tracing::info!(
-        target: "waterui::inspector",
-        inspector_addr = %addr,
-        "Inspector endpoint listening"
-    );
+        spawn("waterui-inspector-accept", {
+            let hub = Arc::clone(&hub);
+            let token = config.token.clone();
+            move || server::accept_loop(&listener, &hub, token.as_str(), &target, available)
+        })?;
 
-    Ok(InspectorRuntime {
-        endpoint: InspectorEndpointInfo {
-            addr,
-            token: config.token,
-        },
-        task_probe: Arc::new(tasks::TaskProbe::new(
-            Arc::clone(&hub),
-            config.task_window,
-            config.stall_ratio,
-        )),
-        hub,
-    })
+        tracing::info!(
+            target: "waterui::inspector",
+            inspector_addr = %addr,
+            "Inspector endpoint listening"
+        );
+
+        Ok(InspectorRuntime {
+            endpoint: InspectorEndpointInfo {
+                addr,
+                token: config.token,
+            },
+            task_probe: Arc::new(tasks::TaskProbe::new(
+                Arc::clone(&hub),
+                config.task_window,
+                config.stall_ratio,
+            )),
+            hub,
+        })
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
     thread::Builder::new()
         .name(name.to_string())
@@ -309,6 +329,7 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
 }
 
 /// Best available description of the rendering backend, for the handshake.
+#[cfg(not(target_arch = "wasm32"))]
 const fn backend_name() -> &'static str {
     if cfg!(target_vendor = "apple") {
         "apple"

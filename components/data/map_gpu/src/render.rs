@@ -16,6 +16,7 @@ use maplibre_expr::{EvaluationContext, Value, evaluate};
 use nami::{Binding, Computed, Signal as _, binding, watcher::BoxWatcherGuard};
 use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
 use peniko::{Brush, Color, Fill};
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use shaderloom::CompiledShader;
 use waterui_core::animation::Animation;
@@ -507,34 +508,15 @@ fn build_raster_tiles(
     tiles: &SourceTiles,
 ) -> Vec<PreparedRasterTile> {
     let started_at = Instant::now();
+    #[cfg(not(target_arch = "wasm32"))]
     let raster_tiles = raster_tile_layouts(camera.viewport)
         .into_par_iter()
-        .map(|layout| {
-            let (scene_x, scene_y) = layout.scene_origin;
-            let render_bounds = Rect::new(
-                scene_x,
-                scene_y,
-                scene_x + f64::from(layout.texture_size.0),
-                scene_y + f64::from(layout.texture_size.1),
-            );
-            let mut global_scene = vello::Scene::new();
-            {
-                let mut scene = VelloScene2D::new(&mut global_scene);
-                MapPainter::default().paint_base_in_bounds(
-                    &mut scene,
-                    style,
-                    camera,
-                    tiles,
-                    render_bounds,
-                );
-            }
-            let mut local_scene = vello::Scene::new();
-            local_scene.append(&global_scene, Some(Affine::translate((-scene_x, -scene_y))));
-            PreparedRasterTile {
-                scene: local_scene,
-                layout,
-            }
-        })
+        .map(|layout| prepare_raster_tile(style, camera, tiles, layout))
+        .collect::<Vec<_>>();
+    #[cfg(target_arch = "wasm32")]
+    let raster_tiles = raster_tile_layouts(camera.viewport)
+        .into_iter()
+        .map(|layout| prepare_raster_tile(style, camera, tiles, layout))
         .collect::<Vec<_>>();
     tracing::debug!(
         elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0,
@@ -542,6 +524,32 @@ fn build_raster_tiles(
         "prepared tiled GPU map display lists in parallel"
     );
     raster_tiles
+}
+
+fn prepare_raster_tile(
+    style: &MapStyle,
+    camera: Camera,
+    tiles: &SourceTiles,
+    layout: RasterTileLayout,
+) -> PreparedRasterTile {
+    let (scene_x, scene_y) = layout.scene_origin;
+    let render_bounds = Rect::new(
+        scene_x,
+        scene_y,
+        scene_x + f64::from(layout.texture_size.0),
+        scene_y + f64::from(layout.texture_size.1),
+    );
+    let mut global_scene = vello::Scene::new();
+    {
+        let mut scene = VelloScene2D::new(&mut global_scene);
+        MapPainter::default().paint_base_in_bounds(&mut scene, style, camera, tiles, render_bounds);
+    }
+    let mut local_scene = vello::Scene::new();
+    local_scene.append(&global_scene, Some(Affine::translate((-scene_x, -scene_y))));
+    PreparedRasterTile {
+        scene: local_scene,
+        layout,
+    }
 }
 
 fn camera_transform(source: Camera, target: Camera) -> Option<Affine> {
@@ -1474,16 +1482,28 @@ fn rasterize_map(job: RasterJob) -> RasterResult {
 
     let started_at = Instant::now();
     let missing_renderers = base_tiles.len().saturating_sub(renderers.len());
+    #[cfg(not(target_arch = "wasm32"))]
     renderers.extend(
         (0..missing_renderers)
             .into_par_iter()
             .map(|_| build_raster_renderer(&resources.device))
             .collect::<Vec<_>>(),
     );
+    #[cfg(target_arch = "wasm32")]
+    renderers.extend((0..missing_renderers).map(|_| build_raster_renderer(&resources.device)));
     let spare_renderers = renderers.split_off(base_tiles.len());
+    #[cfg(not(target_arch = "wasm32"))]
     let rendered = renderers
         .into_par_iter()
         .zip(base_tiles.par_iter())
+        .map(|(renderer, prepared)| {
+            rasterize_tile(renderer, prepared, &signature, camera, &resources)
+        })
+        .collect::<Vec<_>>();
+    #[cfg(target_arch = "wasm32")]
+    let rendered = renderers
+        .into_iter()
+        .zip(base_tiles.iter())
         .map(|(renderer, prepared)| {
             rasterize_tile(renderer, prepared, &signature, camera, &resources)
         })
@@ -1619,8 +1639,17 @@ impl MapGpuRenderer {
             .expect("GPU Map redraw handle missing after setup")
             .clone();
         self.pending_raster_signature = Some(pending_signature);
+        #[cfg(not(target_arch = "wasm32"))]
         executor_core::spawn(async move {
             let result = blocking::unblock(move || rasterize_map(job)).await;
+            if sender.send(result).is_ok() {
+                redraw_handle.request_redraw();
+            }
+        })
+        .detach();
+        #[cfg(target_arch = "wasm32")]
+        spawn_local(async move {
+            let result = rasterize_map(job);
             if sender.send(result).is_ok() {
                 redraw_handle.request_redraw();
             }
@@ -2879,38 +2908,89 @@ fn shade_dem_tile(
 
     let width = usize::try_from(tile.width).expect("DEM tile width must fit usize");
     let mut pixels = vec![0_u8; width * usize::try_from(tile.height).unwrap_or(0) * 4];
+    #[cfg(not(target_arch = "wasm32"))]
     pixels
         .par_chunks_exact_mut(width * 4)
         .enumerate()
         .for_each(|(row, line)| {
-            let y = i64::try_from(row).expect("DEM row must fit i64");
-            for (column, texel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-                let x = i64::try_from(column).expect("DEM column must fit i64");
-                let slope_x = (tile.height_at(x - 1, y) - tile.height_at(x + 1, y)) * exaggeration
-                    / (2.0 * spacing);
-                let slope_y = (tile.height_at(x, y - 1) - tile.height_at(x, y + 1)) * exaggeration
-                    / (2.0 * spacing);
-                let normal = slope_x
-                    .mul_add(slope_x, slope_y.mul_add(slope_y, 1.0))
-                    .sqrt();
-                let illumination = (slope_x
-                    .mul_add(light_x, slope_y * light_y)
-                    .mul_add(horizontal, light_z)
-                    / normal)
-                    .clamp(-1.0, 1.0);
-                // Below the light plane is shadowed terrain, above it is lit.
-                let (color, weight) = if illumination < 0.0 {
-                    (shadow, -illumination)
-                } else {
-                    (highlight, illumination)
-                };
-                for (channel, value) in texel.iter_mut().take(3).enumerate() {
-                    *value = channel_byte(color.components[channel]);
-                }
-                texel[3] = channel_byte(color.components[3] * weight);
-            }
+            shade_dem_row(
+                tile,
+                row,
+                line,
+                spacing,
+                exaggeration,
+                light_x,
+                light_y,
+                light_z,
+                horizontal,
+                shadow,
+                highlight,
+            )
+        });
+    #[cfg(target_arch = "wasm32")]
+    pixels
+        .chunks_exact_mut(width * 4)
+        .enumerate()
+        .for_each(|(row, line)| {
+            shade_dem_row(
+                tile,
+                row,
+                line,
+                spacing,
+                exaggeration,
+                light_x,
+                light_y,
+                light_z,
+                horizontal,
+                shadow,
+                highlight,
+            )
         });
     pixels
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the row shader receives the precomputed light model"
+)]
+fn shade_dem_row(
+    tile: &DemTile,
+    row: usize,
+    line: &mut [u8],
+    spacing: f32,
+    exaggeration: f32,
+    light_x: f32,
+    light_y: f32,
+    light_z: f32,
+    horizontal: f32,
+    shadow: Color,
+    highlight: Color,
+) {
+    let y = i64::try_from(row).expect("DEM row must fit i64");
+    for (column, texel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let x = i64::try_from(column).expect("DEM column must fit i64");
+        let slope_x =
+            (tile.height_at(x - 1, y) - tile.height_at(x + 1, y)) * exaggeration / (2.0 * spacing);
+        let slope_y =
+            (tile.height_at(x, y - 1) - tile.height_at(x, y + 1)) * exaggeration / (2.0 * spacing);
+        let normal = slope_x
+            .mul_add(slope_x, slope_y.mul_add(slope_y, 1.0))
+            .sqrt();
+        let illumination = (slope_x
+            .mul_add(light_x, slope_y * light_y)
+            .mul_add(horizontal, light_z)
+            / normal)
+            .clamp(-1.0, 1.0);
+        let (color, weight) = if illumination < 0.0 {
+            (shadow, -illumination)
+        } else {
+            (highlight, illumination)
+        };
+        for (channel, value) in texel.iter_mut().take(3).enumerate() {
+            *value = channel_byte(color.components[channel]);
+        }
+        texel[3] = channel_byte(color.components[3] * weight);
+    }
 }
 
 #[allow(

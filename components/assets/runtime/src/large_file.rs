@@ -200,7 +200,7 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
         .map(|root| root.join("waterui").join("assets"))
         .ok_or_else(|| AssetError::io("Could not determine cache directory"))?;
 
-    smol::unblock({
+    blocking::unblock({
         let cache_dir = cache_dir.clone();
         move || std::fs::create_dir_all(&cache_dir)
     })
@@ -209,7 +209,7 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
 
     let cache_path = cache_dir.join(&hash);
 
-    let cache_len = smol::unblock({
+    let cache_len = blocking::unblock({
         let cache_path = cache_path.clone();
         move || match std::fs::metadata(&cache_path) {
             Ok(metadata) => Ok(Some(metadata.len())),
@@ -226,7 +226,7 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
                 "Ignoring empty cached asset for {url}: {}",
                 cache_path.display()
             );
-            let _ = smol::unblock({
+            let _ = blocking::unblock({
                 let cache_path = cache_path.clone();
                 move || std::fs::remove_file(&cache_path)
             })

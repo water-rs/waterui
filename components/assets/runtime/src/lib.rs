@@ -41,36 +41,40 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 mod bundle;
 mod data;
 mod error;
 mod kind;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 mod large_file;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 mod remote;
+#[cfg(all(feature = "std", target_arch = "wasm32"))]
+mod remote_web;
 #[cfg(feature = "std")]
 mod url;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use bundle::{
     AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset,
 };
 pub use data::Data;
 pub use error::AssetError;
 pub use kind::AssetKind;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use large_file::LargeFile;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use remote::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
+#[cfg(all(feature = "std", target_arch = "wasm32"))]
+pub use remote_web::download_remote_bytes;
 #[cfg(feature = "std")]
 pub use url::{ensure_http_allowed, is_loopback_http_url, is_remote_url};
 
 /// Prelude for common imports.
 pub mod prelude {
     pub use crate::{AssetError, AssetKind, Data};
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     pub use crate::{
         AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFile, LargeFileAsset, VideoAsset,
     };

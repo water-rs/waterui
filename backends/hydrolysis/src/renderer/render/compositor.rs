@@ -45,34 +45,38 @@ fn encode_vello_layers_parallel(
     width: u32,
     height: u32,
 ) -> Vec<(usize, PooledLayerTexture)> {
+    #[cfg(not(target_arch = "wasm32"))]
     use rayon::prelude::*;
 
-    scenes
-        .into_par_iter()
-        .map(|(index, scene, leased)| {
-            let mut renderer = pool
-                .lock()
-                .expect("hydrolysis renderer: vello renderer pool poisoned")
-                .pop()
-                .unwrap_or_else(|| build_pooled_vello_renderer(device));
+    let render_layer = |(index, scene, leased): (usize, &vello::Scene, PooledLayerTexture)| {
+        let mut renderer = pool
+            .lock()
+            .expect("hydrolysis renderer: vello renderer pool poisoned")
+            .pop()
+            .unwrap_or_else(|| build_pooled_vello_renderer(device));
 
-            let params = vello::RenderParams {
-                base_color: vello::peniko::Color::TRANSPARENT,
-                width,
-                height,
-                antialiasing_method: vello::AaConfig::Area,
-            };
-            renderer
-                .render_to_texture(device, queue, scene, &leased.view, &params)
-                .expect("hydrolysis renderer: failed to render vello layer scene");
+        let params = vello::RenderParams {
+            base_color: vello::peniko::Color::TRANSPARENT,
+            width,
+            height,
+            antialiasing_method: vello::AaConfig::Area,
+        };
+        renderer
+            .render_to_texture(device, queue, scene, &leased.view, &params)
+            .expect("hydrolysis renderer: failed to render vello layer scene");
 
-            pool.lock()
-                .expect("hydrolysis renderer: vello renderer pool poisoned")
-                .push(renderer);
+        pool.lock()
+            .expect("hydrolysis renderer: vello renderer pool poisoned")
+            .push(renderer);
 
-            (index, leased)
-        })
-        .collect()
+        (index, leased)
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let rendered = scenes.into_par_iter().map(render_layer).collect();
+    #[cfg(target_arch = "wasm32")]
+    let rendered = scenes.into_iter().map(render_layer).collect();
+    rendered
 }
 
 #[derive(Default)]

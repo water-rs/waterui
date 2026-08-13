@@ -39,7 +39,7 @@ pub async fn write_bytes_atomically(
 ) -> Result<AtomicWriteOutcome, AssetError> {
     let path = path.to_path_buf();
     let bytes = bytes.to_vec();
-    smol::unblock(move || write_bytes_atomically_blocking(&path, &bytes)).await
+    blocking::unblock(move || write_bytes_atomically_blocking(&path, &bytes)).await
 }
 
 fn write_bytes_atomically_blocking(

@@ -1,11 +1,10 @@
-use std::time::Instant;
-
 use waterui::View;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, SceneViewMergeToParent};
 
 use crate::renderer::HydrolysisRenderer;
+use crate::time::Instant;
 
 /// A `GpuView` that renders any cloneable `View` through hydrolysis.
 #[derive(Debug)]
