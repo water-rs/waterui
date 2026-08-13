@@ -307,3 +307,14 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # underflowed workgroup-array index; Mali page-faults on it). Fixed upstream in
 # linebender/vello#1817; drop this patch when a release containing it ships.
 vello = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
+
+# Arm's proprietary Vulkan driver (r54p2 on Pixel 9 Pro / Android 16)
+# rasterizes as if viewport heights were positive, ignoring the negative-height
+# viewport wgpu uses to flip Y, so every render pass comes out upside down.
+# This branch flips Y in the vertex shader on that driver instead; drop the
+# patch when upstream ships an equivalent workaround.
+wgpu = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
+wgpu-core = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
+wgpu-hal = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
+wgpu-types = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
+naga = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
