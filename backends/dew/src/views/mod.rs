@@ -96,7 +96,7 @@ impl LabelText {
         if self.is_hidden() {
             return Size::new(0.0, 0.0);
         }
-        let key = TextLayoutKey::foreground(None);
+        let key = TextLayoutKey::new(None, theme::foreground(env));
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(self.content.revision(), key, || {
             state
@@ -117,7 +117,8 @@ impl LabelText {
         rect: Rect,
         env: &Environment,
     ) {
-        self.render_with_brush(renderer, ctx, rect, env, theme::FOREGROUND);
+        let foreground = renderer.theme().foreground();
+        self.render_with_brush(renderer, ctx, rect, env, foreground);
     }
 
     /// Renders the label with a caller-selected default brush, for surfaces
@@ -200,6 +201,8 @@ mod tests {
     use waterui_controls::slider::slider;
     use waterui_controls::toggle::Toggle;
     use waterui_core::AnyView;
+    use waterui_core::plugin::Plugin;
+    use waterui_graphics::color::{ResolvedColor, Srgb};
 
     fn render_commands(
         view: impl waterui_core::View,
@@ -245,6 +248,17 @@ mod tests {
         );
     }
 
+    fn assert_color_near(actual: peniko::Color, expected: peniko::Color) {
+        assert!(
+            actual
+                .components
+                .iter()
+                .zip(expected.components)
+                .all(|(actual, expected)| (actual - expected).abs() < 1.0e-6),
+            "expected color near {expected:?}, got {actual:?}"
+        );
+    }
+
     /// An unlabeled on-toggle in a 200×40 context: accent pill trailing at
     /// the right edge, white thumb at the on end, thumb outline.
     #[test]
@@ -252,13 +266,13 @@ mod tests {
         let commands = render_commands(Toggle::new(&binding(true)), 200.0, 40.0);
         assert_eq!(commands.len(), 3, "track fill, thumb fill, thumb stroke");
 
-        assert_eq!(solid_brush(&commands[0]), theme::ACCENT);
+        assert_color_near(solid_brush(&commands[0]), theme::ACCENT);
         assert_rect_near(commands[0].bounds(), Rect::new(149.0, 4.5, 200.0, 35.5));
 
-        assert_eq!(solid_brush(&commands[1]), theme::THUMB);
+        assert_color_near(solid_brush(&commands[1]), theme::THUMB);
         assert_point_near(commands[1].bounds().center(), Point::new(184.5, 20.0));
 
-        assert_eq!(solid_brush(&commands[2]), theme::BORDER);
+        assert_color_near(solid_brush(&commands[2]), theme::BORDER);
     }
 
     /// Turning the binding off swaps the track to the muted color and moves
@@ -266,7 +280,7 @@ mod tests {
     #[test]
     fn toggle_off_uses_muted_track_with_leading_thumb() {
         let commands = render_commands(Toggle::new(&binding(false)), 200.0, 40.0);
-        assert_eq!(solid_brush(&commands[0]), theme::TRACK);
+        assert_color_near(solid_brush(&commands[0]), theme::TRACK);
         assert_point_near(commands[1].bounds().center(), Point::new(164.5, 20.0));
     }
 
@@ -277,15 +291,40 @@ mod tests {
         let commands = render_commands(slider("Volume", &binding(0.5)).hide_label(), 220.0, 20.0);
         assert_eq!(commands.len(), 4, "track, fill, thumb fill, thumb stroke");
 
-        assert_eq!(solid_brush(&commands[0]), theme::TRACK);
+        assert_color_near(solid_brush(&commands[0]), theme::TRACK);
         assert_rect_near(commands[0].bounds(), Rect::new(10.0, 8.0, 210.0, 12.0));
 
-        assert_eq!(solid_brush(&commands[1]), theme::ACCENT);
+        assert_color_near(solid_brush(&commands[1]), theme::ACCENT);
         assert_rect_near(commands[1].bounds(), Rect::new(10.0, 8.0, 110.0, 12.0));
 
-        assert_eq!(solid_brush(&commands[2]), theme::THUMB);
+        assert_color_near(solid_brush(&commands[2]), theme::THUMB);
         assert_point_near(commands[2].bounds().center(), Point::new(110.0, 10.0));
 
-        assert_eq!(solid_brush(&commands[3]), theme::BORDER);
+        assert_color_near(solid_brush(&commands[3]), theme::BORDER);
+    }
+
+    #[test]
+    fn controls_read_installed_theme_colors() {
+        let accent: nami::Binding<ResolvedColor> =
+            binding(ResolvedColor::from_srgb(Srgb::new(1.0, 0.0, 0.0)));
+        let mut env = Environment::new();
+        waterui::theme::Theme::new()
+            .colors(waterui::theme::ColorSettings::new().accent(accent.clone()))
+            .install(&mut env);
+
+        let mut renderer = DewRenderer::default();
+        let commands =
+            renderer.render_tree(AnyView::new(Toggle::new(&binding(true))), &env, 200.0, 40.0);
+        assert_color_near(
+            solid_brush(&commands.commands()[0]),
+            peniko::Color::from_rgb8(255, 0, 0),
+        );
+
+        accent.set(ResolvedColor::from_srgb(Srgb::new(0.0, 0.0, 1.0)));
+        let commands = renderer.refresh_tree(200.0, 40.0);
+        assert_color_near(
+            solid_brush(&commands.commands()[0]),
+            peniko::Color::from_rgb8(0, 0, 255),
+        );
     }
 }

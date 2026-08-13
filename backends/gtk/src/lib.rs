@@ -42,6 +42,8 @@ pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod renderer;
 #[cfg(target_os = "linux")]
+mod theme;
+#[cfg(target_os = "linux")]
 pub mod util;
 #[cfg(all(
     target_os = "linux",

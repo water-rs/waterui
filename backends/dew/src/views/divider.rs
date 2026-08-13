@@ -9,7 +9,6 @@ use waterui_layout::stack::Axis;
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::text::DewState;
-use crate::theme;
 use crate::views::to_f32;
 
 const THICKNESS: f64 = 1.0;
@@ -36,9 +35,8 @@ impl DewNode for DividerNode {
         } else {
             Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + THICKNESS)
         };
-        renderer
-            .list_mut()
-            .fill(&line, ctx.transform, theme::BORDER);
+        let border = renderer.theme().border();
+        renderer.list_mut().fill(&line, ctx.transform, border);
     }
 
     fn stretch_axis(&self) -> StretchAxis {
