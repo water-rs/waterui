@@ -324,7 +324,12 @@ fn create_attached_surface(
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
     };
-    wgpu_surface.configure(&gpu.device, &config);
+    super::checked_surface_configure(
+        &wgpu_surface,
+        &gpu.device,
+        &config,
+        "waterui_gpu_surface_attach",
+    );
     (wgpu_surface, config)
 }
 
@@ -694,9 +699,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             config.height = height;
         }
 
-        attached_surface(state, "waterui_gpu_surface_render").configure(
+        super::checked_surface_configure(
+            attached_surface(state, "waterui_gpu_surface_render"),
             &state.runtime.context().device,
             attached_config(state, "waterui_gpu_surface_render"),
+            "waterui_gpu_surface_render",
         );
         state.current_width = width;
         state.current_height = height;
