@@ -17,7 +17,7 @@ categories = ["gui", "api-bindings"]
 # included), and Cargo forbids a member from turning them off. The FFI crate
 # must not re-root the GPU stack when the app opted out, so it declares the
 # dependency itself and forwards `gpu` explicitly.
-waterui = { version = "0.2.1", path = "..", default-features = false, features = ["assets", "media"] }
+waterui = { version = "0.2.1", path = "..", default-features = false, features = ["assets", "media", "inspector"] }
 waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-controls.workspace = true
