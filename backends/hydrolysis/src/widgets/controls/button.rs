@@ -28,7 +28,7 @@ use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
-use crate::widgets::util::{widget_disabled, inset_rect, widget_theme};
+use crate::widgets::util::{inset_rect, widget_disabled, widget_theme};
 
 /// The retained render state of a button. A `TitleOnly` label is rendered as
 /// centered styled text fresh each frame (so its reactive title stays live); any

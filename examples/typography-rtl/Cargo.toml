@@ -1,0 +1,22 @@
+[package]
+name = "typography_rtl"
+version = "0.1.0"
+edition = "2024"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaterUI typography, CJK font fallback, and RTL layout showcase"
+publish = false
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui.workspace = true
+
+[dev-dependencies]
+hydrolysis-m3.workspace = true
+waterui-testing.workspace = true

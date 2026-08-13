@@ -5,8 +5,7 @@ use waterui::text::font::{
 use waterui::theme::install_font_signal;
 use waterui_core::{Environment, resolve::Resolvable};
 
-const MATERIAL_TYPEFACE: &str =
-    "Roboto, Noto Sans CJK JP, Noto Sans CJK KR, Noto Sans CJK SC, Noto Sans CJK TC, sans-serif";
+const MATERIAL_TYPEFACE: &str = "Roboto, sans-serif";
 
 const fn font(
     size: f32,
@@ -186,11 +185,8 @@ mod tests {
     }
 
     #[test]
-    fn material_typeface_uses_roboto_with_noto_cjk_fallbacks() {
-        assert_eq!(
-            MATERIAL_TYPEFACE,
-            "Roboto, Noto Sans CJK JP, Noto Sans CJK KR, Noto Sans CJK SC, Noto Sans CJK TC, sans-serif"
-        );
+    fn material_typeface_uses_roboto_then_script_aware_sans_fallbacks() {
+        assert_eq!(MATERIAL_TYPEFACE, "Roboto, sans-serif");
     }
 
     #[test]

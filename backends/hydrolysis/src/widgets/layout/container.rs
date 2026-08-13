@@ -49,7 +49,7 @@ impl HydroNativeView for Native<LazyContainer> {
         if child_count == 0 {
             return LayoutSize::zero();
         }
-        let Some(axis) = lazy_stack_axis_config(layout) else {
+        let Some(axis) = lazy_stack_axis_config(layout, view.as_inner().direction()) else {
             // Non-virtualized collection (AbsoluteLayout/ZStackLayout overlay):
             // measure like a FixedContainer over its whole materialized membership.
             let views = materialize_all(children, env);
@@ -84,7 +84,7 @@ impl HydroNativeView for Native<LazyContainer> {
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         let (layout, children) = view.as_inner().as_parts();
-        if lazy_stack_axis_config(layout).is_some() {
+        if lazy_stack_axis_config(layout, view.as_inner().direction()).is_some() {
             // Virtualized stacks size from the intrinsic estimate (proposal is
             // applied per-row at render time, not to the whole stack here).
             return waterui_core::layout::ViewDimensions::new(Self::intrinsic(state, view, env));

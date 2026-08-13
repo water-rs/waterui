@@ -43,6 +43,7 @@ rayon = "1.12"
 pollster.workspace = true
 executor-core.workspace = true
 rustc-hash.workspace = true
+unicode-segmentation = "1.12"
 async-task = "4.7"
 native-executor.workspace = true
 winit = { version = "0.30", optional = true }
@@ -158,6 +159,7 @@ waterui = { path = "../..", default-features = false, features = ["flow-markdown
 default = []
 accessibility = ["dep:accesskit"]
 testing = []
+inspector-signals = ["waterui/inspector-signals"]
 webview-default = [
     "dep:waterui-browser-wpe",
     "waterui-browser-wpe/webview",

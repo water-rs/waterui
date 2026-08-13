@@ -116,6 +116,7 @@ fn offscreen_scale_factor() -> f64 {
 }
 
 fn install_native_component_hooks(env: &mut Environment) {
+    crate::localization::install(env);
     waterui_video_gpu::install(env);
     #[cfg(any(test, feature = "testing"))]
     let semantic_native_map = env.get::<crate::testing::SemanticNativeMap>().is_some();

@@ -756,11 +756,18 @@ pub(crate) fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
     parley::FontWeight::new(value)
 }
 
-pub(crate) fn parley_alignment(alignment: HorizontalAlignment) -> parley::Alignment {
-    if alignment == HorizontalAlignment::Leading {
-        parley::Alignment::Start
-    } else if alignment == HorizontalAlignment::Trailing {
-        parley::Alignment::End
+pub(crate) fn parley_alignment(
+    alignment: HorizontalAlignment,
+    right_to_left: bool,
+) -> parley::Alignment {
+    if alignment == HorizontalAlignment::Leading && right_to_left
+        || alignment == HorizontalAlignment::Trailing && !right_to_left
+    {
+        parley::Alignment::Right
+    } else if alignment == HorizontalAlignment::Leading
+        || alignment == HorizontalAlignment::Trailing
+    {
+        parley::Alignment::Left
     } else {
         parley::Alignment::Center
     }
@@ -816,4 +823,25 @@ pub(crate) fn circle_arc_path(
         ));
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_text_alignment_follows_environment_direction() {
+        assert_eq!(
+            parley_alignment(HorizontalAlignment::Leading, false),
+            parley::Alignment::Left
+        );
+        assert_eq!(
+            parley_alignment(HorizontalAlignment::Leading, true),
+            parley::Alignment::Right
+        );
+        assert_eq!(
+            parley_alignment(HorizontalAlignment::Trailing, true),
+            parley::Alignment::Left
+        );
+    }
 }
