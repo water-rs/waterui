@@ -19,6 +19,64 @@ pub fn create_window(app: &Application, title: &str, width: i32, height: i32) ->
         .build()
 }
 
+/// Offers "Inspect element" on a secondary click anywhere in the window.
+///
+/// A debug build attaches this to the window itself rather than to any widget,
+/// so inspection is reachable from everywhere without an application opting in.
+/// A widget with a context menu of its own handles the click first and this
+/// never runs, which is the same precedence a browser gives page menus.
+///
+/// GTK builds native widgets and publishes no accessibility tree to the
+/// inspector, so there is no node to name here; the inspector opens on the
+/// application. Naming the element as well needs GTK to feed the tree channel.
+pub fn install_inspect_gesture(window: &ApplicationWindow, env: &Environment) {
+    use gtk4::prelude::*;
+
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    // Nothing is listening in a release build, and an entry that does nothing is
+    // worse than no entry.
+    if env
+        .get::<waterui::inspector::InspectorRuntime>()
+        .is_none()
+    {
+        return;
+    }
+
+    let click = gtk4::GestureClick::new();
+    click.set_button(3);
+    // Run after the target widget has had its turn, so an application's own
+    // context menu wins.
+    click.set_propagation_phase(gtk4::PropagationPhase::Bubble);
+    click.connect_pressed({
+        let window = window.clone();
+        let env = env.clone();
+        move |_, _, x, y| {
+            let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+                return;
+            };
+            let popover = gtk4::Popover::new();
+            popover.set_has_arrow(true);
+            popover.set_parent(&window);
+            popover.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
+
+            let item = gtk4::Button::with_label("Inspect element");
+            item.set_has_frame(false);
+            item.connect_clicked({
+                let popover = popover.clone();
+                move |_| {
+                    popover.popdown();
+                    inspector.open();
+                }
+            });
+            popover.set_child(Some(&item));
+            popover.popup();
+        }
+    });
+    window.add_controller(click);
+}
+
 /// Applies `WaterUI` window background styling to a GTK window.
 pub fn apply_window_background(
     window: &ApplicationWindow,
