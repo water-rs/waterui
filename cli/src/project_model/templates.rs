@@ -3099,7 +3099,12 @@ pub mod root {
             GeneratedTargetSection {
                 dependencies: BTreeMap::from([(
                     "waterui".to_string(),
-                    waterui_dependency.with_features(&["assets", "media", "flow-markdown"]),
+                    waterui_dependency.with_features(&[
+                        "gpu",
+                        "assets",
+                        "media",
+                        "flow-markdown",
+                    ]),
                 )]),
             },
         )])
