@@ -617,18 +617,23 @@ impl HydrolysisRenderer {
         }
 
         if button != PointerButton::Primary {
-            if button == PointerButton::Secondary
-                && let Some(target) = self.topmost_context_menu_target_at_point(point)
-            {
-                if self.set_focused_text_input(focused) {
-                    refresh_requested = true;
+            if button == PointerButton::Secondary {
+                let mut items = self
+                    .topmost_context_menu_target_at_point(point)
+                    .map(|target| popup_menu_nodes(&target.items.get()))
+                    .unwrap_or_default();
+                self.append_inspect_element_item(&mut items, point);
+                if !items.is_empty() {
+                    if self.set_focused_text_input(focused) {
+                        refresh_requested = true;
+                    }
+                    let changed = self.show_popup_menu_nodes(
+                        items,
+                        LayoutPoint::new(point.x as f32, point.y as f32),
+                        env,
+                    );
+                    return refresh_requested || visual_changed || changed;
                 }
-                let changed = self.show_popup_menu_nodes(
-                    popup_menu_nodes(&target.items.get()),
-                    LayoutPoint::new(point.x as f32, point.y as f32),
-                    env,
-                );
-                return refresh_requested || visual_changed || changed;
             }
             if self.set_focused_text_input(focused) {
                 refresh_requested = true;
