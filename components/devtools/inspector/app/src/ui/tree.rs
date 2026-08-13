@@ -40,7 +40,15 @@ pub fn view(model: Model) -> impl View {
         })
         .otherwise({
             let rows = rows(&model, &filter);
-            move || List::for_each(rows.clone(), row_view)
+            let revealed = model.revealed.clone();
+            move || {
+                let revealed = revealed.clone();
+                List::for_each(rows.clone(), move |row: TreeRow| {
+                    let id = row.id;
+                    let is_revealed = revealed.clone().map(move |node| node == Some(id)).computed();
+                    row_view(row, is_revealed)
+                })
+            }
         }),
     ))
     .alignment(HorizontalAlignment::Leading)
@@ -77,7 +85,11 @@ fn rows(model: &Model, filter: &Binding<Str>) -> SignalCollection<Computed<Vec<T
 }
 
 /// One node: indented by depth, with its role, label, and geometry.
-fn row_view(row: TreeRow) -> ListItem {
+///
+/// A node the application asked to inspect is marked, so that opening the
+/// inspector on an element lands the eye on that element rather than on the
+/// top of a long tree.
+fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem {
     #[expect(
         clippy::cast_precision_loss,
         reason = "a view tree deep enough to lose f32 precision could not be rendered"
@@ -91,6 +103,7 @@ fn row_view(row: TreeRow) -> ListItem {
                 text(row.role).sub_headline().foreground(Accent),
                 label_view(row.label),
                 hidden_badge(row.hidden),
+                revealed_badge(revealed),
             ))
             .spacing(8.0),
             detail_view(row.value, row.bounds),
@@ -111,6 +124,17 @@ fn label_view(label: Option<Str>) -> AnyView {
         || text("(no label)").caption().foreground(Orange).anyview(),
         |label| text(label).anyview(),
     )
+}
+
+/// Marks the node the application asked to inspect.
+///
+/// Reactive rather than baked in, so a second "inspect element" moves the mark
+/// instead of rebuilding the tree.
+fn revealed_badge(revealed: Computed<bool>) -> AnyView {
+    when(revealed, || {
+        text("inspected").caption().foreground(Accent)
+    })
+    .anyview()
 }
 
 fn hidden_badge(hidden: bool) -> AnyView {

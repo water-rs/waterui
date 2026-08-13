@@ -187,6 +187,10 @@ pub struct StallRow {
     reason = "a reactive model's fields are signals; their debug output is the type name, not the state"
 )]
 pub struct Model {
+    /// Which pane is shown; also driven by the target asking to reveal a node.
+    pub section: Binding<Option<Section>>,
+    /// The node the target last asked to show, highlighted in the tree.
+    pub revealed: Binding<Option<u64>>,
     /// Connection lifecycle.
     pub connection: Binding<Connection>,
     /// Endpoint being inspected.
@@ -267,8 +271,21 @@ impl Model {
             logs: Binding::container(Vec::new()),
             signals: Binding::container(Vec::new()),
             stalls: Binding::container(Vec::new()),
+            section: Binding::container(Some(Section::Overview)),
+            revealed: Binding::container(None),
             tracking: Rc::new(RefCell::new(Tracking::default())),
         }
+    }
+
+    /// Shows `node`, because someone asked to inspect it in the application.
+    ///
+    /// Opens the tree, subscribes to it if it was not already — a request to
+    /// see a node is a request for the channel that carries it — and marks the
+    /// node so the pane can reveal it.
+    pub fn apply_select(&self, node: u64) {
+        self.subscribed.set(self.subscribed.get() | ChannelSet::TREE);
+        self.section.set(Some(Section::Tree));
+        self.revealed.set(Some(node));
     }
 
     /// Records a frame and advances the timeline.
