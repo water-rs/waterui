@@ -23,7 +23,7 @@ use crate::util::{store_watcher_guards, subscribe_then_get};
     feature = "webview-wpe"
 ))]
 use crate::webview::ensure_webview_controller;
-use crate::window::{apply_window_background, create_window};
+use crate::window::{apply_window_background, create_window, install_inspect_gesture};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct GtkMainThreadExecutor;
@@ -132,6 +132,7 @@ impl GtkApp {
                 env.insert(runtime);
                 let window = create_window(&app, "WaterUI App", 800, 600);
                 crate::theme::install(&mut env, window.upcast_ref());
+                install_inspect_gesture(&window, &env);
                 let mut renderer = GtkRenderer::new();
                 let widget = renderer.render(view, &env);
                 window.set_child(Some(&widget));
@@ -200,6 +201,7 @@ impl GtkApp {
                 env.insert(runtime);
                 let window = create_window(&app, "", 800, 600);
                 crate::theme::install(&mut env, window.upcast_ref());
+                install_inspect_gesture(&window, &env);
                 apply_window_background(&window, &background, &env);
 
                 let (initial_title, title_guard) = subscribe_then_get(&title, {

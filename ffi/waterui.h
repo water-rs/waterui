@@ -8352,6 +8352,44 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
                                              void (*drop)(void*));
 
 /**
+ * Opens the inspector for this application.
+ *
+ * Reveals nothing in particular: use this where the backend cannot say which
+ * element the user meant, such as a menu item that is about the application
+ * rather than about a point on screen.
+ *
+ * # Safety
+ *
+ * `env` must be a valid environment handle that stays alive for this call.
+ */
+void waterui_inspector_open(const struct WuiEnv *env);
+
+/**
+ * Reveals one node in the inspector, opening one if none is attached.
+ *
+ * `node` is an accessibility node id, which is what the inspector's tree is
+ * keyed by. A backend that publishes no tree has no id to pass and should call
+ * [`waterui_inspector_open`] instead.
+ *
+ * # Safety
+ *
+ * `env` must be a valid environment handle that stays alive for this call.
+ */
+void waterui_inspector_inspect_node(const struct WuiEnv *env, uint64_t node);
+
+/**
+ * Whether this build offers inspection at all.
+ *
+ * A backend asks before putting "Inspect element" in front of a user, so that
+ * a release build shows nothing rather than an entry that does nothing.
+ *
+ * # Safety
+ *
+ * `env` must be a valid environment handle that stays alive for this call.
+ */
+bool waterui_inspector_is_available(const struct WuiEnv *env);
+
+/**
  * Reads the current value from a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
