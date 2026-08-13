@@ -366,6 +366,8 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 /// flush, the environment its subtree was built under (effect colors and a11y
 /// read env every frame), and the child node it recurses into.
 pub(crate) struct WrapperNode {
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_identity: Rc<()>,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
     pub(super) child: RenderNode,
@@ -395,6 +397,8 @@ pub(crate) trait WidgetBehavior {
 /// re-read live signals and re-emit interaction targets and accessibility at the
 /// current bounds. No bake, no capture-once freeze.
 pub(crate) struct WidgetNode {
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_identity: Rc<()>,
     pub(super) behavior: Rc<dyn WidgetBehavior>,
     pub(super) stretch: StretchAxis,
     pub(super) env: Environment,
@@ -478,11 +482,15 @@ pub(crate) struct ColorNode {
 }
 
 pub(crate) struct TextNode {
+    #[cfg(feature = "accessibility")]
+    pub(crate) accessibility_identity: Rc<()>,
     pub(crate) content: Computed<StyledStr>,
     pub(crate) alignment: Computed<HorizontalAlignment>,
 }
 
 pub(crate) struct ContainerNode {
+    #[cfg(feature = "accessibility")]
+    pub(crate) accessibility_identity: Rc<()>,
     pub(crate) layout: Box<dyn Layout>,
     pub(crate) children: Vec<RenderNode>,
     #[cfg(feature = "accessibility")]
@@ -518,6 +526,8 @@ pub(crate) struct OffsetNode {
 }
 
 pub(crate) struct ScrollNode {
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_identity: Rc<()>,
     pub(super) axis: ScrollAxis,
     pub(super) child: RenderNode,
     pub(super) controller: Option<ScrollController<Point>>,
@@ -546,6 +556,8 @@ pub(crate) struct EnvNode {
 }
 
 pub(crate) struct SceneViewNode {
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_identity: Rc<()>,
     /// The owned scene content, re-drawn each flush (it reads its own reactive
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
@@ -562,6 +574,8 @@ pub(crate) struct SceneViewNode {
 /// registry so its off-thread redraw handle is polled even on frames that do not
 /// re-flush the tree.
 pub(crate) struct GpuSurfaceNode {
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_identity: Rc<()>,
     pub(super) runtime: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
 }
 

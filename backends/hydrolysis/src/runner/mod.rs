@@ -49,6 +49,8 @@ mod headless;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
+mod web_accessibility;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_runner;
 mod window;
 #[cfg(feature = "winit")]

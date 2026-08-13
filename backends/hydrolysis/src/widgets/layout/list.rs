@@ -301,7 +301,12 @@ pub(crate) fn list_accessibility(
                 row_node.set_label(label);
             }
             row_node.add_action(AccessibilityAction::Focus);
-            if let Some(row_node_id) = renderer.register_accessibility_child_node(
+            let row_id = list
+                .contents
+                .get_id(index)
+                .unwrap_or_else(|| panic!("hydrolysis list row {index} has no stable identity"));
+            if let Some(row_node_id) = renderer.register_accessibility_child_node_with_key(
+                i64::from(i32::from(*row_id)),
                 row_node,
                 transformed_rect(ctx.hit_transform, row_rect),
                 &row_env,

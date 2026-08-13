@@ -76,6 +76,8 @@ impl RenderNode {
         S: WidgetBehavior + 'static,
     {
         RenderNode::Widget(WidgetNode {
+            #[cfg(feature = "accessibility")]
+            accessibility_identity: Rc::new(()),
             behavior: state,
             stretch,
             env: env.clone(),

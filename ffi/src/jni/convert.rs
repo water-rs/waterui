@@ -430,6 +430,65 @@ impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityIdentifier {
     }
 }
 
+impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityLabel {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataAccessibilityLabelStruct"
+            ))
+            .expect("MetadataAccessibilityLabelStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.label as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataAccessibilityLabelStruct")
+    }
+}
+
+impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityValue {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataAccessibilityValueStruct"
+            ))
+            .expect("MetadataAccessibilityValueStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JI)V"),
+            &[JValue::Long(self.content as jlong), JValue::Int(self.value)],
+        )
+        .expect("Failed to create MetadataAccessibilityValueStruct")
+    }
+}
+
+impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityState {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataAccessibilityStateStruct"
+            ))
+            .expect("MetadataAccessibilityStateStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJJJJJJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.state.disabled as jlong),
+                JValue::Long(self.state.selected as jlong),
+                JValue::Long(self.state.checked as jlong),
+                JValue::Long(self.state.expanded as jlong),
+                JValue::Long(self.state.busy as jlong),
+                JValue::Long(self.state.hidden as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataAccessibilityStateStruct")
+    }
+}
+
 /// MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float)
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {

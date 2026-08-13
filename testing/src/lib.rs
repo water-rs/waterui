@@ -104,7 +104,7 @@ pub use executor::{TestLocalExecutor, install_test_executor};
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 pub use query::Query;
 pub use selector::{ElementRef, ElementSet, Selector};
-pub use semantics::{NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
+pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
 pub use snapshot::{Snapshot, TestHost};
 pub use wait::{Expectation, WaitOptions, WaitResult};
 
