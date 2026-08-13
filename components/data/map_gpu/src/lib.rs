@@ -497,25 +497,13 @@ impl MapGestureController {
                     return;
                 };
                 let origin = self.gesture_origin.get();
-                let scale = f64::from(event.scale).max(f64::EPSILON);
-                let latitude_delta =
-                    (origin.latitude_delta / scale).clamp(MIN_LATITUDE_DELTA, MAX_LATITUDE_DELTA);
-                let longitude_delta = (origin.longitude_delta / scale)
-                    .clamp(MIN_LONGITUDE_DELTA, MAX_LONGITUDE_DELTA);
-                let focal_x = f64::from(event.center.x / width) - 0.5;
-                let focal_y = f64::from(event.center.y / height) - 0.5;
-                let longitude = focal_x.mul_add(
-                    origin.longitude_delta - longitude_delta,
-                    origin.center.longitude.get(),
-                );
-                let latitude = (-focal_y).mul_add(
-                    origin.latitude_delta - latitude_delta,
-                    origin.center.latitude.get(),
-                );
-                let region = Region::new(
-                    map_coordinate(latitude, longitude, latitude_delta),
-                    latitude_delta,
-                    longitude_delta,
+                let region = magnified_region(
+                    origin,
+                    f64::from(event.scale),
+                    event.center.x,
+                    event.center.y,
+                    width,
+                    height,
                 );
                 match event.phase {
                     GesturePhase::Updated => self.set_live_region(region),
@@ -530,6 +518,38 @@ impl MapGestureController {
             GesturePhase::Cancelled => self.settle_region(self.region.get()),
         }
     }
+}
+
+/// Zooms `origin` by `scale` while keeping the geographic point under the
+/// focal position (surface-local pixels) fixed on screen.
+pub(crate) fn magnified_region(
+    origin: Region,
+    scale: f64,
+    center_x: f32,
+    center_y: f32,
+    width: f32,
+    height: f32,
+) -> Region {
+    let scale = scale.max(f64::EPSILON);
+    let latitude_delta =
+        (origin.latitude_delta / scale).clamp(MIN_LATITUDE_DELTA, MAX_LATITUDE_DELTA);
+    let longitude_delta =
+        (origin.longitude_delta / scale).clamp(MIN_LONGITUDE_DELTA, MAX_LONGITUDE_DELTA);
+    let focal_x = f64::from(center_x / width) - 0.5;
+    let focal_y = f64::from(center_y / height) - 0.5;
+    let longitude = focal_x.mul_add(
+        origin.longitude_delta - longitude_delta,
+        origin.center.longitude.get(),
+    );
+    let latitude = (-focal_y).mul_add(
+        origin.latitude_delta - latitude_delta,
+        origin.center.latitude.get(),
+    );
+    Region::new(
+        map_coordinate(latitude, longitude, latitude_delta),
+        latitude_delta,
+        longitude_delta,
+    )
 }
 
 fn translated_region(

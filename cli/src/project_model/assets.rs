@@ -163,6 +163,18 @@ pub struct RequiredPermission {
     pub key: PermissionKey,
     /// Why that crate needs it.
     pub reason: String,
+    /// How the requirement was established.
+    pub evidence: PermissionEvidence,
+}
+
+/// How confident the audit is that a permission is actually needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionEvidence {
+    /// The crate declared the requirement in its own manifest metadata.
+    Declared,
+    /// Inferred from the shape of the dependency graph; may be a false
+    /// positive, so the report is phrased as a suggestion.
+    Inferred,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -185,6 +197,18 @@ struct FontMetadata {
     required_feature: Option<String>,
 }
 
+/// The manifest whose dependency graph is this app's true closure.
+///
+/// Resolving `cargo metadata` on the project root unions features across every
+/// member of the surrounding workspace, so one example enabling `waterui/map`
+/// would drag the map stack (and its fonts and permissions) into every other
+/// app in the repository. The generated FFI companion depends on exactly this
+/// app plus the waterui crates with no default features, so its graph answers
+/// "what does *this* app enable" precisely.
+fn app_closure_manifest(project: &Project) -> std::path::PathBuf {
+    project.ffi_crate_path().join("Cargo.toml")
+}
+
 /// Scans all dependencies for font declarations in their Cargo.toml metadata.
 ///
 /// Uses `cargo metadata` to find all packages and parse their
@@ -193,7 +217,7 @@ struct FontMetadata {
 /// Fonts with a `required-feature` field will only be included if that feature
 /// is enabled for the declaring package (checked via cargo metadata's resolved graph).
 pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>> {
-    let manifest_path = project.root().join("Cargo.toml");
+    let manifest_path = app_closure_manifest(project);
 
     debug!("Scanning fonts from dependencies via cargo metadata");
 
@@ -888,7 +912,7 @@ pub async fn package_feature_enabled(
     package: &str,
     feature: &str,
 ) -> eyre::Result<bool> {
-    let manifest_path = project.root().join("Cargo.toml");
+    let manifest_path = app_closure_manifest(project);
     let metadata = smol::unblock({
         let manifest_path = manifest_path.clone();
         move || {
@@ -1093,7 +1117,7 @@ mod tests {
 pub async fn scan_required_permissions(
     project: &Project,
 ) -> eyre::Result<Vec<RequiredPermission>> {
-    let manifest_path = project.root().join("Cargo.toml");
+    let manifest_path = app_closure_manifest(project);
     let metadata = smol::unblock({
         let manifest_path = manifest_path.clone();
         move || {
@@ -1147,14 +1171,66 @@ pub async fn scan_required_permissions(
                 package: package.name.to_string(),
                 key,
                 reason: requirement.reason.clone(),
+                evidence: PermissionEvidence::Declared,
             });
         }
+    }
+    if let Some(inferred) = infer_internet_from_http_clients(&metadata.packages, &required) {
+        required.push(inferred);
     }
     required.sort_by(|left, right| {
         (left.key, left.package.as_str()).cmp(&(right.key, right.package.as_str()))
     });
     required.dedup();
     Ok(required)
+}
+
+/// HTTP client crates whose presence almost always means the app talks to the
+/// network at runtime. Presence is a hint, not proof — a client can sit behind
+/// a disabled feature of some dependency — so hits are reported as
+/// [`PermissionEvidence::Inferred`].
+const HTTP_CLIENT_CRATES: &[&str] = &[
+    "attohttpc",
+    "curl",
+    "hyper",
+    "isahc",
+    "reqwest",
+    "surf",
+    "ureq",
+    "zenwave",
+];
+
+/// Suggests the `internet` permission when the dependency graph contains a
+/// known HTTP client and nothing declared that permission outright.
+///
+/// A declared requirement always carries better evidence and a better message,
+/// so the inference stays quiet as soon as one exists.
+fn infer_internet_from_http_clients(
+    packages: &[cargo_metadata::Package],
+    declared: &[RequiredPermission],
+) -> Option<RequiredPermission> {
+    if declared
+        .iter()
+        .any(|requirement| requirement.key == PermissionKey::Internet)
+    {
+        return None;
+    }
+    let mut clients: Vec<&str> = packages
+        .iter()
+        .map(|package| package.name.as_str())
+        .filter(|name| HTTP_CLIENT_CRATES.contains(name))
+        .collect();
+    clients.sort_unstable();
+    clients.dedup();
+    if clients.is_empty() {
+        return None;
+    }
+    Some(RequiredPermission {
+        package: clients.join(", "),
+        key: PermissionKey::Internet,
+        reason: String::from("the dependency graph contains an HTTP client"),
+        evidence: PermissionEvidence::Inferred,
+    })
 }
 
 /// Selects the declared requirements this app has not satisfied.
@@ -1192,10 +1268,16 @@ pub fn warn_missing_permissions(
 
     for requirement in missing_permissions(&enabled, required, relevant) {
         let key = permission_toml_key(requirement.key);
-        warn!(
-            "{} needs the `{key}` permission ({}). Add it to Water.toml:\n\n    [permissions.{key}]\n    enable = true\n",
-            requirement.package, requirement.reason
-        );
+        match requirement.evidence {
+            PermissionEvidence::Declared => warn!(
+                "{} needs the `{key}` permission ({}). Add it to Water.toml:\n\n    [permissions.{key}]\n    enable = true\n",
+                requirement.package, requirement.reason
+            ),
+            PermissionEvidence::Inferred => warn!(
+                "This app likely needs the `{key}` permission: {} ({}). If it talks to the network, add it to Water.toml:\n\n    [permissions.{key}]\n    enable = true\n",
+                requirement.reason, requirement.package
+            ),
+        }
     }
 }
 
@@ -1216,7 +1298,50 @@ mod permission_audit_tests {
             package: String::from("waterui-map-gpu"),
             key,
             reason: String::from("downloads map styles and vector tiles"),
+            evidence: PermissionEvidence::Declared,
         }
+    }
+
+    fn package(name: &str) -> cargo_metadata::Package {
+        let manifest = format!(
+            r#"{{
+                "name": "{name}",
+                "version": "1.0.0",
+                "id": "registry+https://github.com/rust-lang/crates.io-index#{name}@1.0.0",
+                "dependencies": [],
+                "targets": [],
+                "features": {{}},
+                "manifest_path": "/dev/null/Cargo.toml"
+            }}"#
+        );
+        serde_json::from_str(&manifest).expect("synthesize a cargo package")
+    }
+
+    #[test]
+    fn an_http_client_in_the_graph_suggests_internet() {
+        let packages = vec![package("serde"), package("zenwave")];
+
+        let inferred = infer_internet_from_http_clients(&packages, &[])
+            .expect("zenwave should trigger the suggestion");
+
+        assert_eq!(inferred.key, PermissionKey::Internet);
+        assert_eq!(inferred.evidence, PermissionEvidence::Inferred);
+        assert!(inferred.package.contains("zenwave"));
+    }
+
+    #[test]
+    fn a_declared_internet_requirement_silences_the_inference() {
+        let packages = vec![package("reqwest")];
+        let declared = vec![requirement(PermissionKey::Internet)];
+
+        assert!(infer_internet_from_http_clients(&packages, &declared).is_none());
+    }
+
+    #[test]
+    fn a_graph_without_http_clients_suggests_nothing() {
+        let packages = vec![package("serde"), package("tracing")];
+
+        assert!(infer_internet_from_http_clients(&packages, &[]).is_none());
     }
 
     #[test]
