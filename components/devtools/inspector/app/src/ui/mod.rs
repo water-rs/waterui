@@ -22,7 +22,7 @@ pub(crate) mod parts;
 
 /// The Inspector's root view.
 pub fn inspector(model: Model, subscriptions: SubscriptionSender) -> impl View {
-    let selected = Binding::container(Some(Section::Overview));
+    let selected = model.section.clone();
 
     NavigationSplitView::new(
         &selected,
