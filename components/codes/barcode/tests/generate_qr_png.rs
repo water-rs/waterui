@@ -2,8 +2,11 @@
 
 use std::path::PathBuf;
 
+use rxing::BarcodeFormat;
 use waterui_barcode::{BarcodeRenderer, BarcodeSource};
 use waterui_graphics::{GpuRuntime, GpuSurface, OffscreenRenderConfig, OffscreenSize};
+
+mod support;
 
 #[test]
 fn generate_qr_png_offscreen() {
@@ -12,7 +15,7 @@ fn generate_qr_png_offscreen() {
     let out_path = std::env::var("WATERUI_QR_OUT")
         .map_or_else(|_| PathBuf::from("target/generated_qr.png"), PathBuf::from);
 
-    let renderer = BarcodeRenderer::new(BarcodeSource::qr(content));
+    let renderer = BarcodeRenderer::new(BarcodeSource::qr(content.clone()));
     let size = OffscreenSize::try_from_pixels(768, 768).expect("valid output size");
     let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
     let runtime = pollster::block_on(GpuRuntime::new())
@@ -25,6 +28,7 @@ fn generate_qr_png_offscreen() {
         output.rgba8.len(),
         (output.width * output.height * 4) as usize
     );
+    assert_eq!(support::decode(&output, BarcodeFormat::QR_CODE), content);
 
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent).expect("output directory should be creatable");

@@ -28,6 +28,7 @@ waterui-build-support.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
+rxing.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
 

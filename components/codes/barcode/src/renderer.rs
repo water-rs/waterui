@@ -17,15 +17,14 @@ use waterui_graphics::{
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct QrUniforms {
-    matrix_dim: u32,
-    quiet_zone: u32,
+    matrix_width: u32,
+    matrix_height: u32,
+    quiet_zone_x: u32,
+    quiet_zone_y: u32,
     output_width: u32,
     output_height: u32,
     fill_mode: u32,
-    // Uniform buffer layout must match WGSL alignment rules:
-    // after `fill_mode` WGSL inserts 12 bytes to align the next vec3,
-    // then vec3 itself takes 12 bytes, so the next vec4 starts at byte 48.
-    _pad0: [u32; 7],
+    preserve_square_modules: u32,
     solid_dark_color: [f32; 4],
     light_color: [f32; 4],
     gradient_start_color: [f32; 4],
@@ -47,7 +46,8 @@ pub struct BarcodeRenderer {
     render_pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
-    matrix_dim: u32,
+    matrix_width: u32,
+    matrix_height: u32,
     reactive_colors: Option<ReactiveBarcodeColors>,
 }
 
@@ -152,7 +152,8 @@ impl fmt::Debug for BarcodeRenderer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeRenderer")
             .field("source", &self.source)
-            .field("matrix_dim", &self.matrix_dim)
+            .field("matrix_width", &self.matrix_width)
+            .field("matrix_height", &self.matrix_height)
             .finish_non_exhaustive()
     }
 }
@@ -171,7 +172,8 @@ impl BarcodeRenderer {
             render_pipeline: None,
             uniform_buffer: None,
             bind_group: None,
-            matrix_dim: 0,
+            matrix_width: 0,
+            matrix_height: 0,
             reactive_colors: None,
         }
     }
@@ -272,7 +274,8 @@ impl BarcodeRenderer {
         bind_group_layout: &wgpu::BindGroupLayout,
     ) {
         let matrix = self.source.matrix();
-        self.matrix_dim = matrix.dimension;
+        self.matrix_width = matrix.width;
+        self.matrix_height = matrix.height;
         let matrix_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("QR matrix storage buffer"),
             contents: bytemuck::cast_slice(&matrix.packed_data),
@@ -338,12 +341,14 @@ impl GpuView for BarcodeRenderer {
             .resolve();
 
         let uniforms = QrUniforms {
-            matrix_dim: self.matrix_dim,
-            quiet_zone: self.source.quiet_zone(),
+            matrix_width: self.matrix_width,
+            matrix_height: self.matrix_height,
+            quiet_zone_x: self.source.quiet_zone(),
+            quiet_zone_y: self.source.vertical_quiet_zone(),
             output_width: frame.width,
             output_height: frame.height,
             fill_mode: resolved.fill_mode,
-            _pad0: [0; 7],
+            preserve_square_modules: u32::from(self.source.preserves_square_modules()),
             solid_dark_color: resolved.solid_dark_color,
             light_color: resolved.light_color,
             gradient_start_color: resolved.gradient_start_color,
