@@ -25,10 +25,11 @@ use waterui_core::dynamic::Dynamic;
 use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Retain, Str, View};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_layout::Divider;
-use waterui_layout::container::FixedContainer;
+use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_text::{TextConfig, styled::StyledStr};
@@ -323,6 +324,28 @@ fn build_unmeasured_node(
             _retain: value,
             child: build_node(renderer, content, env, depth + 1),
         });
+    }
+    if type_id == TypeId::of::<Native<LazyContainer>>() {
+        let native = *view
+            .downcast::<Native<LazyContainer>>()
+            .expect("dew lazy container downcast must match its type id");
+        let (layout, contents) = native.into_inner().into_inner();
+        // Dew materializes the whole collection instead of virtualizing it. Its
+        // screens hold a handful of widgets — the budgeted simulation is a
+        // twelve-product panel — so a visible-window index would cost more
+        // bookkeeping and allocation than the rows it avoids building, and this
+        // backend is budgeted on exactly that. Rendering nothing, which is what
+        // an unhandled `LazyContainer` did before, is not the cheaper option.
+        let count = contents.len().get();
+        let children = (0..count)
+            .map(|index| {
+                let child = contents.get_view(index).unwrap_or_else(|| {
+                    panic!("dew LazyContainer failed to materialize child at index {index}")
+                });
+                build_node(renderer, child, env, depth + 1)
+            })
+            .collect();
+        return Box::new(ContainerNode { layout, children });
     }
     if type_id == TypeId::of::<Native<FixedContainer>>() {
         let native = *view

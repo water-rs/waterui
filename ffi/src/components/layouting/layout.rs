@@ -9,7 +9,7 @@ use waterui_layout::{
     container::{FixedContainer, LazyContainer},
     measure_layout, with_memoized_children,
     scroll::Axis,
-    stack::{HStackLayout, VStackLayout},
+    stack::LazyStackAxis,
 };
 
 use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
@@ -99,24 +99,20 @@ struct LazyStackDescriptor {
 }
 
 fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
-    let layout_any = layout as &dyn core::any::Any;
-    if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>() {
-        return Some(LazyStackDescriptor {
+    waterui_layout::stack::lazy_stack_axis(layout).map(|axis| match axis {
+        LazyStackAxis::Vertical { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Vertical,
-            spacing: vstack.spacing.get(),
-            horizontal_alignment: vstack.alignment.into_ffi(),
+            spacing: spacing.get(),
+            horizontal_alignment: alignment.into_ffi(),
             vertical_alignment: VerticalAlignment::Center.into_ffi(),
-        });
-    }
-    if let Some(hstack) = layout_any.downcast_ref::<HStackLayout>() {
-        return Some(LazyStackDescriptor {
+        },
+        LazyStackAxis::Horizontal { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Horizontal,
-            spacing: hstack.spacing.get(),
+            spacing: spacing.get(),
             horizontal_alignment: HorizontalAlignment::Center.into_ffi(),
-            vertical_alignment: hstack.alignment.into_ffi(),
-        });
-    }
-    None
+            vertical_alignment: alignment.into_ffi(),
+        },
+    })
 }
 
 fn required_lazy_stack_descriptor(layout: &dyn Layout) -> LazyStackDescriptor {

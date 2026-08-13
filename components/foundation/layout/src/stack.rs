@@ -45,6 +45,9 @@ pub use zstack::*;
 
 pub use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 
+use crate::Layout;
+use nami::Computed;
+
 /// Defines the axis of a stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -67,4 +70,55 @@ impl Axis {
     pub const fn is_vertical(&self) -> bool {
         matches!(self, Self::Vertical)
     }
+}
+
+/// The axis a [`LazyContainer`](crate::container::LazyContainer) can be
+/// virtualized along, together with the spacing and cross-axis alignment the
+/// stack was configured with.
+///
+/// Only the two stacks scroll in one direction with a well-defined item order,
+/// which is what viewport virtualization needs; every other layout — a grid, a
+/// `ZStack`, an absolute overlay — lays out its whole membership and returns
+/// `None` here.
+#[derive(Debug, Clone)]
+pub enum LazyStackAxis {
+    /// Items run top to bottom, aligned horizontally.
+    Vertical {
+        /// Gap between consecutive items.
+        spacing: Computed<f32>,
+        /// How items line up across the axis.
+        alignment: HorizontalAlignment,
+    },
+    /// Items run leading to trailing, aligned vertically.
+    Horizontal {
+        /// Gap between consecutive items.
+        spacing: Computed<f32>,
+        /// How items line up across the axis.
+        alignment: VerticalAlignment,
+    },
+}
+
+/// Resolves a layout to the axis a lazy container can virtualize along.
+///
+/// Every renderer that virtualizes a lazy container asks this, so the answer is
+/// the same everywhere. Deriving it per backend is how GTK ended up reading
+/// `Layout::stretch_axis` — a different question entirely, and one whose answer
+/// changed when the stacks became content-sized, silently laying every lazy
+/// horizontal stack out vertically.
+#[must_use]
+pub fn lazy_stack_axis(layout: &dyn Layout) -> Option<LazyStackAxis> {
+    let layout = layout as &dyn core::any::Any;
+    if let Some(vstack) = layout.downcast_ref::<VStackLayout>() {
+        return Some(LazyStackAxis::Vertical {
+            spacing: vstack.spacing.clone(),
+            alignment: vstack.alignment,
+        });
+    }
+    if let Some(hstack) = layout.downcast_ref::<HStackLayout>() {
+        return Some(LazyStackAxis::Horizontal {
+            spacing: hstack.spacing.clone(),
+            alignment: hstack.alignment,
+        });
+    }
+    None
 }

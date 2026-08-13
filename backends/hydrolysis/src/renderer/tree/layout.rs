@@ -48,7 +48,11 @@ impl RenderNode {
             RenderNode::ViewEffect(_) => StretchAxis::None,
             RenderNode::AppliedFilter(node) => node.child.stretch(),
             RenderNode::Scroll(_) => StretchAxis::Both,
-            RenderNode::LazyStack(_) => StretchAxis::Both,
+            // The same stack laid out eagerly is content-sized on both axes, so a
+            // lazy one has to be too: making a stack virtualizable must not change
+            // how it sizes. Rows that want the full cross axis ask for it
+            // themselves, exactly as they do in the eager path.
+            RenderNode::LazyStack(_) => StretchAxis::None,
             RenderNode::Collection(node) => node.layout.stretch_axis(),
             RenderNode::Wrapper(node) => node.child.stretch(),
             RenderNode::Widget(node) => node.stretch,

@@ -268,6 +268,14 @@ fn frame_child_proposal_axis(
         .map(|value| clamp_frame_axis(value, min, max))
 }
 
+/// Resolves the frame's own extent on one axis.
+///
+/// A frame grows into the space offered *up to* the maximum it was given, which
+/// is how `.frame(maxWidth: .infinity)` fills and `.frame(maxWidth: 100)` fills
+/// to a hundred points. Without a maximum there is nothing to grow into, so the
+/// frame stays the size of its content — `.frame(minHeight: 44)` on a label
+/// leaves a 44pt-tall label, rather than a label stretched over whatever height
+/// the parent happened to propose.
 #[inline]
 fn frame_resolved_axis(
     parent_proposal: Option<f32>,
@@ -276,10 +284,11 @@ fn frame_resolved_axis(
     ideal: Option<f32>,
     max: Option<f32>,
 ) -> f32 {
-    parent_proposal.map_or_else(
-        || clamp_frame_axis(ideal.unwrap_or(child_size), min, max),
-        |value| clamp_frame_axis(value, min, max),
-    )
+    let content = ideal.unwrap_or(child_size);
+    match (parent_proposal, max) {
+        (Some(proposed), Some(_)) => clamp_frame_axis(proposed, min, max),
+        _ => clamp_frame_axis(content, min, max),
+    }
 }
 
 /// A view that provides a frame with optional size constraints and alignment for its child.
@@ -498,5 +507,65 @@ mod tests {
         };
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
         assert_eq!(size.width, 120.0);
+    }
+
+    #[test]
+    fn a_minimum_alone_does_not_make_the_frame_greedy() {
+        // `.frame(minWidth: 50)` on a 30pt child inside a 300pt parent is a 50pt
+        // frame, not a 300pt one: with no maximum there is nothing to grow into.
+        let layout = FrameLayout {
+            min_width: Some(Computed::constant(50.0)),
+            ..Default::default()
+        };
+
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(300.0), None), &[&child]);
+
+        assert!(
+            (size.width - 50.0).abs() < f32::EPSILON,
+            "expected the frame to stay at its minimum, got {}",
+            size.width
+        );
+    }
+
+    #[test]
+    fn a_bounded_maximum_fills_up_to_that_maximum() {
+        // `.frame(maxWidth: 100)` does grow into the offer, stopping at 100.
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(100.0)),
+            ..Default::default()
+        };
+
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(300.0), None), &[&child]);
+
+        assert!(
+            (size.width - 100.0).abs() < f32::EPSILON,
+            "expected the frame to fill to its maximum, got {}",
+            size.width
+        );
+    }
+
+    #[test]
+    fn an_infinite_maximum_takes_the_whole_offer() {
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(f32::INFINITY)),
+            ..Default::default()
+        };
+
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(300.0), None), &[&child]);
+
+        assert!(
+            (size.width - 300.0).abs() < f32::EPSILON,
+            "expected the frame to fill the proposal, got {}",
+            size.width
+        );
     }
 }

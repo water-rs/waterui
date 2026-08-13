@@ -1,5 +1,5 @@
 use super::*;
-use waterui_layout::stack::{HStackLayout, VStackLayout};
+use waterui_layout::stack::LazyStackAxis;
 
 #[derive(Default)]
 pub(crate) struct LazyState {
@@ -61,20 +61,14 @@ impl LazyTableSlot {
 /// retained per-id collection path, which keeps one cached subtree per item id
 /// and reconciles membership changes incrementally.
 pub(crate) fn lazy_stack_axis_config(layout: &dyn Layout) -> Option<LazyStackAxisConfig> {
-    let layout_any = layout as &dyn core::any::Any;
-    if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>() {
-        return Some(LazyStackAxisConfig::Vertical {
-            spacing: vstack.spacing.clone(),
-            alignment: vstack.alignment,
-        });
-    }
-    if let Some(hstack) = layout_any.downcast_ref::<HStackLayout>() {
-        return Some(LazyStackAxisConfig::Horizontal {
-            spacing: hstack.spacing.clone(),
-            alignment: hstack.alignment,
-        });
-    }
-    None
+    waterui_layout::stack::lazy_stack_axis(layout).map(|axis| match axis {
+        LazyStackAxis::Vertical { spacing, alignment } => {
+            LazyStackAxisConfig::Vertical { spacing, alignment }
+        }
+        LazyStackAxis::Horizontal { spacing, alignment } => {
+            LazyStackAxisConfig::Horizontal { spacing, alignment }
+        }
+    })
 }
 
 /// Places one lazy-stack item: given its measured `size`, `stretch_axis`, the
