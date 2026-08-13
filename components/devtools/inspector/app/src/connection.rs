@@ -185,6 +185,11 @@ fn apply(model: &Model, message: InspectorServerMessage) -> Option<String> {
         // A pong needs no action, and a second welcome is a target repeating
         // itself; neither is an error.
         InspectorServerMessage::Pong | InspectorServerMessage::Welcome { .. } => None,
+        // Someone picked "inspect element" in the application: show it.
+        InspectorServerMessage::Select { node } => {
+            model.apply_select(node.0);
+            None
+        }
         InspectorServerMessage::Error { message } => Some(message),
     }
 }
