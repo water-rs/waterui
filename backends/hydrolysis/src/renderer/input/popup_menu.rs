@@ -26,6 +26,7 @@ use waterui_text::text;
 pub(crate) struct PopupWindowManager(Rc<dyn Fn(Window)>);
 
 impl PopupWindowManager {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(show: impl Fn(Window) + 'static) -> Self {
         Self(Rc::new(show))
     }

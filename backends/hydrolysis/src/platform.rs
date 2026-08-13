@@ -363,6 +363,13 @@ fn should_force_fallback_adapter() -> bool {
 
 #[derive(Clone, Copy, Debug)]
 struct AdapterSelection {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "WebGPU adapter selection cannot enumerate software adapters"
+        )
+    )]
     allow_software_adapter: bool,
 }
 
@@ -380,17 +387,20 @@ impl AdapterSelection {
         should_force_fallback_adapter()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn allow_software_adapter(self) -> bool {
         self.allow_software_adapter || self.force_fallback_adapter()
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg(not(target_arch = "wasm32"))]
 struct AdapterPreference {
     backend_rank: u8,
     device_type_rank: u8,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl AdapterPreference {
     fn for_info(info: &wgpu::AdapterInfo) -> Self {
         Self {
@@ -400,6 +410,7 @@ impl AdapterPreference {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn backend_rank(backend: wgpu::Backend) -> u8 {
     if cfg!(target_os = "windows") {
         match backend {
@@ -431,6 +442,7 @@ const fn backend_rank(backend: wgpu::Backend) -> u8 {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     match device_type {
         wgpu::DeviceType::DiscreteGpu => 0,
@@ -870,7 +882,10 @@ impl PlatformWindow for OffscreenWindow {
         // `frame` is in logical units; the surface is allocated in physical
         // pixels, so the scale factor has to be applied here or a HiDPI window
         // would rasterize at one physical pixel per logical pixel.
-        self.resize_to_logical(f64::from(frame.width().max(1.0)), f64::from(frame.height().max(1.0)));
+        self.resize_to_logical(
+            f64::from(frame.width().max(1.0)),
+            f64::from(frame.height().max(1.0)),
+        );
     }
 
     fn set_size_limits(

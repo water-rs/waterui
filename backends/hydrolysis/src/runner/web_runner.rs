@@ -29,7 +29,10 @@ use super::fonts::ResourceFontFamilies;
 use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
-use crate::runner::{RenderDiagnosticsConfig, RuntimeWindow, handle_input_events, render_window};
+use crate::runner::{
+    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
+};
+use crate::time::Instant;
 
 const WEB_FONT_MANIFEST_PATH: &str = "fonts/waterui-fonts.json";
 
@@ -180,6 +183,7 @@ impl BrowserRunner {
         if should_close || self.runtime.window.state.get() == WindowState::Closed {
             return false;
         }
+        let _ = advance_runtime(&mut self.runtime, &self.env, Instant::now());
         render_window(&mut self.runtime, &self.env, &mut || {
             Self::drain_runnable_queue(&self.runnable_queue)
         });
@@ -257,11 +261,6 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
         ));
         // The reactive graph is thread-confined, so its observer is installed
         // here, on the thread that owns the loop, and lives as long as it does.
-        #[cfg(feature = "inspector-signals")]
-        let _signal_scope = inspector
-            .as_ref()
-            .map(waterui::inspector::InspectorRuntime::observe_signals);
-
         let (windows, _menu_bar, env) = app.into_parts();
         let mut windows = windows.into_iter();
         let window = windows

@@ -1,6 +1,8 @@
 //! File picker component configuration.
 
-use alloc::{string::ToString, vec, vec::Vec};
+use alloc::vec::Vec;
+#[cfg(not(any(target_os = "espidf", target_arch = "wasm32")))]
+use alloc::{string::ToString, vec};
 use nami::Binding;
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{Button, IntoLabel};
@@ -119,7 +121,11 @@ impl View for FilePicker {
 
                 #[cfg(any(target_os = "espidf", target_arch = "wasm32"))]
                 {
-                    panic!("FilePicker native file dialog is unavailable on this target");
+                    let _ = value;
+                    panic!(
+                        "FilePicker native file dialog is unavailable on this target (import={}, max_count={})",
+                        self.import, self.num
+                    );
                 }
             }
         })

@@ -260,6 +260,7 @@ pub struct FrameProfile {
 }
 
 impl FrameProfile {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn with_total(mut self, total: Duration) -> Self {
         self.total = total;
         self
@@ -340,7 +341,12 @@ pub(super) fn render_window<P: PlatformWindow>(
     env: &Environment,
     drain_local_tasks: &mut dyn FnMut() -> bool,
 ) {
+    #[cfg(not(target_arch = "wasm32"))]
     let _ = render_window_with_capture(runtime, env, false, drain_local_tasks);
+    #[cfg(target_arch = "wasm32")]
+    let result = render_window_with_capture(runtime, env, false, drain_local_tasks);
+    #[cfg(target_arch = "wasm32")]
+    let _ = (result.rebuilt, result.snapshot, result.profile);
 }
 
 pub(super) const fn surface_error_requires_reconfigure(
@@ -567,6 +573,7 @@ pub(super) struct ScenePumpOutcome {
     pub(super) phases: FramePhases,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn pump_window_semantics<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -671,6 +678,7 @@ fn render_to_surface(
             base_color: clear_color,
         },
     );
+    #[cfg(not(target_arch = "wasm32"))]
     let snapshot = capture_snapshot.then(|| HeadlessSnapshot {
         width,
         height,
@@ -682,6 +690,14 @@ fn render_to_surface(
             height,
         ),
     });
+    #[cfg(target_arch = "wasm32")]
+    let snapshot = {
+        assert!(
+            !capture_snapshot,
+            "browser surfaces cannot be synchronously read back for a headless snapshot"
+        );
+        None
+    };
     let render = render_started_at.elapsed();
     let present_started_at = Instant::now();
     surface.present(frame);
@@ -953,12 +969,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
 
-    super::inspector::publish_frame(
-        env,
-        frame_mode,
-        &profile,
-        frame_pump_started_at.elapsed(),
-    );
+    super::inspector::publish_frame(env, frame_mode, &profile, frame_pump_started_at.elapsed());
     #[cfg(feature = "accessibility")]
     if let Some(update) = runtime.renderer.peek_accessibility_tree_update() {
         super::inspector::publish_tree(env, update);
