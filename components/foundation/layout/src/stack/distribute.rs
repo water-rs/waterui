@@ -18,13 +18,13 @@ use alloc::vec::Vec;
 
 /// A child's room for manoeuvre on the main axis.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Extent {
+pub struct Extent {
     /// What the child reports when the axis is unconstrained.
-    pub(crate) ideal: f32,
+    pub ideal: f32,
     /// What the child reports when the axis is proposed `0` — its hard floor.
-    pub(crate) min: f32,
+    pub min: f32,
     /// Higher wins space; ties share it.
-    pub(crate) priority: i32,
+    pub priority: i32,
 }
 
 /// Clamps `extents` into `available`, taking space from the lowest priorities
@@ -33,7 +33,7 @@ pub(crate) struct Extent {
 /// Returns the extent each child should occupy. When even every minimum together
 /// exceeds `available` the result overflows rather than collapsing children to
 /// nothing: an unreadable row is not a better answer than a clipped one.
-pub(crate) fn compress_to_fit(extents: &[Extent], available: f32) -> Vec<f32> {
+pub fn compress_to_fit(extents: &[Extent], available: f32) -> Vec<f32> {
     let mut resolved: Vec<f32> = extents.iter().map(|extent| extent.ideal).collect();
     let total: f32 = resolved.iter().sum();
     if !exceeds(total, available, resolved.len()) {
@@ -106,7 +106,7 @@ fn water_fill(extents: &[Extent], target: f32) -> Vec<f32> {
     // linear in it, so bisection converges on the exact level. Forty steps takes
     // an f32 interval below its own precision.
     for _ in 0..40 {
-        let mid = 0.5 * (low + high);
+        let mid = f32::midpoint(low, high);
         if at_cap(mid) > target {
             high = mid;
         } else {
@@ -125,7 +125,7 @@ fn water_fill(extents: &[Extent], target: f32) -> Vec<f32> {
 ///
 /// Callers check this before probing children for their minimums: that probe is
 /// only worth its cost when something actually has to give.
-pub(crate) fn exceeds(total: f32, available: f32, terms: usize) -> bool {
+pub fn exceeds(total: f32, available: f32, terms: usize) -> bool {
     let magnitude = total.abs().max(available.abs()).max(1.0);
     total - available > f32::EPSILON * magnitude * usize_to_f32(terms.max(1))
 }
@@ -213,5 +213,4 @@ mod tests {
             resolved[1]
         );
     }
-
 }
