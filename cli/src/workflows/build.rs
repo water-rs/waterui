@@ -581,6 +581,12 @@ impl RustBuild {
         self
     }
 
+    /// Cargo features this build passes via `--features`.
+    #[must_use]
+    pub fn features(&self) -> &[String] {
+        &self.features
+    }
+
     /// Add a rustc flag to the build via `RUSTFLAGS`.
     #[must_use]
     pub fn with_rustc_flag(mut self, flag: impl Into<String>) -> Self {

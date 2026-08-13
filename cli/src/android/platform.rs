@@ -396,11 +396,13 @@ impl AndroidPlatform {
         let build_context = resolve_android_build_context(abi, &triple).await?;
         let mut build = configure_android_rust_build(project, &triple, &build_context, &options).await?;
         let runtime_fingerprint = if options.linkage() == RustLinkage::SharedRuntime {
-            let build_features = vec!["waterui-ffi/android-jni".to_string(), "dev".to_string()];
+            // The fingerprint must resolve the same feature set the build passes
+            // (capabilities included), or projects with different capabilities
+            // hash to one runtime dir and rebuild-churn against each other.
             Some(
                 shared_rust_runtime_fingerprint(
                     &project.ffi_crate_path().join("Cargo.toml"),
-                    &build_features,
+                    build.features(),
                     &triple,
                 )
                 .await?,
@@ -651,7 +653,10 @@ async fn configure_android_rust_build(
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
         .with_feature("waterui-ffi/android-jni")
         .with_features(crate::project_model::assets::capability_ffi_features(project).await?)
-        .with_crate_type_override("cdylib");
+        .with_crate_type_override("cdylib")
+        // Devices with 16 KB pages (Pixel 9 class and Play's 2025 requirement)
+        // refuse or warn on 4 KB-aligned LOAD segments.
+        .with_rustc_flag("-Clink-arg=-Wl,-z,max-page-size=16384");
     if options.linkage() == RustLinkage::SharedRuntime {
         build = build.with_feature("dev").with_preferred_dynamic_linking();
     }
