@@ -35,8 +35,13 @@ pub struct BarcodeSource {
 /// Barcode matrix data packed for GPU consumption.
 #[derive(Debug, Clone)]
 pub struct BarcodeMatrix {
-    /// Matrix dimension (number of modules per side)
-    pub dimension: u32,
+    /// Matrix width in modules.
+    pub width: u32,
+    /// Matrix height in modules.
+    ///
+    /// Two-dimensional symbologies use their encoded row count. Linear
+    /// symbologies use one row because bar height is a rendering concern.
+    pub height: u32,
     /// Packed matrix data - each u32 contains 32 modules as bits
     /// Bit 0 of word 0 = module (0,0), bit 1 = module (1,0), etc.
     /// 1 = dark module, 0 = light module
@@ -105,6 +110,20 @@ impl BarcodeSource {
         }
     }
 
+    pub(crate) const fn vertical_quiet_zone(&self) -> u32 {
+        match self.symbology {
+            BarcodeSymbology::Qr => self.quiet_zone(),
+            BarcodeSymbology::Code128 => 0,
+        }
+    }
+
+    pub(crate) const fn preserves_square_modules(&self) -> bool {
+        match self.symbology {
+            BarcodeSymbology::Qr => true,
+            BarcodeSymbology::Code128 => false,
+        }
+    }
+
     /// Returns the encoded matrix.
     ///
     /// Visible only inside the barcode crate; external code should obtain a
@@ -138,7 +157,8 @@ impl BarcodeSource {
         }
 
         BarcodeMatrix {
-            dimension,
+            width: dimension,
+            height: dimension,
             packed_data,
         }
     }
@@ -147,9 +167,17 @@ impl BarcodeSource {
         let quiet_zone = self.quiet_zone();
         let configured_size = self.size;
         let matrix = self.matrix();
-        let extent = matrix.dimension + quiet_zone * 2;
-        let target_size = configured_size.max(extent);
-        (target_size, target_size)
+        match self.symbology {
+            BarcodeSymbology::Qr => {
+                let extent = matrix.width + quiet_zone * 2;
+                let target_size = configured_size.max(extent);
+                (target_size, target_size)
+            }
+            BarcodeSymbology::Code128 => {
+                let width = configured_size.max(matrix.width + quiet_zone * 2);
+                (width, configured_size)
+            }
+        }
     }
 
     fn generate_code128_matrix(content: &str) -> BarcodeMatrix {
@@ -163,26 +191,21 @@ impl BarcodeSource {
             .encode();
         assert!(!encoded.is_empty(), "Code128 encoder returned no modules");
 
-        // Keep current square-matrix shader path: repeat 1D bars on every row.
-        let dimension = u32::try_from(encoded.len())
+        let width = u32::try_from(encoded.len())
             .expect("BarcodeSource::generate_code128_matrix: encoded length must fit into u32");
-        let total_modules = (dimension * dimension) as usize;
-        let num_words = total_modules.div_ceil(32);
-        let mut packed_data = vec![0u32; num_words];
+        let mut packed_data = vec![0u32; encoded.len().div_ceil(32)];
 
-        for y in 0..dimension {
-            for x in 0..dimension {
-                let linear_idx = (y * dimension + x) as usize;
-                if encoded[x as usize] == 1 {
-                    let word_idx = linear_idx / 32;
-                    let bit_idx = linear_idx % 32;
-                    packed_data[word_idx] |= 1u32 << bit_idx;
-                }
+        for (linear_idx, module) in encoded.into_iter().enumerate() {
+            if module == 1 {
+                let word_idx = linear_idx / 32;
+                let bit_idx = linear_idx % 32;
+                packed_data[word_idx] |= 1u32 << bit_idx;
             }
         }
 
         BarcodeMatrix {
-            dimension,
+            width,
+            height: 1,
             packed_data,
         }
     }
@@ -218,6 +241,27 @@ impl waterui_graphics::image_generator::ImageGenerator for BarcodeSource {
 mod tests {
     use super::*;
     use waterui_graphics::image_generator::ImageGenerator;
+
+    #[test]
+    fn code128_matrix_stores_one_row_of_modules() {
+        let source = BarcodeSource::code128("HELLO-WATERUI-128");
+        let matrix = source.matrix();
+
+        assert_eq!(matrix.height, 1);
+        assert_eq!(matrix.packed_data.len(), matrix.width.div_ceil(32) as usize);
+    }
+
+    #[test]
+    fn qr_matrix_remains_square() {
+        let source = BarcodeSource::qr("https://waterui.dev");
+        let matrix = source.matrix();
+
+        assert_eq!(matrix.width, matrix.height);
+        assert_eq!(
+            matrix.packed_data.len(),
+            (matrix.width * matrix.height).div_ceil(32) as usize
+        );
+    }
 
     #[test]
     fn qr_generator_produces_expected_size_and_pixels() {
