@@ -17,10 +17,14 @@ use waterui_graphics::{
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct MaskUniforms {
-    matrix_dim: u32,
-    quiet_zone: u32,
+    matrix_width: u32,
+    matrix_height: u32,
+    quiet_zone_x: u32,
+    quiet_zone_y: u32,
     output_width: u32,
     output_height: u32,
+    preserve_square_modules: u32,
+    _padding: u32,
     light_color: [f32; 4],
 }
 
@@ -34,7 +38,8 @@ pub struct BarcodeMaskEffect {
     uniform_buffer: Option<wgpu::Buffer>,
     matrix_buffer: Option<wgpu::Buffer>,
     sampler: Option<wgpu::Sampler>,
-    matrix_dim: u32,
+    matrix_width: u32,
+    matrix_height: u32,
     light_color: Computed<ResolvedColor>,
     light_color_guard: Option<BoxWatcherGuard>,
     redraw_callback: Option<ViewEffectRedrawCallback>,
@@ -43,7 +48,8 @@ pub struct BarcodeMaskEffect {
 impl fmt::Debug for BarcodeMaskEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeMaskEffect")
-            .field("matrix_dim", &self.matrix_dim)
+            .field("matrix_width", &self.matrix_width)
+            .field("matrix_height", &self.matrix_height)
             .finish_non_exhaustive()
     }
 }
@@ -61,7 +67,8 @@ impl BarcodeMaskEffect {
             uniform_buffer: None,
             matrix_buffer: None,
             sampler: None,
-            matrix_dim: 0,
+            matrix_width: 0,
+            matrix_height: 0,
             light_color: light_color.into_computed(),
             light_color_guard: None,
             redraw_callback: None,
@@ -177,7 +184,8 @@ impl BarcodeMaskEffect {
 
     fn create_matrix_buffer(&mut self, device: &wgpu::Device) {
         let matrix = self.source.matrix();
-        self.matrix_dim = matrix.dimension;
+        self.matrix_width = matrix.width;
+        self.matrix_height = matrix.height;
         self.matrix_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("QR mask matrix buffer"),
@@ -238,10 +246,14 @@ impl EffectRenderer for BarcodeMaskEffect {
         let light_color = self.light_color.get();
 
         let uniforms = MaskUniforms {
-            matrix_dim: self.matrix_dim,
-            quiet_zone: self.source.quiet_zone(),
+            matrix_width: self.matrix_width,
+            matrix_height: self.matrix_height,
+            quiet_zone_x: self.source.quiet_zone(),
+            quiet_zone_y: self.source.vertical_quiet_zone(),
             output_width: output.width,
             output_height: output.height,
+            preserve_square_modules: u32::from(self.source.preserves_square_modules()),
+            _padding: 0,
             light_color: [
                 light_color.red,
                 light_color.green,

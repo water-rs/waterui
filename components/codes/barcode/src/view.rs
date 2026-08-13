@@ -1,7 +1,13 @@
 use crate::{BarcodeMaskEffect, BarcodeRenderer, BarcodeSource, BarcodeSymbology};
 use core::fmt;
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
-use waterui_core::{Environment, Str, View, flatten_signal, layout::UnitPoint};
+use waterui_core::{
+    AnyView, Environment, Str, View,
+    accessibility::{AccessibilityLabel, AccessibilityRole},
+    flatten_signal,
+    layout::UnitPoint,
+    metadata::IgnorableMetadata,
+};
 use waterui_graphics::{GpuSurface, GpuView, ViewEffect, color::Color};
 
 /// Fill style for dark barcode modules.
@@ -59,6 +65,33 @@ impl Default for BarcodeFill {
 
 fn default_light_color() -> Computed<Color> {
     Computed::constant(Color::from(waterui_graphics::color::Srgb::WHITE))
+}
+
+fn barcode_label(symbology: BarcodeSymbology, content: &Str) -> AccessibilityLabel {
+    let kind = match symbology {
+        BarcodeSymbology::Qr => "QR code",
+        BarcodeSymbology::Code128 => "Code 128 barcode",
+    };
+    AccessibilityLabel::new(format!("{kind}: {content}"))
+}
+
+fn apply_barcode_semantics(
+    env: &Environment,
+    symbology: BarcodeSymbology,
+    content: &Str,
+    view: impl View,
+) -> AnyView {
+    let mut view = AnyView::new(view);
+    if env.get::<AccessibilityRole>().is_none() {
+        view = AnyView::new(IgnorableMetadata::new(view, AccessibilityRole::Image));
+    }
+    if env.get::<AccessibilityLabel>().is_none() {
+        view = AnyView::new(IgnorableMetadata::new(
+            view,
+            barcode_label(symbology, content),
+        ));
+    }
+    view
 }
 
 /// A view that renders a barcode.
@@ -173,7 +206,7 @@ impl<V: GpuView> BarcodeGpuFill<V> {
 }
 
 impl View for Barcode {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let Self {
             symbology,
             content,
@@ -181,21 +214,21 @@ impl View for Barcode {
             light_color,
         } = self;
         let source = match symbology {
-            BarcodeSymbology::Qr => BarcodeSource::qr(content),
-            BarcodeSymbology::Code128 => BarcodeSource::code128(content),
+            BarcodeSymbology::Qr => BarcodeSource::qr(content.clone()),
+            BarcodeSymbology::Code128 => BarcodeSource::code128(content.clone()),
         };
         let renderer = BarcodeRenderer::new(source)
             .with_fill(fill)
             .with_light_color(light_color);
-        GpuSurface::new(renderer)
+        apply_barcode_semantics(env, symbology, &content, GpuSurface::new(renderer))
     }
 }
 
 impl<V: GpuView> View for BarcodeGpuFill<V> {
     fn body(self, env: &Environment) -> impl View {
         let source = match self.symbology {
-            BarcodeSymbology::Qr => BarcodeSource::qr(self.content),
-            BarcodeSymbology::Code128 => BarcodeSource::code128(self.content),
+            BarcodeSymbology::Qr => BarcodeSource::qr(self.content.clone()),
+            BarcodeSymbology::Code128 => BarcodeSource::code128(self.content.clone()),
         };
         let environment = env.clone();
         let resolved_light = flatten_signal(
@@ -204,7 +237,12 @@ impl<V: GpuView> View for BarcodeGpuFill<V> {
         );
         let effect = BarcodeMaskEffect::new(source, resolved_light);
         let fill_surface = GpuSurface::new(self.fill);
-        ViewEffect::new(fill_surface, effect)
+        apply_barcode_semantics(
+            env,
+            self.symbology,
+            &self.content,
+            ViewEffect::new(fill_surface, effect),
+        )
     }
 }
 
