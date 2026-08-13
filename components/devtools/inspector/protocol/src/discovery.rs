@@ -110,7 +110,7 @@ pub fn list() -> io::Result<Vec<Advertisement>> {
             let _ = fs::remove_file(&path);
         }
     }
-    found.sort_by(|left, right| right.pid.cmp(&left.pid));
+    found.sort_by_key(|advertisement| std::cmp::Reverse(advertisement.pid));
     Ok(found)
 }
 
