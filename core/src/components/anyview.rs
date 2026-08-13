@@ -179,6 +179,17 @@ impl View for AnyView {
     fn body(self, env: &Environment) -> impl View {
         self.0.body(env.clone())
     }
+
+    /// Forwards the erased view's own answer.
+    ///
+    /// Without this, erasing a view silently reset its stretch axis to the
+    /// default: the inherent [`AnyView::stretch_axis`] reported the real value
+    /// while the trait method — the one generic code calls — reported `None`.
+    /// Every container that wanted its content's axis therefore had to copy it
+    /// before erasing, and that copy is what went stale.
+    fn stretch_axis(&self) -> StretchAxis {
+        AnyViewImpl::stretch_axis(&*self.0)
+    }
 }
 
 #[cfg(test)]

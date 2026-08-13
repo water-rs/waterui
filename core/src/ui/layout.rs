@@ -824,16 +824,21 @@ pub trait Layout: Debug + Any {
         Vec::new()
     }
 
-    /// Which axis this container stretches to fill available space.
+    /// Which axis this container stretches to fill available space, given what
+    /// its children said about themselves.
     ///
-    /// - `VStack`: `.horizontal` (fills available width, intrinsic height)
-    /// - `HStack`: `.vertical` (fills available height, intrinsic width)
-    /// - `ZStack`: `.none` (content-sized by default)
-    /// - Other layouts: `.none` by default
+    /// Stacks are content-sized, so they answer `None` and let a child that wants
+    /// to fill say so. A layout that is transparent to its content — a background,
+    /// an overlay, an alignment guide — answers with that content's axis, and a
+    /// frame answers from its own constraints.
     ///
-    /// This allows parent containers to know whether to expand this container
-    /// to fill available space on the cross axis.
-    fn stretch_axis(&self) -> StretchAxis {
+    /// `children` carries each child's own [`StretchAxis`] in order. Passing it is
+    /// what lets a transparent layout answer from live state: without it such a
+    /// layout has to copy its content's axis when it is built, and that copy goes
+    /// stale the moment the content's own answer changes — the container then
+    /// claims space its content no longer wants, or refuses space it now does.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        let _ = children;
         StretchAxis::None
     }
 

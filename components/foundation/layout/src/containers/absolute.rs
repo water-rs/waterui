@@ -42,7 +42,7 @@ use crate::{
 pub struct AbsoluteLayout;
 
 impl Layout for AbsoluteLayout {
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Both
     }
 
@@ -199,7 +199,7 @@ impl fmt::Debug for PositionedLayout {
 }
 
 impl Layout for PositionedLayout {
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Both
     }
 

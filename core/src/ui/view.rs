@@ -223,7 +223,12 @@ macro_rules! impl_tuple_views {
         #[allow(unused_parens)]
         impl <$($ty:View,)*>TupleViews for ($($ty,)*){
             fn into_views(self) -> Vec<AnyView> {
-                let ($($ty),*)=self;
+                // The trailing comma matters: `let (T) = self` is a parenthesized
+                // binding, not a one-element tuple pattern, so without it a
+                // single-child container erased the tuple itself instead of the
+                // view inside it — and the tuple answers every view question with
+                // its default, losing whatever the child had declared.
+                let ($($ty,)*)=self;
                 alloc::vec![$(AnyView::new($ty)),*]
             }
         }
