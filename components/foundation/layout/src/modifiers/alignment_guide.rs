@@ -18,14 +18,12 @@ use crate::{
 struct HorizontalAlignmentGuideLayout<F> {
     alignment: HorizontalAlignment,
     compute: F,
-    stretch_axis: StretchAxis,
 }
 
 impl<F> fmt::Debug for HorizontalAlignmentGuideLayout<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HorizontalAlignmentGuideLayout")
             .field("alignment", &self.alignment)
-            .field("stretch_axis", &self.stretch_axis)
             .finish_non_exhaustive()
     }
 }
@@ -73,8 +71,10 @@ where
         vec![self.alignment]
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        self.stretch_axis
+    /// Overriding a guide changes where the child lines up, never how much space
+    /// it claims, so the answer is the child's.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        children.first().copied().unwrap_or_default()
     }
 }
 
@@ -111,12 +111,10 @@ where
     F: Fn(&ViewDimensions) -> f32 + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let stretch_axis = self.content.stretch_axis();
         FixedContainer::new(
             HorizontalAlignmentGuideLayout {
                 alignment: self.alignment,
                 compute: self.compute,
-                stretch_axis,
             },
             (self.content,),
         )
@@ -131,14 +129,12 @@ where
 struct VerticalAlignmentGuideLayout<F> {
     alignment: VerticalAlignment,
     compute: F,
-    stretch_axis: StretchAxis,
 }
 
 impl<F> fmt::Debug for VerticalAlignmentGuideLayout<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VerticalAlignmentGuideLayout")
             .field("alignment", &self.alignment)
-            .field("stretch_axis", &self.stretch_axis)
             .finish_non_exhaustive()
     }
 }
@@ -186,8 +182,10 @@ where
         vec![self.alignment]
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        self.stretch_axis
+    /// Overriding a guide changes where the child lines up, never how much space
+    /// it claims, so the answer is the child's.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        children.first().copied().unwrap_or_default()
     }
 }
 
@@ -224,12 +222,10 @@ where
     F: Fn(&ViewDimensions) -> f32 + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let stretch_axis = self.content.stretch_axis();
         FixedContainer::new(
             VerticalAlignmentGuideLayout {
                 alignment: self.alignment,
                 compute: self.compute,
-                stretch_axis,
             },
             (self.content,),
         )
@@ -289,7 +285,8 @@ mod tests {
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 1);
-        assert_eq!(layout.stretch_axis(), StretchAxis::Horizontal);
+        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
+        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::Horizontal);
     }
 
     #[test]
@@ -307,7 +304,8 @@ mod tests {
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 1);
-        assert_eq!(layout.stretch_axis(), StretchAxis::None);
+        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
+        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::None);
         assert_eq!(
             layout.explicit_horizontal_alignments(),
             vec![HorizontalAlignment::Leading]
@@ -340,7 +338,8 @@ mod tests {
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 1);
-        assert_eq!(layout.stretch_axis(), StretchAxis::None);
+        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
+        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::None);
         assert_eq!(
             layout.explicit_vertical_alignments(),
             vec![VerticalAlignment::Top]

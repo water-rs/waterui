@@ -340,7 +340,7 @@ impl Layout for GridLinesLayout {
         rects
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Both
     }
 }
@@ -505,7 +505,7 @@ impl Layout for ReactiveAxisLayout {
         }
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Both
     }
 }
@@ -728,7 +728,7 @@ impl Layout for AxisLabelsLayout {
         rects
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Both
     }
 }

@@ -30,13 +30,14 @@ use crate::{
 /// The content child determines the size, the background fills the bounds.
 /// Children order: `[background, content]`
 #[derive(Debug, Clone, Copy, Default)]
-pub struct BackgroundLayout {
-    stretch_axis: StretchAxis,
-}
+pub struct BackgroundLayout;
 
 impl Layout for BackgroundLayout {
-    fn stretch_axis(&self) -> StretchAxis {
-        self.stretch_axis
+    /// A background is transparent to its content: `children[1]`. Answering from
+    /// the child rather than from a copy taken at build time keeps the two from
+    /// disagreeing.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        children.get(1).copied().unwrap_or_default()
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -132,10 +133,10 @@ where
             content,
             background,
         } = self;
-        let stretch_axis = content.stretch_axis();
+
 
         // Background is first (renders behind), content is second (renders on top)
-        FixedContainer::new(BackgroundLayout { stretch_axis }, (background, content))
+        FixedContainer::new(BackgroundLayout, (background, content))
     }
 }
 
@@ -215,10 +216,12 @@ mod tests {
     }
 
     #[test]
-    fn test_background_layout_preserves_content_stretch_axis() {
-        let layout = BackgroundLayout {
-            stretch_axis: StretchAxis::Horizontal,
-        };
-        assert_eq!(layout.stretch_axis(), StretchAxis::Horizontal);
+    fn test_background_layout_reports_its_content_stretch_axis() {
+        // The background is children[0] and the content children[1]; the pair
+        // claims whatever the content claims.
+        assert_eq!(
+            BackgroundLayout.stretch_axis(&[StretchAxis::Both, StretchAxis::Horizontal]),
+            StretchAxis::Horizontal
+        );
     }
 }

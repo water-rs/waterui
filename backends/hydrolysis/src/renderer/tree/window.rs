@@ -353,10 +353,17 @@ impl HydrolysisRenderer {
             validated_minimum_axis(min_height, "height"),
         );
         let maximum = content_maximum_size(max_width, max_height);
-        if let Some(maximum) = maximum {
-            assert!(
-                maximum.width >= minimum.width && maximum.height >= minimum.height,
-                "hydrolysis window layout reported maximum {maximum:?} below minimum {minimum:?}"
+        if let Some(maximum) = maximum
+            && !(maximum.width >= minimum.width && maximum.height >= minimum.height)
+        {
+            // The root's two numbers say the tree contradicted itself, but not
+            // which view did. Walk it and let the offending nodes name themselves,
+            // otherwise this is only reproducible by guesswork.
+            let culprits = probe_contract_violations(tree, &mut self.state, env);
+            panic!(
+                "hydrolysis window layout reported maximum {maximum:?} below minimum \
+                 {minimum:?}.\nA view answered a larger proposal with a smaller size. \
+                 Offending nodes (deepest first):\n{culprits}"
             );
         }
         ContentSizeLimits { minimum, maximum }
@@ -389,4 +396,69 @@ fn content_maximum_size(width: f32, height: f32) -> Option<Size> {
         width.unwrap_or(f32::MAX),
         height.unwrap_or(f32::MAX),
     ))
+}
+
+/// Reports every node whose own probe answers contradict each other, deepest
+/// first, so the innermost cause is read before the containers that inherited it.
+///
+/// Only runs when the window's own check has already failed, so the cost of
+/// re-measuring the tree four times per node does not matter.
+fn probe_contract_violations(
+    tree: &RenderNode,
+    state: &mut HydroState,
+    env: &Environment,
+) -> String {
+    let mut report = String::new();
+    walk_probe_contract(tree, state, env, 0, &mut report);
+    if report.is_empty() {
+        report.push_str(
+            "  (no single node contradicts itself; the disagreement is produced by a              container combining its children)\n",
+        );
+    }
+    report
+}
+
+fn walk_probe_contract(
+    node: &RenderNode,
+    state: &mut HydroState,
+    env: &Environment,
+    depth: usize,
+    report: &mut String,
+) {
+    for child in node.child_nodes() {
+        walk_probe_contract(child, state, env, depth + 1, report);
+    }
+
+    let min_width = node
+        .measure(state, env, ProposalSize::new(Some(0.0), None))
+        .size
+        .width;
+    let max_width = node
+        .measure(state, env, ProposalSize::new(Some(f32::INFINITY), None))
+        .size
+        .width;
+    let min_height = node
+        .measure(state, env, ProposalSize::new(None, Some(0.0)))
+        .size
+        .height;
+    let max_height = node
+        .measure(state, env, ProposalSize::new(None, Some(f32::INFINITY)))
+        .size
+        .height;
+
+    for (axis, min, max) in [
+        ("width", min_width, max_width),
+        ("height", min_height, max_height),
+    ] {
+        if min > max {
+            use core::fmt::Write as _;
+            let _ = writeln!(
+                report,
+                "  {:indent$}{} {axis}: minimum {min} exceeds maximum {max}",
+                "",
+                node.kind(),
+                indent = depth * 2
+            );
+        }
+    }
 }

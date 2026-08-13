@@ -374,7 +374,7 @@ impl ProtoNode {
                 let refs: Vec<&dyn SubView> = subs.iter().map(|s| s as &dyn SubView).collect();
                 MeasuredSub {
                     size: layout.size_that_fits(proposal, &refs),
-                    stretch: layout.stretch_axis(),
+                    stretch: layout.stretch_axis(&[]),
                 }
             }
         }

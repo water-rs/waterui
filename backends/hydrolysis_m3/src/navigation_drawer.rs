@@ -203,7 +203,7 @@ impl Layout for NavigationDrawerPanelLayout {
         children.iter().map(|_| bounds).collect()
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Vertical
     }
 }

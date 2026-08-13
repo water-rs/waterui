@@ -28,11 +28,65 @@ impl RenderNode {
         }
     }
 
+    /// The variant's name, for diagnostics that have to point at a node.
+    pub(super) fn kind(&self) -> &'static str {
+        match self {
+            RenderNode::Color(_) => "Color",
+            RenderNode::Text(_) => "Text",
+            RenderNode::Container(_) => "Container",
+            RenderNode::Opacity(_) => "Opacity",
+            RenderNode::Scale(_) => "Scale",
+            RenderNode::Rotation(_) => "Rotation",
+            RenderNode::Offset(_) => "Offset",
+            RenderNode::Retain(_) => "Retain",
+            RenderNode::Env(_) => "Env",
+            RenderNode::Dynamic(_) => "Dynamic",
+            RenderNode::SceneView(_) => "SceneView",
+            RenderNode::GpuSurface(_) => "GpuSurface",
+            RenderNode::ViewEffect(_) => "ViewEffect",
+            RenderNode::AppliedFilter(_) => "AppliedFilter",
+            RenderNode::Scroll(_) => "Scroll",
+            RenderNode::LazyStack(_) => "LazyStack",
+            RenderNode::Collection(_) => "Collection",
+            RenderNode::Wrapper(_) => "Wrapper",
+            RenderNode::Widget(_) => "Widget",
+        }
+    }
+
+    /// The child nodes this one owns, for diagnostics that walk the tree.
+    ///
+    /// Deliberately a diagnostic-only accessor: layout and flush each need more
+    /// than the children (frames, environments, retained caches), so they keep
+    /// their own matches rather than routing through this.
+    pub(super) fn child_nodes(&self) -> Vec<&RenderNode> {
+        match self {
+            RenderNode::Container(node) => node.children.iter().collect(),
+            RenderNode::Opacity(node) => vec![&node.child],
+            RenderNode::Scale(node) => vec![&node.child],
+            RenderNode::Rotation(node) => vec![&node.child],
+            RenderNode::Offset(node) => vec![&node.child],
+            RenderNode::Retain(node) => vec![&node.child],
+            RenderNode::Env(node) => vec![&node.child],
+            RenderNode::Dynamic(node) => vec![&node.child],
+            RenderNode::AppliedFilter(node) => vec![&node.child],
+            RenderNode::Wrapper(node) => vec![&node.child],
+            RenderNode::Scroll(node) => vec![&node.child],
+            _ => Vec::new(),
+        }
+    }
+
     pub(super) fn stretch(&self) -> StretchAxis {
         match self {
             RenderNode::Color(_) => StretchAxis::Both,
             RenderNode::Text(_) => StretchAxis::None,
-            RenderNode::Container(container) => container.layout.stretch_axis(),
+            RenderNode::Container(container) => {
+                // The retained children answer for themselves, so a transparent
+                // layout reports what its content currently claims rather than
+                // what it claimed when the tree was built.
+                let child_axes: Vec<StretchAxis> =
+                    container.children.iter().map(RenderNode::stretch).collect();
+                container.layout.stretch_axis(&child_axes)
+            }
             RenderNode::Opacity(node) => node.child.stretch(),
             RenderNode::Scale(node) => node.child.stretch(),
             RenderNode::Rotation(node) => node.child.stretch(),
@@ -53,7 +107,11 @@ impl RenderNode {
             // how it sizes. Rows that want the full cross axis ask for it
             // themselves, exactly as they do in the eager path.
             RenderNode::LazyStack(_) => StretchAxis::None,
-            RenderNode::Collection(node) => node.layout.stretch_axis(),
+            RenderNode::Collection(node) => {
+                // A collection's membership is reactive; its layout is one of the
+                // content-sized stacks, which ignores the children anyway.
+                node.layout.stretch_axis(&[])
+            }
             RenderNode::Wrapper(node) => node.child.stretch(),
             RenderNode::Widget(node) => node.stretch,
         }

@@ -34,6 +34,7 @@ pub use waterui_graphics::filter_view::FilterViewExt;
 use waterui_layout::{
     EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
     VerticalAlignmentGuide,
+    aspect_ratio::{AspectRatio, ContentMode},
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -120,6 +121,18 @@ pub trait ViewExt: View + Sized {
     /// * `amount` - The opacity value (0.0 = transparent, 1.0 = opaque). Can be reactive.
     fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity> {
         Metadata::new(self, Opacity::new(amount))
+    }
+
+    /// Constrains this view to a width-to-height ratio.
+    ///
+    /// The view shrinks to fit inside whatever it is offered, leaving slack on
+    /// the longer axis — `SwiftUI`'s `.aspectRatio(_, contentMode: .fit)`. Use
+    /// [`AspectRatio::new`] for the filling mode.
+    ///
+    /// # Arguments
+    /// * `ratio` - Width divided by height. Must be positive and finite.
+    fn aspect_ratio(self, ratio: impl IntoSignalF32 + 'static) -> impl View {
+        AspectRatio::new(self, ratio, ContentMode::Fit)
     }
 
     /// Sets how strongly this view holds on to space when its stack runs short.

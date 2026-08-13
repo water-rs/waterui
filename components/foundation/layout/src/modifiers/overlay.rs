@@ -26,7 +26,6 @@ struct ChildMeasurement {
 #[derive(Debug, Clone, Default)]
 pub struct OverlayLayout {
     alignment: Alignment,
-    stretch_axis: StretchAxis,
 }
 
 impl OverlayLayout {
@@ -45,8 +44,10 @@ impl OverlayLayout {
 }
 
 impl Layout for OverlayLayout {
-    fn stretch_axis(&self) -> StretchAxis {
-        self.stretch_axis
+    /// An overlay is sized by its base, `children[0]`; the layer on top never
+    /// changes what the pair claims.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        children.first().copied().unwrap_or_default()
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -196,7 +197,6 @@ impl<Base, Layer> Overlay<Base, Layer> {
         Self {
             layout: OverlayLayout {
                 alignment: Alignment::Center,
-                stretch_axis: StretchAxis::None,
             },
             base,
             layer,
@@ -226,11 +226,10 @@ where
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self {
-            mut layout,
+            layout,
             base,
             layer,
         } = self;
-        layout.stretch_axis = base.stretch_axis();
         FixedContainer::new(layout, (base, layer))
     }
 }
@@ -299,7 +298,6 @@ mod tests {
     fn test_overlay_placement_center() {
         let layout = OverlayLayout {
             alignment: Alignment::Center,
-            stretch_axis: StretchAxis::None,
         };
 
         let mut base = MockSubView {
@@ -351,6 +349,7 @@ mod tests {
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 2);
-        assert_eq!(layout.stretch_axis(), StretchAxis::Horizontal);
+        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
+        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::Horizontal);
     }
 }
