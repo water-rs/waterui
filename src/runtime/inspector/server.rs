@@ -213,6 +213,9 @@ pub(super) fn dispatch_loop(
     available: ChannelSet,
 ) {
     let mut clients: Vec<Client> = Vec::new();
+    // A node asked for before any inspector was attached, sent to the first one
+    // that arrives.
+    let mut pending_select: Option<waterui_inspector_protocol::NodeId> = None;
 
     while let Ok(dispatch) = receiver.recv_blocking() {
         match dispatch {
@@ -237,6 +240,15 @@ pub(super) fn dispatch_loop(
                     socket,
                     channels,
                 });
+                // Inspecting an element launches an inspector that is not
+                // connected yet, so the node it was asked to reveal waits here
+                // for it rather than being sent to nobody.
+                if let Some(node) = pending_select.take()
+                    && let Some(entry) = clients.last_mut()
+                {
+                    let message = InspectorServerMessage::Select { node };
+                    let _ = write_frame_blocking(&mut entry.socket, &message);
+                }
                 update_subscription(hub, &clients, available);
             }
             Dispatch::Subscribed { client, channels } => {
@@ -244,6 +256,16 @@ pub(super) fn dispatch_loop(
                     entry.channels = channels & available;
                 }
                 update_subscription(hub, &clients, available);
+            }
+            Dispatch::Select { node } => {
+                if clients.is_empty() {
+                    pending_select = Some(node);
+                } else {
+                    let message = InspectorServerMessage::Select { node };
+                    clients.retain_mut(|entry| {
+                        write_frame_blocking(&mut entry.socket, &message).is_ok()
+                    });
+                }
             }
             Dispatch::Ping { client } => {
                 clients.retain_mut(|entry| {
@@ -288,4 +310,5 @@ fn update_subscription(hub: &EventHub, clients: &[Client], available: ChannelSet
         .iter()
         .fold(ChannelSet::empty(), |set, client| set | client.channels);
     hub.set_subscribed(union & available);
+    hub.set_client_count(clients.len());
 }

@@ -11,7 +11,7 @@
 //! happened to fit" is wrong exactly when the system is interesting.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use waterui_inspector_protocol::{Channel, ChannelSet, InspectorEvent, InspectorEventEnvelope};
@@ -56,6 +56,11 @@ pub(super) enum Dispatch {
         /// The channels it now wants.
         channels: ChannelSet,
     },
+    /// The user asked to inspect a node; every attached inspector is told.
+    Select {
+        /// The node to reveal.
+        node: waterui_inspector_protocol::NodeId,
+    },
     /// A client asked whether the target is alive.
     Ping {
         /// Client to answer.
@@ -87,6 +92,11 @@ pub struct EventHub {
     /// be a plain atomic load rather than anything that could block.
     subscribed: AtomicU16,
     dropped: [AtomicU64; Channel::ALL.len()],
+    /// How many inspectors are attached.
+    ///
+    /// Read to decide whether asking to inspect an element should also launch
+    /// an inspector, so it must not block either.
+    clients: AtomicUsize,
     sender: async_channel::Sender<Dispatch>,
 }
 
@@ -106,6 +116,7 @@ impl EventHub {
             next_client: AtomicU64::new(0),
             subscribed: AtomicU16::new(ChannelSet::empty().bits()),
             dropped: [const { AtomicU64::new(0) }; Channel::ALL.len()],
+            clients: AtomicUsize::new(0),
             sender,
         });
         (hub, receiver)
@@ -155,6 +166,25 @@ impl EventHub {
     )]
     pub(super) fn take_dropped(&self, channel: Channel) -> u64 {
         self.dropped[channel as usize].swap(0, Ordering::Relaxed)
+    }
+
+    /// Whether any inspector is attached.
+    #[must_use]
+    pub fn has_clients(&self) -> bool {
+        self.clients.load(Ordering::Relaxed) > 0
+    }
+
+    pub(super) fn set_client_count(&self, count: usize) {
+        self.clients.store(count, Ordering::Relaxed);
+    }
+
+    /// Asks every attached inspector to reveal `node`.
+    ///
+    /// Does nothing when none is attached: inspecting an element is a request
+    /// to an inspector, not something the application does by itself.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn select_node(&self, node: waterui_inspector_protocol::NodeId) {
+        self.send_control(Dispatch::Select { node });
     }
 
     /// Publishes a control message from a client's reader thread.

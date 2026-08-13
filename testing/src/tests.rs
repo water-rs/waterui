@@ -72,6 +72,8 @@ impl A11yDriver for NoopDriver {
 
     fn pointer_up(&mut self, _x: f32, _y: f32, _env: &Environment) {}
 
+    fn secondary_click(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+
     fn scroll_at(
         &mut self,
         _x: f32,
