@@ -9,8 +9,8 @@ use gtk4::{Orientation, Widget};
 use nami::Signal;
 use waterui_core::views::{SharedAnyViews, Views};
 use waterui_core::{Environment, Native};
-use waterui_layout::StretchAxis;
 use waterui_layout::container::LazyContainer;
+use waterui_layout::stack::{LazyStackAxis, lazy_stack_axis};
 
 use crate::component::GtkComponent;
 use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
@@ -34,11 +34,26 @@ impl GtkComponent for Native<LazyContainer> {
             .collect::<Vec<_>>();
         model.reconcile(&initial_ids);
 
-        // Determine orientation from layout
-        let orientation = match layout.stretch_axis() {
-            StretchAxis::Vertical => Orientation::Horizontal,
-            // Horizontal, Both, and None all default to vertical orientation
-            _ => Orientation::Vertical,
+        // The axis, spacing and cross-axis alignment all come from the layout the
+        // container was built with. Deriving the axis from `Layout::stretch_axis`
+        // instead — a different question — is what laid every lazy `HStack` out
+        // vertically once the stacks became content-sized.
+        let axis = lazy_stack_axis(layout.as_ref()).unwrap_or_else(|| {
+            panic!(
+                "GTK LazyContainer supports the virtualizable stack layouts; got {layout:?}"
+            )
+        });
+        let (orientation, spacing, cross_alignment) = match &axis {
+            LazyStackAxis::Vertical { spacing, alignment } => (
+                Orientation::Vertical,
+                spacing.get(),
+                gtk_align_from_horizontal(*alignment),
+            ),
+            LazyStackAxis::Horizontal { spacing, alignment } => (
+                Orientation::Horizontal,
+                spacing.get(),
+                gtk_align_from_vertical(*alignment),
+            ),
         };
 
         // Create factory for lazy binding
@@ -87,6 +102,17 @@ impl GtkComponent for Native<LazyContainer> {
         let selection = gtk4::NoSelection::new(Some(model.store()));
         let list_view = gtk4::ListView::new(Some(selection), Some(factory));
         list_view.set_orientation(orientation);
+        // GTK spaces list rows through the widget's CSS box, so the stack's
+        // spacing becomes the inter-row gap rather than being dropped.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "GTK spacing is integer pixels while WaterUI layout is f32"
+        )]
+        list_view.set_property("row-spacing", spacing.max(0.0) as i32);
+        match orientation {
+            Orientation::Vertical => list_view.set_halign(cross_alignment),
+            _ => list_view.set_valign(cross_alignment),
+        }
         list_view.set_hexpand(true);
         list_view.set_vexpand(true);
 
@@ -108,5 +134,29 @@ impl GtkComponent for Native<LazyContainer> {
         store_watcher_guard(&list_view, Box::new(contents_guard));
 
         list_view.upcast()
+    }
+}
+
+/// Maps a `WaterUI` cross-axis alignment onto GTK's, for a vertical stack.
+fn gtk_align_from_horizontal(alignment: waterui_layout::HorizontalAlignment) -> gtk4::Align {
+    use waterui_layout::HorizontalAlignment;
+    if alignment == HorizontalAlignment::Leading {
+        gtk4::Align::Start
+    } else if alignment == HorizontalAlignment::Trailing {
+        gtk4::Align::End
+    } else {
+        gtk4::Align::Center
+    }
+}
+
+/// Maps a `WaterUI` cross-axis alignment onto GTK's, for a horizontal stack.
+fn gtk_align_from_vertical(alignment: waterui_layout::VerticalAlignment) -> gtk4::Align {
+    use waterui_layout::VerticalAlignment;
+    if alignment == VerticalAlignment::Top {
+        gtk4::Align::Start
+    } else if alignment == VerticalAlignment::Bottom {
+        gtk4::Align::End
+    } else {
+        gtk4::Align::Center
     }
 }
