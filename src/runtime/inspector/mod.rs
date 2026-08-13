@@ -278,21 +278,41 @@ impl InspectorRuntime {
                 target: "waterui::inspector",
                 inspector_addr = %self.endpoint.addr,
                 token = %self.endpoint.token,
-                "Inspect requested; attach from your computer with `water inspect`"
+                "Inspect requested; attach from your computer with `water inspector`"
             );
             return;
         }
 
         // The CLI owns knowing how to build and run the inspector application
-        // for this platform, so this asks for it by name rather than
-        // reimplementing any of that here.
-        let launched = std::process::Command::new("water")
-            .arg("inspect")
+        // for this platform, so this asks for it rather than reimplementing any
+        // of that here.
+        let Some(cli) = water_cli_path() else {
+            tracing::warn!(
+                target: "waterui::inspector",
+                inspector_addr = %self.endpoint.addr,
+                token = %self.endpoint.token,
+                "Could not find the `water` CLI; attach with `water inspect --target <addr> --token <token>`,                  or point WATERUI_CLI at the binary"
+            );
+            return;
+        };
+
+        let mut command = std::process::Command::new(&cli);
+        command
+            .arg("inspector")
             .arg("--target")
             .arg(self.endpoint.addr.to_string())
             .arg("--token")
-            .arg(&self.endpoint.token)
-            .spawn();
+            .arg(&self.endpoint.token);
+
+        // The CLI builds the inspector against the project it is inspecting, and
+        // reads that project from its working directory. A launched application
+        // has none worth the name — a macOS app gets `/` — so `water run` tells
+        // it where the project is and it is passed straight through.
+        if let Some(project) = std::env::var_os("WATERUI_PROJECT_DIR") {
+            command.arg("--path").arg(project);
+        }
+
+        let launched = command.spawn();
 
         match launched {
             Ok(_) => tracing::info!(
@@ -305,7 +325,7 @@ impl InspectorRuntime {
                 error = %error,
                 inspector_addr = %self.endpoint.addr,
                 token = %self.endpoint.token,
-                "Could not launch `water inspect`; attach manually"
+                "Could not launch `water inspector`; attach manually"
             ),
         }
     }
@@ -360,6 +380,48 @@ pub fn install(environment: &mut Environment, inspector: Option<InspectorRuntime
     environment.insert(inspector);
 }
 
+/// Where the `water` CLI is, if it can be found.
+///
+/// An application launched from the Finder or a simulator does not inherit the
+/// shell's `PATH`, so the CLI is usually invisible to it even when the
+/// developer can run `water` in their terminal — it lives in Cargo's bin
+/// directory, which only a shell profile adds. Searching the usual install
+/// locations is what makes "inspect this element" work from a double-clicked
+/// application rather than only from one started in a terminal.
+///
+/// `WATERUI_CLI` overrides the search.
+#[cfg(not(target_arch = "wasm32"))]
+fn water_cli_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    if let Some(explicit) = std::env::var_os("WATERUI_CLI") {
+        let explicit = PathBuf::from(explicit);
+        return explicit.is_file().then_some(explicit);
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // The inherited PATH first: a developer who put the CLI somewhere of their
+    // own has already said where it is.
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|entry| entry.join("water")));
+    }
+
+    // Then where installers actually put it.
+    if let Some(cargo_home) = std::env::var_os("CARGO_HOME") {
+        candidates.push(PathBuf::from(cargo_home).join("bin").join("water"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".cargo").join("bin").join("water"));
+        candidates.push(home.join(".local").join("bin").join("water"));
+    }
+    candidates.push(PathBuf::from("/opt/homebrew/bin/water"));
+    candidates.push(PathBuf::from("/usr/local/bin/water"));
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
 /// Which channels this build can actually produce.
 ///
 /// Advertised in the handshake so an inspector can grey out what it will never
@@ -380,7 +442,7 @@ fn available_channels() -> ChannelSet {
 /// a developer runs can be inspected without deciding in advance that it should
 /// be. A release build inspects only when the environment says so.
 #[must_use]
-pub fn maybe_init_from_env() -> Option<InspectorRuntime> {
+pub fn maybe_init_from_env(backend: &'static str) -> Option<InspectorRuntime> {
     let config = match InspectorServerConfig::from_env() {
         Ok(Some(config)) => config,
         Ok(None) => InspectorServerConfig::for_debug_build()?,
@@ -394,7 +456,7 @@ pub fn maybe_init_from_env() -> Option<InspectorRuntime> {
         }
     };
 
-    match init_with_config(config) {
+    match init_with_config(config, backend) {
         Ok(runtime) => Some(runtime),
         Err(error) => {
             tracing::warn!(
@@ -413,7 +475,10 @@ pub fn maybe_init_from_env() -> Option<InspectorRuntime> {
 ///
 /// Returns an I/O error when the socket cannot be bound or a thread cannot be
 /// spawned.
-pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorRuntime> {
+pub fn init_with_config(
+    config: InspectorServerConfig,
+    backend: &'static str,
+) -> io::Result<InspectorRuntime> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = config;
@@ -434,7 +499,7 @@ pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorRu
         let target = TargetInfo {
             pid: std::process::id(),
             name: config.app_name.clone(),
-            backend: backend_name().to_string(),
+            backend: backend.to_string(),
         };
 
         spawn("waterui-inspector-dispatch", {
@@ -502,14 +567,4 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
         .map_err(|error| io::Error::other(format!("failed to spawn {name} thread: {error}")))
 }
 
-/// Best available description of the rendering backend, for the handshake.
-#[cfg(not(target_arch = "wasm32"))]
-const fn backend_name() -> &'static str {
-    if cfg!(target_vendor = "apple") {
-        "apple"
-    } else if cfg!(target_os = "android") {
-        "android"
-    } else {
-        "hydrolysis"
-    }
-}
+

@@ -55,7 +55,7 @@ pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRunti
     // GTK apps run UI rendering on the main thread. Initialize executors there so
     // spawn/spawn_local paths used by reactive bindings are always available.
     let _ = try_init_global_executor(NativeExecutor::new());
-    let inspector = waterui::inspector::maybe_init_from_env();
+    let inspector = waterui::inspector::maybe_init_from_env("gtk");
     let inspector_probe = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::runtime_probe);
@@ -63,6 +63,10 @@ pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRunti
         GtkMainThreadExecutor,
         inspector_probe,
     ));
+
+    // Locale changes reach views through a mailbox, whose pump needs the
+    // executor installed just above.
+    waterui_locale::start_system_locale_listener();
     inspector
 }
 
