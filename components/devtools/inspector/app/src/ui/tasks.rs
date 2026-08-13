@@ -29,8 +29,7 @@ pub fn view(model: Model) -> impl View {
                 move || {
                     vstack((
                         task_header(),
-                        List::for_each(SignalCollection::new(tasks.clone()), task_row)
-                            .height(TASK_TABLE_HEIGHT),
+                        List::for_each(SignalCollection::new(tasks.clone()), task_row),
                     ))
                     .alignment(HorizontalAlignment::Leading)
                 }
@@ -61,7 +60,6 @@ fn task_header() -> impl View {
         column(text("over")),
     ))
     .spacing(8.0)
-    .height(ROW_HEIGHT)
 }
 
 fn task_row(row: TaskRow) -> ListItem {
@@ -81,19 +79,10 @@ fn task_row(row: TaskRow) -> ListItem {
         })),
         ))
         .spacing(8.0)
-        .height(ROW_HEIGHT)
         .padding_with(EdgeInsets::new(6.0, 6.0, 0.0, 0.0)),
     )
 }
 
-/// Height of one table row. Explicit, because a row left to size itself is
-/// allocated nothing when it shares a stack with a greedy sibling.
-const ROW_HEIGHT: f32 = 32.0;
-
-/// Height reserved for the task table.
-///
-/// A handful of task types is the normal case; the list scrolls beyond that.
-const TASK_TABLE_HEIGHT: f32 = 200.0;
 
 /// Fixed-width numeric column, so the table reads as a table.
 fn column(content: impl View) -> impl View {

@@ -98,7 +98,6 @@ fn totals(model: &Model) -> impl View {
         spacer(),
     ))
     .spacing(32.0)
-    .height(parts::METRIC_HEIGHT)
 }
 
 /// One node: what it holds, where it came from, and how hard it is working.
@@ -114,8 +113,7 @@ fn row_view(row: SignalRow) -> ListItem {
                 .foreground(MutedForeground),
         ))
         .alignment(HorizontalAlignment::Leading)
-        .spacing(2.0)
-        .height(38.0),
+        .spacing(2.0),
         spacer(),
         parts::metric(
             "watchers",

@@ -29,9 +29,7 @@ pub fn view(model: Model) -> impl View {
                 "View tree",
                 "The accessibility tree, as assistive technology sees it.",
             ),
-            TextField::new(&filter)
-                .prompt("Filter by label or role")
-                .height(44.0),
+            TextField::new(&filter).prompt("Filter by label or role"),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(8.0)
@@ -98,8 +96,7 @@ fn row_view(row: TreeRow) -> ListItem {
             detail_view(row.value, row.bounds),
         ))
         .alignment(HorizontalAlignment::Leading)
-        .spacing(2.0)
-        .height(38.0),
+        .spacing(2.0),
     ))
     .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0))
     .opacity(if row.enabled { 1.0 } else { 0.55 });

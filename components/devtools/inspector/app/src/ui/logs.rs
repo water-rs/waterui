@@ -13,10 +13,6 @@ use crate::model::{LogRow, Model};
 
 use super::parts;
 
-/// Height of the filter row. Explicit, because controls left to size themselves
-/// are allocated nothing when they share a stack with a greedy sibling.
-const CONTROL_HEIGHT: f32 = 44.0;
-
 /// The logs pane.
 #[expect(
     clippy::needless_pass_by_value,
@@ -35,8 +31,7 @@ pub fn view(model: Model) -> impl View {
                 TextField::new(&filter).prompt("Filter"),
                 level_picker(&minimum),
             ))
-            .spacing(12.0)
-            .height(CONTROL_HEIGHT),
+            .spacing(12.0),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(8.0)
@@ -109,8 +104,7 @@ fn row_view(row: LogRow) -> ListItem {
             .width(52.0),
         vstack((text(row.message), origin_view(row.target, row.origin)))
             .alignment(HorizontalAlignment::Leading)
-            .spacing(2.0)
-            .height(38.0),
+            .spacing(2.0),
     ))
     .spacing(10.0)
     .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0)),
