@@ -170,12 +170,13 @@ const fn debug_host() -> IpAddr {
 
 /// A token for one process, from the system's random source.
 fn generate_token() -> String {
+    use std::fmt::Write as _;
     use std::hash::{BuildHasher, Hasher, RandomState};
 
     let mut token = String::with_capacity(32);
     for _ in 0..2 {
         let value = RandomState::new().build_hasher().finish();
-        token.push_str(&format!("{value:016x}"));
+        write!(token, "{value:016x}").expect("writing to a String cannot fail");
     }
     token
 }
@@ -375,8 +376,8 @@ fn available_channels() -> ChannelSet {
 
 /// Starts the endpoint from the environment, or automatically in a debug build.
 ///
-/// A debug build listens without being asked, so that any WaterUI application a
-/// developer runs can be inspected without deciding in advance that it should
+/// A debug build listens without being asked, so that any `WaterUI` application
+/// a developer runs can be inspected without deciding in advance that it should
 /// be. A release build inspects only when the environment says so.
 #[must_use]
 pub fn maybe_init_from_env() -> Option<InspectorRuntime> {
