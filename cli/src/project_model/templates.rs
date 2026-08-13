@@ -2800,6 +2800,69 @@ pub mod esp32 {
     }
 }
 
+/// Copies the `[patch]` tables governing the app's own build into a generated
+/// companion manifest.
+///
+/// The companion crate is its own workspace root inside the build cache, and
+/// Cargo only honours `[patch]` from the root of the workspace being built.
+/// Without this, an app whose workspace patches a crate — say, a fork carrying
+/// an urgent upstream fix — silently builds the unpatched version whenever the
+/// build goes through a companion crate. Path patches are rebased onto
+/// absolute paths because the companion lives outside the app tree.
+async fn propagate_workspace_patches(
+    manifest: &mut cargo_toml::Manifest<()>,
+    project_root: &Path,
+) -> io::Result<()> {
+    let project_root = project_root.to_path_buf();
+    let patches = smol::unblock(move || collect_workspace_patches(&project_root)).await?;
+    manifest.patch = patches;
+    Ok(())
+}
+
+/// Reads the `[patch]` tables from the workspace root that governs a build
+/// rooted at `project_root`, with path patches made absolute.
+fn collect_workspace_patches(project_root: &Path) -> io::Result<cargo_toml::PatchSet> {
+    let Some((workspace_dir, source)) = find_workspace_manifest(project_root)? else {
+        return Ok(cargo_toml::PatchSet::default());
+    };
+
+    let mut patches = source.patch;
+    for deps in patches.values_mut() {
+        for dependency in deps.values_mut() {
+            if let cargo_toml::Dependency::Detailed(detail) = dependency
+                && let Some(path) = detail.path.take()
+            {
+                detail.path = Some(workspace_dir.join(path).to_string_lossy().into_owned());
+            }
+        }
+    }
+    Ok(patches)
+}
+
+/// Finds the manifest Cargo would treat as the workspace root for a package at
+/// `project_root`: the nearest ancestor manifest with a `[workspace]` section,
+/// or the package's own manifest when it is standalone.
+fn find_workspace_manifest(
+    project_root: &Path,
+) -> io::Result<Option<(PathBuf, cargo_toml::Manifest)>> {
+    let mut fallback = None;
+    for dir in project_root.ancestors() {
+        let manifest_path = dir.join("Cargo.toml");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let manifest = cargo_toml::Manifest::from_path(&manifest_path)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if manifest.workspace.is_some() {
+            return Ok(Some((dir.to_path_buf(), manifest)));
+        }
+        if fallback.is_none() && dir == project_root {
+            fallback = Some((dir.to_path_buf(), manifest));
+        }
+    }
+    Ok(fallback)
+}
+
 /// Native FFI companion crate templates.
 pub mod ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
@@ -2914,6 +2977,10 @@ pub mod ffi {
             .insert("waterui-ffi".to_string(), ffi_dependency);
 
         manifest.workspace = Some(Workspace::default());
+
+        if let Some(project_root) = &ctx.project_root_path {
+            super::propagate_workspace_patches(&mut manifest, project_root).await?;
+        }
 
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -3345,6 +3412,10 @@ pub mod preview_ffi {
         }
 
         manifest.workspace = Some(Workspace::default());
+
+        if let Some(project_root) = &ctx.project_root_path {
+            super::propagate_workspace_patches(&mut manifest, project_root).await?;
+        }
 
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;

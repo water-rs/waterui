@@ -23,9 +23,7 @@ use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneInvalidator,
     VelloScene2D, gpu_surface::GestureState,
 };
-use waterui_map::{
-    Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region,
-};
+use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 
 use crate::{
     MapGestureController, MapGpuOptions, MapLoadError, network,
@@ -100,8 +98,27 @@ struct MapChrome {
 
 /// Rounded distances a scale bar is allowed to represent, in metres.
 const SCALE_STEPS: &[f64] = &[
-    1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1_000.0, 2_000.0, 5_000.0, 10_000.0,
-    20_000.0, 50_000.0, 100_000.0, 200_000.0, 500_000.0, 1_000_000.0, 2_000_000.0, 5_000_000.0,
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+    20.0,
+    50.0,
+    100.0,
+    200.0,
+    500.0,
+    1_000.0,
+    2_000.0,
+    5_000.0,
+    10_000.0,
+    20_000.0,
+    50_000.0,
+    100_000.0,
+    200_000.0,
+    500_000.0,
+    1_000_000.0,
+    2_000_000.0,
+    5_000_000.0,
 ];
 
 /// Picks the largest round distance whose bar fits the allowed width.
@@ -249,11 +266,7 @@ impl TileCache {
     /// largest cache, so one payload kind cannot starve the others.
     fn enforce_budget(&mut self) {
         while self.bytes() > self.maximum_bytes {
-            let largest = self
-                .vector
-                .bytes
-                .max(self.raster.bytes)
-                .max(self.dem.bytes);
+            let largest = self.vector.bytes.max(self.raster.bytes).max(self.dem.bytes);
             let freed = if largest == self.vector.bytes {
                 self.vector.evict_lru()
             } else if largest == self.raster.bytes {
@@ -401,8 +414,6 @@ impl PreparedMap {
             raster_tiles: Arc::new(raster_tiles),
         })
     }
-
-
 }
 
 #[allow(
@@ -1179,14 +1190,13 @@ impl SceneContent for MapScene {
         fill_viewport(scene, frame.viewport, Color::new(MAP_BACKGROUND));
         if let (Some(prepared), Some(camera)) = (state.prepared.as_mut(), frame.camera) {
             prepared.append_base_scene_for_camera(scene, camera);
-            self.painter
-                .paint_overlays(
-                    scene,
-                    camera,
-                    &frame.annotations,
-                    frame.location.as_ref(),
-                    self.chrome,
-                );
+            self.painter.paint_overlays(
+                scene,
+                camera,
+                &frame.annotations,
+                frame.location.as_ref(),
+                self.chrome,
+            );
         }
         frame.animating
     }
@@ -1260,12 +1270,14 @@ struct RasterResult {
     renderers: Vec<vello::Renderer>,
 }
 
+/// Camera gesture driven by the surface's raw [`GestureState`] — trackpad
+/// scrolls on desktop, touch drags and pinches on Android.
 #[derive(Default)]
-struct TrackpadCameraGesture {
+struct SurfaceCameraGesture {
     origin: Option<Region>,
 }
 
-impl TrackpadCameraGesture {
+impl SurfaceCameraGesture {
     fn apply(
         &mut self,
         interaction: &MapGestureController,
@@ -1279,13 +1291,30 @@ impl TrackpadCameraGesture {
         let Some(origin) = self.origin else {
             return;
         };
-        let region = crate::translated_region(
+        let width = gpu_scalar(viewport.width);
+        let height = gpu_scalar(viewport.height);
+        let mut region = crate::translated_region(
             origin,
             gesture.pan_offset.x,
             gesture.pan_offset.y,
             f64::from(viewport.width),
             f64::from(viewport.height),
         );
+        // A pinch zooms around its focal point; without one (trackpad pinch
+        // that never reported a center) the viewport center anchors the zoom.
+        if (gesture.pinch_scale - 1.0).abs() > f32::EPSILON {
+            let (center_x, center_y) = gesture
+                .pinch_center
+                .map_or((width / 2.0, height / 2.0), |center| (center.x, center.y));
+            region = crate::magnified_region(
+                region,
+                f64::from(gesture.pinch_scale),
+                center_x,
+                center_y,
+                width,
+                height,
+            );
+        }
         if gesture.active {
             interaction.set_live_region(region);
         } else {
@@ -1491,7 +1520,7 @@ fn rasterize_map(job: RasterJob) -> RasterResult {
 struct MapGpuRenderer {
     map: MapScene,
     interaction: Option<Rc<MapGestureController>>,
-    trackpad_camera: TrackpadCameraGesture,
+    surface_camera: SurfaceCameraGesture,
     camera_pipeline: Option<wgpu::RenderPipeline>,
     cached_texture: Option<CachedMapTexture>,
     raster_signature: Option<RasterSignature>,
@@ -1511,7 +1540,7 @@ impl MapGpuRenderer {
         Self {
             map,
             interaction,
-            trackpad_camera: TrackpadCameraGesture::default(),
+            surface_camera: SurfaceCameraGesture::default(),
             camera_pipeline: None,
             cached_texture: None,
             raster_signature: None,
@@ -1533,11 +1562,11 @@ impl MapGpuRenderer {
         renderer
     }
 
-    fn apply_trackpad_pan(&mut self, gesture: GestureState, viewport: Viewport) {
+    fn apply_surface_gesture(&mut self, gesture: GestureState, viewport: Viewport) {
         let Some(interaction) = self.interaction.as_ref() else {
             return;
         };
-        self.trackpad_camera.apply(interaction, gesture, viewport);
+        self.surface_camera.apply(interaction, gesture, viewport);
     }
 
     fn raster_signature(frame: &ResolvedMapFrame) -> Option<RasterSignature> {
@@ -1865,7 +1894,7 @@ impl GpuView for MapGpuRenderer {
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        self.apply_trackpad_pan(
+        self.apply_surface_gesture(
             frame.gesture,
             Viewport {
                 width: frame.width,
@@ -2771,11 +2800,7 @@ impl HeatmapField {
     /// Returns `None` when nothing accumulated, so an empty heatmap costs no
     /// image upload at all.
     fn colorize(&self, layer: &StyleLayer, zoom: f64) -> Option<Vec<u8>> {
-        let peak = self
-            .density
-            .iter()
-            .copied()
-            .fold(0.0_f32, f32::max);
+        let peak = self.density.iter().copied().fold(0.0_f32, f32::max);
         if peak <= 0.0 {
             return None;
         }
@@ -2861,13 +2886,13 @@ fn shade_dem_tile(
             let y = i64::try_from(row).expect("DEM row must fit i64");
             for (column, texel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let x = i64::try_from(column).expect("DEM column must fit i64");
-                let slope_x =
-                    (tile.height_at(x - 1, y) - tile.height_at(x + 1, y)) * exaggeration
-                        / (2.0 * spacing);
-                let slope_y =
-                    (tile.height_at(x, y - 1) - tile.height_at(x, y + 1)) * exaggeration
-                        / (2.0 * spacing);
-                let normal = slope_x.mul_add(slope_x, slope_y.mul_add(slope_y, 1.0)).sqrt();
+                let slope_x = (tile.height_at(x - 1, y) - tile.height_at(x + 1, y)) * exaggeration
+                    / (2.0 * spacing);
+                let slope_y = (tile.height_at(x, y - 1) - tile.height_at(x, y + 1)) * exaggeration
+                    / (2.0 * spacing);
+                let normal = slope_x
+                    .mul_add(slope_x, slope_y.mul_add(slope_y, 1.0))
+                    .sqrt();
                 let illumination = (slope_x
                     .mul_add(light_x, slope_y * light_y)
                     .mul_add(horizontal, light_z)
@@ -3646,21 +3671,21 @@ mod tests {
     }
 
     #[test]
-    fn trackpad_pan_updates_and_settles_the_camera_without_rebound() {
+    fn surface_pan_updates_and_settles_the_camera_without_rebound() {
         let controller =
             MapGestureController::new(&Computed::constant(manhattan_region(0.030, 0.050)));
         let viewport = Viewport {
             width: 1_000,
             height: 500,
         };
-        let mut trackpad = TrackpadCameraGesture::default();
+        let mut surface_gesture = SurfaceCameraGesture::default();
         let moving = GestureState {
             pan_offset: waterui_core::layout::Point::new(100.0, 50.0),
             active: true,
             ..GestureState::new()
         };
 
-        trackpad.apply(&controller, moving, viewport);
+        surface_gesture.apply(&controller, moving, viewport);
         let visible = controller.region.get();
         assert!((visible.center.latitude.get() - 40.761).abs() < 1e-9);
         assert!((visible.center.longitude.get() + 73.9905).abs() < 1e-9);
@@ -3669,7 +3694,7 @@ mod tests {
             manhattan_region(0.030, 0.050)
         );
 
-        trackpad.apply(
+        surface_gesture.apply(
             &controller,
             GestureState {
                 active: false,
@@ -3680,8 +3705,44 @@ mod tests {
         assert_eq!(controller.region.get(), visible);
         assert_eq!(controller.settled_region.get(), visible);
 
-        trackpad.apply(&controller, GestureState::new(), viewport);
+        surface_gesture.apply(&controller, GestureState::new(), viewport);
         assert_eq!(controller.region.get(), visible);
+        assert_eq!(controller.settled_region.get(), visible);
+    }
+
+    #[test]
+    fn surface_pinch_zooms_around_the_focal_point_and_settles() {
+        let controller =
+            MapGestureController::new(&Computed::constant(manhattan_region(0.030, 0.050)));
+        let viewport = Viewport {
+            width: 1_000,
+            height: 500,
+        };
+        let mut surface_gesture = SurfaceCameraGesture::default();
+        let pinching = GestureState {
+            pinch_scale: 2.0,
+            pinch_center: Some(waterui_core::layout::Point::new(500.0, 250.0)),
+            active: true,
+            ..GestureState::new()
+        };
+
+        surface_gesture.apply(&controller, pinching, viewport);
+        let visible = controller.region.get();
+        assert!((visible.latitude_delta - 0.015).abs() < 1e-9);
+        assert!((visible.longitude_delta - 0.025).abs() < 1e-9);
+        // The pinch focus sits at the viewport center, so the center holds.
+        let origin = manhattan_region(0.030, 0.050);
+        assert!((visible.center.latitude.get() - origin.center.latitude.get()).abs() < 1e-9);
+        assert!((visible.center.longitude.get() - origin.center.longitude.get()).abs() < 1e-9);
+
+        surface_gesture.apply(
+            &controller,
+            GestureState {
+                active: false,
+                ..pinching
+            },
+            viewport,
+        );
         assert_eq!(controller.settled_region.get(), visible);
     }
 
