@@ -3506,13 +3506,17 @@ pub mod inspector {
             dependency_path(&inspector_app_path),
         );
 
-        write_support_cargo_toml(
-            base_dir,
-            ctx.crate_name.as_str(),
-            BTreeMap::new(),
-            dependencies,
-        )
-        .await
+        // The FFI scaffold generated alongside this app declares
+        // `dev = ["<app>/dev"]`, so an app without a `dev` feature cannot be
+        // resolved at all: cargo fails the whole metadata query before anything
+        // is built. Every generated project carries this feature; the support
+        // app is no different.
+        let features = BTreeMap::from([(
+            "dev".to_string(),
+            vec!["waterui/dynamic_linking".to_string()],
+        )]);
+
+        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), features, dependencies).await
     }
 
     #[cfg(test)]
@@ -3530,6 +3534,26 @@ pub mod inspector {
                 crate_path.join("Cargo.toml").is_file(),
                 "inspector app crate is not at {}",
                 crate_path.display()
+            );
+        }
+
+        /// The FFI scaffold generated beside this app declares
+        /// `dev = ["<app>/dev"]`. An app without that feature cannot be
+        /// resolved at all — cargo fails the metadata query and `water
+        /// inspector` dies before building anything, which is exactly what it
+        /// did until this was noticed.
+        #[test]
+        fn the_generated_app_declares_the_feature_its_ffi_scaffold_requires() {
+            let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/project_model/templates.rs");
+            let source = std::fs::read_to_string(generated).expect("the module is readable");
+            let inspector = source
+                .split("pub mod inspector {")
+                .nth(1)
+                .expect("the inspector template module exists");
+            assert!(
+                inspector.contains("\"dev\".to_string()"),
+                "the inspector support app is generated without a `dev` feature"
             );
         }
     }
